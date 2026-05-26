@@ -1,0 +1,254 @@
+import {
+  ArrowDown,
+  ArrowUp,
+  Briefcase,
+  FolderKanban,
+  GraduationCap,
+  List,
+  Plus,
+  Sparkles,
+  Trash2,
+  type LucideIcon,
+} from 'lucide-react'
+import { Suspense, lazy } from 'react'
+
+import type { AppMessages } from '@/i18n'
+import { getSectionSummary, getSectionTitle } from '@/lib/resume'
+import type {
+  ResumeSection,
+  ResumeSectionItem,
+  SectionKind,
+} from '@/types/resume'
+
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Skeleton } from '@/components/ui/skeleton'
+
+import { EditorCardShell } from './editor-card-shell'
+import { FormField } from './form-field'
+
+const RichHighlightsEditor = lazy(() =>
+  import('./rich-highlights-editor').then((module) => ({
+    default: module.RichHighlightsEditor,
+  })),
+)
+
+const sectionIcons: Record<SectionKind, LucideIcon> = {
+  education: GraduationCap,
+  internship: Briefcase,
+  project: FolderKanban,
+  other: List,
+  custom: Sparkles,
+}
+
+function RichHighlightsEditorSkeleton() {
+  return (
+    <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/35 p-3">
+      <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-background/80 p-1">
+        {Array.from({ length: 8 }, (_, index) => (
+          <Skeleton key={index} className="size-8 rounded-md" />
+        ))}
+      </div>
+      <Skeleton className="h-[220px] rounded-xl" />
+    </div>
+  )
+}
+
+export function ResumeSectionCard({
+  t,
+  section,
+  collapsed,
+  onToggle,
+  onUpdateSection,
+  onAddItem,
+  onRemoveSection,
+  onMoveSectionDown,
+  onMoveSectionUp,
+  onUpdateItem,
+  onUpdateHighlights,
+  onRemoveItem,
+  canMoveUp,
+  canMoveDown,
+}: {
+  t: AppMessages
+  section: ResumeSection
+  collapsed: boolean
+  onToggle: () => void
+  onUpdateSection: (
+    sectionId: string,
+    patch: Partial<Omit<ResumeSection, 'id' | 'items'>>,
+  ) => void
+  onAddItem: (sectionId: string) => void
+  onRemoveSection: (sectionId: string) => void
+  onMoveSectionUp: (sectionId: string) => void
+  onMoveSectionDown: (sectionId: string) => void
+  onUpdateItem: (
+    sectionId: string,
+    itemId: string,
+    field: keyof Omit<ResumeSectionItem, 'id' | 'highlights'>,
+    value: string,
+  ) => void
+  onUpdateHighlights: (sectionId: string, itemId: string, value: string) => void
+  onRemoveItem: (sectionId: string, itemId: string) => void
+  canMoveUp: boolean
+  canMoveDown: boolean
+}) {
+  const Icon = sectionIcons[section.kind]
+
+  return (
+    <EditorCardShell
+      icon={Icon}
+      title={getSectionTitle(section, t)}
+      summary={getSectionSummary(section, t)}
+      collapsed={collapsed}
+      onToggle={onToggle}
+      headerAction={
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={!canMoveUp}
+            onClick={() => onMoveSectionUp(section.id)}
+          >
+            <ArrowUp className="size-4" />
+            <span className="sr-only">{t.moveSectionUp}</span>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={!canMoveDown}
+            onClick={() => onMoveSectionDown(section.id)}
+          >
+            <ArrowDown className="size-4" />
+            <span className="sr-only">{t.moveSectionDown}</span>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={(event) => {
+              event.stopPropagation()
+              onRemoveSection(section.id)
+            }}
+          >
+            <Trash2 className="size-4" />
+            <span className="sr-only">{t.deleteSection}</span>
+          </Button>
+        </div>
+      }
+    >
+      <div className="grid min-w-0 gap-3">
+        <FormField label={t.renameSection}>
+          <Input
+            value={section.customTitle}
+            placeholder={t.placeholders.sectionName}
+            onChange={(event) =>
+              onUpdateSection(section.id, { customTitle: event.target.value })
+            }
+          />
+        </FormField>
+        <Button
+          type="button"
+          variant="outline"
+          className="self-start"
+          onClick={() => onAddItem(section.id)}
+        >
+          <Plus className="size-4" />
+          {t.addItem}
+        </Button>
+      </div>
+
+      <div className="grid gap-3">
+        {section.items.map((item, index) => (
+          <div key={item.id} className="grid gap-4 rounded-xl border border-border/70 bg-muted/40 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-foreground/80">{`${t.addItem} ${index + 1}`}</p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onRemoveItem(section.id, item.id)}
+              >
+                <Trash2 className="size-4" />
+                <span className="sr-only">{t.removeItem}</span>
+              </Button>
+            </div>
+
+            <div className="grid min-w-0 gap-3 md:grid-cols-2">
+              <FormField label={t.fieldLabels.title}>
+                <Input
+                  value={item.title}
+                  placeholder={t.placeholders.title}
+                  onChange={(event) =>
+                    onUpdateItem(section.id, item.id, 'title', event.target.value)
+                  }
+                />
+              </FormField>
+              <FormField label={t.fieldLabels.subtitle}>
+                <Input
+                  value={item.subtitle}
+                  placeholder={t.placeholders.subtitle}
+                  onChange={(event) =>
+                    onUpdateItem(section.id, item.id, 'subtitle', event.target.value)
+                  }
+                />
+              </FormField>
+
+              {section.layout === 'timeline' ? (
+                <>
+                  <FormField label={t.fieldLabels.meta}>
+                    <Input
+                      value={item.meta}
+                      placeholder={t.placeholders.meta}
+                      onChange={(event) =>
+                        onUpdateItem(section.id, item.id, 'meta', event.target.value)
+                      }
+                    />
+                  </FormField>
+                  <FormField label={t.fieldLabels.period}>
+                    <Input
+                      value={item.period}
+                      placeholder={t.placeholders.period}
+                      onChange={(event) =>
+                        onUpdateItem(section.id, item.id, 'period', event.target.value)
+                      }
+                    />
+                  </FormField>
+                </>
+              ) : null}
+
+              <FormField label={t.fieldLabels.description} className="md:col-span-2">
+                <Textarea
+                  rows={3}
+                  value={item.description}
+                  placeholder={t.placeholders.description}
+                  onChange={(event) =>
+                    onUpdateItem(section.id, item.id, 'description', event.target.value)
+                  }
+                />
+              </FormField>
+
+              {section.layout === 'timeline' ? (
+                <div className="grid min-w-0 gap-2 md:col-span-2">
+                  <span className="break-words text-[11px] font-medium uppercase leading-tight tracking-[0.2em] text-muted-foreground">
+                    {t.fieldLabels.highlights}
+                  </span>
+                  <Suspense fallback={<RichHighlightsEditorSkeleton />}>
+                    <RichHighlightsEditor
+                      t={t}
+                      value={item.highlights}
+                      onChange={(value) => onUpdateHighlights(section.id, item.id, value)}
+                    />
+                  </Suspense>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </EditorCardShell>
+  )
+}

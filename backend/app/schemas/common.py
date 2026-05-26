@@ -1,0 +1,55 @@
+from pydantic import BaseModel, ConfigDict, Field
+
+APP_CODE_BAD_REQUEST = 40000
+APP_CODE_UNAUTHORIZED = 40001
+APP_CODE_VALIDATION_ERROR = 40002
+APP_CODE_NOT_FOUND = 40004
+APP_CODE_INTERNAL_ERROR = 50000
+
+APP_MESSAGE_OK = "OK"
+APP_MESSAGE_BAD_REQUEST = "BAD_REQUEST"
+APP_MESSAGE_UNAUTHORIZED = "UNAUTHORIZED_REQUEST"
+APP_MESSAGE_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
+APP_MESSAGE_PASSWORD_REQUIRED = "PASSWORD_REQUIRED"
+APP_MESSAGE_PASSWORD_TOO_SHORT = "PASSWORD_TOO_SHORT"
+APP_MESSAGE_PASSWORD_CONFIRMATION_MISMATCH = "PASSWORD_CONFIRMATION_MISMATCH"
+APP_MESSAGE_VALIDATION_ERROR = "VALIDATION_ERROR"
+APP_MESSAGE_NOT_FOUND = "NOT_FOUND"
+APP_MESSAGE_INTERNAL_ERROR = "INTERNAL_SERVER_ERROR"
+
+
+class ApiResponse[DataT](BaseModel):
+    """Unified API response envelope shared by all frontend calls."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: int = 0
+    message: str = APP_MESSAGE_OK
+    data: DataT
+    request_id: str | None = Field(default=None, alias="requestId")
+
+
+def ok_response[DataT](
+    data: DataT,
+    request_id: str | None = None,
+) -> ApiResponse[DataT]:
+    """Wrap successful data in the standard API envelope."""
+
+    return ApiResponse(data=data, requestId=request_id)
+
+
+def error_response(
+    *,
+    code: int,
+    message: str,
+    data: object | None = None,
+    request_id: str | None = None,
+) -> ApiResponse[object | None]:
+    """Wrap an application error in the standard API envelope."""
+
+    return ApiResponse(
+        code=code,
+        message=message,
+        data=data,
+        requestId=request_id,
+    )

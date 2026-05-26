@@ -1,0 +1,15 @@
+# Environment variable files
+.env
+.env.*
+!.env.example
+
+# Editor files
+.vscode/
+.DS_Store
+*.sw?
+
+# Personal AI Related 
+.agents/
+.codex/
+AGENTS.md
+skills-lock.json

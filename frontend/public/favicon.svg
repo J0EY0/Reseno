@@ -1,0 +1,5 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="14" fill="#0F172A"/>
+  <text x="32" y="40" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="800" letter-spacing="-2" fill="#FFFFFF">RM</text>
+  <path d="M12 48H52" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+</svg>
