@@ -59,6 +59,7 @@ interface SectionBlockProps {
 
 interface SectionItemsProps {
   items: ResumeSectionItem[]
+  t: AppMessages
   settings: ResumeTemplateSettings
   itemDiffById?: Map<string, ResumeDraftDiff>
 }
@@ -166,6 +167,23 @@ function roundToHalf(value: number) {
 
 function getDiffClassName(diff?: ResumeDraftDiff) {
   return diff ? `resume-diff resume-diff--${diff.kind}` : undefined
+}
+
+function getDiffLabel(diff: ResumeDraftDiff | undefined, t: AppMessages) {
+  if (!diff) {
+    return undefined
+  }
+
+  switch (diff.kind) {
+    case 'added':
+      return t.agentDiffAdded
+    case 'deleted':
+      return t.agentDiffDeleted
+    case 'moved':
+      return t.agentDiffMoved
+    case 'modified':
+      return t.agentDiffModified
+  }
 }
 
 function createDiffLookup(diffs: ResumeDraftDiff[]) {
@@ -501,12 +519,14 @@ function ContactLine({
 
 function StandardBasicInfo({
   locale,
+  t,
   basic,
   settings,
   layout,
   summaryDiff,
 }: {
   locale: Locale
+  t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
@@ -614,6 +634,7 @@ function StandardBasicInfo({
         <p
           className={cn('resume-tone-body text-left', getDiffClassName(summaryDiff))}
           data-resume-diff-kind={summaryDiff?.kind}
+          data-resume-diff-label={getDiffLabel(summaryDiff, t)}
           style={{
             fontSize: `${settings.bodyScale}em`,
             lineHeight: settings.bodyLineHeight,
@@ -628,12 +649,14 @@ function StandardBasicInfo({
 
 function SidebarBasicInfo({
   locale,
+  t,
   basic,
   settings,
   layout,
   summaryDiff,
 }: {
   locale: Locale
+  t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
@@ -696,6 +719,7 @@ function SidebarBasicInfo({
           <p
             className={cn('text-white/80', getDiffClassName(summaryDiff))}
             data-resume-diff-kind={summaryDiff?.kind}
+            data-resume-diff-label={getDiffLabel(summaryDiff, t)}
             style={{
               fontSize: `${settings.bodyScale}em`,
               lineHeight: settings.bodyLineHeight,
@@ -711,10 +735,12 @@ function SidebarBasicInfo({
 
 function TimelineItem({
   item,
+  t,
   settings,
   diff,
 }: {
   item: ResumeSectionItem
+  t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
 }) {
@@ -725,6 +751,7 @@ function TimelineItem({
       className={cn('resume-item grid gap-2', getDiffClassName(diff))}
       data-resume-item-id={item.id}
       data-resume-diff-kind={diff?.kind}
+      data-resume-diff-label={getDiffLabel(diff, t)}
     >
       <div className="flex items-start justify-between gap-4 max-md:flex-col">
         <div>
@@ -786,7 +813,7 @@ function TimelineItem({
   )
 }
 
-function TimelineItems({ items, settings, itemDiffById }: SectionItemsProps) {
+function TimelineItems({ items, t, settings, itemDiffById }: SectionItemsProps) {
   return (
     <div
       className="grid"
@@ -797,6 +824,7 @@ function TimelineItems({ items, settings, itemDiffById }: SectionItemsProps) {
         <TimelineItem
           key={item.id}
           item={item}
+          t={t}
           settings={settings}
           diff={itemDiffById?.get(item.id)}
         />
@@ -807,10 +835,12 @@ function TimelineItems({ items, settings, itemDiffById }: SectionItemsProps) {
 
 function ListItem({
   item,
+  t,
   settings,
   diff,
 }: {
   item: ResumeSectionItem
+  t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
 }) {
@@ -821,6 +851,7 @@ function ListItem({
       className={cn('resume-item', getDiffClassName(diff))}
       data-resume-item-id={item.id}
       data-resume-diff-kind={diff?.kind}
+      data-resume-diff-label={getDiffLabel(diff, t)}
     >
       <strong style={{ color: settings.bodyColor }}>{item.title}</strong>
       {item.subtitle ? <span>：{item.subtitle}</span> : null}
@@ -844,7 +875,7 @@ function ListItem({
   )
 }
 
-function ListItems({ items, settings, itemDiffById }: SectionItemsProps) {
+function ListItems({ items, t, settings, itemDiffById }: SectionItemsProps) {
   return (
     <ul
       className="resume-tone-body grid list-disc pl-5"
@@ -859,6 +890,7 @@ function ListItems({ items, settings, itemDiffById }: SectionItemsProps) {
         <ListItem
           key={item.id}
           item={item}
+          t={t}
           settings={settings}
           diff={itemDiffById?.get(item.id)}
         />
@@ -869,11 +901,13 @@ function ListItems({ items, settings, itemDiffById }: SectionItemsProps) {
 
 function SectionItems({
   section,
+  t,
   settings,
   items,
   itemDiffById,
 }: {
   section: ResumeSection
+  t: AppMessages
   settings: ResumeTemplateSettings
   items?: ResumeSectionItem[]
   itemDiffById?: Map<string, ResumeDraftDiff>
@@ -884,6 +918,7 @@ function SectionItems({
     return (
       <ListItems
         items={visibleItems}
+        t={t}
         settings={settings}
         itemDiffById={itemDiffById}
       />
@@ -893,6 +928,7 @@ function SectionItems({
   return (
     <TimelineItems
       items={visibleItems}
+      t={t}
       settings={settings}
       itemDiffById={itemDiffById}
     />
@@ -1018,6 +1054,7 @@ function SectionBlock({
         <div className="p-4">
           <SectionItems
             section={section}
+            t={t}
             settings={settings}
             items={visibleItems}
             itemDiffById={itemDiffById}
@@ -1055,6 +1092,7 @@ function SectionBlock({
         <div className={showTitle ? 'mt-3' : undefined}>
           <SectionItems
             section={section}
+            t={t}
             settings={settings}
             items={visibleItems}
             itemDiffById={itemDiffById}
@@ -1098,6 +1136,7 @@ function SectionBlock({
       <div className={showTitle ? 'mt-3' : undefined}>
         <SectionItems
           section={section}
+          t={t}
           settings={settings}
           items={visibleItems}
           itemDiffById={itemDiffById}
@@ -1430,6 +1469,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
         {includeBasicInfo ? (
           <StandardBasicInfo
             locale={locale}
+            t={t}
             basic={resume.basic}
             settings={settings}
             layout={layout}
@@ -1473,6 +1513,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
           >
             <SidebarBasicInfo
               locale={locale}
+              t={t}
               basic={resume.basic}
               settings={settings}
               layout={layout}

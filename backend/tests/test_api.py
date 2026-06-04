@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -98,6 +99,20 @@ def stub_tool_call_batches(
     def call_tools(*_: object) -> LlmToolCallResponse:
         if pending:
             return LlmToolCallResponse(content="", tool_calls=pending.pop(0))
+
+        return LlmToolCallResponse(content="", tool_calls=[])
+
+    return call_tools
+
+
+def stub_tool_call_responses(
+    *responses: LlmToolCallResponse,
+):
+    pending = list(responses)
+
+    def call_tools(*_: object) -> LlmToolCallResponse:
+        if pending:
+            return pending.pop(0)
 
         return LlmToolCallResponse(content="", tool_calls=[])
 
@@ -928,9 +943,37 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                     "jd_reference_search",
                     {"query": "frontend engineer job description"},
                 ),
+            ],
+            [
                 tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
                 tool_call("call-plan", "edit_plan"),
-                tool_call("call-execute", "edit_execute"),
+            ],
+            [
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "Update summary",
+                                "target": "basic.summary",
+                                "reason": (
+                                    "Add the missing TypeScript keyword from the JD."
+                                ),
+                                "operation": {
+                                    "type": "replace_field",
+                                    "path": "basic.summary",
+                                    "value": (
+                                        "Frontend engineer with React and "
+                                        "TypeScript project experience."
+                                    ),
+                                },
+                            },
+                        ],
+                    },
+                ),
             ],
         ),
     )
@@ -1016,6 +1059,213 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     assert any(
         tool["title"] == "jd_reference_search" for tool in data["message"]["tools"]
     )
+
+
+def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat",
+        lambda *_: '{"text":"已生成项目经历修改草稿"}',
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "强化项目结果",
+                                "target": "sections.project.items.project-1",
+                                "reason": (
+                                    "用户要求修改项目经历，直接定位现有项目条目。"
+                                ),
+                                "replacement": "负责推荐链路优化，点击率提升 12%。",
+                                "operation": {
+                                    "type": "update_item",
+                                    "sectionId": "project",
+                                    "itemId": "project-1",
+                                    "patch": {
+                                        "description": (
+                                            "负责推荐链路优化，点击率提升 12%。"
+                                        ),
+                                        "highlights": ["协同后端将接口延迟降低 30%"],
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "ready",
+                        "reason": "Observation shows the project item now matches.",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "prompt": "把项目经历写得更像推荐算法工程师",
+            "message": {
+                "role": "user",
+                "text": "把项目经历写得更像推荐算法工程师",
+            },
+            "messages": [
+                {"role": "user", "text": "把项目经历写得更像推荐算法工程师"},
+            ],
+            "conversation": [
+                {"role": "user", "text": "把项目经历写得更像推荐算法工程师"},
+            ],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"name": "王小明", "summary": ""},
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "layout": "timeline",
+                        "customTitle": "",
+                        "items": [
+                            {
+                                "id": "project-1",
+                                "title": "电商推荐系统优化",
+                                "subtitle": "",
+                                "meta": "",
+                                "period": "2023/06 - 2023/09",
+                                "description": "负责推荐算法迭代。",
+                                "highlights": [],
+                            },
+                        ],
+                    },
+                ],
+            },
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["data"]["message"]
+    tool_titles = [tool["title"] for tool in message["tools"]]
+    assert tool_titles == ["edit_execute"]
+    observations = message["tools"][0]["output"]["observations"]
+    assert observations[0]["target"] == "sections.project.items.project-1"
+    assert observations[0]["before"]["description"] == "负责推荐算法迭代。"
+    assert (
+        observations[0]["after"]["description"]
+        == "负责推荐链路优化，点击率提升 12%。"
+    )
+    assert message["text"] == "已生成项目经历修改草稿"
+    assert message["edits"][0]["target"] == "sections.project.items.project-1"
+    assert message["edits"][0]["operation"] == {
+        "type": "update_item",
+        "sectionId": "project",
+        "itemId": "project-1",
+        "patch": {
+            "description": "负责推荐链路优化，点击率提升 12%。",
+            "highlights": ["协同后端将接口延迟降低 30%"],
+        },
+    }
+
+
+def test_agent_chat_executes_empty_resume_project_insert_from_plan(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    prompt = (
+        "帮我添加项目经历：项目名称：电商后台管理系统\n"
+        "时间：2023.03 - 2023.06\n"
+        "负责 Spring Boot、MySQL、Redis、Docker 和 SQL 优化。"
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat",
+        lambda *_: '{"text":"已生成项目经历草稿"}',
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
+                tool_call(
+                    "call-plan",
+                    "edit_plan",
+                    {
+                        "steps": [
+                            {
+                                "action": "insert_section",
+                                "target": "sections",
+                                "reason": "用户提供了项目经历，需要新增项目模块。",
+                            },
+                        ],
+                    },
+                ),
+            ],
+            [
+                tool_call("call-execute", "edit_execute"),
+            ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "ready",
+                        "reason": "Observation shows the project section was added.",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "prompt": prompt,
+            "message": {"role": "user", "text": prompt},
+            "messages": [],
+            "conversation": [],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["data"]["message"]
+    tool_titles = [tool["title"] for tool in message["tools"]]
+    assert tool_titles == ["resume_analysis", "edit_plan", "edit_execute"]
+    assert message["edits"]
+    operation = message["edits"][0]["operation"]
+    assert operation["type"] == "insert_section"
+    assert operation["section"]["kind"] == "project"
+    assert operation["section"]["items"][0]["title"] == "电商后台管理系统"
+    assert operation["section"]["items"][0]["period"] == "2023.03 - 2023.06"
 
 
 def test_agent_chat_direct_message_does_not_return_tools(
@@ -1110,8 +1360,14 @@ def test_agent_chat_uses_provided_jd_url(
                     "jd_url_fetch",
                     {"url": "https://example.test/jobs/frontend"},
                 ),
+            ],
+            [
                 tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
                 tool_call("call-plan", "edit_plan"),
+            ],
+            [
                 tool_call("call-execute", "edit_execute"),
             ],
         ),
@@ -1231,7 +1487,11 @@ def test_agent_chat_cleans_chinese_target_role(
                     "jd_reference_search",
                     {"query": "AI应用开发 岗位 JD 职责 任职要求"},
                 ),
+            ],
+            [
                 tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
                 tool_call("call-plan", "edit_plan"),
             ],
         ),
@@ -1295,7 +1555,11 @@ def test_agent_chat_streams_tool_and_source_metadata(
                     "jd_reference_search",
                     {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
                 ),
+            ],
+            [
                 tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
                 tool_call("call-plan", "edit_plan"),
             ],
         ),
@@ -1335,7 +1599,9 @@ def test_agent_chat_streams_tool_and_source_metadata(
 
     assert response.status_code == 200
     assert "event: message_start" in body
-    assert "event: text_delta" in body
+    assert "event: plan" not in body
+    assert "event: timeline" in body
+    assert "event: text_delta" not in body
     assert "我先分析目标岗位和当前简历" not in body
     assert "event: tools" in body
     assert '"state":"input-available"' in body
@@ -1345,8 +1611,8 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "流式真实模型响应" in body
     assert body.index("jd_reference_search") < body.index("resume_analysis")
     assert body.index("resume_analysis") < body.index("edit_plan")
-    assert body.index("event: tools") < body.index('"delta":"流式"')
-    assert body.index('"delta":"真实模型响应"') < body.index('"source-jd-search"')
+    assert body.index("event: tools") < body.index("流式真实模型响应")
+    assert body.index("流式真实模型响应") < body.index('"source-jd-search"')
     assert '"tools":' in body
     assert '"source-jd-search"' in body
     assert '"edits":[]' in body
@@ -1355,7 +1621,265 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "edit_execute" not in body
 
 
-def test_agent_chat_streams_edit_metadata_after_model_text(
+def test_agent_chat_streams_model_narration_between_tool_actions(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_responses(
+            LlmToolCallResponse(
+                content="我先看一下当前简历内容。",
+                tool_calls=[tool_call("call-analysis", "resume_analysis")],
+            ),
+            LlmToolCallResponse(
+                content="我发现简介比较短，下一步先整理可执行的修改方向。",
+                tool_calls=[tool_call("call-plan", "edit_plan")],
+            ),
+        ),
+    )
+
+    def stream_response(*_: object) -> object:
+        yield LlmStreamDelta(kind="text", delta="最后给出草稿建议。")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    with client.stream(
+        "POST",
+        "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
+        json={
+            "prompt": "优化个人简介",
+            "message": {"role": "user", "text": "优化个人简介"},
+            "messages": [{"role": "user", "text": "优化个人简介"}],
+            "conversation": [{"role": "user", "text": "优化个人简介"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"name": "王小明", "summary": "有前端项目经验。"},
+                "sections": [],
+            },
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: updates" not in body
+    assert "event: timeline" in body
+    assert "event: text_delta" not in body
+    assert "我先看一下当前简历内容。" in body
+    assert "已读取当前简历结构" not in body
+    assert "已整理出" not in body
+    assert "我发现简介比较短，下一步先整理可执行的修改方向。" in body
+    assert body.index("我先看一下当前简历内容。") < body.index(
+        "resume_analysis",
+    )
+    assert body.index("resume_analysis") < body.index(
+        "我发现简介比较短，下一步先整理可执行的修改方向。",
+    )
+    assert body.index("我发现简介比较短，下一步先整理可执行的修改方向。") < body.index(
+        "edit_plan",
+    )
+    assert body.index("edit_plan") < body.index("最后给出草稿建议。")
+    assert "最后给出草稿建议。" in body
+
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    timeline = json.loads(message_done_data)["message"]["timeline"]
+    assert [part["type"] for part in timeline] == [
+        "text",
+        "tool_group",
+        "text",
+        "tool_group",
+        "text",
+    ]
+    assert [
+        part["toolIds"]
+        for part in timeline
+        if part["type"] == "tool_group"
+    ] == [["call-analysis"], ["call-plan"]]
+
+
+def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_responses(
+            LlmToolCallResponse(
+                content="我先同时检查简历结构和岗位参考。",
+                tool_calls=[
+                    tool_call("call-analysis", "resume_analysis"),
+                    tool_call(
+                        "call-jd",
+                        "jd_reference_search",
+                        {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
+                    ),
+                ],
+            ),
+        ),
+    )
+
+    def stream_response(*_: object) -> object:
+        yield LlmStreamDelta(kind="text", delta="下一步会基于这些结果给出草稿。")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    with client.stream(
+        "POST",
+        "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
+        json={
+            "prompt": "优化个人简介",
+            "message": {"role": "user", "text": "优化个人简介"},
+            "messages": [{"role": "user", "text": "优化个人简介"}],
+            "conversation": [{"role": "user", "text": "优化个人简介"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"name": "王小明", "summary": "有前端项目经验。"},
+                "sections": [],
+            },
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: plan" not in body
+    assert "event: timeline" in body
+    assert "event: text_delta" not in body
+    assert body.index("我先同时检查简历结构和岗位参考。") < body.index(
+        "resume_analysis",
+    )
+    assert "已读取当前简历结构" not in body
+    assert "已拿到岗位参考" not in body
+    assert body.index("resume_analysis") < body.index("jd_reference_search")
+    assert body.index("jd_reference_search") < body.index(
+        "下一步会基于这些结果给出草稿。",
+    )
+
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    timeline = json.loads(message_done_data)["message"]["timeline"]
+    assert [part["type"] for part in timeline] == [
+        "text",
+        "tool_group",
+        "tool_group",
+        "text",
+    ]
+    assert [
+        part["toolIds"]
+        for part in timeline
+        if part["type"] == "tool_group"
+    ] == [["call-analysis"], ["call-jd"]]
+
+
+def test_agent_chat_streams_terminal_model_text_after_tool_observation(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_responses(
+            LlmToolCallResponse(
+                content="我先读取当前简历。",
+                tool_calls=[tool_call("call-analysis", "resume_analysis")],
+            ),
+            LlmToolCallResponse(
+                content="当前简历已经足够回答这个问题，我不会继续调用工具。",
+                tool_calls=[],
+            ),
+        ),
+    )
+
+    def stream_response(*_: object) -> object:
+        raise AssertionError("terminal tool-loop text should not request final stream")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    with client.stream(
+        "POST",
+        "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
+        json={
+            "prompt": "分析一下我的简历",
+            "message": {"role": "user", "text": "分析一下我的简历"},
+            "messages": [{"role": "user", "text": "分析一下我的简历"}],
+            "conversation": [{"role": "user", "text": "分析一下我的简历"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"name": "王小明", "summary": "有前端项目经验。"},
+                "sections": [],
+            },
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "我先读取当前简历。" in body
+    assert "当前简历已经足够回答这个问题，我不会继续调用工具。" in body
+    assert "已读取当前简历结构" not in body
+    assert body.index("我先读取当前简历。") < body.index("resume_analysis")
+    assert body.index("resume_analysis") < body.index(
+        "当前简历已经足够回答这个问题，我不会继续调用工具。",
+    )
+
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    timeline = json.loads(message_done_data)["message"]["timeline"]
+    assert [part["type"] for part in timeline] == ["text", "tool_group", "text"]
+    assert timeline[-1]["text"] == "当前简历已经足够回答这个问题，我不会继续调用工具。"
+
+
+def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -1370,8 +1894,14 @@ def test_agent_chat_streams_edit_metadata_after_model_text(
                     "jd_reference_search",
                     {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
                 ),
+            ],
+            [
                 tool_call("call-analysis", "resume_analysis"),
+            ],
+            [
                 tool_call("call-plan", "edit_plan"),
+            ],
+            [
                 tool_call("call-execute", "edit_execute"),
             ],
         ),
@@ -1414,10 +1944,14 @@ def test_agent_chat_streams_edit_metadata_after_model_text(
 
     assert response.status_code == 200
     assert "我先分析目标岗位和当前简历" not in body
+    assert "event: plan" not in body
     assert "event: tools" in body
+    assert "event: edits" in body
+    assert "event: text_delta" not in body
     assert "模型完成分析" in body
-    assert body.index("event: tools") < body.index('"delta":"模型"')
-    assert body.index('"delta":"完成分析"') < body.index('"edits":[{')
+    assert body.index("event: tools") < body.index("模型完成分析")
+    assert body.index("event: edits") < body.index("模型完成分析")
+    assert body.rindex('"edits":[{') > body.index("模型完成分析")
     assert '"edits":[{' in body
     assert "edit_plan" in body
     assert "edit_execute" in body

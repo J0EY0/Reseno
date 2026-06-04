@@ -321,9 +321,12 @@ type ImportTemplatesResponse = {
 
 用途：发送当前简历上下文、JD、模型配置和用户输入，返回 Agent 建议。
 同一个接口同时支持普通 JSON 和 SSE 流式响应。
-Agent 使用 `plan_execute` 范式：先解析 JD 来源和简历上下文，再生成计划，
-最后返回可执行的结构化修改操作。前端只把这些操作应用到临时 JSON 草稿，
-用户确认后才写回当前简历。
+Agent 使用 ReAct 范式：模型先理解用户意图，再决定是否调用 JD 获取、JD 搜索、
+简历分析、编辑计划或编辑执行工具。每轮遵循 Reasoning → Action → Observation；
+每轮只能执行一个 Action，拿到 Observation 后再决定下一步；
+Observation 来自工具结果，最后必须通过隐藏的 `finish` action 结束循环。不要默认
+先搜索 JD 或分析简历；只有用户提供 JD URL 或明确要求岗位/JD 匹配时才调用 JD 工具。
+前端只把返回的结构化修改操作应用到临时 JSON 草稿，用户确认后才写回当前简历。
 后端会使用 SQLite 中已配置并加密保存的大模型配置发起真实模型调用；如果没有
 可用模型配置，接口只返回配置引导，不返回模拟对话。
 
@@ -375,7 +378,9 @@ type AgentChatRequest = {
   }
   appliedActions: string[]
   modelConfig: ModelConfig | null
-  settings: AgentSettings
+  settings: AgentSettings & {
+    maxReActIterations?: number // 可选；默认 5，后端会限制在 1-8
+  }
   stream?: boolean
 }
 ```
@@ -415,7 +420,7 @@ type AgentToolInvocation = {
 type AgentResumeEditSuggestion = {
   id: string
   title: string
-  target: string // 例如 basic.summary 或 sections.project.items[0]
+  target: string // 例如 basic.summary 或 sections.project.items.project-1
   reason: string
   replacement?: string
   status?: "planned" | "executed" | "rejected"
@@ -440,6 +445,7 @@ type AgentChatResponse = {
     tone?: "default" | "success"
     text: string
     reasoning?: string
+    plan?: string[] // 可选审计元数据；默认前端主视图不直接展示内部计划
     suggestions?: string[]
     knowledge?: Array<{
       title: string
@@ -471,6 +477,10 @@ type AgentChatStreamEvent =
       delta: string
     }
   | {
+      type: "plan"
+      message: Partial<Pick<AgentChatResponse["message"], "plan">>
+    }
+  | {
       type: "message_delta"
       message: Partial<Omit<AgentChatResponse["message"], "id" | "role">>
     }
@@ -490,8 +500,17 @@ type AgentChatStreamEvent =
 event: message_start
 data: {"type":"message_start","message":{"id":"agent-msg-xxx","role":"assistant","tone":"default"}}
 
-event: reasoning_delta
-data: {"type":"reasoning_delta","delta":"正在分析用户意图和当前简历上下文。"}
+event: plan
+data: {"type":"plan","message":{"plan":["检查当前简历内容","定位需要调整的模块","生成可预览草稿","汇总修改结果"]}}
+
+event: tools
+data: {"type":"tools","message":{"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"input-available","input":{}}]}}
+
+event: tools
+data: {"type":"tools","message":{"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"output-available","input":{},"output":{"sectionCount":2}}]}}
+
+event: edits
+data: {"type":"edits","message":{"edits":[{"id":"edit-1","title":"补强项目经历","target":"sections.project.items.project-1","reason":"用户要求强化项目结果","replacement":"负责推荐链路优化，点击率提升 12%。"}]}}
 
 event: text_delta
 data: {"type":"text_delta","delta":"第一段增量文本"}
@@ -500,7 +519,7 @@ event: text_delta
 data: {"type":"text_delta","delta":"，继续输出"}
 
 event: message_delta
-data: {"type":"message_delta","message":{"sources":[{"id":"source-current-resume","title":"当前简历","sourceType":"resume"}],"tools":[{"id":"tool-1","type":"tool-resume_keyword_match","title":"resume_keyword_match","state":"output-available","input":{"missing":["TypeScript"]},"output":{"missingCount":1}}],"edits":[{"id":"edit-1","title":"补强个人简介","target":"basic.summary","reason":"简介缺少结果证明","replacement":"..."}],"quickReplies":["继续优化项目经历"],"suggestions":["建议 1"],"actions":["summary","bullet"]}}
+data: {"type":"message_delta","message":{"sources":[{"id":"source-jd-url","title":"目标岗位 JD","sourceType":"web","url":"https://example.com/job"}],"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"output-available","input":{},"output":{"sectionCount":2}}],"edits":[{"id":"edit-1","title":"补强项目经历","target":"sections.project.items.project-1","reason":"用户要求强化项目结果","replacement":"负责推荐链路优化，点击率提升 12%。"}],"quickReplies":["继续优化项目经历"],"suggestions":["建议 1"],"actions":["execute"]}}
 
 event: message_done
 data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant","tone":"default","text":"完整文本","reasoning":"完整 reasoning 文本","sources":[],"tools":[],"edits":[],"quickReplies":[],"suggestions":["建议 1"],"actions":["summary","bullet"]}}
@@ -509,12 +528,24 @@ data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant",
 约束：
 
 - `message_done.message.text` 必须是完整文本，不能只返回最后一个 delta。
-- `reasoning_delta` 只用于 provider 显式返回的 reasoning 内容；前端用
-  AI Elements reasoning 组件展示，不参与普通正文拼接。
+- `reasoning_delta` 只用于 provider 显式返回的 reasoning 内容，不参与普通正文拼接；
+  前端默认不展示原始 chain-of-thought。主体验只展示“正在阅读简历 / 正在生成草稿”等
+  产品化状态、最终回复和修改摘要。
 - `actions` 只返回 action id，按钮文案由前端本地 i18n 渲染。
-- `tools` 用于 AI Elements 的工具调用展示；同一个工具调用的 `id` 在流式过程中应保持稳定。
+- `plan` 可在可工具化请求的工具事件之前返回，作为审计或调试元数据；默认 Agent 面板主视图不直接展示内部计划，只展示简短确认文案、当前执行 shimmer 和已完成操作折叠行。
+- `tools` 的快照用于生成 Codex-like 当前执行状态和完成后的折叠详情；同一个工具调用的 `id` 在流式过程中应保持稳定。
+- `tools` 中 `input-available` / `input-streaming` 表示该步骤正在执行。前端主视图只展示当前步骤 shimmer，例如
+  “正在阅读简历 / 正在查询岗位参考 / 正在生成草稿”；完成后折叠为
+  “已运行 N 条操作”。折叠详情只展示产品化执行文案，不默认展示底层工具名、参数或原始输出。
 - `sources` 用于引用来源展示；如果来源可打开，返回 `url`，否则只返回标题和摘要。
-- `edits` 是结构化修改建议，当前只展示不自动应用；后续自动应用时需要补充 patch/action schema。
+- `edits` 是结构化修改建议；后端必须返回 `ResumeEditOperation`，前端先应用到临时草稿并高亮预览。
+- 流式过程中 `edit_execute` 完成后可提前发送 `event: edits`，用于同步中间预览；
+  应用/撤回按钮只在 `message_done` 之后展示。
+- 前端必须把 `edits` 应用到 pending draft，而不是直接写入正式 `resume`；预览区显示
+  draft 并用新增、修改、移动、删除的颜色语义标记变更位置。
+- `edit_execute` 可直接携带 `edits` 执行，不强制要求先调用 `edit_plan`；如果需要现有模块或条目 ID，模型应先调用 `resume_analysis`。
+- `edit_execute.output.observations` 会返回本次草稿操作的目标位置、修改前快照和修改后快照，模型应根据 Observation 判断是否继续修正或调用隐藏 `finish` 结束。
+- `finish` 是后端内部 ReAct 结束 action，不作为前端工具卡展示。
 - `quickReplies` 是后端建议的继续追问，不要由前端硬编码。
 - `message` 是当前用户消息，`messages` 用于多轮上下文；`conversation` 仅作为旧字段兼容。
 - 传入 `resumeId` 时，后端会把当前用户消息和最终助手消息写入

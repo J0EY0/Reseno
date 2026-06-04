@@ -511,30 +511,125 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 
 .resume-diff {
   position: relative;
-  border-radius: 6px;
+  border-radius: 8px;
+  outline: 1px solid transparent;
+  outline-offset: 2px;
   transition:
     background-color 0.18s ease,
+    outline-color 0.18s ease,
     box-shadow 0.18s ease;
 }
 
+.resume-diff::before {
+  position: absolute;
+  inset: -4px;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.resume-diff::after {
+  position: absolute;
+  top: -0.85rem;
+  right: 0.35rem;
+  z-index: 2;
+  border-radius: 999px;
+  background: var(--resume-page-bg, white);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  content: attr(data-resume-diff-label);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 0.25rem 0.38rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .resume-diff--added {
-  background: rgba(16, 185, 129, 0.11);
-  box-shadow: inset 3px 0 0 rgba(16, 185, 129, 0.38);
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.16), rgba(16, 185, 129, 0.07));
+  box-shadow: inset 3px 0 0 rgba(16, 185, 129, 0.5);
+  outline-color: rgba(16, 185, 129, 0.18);
+}
+
+.resume-diff--added::after {
+  color: rgb(4, 120, 87);
+}
+
+.resume-diff--added::before {
+  animation: resume-diff-scan-green 1.5s ease-out 1;
+  border-color: rgba(16, 185, 129, 0.24);
 }
 
 .resume-diff--modified {
-  background: rgba(59, 130, 246, 0.1);
-  box-shadow: inset 3px 0 0 rgba(59, 130, 246, 0.34);
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.14), rgba(250, 204, 21, 0.1));
+  box-shadow:
+    inset 3px 0 0 rgba(59, 130, 246, 0.48),
+    0 0 0 1px rgba(59, 130, 246, 0.1);
+  outline-color: rgba(59, 130, 246, 0.18);
+}
+
+.resume-diff--modified::after {
+  color: rgb(37, 99, 235);
+}
+
+.resume-diff--modified::before {
+  animation: resume-diff-scan-blue 1.5s ease-out 1;
+  border-color: rgba(59, 130, 246, 0.26);
 }
 
 .resume-diff--moved {
-  background: rgba(245, 158, 11, 0.11);
-  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.36);
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.44);
+  outline-color: rgba(245, 158, 11, 0.2);
+}
+
+.resume-diff--moved::after {
+  color: rgb(180, 83, 9);
 }
 
 .resume-diff--deleted {
-  background: rgba(244, 63, 94, 0.08);
-  box-shadow: inset 3px 0 0 rgba(244, 63, 94, 0.32);
+  background: rgba(244, 63, 94, 0.1);
+  box-shadow: inset 3px 0 0 rgba(244, 63, 94, 0.42);
+  color: rgb(159, 18, 57);
+  outline-color: rgba(244, 63, 94, 0.18);
+  text-decoration: line-through;
+  text-decoration-color: rgba(190, 18, 60, 0.55);
+}
+
+.resume-diff--deleted::after {
+  color: rgb(190, 18, 60);
+}
+
+@keyframes resume-diff-scan-blue {
+  from {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.34);
+    opacity: 1;
+  }
+
+  to {
+    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
+    opacity: 0.25;
+  }
+}
+
+@keyframes resume-diff-scan-green {
+  from {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.34);
+    opacity: 1;
+  }
+
+  to {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resume-diff::before {
+    animation: none;
+  }
 }
 
 .resume-page--modern {

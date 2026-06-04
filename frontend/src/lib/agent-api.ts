@@ -15,6 +15,7 @@ import type {
   AgentResumeEditSuggestion,
   AgentSessionResponse,
   AgentSource,
+  AgentTimelinePart,
   AgentToolInvocation,
 } from "@/types/api";
 
@@ -195,12 +196,41 @@ function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
     .filter((item) => item.id && item.title && item.target);
 }
 
+function toTimelineParts(value: unknown): AgentChatMessage["timeline"] {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .filter(isRecord)
+    .map((item): AgentTimelinePart => {
+      const type: AgentTimelinePart["type"] =
+        item.type === "text" || item.type === "tool_group"
+          ? item.type
+          : "text";
+
+      return {
+        id: typeof item.id === "string" ? item.id : "",
+        type,
+        text: typeof item.text === "string" ? item.text : undefined,
+        toolIds: Array.isArray(item.toolIds)
+          ? item.toolIds.filter((toolId): toolId is string =>
+              typeof toolId === "string",
+            )
+          : undefined,
+      };
+    })
+    .filter((item) => item.id);
+}
+
 function createEmptyAssistantMessage(): AgentChatMessage {
   return {
     id: `agent-stream-${Date.now()}`,
     role: "assistant",
     reasoning: "",
     text: "",
+    updates: [],
+    timeline: [],
   };
 }
 
@@ -213,6 +243,9 @@ function mergeAgentMessage(
   }
 
   const suggestions = toStringArray(patch.suggestions);
+  const plan = toStringArray(patch.plan);
+  const updates = toStringArray(patch.updates);
+  const timeline = toTimelineParts(patch.timeline);
   const knowledge = toKnowledgeItems(patch.knowledge);
   const actions = toActionIds(patch.actions);
   const tools = toToolInvocations(patch.tools);
@@ -231,6 +264,9 @@ function mergeAgentMessage(
         ? patch.tone
         : current.tone,
     text: typeof patch.text === "string" ? patch.text : current.text,
+    updates: updates ?? current.updates,
+    timeline: timeline ?? current.timeline,
+    plan: plan ?? current.plan,
     suggestions: suggestions ?? current.suggestions,
     knowledge: knowledge ?? current.knowledge,
     tools: tools ?? current.tools,
@@ -351,6 +387,9 @@ async function readAgentChatStream(
 
     if (
       type === "message_delta" ||
+      type === "plan" ||
+      type === "updates" ||
+      type === "timeline" ||
       type === "suggestions" ||
       type === "knowledge" ||
       type === "tools" ||

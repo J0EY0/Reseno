@@ -97,6 +97,17 @@ class AgentResumeEditSuggestion(BaseModel):
     status: Literal["planned", "executed", "rejected"] = "planned"
 
 
+class AgentTimelinePart(BaseModel):
+    """One ordered visible part in an assistant response timeline."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    type: Literal["text", "tool_group"]
+    text: str = ""
+    tool_ids: list[str] = Field(default_factory=list, alias="toolIds")
+
+
 class AgentChatMessage(BaseModel):
     """Structured assistant message returned to the frontend."""
 
@@ -107,6 +118,9 @@ class AgentChatMessage(BaseModel):
     tone: Literal["default", "success"] | None = "default"
     text: str
     reasoning: str = ""
+    updates: list[str] = Field(default_factory=list)
+    timeline: list[AgentTimelinePart] = Field(default_factory=list)
+    plan: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     knowledge: list[AgentKnowledgeItem] = Field(default_factory=list)
     tools: list[AgentToolInvocation] = Field(default_factory=list)

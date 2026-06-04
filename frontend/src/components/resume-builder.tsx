@@ -2010,13 +2010,10 @@ export function ResumeBuilder({
   }
 
   const previewAgentEdits = useCallback(
-    (edits: AgentResumeEditSuggestion[]) => {
-      const result = applyAgentEditsToDraft(effectiveResume, edits);
+    (edits: AgentResumeEditSuggestion[], baseResume = resume) => {
+      const result = applyAgentEditsToDraft(baseResume, edits);
 
       if (result.appliedCount === 0) {
-        toast.info(t.agentDraftNoChanges, {
-          closeButton: true,
-        });
         return;
       }
 
@@ -2025,11 +2022,8 @@ export function ResumeBuilder({
         diffs: result.diffs,
         editCount: result.appliedCount,
       });
-      toast.success(t.agentDraftReady, {
-        closeButton: true,
-      });
     },
-    [effectiveResume, t],
+    [resume],
   );
 
   const applyAgentDraft = useCallback(() => {

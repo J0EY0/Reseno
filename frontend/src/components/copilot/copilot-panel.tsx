@@ -43,11 +43,6 @@ import {
   usePromptInputAttachments,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   InlineCitation,
@@ -64,22 +59,16 @@ import {
   InlineCitationSource,
   InlineCitationText,
 } from "@/components/ai-elements/inline-citation";
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "@/components/ai-elements/tool";
 import { Button } from "@/components/ui/button";
 import {
-  BookOpen,
   Bot,
   Check,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
   FileText,
   RotateCcw,
-  WandSparkles,
+  SquareTerminal,
 } from "lucide-react";
 import {
   useCallback,
@@ -112,6 +101,7 @@ import type {
   AgentResumeEditSuggestion,
   AgentSource,
   AgentStoredMessage,
+  AgentTimelinePart,
   AgentToolInvocation,
 } from "@/types/api";
 import type {
@@ -283,6 +273,7 @@ function sanitizeAgentResponse(message: AgentChatMessage): AgentChatMessage {
   return {
     ...message,
     text: stripTransientModelStatus(message.text),
+    updates: [],
     sources: message.sources?.filter(isCitationSource),
   };
 }
@@ -447,20 +438,8 @@ function toPanelMessage(message: AgentStoredMessage): AgentPanelMessage {
   };
 }
 
-function formatToolOutput(output: AgentToolInvocation["output"]) {
-  if (typeof output === "string") {
-    return output;
-  }
-
-  if (output === undefined || output === null) {
-    return "";
-  }
-
-  try {
-    return JSON.stringify(output, null, 2);
-  } catch {
-    return String(output);
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
 function isToolRunning(state: AgentToolInvocation["state"]) {
@@ -476,33 +455,115 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
 
   return Boolean(
     message.text.trim() ||
-      response?.reasoning?.trim() ||
+      response?.timeline?.some(
+        (part) => part.text?.trim() || part.toolIds?.length,
+      ) ||
       response?.tools?.length ||
-      response?.suggestions?.length ||
       response?.edits?.length ||
-      response?.knowledge?.length ||
-      response?.sources?.length ||
-      response?.quickReplies?.length,
+      response?.sources?.length,
   );
 }
 
-function getRunningToolLabel(
-  tools: AgentToolInvocation[] | undefined,
-  t: AppMessages,
-) {
-  const runningTool = tools?.find((tool) => isToolRunning(tool.state));
+function getToolActivityLabel(tool: AgentToolInvocation, t: AppMessages) {
+  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
 
-  if (!runningTool) {
-    return null;
+  if (toolName.includes("jd_url_fetch")) {
+    return t.agentToolFetchingJob;
   }
 
-  const toolName = `${runningTool.type} ${runningTool.title}`.toLowerCase();
+  if (toolName.includes("jd_reference_search")) {
+    return t.agentToolSearchingJob;
+  }
 
   if (toolName.includes("resume") && toolName.includes("analysis")) {
     return t.agentToolAnalyzingResume;
   }
 
-  return t.agentToolRunning;
+  if (toolName.includes("edit_plan")) {
+    return t.agentToolPlanningEdits;
+  }
+
+  if (toolName.includes("edit_execute")) {
+    return t.agentToolGeneratingDraft;
+  }
+
+  return t.agentToolProcessing;
+}
+
+function getToolCompleteLabel(tool: AgentToolInvocation, t: AppMessages) {
+  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
+
+  if (toolName.includes("jd_url_fetch")) {
+    return t.agentToolFetchingJobDone;
+  }
+
+  if (toolName.includes("jd_reference_search")) {
+    return t.agentToolSearchingJobDone;
+  }
+
+  if (toolName.includes("resume") && toolName.includes("analysis")) {
+    return t.agentToolAnalyzingResumeDone;
+  }
+
+  if (toolName.includes("edit_plan")) {
+    return t.agentToolPlanningEditsDone;
+  }
+
+  if (toolName.includes("edit_execute")) {
+    return t.agentToolGeneratingDraftDone;
+  }
+
+  return t.agentToolProcessingDone;
+}
+
+function getToolErrorLabel(tool: AgentToolInvocation, t: AppMessages) {
+  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
+
+  if (toolName.includes("jd_url_fetch")) {
+    return t.agentToolFetchingJobFailed;
+  }
+
+  if (toolName.includes("jd_reference_search")) {
+    return t.agentToolSearchingJobFailed;
+  }
+
+  if (toolName.includes("resume") && toolName.includes("analysis")) {
+    return t.agentToolAnalyzingResumeFailed;
+  }
+
+  if (toolName.includes("edit_plan")) {
+    return t.agentToolPlanningEditsFailed;
+  }
+
+  if (toolName.includes("edit_execute")) {
+    return t.agentToolGeneratingDraftFailed;
+  }
+
+  return t.agentToolFailed;
+}
+
+function getToolTimelineLabel(tool: AgentToolInvocation, t: AppMessages) {
+  if (tool.state === "output-error" || tool.state === "output-denied") {
+    return getToolErrorLabel(tool, t);
+  }
+
+  if (isToolRunning(tool.state)) {
+    return getToolActivityLabel(tool, t);
+  }
+
+  return getToolCompleteLabel(tool, t);
+}
+
+function getEditsPreviewKey(edits: AgentResumeEditSuggestion[]) {
+  return JSON.stringify(
+    edits.map((edit) => ({
+      id: edit.id,
+      operation: edit.operation,
+      replacement: edit.replacement,
+      status: edit.status,
+      target: edit.target,
+    })),
+  );
 }
 
 function AgentTypingDots({ label }: { label: string }) {
@@ -531,19 +592,347 @@ function AgentToolShimmerStatus({
     <div
       aria-label={label}
       className={cn(
-        "flex min-w-0 items-center text-xs font-medium",
+        "flex min-w-0 items-center justify-start text-xs font-medium",
         className,
       )}
       role="status"
     >
       <Shimmer
         as="span"
-        className="max-w-full truncate text-muted-foreground"
+        className="max-w-full truncate"
         duration={1.6}
         spread={1.6}
       >
         {label}
       </Shimmer>
+    </div>
+  );
+}
+
+function formatCountMessage(template: string, count: number) {
+  return template.replace("{count}", String(count));
+}
+
+function getEditSummaryLabel(edit: AgentResumeEditSuggestion) {
+  return edit.title.trim() || edit.target.trim() || edit.id;
+}
+
+function toReadableDiffValue(value: unknown) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (!isRecord(value)) {
+    return "";
+  }
+
+  const fields = [
+    value.title,
+    value.subtitle,
+    value.organization,
+    value.role,
+    value.description,
+    value.summary,
+  ]
+    .filter((field): field is string => typeof field === "string")
+    .map((field) => field.trim())
+    .filter(Boolean);
+
+  if (Array.isArray(value.highlights)) {
+    fields.push(
+      ...value.highlights
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+  }
+
+  if (fields.length) {
+    return fields.join("\n");
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function getEditObservationMap(tools: AgentToolInvocation[]) {
+  const map = new Map<string, { before?: string; after?: string }>();
+
+  tools.forEach((tool) => {
+    if (tool.title !== "edit_execute" || !isRecord(tool.output)) {
+      return;
+    }
+
+    const observations = tool.output.observations;
+    if (!Array.isArray(observations)) {
+      return;
+    }
+
+    observations.forEach((observation) => {
+      if (!isRecord(observation) || typeof observation.target !== "string") {
+        return;
+      }
+
+      map.set(observation.target, {
+        before: toReadableDiffValue(observation.before),
+        after: toReadableDiffValue(observation.after),
+      });
+    });
+  });
+
+  return map;
+}
+
+function AgentToolDetailsDisclosure({
+  tools,
+  t,
+}: {
+  tools: AgentToolInvocation[];
+  t: AppMessages;
+}) {
+  const completedTools = tools.filter((tool) => !isToolRunning(tool.state));
+  const [isOpen, setIsOpen] = useState(false);
+
+  if (completedTools.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="text-xs">
+      <button
+        aria-expanded={isOpen}
+        className="group/details flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 font-medium leading-5 text-muted-foreground transition-colors duration-200 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        type="button"
+        onClick={() => {
+          setIsOpen((open) => !open);
+        }}
+      >
+        <SquareTerminal className="size-3.5 transition-colors duration-200" />
+        <span>
+          {formatCountMessage(t.agentToolDetailsComplete, completedTools.length)}
+        </span>
+        <ChevronRight
+          className={cn(
+            "size-3.5 opacity-0 transition-[opacity,transform] duration-200 group-hover/details:opacity-100 group-focus-visible/details:opacity-100",
+            isOpen && "rotate-90 opacity-100",
+          )}
+        />
+      </button>
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows,opacity,transform] duration-200 ease-out",
+          isOpen
+            ? "grid-rows-[1fr] translate-y-0 opacity-100"
+            : "pointer-events-none grid-rows-[0fr] -translate-y-1 opacity-0",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="mt-1 space-y-1 pl-6 text-xs leading-5 text-muted-foreground">
+            {completedTools.map((tool) => (
+              <p key={`${tool.id}-${tool.state}`} className="break-words">
+                {getToolTimelineLabel(tool, t)}
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentTimelineToolPart({
+  tools,
+  t,
+}: {
+  tools: AgentToolInvocation[];
+  t: AppMessages;
+}) {
+  const runningTool = tools.find((tool) => isToolRunning(tool.state));
+
+  if (runningTool) {
+    return (
+      <AgentToolShimmerStatus
+        className="text-sm"
+        label={getToolActivityLabel(runningTool, t)}
+      />
+    );
+  }
+
+  return <AgentToolDetailsDisclosure tools={tools} t={t} />;
+}
+
+function AgentMessageTimeline({
+  parts,
+  sources,
+  tools,
+  t,
+}: {
+  parts: AgentTimelinePart[];
+  sources: AgentSource[] | undefined;
+  tools: AgentToolInvocation[];
+  t: AppMessages;
+}) {
+  const visibleParts = parts.filter((part) => {
+    if (part.type === "text") {
+      return Boolean(part.text?.trim());
+    }
+
+    return Boolean(part.toolIds?.length);
+  });
+  const lastTextPartId = [...visibleParts]
+    .reverse()
+    .find((part) => part.type === "text")?.id;
+
+  if (visibleParts.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {visibleParts.map((part) => {
+        if (part.type === "text") {
+          return (
+            <div key={part.id}>
+              <AgentAssistantResponse
+                sources={part.id === lastTextPartId ? sources : undefined}
+                text={part.text ?? ""}
+              />
+            </div>
+          );
+        }
+
+        const partTools = tools.filter((tool) =>
+          part.toolIds?.includes(tool.id),
+        );
+
+        if (partTools.length === 0) {
+          return null;
+        }
+
+        return (
+          <AgentTimelineToolPart
+            key={part.id}
+            tools={partTools}
+            t={t}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentChangeSummary({
+  edits,
+  observations,
+  hasAgentDraft,
+  onApplyAgentDraft,
+  onDiscardAgentDraft,
+  shouldShowDraftActions,
+  t,
+}: {
+  edits: AgentResumeEditSuggestion[];
+  observations: Map<string, { before?: string; after?: string }>;
+  hasAgentDraft: boolean;
+  onApplyAgentDraft: () => void;
+  onDiscardAgentDraft: () => void;
+  shouldShowDraftActions: boolean;
+  t: AppMessages;
+}) {
+  if (edits.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-4 rounded-2xl border border-border/70 bg-muted/25 p-3">
+      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+        <ClipboardList className="size-3.5" />
+        {t.agentChangeSummaryTitle}
+      </div>
+      <p className="mt-2 text-sm font-medium text-foreground">
+        {formatCountMessage(t.agentReviewReady, edits.length)}
+      </p>
+      {hasAgentDraft ? (
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {t.agentDraftSynced}
+        </p>
+      ) : null}
+      <div className="mt-3 space-y-1.5 text-xs leading-5 text-muted-foreground">
+        {edits.slice(0, 4).map((edit) => {
+          const observation = observations.get(edit.target);
+          const hasDiff = Boolean(observation?.before || observation?.after);
+
+          return (
+            <details
+              key={edit.id}
+              className="rounded-xl bg-background/45 px-2.5 py-1.5"
+              open={hasDiff && edits.length === 1}
+            >
+              <summary className="flex cursor-pointer list-none gap-2 marker:hidden">
+                <span
+                  aria-hidden="true"
+                  className="mt-2 size-1 rounded-full bg-current"
+                />
+                <span className="min-w-0 flex-1 break-words">
+                  {getEditSummaryLabel(edit)}
+                </span>
+                {hasDiff ? (
+                  <ChevronDown className="mt-1 size-3.5 shrink-0" />
+                ) : null}
+              </summary>
+              {hasDiff ? (
+                <div className="mt-2 grid gap-2">
+                  {observation?.before ? (
+                    <div>
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em]">
+                        {t.agentDiffBefore}
+                      </div>
+                      <p className="whitespace-pre-wrap rounded-lg bg-muted/40 p-2">
+                        {observation.before}
+                      </p>
+                    </div>
+                  ) : null}
+                  {observation?.after ? (
+                    <div>
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em]">
+                        {t.agentDiffAfter}
+                      </div>
+                      <p className="whitespace-pre-wrap rounded-lg bg-emerald-500/10 p-2 text-foreground">
+                        {observation.after}
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </details>
+          );
+        })}
+      </div>
+      {shouldShowDraftActions ? (
+        <div className="mt-3 flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 flex-1 rounded-xl text-xs"
+            onClick={onApplyAgentDraft}
+          >
+            <Check className="mr-1.5 size-3.5" />
+            {t.agentApplyDraft}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 flex-1 rounded-xl text-xs"
+            onClick={onDiscardAgentDraft}
+          >
+            <RotateCcw className="mr-1.5 size-3.5" />
+            {t.agentDiscardDraft}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -580,7 +969,10 @@ export function CopilotPanel({
   agentSettings: AgentSettings;
   onSelectedModelChange: (modelId: string) => void;
   hasAgentDraft: boolean;
-  onPreviewAgentEdits: (edits: AgentResumeEditSuggestion[]) => void;
+  onPreviewAgentEdits: (
+    edits: AgentResumeEditSuggestion[],
+    baseResume: ResumeData,
+  ) => void;
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
   onOpenModelSettings: () => void;
@@ -591,6 +983,8 @@ export function CopilotPanel({
   const [isResponding, setIsResponding] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const replyTimerRef = useRef<number | null>(null);
+  const previewedEditsKeyRef = useRef<string | null>(null);
+  const requestResumeRef = useRef<ResumeData>(resume);
   const selectedModel = useMemo(
     () =>
       modelConfigs.find((config) => config.id === selectedModelId) ??
@@ -621,6 +1015,17 @@ export function CopilotPanel({
     () => (streamingMessage ? [...messages, streamingMessage] : messages),
     [messages, streamingMessage],
   );
+  const latestDraftMessageId = useMemo(() => {
+    for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
+      const message = visibleMessages[index];
+
+      if (message.response?.edits?.length) {
+        return message.id;
+      }
+    }
+
+    return null;
+  }, [visibleMessages]);
   const hasConfiguredModel = Boolean(selectedModel);
 
   useEffect(() => {
@@ -688,15 +1093,19 @@ export function CopilotPanel({
     })();
   }
 
-  function previewEdits(edits: AgentResumeEditSuggestion[]) {
-    if (edits.length === 0) {
-      toast.info(t.agentDraftNoChanges, {
-        closeButton: true,
-      });
+  function syncPreviewEdits(edits: AgentResumeEditSuggestion[] | undefined) {
+    if (!edits?.length) {
       return;
     }
 
-    onPreviewAgentEdits(edits);
+    const key = getEditsPreviewKey(edits);
+
+    if (previewedEditsKeyRef.current === key) {
+      return;
+    }
+
+    previewedEditsKeyRef.current = key;
+    onPreviewAgentEdits(edits, requestResumeRef.current);
   }
 
   async function sendPrompt(text: string, files: AgentChatAttachment[] = []) {
@@ -728,6 +1137,8 @@ export function CopilotPanel({
     setIsResponding(true);
     setMessages(nextMessages);
     setStreamingMessage(null);
+    previewedEditsKeyRef.current = null;
+    requestResumeRef.current = resume;
 
     if (looksLikeJobBrief) {
       onJobBriefChange(prompt);
@@ -762,11 +1173,15 @@ export function CopilotPanel({
             },
             {
               onMessage: (streamedMessage) => {
-                setStreamingMessage(toAssistantPanelMessage(streamedMessage));
+                const panelMessage = toAssistantPanelMessage(streamedMessage);
+
+                syncPreviewEdits(panelMessage.response?.edits);
+                setStreamingMessage(panelMessage);
               },
             },
           );
 
+          syncPreviewEdits(response.message.edits);
           setMessages([...nextMessages, toAssistantPanelMessage(response.message)]);
         } catch (error) {
           console.error("Failed to send agent chat message.", error);
@@ -801,37 +1216,8 @@ export function CopilotPanel({
             </div>
             <div className="min-w-0 flex-1">
               <h3 className="text-base font-semibold tracking-tight">{t.aiTitle}</h3>
-              {hasAgentDraft ? (
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {t.agentDraftApplyHint}
-                </p>
-              ) : null}
             </div>
           </div>
-
-          {hasAgentDraft ? (
-            <div className="mx-4 mb-3 flex gap-2 rounded-2xl border border-border/70 bg-muted/25 p-2">
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 flex-1 rounded-xl text-xs"
-                onClick={onApplyAgentDraft}
-              >
-                <Check className="mr-1.5 size-3.5" />
-                {t.agentApplyDraft}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-8 flex-1 rounded-xl text-xs"
-                onClick={onDiscardAgentDraft}
-              >
-                <RotateCcw className="mr-1.5 size-3.5" />
-                {t.agentDiscardDraft}
-              </Button>
-            </div>
-          ) : null}
 
           <div className="flex min-h-0 flex-1 flex-col">
             <Conversation className="min-h-0 min-w-0 flex-1 overflow-x-hidden">
@@ -869,11 +1255,28 @@ export function CopilotPanel({
                       const isStreamingAssistant =
                         isResponding && streamingMessage?.id === message.id;
                       const assistantText = message.text.trim();
-                      const reasoningText = response?.reasoning?.trim() ?? "";
-                      const runningToolLabel = getRunningToolLabel(
-                        response?.tools,
-                        t,
+                      const tools = response?.tools ?? [];
+                      const timeline = response?.timeline ?? [];
+                      const shouldRenderTimeline = timeline.length > 0;
+                      const editObservations = getEditObservationMap(tools);
+                      const runningTool = tools.find((tool) =>
+                        isToolRunning(tool.state),
                       );
+                      const runningToolLabel = runningTool
+                        ? getToolActivityLabel(runningTool, t)
+                        : null;
+                      const shouldShowInitialStatus =
+                        isStreamingAssistant &&
+                        !assistantText &&
+                        !tools.length;
+                      const shouldShowDraftActions =
+                        message.id === latestDraftMessageId &&
+                        Boolean(response?.edits?.length) &&
+                        hasAgentDraft &&
+                        !isResponding;
+                      const shouldShowChangeSummary =
+                        Boolean(response?.edits?.length) &&
+                        !isStreamingAssistant;
                       const hasRenderableAssistantContent =
                         hasAssistantRenderableContent(message);
 
@@ -892,87 +1295,57 @@ export function CopilotPanel({
                               </span>
                             ) : (
                               <>
-                                {reasoningText ? (
-                                  <Reasoning
-                                    className="mt-1"
-                                    isStreaming={
-                                      isStreamingAssistant &&
-                                      assistantText.length === 0
-                                    }
-                                  >
-                                    <ReasoningTrigger
-                                      getThinkingMessage={(isStreaming, duration) =>
-                                        isStreaming
-                                          ? t.agentReasoningStreaming
-                                          : duration
-                                            ? `${t.agentReasoningComplete} ${duration}s`
-                                            : t.agentReasoningComplete
-                                      }
-                                    />
-                                    <ReasoningContent>
-                                      {reasoningText}
-                                    </ReasoningContent>
-                                  </Reasoning>
-                                ) : null}
-                                {response?.tools?.length ? (
-                                  <div className="mt-3 space-y-1.5">
-                                    <div className="flex min-w-0 items-center justify-between gap-2">
-                                      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                                        {t.agentToolsTitle}
-                                      </div>
-                                      {runningToolLabel ? (
-                                        <AgentToolShimmerStatus
-                                          className="shrink-0"
-                                          label={runningToolLabel}
+                                {shouldRenderTimeline ? (
+                                  <AgentMessageTimeline
+                                    parts={timeline}
+                                    sources={response?.sources}
+                                    tools={tools}
+                                    t={t}
+                                  />
+                                ) : (
+                                  <>
+                                    {assistantText ? (
+                                      <div>
+                                        <AgentAssistantResponse
+                                          sources={response?.sources}
+                                          text={message.text}
                                         />
-                                      ) : null}
-                                    </div>
-                                    {response.tools.map((tool) => {
-                                      const toolType = (
-                                        tool.type.startsWith("tool-")
-                                          ? tool.type
-                                          : `tool-${tool.type}`
-                                      ) as `tool-${string}`;
-
-                                      return (
-                                        <Tool
-                                          key={`${tool.id}-${tool.state}`}
-                                          defaultOpen={isToolRunning(tool.state)}
-                                        >
-                                          <ToolHeader
-                                            type={toolType}
-                                            title={tool.title}
-                                            state={tool.state}
-                                          />
-                                          <ToolContent className="space-y-3 p-2.5">
-                                            <ToolInput input={tool.input ?? {}} />
-                                            {(tool.output !== undefined ||
-                                              tool.errorText) && (
-                                              <ToolOutput
-                                                errorText={tool.errorText}
-                                                output={
-                                                  tool.output === undefined
-                                                    ? undefined
-                                                    : formatToolOutput(tool.output)
-                                                }
-                                              />
-                                            )}
-                                          </ToolContent>
-                                        </Tool>
-                                      );
-                                    })}
-                                  </div>
-                                ) : null}
-                                {assistantText ? (
-                                  <div className="mt-3">
-                                    <AgentAssistantResponse
-                                      sources={response?.sources}
-                                      text={message.text}
-                                    />
-                                  </div>
-                                ) : isStreamingAssistant &&
-                                  !hasRenderableAssistantContent ? (
-                                  <AgentTypingDots label={t.agentThinking} />
+                                      </div>
+                                    ) : null}
+                                    {runningToolLabel ? (
+                                      <AgentToolShimmerStatus
+                                        className={assistantText ? "mt-3 text-sm" : "text-sm"}
+                                        label={runningToolLabel}
+                                      />
+                                    ) : shouldShowInitialStatus ? (
+                                      <AgentToolShimmerStatus
+                                        className={assistantText ? "mt-3 text-sm" : "text-sm"}
+                                        label={t.agentToolThinking}
+                                      />
+                                    ) : tools.length ? (
+                                      <div className={assistantText ? "mt-3" : undefined}>
+                                        <AgentToolDetailsDisclosure tools={tools} t={t} />
+                                      </div>
+                                    ) : null}
+                                    {!assistantText &&
+                                    isStreamingAssistant &&
+                                      !hasRenderableAssistantContent &&
+                                      !shouldShowInitialStatus &&
+                                      !runningToolLabel ? (
+                                      <AgentTypingDots label={t.agentThinking} />
+                                    ) : null}
+                                  </>
+                                )}
+                                {shouldShowChangeSummary ? (
+                                  <AgentChangeSummary
+                                    edits={response?.edits ?? []}
+                                    observations={editObservations}
+                                    hasAgentDraft={hasAgentDraft}
+                                    onApplyAgentDraft={onApplyAgentDraft}
+                                    onDiscardAgentDraft={onDiscardAgentDraft}
+                                    shouldShowDraftActions={shouldShowDraftActions}
+                                    t={t}
+                                  />
                                 ) : null}
                               </>
                             )}
@@ -993,105 +1366,6 @@ export function CopilotPanel({
                               </div>
                             ) : null}
 
-                            {response?.suggestions?.length ? (
-                              <div className="mt-4 space-y-2">
-                                <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                  <WandSparkles className="size-3.5" />
-                                  {t.agentSuggestionsTitle}
-                                </div>
-                                <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm leading-6 text-muted-foreground">
-                                  {response.suggestions.map((suggestion) => (
-                                    <li key={suggestion}>{suggestion}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ) : null}
-
-                            {response?.edits?.length ? (
-                              <div className="mt-4 space-y-2">
-                                <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                  <ClipboardList className="size-3.5" />
-                                  {t.agentEditsTitle}
-                                </div>
-                                <div className="space-y-2">
-                                  {response.edits.map((edit) => (
-                                    <div
-                                      key={edit.id}
-                                      className="rounded-2xl border border-border/70 bg-background/70 p-3"
-                                    >
-                                      <p className="text-sm font-medium text-foreground">
-                                        {edit.title}
-                                      </p>
-                                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                                        {edit.reason}
-                                      </p>
-                                      {edit.replacement ? (
-                                        <p className="mt-2 rounded-xl bg-muted/45 px-3 py-2 text-xs leading-5 text-foreground">
-                                          {edit.replacement}
-                                        </p>
-                                      ) : null}
-                                    </div>
-                                  ))}
-                                </div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="secondary"
-                                  disabled={isResponding}
-                                  className="mt-2 h-8 rounded-xl px-3 text-xs"
-                                  onClick={() => previewEdits(response.edits ?? [])}
-                                >
-                                  <ClipboardList className="mr-1.5 size-3.5" />
-                                  {t.agentPreviewEdits}
-                                </Button>
-                              </div>
-                            ) : null}
-
-                            {response?.knowledge?.length ? (
-                              <div className="mt-4 space-y-2">
-                                <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                  <BookOpen className="size-3.5" />
-                                  {t.agentKnowledgeTitle}
-                                </div>
-                                <ul className="mt-2 space-y-2">
-                                  {response.knowledge.map((topic) => (
-                                    <li key={`${topic.title}-${topic.detail}`}>
-                                      <p className="text-sm font-medium text-foreground">
-                                        {topic.title}
-                                      </p>
-                                      <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                                        {topic.detail}
-                                      </p>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ) : null}
-
-                            {response?.quickReplies?.length ? (
-                              <div className="mt-4 space-y-2">
-                                <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                  {t.agentQuickRepliesTitle}
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {response.quickReplies.map((suggestion) => (
-                                    <Button
-                                      key={suggestion}
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      disabled={isResponding}
-                                      className="h-8 rounded-full px-3 text-xs"
-                                      onClick={() => {
-                                        void sendPrompt(suggestion);
-                                      }}
-                                    >
-                                      {suggestion}
-                                    </Button>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
                           </MessageContent>
                         </Message>
                       );
@@ -1100,7 +1374,10 @@ export function CopilotPanel({
                     {isResponding && !streamingMessage ? (
                       <Message from="assistant">
                         <MessageContent className="w-full px-0 py-1 text-muted-foreground">
-                          <AgentTypingDots label={t.agentThinking} />
+                          <AgentToolShimmerStatus
+                            className="mt-2 text-sm"
+                            label={t.agentToolThinking}
+                          />
                         </MessageContent>
                       </Message>
                     ) : null}

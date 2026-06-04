@@ -180,6 +180,26 @@ def _chat_completion_params(
     return params
 
 
+def _unsupported_parallel_tool_calls(error: APIStatusError) -> bool:
+    """Return whether an OpenAI-compatible provider rejected this parameter."""
+
+    response_text = error.response.text.lower()
+    if "parallel_tool_calls" not in response_text:
+        return False
+
+    return any(
+        marker in response_text
+        for marker in (
+            "unsupported",
+            "not supported",
+            "unknown",
+            "unrecognized",
+            "invalid parameter",
+            "extra inputs",
+        )
+    )
+
+
 def _client(config: AgentLlmConfig) -> OpenAI:
     """Build an SDK client for one request-scoped model config."""
 
@@ -292,14 +312,35 @@ def complete_chat_tool_call(
 ) -> LlmToolCallResponse:
     """Ask the model to choose zero or more OpenAI-compatible function tools."""
 
+    params = {
+        **_chat_completion_params(config, messages, stream=False),
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
     try:
-        response = _client(config).chat.completions.create(
-            **_chat_completion_params(config, messages, stream=False),
-            tools=tools,
-            tool_choice="auto",
-        )
+        response = _client(config).chat.completions.create(**params)
     except APIStatusError as exc:
-        raise LlmRequestError(_provider_error_excerpt(exc)) from exc
+        if not _unsupported_parallel_tool_calls(exc):
+            raise LlmRequestError(_provider_error_excerpt(exc)) from exc
+
+        params.pop("parallel_tool_calls", None)
+        try:
+            response = _client(config).chat.completions.create(**params)
+        except APIStatusError as fallback_exc:
+            raise LlmRequestError(
+                _provider_error_excerpt(fallback_exc),
+            ) from fallback_exc
+        except APITimeoutError as fallback_exc:
+            raise LlmRequestError("Model provider request timed out.") from fallback_exc
+        except APIConnectionError as fallback_exc:
+            raise LlmRequestError(
+                f"Model provider request failed: {fallback_exc}",
+            ) from fallback_exc
+        except APIError as fallback_exc:
+            raise LlmRequestError(
+                f"Model provider request failed: {fallback_exc}",
+            ) from fallback_exc
     except APITimeoutError as exc:
         raise LlmRequestError("Model provider request timed out.") from exc
     except APIConnectionError as exc:

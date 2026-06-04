@@ -30,9 +30,11 @@ const ShimmerComponent = ({
   spread = 2,
 }: TextShimmerProps) => {
   const MotionComponent =
-    typeof Component === "string" && Component in motionComponents
-      ? motionComponents[Component]
-      : motion.p;
+    Component === "div"
+      ? motionComponents.div
+      : Component === "span"
+        ? motionComponents.span
+        : motionComponents.p;
 
   const dynamicSpread = useMemo(
     () => (children?.length ?? 0) * spread,

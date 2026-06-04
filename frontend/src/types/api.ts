@@ -164,12 +164,22 @@ export interface AgentResumeEditSuggestion {
   diffs?: ResumeDraftDiff[];
 }
 
+export interface AgentTimelinePart {
+  id: string;
+  type: "text" | "tool_group";
+  text?: string;
+  toolIds?: string[];
+}
+
 export interface AgentChatMessage {
   id: string;
   role: "assistant";
   tone?: "default" | "success";
   text: string;
   reasoning?: string;
+  updates?: string[];
+  timeline?: AgentTimelinePart[];
+  plan?: string[];
   suggestions?: string[];
   knowledge?: Array<{
     title: string;
@@ -213,6 +223,18 @@ export type AgentChatStreamEvent =
   | {
       type: "message_delta";
       message: Partial<Omit<AgentChatMessage, "id" | "role">>;
+    }
+  | {
+      type: "plan";
+      message: Partial<Pick<AgentChatMessage, "plan">>;
+    }
+  | {
+      type: "updates";
+      message: Partial<Pick<AgentChatMessage, "updates">>;
+    }
+  | {
+      type: "timeline";
+      message: Partial<Pick<AgentChatMessage, "text" | "timeline">>;
     }
   | {
       type: "message_done";
