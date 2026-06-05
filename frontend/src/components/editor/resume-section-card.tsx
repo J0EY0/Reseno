@@ -24,6 +24,17 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
 import { EditorCardShell } from './editor-card-shell'
 import { FormField } from './form-field'
@@ -42,15 +53,18 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
   custom: Sparkles,
 }
 
+const compactFieldClassName =
+  'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
+
 function RichHighlightsEditorSkeleton() {
   return (
-    <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/35 p-3">
-      <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-background/80 p-1">
+    <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30">
+      <div className="flex items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
         {Array.from({ length: 8 }, (_, index) => (
           <Skeleton key={index} className="size-8 rounded-md" />
         ))}
       </div>
-      <Skeleton className="h-[220px] rounded-xl" />
+      <Skeleton className="h-[120px] rounded-none" />
     </div>
   )
 }
@@ -125,18 +139,38 @@ export function ResumeSectionCard({
             <ArrowDown className="size-4" />
             <span className="sr-only">{t.moveSectionDown}</span>
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={(event) => {
-              event.stopPropagation()
-              onRemoveSection(section.id)
-            }}
-          >
-            <Trash2 className="size-4" />
-            <span className="sr-only">{t.deleteSection}</span>
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <Trash2 className="size-4" />
+                <span className="sr-only">{t.deleteSection}</span>
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent size="sm">
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  {t.confirmDeleteSectionTitle}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t.confirmDeleteSectionDescription}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t.cancel}</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => onRemoveSection(section.id)}
+                >
+                  {t.deleteSection}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       }
     >
@@ -144,6 +178,7 @@ export function ResumeSectionCard({
         <FormField label={t.renameSection}>
           <Input
             value={section.customTitle}
+            className={compactFieldClassName}
             placeholder={t.placeholders.sectionName}
             onChange={(event) =>
               onUpdateSection(section.id, { customTitle: event.target.value })
@@ -163,7 +198,7 @@ export function ResumeSectionCard({
 
       <div className="grid gap-3">
         {section.items.map((item, index) => (
-          <div key={item.id} className="grid gap-4 rounded-xl border border-border/70 bg-muted/40 p-4">
+          <div key={item.id} className="grid gap-3 rounded-lg border border-border/60 bg-background/45 p-3">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium text-foreground/80">{`${t.addItem} ${index + 1}`}</p>
               <Button
@@ -181,6 +216,7 @@ export function ResumeSectionCard({
               <FormField label={t.fieldLabels.title}>
                 <Input
                   value={item.title}
+                  className={compactFieldClassName}
                   placeholder={t.placeholders.title}
                   onChange={(event) =>
                     onUpdateItem(section.id, item.id, 'title', event.target.value)
@@ -190,6 +226,7 @@ export function ResumeSectionCard({
               <FormField label={t.fieldLabels.subtitle}>
                 <Input
                   value={item.subtitle}
+                  className={compactFieldClassName}
                   placeholder={t.placeholders.subtitle}
                   onChange={(event) =>
                     onUpdateItem(section.id, item.id, 'subtitle', event.target.value)
@@ -202,6 +239,7 @@ export function ResumeSectionCard({
                   <FormField label={t.fieldLabels.meta}>
                     <Input
                       value={item.meta}
+                      className={compactFieldClassName}
                       placeholder={t.placeholders.meta}
                       onChange={(event) =>
                         onUpdateItem(section.id, item.id, 'meta', event.target.value)
@@ -211,6 +249,7 @@ export function ResumeSectionCard({
                   <FormField label={t.fieldLabels.period}>
                     <Input
                       value={item.period}
+                      className={compactFieldClassName}
                       placeholder={t.placeholders.period}
                       onChange={(event) =>
                         onUpdateItem(section.id, item.id, 'period', event.target.value)
@@ -222,8 +261,9 @@ export function ResumeSectionCard({
 
               <FormField label={t.fieldLabels.description} className="md:col-span-2">
                 <Textarea
-                  rows={3}
+                  rows={2}
                   value={item.description}
+                  className={`${compactFieldClassName} min-h-16 resize-y`}
                   placeholder={t.placeholders.description}
                   onChange={(event) =>
                     onUpdateItem(section.id, item.id, 'description', event.target.value)

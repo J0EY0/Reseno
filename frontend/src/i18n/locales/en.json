@@ -338,6 +338,8 @@
   "moveSectionUp": "Move Section Up",
   "moveSectionDown": "Move Section Down",
   "deleteSection": "Delete Section",
+  "confirmDeleteSectionTitle": "Delete this section?",
+  "confirmDeleteSectionDescription": "This removes the section and all entries inside it.",
   "removeItem": "Delete Entry",
   "removeField": "Delete Field",
   "addHighlight": "Add Highlight",
@@ -483,7 +485,7 @@
   },
   "sectionTitles": {
     "education": "Education",
-    "internship": "Internship",
+    "internship": "Work Experience",
     "project": "Projects",
     "other": "Other",
     "custom": "Custom Section"

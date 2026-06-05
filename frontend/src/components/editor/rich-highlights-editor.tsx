@@ -4,7 +4,6 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
   Bold,
-  Eraser,
   Italic,
   List,
   ListOrdered,
@@ -67,7 +66,7 @@ export function RichHighlightsEditor({
       editorProps: {
         attributes: {
           class:
-            "tiptap rich-text-editor rich-text-editor-scroll h-[220px] overflow-y-auto overscroll-contain cursor-text text-sm leading-[1.12] text-foreground outline-none",
+            "tiptap rich-text-editor rich-text-editor-scroll max-h-[160px] min-h-[120px] overflow-y-auto overscroll-contain cursor-text text-sm leading-[1.12] text-foreground outline-none",
         },
       },
       onUpdate({ editor: currentEditor }) {
@@ -98,8 +97,8 @@ export function RichHighlightsEditor({
   }
 
   return (
-    <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/35 p-3">
-      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border/70 bg-background/80 p-1">
+    <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30 transition-colors focus-within:border-ring/50 focus-within:ring-1 focus-within:ring-ring/20">
+      <div className="flex flex-wrap items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
         <Button
           type="button"
           size="icon"
@@ -210,30 +209,9 @@ export function RichHighlightsEditor({
         >
           <ListOrdered className="size-4" />
         </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="size-8"
-          title={t.richTextClear}
-          aria-label={t.richTextClear}
-          onMouseDown={preventToolbarBlur}
-          onClick={() =>
-            runCommand(
-              () =>
-                editor?.chain().focus().unsetAllMarks().clearNodes().run() ??
-                false,
-            )
-          }
-        >
-          <Eraser className="size-4" />
-        </Button>
       </div>
 
-      <div
-        className="rounded-xl border border-border/70 bg-background/90 px-3 py-2.5 shadow-sm transition-colors focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20"
-        onClick={() => editor?.chain().focus().run()}
-      >
+      <div className="bg-background/65 px-3 py-2.5" onClick={() => editor?.chain().focus().run()}>
         <EditorContent editor={editor} />
       </div>
     </div>

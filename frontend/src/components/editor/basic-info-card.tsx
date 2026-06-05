@@ -95,43 +95,31 @@ export function BasicInfoCard({
           <FormField label={t.fieldLabels.name}>
             <Input
               value={basic.name}
-              placeholder={t.placeholders.name}
               onChange={(event) => onUpdateBasic('name', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.headline}>
             <Input
               value={basic.headline}
-              placeholder={t.placeholders.headline}
               onChange={(event) => onUpdateBasic('headline', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.phone}>
             <Input
               value={basic.phone}
-              placeholder={t.placeholders.phone}
               onChange={(event) => onUpdateBasic('phone', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.email}>
             <Input
               value={basic.email}
-              placeholder={t.placeholders.email}
               onChange={(event) => onUpdateBasic('email', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.location}>
             <Input
               value={basic.location}
-              placeholder={t.placeholders.location}
               onChange={(event) => onUpdateBasic('location', event.target.value)}
-            />
-          </FormField>
-          <FormField label={t.fieldLabels.avatarUrl}>
-            <Input
-              value={basic.avatar}
-              placeholder={t.placeholders.avatarUrl}
-              onChange={(event) => onUpdateBasic('avatar', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.summary} className="[grid-column:1/-1]">
@@ -163,7 +151,6 @@ export function BasicInfoCard({
             <FormField label={t.fieldLabels.fieldName}>
               <Input
                 value={field.label}
-                placeholder={t.placeholders.fieldName}
                 onChange={(event) =>
                   onUpdateCustomField(field.id, 'label', event.target.value)
                 }
@@ -172,7 +159,6 @@ export function BasicInfoCard({
             <FormField label={t.fieldLabels.fieldValue}>
               <Input
                 value={field.value}
-                placeholder={t.placeholders.fieldValue}
                 onChange={(event) =>
                   onUpdateCustomField(field.id, 'value', event.target.value)
                 }
