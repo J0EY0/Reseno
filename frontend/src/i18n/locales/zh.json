@@ -338,6 +338,8 @@
   "moveSectionUp": "上移板块",
   "moveSectionDown": "下移板块",
   "deleteSection": "删除板块",
+  "confirmDeleteSectionTitle": "确认删除这个板块？",
+  "confirmDeleteSectionDescription": "删除后该板块和其中条目都会移除。",
   "removeItem": "删除条目",
   "removeField": "删除字段",
   "addHighlight": "添加要点",
@@ -487,7 +489,7 @@
     "email": "邮箱",
     "location": "地点",
     "avatarUrl": "头像地址",
-    "summary": "个人简介",
+    "summary": "个人总结",
     "fieldName": "字段名",
     "fieldValue": "字段值",
     "title": "标题",
@@ -524,7 +526,7 @@
   },
   "sectionTitles": {
     "education": "教育经历",
-    "internship": "实习经历",
+    "internship": "工作经历",
     "project": "项目经历",
     "other": "其他",
     "custom": "自定义板块"

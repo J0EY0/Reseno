@@ -95,7 +95,11 @@ export function createEmptyResume(): ResumeData {
       summary: '',
       customFields: [],
     },
-    sections: [],
+    sections: [
+      createSection('education', 'timeline', [createItem()]),
+      createSection('internship', 'timeline', [createItem()]),
+      createSection('project', 'timeline', [createItem()]),
+    ],
   }
 }
 
