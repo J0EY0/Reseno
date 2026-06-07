@@ -1,13 +1,17 @@
 import {
   ArrowDown,
   ArrowUp,
+  Award,
+  BadgeCheck,
   Briefcase,
   FolderKanban,
   GraduationCap,
+  Languages,
   List,
   Plus,
   Sparkles,
   Trash2,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react'
 import { Suspense, lazy } from 'react'
@@ -47,8 +51,13 @@ const RichHighlightsEditor = lazy(() =>
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
+  work: Briefcase,
   internship: Briefcase,
   project: FolderKanban,
+  skills: Wrench,
+  awards: Award,
+  certificates: BadgeCheck,
+  languages: Languages,
   other: List,
   custom: Sparkles,
 }

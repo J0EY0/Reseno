@@ -647,7 +647,17 @@ type ResumeBasicInfo = {
 ```ts
 type ResumeSection = {
   id: string
-  kind: "education" | "internship" | "project" | "other" | "custom"
+  kind:
+    | "education"
+    | "work"
+    | "internship"
+    | "project"
+    | "skills"
+    | "awards"
+    | "certificates"
+    | "languages"
+    | "other"
+    | "custom"
   layout: "timeline" | "list"
   customTitle?: string
   items: ResumeSectionItem[]

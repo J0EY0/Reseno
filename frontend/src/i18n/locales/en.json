@@ -389,6 +389,10 @@
   "agentToolResumeObservation": "Read the current resume structure.",
   "agentToolJobObservation": "Fetched the job reference result.",
   "agentToolDefaultObservation": "Received the tool result; the agent will use it for the next step.",
+  "agentTransientModelStatusTexts": [
+    "Waiting for the model response.",
+    "I will analyze the target role and current resume first, then return actionable suggestions."
+  ],
   "agentPlanTitle": "Plan",
   "agentExecutionTitle": "Execution",
   "agentCollapsePanel": "Collapse the agent conversation rail",
@@ -526,8 +530,13 @@
   },
   "sectionTitles": {
     "education": "Education",
-    "internship": "Work Experience",
+    "work": "Work Experience",
+    "internship": "Internship Experience",
     "project": "Projects",
+    "skills": "Skills",
+    "awards": "Awards",
+    "certificates": "Certificates",
+    "languages": "Languages",
     "other": "Other",
     "custom": "Custom Section"
   },

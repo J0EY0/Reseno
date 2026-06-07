@@ -161,15 +161,25 @@ def _section_label(section: dict[str, object], locale: str) -> str:
     kind = section.get("kind")
     zh_labels = {
         "education": "教育经历",
+        "work": "工作经历",
         "internship": "实习经历",
         "project": "项目经历",
+        "skills": "技能",
+        "awards": "获奖经历",
+        "certificates": "证书",
+        "languages": "语言能力",
         "other": "其他经历",
         "custom": "自定义模块",
     }
     en_labels = {
         "education": "Education",
-        "internship": "Internship",
+        "work": "Work Experience",
+        "internship": "Internship Experience",
         "project": "Projects",
+        "skills": "Skills",
+        "awards": "Awards",
+        "certificates": "Certificates",
+        "languages": "Languages",
         "other": "Other",
         "custom": "Custom Section",
     }
@@ -681,44 +691,28 @@ class AgentPlanExecutor:
 
         if self.is_zh:
             title = "新增项目经历模块"
-            section_title = "岗位相关项目"
-            project_title = prompt_project["title"] or f"{job_reference.role}相关项目"
-            description = (
-                prompt_project["description"]
-                or "用于承接目标岗位要求的核心技能、业务场景和交付结果。"
-            )
-            highlights = prompt_project["highlights"] or [
-                "补充项目背景、技术栈、个人职责和最终结果。",
-                "把岗位关键词自然写入项目描述，避免简单堆词。",
-            ]
+            section_title = "项目经历"
+            project_title = prompt_project["title"]
+            description = prompt_project["description"]
+            highlights = prompt_project["highlights"]
         else:
             title = "Add a project section"
-            section_title = "Role-Fit Projects"
-            project_title = prompt_project["title"] or f"{job_reference.role} project"
-            description = (
-                prompt_project["description"]
-                or "Use this project to connect role requirements with concrete "
-                "skills, context, and delivery outcomes."
-            )
-            highlights = prompt_project["highlights"] or [
-                "Add project context, stack, personal scope, and final outcome.",
-                (
-                    "Write role keywords naturally into the project instead of "
-                    "listing them."
-                ),
-            ]
+            section_title = "Projects"
+            project_title = prompt_project["title"]
+            description = prompt_project["description"]
+            highlights = prompt_project["highlights"]
 
         section = {
             "id": section_id,
             "kind": "project",
             "layout": "timeline",
-            "customTitle": section_title,
+            "customTitle": "",
             "items": [
                 {
                     "id": item_id,
                     "title": project_title,
-                    "subtitle": "",
-                    "meta": "",
+                    "subtitle": prompt_project["subtitle"],
+                    "meta": prompt_project["meta"],
                     "period": prompt_project["period"],
                     "description": description,
                     "highlights": highlights,
@@ -745,23 +739,32 @@ class AgentPlanExecutor:
 
         text = _compact_text(self.prompt, limit=900)
         title = ""
+        subtitle = ""
+        meta = ""
         period = ""
 
-        title_patterns = (
-            r"(?:项目名称|项目名|项目)[:：]\s*([^\n，。；;]{2,40})",
-            r"(?:project(?:\s+name)?|project)[:：]\s*([^\n,.;]{2,60})",
-        )
-        for pattern in title_patterns:
+        def labeled_value(labels: str, stop_labels: str, limit: int = 80) -> str:
+            pattern = rf"(?:{labels})[:：]\s*(.+?)(?=\s*(?:{stop_labels})[:：]|\n|$)"
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
-                title = match.group(1).strip()
-                title = re.split(
-                    r"\s+(?:时间|周期|负责|职责|使用|技术|20\d{2}|time|period|built|used)",
-                    title,
-                    maxsplit=1,
-                    flags=re.IGNORECASE,
-                )[0].strip()
-                break
+                return match.group(1).strip(" ，。；;,")[:limit]
+            return ""
+
+        stop_labels = (
+            r"项目名称|项目名|项目|时间|日期|周期|角色|职位|岗位|技术栈|技术|"
+            r"背景|描述|简介|工作内容|职责|负责|结果|成果|影响|"
+            r"project(?:\s+name)?|time|date|period|role|position|tech stack|"
+            r"stack|description|context|responsibility|action|result|impact"
+        )
+        title = labeled_value(
+            r"项目名称|项目名|project(?:\s+name)?",
+            stop_labels,
+            60,
+        )
+        if not title:
+            title = labeled_value(r"项目|project", stop_labels, 60)
+        subtitle = labeled_value(r"角色|职位|岗位|role|position", stop_labels, 60)
+        meta = labeled_value(r"技术栈|技术|tech stack|stack", stop_labels, 120)
 
         period_match = re.search(
             r"((?:20\d{2})[./-]\d{1,2}\s*(?:-|–|—|至|到)\s*(?:20\d{2})?[./-]?\d{0,2})",
@@ -769,23 +772,84 @@ class AgentPlanExecutor:
         )
         if period_match:
             period = period_match.group(1).strip()
+        else:
+            period = labeled_value(r"时间|日期|周期|time|date|period", stop_labels, 60)
 
         cleaned = re.sub(
-            r"^(?:帮我|请|麻烦)?(?:修改|优化|润色|新增|添加|补充)?(?:我的|这段|以下)?",
+            r"^(?:帮我|请|麻烦)?(?:修改|优化|润色|新增|添加|补充|生成)?"
+            r"(?:我的|这段|以下)?(?:简历|项目经历|项目)?[:：,，\s]*",
             "",
             text,
+            flags=re.IGNORECASE,
         ).strip()
-        description = cleaned[:180]
+        description = labeled_value(
+            r"背景|描述|简介|description|context",
+            stop_labels,
+            120,
+        )
 
         parts = [
-            part.strip(" -•\t")
+            re.sub(
+                r"^(?:工作内容|职责|负责内容|行动|方案|结果|成果|影响|要点|"
+                r"responsibility|action|solution|result|impact|highlight)"
+                r"[:：]\s*",
+                "",
+                part.strip(" -•\t"),
+                flags=re.IGNORECASE,
+            )
             for part in re.split(r"[。；;\n]+", cleaned)
             if part.strip(" -•\t")
         ]
-        highlights = [part for part in parts if part != description][:3]
+        field_values = [title, subtitle, meta, period, description]
+        field_keys = {
+            re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", value).lower()
+            for value in field_values
+            if value
+        }
+        field_label_pattern = re.compile(
+            r"^(?:项目名称|项目名|项目|时间|日期|周期|角色|职位|岗位|技术栈|技术|"
+            r"背景|描述|简介|project(?:\s+name)?|time|date|period|role|"
+            r"position|tech stack|stack|description|context)[:：]",
+            flags=re.IGNORECASE,
+        )
+        highlights: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            if not part:
+                continue
+            if field_label_pattern.search(part):
+                responsibility_match = re.search(
+                    r"(?:工作内容|职责|负责内容|responsibility|action)[:：]\s*(.+)"
+                    r"|(?:^|\s)(负责\s+.+)$",
+                    part,
+                    flags=re.IGNORECASE,
+                )
+                if not responsibility_match:
+                    continue
+                part = (
+                    responsibility_match.group(1)
+                    or responsibility_match.group(2)
+                    or ""
+                ).strip()
+            if not part:
+                continue
+            key = re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", part).lower()
+            if not key or key in seen or key in field_keys:
+                continue
+            repeated_field_count = sum(
+                field_key in key for field_key in field_keys if len(field_key) >= 3
+            )
+            if repeated_field_count >= 2:
+                continue
+            highlights.append(part)
+            seen.add(key)
+            if len(highlights) >= 3:
+                break
 
         return {
             "title": title,
+            "subtitle": subtitle,
+            "meta": meta,
             "period": period,
             "description": description,
             "highlights": highlights,
@@ -802,11 +866,16 @@ class AgentPlanExecutor:
             return None
 
         priority = {
-            "internship": 0,
-            "project": 1,
-            "custom": 2,
-            "other": 3,
-            "education": 4,
+            "work": 0,
+            "internship": 1,
+            "project": 2,
+            "skills": 3,
+            "awards": 4,
+            "certificates": 5,
+            "languages": 6,
+            "custom": 7,
+            "other": 8,
+            "education": 9,
         }
         ordered_sections = sorted(
             analysis.sections,

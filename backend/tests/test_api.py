@@ -1261,11 +1261,143 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
     tool_titles = [tool["title"] for tool in message["tools"]]
     assert tool_titles == ["resume_analysis", "edit_plan", "edit_execute"]
     assert message["edits"]
+    observations = message["tools"][2]["output"]["observations"]
+    assert observations[0]["before"] is None
+    assert "电商后台管理系统" in observations[0]["after"]
+    assert "2023.03 - 2023.06" in observations[0]["after"]
+    assert "sectionCount" not in json.dumps(observations, ensure_ascii=False)
     operation = message["edits"][0]["operation"]
     assert operation["type"] == "insert_section"
     assert operation["section"]["kind"] == "project"
+    assert operation["section"]["customTitle"] == ""
     assert operation["section"]["items"][0]["title"] == "电商后台管理系统"
     assert operation["section"]["items"][0]["period"] == "2023.03 - 2023.06"
+    assert operation["section"]["items"][0]["description"] == ""
+    assert operation["section"]["items"][0]["highlights"] == [
+        "负责 Spring Boot、MySQL、Redis、Docker 和 SQL 优化",
+    ]
+    assert "帮我" not in json.dumps(operation, ensure_ascii=False)
+    assert "项目名称" not in json.dumps(
+        operation["section"]["items"][0]["highlights"],
+        ensure_ascii=False,
+    )
+
+
+def test_agent_chat_normalizes_model_inserted_resume_fields(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    prompt = (
+        "帮我添加项目经历：项目名称：电商后台管理系统 时间：2023.03 - 2023.06 "
+        "角色：后端开发 技术栈：Spring Boot, MySQL, Redis, Docker 工作内容："
+        "设计并实现订单模块，通过 SQL 优化将查询时间从 2s 降至 0.3s。"
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat",
+        lambda *_: '{"text":"已生成项目经历草稿"}',
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "新增项目经历",
+                                "target": "sections",
+                                "reason": "用户提供的是项目内容，应归入项目经历。",
+                                "operation": {
+                                    "type": "insert_section",
+                                    "section": {
+                                        "section_type": "custom",
+                                        "layout": "timeline",
+                                        "customTitle": "岗位相关项目",
+                                        "items": [
+                                            {
+                                                "title": "电商后台管理系统",
+                                                "subtitle": "后端开发",
+                                                "meta": (
+                                                    "Spring Boot, MySQL, Redis, "
+                                                    "Docker"
+                                                ),
+                                                "period": "2023.03 - 2023.06",
+                                                "description": (
+                                                    "项目名称：电商后台管理系统 时间："
+                                                    "2023.03 - 2023.06 角色：后端开发 "
+                                                    "技术栈：Spring Boot, MySQL, "
+                                                    "Redis, Docker"
+                                                ),
+                                                "highlights": [
+                                                    (
+                                                        "项目名称：电商后台管理系统 "
+                                                        "时间：2023.03 - 2023.06 "
+                                                        "角色：后端开发"
+                                                    ),
+                                                    (
+                                                        "工作内容：设计并实现订单模块，"
+                                                        "通过 SQL 优化将查询时间从 "
+                                                        "2s 降至 0.3s"
+                                                    ),
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "ready",
+                        "reason": "Observation shows the project section was added.",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "prompt": prompt,
+            "message": {"role": "user", "text": prompt},
+            "messages": [],
+            "conversation": [],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    operation = response.json()["data"]["message"]["edits"][0]["operation"]
+    section = operation["section"]
+    item = section["items"][0]
+    assert section["kind"] == "project"
+    assert section["customTitle"] == ""
+    assert item["title"] == "电商后台管理系统"
+    assert item["subtitle"] == "后端开发"
+    assert item["meta"] == "Spring Boot, MySQL, Redis, Docker"
+    assert item["period"] == "2023.03 - 2023.06"
+    assert item["description"] == ""
+    assert item["highlights"] == [
+        "设计并实现订单模块，通过 SQL 优化将查询时间从 2s 降至 0.3s",
+    ]
 
 
 def test_agent_chat_direct_message_does_not_return_tools(
@@ -1796,14 +1928,13 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     assert [part["type"] for part in timeline] == [
         "text",
         "tool_group",
-        "tool_group",
         "text",
     ]
     assert [
         part["toolIds"]
         for part in timeline
         if part["type"] == "tool_group"
-    ] == [["call-analysis"], ["call-jd"]]
+    ] == [["call-analysis", "call-jd"]]
 
 
 def test_agent_chat_streams_terminal_model_text_after_tool_observation(
@@ -1955,6 +2086,25 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     assert '"edits":[{' in body
     assert "edit_plan" in body
     assert "edit_execute" in body
+
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    timeline = json.loads(message_done_data)["message"]["timeline"]
+    assert [part["type"] for part in timeline] == ["tool_group", "text"]
+    assert timeline[0]["toolIds"] == [
+        "call-jd",
+        "call-analysis",
+        "call-plan",
+        "call-execute",
+    ]
 
 
 def test_agent_chat_streams_direct_model_tokens(

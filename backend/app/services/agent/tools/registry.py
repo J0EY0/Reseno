@@ -2,6 +2,131 @@ from typing import Any
 
 from ..prompts import EDIT_OPERATION_GUIDE
 
+SECTION_KIND_ENUM = [
+    "education",
+    "work",
+    "internship",
+    "project",
+    "skills",
+    "awards",
+    "certificates",
+    "languages",
+    "custom",
+]
+
+ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "title": {
+            "type": "string",
+            "description": (
+                "Project, company, school, certificate, or award name only."
+            ),
+        },
+        "subtitle": {
+            "type": "string",
+            "description": "Role, position, major, degree, or identity only.",
+        },
+        "meta": {
+            "type": "string",
+            "description": "Tech stack, GPA, location, organization, or metadata.",
+        },
+        "period": {
+            "type": "string",
+            "description": "Time range only. Use this for date/date range.",
+        },
+        "description": {
+            "type": "string",
+            "description": "One short background sentence only; may be empty.",
+        },
+        "highlights": {
+            "type": "array",
+            "description": (
+                "Concrete actions, technical solutions, outcomes, and impact. "
+                "Do not repeat title, subtitle, meta, or period."
+            ),
+            "items": {"type": "string"},
+        },
+    },
+    "additionalProperties": False,
+}
+
+SECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "section_type": {
+            "type": "string",
+            "enum": SECTION_KIND_ENUM,
+            "description": (
+                "Standard resume section type. Use this instead of inventing "
+                "free-form module names."
+            ),
+        },
+        "kind": {
+            "type": "string",
+            "enum": SECTION_KIND_ENUM,
+            "description": "Backward-compatible alias for section_type.",
+        },
+        "layout": {"type": "string", "enum": ["timeline", "list"]},
+        "customTitle": {
+            "type": "string",
+            "description": "Only use for section_type=custom; otherwise leave empty.",
+        },
+        "items": {"type": "array", "items": ITEM_SCHEMA},
+    },
+    "required": ["section_type", "layout", "items"],
+    "additionalProperties": False,
+}
+
+OPERATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": [
+                "replace_field",
+                "update_item",
+                "insert_item",
+                "update_section",
+                "insert_section",
+                "delete_item",
+                "delete_section",
+                "reorder_sections",
+                "reorder_items",
+            ],
+        },
+        "path": {"type": "string"},
+        "value": {"type": "string"},
+        "sectionId": {"type": "string"},
+        "itemId": {"type": "string"},
+        "section": SECTION_SCHEMA,
+        "item": ITEM_SCHEMA,
+        "index": {"type": "integer"},
+        "patch": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": SECTION_KIND_ENUM},
+                "section_type": {"type": "string", "enum": SECTION_KIND_ENUM},
+                "layout": {"type": "string", "enum": ["timeline", "list"]},
+                "customTitle": {"type": "string"},
+                "title": {"type": "string"},
+                "subtitle": {"type": "string"},
+                "meta": {"type": "string"},
+                "period": {"type": "string"},
+                "description": {"type": "string"},
+                "highlights": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "sectionIds": {"type": "array", "items": {"type": "string"}},
+        "itemIds": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["type"],
+    "additionalProperties": False,
+}
+
 AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -108,13 +233,12 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     ),
                                 },
                                 "operation": {
-                                    "type": "object",
+                                    **OPERATION_SCHEMA,
                                     "description": (
                                         "Optional frontend ResumeEditOperation. "
                                         "If present, edit_execute can reuse it. "
                                         f"{EDIT_OPERATION_GUIDE}"
                                     ),
-                                    "additionalProperties": True,
                                 },
                             },
                             "required": ["action", "target", "reason"],
@@ -151,9 +275,8 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "reason": {"type": "string"},
                                 "replacement": {"type": "string"},
                                 "operation": {
-                                    "type": "object",
+                                    **OPERATION_SCHEMA,
                                     "description": EDIT_OPERATION_GUIDE,
-                                    "additionalProperties": True,
                                 },
                             },
                             "required": ["title", "target", "reason", "operation"],

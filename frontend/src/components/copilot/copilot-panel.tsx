@@ -115,12 +115,8 @@ const AGENT_REQUEST_DEBOUNCE_MS = 420;
 const MAX_ATTACHMENT_TEXT_LENGTH = 16_000;
 const TEXT_ATTACHMENT_PATTERN =
   /^(text\/|application\/json|application\/xml|application\/.*\+json)/i;
-const TRANSIENT_MODEL_STATUS_TEXT = new Set([
-  "正在等待模型返回。",
-  "Waiting for the model response.",
-  "我先分析目标岗位和当前简历，然后再给出可执行建议。",
-  "I will analyze the target role and current resume first, then return actionable suggestions.",
-]);
+const AGENT_MARKDOWN_CLASSNAME =
+  "[&_h1]:!mb-2 [&_h1]:!mt-3 [&_h1]:!text-base [&_h1]:!font-semibold [&_h1]:!leading-7 [&_h1]:!tracking-normal [&_h2]:!mb-2 [&_h2]:!mt-3 [&_h2]:!text-base [&_h2]:!font-semibold [&_h2]:!leading-7 [&_h2]:!tracking-normal [&_h3]:!mb-1.5 [&_h3]:!mt-2.5 [&_h3]:!text-sm [&_h3]:!font-semibold [&_h3]:!leading-6";
 
 interface AgentPanelMessage {
   id: string;
@@ -263,23 +259,34 @@ function isCitationSource(source: AgentSource) {
   );
 }
 
-function stripTransientModelStatus(text: string) {
+function stripTransientModelStatus(
+  text: string,
+  transientStatusTexts: readonly string[],
+) {
   const trimmed = text.trim();
 
-  return TRANSIENT_MODEL_STATUS_TEXT.has(trimmed) ? "" : text;
+  return transientStatusTexts.some((statusText) => statusText.trim() === trimmed)
+    ? ""
+    : text;
 }
 
-function sanitizeAgentResponse(message: AgentChatMessage): AgentChatMessage {
+function sanitizeAgentResponse(
+  message: AgentChatMessage,
+  transientStatusTexts: readonly string[],
+): AgentChatMessage {
   return {
     ...message,
-    text: stripTransientModelStatus(message.text),
+    text: stripTransientModelStatus(message.text, transientStatusTexts),
     updates: [],
     sources: message.sources?.filter(isCitationSource),
   };
 }
 
-function toAssistantPanelMessage(message: AgentChatMessage): AgentPanelMessage {
-  const response = sanitizeAgentResponse(message);
+function toAssistantPanelMessage(
+  message: AgentChatMessage,
+  transientStatusTexts: readonly string[],
+): AgentPanelMessage {
+  const response = sanitizeAgentResponse(message, transientStatusTexts);
 
   return {
     id: message.id,
@@ -376,20 +383,36 @@ function AgentInlineCitationCard({
 }
 
 function AgentAssistantResponse({
+  removeMarkdownTables,
   sources,
   text,
 }: {
+  removeMarkdownTables?: boolean;
   sources: AgentSource[] | undefined;
   text: string;
 }) {
-  if (!sources?.some((source) => getValidSourceUrl(source))) {
-    return <MessageResponse>{text}</MessageResponse>;
+  const responseText = removeMarkdownTables
+    ? removeMarkdownTableBlocks(text)
+    : text;
+
+  if (!responseText.trim()) {
+    return null;
   }
 
-  if (!isPlainAgentText(text)) {
+  if (!sources?.some((source) => getValidSourceUrl(source))) {
+    return (
+      <MessageResponse className={AGENT_MARKDOWN_CLASSNAME}>
+        {responseText}
+      </MessageResponse>
+    );
+  }
+
+  if (!isPlainAgentText(responseText)) {
     return (
       <>
-        <MessageResponse>{text}</MessageResponse>
+        <MessageResponse className={AGENT_MARKDOWN_CLASSNAME}>
+          {responseText}
+        </MessageResponse>
         <span className="mt-1 inline-block text-sm leading-relaxed">
           <InlineCitation>
             <AgentInlineCitationCard sources={sources} />
@@ -400,7 +423,7 @@ function AgentAssistantResponse({
   }
 
   const { citationText, prefix, trailingWhitespace } =
-    splitTrailingCitationText(text);
+    splitTrailingCitationText(responseText);
 
   return (
     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
@@ -415,9 +438,41 @@ function AgentAssistantResponse({
   );
 }
 
-function toPanelMessage(message: AgentStoredMessage): AgentPanelMessage {
+function removeMarkdownTableBlocks(text: string) {
+  const tableRowPattern = /^\s*\|.*\|\s*$/;
+  const tableSeparatorPattern =
+    /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+  const lines = text.split(/\r?\n/);
+  const keptLines: string[] = [];
+  let removedTableLine = false;
+
+  for (const line of lines) {
+    const isMarkdownTableLine =
+      tableRowPattern.test(line) || tableSeparatorPattern.test(line);
+
+    if (isMarkdownTableLine) {
+      removedTableLine = true;
+      continue;
+    }
+
+    if (removedTableLine && !line.trim()) {
+      removedTableLine = false;
+      continue;
+    }
+
+    removedTableLine = false;
+    keptLines.push(line);
+  }
+
+  return keptLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function toPanelMessage(
+  message: AgentStoredMessage,
+  transientStatusTexts: readonly string[],
+): AgentPanelMessage {
   const messageId = message.id ?? createId("agent-stored");
-  const text = stripTransientModelStatus(message.text);
+  const text = stripTransientModelStatus(message.text, transientStatusTexts);
   const fallbackResponse: AgentChatMessage | undefined =
     message.role === "assistant"
       ? {
@@ -433,7 +488,7 @@ function toPanelMessage(message: AgentStoredMessage): AgentPanelMessage {
     role: message.role,
     text,
     response: message.response
-      ? sanitizeAgentResponse(message.response)
+      ? sanitizeAgentResponse(message.response, transientStatusTexts)
       : fallbackResponse,
   };
 }
@@ -766,11 +821,13 @@ function AgentTimelineToolPart({
 
 function AgentMessageTimeline({
   parts,
+  removeMarkdownTables,
   sources,
   tools,
   t,
 }: {
   parts: AgentTimelinePart[];
+  removeMarkdownTables?: boolean;
   sources: AgentSource[] | undefined;
   tools: AgentToolInvocation[];
   t: AppMessages;
@@ -797,6 +854,7 @@ function AgentMessageTimeline({
           return (
             <div key={part.id}>
               <AgentAssistantResponse
+                removeMarkdownTables={removeMarkdownTables}
                 sources={part.id === lastTextPartId ? sources : undefined}
                 text={part.text ?? ""}
               />
@@ -1049,7 +1107,11 @@ export function CopilotPanel({
     void loadAgentSession(resumeId)
       .then((session) => {
         if (!cancelled) {
-          setMessages(session.messages.map(toPanelMessage));
+          setMessages(
+            session.messages.map((message) =>
+              toPanelMessage(message, t.agentTransientModelStatusTexts),
+            ),
+          );
         }
       })
       .catch((error) => {
@@ -1061,7 +1123,7 @@ export function CopilotPanel({
     return () => {
       cancelled = true;
     };
-  }, [resumeId]);
+  }, [resumeId, t.agentTransientModelStatusTexts]);
 
   useEffect(() => {
     return () => {
@@ -1173,7 +1235,10 @@ export function CopilotPanel({
             },
             {
               onMessage: (streamedMessage) => {
-                const panelMessage = toAssistantPanelMessage(streamedMessage);
+                const panelMessage = toAssistantPanelMessage(
+                  streamedMessage,
+                  t.agentTransientModelStatusTexts,
+                );
 
                 syncPreviewEdits(panelMessage.response?.edits);
                 setStreamingMessage(panelMessage);
@@ -1182,7 +1247,13 @@ export function CopilotPanel({
           );
 
           syncPreviewEdits(response.message.edits);
-          setMessages([...nextMessages, toAssistantPanelMessage(response.message)]);
+          setMessages([
+            ...nextMessages,
+            toAssistantPanelMessage(
+              response.message,
+              t.agentTransientModelStatusTexts,
+            ),
+          ]);
         } catch (error) {
           console.error("Failed to send agent chat message.", error);
           if (!isApiErrorToastShown(error)) {
@@ -1298,6 +1369,9 @@ export function CopilotPanel({
                                 {shouldRenderTimeline ? (
                                   <AgentMessageTimeline
                                     parts={timeline}
+                                    removeMarkdownTables={Boolean(
+                                      response?.edits?.length,
+                                    )}
                                     sources={response?.sources}
                                     tools={tools}
                                     t={t}
@@ -1307,6 +1381,9 @@ export function CopilotPanel({
                                     {assistantText ? (
                                       <div>
                                         <AgentAssistantResponse
+                                          removeMarkdownTables={Boolean(
+                                            response?.edits?.length,
+                                          )}
                                           sources={response?.sources}
                                           text={message.text}
                                         />

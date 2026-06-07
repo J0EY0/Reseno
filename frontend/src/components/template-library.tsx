@@ -65,8 +65,13 @@ import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size"
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 const previewSectionKinds: SectionKind[] = [
   "education",
+  "work",
   "internship",
   "project",
+  "skills",
+  "awards",
+  "certificates",
+  "languages",
   "other",
   "custom",
 ];

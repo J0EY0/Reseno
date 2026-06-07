@@ -389,6 +389,10 @@
   "agentToolResumeObservation": "已读取当前简历结构。",
   "agentToolJobObservation": "已获取岗位参考结果。",
   "agentToolDefaultObservation": "已收到工具结果，Agent 会据此决定下一步。",
+  "agentTransientModelStatusTexts": [
+    "正在等待模型返回。",
+    "我先分析目标岗位和当前简历，然后再给出可执行建议。"
+  ],
   "agentPlanTitle": "计划",
   "agentExecutionTitle": "执行过程",
   "agentCollapsePanel": "收起 Agent 对话栏",
@@ -526,10 +530,15 @@
   },
   "sectionTitles": {
     "education": "教育经历",
-    "internship": "工作经历",
+    "work": "工作经历",
+    "internship": "实习经历",
     "project": "项目经历",
+    "skills": "技能",
+    "awards": "获奖经历",
+    "certificates": "证书",
+    "languages": "语言能力",
     "other": "其他",
-    "custom": "自定义板块"
+    "custom": "自定义模块"
   },
   "aiActions": {
     "rewriteSummary": "润色简介",

@@ -198,8 +198,13 @@ export function getKeywordMatch(
     resume.basic.phone,
     resume.basic.email,
     resume.sections.some((section) => section.kind === 'education') ? 'education' : '',
+    resume.sections.some((section) => section.kind === 'work') ? 'work' : '',
     resume.sections.some((section) => section.kind === 'internship') ? 'internship' : '',
     resume.sections.some((section) => section.kind === 'project') ? 'project' : '',
+    resume.sections.some((section) => section.kind === 'skills') ? 'skills' : '',
+    resume.sections.some((section) => section.kind === 'awards') ? 'awards' : '',
+    resume.sections.some((section) => section.kind === 'certificates') ? 'certificates' : '',
+    resume.sections.some((section) => section.kind === 'languages') ? 'languages' : '',
     resume.sections.some((section) => section.kind === 'other') ? 'other' : '',
   ].filter(Boolean).length
 

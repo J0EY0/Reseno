@@ -16,6 +16,26 @@ SYSTEM_PROMPTS = {
     "en": load_prompt("system.en.md"),
 }
 
+FINAL_RESPONSE_PROMPTS = {
+    "zh": load_prompt("final_response.zh.md"),
+    "en": load_prompt("final_response.en.md"),
+}
+
+STREAMING_FINAL_RESPONSE_PROMPTS = {
+    "zh": load_prompt("streaming_final_response.zh.md"),
+    "en": load_prompt("streaming_final_response.en.md"),
+}
+
+DIRECT_CHAT_PROMPTS = {
+    "zh": load_prompt("direct_chat.zh.md"),
+    "en": load_prompt("direct_chat.en.md"),
+}
+
+DIRECT_CHAT_CONTEXT_PROMPTS = {
+    "zh": load_prompt("direct_chat_context.zh.md"),
+    "en": load_prompt("direct_chat_context.en.md"),
+}
+
 AGENT_INTENT_KEYWORDS = {
     "zh": (
         "简历",

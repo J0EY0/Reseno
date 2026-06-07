@@ -709,8 +709,8 @@ function FormatSliderField({
 }
 
 function createTemplatePreviewSection(kind: SectionKind): ResumeSection {
-  return kind === "other"
-    ? createSection("other", "list", [createItem()])
+  return ["skills", "certificates", "languages", "other"].includes(kind)
+    ? createSection(kind, "list", [createItem()])
     : createSection(kind, "timeline", [createItem()]);
 }
 
@@ -2573,10 +2573,9 @@ export function ResumeBuilder({
   }
 
   function addResumeSection(kind: SectionKind = "custom") {
-    const nextSection =
-      kind === "other"
-        ? createSection("other", "list", [createItem()])
-        : createSection(kind, "timeline", [createItem()]);
+    const nextSection = ["skills", "certificates", "languages", "other"].includes(kind)
+      ? createSection(kind, "list", [createItem()])
+      : createSection(kind, "timeline", [createItem()]);
 
     startTransition(() => {
       setResume((current) => ({

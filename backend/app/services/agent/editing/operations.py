@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from typing import Any
 from uuid import uuid4
@@ -30,8 +31,83 @@ BASIC_EDIT_FIELDS = {
     "avatar",
     "summary",
 }
-SECTION_PATCH_FIELDS = {"kind", "layout", "customTitle"}
+SECTION_PATCH_FIELDS = {"kind", "section_type", "layout", "customTitle"}
 ITEM_PATCH_FIELDS = {"title", "subtitle", "meta", "period", "description", "highlights"}
+STANDARD_SECTION_KINDS = {
+    "education",
+    "work",
+    "internship",
+    "project",
+    "skills",
+    "awards",
+    "certificates",
+    "languages",
+    "custom",
+}
+SECTION_KIND_ALIASES = {
+    "education": "education",
+    "教育": "education",
+    "教育经历": "education",
+    "school": "education",
+    "work": "work",
+    "work experience": "work",
+    "工作": "work",
+    "工作经历": "work",
+    "experience": "work",
+    "internship": "internship",
+    "internship experience": "internship",
+    "实习": "internship",
+    "实习经历": "internship",
+    "project": "project",
+    "projects": "project",
+    "项目": "project",
+    "项目经历": "project",
+    "skills": "skills",
+    "skill": "skills",
+    "技能": "skills",
+    "awards": "awards",
+    "award": "awards",
+    "honors": "awards",
+    "获奖": "awards",
+    "获奖经历": "awards",
+    "certificates": "certificates",
+    "certificate": "certificates",
+    "certifications": "certificates",
+    "证书": "certificates",
+    "languages": "languages",
+    "language": "languages",
+    "语言": "languages",
+    "语言能力": "languages",
+    "custom": "custom",
+    "custom section": "custom",
+    "自定义": "custom",
+    "自定义模块": "custom",
+    "自定义板块": "custom",
+}
+FIELD_ONLY_LABEL_RE = re.compile(
+    r"^\s*(?:项目名称|项目名|项目|公司|学校|证书|奖项|名称|title|project name|"
+    r"company|school|certificate|award|时间|日期|周期|date|period|time|角色|"
+    r"职位|岗位|专业|学位|role|position|major|degree|技术栈|技术|gpa|地点|"
+    r"组织|tech stack|stack|location|organization)\s*[:：]",
+    re.IGNORECASE,
+)
+CONTENT_LABEL_RE = re.compile(
+    r"^\s*(?:工作内容|职责|负责内容|行动|方案|结果|成果|影响|要点|"
+    r"responsibility|action|solution|result|impact|highlight)\s*[:：]\s*",
+    re.IGNORECASE,
+)
+MIXED_FIELD_LABEL_RE = re.compile(
+    r"(?:项目名称|项目名|时间|日期|角色|职位|技术栈|技术|title|project name|"
+    r"date|period|role|position|tech stack|stack)\s*[:：]",
+    re.IGNORECASE,
+)
+REQUEST_PREFIX_RE = re.compile(
+    r"^\s*(?:请|麻烦|帮我|please)?\s*"
+    r"(?:添加|新增|补充|修改|优化|润色|生成|add|create|insert|modify|"
+    r"rewrite|improve)?\s*(?:我的|一段|以下|the)?\s*"
+    r"(?:简历|项目经历|工作经历|实习经历|resume|project|experience)?\s*[:：,，-]*\s*",
+    re.IGNORECASE,
+)
 
 
 def _resume_sections(resume: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,6 +162,143 @@ def _model_string(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _compact_whitespace(value: str) -> str:
+    """Collapse text spacing for duplicate checks."""
+
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _duplicate_key(value: str) -> str:
+    """Return a punctuation-light key for comparing generated fields."""
+
+    return re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", value).lower()
+
+
+def _section_kind_from_text(value: object) -> str:
+    """Map a model-provided section type/name to a standard section kind."""
+
+    text = _model_string(value).lower()
+    if not text:
+        return ""
+
+    direct = SECTION_KIND_ALIASES.get(text)
+    if direct:
+        return direct
+
+    for token, kind in SECTION_KIND_ALIASES.items():
+        if token and token in text:
+            return kind
+
+    return ""
+
+
+def _normalized_section_kind(*values: object) -> str:
+    """Return a standard section kind, falling back to custom."""
+
+    for value in values:
+        kind = _section_kind_from_text(value)
+        if kind and kind != "custom":
+            return kind
+
+    return "custom"
+
+
+def _normalized_custom_title(value: object, kind: str) -> str:
+    """Allow free section names only for custom sections."""
+
+    title = _model_string(value)
+    if kind != "custom":
+        return ""
+
+    if _section_kind_from_text(title) and _section_kind_from_text(title) != "custom":
+        return ""
+
+    return title
+
+
+def _clean_generated_text(value: object) -> str:
+    """Remove user-command prefixes and normalize model-provided prose."""
+
+    text = _compact_whitespace(_model_string(value))
+    return REQUEST_PREFIX_RE.sub("", text, count=1).strip()
+
+
+def _clean_highlight_text(value: object) -> str:
+    """Normalize one generated bullet/highlight."""
+
+    text = _clean_generated_text(value).strip(" -•\t")
+    text = CONTENT_LABEL_RE.sub("", text, count=1).strip()
+    if FIELD_ONLY_LABEL_RE.search(text):
+        return ""
+    return text
+
+
+def _contains_mixed_field_labels(value: str) -> bool:
+    """Return whether text still looks like an unsplit resume paragraph."""
+
+    return len(MIXED_FIELD_LABEL_RE.findall(value)) >= 2
+
+
+def _field_values_for_dedupe(item: dict[str, Any]) -> list[str]:
+    """Return fields that should not be repeated in prose or bullets."""
+
+    return [
+        _model_string(item.get("title")),
+        _model_string(item.get("subtitle")),
+        _model_string(item.get("meta")),
+        _model_string(item.get("period")),
+    ]
+
+
+def _has_repeated_field_values(value: str, field_values: list[str]) -> bool:
+    """Return whether text repeats multiple structured fields."""
+
+    text_key = _duplicate_key(value)
+    matches = 0
+    for field_value in field_values:
+        field_key = _duplicate_key(field_value)
+        if len(field_key) >= 3 and field_key in text_key:
+            matches += 1
+
+    return matches >= 2
+
+
+def _clean_resume_item_fields(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep generated resume item fields in their own lanes."""
+
+    cleaned = {**item}
+    for key in ("title", "subtitle", "meta", "period", "description"):
+        cleaned[key] = _clean_generated_text(cleaned.get(key))
+
+    field_values = _field_values_for_dedupe(cleaned)
+    description = _model_string(cleaned.get("description"))
+    if description and (
+        _contains_mixed_field_labels(description)
+        or _has_repeated_field_values(description, field_values)
+    ):
+        cleaned["description"] = ""
+
+    highlights = cleaned.get("highlights")
+    next_highlights: list[str] = []
+    seen: set[str] = set()
+    if isinstance(highlights, list):
+        for highlight in highlights:
+            text = _clean_highlight_text(highlight)
+            if not text:
+                continue
+            if _contains_mixed_field_labels(text):
+                continue
+            if _has_repeated_field_values(text, field_values):
+                continue
+            key = _duplicate_key(text)
+            if key and key not in seen:
+                next_highlights.append(text)
+                seen.add(key)
+
+    cleaned["highlights"] = next_highlights
+    return cleaned
+
+
 def _model_int(value: object) -> int | None:
     """Return a bounded integer from model-provided JSON."""
 
@@ -102,7 +315,7 @@ def _normalized_item(value: object) -> dict[str, Any] | None:
         return None
 
     item_id = _model_string(value.get("id")) or f"item-agent-{uuid4().hex[:8]}"
-    return {
+    return _clean_resume_item_fields({
         "id": item_id,
         "title": _model_string(value.get("title")),
         "subtitle": _model_string(value.get("subtitle")),
@@ -110,7 +323,7 @@ def _normalized_item(value: object) -> dict[str, Any] | None:
         "period": _model_string(value.get("period")),
         "description": _model_string(value.get("description")),
         "highlights": _string_list(value.get("highlights")),
-    }
+    })
 
 
 def _normalized_section(value: object) -> dict[str, Any] | None:
@@ -119,7 +332,12 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
 
-    kind = _model_string(value.get("kind"))
+    kind = _normalized_section_kind(
+        value.get("section_type"),
+        value.get("sectionType"),
+        value.get("kind"),
+        value.get("customTitle"),
+    )
     layout = _model_string(value.get("layout"))
     items = value.get("items")
     normalized_items = (
@@ -129,18 +347,18 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
 
     return {
         "id": _model_string(value.get("id")) or f"section-agent-{uuid4().hex[:8]}",
-        "kind": (
-            kind
-            if kind in {"education", "internship", "project", "other", "custom"}
-            else "custom"
-        ),
+        "kind": kind,
         "layout": layout if layout in {"timeline", "list"} else "timeline",
-        "customTitle": _model_string(value.get("customTitle")),
+        "customTitle": _normalized_custom_title(value.get("customTitle"), kind),
         "items": normalized_items,
     }
 
 
-def _safe_item_patch(value: object) -> dict[str, Any]:
+def _safe_item_patch(
+    value: object,
+    *,
+    base_item: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return only frontend-writable item fields from a model patch."""
 
     if not isinstance(value, dict):
@@ -158,7 +376,19 @@ def _safe_item_patch(value: object) -> dict[str, Any]:
         if isinstance(field_value, str):
             patch[key] = field_value
 
-    return patch
+    if not patch:
+        return {}
+
+    merged = _clean_resume_item_fields({**(base_item or {}), **patch})
+    cleaned_patch: dict[str, Any] = {}
+    for key in patch:
+        if key not in merged:
+            continue
+        if key == "highlights" and not merged[key]:
+            continue
+        cleaned_patch[key] = merged[key]
+
+    return cleaned_patch
 
 
 def _safe_section_patch(value: object) -> dict[str, Any]:
@@ -172,17 +402,19 @@ def _safe_section_patch(value: object) -> dict[str, Any]:
         field_value = value.get(key)
         if not isinstance(field_value, str):
             continue
-        if key == "kind" and field_value not in {
-            "education",
-            "internship",
-            "project",
-            "other",
-            "custom",
-        }:
+        if key in {"kind", "section_type"}:
+            patch["kind"] = _normalized_section_kind(field_value)
             continue
         if key == "layout" and field_value not in {"timeline", "list"}:
             continue
-        patch[key] = field_value
+        if key == "customTitle":
+            kind = _normalized_section_kind(
+                value.get("kind"),
+                value.get("section_type"),
+            )
+            patch[key] = _normalized_custom_title(field_value, kind)
+        else:
+            patch[key] = field_value
 
     return patch
 
@@ -260,8 +492,12 @@ def _normalize_edit_operation(
         section_id = _model_string(operation.get("sectionId"))
         item_id = _model_string(operation.get("itemId"))
         section = _find_resume_section(resume, section_id)
-        patch = _safe_item_patch(operation.get("patch"))
-        if section and item_id and patch and _find_resume_item(section, item_id):
+        item = _find_resume_item(section, item_id) if section else None
+        patch = _safe_item_patch(
+            operation.get("patch"),
+            base_item=item if isinstance(item, dict) else None,
+        )
+        if section and item_id and patch and item:
             return {
                 "type": "update_item",
                 "sectionId": section_id,
@@ -340,15 +576,18 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
     if operation_type == "insert_section":
         section = operation.get("section", {})
         if isinstance(section, dict):
-            return _model_string(section.get("customTitle")) or _model_string(
-                section.get("kind"),
-            )
+            title = _model_string(section.get("customTitle"))
+            if title:
+                return title
+            items = section.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if item_preview := _resume_item_preview(item):
+                        return item_preview
     if operation_type == "insert_item":
         item = operation.get("item", {})
         if isinstance(item, dict):
-            return _model_string(item.get("title")) or _model_string(
-                item.get("description"),
-            )
+            return _resume_item_preview(item)
     return None
 
 
@@ -458,6 +697,63 @@ def _compact_observation_value(value: object) -> object:
     return value
 
 
+def _resume_item_observation_text(item: object) -> str:
+    """Return a concise user-readable item snapshot."""
+
+    if not isinstance(item, dict):
+        return ""
+
+    fields = [
+        _model_string(item.get("title")),
+        _model_string(item.get("subtitle")),
+        _model_string(item.get("meta")),
+        _model_string(item.get("period")),
+        _model_string(item.get("description")),
+    ]
+    highlights = item.get("highlights")
+    if isinstance(highlights, list):
+        fields.extend(_model_string(highlight) for highlight in highlights)
+
+    return "\n".join(field for field in fields if field)
+
+
+def _resume_item_preview(item: object) -> str:
+    """Return the first readable field from a resume item."""
+
+    if not isinstance(item, dict):
+        return ""
+
+    for key in ("title", "subtitle", "meta", "period", "description"):
+        if value := _model_string(item.get(key)):
+            return value
+
+    highlights = item.get("highlights")
+    if isinstance(highlights, list):
+        for highlight in highlights:
+            if value := _model_string(highlight):
+                return value
+
+    return ""
+
+
+def _resume_section_observation_text(section: object) -> str:
+    """Return a concise user-readable section snapshot."""
+
+    if not isinstance(section, dict):
+        return ""
+
+    fields = [_model_string(section.get("customTitle"))]
+    items = section.get("items")
+    if isinstance(items, list):
+        fields.extend(
+            item_text
+            for item in items[:3]
+            if (item_text := _resume_item_observation_text(item))
+        )
+
+    return "\n\n".join(field for field in fields if field)
+
+
 def _operation_snapshot(
     resume: dict[str, Any],
     operation: dict[str, Any],
@@ -501,6 +797,28 @@ def _operation_snapshot(
         return [item.get("id") for item in items if isinstance(item, dict)]
 
     return None
+
+
+def _operation_observation_value(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+    *,
+    after: bool,
+) -> object:
+    """Return a user-facing before/after observation value."""
+
+    operation_type = operation.get("type")
+    if operation_type == "insert_section":
+        if not after:
+            return None
+        return _resume_section_observation_text(operation.get("section"))
+
+    if operation_type == "insert_item":
+        if not after:
+            return None
+        return _resume_item_observation_text(operation.get("item"))
+
+    return _operation_snapshot(resume, operation)
 
 
 def _apply_edit_operation(
@@ -641,10 +959,18 @@ def _edit_observations(
                 "operationType": operation.get("type"),
                 "status": edit.status,
                 "before": _compact_observation_value(
-                    _operation_snapshot(before_resume, operation),
+                    _operation_observation_value(
+                        before_resume,
+                        operation,
+                        after=False,
+                    ),
                 ),
                 "after": _compact_observation_value(
-                    _operation_snapshot(after_resume, operation),
+                    _operation_observation_value(
+                        after_resume,
+                        operation,
+                        after=True,
+                    ),
                 ),
                 "instruction": (
                     "Decide from this Observation whether the draft now satisfies "
