@@ -1,0 +1,94 @@
+{
+  "sections": [
+    {
+      "kind": "education",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "教育经历",
+        "en": "Education"
+      },
+      "aliases": ["education", "教育", "教育经历", "school"]
+    },
+    {
+      "kind": "work",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "工作经历",
+        "en": "Work Experience"
+      },
+      "aliases": ["work", "work experience", "工作", "工作经历", "experience"]
+    },
+    {
+      "kind": "internship",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "实习经历",
+        "en": "Internship Experience"
+      },
+      "aliases": ["internship", "internship experience", "实习", "实习经历"]
+    },
+    {
+      "kind": "project",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "项目经历",
+        "en": "Projects"
+      },
+      "aliases": ["project", "projects", "项目", "项目经历"]
+    },
+    {
+      "kind": "skills",
+      "defaultLayout": "list",
+      "labels": {
+        "zh": "技能",
+        "en": "Skills"
+      },
+      "aliases": ["skills", "skill", "技能"]
+    },
+    {
+      "kind": "awards",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "获奖经历",
+        "en": "Awards"
+      },
+      "aliases": ["awards", "award", "honors", "获奖", "获奖经历"]
+    },
+    {
+      "kind": "certificates",
+      "defaultLayout": "list",
+      "labels": {
+        "zh": "证书",
+        "en": "Certificates"
+      },
+      "aliases": ["certificates", "certificate", "certifications", "证书"]
+    },
+    {
+      "kind": "languages",
+      "defaultLayout": "list",
+      "labels": {
+        "zh": "语言能力",
+        "en": "Languages"
+      },
+      "aliases": ["languages", "language", "语言", "语言能力"]
+    },
+    {
+      "kind": "other",
+      "defaultLayout": "list",
+      "labels": {
+        "zh": "其他",
+        "en": "Other Experience"
+      },
+      "aliases": ["other", "others", "other experience", "其他", "其他经历", "其他信息"]
+    },
+    {
+      "kind": "custom",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "自定义模块",
+        "en": "Custom Section"
+      },
+      "aliases": ["custom", "custom section", "自定义", "自定义模块", "自定义板块"]
+    }
+  ]
+}

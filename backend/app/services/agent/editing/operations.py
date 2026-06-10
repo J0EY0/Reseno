@@ -11,6 +11,7 @@ from ..prompts import (
     MAX_REACT_MAX_ITERATIONS,
     MIN_REACT_MAX_ITERATIONS,
 )
+from ..section_registry import SECTION_KIND_ALIASES
 
 
 def _string_list(value: object) -> list[str]:
@@ -33,57 +34,6 @@ BASIC_EDIT_FIELDS = {
 }
 SECTION_PATCH_FIELDS = {"kind", "section_type", "layout", "customTitle"}
 ITEM_PATCH_FIELDS = {"title", "subtitle", "meta", "period", "description", "highlights"}
-STANDARD_SECTION_KINDS = {
-    "education",
-    "work",
-    "internship",
-    "project",
-    "skills",
-    "awards",
-    "certificates",
-    "languages",
-    "custom",
-}
-SECTION_KIND_ALIASES = {
-    "education": "education",
-    "教育": "education",
-    "教育经历": "education",
-    "school": "education",
-    "work": "work",
-    "work experience": "work",
-    "工作": "work",
-    "工作经历": "work",
-    "experience": "work",
-    "internship": "internship",
-    "internship experience": "internship",
-    "实习": "internship",
-    "实习经历": "internship",
-    "project": "project",
-    "projects": "project",
-    "项目": "project",
-    "项目经历": "project",
-    "skills": "skills",
-    "skill": "skills",
-    "技能": "skills",
-    "awards": "awards",
-    "award": "awards",
-    "honors": "awards",
-    "获奖": "awards",
-    "获奖经历": "awards",
-    "certificates": "certificates",
-    "certificate": "certificates",
-    "certifications": "certificates",
-    "证书": "certificates",
-    "languages": "languages",
-    "language": "languages",
-    "语言": "languages",
-    "语言能力": "languages",
-    "custom": "custom",
-    "custom section": "custom",
-    "自定义": "custom",
-    "自定义模块": "custom",
-    "自定义板块": "custom",
-}
 FIELD_ONLY_LABEL_RE = re.compile(
     r"^\s*(?:项目名称|项目名|项目|公司|学校|证书|奖项|名称|title|project name|"
     r"company|school|certificate|award|时间|日期|周期|date|period|time|角色|"

@@ -1,6 +1,8 @@
 from functools import cache
 from pathlib import Path
 
+from ..section_registry import section_kind_values, section_label_lines
+
 PROMPT_DIR = Path(__file__).resolve().parent
 
 
@@ -101,7 +103,13 @@ AGENT_INTENT_KEYWORDS = {
     ),
 }
 
-EDIT_OPERATION_GUIDE = load_prompt("edit_operation_guide.md")
+EDIT_OPERATION_GUIDE = load_prompt("edit_operation_guide.md").replace(
+    "{section_kind_values}",
+    section_kind_values(),
+).replace(
+    "{section_label_lines}",
+    section_label_lines(),
+)
 
 DEFAULT_REACT_MAX_ITERATIONS = 5
 MIN_REACT_MAX_ITERATIONS = 1

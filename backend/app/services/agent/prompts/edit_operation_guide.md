@@ -28,18 +28,10 @@ If the original input is one mixed paragraph, split it into the matching fields 
 
 Section rules / 模块规则:
 Use only standard resume section types. Do not invent temporary section titles such as role-related projects, relevant experience, or core projects.
-Allowed section_type values are: education, work, internship, project, skills, awards, certificates, languages, custom.
-- education: 教育经历 / Education
-- work: 工作经历 / Work Experience
-- internship: 实习经历 / Internship Experience
-- project: 项目经历 / Projects
-- skills: 技能 / Skills
-- awards: 获奖经历 / Awards
-- certificates: 证书 / Certificates
-- languages: 语言能力 / Languages
-- custom: 自定义模块 / Custom Section
+Allowed section_type values are: {section_kind_values}.
+{section_label_lines}
 
-If content is a project, put it under project. If content is work or internship, put it under work or internship. If it cannot be classified, use custom and explain why in the edit reason.
+If content is a project, put it under project. If content is work or internship, put it under work or internship. If the content is resume-relevant but does not fit a specific standard section, use other. Use custom only when the user explicitly needs a named custom section that cannot map to a standard type, and explain why in the edit reason.
 
 模块名称必须使用标准简历模块，不要生成“岗位相关项目”“相关经历”“核心项目”等临时模块名。
-如果内容属于项目，应归入“项目经历”。如果内容属于工作或实习，应归入“工作经历”或“实习经历”。如果无法判断，使用“自定义模块”，并在 reason 中说明原因。
+如果内容属于项目，应归入“项目经历”。如果内容属于工作或实习，应归入“工作经历”或“实习经历”。如果内容和简历相关但不适合具体标准模块，使用“其他经历”。只有用户明确需要无法映射到标准类型的命名模块时，才使用“自定义模块”，并在 reason 中说明原因。

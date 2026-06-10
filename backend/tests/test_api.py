@@ -9,6 +9,14 @@ from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.exports import ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchResult
+from app.services.agent.editing.operations import _model_edit_suggestions
+from app.services.agent.prompts import EDIT_OPERATION_GUIDE
+from app.services.agent.section_registry import (
+    SECTION_DEFAULT_LAYOUTS,
+    SECTION_KIND_ENUM,
+    SECTION_REGISTRY,
+)
+from app.services.agent.tools import registry as tool_registry
 from app.services.auth_tokens import create_access_token
 from app.services.llm_client import (
     LlmRequestError,
@@ -1170,8 +1178,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
     assert observations[0]["target"] == "sections.project.items.project-1"
     assert observations[0]["before"]["description"] == "负责推荐算法迭代。"
     assert (
-        observations[0]["after"]["description"]
-        == "负责推荐链路优化，点击率提升 12%。"
+        observations[0]["after"]["description"] == "负责推荐链路优化，点击率提升 12%。"
     )
     assert message["text"] == "已生成项目经历修改草稿"
     assert message["edits"][0]["target"] == "sections.project.items.project-1"
@@ -1321,8 +1328,7 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
                                                 "title": "电商后台管理系统",
                                                 "subtitle": "后端开发",
                                                 "meta": (
-                                                    "Spring Boot, MySQL, Redis, "
-                                                    "Docker"
+                                                    "Spring Boot, MySQL, Redis, Docker"
                                                 ),
                                                 "period": "2023.03 - 2023.06",
                                                 "description": (
@@ -1398,6 +1404,64 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
     assert item["highlights"] == [
         "设计并实现订单模块，通过 SQL 优化将查询时间从 2s 降至 0.3s",
     ]
+
+
+def test_agent_section_registry_drives_schema_and_prompt() -> None:
+    assert tool_registry.SECTION_KIND_ENUM == SECTION_KIND_ENUM
+    assert (
+        f"Allowed section_type values are: {', '.join(SECTION_KIND_ENUM)}."
+        in EDIT_OPERATION_GUIDE
+    )
+    for kind in SECTION_KIND_ENUM:
+        assert f"- {kind}:" in EDIT_OPERATION_GUIDE
+
+
+def test_agent_section_registry_matches_local_contract() -> None:
+    assert [section["kind"] for section in SECTION_REGISTRY] == SECTION_KIND_ENUM
+    assert {
+        section["kind"]: section["defaultLayout"] for section in SECTION_REGISTRY
+    } == SECTION_DEFAULT_LAYOUTS
+
+
+def test_agent_chat_accepts_other_section_kind() -> None:
+    assert "other" in SECTION_KIND_ENUM
+
+    edits = _model_edit_suggestions(
+        {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+        [
+            {
+                "title": "新增其他经历",
+                "target": "sections",
+                "reason": "用户提供的内容适合放入其他经历。",
+                "operation": {
+                    "type": "insert_section",
+                    "section": {
+                        "section_type": "other",
+                        "layout": "list",
+                        "customTitle": "其他经历",
+                        "items": [
+                            {
+                                "title": "开源贡献",
+                                "subtitle": "",
+                                "meta": "",
+                                "period": "",
+                                "description": "",
+                                "highlights": ["维护项目文档"],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+        locale="zh",
+    )
+
+    assert edits
+    section = edits[0].operation["section"]
+    assert section["kind"] == "other"
+    assert section["customTitle"] == ""
+    assert section["layout"] == "list"
+    assert section["items"][0]["title"] == "开源贡献"
 
 
 def test_agent_chat_direct_message_does_not_return_tools(
@@ -1659,17 +1723,12 @@ def test_agent_chat_cleans_chinese_target_role(
     assert response.status_code == 200
     message = response.json()["data"]["message"]
     jd_tool = next(
-        tool
-        for tool in message["tools"]
-        if tool["title"] == "jd_reference_search"
+        tool for tool in message["tools"] if tool["title"] == "jd_reference_search"
     )
     assert jd_tool["output"]["role"] == "AI应用开发"
     assert jd_tool["input"]["query"] == "AI应用开发 岗位 JD 职责 任职要求"
     assert message["knowledge"][0]["title"] == "AI应用开发"
-    assert not any(
-        "的职位是" in suggestion
-        for suggestion in message["suggestions"]
-    )
+    assert not any("的职位是" in suggestion for suggestion in message["suggestions"])
 
 
 def test_agent_chat_streams_tool_and_source_metadata(
@@ -1840,11 +1899,10 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
         "tool_group",
         "text",
     ]
-    assert [
-        part["toolIds"]
-        for part in timeline
-        if part["type"] == "tool_group"
-    ] == [["call-analysis"], ["call-plan"]]
+    assert [part["toolIds"] for part in timeline if part["type"] == "tool_group"] == [
+        ["call-analysis"],
+        ["call-plan"],
+    ]
 
 
 def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
@@ -1930,11 +1988,9 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
         "tool_group",
         "text",
     ]
-    assert [
-        part["toolIds"]
-        for part in timeline
-        if part["type"] == "tool_group"
-    ] == [["call-analysis", "call-jd"]]
+    assert [part["toolIds"] for part in timeline if part["type"] == "tool_group"] == [
+        ["call-analysis", "call-jd"]
+    ]
 
 
 def test_agent_chat_streams_terminal_model_text_after_tool_observation(

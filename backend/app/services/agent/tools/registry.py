@@ -1,18 +1,7 @@
 from typing import Any
 
 from ..prompts import EDIT_OPERATION_GUIDE
-
-SECTION_KIND_ENUM = [
-    "education",
-    "work",
-    "internship",
-    "project",
-    "skills",
-    "awards",
-    "certificates",
-    "languages",
-    "custom",
-]
+from ..section_registry import SECTION_KIND_ENUM
 
 ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
