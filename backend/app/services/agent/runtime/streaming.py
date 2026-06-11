@@ -9,7 +9,6 @@ from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
     AgentKnowledgeItem,
-    AgentResumeEditSuggestion,
     AgentTimelinePart,
 )
 from app.services.llm_client import (
@@ -20,22 +19,11 @@ from app.services.llm_client import (
 
 from ..compat import get_agent_api
 from ..editing import _string_list
-from ..executor import (
-    _agent_file_context,
-    _current_prompt,
-    _should_use_agent_tools,
-)
-from ..prompts import (
-    DIRECT_CHAT_CONTEXT_PROMPTS,
-    DIRECT_CHAT_PROMPTS,
-    FINAL_RESPONSE_PROMPTS,
-    STREAMING_FINAL_RESPONSE_PROMPTS,
-    SYSTEM_PROMPTS,
-)
 from .loop import (
     iter_agent_tool_call_loop,
     run_agent_tool_call_loop,
 )
+from .messages import build_agent_messages
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -71,96 +59,6 @@ def _knowledge_items(value: object) -> list[AgentKnowledgeItem]:
             items.append(AgentKnowledgeItem(title=title, detail=detail))
 
     return items
-
-
-def _visible_edit_summaries(
-    edits: list[AgentResumeEditSuggestion],
-) -> list[dict[str, str]]:
-    """Return only user-facing edit context for the final model response."""
-
-    summaries: list[dict[str, str]] = []
-    for edit in edits:
-        summary: dict[str, str] = {}
-        if edit.title.strip():
-            summary["title"] = edit.title.strip()
-        if edit.reason.strip():
-            summary["reason"] = edit.reason.strip()
-        if summary:
-            summaries.append(summary)
-
-    return summaries
-
-
-def _llm_messages(
-    request: AgentChatRequest,
-    draft: AgentChatMessage,
-    config: AgentLlmConfig,
-) -> list[dict[str, str]]:
-    """Build the provider prompt without exposing API key material."""
-
-    locale_name = "Chinese" if request.locale == "zh" else "English"
-    system_parts = [
-        SYSTEM_PROMPTS[request.locale],
-        FINAL_RESPONSE_PROMPTS[request.locale],
-    ]
-    if config.system_prompt.strip():
-        system_parts.append(config.system_prompt.strip())
-
-    user_payload = {
-        "responseLanguage": locale_name,
-        "userPrompt": _current_prompt(request),
-        "jobBrief": request.job_brief,
-        "files": _agent_file_context(request.files),
-        "keywordMatch": request.keyword_match,
-        "resume": request.resume,
-        "citationSources": [
-            source.model_dump(mode="json", by_alias=True) for source in draft.sources
-        ],
-        "draftStatusText": draft.text,
-        "draftEditCount": len(draft.edits),
-        "draftEdits": _visible_edit_summaries(draft.edits),
-    }
-
-    return [
-        {"role": "system", "content": "\n\n".join(system_parts)},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-    ]
-
-
-def _streaming_agent_llm_messages(
-    request: AgentChatRequest,
-    draft: AgentChatMessage,
-    config: AgentLlmConfig,
-) -> list[dict[str, str]]:
-    """Build a stream-friendly prompt that returns visible text, not JSON."""
-
-    locale_name = "Chinese" if request.locale == "zh" else "English"
-    system_parts = [
-        SYSTEM_PROMPTS[request.locale],
-        STREAMING_FINAL_RESPONSE_PROMPTS[request.locale],
-    ]
-    if config.system_prompt.strip():
-        system_parts.append(config.system_prompt.strip())
-
-    user_payload = {
-        "responseLanguage": locale_name,
-        "userPrompt": _current_prompt(request),
-        "jobBrief": request.job_brief,
-        "files": _agent_file_context(request.files),
-        "keywordMatch": request.keyword_match,
-        "resume": request.resume,
-        "citationSources": [
-            source.model_dump(mode="json", by_alias=True) for source in draft.sources
-        ],
-        "draftStatusText": draft.text,
-        "draftEditCount": len(draft.edits),
-        "draftEdits": _visible_edit_summaries(draft.edits),
-    }
-
-    return [
-        {"role": "system", "content": "\n\n".join(system_parts)},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-    ]
 
 
 def _merge_llm_response(
@@ -206,52 +104,6 @@ def _merge_llm_response(
         quickReplies=quick_replies,
         actions=draft.actions,
     )
-
-
-def _direct_llm_messages(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> list[dict[str, str]]:
-    """Build messages for normal chat that should not call agent tools."""
-
-    locale_name = "Chinese" if request.locale == "zh" else "English"
-    system_parts = [DIRECT_CHAT_PROMPTS[request.locale]]
-    if config.system_prompt.strip():
-        system_parts.append(config.system_prompt.strip())
-
-    context = {
-        "responseLanguage": locale_name,
-        "currentResume": request.resume,
-        "jobBrief": request.job_brief,
-        "keywordMatch": request.keyword_match,
-    }
-    messages = [
-        {"role": "system", "content": "\n\n".join(system_parts)},
-        {
-            "role": "system",
-            "content": "\n".join(
-                [
-                    DIRECT_CHAT_CONTEXT_PROMPTS[request.locale],
-                    json.dumps(context, ensure_ascii=False),
-                ],
-            ),
-        },
-    ]
-
-    conversation = request.messages or request.conversation
-    for item in conversation[-8:]:
-        text = item.text.strip()
-        if text:
-            messages.append({"role": item.role, "content": text})
-
-    prompt = _current_prompt(request)
-    if prompt and not any(
-        message["role"] == "user" and message["content"] == prompt
-        for message in messages
-    ):
-        messages.append({"role": "user", "content": prompt})
-
-    return messages
 
 
 def _direct_llm_response(
@@ -372,26 +224,21 @@ def build_agent_message(
     if config is None:
         return _model_setup_message(request)
 
-    should_use_agent_tools = _should_use_agent_tools(request)
     draft: AgentChatMessage | None = None
     try:
-        if should_use_agent_tools:
-            runner = run_agent_tool_call_loop(request, config)
-            if runner.tools:
-                draft = runner.build_message()
-            if runner.terminal_text.strip():
-                terminal_text = runner.terminal_text.strip()
-                if draft:
-                    return draft.model_copy(update={"text": terminal_text})
+        runner = run_agent_tool_call_loop(request, config)
+        if runner.tools:
+            draft = runner.build_message()
+        if runner.terminal_text.strip():
+            terminal_text = runner.terminal_text.strip()
+            if draft:
+                return draft.model_copy(update={"text": terminal_text})
 
-                return _direct_llm_response(terminal_text)
-            messages = (
-                _llm_messages(request, draft, config)
-                if draft
-                else _direct_llm_messages(request, config)
-            )
-        else:
-            messages = _direct_llm_messages(request, config)
+            return _direct_llm_response(terminal_text)
+        if not draft:
+            raise LlmRequestError("Model provider returned an empty response.")
+
+        messages = build_agent_messages(request, config, mode="final", draft=draft)
 
         raw_response = get_agent_api().complete_chat(config, messages)
     except LlmRequestError as exc:
@@ -625,7 +472,6 @@ def stream_agent_response(
         on_complete_message(on_complete, message)
         return
 
-    should_use_agent_tools = _should_use_agent_tools(request)
     draft: AgentChatMessage | None = None
     message_id = f"agent-msg-{uuid4().hex[:12]}"
 
@@ -649,13 +495,16 @@ def stream_agent_response(
     tool_part_ids: dict[str, str] = {}
 
     try:
-        if should_use_agent_tools:
-            runner = None
-            terminal_loop_text = False
-            for event in iter_agent_tool_call_loop(request, config):
-                if event.kind == "text":
-                    visible_text = _visible_loop_text(event.text)
-                    if visible_text:
+        runner = None
+        terminal_loop_text = False
+        for event in iter_agent_tool_call_loop(request, config):
+            if event.kind == "text":
+                visible_text = _visible_loop_text(event.text)
+                if visible_text:
+                    if event.terminal and not timeline_parts:
+                        raw_parts.append(visible_text)
+                        yield _text_delta(visible_text)
+                    else:
                         separator = "\n\n" if raw_parts else ""
                         delta = f"{separator}{visible_text}"
                         raw_parts.append(delta)
@@ -665,81 +514,85 @@ def stream_agent_response(
                             text="".join(raw_parts),
                             timeline=_timeline_payload(timeline_parts),
                         )
-                    terminal_loop_text = terminal_loop_text or event.terminal
-                    continue
-                if event.kind == "tools":
-                    new_tool_ids = [
-                        tool.id
+                terminal_loop_text = terminal_loop_text or event.terminal
+                continue
+            if event.kind == "tools":
+                new_tool_ids = [
+                    tool.id
+                    for tool in event.tools or []
+                    if tool.id not in tool_part_ids
+                ]
+                if new_tool_ids:
+                    part_id = _append_timeline_tools(
+                        timeline_parts,
+                        new_tool_ids,
+                    )
+                    for tool_id in new_tool_ids:
+                        tool_part_ids[tool_id] = part_id
+                yield _message_delta_event(
+                    "tools",
+                    text="".join(raw_parts),
+                    tools=[
+                        tool.model_dump(mode="json", by_alias=True)
                         for tool in event.tools or []
-                        if tool.id not in tool_part_ids
-                    ]
-                    if new_tool_ids:
-                        part_id = _append_timeline_tools(
-                            timeline_parts,
-                            new_tool_ids,
-                        )
-                        for tool_id in new_tool_ids:
-                            tool_part_ids[tool_id] = part_id
-                    yield _message_delta_event(
-                        "tools",
-                        text="".join(raw_parts),
-                        tools=[
-                            tool.model_dump(mode="json", by_alias=True)
-                            for tool in event.tools or []
-                        ],
-                        timeline=_timeline_payload(timeline_parts),
-                    )
-                    continue
-                if event.kind == "edits":
-                    yield _message_delta_event(
-                        "edits",
-                        edits=[
-                            edit.model_dump(mode="json", by_alias=True)
-                            for edit in event.edits or []
-                        ],
-                    )
-                    continue
-                if event.kind == "done":
-                    runner = event.runner
-
-            if runner and runner.tools:
-                draft = runner.build_message(message_id=message_id)
-
-            if terminal_loop_text:
-                raw_response = "".join(raw_parts).strip()
-                if not raw_response:
-                    raise LlmRequestError("Model provider returned an empty response.")
-                message = (
-                    draft.model_copy(
-                        update={
-                            "text": raw_response,
-                            "timeline": timeline_parts,
-                        },
-                    )
-                    if draft
-                    else _direct_llm_response(raw_response, message_id=message_id)
+                    ],
+                    timeline=_timeline_payload(timeline_parts),
                 )
-                yield _sse_event(
-                    "message_delta",
-                    {
-                        "type": "message_delta",
-                        "message": _message_delta_payload(message),
+                continue
+            if event.kind == "edits":
+                yield _message_delta_event(
+                    "edits",
+                    edits=[
+                        edit.model_dump(mode="json", by_alias=True)
+                        for edit in event.edits or []
+                    ],
+                )
+                continue
+            if event.kind == "done":
+                runner = event.runner
+
+        if runner and runner.tools:
+            draft = runner.build_message(message_id=message_id)
+
+        if terminal_loop_text:
+            raw_response = "".join(raw_parts).strip()
+            if not raw_response:
+                raise LlmRequestError("Model provider returned an empty response.")
+            message = (
+                draft.model_copy(
+                    update={
+                        "text": raw_response,
+                        "timeline": timeline_parts,
                     },
                 )
-                yield _sse_event(
-                    "message_done",
-                    {
-                        "type": "message_done",
-                        "message": message.model_dump(mode="json", by_alias=True),
-                    },
-                )
-                on_complete_message(on_complete, message)
-                return
+                if draft
+                else _direct_llm_response(raw_response, message_id=message_id)
+            )
+            yield _sse_event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "message": _message_delta_payload(message),
+                },
+            )
+            yield _sse_event(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": message.model_dump(mode="json", by_alias=True),
+                },
+            )
+            on_complete_message(on_complete, message)
+            return
 
-        messages = (
-            _streaming_agent_llm_messages(request, draft, config)
-            if draft
-            else _direct_llm_messages(request, config)
+        if not draft:
+            raise LlmRequestError("Model provider returned an empty response.")
+
+        messages = build_agent_messages(
+            request,
+            config,
+            mode="streaming_final",
+            draft=draft,
         )
         if raw_parts:
             raw_parts.append("\n\n")

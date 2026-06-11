@@ -28,88 +28,31 @@ STREAMING_FINAL_RESPONSE_PROMPTS = {
     "en": load_prompt("streaming_final_response.en.md"),
 }
 
-DIRECT_CHAT_PROMPTS = {
-    "zh": load_prompt("direct_chat.zh.md"),
-    "en": load_prompt("direct_chat.en.md"),
-}
+def _render_edit_operation_guide(
+    filename: str,
+    *,
+    label_locale_order: tuple[str, ...],
+) -> str:
+    return load_prompt(filename).replace(
+        "{section_kind_values}",
+        section_kind_values(),
+    ).replace(
+        "{section_label_lines}",
+        section_label_lines(label_locale_order),
+    )
 
-DIRECT_CHAT_CONTEXT_PROMPTS = {
-    "zh": load_prompt("direct_chat_context.zh.md"),
-    "en": load_prompt("direct_chat_context.en.md"),
-}
 
-AGENT_INTENT_KEYWORDS = {
-    "zh": (
-        "简历",
-        "履历",
-        "jd",
-        "岗位",
-        "职位",
-        "职责",
-        "要求",
-        "优化",
-        "修改",
-        "调整",
-        "新增",
-        "增加",
-        "删除",
-        "移除",
-        "排序",
-        "顺序",
-        "模块",
-        "项目",
-        "实习",
-        "教育",
-        "经历",
-        "技能",
-        "关键词",
-        "匹配",
-        "预览",
-        "草稿",
-        "应用",
-        "撤回",
-        "求职",
-        "面试",
+EDIT_OPERATION_GUIDES = {
+    "zh": _render_edit_operation_guide(
+        "edit_operation_guide.zh.md",
+        label_locale_order=("zh", "en"),
     ),
-    "en": (
-        "resume",
-        "cv",
-        "jd",
-        "job description",
-        "role",
-        "position",
-        "requirement",
-        "responsibility",
-        "optimize",
-        "improve",
-        "rewrite",
-        "edit",
-        "revise",
-        "add",
-        "remove",
-        "delete",
-        "reorder",
-        "section",
-        "project",
-        "experience",
-        "education",
-        "skill",
-        "keyword",
-        "match",
-        "draft",
-        "preview",
-        "apply",
-        "internship",
+    "en": _render_edit_operation_guide(
+        "edit_operation_guide.en.md",
+        label_locale_order=("en", "zh"),
     ),
 }
-
-EDIT_OPERATION_GUIDE = load_prompt("edit_operation_guide.md").replace(
-    "{section_kind_values}",
-    section_kind_values(),
-).replace(
-    "{section_label_lines}",
-    section_label_lines(),
-)
+EDIT_OPERATION_GUIDE = EDIT_OPERATION_GUIDES["en"]
 
 DEFAULT_REACT_MAX_ITERATIONS = 5
 MIN_REACT_MAX_ITERATIONS = 1

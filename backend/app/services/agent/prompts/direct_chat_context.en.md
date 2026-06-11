@@ -1,1 +1,0 @@
-Current editor context JSON:

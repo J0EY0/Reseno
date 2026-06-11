@@ -15,7 +15,6 @@ from .compat import get_agent_api
 from .editing import _string_list
 from .integrations import JD_URL_PATTERN, _compact_text
 from .models import EditPlanStep, JobReference, ResumeAnalysis
-from .prompts import AGENT_INTENT_KEYWORDS
 
 
 def _current_prompt(request: AgentChatRequest) -> str:
@@ -79,23 +78,6 @@ def _agent_file_context(files: list[dict[str, Any]]) -> list[dict[str, str]]:
         )
 
     return file_context
-
-
-def _should_use_agent_tools(request: AgentChatRequest) -> bool:
-    """Return whether the prompt needs the tool-backed resume agent flow."""
-
-    prompt = _current_prompt(request).lower()
-    if not prompt:
-        return False
-
-    if request.applied_actions or request.files:
-        return True
-
-    if JD_URL_PATTERN.search(prompt):
-        return True
-
-    keywords = AGENT_INTENT_KEYWORDS[request.locale]
-    return any(keyword in prompt for keyword in keywords)
 
 
 def _visible_plan_steps(request: AgentChatRequest) -> list[str]:

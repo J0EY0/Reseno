@@ -12,14 +12,9 @@ from app.services.llm_client import AgentLlmConfig, LlmToolCall
 
 from ..compat import get_agent_api
 from ..editing import _react_max_iterations
-from ..executor import (
-    AgentPlanExecutor,
-    _agent_file_context,
-    _conversation_depth,
-    _current_prompt,
-)
-from ..prompts import EDIT_OPERATION_GUIDE, SYSTEM_PROMPTS
+from ..executor import AgentPlanExecutor
 from ..tools import AGENT_TOOL_SCHEMAS, AgentToolRunner, running_model_tool
+from .messages import build_agent_messages
 
 
 @dataclass(frozen=True)
@@ -32,39 +27,6 @@ class AgentToolLoopEvent:
     edits: list[AgentResumeEditSuggestion] | None = None
     runner: "AgentToolRunner | None" = None
     terminal: bool = False
-
-
-def _agent_tool_messages(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> list[dict[str, Any]]:
-    """Build the prompt where the model decides which tools to call."""
-
-    locale_name = "Chinese" if request.locale == "zh" else "English"
-    system_parts = [
-        SYSTEM_PROMPTS[request.locale],
-        EDIT_OPERATION_GUIDE,
-    ]
-    if config.system_prompt.strip():
-        system_parts.append(config.system_prompt.strip())
-
-    user_payload = {
-        "responseLanguage": locale_name,
-        "userPrompt": _current_prompt(request),
-        "jobBrief": request.job_brief,
-        "files": _agent_file_context(request.files),
-        "keywordMatch": request.keyword_match,
-        "resume": request.resume,
-        "conversationDepth": _conversation_depth(request),
-    }
-
-    return [
-        {"role": "system", "content": "\n\n".join(system_parts)},
-        {
-            "role": "user",
-            "content": json.dumps(user_payload, ensure_ascii=False),
-        },
-    ]
 
 
 def _tool_call_assistant_message(
@@ -124,7 +86,7 @@ def iter_agent_tool_call_loop(
 
     executor = AgentPlanExecutor(request)
     runner = AgentToolRunner(executor)
-    messages = _agent_tool_messages(request, config)
+    messages = build_agent_messages(request, config, mode="tools")
     max_iterations = _react_max_iterations(request)
 
     for _ in range(max_iterations):

@@ -10,7 +10,7 @@ from app.db.connection import connect
 from app.schemas.exports import ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchResult
 from app.services.agent.editing.operations import _model_edit_suggestions
-from app.services.agent.prompts import EDIT_OPERATION_GUIDE
+from app.services.agent.prompts import EDIT_OPERATION_GUIDE, EDIT_OPERATION_GUIDES
 from app.services.agent.section_registry import (
     SECTION_DEFAULT_LAYOUTS,
     SECTION_KIND_ENUM,
@@ -1412,8 +1412,13 @@ def test_agent_section_registry_drives_schema_and_prompt() -> None:
         f"Allowed section_type values are: {', '.join(SECTION_KIND_ENUM)}."
         in EDIT_OPERATION_GUIDE
     )
+    assert (
+        f"允许的 section_type 值是：{', '.join(SECTION_KIND_ENUM)}。"
+        in EDIT_OPERATION_GUIDES["zh"]
+    )
     for kind in SECTION_KIND_ENUM:
         assert f"- {kind}:" in EDIT_OPERATION_GUIDE
+        assert f"- {kind}:" in EDIT_OPERATION_GUIDES["zh"]
 
 
 def test_agent_section_registry_matches_local_contract() -> None:
@@ -1464,14 +1469,17 @@ def test_agent_chat_accepts_other_section_kind() -> None:
     assert section["items"][0]["title"] == "开源贡献"
 
 
-def test_agent_chat_direct_message_does_not_return_tools(
+def test_agent_chat_plain_message_does_not_return_tools(
     client: TestClient,
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: "你好，我可以回答简历相关问题。",
+        "app.services.agent.complete_chat_tool_call",
+        lambda *_: LlmToolCallResponse(
+            content="你好，我可以回答简历相关问题。",
+            tool_calls=[],
+        ),
     )
 
     response = client.post(
@@ -1510,7 +1518,10 @@ def test_agent_model_error_does_not_return_llm_tool(
     def raise_provider_error(*_: object) -> str:
         raise LlmRequestError("provider unavailable")
 
-    monkeypatch.setattr("app.services.agent.complete_chat", raise_provider_error)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        raise_provider_error,
+    )
 
     response = client.post(
         "/api/agent/chat",
@@ -2163,18 +2174,18 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     ]
 
 
-def test_agent_chat_streams_direct_model_tokens(
+def test_agent_chat_streams_plain_model_tokens(
     client: TestClient,
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="reasoning", delta="先确认用户意图。")
-        yield LlmStreamDelta(kind="text", delta="你好")
-        yield LlmStreamDelta(kind="text", delta="，我可以帮你看简历。")
-
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        lambda *_: LlmToolCallResponse(
+            content="你好，我可以帮你看简历。",
+            tool_calls=[],
+        ),
+    )
 
     with client.stream(
         "POST",
@@ -2200,10 +2211,8 @@ def test_agent_chat_streams_direct_model_tokens(
 
     assert response.status_code == 200
     assert "正在等待模型返回。" not in body
-    assert "event: reasoning_delta" in body
     assert "event: text_delta" in body
     assert "你好，我可以帮你看简历。" in body
-    assert "先确认用户意图。" in body
     assert "event: tools" not in body
 
 
