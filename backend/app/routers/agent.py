@@ -1,17 +1,20 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from contextlib import closing
 
-from fastapi import APIRouter, Header, HTTPException, status
+import anyio
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.db.connection import connect
 from app.schemas.agent import (
+    AgentChatMessage,
     AgentChatRequest,
     AgentChatResponse,
     AgentSessionResponse,
 )
 from app.schemas.common import APP_MESSAGE_BAD_REQUEST, ApiResponse, ok_response
-from app.services.agent import build_agent_message, stream_agent_response
+from app.services.agent import build_agent_message
+from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import (
     append_agent_exchange,
     is_valid_resume_id,
@@ -19,6 +22,24 @@ from app.services.agent_sessions import (
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+
+def _build_and_store_message(request: AgentChatRequest) -> AgentChatMessage:
+    """Build and persist one non-streaming assistant message."""
+
+    with closing(connect()) as conn:
+        message = build_agent_message(request, conn)
+        append_agent_exchange(conn, request, message)
+
+    return message
+
+
+async def _close_async_iterator(iterator: AsyncIterator[str]) -> None:
+    """Close an async generator-like iterator when the client aborts the stream."""
+
+    close = getattr(iterator, "aclose", None)
+    if callable(close):
+        await close()
 
 
 @router.get(
@@ -41,7 +62,8 @@ def get_agent_resume_session(resume_id: str) -> ApiResponse[AgentSessionResponse
 
 
 @router.post("/chat", response_model=ApiResponse[AgentChatResponse])
-def post_agent_chat(
+async def post_agent_chat(
+    http_request: Request,
     request: AgentChatRequest,
     accept: str | None = Header(default=None),
 ) -> ApiResponse[AgentChatResponse] | StreamingResponse:
@@ -54,23 +76,30 @@ def post_agent_chat(
         )
 
     if request.stream and accept and "text/event-stream" in accept.lower():
-        def event_stream() -> Iterator[str]:
+        async def event_stream() -> AsyncIterator[str]:
             """Open DB resources for the lifetime of the streaming response."""
 
             with closing(connect()) as conn:
-                yield from stream_agent_response(
+                iterator = async_stream_agent_response(
                     request,
                     conn,
                     lambda message: append_agent_exchange(conn, request, message),
                 )
+                try:
+                    async for chunk in iterator:
+                        if await http_request.is_disconnected():
+                            break
+                        yield chunk
+                        if await http_request.is_disconnected():
+                            break
+                finally:
+                    await _close_async_iterator(iterator)
 
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
         )
 
-    with closing(connect()) as conn:
-        message = build_agent_message(request, conn)
-        append_agent_exchange(conn, request, message)
+    message = await anyio.to_thread.run_sync(_build_and_store_message, request)
 
     return ok_response(AgentChatResponse(message=message))

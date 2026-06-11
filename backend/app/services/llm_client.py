@@ -1,6 +1,7 @@
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from inspect import isawaitable
 from sqlite3 import Connection
 from typing import Any, Literal
 
@@ -9,6 +10,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -210,6 +212,28 @@ def _client(config: AgentLlmConfig) -> OpenAI:
     )
 
 
+def _async_client(config: AgentLlmConfig) -> AsyncOpenAI:
+    """Build an async SDK client for one request-scoped model config."""
+
+    return AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=_openai_base_url(config.base_url),
+        timeout=max(5, config.timeout_seconds),
+    )
+
+
+async def _close_async_stream(stream: object) -> None:
+    """Close an SDK stream whether close is sync or async."""
+
+    close = getattr(stream, "close", None)
+    if not callable(close):
+        return
+
+    close_result = close()
+    if isawaitable(close_result):
+        await close_result
+
+
 def complete_chat(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
@@ -218,6 +242,37 @@ def complete_chat(
 
     try:
         response = _client(config).chat.completions.create(
+            **_chat_completion_params(config, messages, stream=False),
+        )
+    except APIStatusError as exc:
+        raise LlmRequestError(_provider_error_excerpt(exc)) from exc
+    except APITimeoutError as exc:
+        raise LlmRequestError("Model provider request timed out.") from exc
+    except APIConnectionError as exc:
+        raise LlmRequestError(f"Model provider request failed: {exc}") from exc
+    except APIError as exc:
+        raise LlmRequestError(
+            f"Model provider request failed: {exc}",
+        ) from exc
+
+    if not response.choices:
+        raise LlmRequestError("Model provider returned an empty response.")
+
+    content = response.choices[0].message.content
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    raise LlmRequestError("Model provider returned an empty response.")
+
+
+async def async_complete_chat(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+) -> str:
+    """Call an OpenAI-compatible chat completion endpoint asynchronously."""
+
+    try:
+        response = await _async_client(config).chat.completions.create(
             **_chat_completion_params(config, messages, stream=False),
         )
     except APIStatusError as exc:
@@ -263,6 +318,7 @@ def complete_chat_stream(
 ) -> Iterator[LlmStreamDelta]:
     """Stream an OpenAI-compatible chat completion as provider deltas."""
 
+    stream = None
     try:
         stream = _client(config).chat.completions.create(
             **_chat_completion_params(config, messages, stream=True),
@@ -289,6 +345,48 @@ def complete_chat_stream(
         raise LlmRequestError(
             f"Model provider request failed: {exc}",
         ) from exc
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
+async def async_complete_chat_stream(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+):
+    """Stream an OpenAI-compatible chat completion asynchronously."""
+
+    stream = None
+    try:
+        stream = await _async_client(config).chat.completions.create(
+            **_chat_completion_params(config, messages, stream=True),
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+            reasoning = _delta_text(delta, ("reasoning_content", "reasoning"))
+            if reasoning:
+                yield LlmStreamDelta(kind="reasoning", delta=reasoning)
+
+            content = _delta_text(delta, ("content",))
+            if content:
+                yield LlmStreamDelta(kind="text", delta=content)
+    except APIStatusError as exc:
+        raise LlmRequestError(_provider_error_excerpt(exc)) from exc
+    except APITimeoutError as exc:
+        raise LlmRequestError("Model provider request timed out.") from exc
+    except APIConnectionError as exc:
+        raise LlmRequestError(f"Model provider request failed: {exc}") from exc
+    except APIError as exc:
+        raise LlmRequestError(
+            f"Model provider request failed: {exc}",
+        ) from exc
+    finally:
+        if stream is not None:
+            await _close_async_stream(stream)
 
 
 def _parsed_tool_arguments(raw_arguments: str) -> dict[str, Any]:
@@ -327,6 +425,81 @@ def complete_chat_tool_call(
         params.pop("parallel_tool_calls", None)
         try:
             response = _client(config).chat.completions.create(**params)
+        except APIStatusError as fallback_exc:
+            raise LlmRequestError(
+                _provider_error_excerpt(fallback_exc),
+            ) from fallback_exc
+        except APITimeoutError as fallback_exc:
+            raise LlmRequestError("Model provider request timed out.") from fallback_exc
+        except APIConnectionError as fallback_exc:
+            raise LlmRequestError(
+                f"Model provider request failed: {fallback_exc}",
+            ) from fallback_exc
+        except APIError as fallback_exc:
+            raise LlmRequestError(
+                f"Model provider request failed: {fallback_exc}",
+            ) from fallback_exc
+    except APITimeoutError as exc:
+        raise LlmRequestError("Model provider request timed out.") from exc
+    except APIConnectionError as exc:
+        raise LlmRequestError(f"Model provider request failed: {exc}") from exc
+    except APIError as exc:
+        raise LlmRequestError(
+            f"Model provider request failed: {exc}",
+        ) from exc
+
+    if not response.choices:
+        raise LlmRequestError("Model provider returned an empty response.")
+
+    message = response.choices[0].message
+    content = message.content if isinstance(message.content, str) else ""
+    reasoning = _delta_text(message, ("reasoning_content", "reasoning"))
+    tool_calls: list[LlmToolCall] = []
+    for tool_call in message.tool_calls or []:
+        function = getattr(tool_call, "function", None)
+        name = getattr(function, "name", "")
+        raw_arguments = getattr(function, "arguments", "") or ""
+        if not name:
+            continue
+
+        tool_calls.append(
+            LlmToolCall(
+                id=tool_call.id,
+                name=name,
+                arguments=_parsed_tool_arguments(raw_arguments),
+                raw_arguments=raw_arguments,
+            ),
+        )
+
+    return LlmToolCallResponse(
+        content=content.strip(),
+        tool_calls=tool_calls,
+        reasoning=reasoning,
+    )
+
+
+async def async_complete_chat_tool_call(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> LlmToolCallResponse:
+    """Ask the model to choose tools through the async SDK."""
+
+    params = {
+        **_chat_completion_params(config, messages, stream=False),
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    try:
+        response = await _async_client(config).chat.completions.create(**params)
+    except APIStatusError as exc:
+        if not _unsupported_parallel_tool_calls(exc):
+            raise LlmRequestError(_provider_error_excerpt(exc)) from exc
+
+        params.pop("parallel_tool_calls", None)
+        try:
+            response = await _async_client(config).chat.completions.create(**params)
         except APIStatusError as fallback_exc:
             raise LlmRequestError(
                 _provider_error_excerpt(fallback_exc),

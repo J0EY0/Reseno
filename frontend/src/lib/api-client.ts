@@ -145,6 +145,15 @@ export function isApiErrorToastShown(error: unknown) {
   return isApiErrorNotified(error);
 }
 
+export function isAbortError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "name" in error &&
+      error.name === "AbortError",
+  );
+}
+
 function notifyApiError(message: string) {
   if (typeof window === "undefined") {
     return;
@@ -375,6 +384,10 @@ export async function fetchApiResource(url: string, init: RequestInit = {}) {
       headers: getAuthHeaders({}, init.headers),
     });
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
     if (isApiErrorNotified(error)) {
       throw error;
     }

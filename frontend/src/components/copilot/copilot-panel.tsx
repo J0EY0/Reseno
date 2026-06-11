@@ -91,7 +91,7 @@ import {
   getModelProviderMeta,
   inferModelProviderId,
 } from "@/lib/model-providers";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { createId, getKeywordMatch } from "@/lib/resume";
 import { cn } from "@/lib/utils";
 import type {
@@ -1041,6 +1041,8 @@ export function CopilotPanel({
   const [isResponding, setIsResponding] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const replyTimerRef = useRef<number | null>(null);
+  const activeRequestAbortRef = useRef<AbortController | null>(null);
+  const streamingMessageRef = useRef<AgentPanelMessage | null>(null);
   const previewedEditsKeyRef = useRef<string | null>(null);
   const requestResumeRef = useRef<ResumeData>(resume);
   const selectedModel = useMemo(
@@ -1089,6 +1091,9 @@ export function CopilotPanel({
   useEffect(() => {
     let cancelled = false;
 
+    activeRequestAbortRef.current?.abort();
+    activeRequestAbortRef.current = null;
+
     if (replyTimerRef.current) {
       window.clearTimeout(replyTimerRef.current);
       replyTimerRef.current = null;
@@ -1126,10 +1131,15 @@ export function CopilotPanel({
   }, [resumeId, t.agentTransientModelStatusTexts]);
 
   useEffect(() => {
+    streamingMessageRef.current = streamingMessage;
+  }, [streamingMessage]);
+
+  useEffect(() => {
     return () => {
       if (replyTimerRef.current) {
         window.clearTimeout(replyTimerRef.current);
       }
+      activeRequestAbortRef.current?.abort();
     };
   }, []);
 
@@ -1169,6 +1179,30 @@ export function CopilotPanel({
     previewedEditsKeyRef.current = key;
     onPreviewAgentEdits(edits, requestResumeRef.current);
   }
+
+  const stopResponding = useCallback(() => {
+    if (replyTimerRef.current) {
+      window.clearTimeout(replyTimerRef.current);
+      replyTimerRef.current = null;
+    }
+
+    activeRequestAbortRef.current?.abort();
+    activeRequestAbortRef.current = null;
+
+    const partialMessage = streamingMessageRef.current;
+    if (partialMessage && hasAssistantRenderableContent(partialMessage)) {
+      setMessages((currentMessages) => {
+        if (currentMessages.some((message) => message.id === partialMessage.id)) {
+          return currentMessages;
+        }
+
+        return [...currentMessages, partialMessage];
+      });
+    }
+
+    setStreamingMessage(null);
+    setIsResponding(false);
+  }, []);
 
   async function sendPrompt(text: string, files: AgentChatAttachment[] = []) {
     const prompt = text.trim();
@@ -1212,6 +1246,10 @@ export function CopilotPanel({
 
     replyTimerRef.current = window.setTimeout(() => {
       void (async () => {
+        replyTimerRef.current = null;
+        const abortController = new AbortController();
+        activeRequestAbortRef.current = abortController;
+
         try {
           const response = await sendAgentChatMessage(
             {
@@ -1235,6 +1273,10 @@ export function CopilotPanel({
             },
             {
               onMessage: (streamedMessage) => {
+                if (abortController.signal.aborted) {
+                  return;
+                }
+
                 const panelMessage = toAssistantPanelMessage(
                   streamedMessage,
                   t.agentTransientModelStatusTexts,
@@ -1243,8 +1285,13 @@ export function CopilotPanel({
                 syncPreviewEdits(panelMessage.response?.edits);
                 setStreamingMessage(panelMessage);
               },
+              signal: abortController.signal,
             },
           );
+
+          if (abortController.signal.aborted) {
+            return;
+          }
 
           syncPreviewEdits(response.message.edits);
           setMessages([
@@ -1255,6 +1302,10 @@ export function CopilotPanel({
             ),
           ]);
         } catch (error) {
+          if (isAbortError(error)) {
+            return;
+          }
+
           console.error("Failed to send agent chat message.", error);
           if (!isApiErrorToastShown(error)) {
             toast.error(t.agentRequestFailed, {
@@ -1262,6 +1313,9 @@ export function CopilotPanel({
             });
           }
         } finally {
+          if (activeRequestAbortRef.current === abortController) {
+            activeRequestAbortRef.current = null;
+          }
           setIsResponding(false);
           setStreamingMessage(null);
           replyTimerRef.current = null;
@@ -1619,6 +1673,7 @@ export function CopilotPanel({
                           <PromptInputSubmit
                             status={isResponding ? "streaming" : "ready"}
                             disabled={!hasConfiguredModel}
+                            onStop={stopResponding}
                             className="ml-3 h-8 min-w-10 shrink-0 rounded-[14px] bg-foreground px-3 text-background shadow-none transition-none hover:!bg-foreground hover:!text-background disabled:cursor-not-allowed"
                           />
                         </PromptInputFooter>

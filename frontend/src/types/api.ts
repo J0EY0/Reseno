@@ -237,6 +237,34 @@ export type AgentChatStreamEvent =
       message: Partial<Pick<AgentChatMessage, "text" | "timeline">>;
     }
   | {
+      type: "suggestions";
+      message: Partial<Pick<AgentChatMessage, "suggestions">>;
+    }
+  | {
+      type: "knowledge";
+      message: Partial<Pick<AgentChatMessage, "knowledge">>;
+    }
+  | {
+      type: "tools";
+      message: Partial<Pick<AgentChatMessage, "text" | "tools" | "timeline">>;
+    }
+  | {
+      type: "sources";
+      message: Partial<Pick<AgentChatMessage, "sources">>;
+    }
+  | {
+      type: "edits";
+      message: Partial<Pick<AgentChatMessage, "edits">>;
+    }
+  | {
+      type: "quickReplies";
+      message: Partial<Pick<AgentChatMessage, "quickReplies">>;
+    }
+  | {
+      type: "actions";
+      message: Partial<Pick<AgentChatMessage, "actions">>;
+    }
+  | {
       type: "message_done";
       message: AgentChatMessage;
     }
