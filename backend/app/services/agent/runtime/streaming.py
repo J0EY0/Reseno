@@ -233,8 +233,10 @@ def build_agent_message(
     draft: AgentChatMessage | None = None
     try:
         runner = run_agent_tool_call_loop(request, config)
-        if runner.tools:
+        if runner.tools or runner.finish_status:
             draft = runner.build_message()
+        if draft and runner.finish_status and not runner.tools:
+            return draft
         if runner.terminal_text.strip():
             terminal_text = runner.terminal_text.strip()
             if draft:
@@ -295,10 +297,16 @@ def _message_delta_event(event_name: str, **fields: object) -> str:
     )
 
 
-_STREAM_DONE = object()
+class _StreamDone:
+    """Sentinel used when a sync stream is exhausted."""
 
 
-def _next_stream_delta(iterator: Iterator[LlmStreamDelta]) -> LlmStreamDelta | object:
+_STREAM_DONE = _StreamDone()
+
+
+def _next_stream_delta(
+    iterator: Iterator[LlmStreamDelta],
+) -> LlmStreamDelta | _StreamDone:
     """Return the next sync stream delta or a sentinel."""
 
     try:
@@ -319,7 +327,7 @@ async def _complete_chat_stream_deltas(
         iterator = iter(sync_stream(config, messages))
         while True:
             delta = await anyio.to_thread.run_sync(_next_stream_delta, iterator)
-            if delta is _STREAM_DONE:
+            if isinstance(delta, _StreamDone):
                 break
             yield delta
         return
@@ -545,8 +553,8 @@ def stream_agent_response(
                         yield _text_delta(visible_text)
                     else:
                         separator = "\n\n" if raw_parts else ""
-                        delta = f"{separator}{visible_text}"
-                        raw_parts.append(delta)
+                        visible_delta = f"{separator}{visible_text}"
+                        raw_parts.append(visible_delta)
                         _append_timeline_text(timeline_parts, visible_text)
                         yield _message_delta_event(
                             "timeline",
@@ -590,8 +598,26 @@ def stream_agent_response(
             if event.kind == "done":
                 runner = event.runner
 
-        if runner and runner.tools:
+        if runner and (runner.tools or runner.finish_status):
             draft = runner.build_message(message_id=message_id)
+
+        if draft and runner and runner.finish_status and not runner.tools:
+            yield _sse_event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "message": _message_delta_payload(draft),
+                },
+            )
+            yield _sse_event(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": draft.model_dump(mode="json", by_alias=True),
+                },
+            )
+            on_complete_message(on_complete, draft)
+            return
 
         if terminal_loop_text:
             raw_response = "".join(raw_parts).strip()
@@ -775,8 +801,8 @@ async def async_stream_agent_response(
                         yield _text_delta(visible_text)
                     else:
                         separator = "\n\n" if raw_parts else ""
-                        delta = f"{separator}{visible_text}"
-                        raw_parts.append(delta)
+                        visible_delta = f"{separator}{visible_text}"
+                        raw_parts.append(visible_delta)
                         _append_timeline_text(timeline_parts, visible_text)
                         yield _message_delta_event(
                             "timeline",
@@ -820,8 +846,26 @@ async def async_stream_agent_response(
             if event.kind == "done":
                 runner = event.runner
 
-        if runner and runner.tools:
+        if runner and (runner.tools or runner.finish_status):
             draft = runner.build_message(message_id=message_id)
+
+        if draft and runner and runner.finish_status and not runner.tools:
+            yield _sse_event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "message": _message_delta_payload(draft),
+                },
+            )
+            yield _sse_event(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": draft.model_dump(mode="json", by_alias=True),
+                },
+            )
+            on_complete_message(on_complete, draft)
+            return
 
         if terminal_loop_text:
             raw_response = "".join(raw_parts).strip()

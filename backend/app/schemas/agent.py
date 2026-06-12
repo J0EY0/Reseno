@@ -2,6 +2,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
+AgentToolState = Literal[
+    "input-streaming",
+    "input-available",
+    "output-available",
+    "output-error",
+    "approval-requested",
+    "approval-responded",
+    "output-denied",
+]
+
 
 class AgentConversationItem(BaseModel):
     """One prior message in an agent conversation."""
@@ -69,15 +80,7 @@ class AgentToolInvocation(BaseModel):
     id: str
     type: str
     title: str
-    state: Literal[
-        "input-streaming",
-        "input-available",
-        "output-available",
-        "output-error",
-        "approval-requested",
-        "approval-responded",
-        "output-denied",
-    ]
+    state: AgentToolState
     input: dict[str, Any] | list[Any] | str | int | float | bool | None = None
     output: dict[str, Any] | list[Any] | str | int | float | bool | None = None
     error_text: str | None = Field(default=None, alias="errorText")
@@ -127,9 +130,7 @@ class AgentChatMessage(BaseModel):
     sources: list[AgentSource] = Field(default_factory=list)
     edits: list[AgentResumeEditSuggestion] = Field(default_factory=list)
     quick_replies: list[str] = Field(default_factory=list, alias="quickReplies")
-    actions: list[Literal["summary", "bullet", "keywords", "plan", "execute"]] = Field(
-        default_factory=list,
-    )
+    actions: list[AgentAction] = Field(default_factory=list)
 
 
 class AgentChatResponse(BaseModel):

@@ -518,8 +518,9 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
     if operation_type == "update_item":
         patch = operation.get("patch", {})
         if isinstance(patch, dict):
-            if isinstance(patch.get("description"), str):
-                return patch["description"]
+            description = patch.get("description")
+            if isinstance(description, str):
+                return description
             highlights = _string_list(patch.get("highlights"))
             if highlights:
                 return " / ".join(highlights[:2])
@@ -541,24 +542,137 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
     return None
 
 
-def _model_edit_suggestions(
+def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
+    """Return a compact reason for a rejected model operation."""
+
+    if not isinstance(operation, dict):
+        return "Missing operation object."
+
+    operation_type = _model_string(operation.get("type"))
+    if not operation_type:
+        return "Missing operation type."
+
+    supported_types = {
+        "replace_field",
+        "update_item",
+        "insert_item",
+        "update_section",
+        "insert_section",
+        "delete_item",
+        "delete_section",
+        "reorder_sections",
+        "reorder_items",
+    }
+    if operation_type not in supported_types:
+        return f"Unsupported operation type: {operation_type}."
+
+    if operation_type == "replace_field":
+        path = _model_string(operation.get("path"))
+        if not path.startswith("basic.") or path[6:] not in BASIC_EDIT_FIELDS:
+            return "replace_field requires path basic.<writableField>."
+        if not isinstance(operation.get("value"), str):
+            return "replace_field requires a string value."
+
+    if operation_type == "insert_section" and not _normalized_section(
+        operation.get("section"),
+    ):
+        return "insert_section requires a valid section object."
+
+    if operation_type == "update_section":
+        section_id = _model_string(operation.get("sectionId"))
+        if not section_id or not _find_resume_section(resume, section_id):
+            return "update_section requires an existing sectionId."
+        if not _safe_section_patch(operation.get("patch")):
+            return "update_section requires at least one writable section patch field."
+
+    if operation_type == "delete_section":
+        section_id = _model_string(operation.get("sectionId"))
+        if not section_id or not _find_resume_section(resume, section_id):
+            return "delete_section requires an existing sectionId."
+
+    if operation_type == "reorder_sections":
+        section_ids = _string_list(operation.get("sectionIds"))
+        valid_ids = {
+            str(section.get("id"))
+            for section in _resume_sections(resume)
+            if isinstance(section.get("id"), str)
+        }
+        if not [section_id for section_id in section_ids if section_id in valid_ids]:
+            return "reorder_sections requires existing sectionIds."
+
+    if operation_type == "insert_item":
+        section_id = _model_string(operation.get("sectionId"))
+        if not section_id or not _find_resume_section(resume, section_id):
+            return "insert_item requires an existing sectionId."
+        if not _normalized_item(operation.get("item")):
+            return "insert_item requires a valid item object."
+
+    if operation_type in {"update_item", "delete_item", "reorder_items"}:
+        section_id = _model_string(operation.get("sectionId"))
+        section = _find_resume_section(resume, section_id)
+        if not section:
+            return f"{operation_type} requires an existing sectionId."
+
+        if operation_type == "reorder_items":
+            item_ids = _string_list(operation.get("itemIds"))
+            valid_item_ids = {
+                str(item.get("id"))
+                for item in section.get("items", [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            if not [item_id for item_id in item_ids if item_id in valid_item_ids]:
+                return "reorder_items requires existing itemIds in the target section."
+            return "Operation was rejected by validation."
+
+        item_id = _model_string(operation.get("itemId"))
+        item = _find_resume_item(section, item_id)
+        if not item_id or not item:
+            return f"{operation_type} requires an existing itemId."
+        if operation_type == "update_item" and not _safe_item_patch(
+            operation.get("patch"),
+            base_item=item if isinstance(item, dict) else None,
+        ):
+            return "update_item requires at least one writable item patch field."
+
+    return "Operation was rejected by validation."
+
+
+def _model_edit_suggestions_with_diagnostics(
     resume: dict[str, Any],
     value: object,
     *,
     locale: str,
-) -> list[AgentResumeEditSuggestion]:
-    """Convert model-supplied edits into validated frontend operations."""
+) -> tuple[list[AgentResumeEditSuggestion], list[dict[str, Any]]]:
+    """Convert model edits and return rejected entries for tool observations."""
 
     if not isinstance(value, list):
-        return []
+        return [], []
 
     edits: list[AgentResumeEditSuggestion] = []
+    rejected: list[dict[str, Any]] = []
     for index, item in enumerate(value, start=1):
         if not isinstance(item, dict):
+            rejected.append(
+                {
+                    "index": index,
+                    "title": f"Edit {index}",
+                    "reason": "Edit entry must be an object.",
+                },
+            )
             continue
 
         operation = _normalize_edit_operation(resume, item.get("operation"))
         if not operation:
+            rejected.append(
+                {
+                    "index": index,
+                    "title": _model_string(item.get("title")) or f"Edit {index}",
+                    "reason": _invalid_operation_reason(
+                        resume,
+                        item.get("operation"),
+                    ),
+                },
+            )
             continue
 
         title = _model_string(item.get("title")) or (
@@ -586,6 +700,22 @@ def _model_edit_suggestions(
             ),
         )
 
+    return edits, rejected
+
+
+def _model_edit_suggestions(
+    resume: dict[str, Any],
+    value: object,
+    *,
+    locale: str,
+) -> list[AgentResumeEditSuggestion]:
+    """Convert model-supplied edits into validated frontend operations."""
+
+    edits, _rejected = _model_edit_suggestions_with_diagnostics(
+        resume,
+        value,
+        locale=locale,
+    )
     return edits
 
 

@@ -90,7 +90,7 @@ def tool_call(
     name: str,
     arguments: dict | None = None,
 ) -> LlmToolCall:
-    raw_arguments = "{}" if arguments is None else "{}"
+    raw_arguments = json.dumps(arguments or {}, ensure_ascii=False)
     return LlmToolCall(
         id=call_id,
         name=name,
@@ -1421,6 +1421,43 @@ def test_agent_section_registry_drives_schema_and_prompt() -> None:
         assert f"- {kind}:" in EDIT_OPERATION_GUIDES["zh"]
 
 
+def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
+    variants = tool_registry.OPERATION_SCHEMA["oneOf"]
+    by_type = {
+        variant["properties"]["type"]["enum"][0]: variant for variant in variants
+    }
+
+    assert set(by_type) == {
+        "replace_field",
+        "update_item",
+        "insert_item",
+        "update_section",
+        "insert_section",
+        "delete_item",
+        "delete_section",
+        "reorder_sections",
+        "reorder_items",
+    }
+    assert set(by_type["replace_field"]["required"]) == {"type", "path", "value"}
+    assert set(by_type["insert_section"]["required"]) == {"type", "section"}
+    assert set(by_type["update_section"]["required"]) == {
+        "type",
+        "sectionId",
+        "patch",
+    }
+    assert set(by_type["update_item"]["required"]) == {
+        "type",
+        "sectionId",
+        "itemId",
+        "patch",
+    }
+    assert set(by_type["reorder_items"]["required"]) == {
+        "type",
+        "sectionId",
+        "itemIds",
+    }
+
+
 def test_agent_section_registry_matches_local_contract() -> None:
     assert [section["kind"] for section in SECTION_REGISTRY] == SECTION_KIND_ENUM
     assert {
@@ -1507,6 +1544,156 @@ def test_agent_chat_plain_message_does_not_return_tools(
     assert message["tools"] == []
     assert message["edits"] == []
     assert message["actions"] == []
+
+
+def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def unexpected_final_completion(*_: object) -> str:
+        raise AssertionError("finish-only responses should not call final completion")
+
+    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "blocked",
+                        "reason": "缺少要修改的目标模块或条目。",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "prompt": "帮我修改简历",
+            "message": {"role": "user", "text": "帮我修改简历"},
+            "messages": [{"role": "user", "text": "帮我修改简历"}],
+            "conversation": [{"role": "user", "text": "帮我修改简历"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["data"]["message"]
+    assert "不能生成可靠" in message["text"]
+    assert "缺少要修改的目标模块或条目" in message["text"]
+    assert message["tools"] == []
+    assert message["edits"] == []
+
+
+def test_agent_chat_reports_invalid_model_edit_operation(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def unexpected_final_completion(*_: object) -> str:
+        raise AssertionError("terminal loop text should not call final completion")
+
+    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_responses(
+            LlmToolCallResponse(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "补充项目结果",
+                                    "target": "sections.project.items.project-1",
+                                    "reason": "用户要求补强项目。",
+                                    "operation": {
+                                        "type": "update_item",
+                                        "sectionId": "project",
+                                        "patch": {
+                                            "highlights": ["补充可验证业务结果"],
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmToolCallResponse(
+                content="需要补充 itemId 后才能继续生成可预览草稿。",
+                tool_calls=[],
+            ),
+        ),
+    )
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "prompt": "补强项目结果",
+            "message": {"role": "user", "text": "补强项目结果"},
+            "messages": [{"role": "user", "text": "补强项目结果"}],
+            "conversation": [{"role": "user", "text": "补强项目结果"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"name": "王小明", "summary": "前端开发。"},
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "layout": "timeline",
+                        "customTitle": "",
+                        "items": [
+                            {
+                                "id": "project-1",
+                                "title": "后台系统",
+                                "subtitle": "前端开发",
+                                "meta": "React",
+                                "period": "2025",
+                                "description": "",
+                                "highlights": ["负责列表页开发"],
+                            },
+                        ],
+                    },
+                ],
+            },
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["data"]["message"]
+    tool = message["tools"][0]
+    rejected_edit = tool["output"]["rejectedEdits"][0]
+    assert message["text"] == "需要补充 itemId 后才能继续生成可预览草稿。"
+    assert message["edits"] == []
+    assert tool["state"] == "output-error"
+    assert tool["output"]["rejectedEditCount"] == 1
+    assert "itemId" in rejected_edit["reason"]
+    assert "No executable edits were accepted" in tool["errorText"]
 
 
 def test_agent_model_error_does_not_return_llm_tool(
@@ -1821,6 +2008,72 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert '"quickReplies":' in body
     assert "edit_plan" in body
     assert "edit_execute" not in body
+
+
+def test_agent_chat_streams_finish_blocked_without_visible_tools(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def unexpected_stream(*_: object) -> object:
+        raise AssertionError("finish-only responses should not stream final completion")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", unexpected_stream)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "blocked",
+                        "reason": "缺少真实经历内容。",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    with client.stream(
+        "POST",
+        "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
+        json={
+            "prompt": "帮我生成项目经历",
+            "message": {"role": "user", "text": "帮我生成项目经历"},
+            "messages": [{"role": "user", "text": "帮我生成项目经历"}],
+            "conversation": [{"role": "user", "text": "帮我生成项目经历"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    message = json.loads(message_done_data)["message"]
+    assert "不能生成可靠" in message["text"]
+    assert "缺少真实经历内容" in message["text"]
+    assert message["tools"] == []
+    assert message["edits"] == []
 
 
 def test_agent_chat_streams_model_narration_between_tool_actions(

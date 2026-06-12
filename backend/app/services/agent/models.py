@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.schemas.agent import AgentToolState
+
 
 @dataclass(frozen=True)
 class JobReference:
@@ -12,7 +14,7 @@ class JobReference:
     excerpt: str
     source_title: str = ""
     source_excerpt: str = ""
-    tool_state: str = "output-available"
+    tool_state: AgentToolState = "output-available"
     tool_error: str | None = None
     result_count: int = 0
 

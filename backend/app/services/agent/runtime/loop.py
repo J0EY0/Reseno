@@ -13,6 +13,7 @@ from app.schemas.agent import (
 from app.services.llm_client import (
     AgentLlmConfig,
     LlmToolCall,
+    LlmToolCallResponse,
     async_complete_chat_tool_call,
     complete_chat_tool_call,
 )
@@ -159,7 +160,7 @@ def iter_agent_tool_call_loop(
 async def _async_tool_call_response(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
-):
+) -> LlmToolCallResponse:
     """Return a tool-call response, preserving tests that monkeypatch sync calls."""
 
     agent_api = get_agent_api()

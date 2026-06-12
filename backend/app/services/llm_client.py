@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from inspect import isawaitable
 from sqlite3 import Connection
@@ -354,7 +354,7 @@ def complete_chat_stream(
 async def async_complete_chat_stream(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
-):
+) -> AsyncIterator[LlmStreamDelta]:
     """Stream an OpenAI-compatible chat completion asynchronously."""
 
     stream = None

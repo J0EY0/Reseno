@@ -155,7 +155,7 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
 def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
     """Load one model config row with all fields needed for comparison."""
 
-    return conn.execute(
+    row = conn.execute(
         """
         SELECT
             client_id,
@@ -176,6 +176,7 @@ def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
         """,
         (client_id,),
     ).fetchone()
+    return row if isinstance(row, Row) else None
 
 
 def _merge_legacy_row_for_client_id(

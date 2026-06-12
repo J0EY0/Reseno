@@ -3,6 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.schemas.agent import (
+    AgentAction,
     AgentChatMessage,
     AgentChatRequest,
     AgentKnowledgeItem,
@@ -204,6 +205,8 @@ class AgentPlanExecutor:
         edits: list[AgentResumeEditSuggestion],
         tools: list[AgentToolInvocation],
         message_id: str | None = None,
+        finish_status: str = "",
+        finish_reason: str = "",
     ) -> AgentChatMessage:
         """Assemble the final assistant payload from executed tool outputs."""
 
@@ -214,7 +217,14 @@ class AgentPlanExecutor:
             id=message_id or f"agent-msg-{uuid4().hex[:12]}",
             role="assistant",
             tone="success" if edits else "default",
-            text=self.build_response_text(job_reference, analysis, plan, edits),
+            text=self.build_response_text(
+                job_reference,
+                analysis,
+                plan,
+                edits,
+                finish_status=finish_status,
+                finish_reason=finish_reason,
+            ),
             plan=_visible_plan_steps(self.request),
             suggestions=self.build_suggestions(job_reference, analysis),
             knowledge=knowledge,
@@ -1043,8 +1053,20 @@ class AgentPlanExecutor:
         tool_id: str | None = None,
         *,
         observations: list[dict[str, Any]] | None = None,
+        rejected_edits: list[dict[str, Any]] | None = None,
     ) -> AgentToolInvocation:
         """Return the completed draft edit execution tool invocation."""
+
+        output: dict[str, Any] = {
+            "editCount": len(edits),
+            "operationTypes": [
+                edit.operation.get("type") for edit in edits if edit.operation
+            ],
+            "observations": observations or [],
+        }
+        if rejected_edits:
+            output["rejectedEditCount"] = len(rejected_edits)
+            output["rejectedEdits"] = rejected_edits
 
         return AgentToolInvocation(
             id=tool_id or f"tool-{uuid4().hex[:8]}",
@@ -1052,13 +1074,7 @@ class AgentPlanExecutor:
             title="edit_execute",
             state="output-available",
             input={"planStepCount": len(plan)},
-            output={
-                "editCount": len(edits),
-                "operationTypes": [
-                    edit.operation.get("type") for edit in edits if edit.operation
-                ],
-                "observations": observations or [],
-            },
+            output=output,
         )
 
     def build_sources(
@@ -1213,7 +1229,7 @@ class AgentPlanExecutor:
     def build_actions(
         self,
         edits: list[AgentResumeEditSuggestion],
-    ) -> list[str]:
+    ) -> list[AgentAction]:
         """Return only actions that are valid for the generated response."""
 
         if edits:
@@ -1227,8 +1243,27 @@ class AgentPlanExecutor:
         _analysis: ResumeAnalysis,
         _plan: list[EditPlanStep],
         edits: list[AgentResumeEditSuggestion],
+        *,
+        finish_status: str = "",
+        finish_reason: str = "",
     ) -> str:
         """Build the assistant message body shown in the conversation."""
+
+        if finish_status == "blocked":
+            reason = finish_reason.strip()
+            if self.is_zh:
+                detail = f"原因：{reason}" if reason else "原因：当前信息不足。"
+                return (
+                    "我还不能生成可靠的可预览修改草稿。"
+                    f"{detail} 请补充目标字段、模块、条目或真实经历后再继续。"
+                )
+
+            detail = f"Reason: {reason}" if reason else "Reason: not enough context."
+            return (
+                "I cannot produce a reliable previewable draft yet. "
+                f"{detail} Provide the target field, section, item, or real "
+                "experience details before continuing."
+            )
 
         if not edits:
             if self.is_zh:

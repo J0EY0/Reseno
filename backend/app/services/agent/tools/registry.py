@@ -69,51 +69,123 @@ SECTION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-OPERATION_SCHEMA: dict[str, Any] = {
+ITEM_PATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "type": {
-            "type": "string",
-            "enum": [
-                "replace_field",
-                "update_item",
-                "insert_item",
-                "update_section",
-                "insert_section",
-                "delete_item",
-                "delete_section",
-                "reorder_sections",
-                "reorder_items",
-            ],
-        },
-        "path": {"type": "string"},
-        "value": {"type": "string"},
-        "sectionId": {"type": "string"},
-        "itemId": {"type": "string"},
-        "section": SECTION_SCHEMA,
-        "item": ITEM_SCHEMA,
-        "index": {"type": "integer"},
-        "patch": {
-            "type": "object",
-            "properties": {
-                "kind": {"type": "string", "enum": SECTION_KIND_ENUM},
-                "section_type": {"type": "string", "enum": SECTION_KIND_ENUM},
-                "layout": {"type": "string", "enum": ["timeline", "list"]},
-                "customTitle": {"type": "string"},
-                "title": {"type": "string"},
-                "subtitle": {"type": "string"},
-                "meta": {"type": "string"},
-                "period": {"type": "string"},
-                "description": {"type": "string"},
-                "highlights": {"type": "array", "items": {"type": "string"}},
-            },
-            "additionalProperties": False,
-        },
-        "sectionIds": {"type": "array", "items": {"type": "string"}},
-        "itemIds": {"type": "array", "items": {"type": "string"}},
+        "title": {"type": "string"},
+        "subtitle": {"type": "string"},
+        "meta": {"type": "string"},
+        "period": {"type": "string"},
+        "description": {"type": "string"},
+        "highlights": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["type"],
+    "minProperties": 1,
     "additionalProperties": False,
+}
+
+SECTION_PATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": SECTION_KIND_ENUM},
+        "section_type": {"type": "string", "enum": SECTION_KIND_ENUM},
+        "layout": {"type": "string", "enum": ["timeline", "list"]},
+        "customTitle": {"type": "string"},
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
+
+
+def _operation_variant(
+    operation_type: str,
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    """Return one operation-specific schema branch."""
+
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": [operation_type]},
+            **properties,
+        },
+        "required": ["type", *required],
+        "additionalProperties": False,
+    }
+
+
+OPERATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "oneOf": [
+        _operation_variant(
+            "replace_field",
+            {
+                "path": {"type": "string"},
+                "value": {"type": "string"},
+            },
+            ["path", "value"],
+        ),
+        _operation_variant(
+            "insert_section",
+            {
+                "section": SECTION_SCHEMA,
+                "index": {"type": "integer"},
+            },
+            ["section"],
+        ),
+        _operation_variant(
+            "update_section",
+            {
+                "sectionId": {"type": "string"},
+                "patch": SECTION_PATCH_SCHEMA,
+            },
+            ["sectionId", "patch"],
+        ),
+        _operation_variant(
+            "delete_section",
+            {"sectionId": {"type": "string"}},
+            ["sectionId"],
+        ),
+        _operation_variant(
+            "reorder_sections",
+            {"sectionIds": {"type": "array", "items": {"type": "string"}}},
+            ["sectionIds"],
+        ),
+        _operation_variant(
+            "insert_item",
+            {
+                "sectionId": {"type": "string"},
+                "item": ITEM_SCHEMA,
+                "index": {"type": "integer"},
+            },
+            ["sectionId", "item"],
+        ),
+        _operation_variant(
+            "update_item",
+            {
+                "sectionId": {"type": "string"},
+                "itemId": {"type": "string"},
+                "patch": ITEM_PATCH_SCHEMA,
+            },
+            ["sectionId", "itemId", "patch"],
+        ),
+        _operation_variant(
+            "delete_item",
+            {
+                "sectionId": {"type": "string"},
+                "itemId": {"type": "string"},
+            },
+            ["sectionId", "itemId"],
+        ),
+        _operation_variant(
+            "reorder_items",
+            {
+                "sectionId": {"type": "string"},
+                "itemIds": {"type": "array", "items": {"type": "string"}},
+            },
+            ["sectionId", "itemIds"],
+        ),
+    ],
 }
 
 AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [

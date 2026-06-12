@@ -13,6 +13,7 @@ from ..editing import (
     _edit_observations,
     _merge_edits,
     _model_edit_suggestions,
+    _model_edit_suggestions_with_diagnostics,
     _model_plan_steps,
 )
 from ..executor import AgentPlanExecutor
@@ -146,9 +147,10 @@ class AgentToolRunner:
     def run_edit_execute(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Execute model-supplied draft edits or a previously created plan."""
 
-        model_edits = _model_edit_suggestions(
+        explicit_edits_value = tool_call.arguments.get("edits")
+        model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
-            tool_call.arguments.get("edits"),
+            explicit_edits_value,
             locale=self.executor.request.locale,
         )
         if model_edits:
@@ -165,6 +167,25 @@ class AgentToolRunner:
                 self.edits,
                 tool_call.id,
                 observations=observations,
+                rejected_edits=rejected_edits,
+            )
+
+        if isinstance(explicit_edits_value, list) and rejected_edits:
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type="tool-edit_execute",
+                title="edit_execute",
+                state="output-error",
+                input=tool_call.arguments,
+                output={
+                    "editCount": 0,
+                    "rejectedEditCount": len(rejected_edits),
+                    "rejectedEdits": rejected_edits,
+                },
+                errorText=(
+                    "No executable edits were accepted. Check required fields "
+                    "such as sectionId, itemId, path, patch, and operation type."
+                ),
             )
 
         if self.planned_edits:
@@ -274,6 +295,8 @@ class AgentToolRunner:
             edits=self.edits,
             tools=self.tools,
             message_id=message_id,
+            finish_status=self.finish_status,
+            finish_reason=self.finish_reason,
         )
 
 

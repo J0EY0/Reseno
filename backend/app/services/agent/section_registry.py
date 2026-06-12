@@ -31,14 +31,17 @@ def _load_section_registry() -> list[dict[str, Any]]:
     return sections
 
 
-SECTION_REGISTRY = _load_section_registry()
-SECTION_KIND_ENUM = [section["kind"] for section in SECTION_REGISTRY]
-SECTION_LABELS = {section["kind"]: section["labels"] for section in SECTION_REGISTRY}
-SECTION_DEFAULT_LAYOUTS = {
-    section["kind"]: section["defaultLayout"] for section in SECTION_REGISTRY
+SECTION_REGISTRY: list[dict[str, Any]] = _load_section_registry()
+SECTION_KIND_ENUM: list[str] = [str(section["kind"]) for section in SECTION_REGISTRY]
+SECTION_LABELS: dict[str, dict[str, str]] = {
+    str(section["kind"]): section["labels"] for section in SECTION_REGISTRY
 }
-SECTION_KIND_ALIASES = {
-    alias: section["kind"]
+SECTION_DEFAULT_LAYOUTS: dict[str, str] = {
+    str(section["kind"]): str(section["defaultLayout"])
+    for section in SECTION_REGISTRY
+}
+SECTION_KIND_ALIASES: dict[str, str] = {
+    alias: str(section["kind"])
     for section in SECTION_REGISTRY
     for alias in section.get("aliases", [])
     if isinstance(alias, str) and alias
