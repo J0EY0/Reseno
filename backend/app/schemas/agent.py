@@ -27,6 +27,22 @@ class AgentConversationItem(BaseModel):
     response: dict[str, Any] | None = None
 
 
+class AgentDraftState(BaseModel):
+    """Current frontend draft state carried into the agent loop."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    status: Literal["pending", "applied", "discarded"] = "pending"
+    source_message_id: str | None = Field(default=None, alias="sourceMessageId")
+    created_at: str | None = Field(default=None, alias="createdAt")
+    updated_at: str | None = Field(default=None, alias="updatedAt")
+    resume: dict[str, Any] = Field(default_factory=dict)
+    edit_count: int = Field(default=0, alias="editCount")
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    diffs: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AgentChatRequest(BaseModel):
     """Request body for generating an agent resume-editing response."""
 
@@ -43,6 +59,7 @@ class AgentChatRequest(BaseModel):
     job_brief: str = Field(default="", alias="jobBrief")
     keyword_match: dict[str, Any] = Field(default_factory=dict, alias="keywordMatch")
     applied_actions: list[str] = Field(default_factory=list, alias="appliedActions")
+    draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
     settings: dict[str, Any] = Field(default_factory=dict)
     stream: bool = False

@@ -32,7 +32,7 @@ class AgentToolRunner:
 
     def __init__(self, executor: AgentPlanExecutor) -> None:
         self.executor = executor
-        self.draft_resume = deepcopy(executor.request.resume)
+        self.draft_resume = deepcopy(executor.resume)
         self.job_reference: JobReference | None = None
         self.analysis: ResumeAnalysis | None = None
         self.plan: list[EditPlanStep] = []

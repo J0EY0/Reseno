@@ -11,6 +11,7 @@ from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchResult
 from app.services.agent.editing.operations import _model_edit_suggestions
+from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.prompts import EDIT_OPERATION_GUIDE, EDIT_OPERATION_GUIDES
 from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent.section_registry import (
@@ -1163,6 +1164,52 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         files=[],
         locale="zh",
         resume={"basic": {"name": "王小明"}, "sections": []},
+        draftState={
+            "id": "draft-current",
+            "status": "pending",
+            "sourceMessageId": "agent-assistant-draft",
+            "resume": {
+                "basic": {"name": "王小明", "summary": "草稿简介"},
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "customTitle": "项目经历",
+                        "items": [
+                            {
+                                "id": "project-item-1",
+                                "title": "ResuMate",
+                                "subtitle": "AI 简历编辑器",
+                            },
+                        ],
+                    },
+                ],
+            },
+            "editCount": 1,
+            "edits": [
+                {
+                    "id": "edit-project-1",
+                    "title": "新增项目经历模块",
+                    "target": "sections.project",
+                    "reason": "根据用户提供的项目经历生成草稿。",
+                    "status": "executed",
+                    "operation": {
+                        "type": "insert_section",
+                        "sectionId": "project",
+                    },
+                },
+            ],
+            "diffs": [
+                {
+                    "id": "diff-project-1",
+                    "operationId": "edit-project-1",
+                    "path": "sections.project",
+                    "kind": "added",
+                    "label": "新增项目经历模块",
+                    "after": "ResuMate",
+                },
+            ],
+        },
         jobBrief="",
         keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=["execute"],
@@ -1184,11 +1231,63 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     assert context["latestDraft"]["editCount"] == 1
     assert context["latestDraft"]["edits"][0]["title"] == "新增项目经历模块"
     assert context["latestDraft"]["edits"][0]["sectionId"] == "project"
+    assert context["currentDraft"]["id"] == "draft-current"
+    assert context["currentDraft"]["status"] == "pending"
+    assert context["currentDraft"]["diffs"][0]["after"] == "ResuMate"
+    assert context["activeDraft"]["id"] == "draft-current"
+    assert payload["resume"]["sections"][0]["id"] == "project"
     assert context["appliedActions"] == ["execute"]
     assert any(
         item.get("assistantState", {}).get("editCount") == 1
         for item in context["olderSummary"]
     )
+
+
+def test_agent_executor_analyzes_pending_draft_resume() -> None:
+    request = AgentChatRequest(
+        prompt="继续修改刚才的草稿",
+        messages=[],
+        conversation=[],
+        files=[],
+        locale="zh",
+        resume={"basic": {"name": "王小明"}, "sections": []},
+        draftState={
+            "id": "draft-current",
+            "status": "pending",
+            "resume": {
+                "basic": {
+                    "name": "王小明",
+                    "summary": "草稿里的个人简介",
+                },
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "customTitle": "项目经历",
+                        "items": [
+                            {
+                                "id": "project-item-1",
+                                "title": "ResuMate",
+                                "subtitle": "AI 简历编辑器",
+                                "description": "支持草稿预览和多轮修改。",
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+        jobBrief="",
+        keywordMatch={"matched": [], "missing": [], "score": 0},
+        appliedActions=[],
+        modelConfig=None,
+        settings={},
+        stream=False,
+    )
+
+    analysis = AgentPlanExecutor(request).analyze_resume()
+
+    assert analysis.summary == "草稿里的个人简介"
+    assert [section["id"] for section in analysis.sections] == ["project"]
 
 
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:

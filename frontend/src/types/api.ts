@@ -103,6 +103,20 @@ export interface AgentConversationMessage {
   response?: Partial<AgentChatMessage>;
 }
 
+export type AgentDraftStatus = "pending" | "applied" | "discarded";
+
+export interface AgentDraftState {
+  id: string;
+  status: AgentDraftStatus;
+  sourceMessageId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  resume: ResumeData;
+  editCount: number;
+  edits: AgentResumeEditSuggestion[];
+  diffs: ResumeDraftDiff[];
+}
+
 export interface AgentChatRequest {
   resumeId?: string;
   prompt: string;
@@ -115,6 +129,7 @@ export interface AgentChatRequest {
   jobBrief: string;
   keywordMatch: KeywordMatch;
   appliedActions: string[];
+  draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
   settings: AgentSettings;
   stream?: boolean;

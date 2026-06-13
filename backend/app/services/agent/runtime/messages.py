@@ -9,6 +9,7 @@ from app.schemas.agent import (
 from app.services.llm_client import AgentLlmConfig
 
 from ..executor import (
+    _active_resume,
     _agent_file_context,
     _conversation_depth,
     _current_prompt,
@@ -91,7 +92,7 @@ def _agent_payload(
         "jobBrief": request.job_brief,
         "files": _agent_file_context(request.files),
         "keywordMatch": request.keyword_match,
-        "resume": request.resume,
+        "resume": _active_resume(request),
         "conversationDepth": _conversation_depth(request),
     }
 
@@ -138,6 +139,10 @@ def _conversation_payload(
         conversation_messages,
         token_budget=state_token_budget,
     )
+    current_draft = _current_draft_state(
+        request,
+        token_budget=state_token_budget,
+    )
     last_assistant_state = _last_assistant_state(
         conversation_messages,
         token_budget=state_token_budget,
@@ -150,6 +155,7 @@ def _conversation_payload(
         total_messages=len(exact_messages),
         exact_messages=exact_messages,
         compressed_messages=[],
+        current_draft=current_draft,
         latest_draft=latest_draft,
         last_assistant_state=last_assistant_state,
         budget_tokens=budget_tokens,
@@ -176,6 +182,7 @@ def _conversation_payload(
         budget_tokens=budget_tokens,
         exact_messages=exact_messages,
         latest_draft=latest_draft,
+        current_draft=current_draft,
         last_assistant_state=last_assistant_state,
         source_conversation=conversation_messages,
     )
@@ -188,6 +195,7 @@ def _compressed_conversation_payload(
     budget_tokens: int | None,
     exact_messages: list[dict[str, str]],
     latest_draft: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
     last_assistant_state: dict[str, Any] | None,
     source_conversation: list[Any],
 ) -> dict[str, Any]:
@@ -213,6 +221,7 @@ def _compressed_conversation_payload(
             total_messages=len(exact_messages),
             exact_messages=exact_remaining,
             compressed_messages=compressed_messages,
+            current_draft=current_draft,
             latest_draft=latest_draft,
             last_assistant_state=last_assistant_state,
             budget_tokens=budget_tokens,
@@ -238,6 +247,7 @@ def _compressed_conversation_payload(
         total_messages=len(exact_messages),
         exact_messages=exact_remaining,
         compressed_messages=compressed_messages,
+        current_draft=current_draft,
         latest_draft=latest_draft,
         last_assistant_state=last_assistant_state,
         budget_tokens=budget_tokens,
@@ -264,6 +274,7 @@ def _conversation_context(
     total_messages: int,
     exact_messages: list[dict[str, str]],
     compressed_messages: list[dict[str, Any]],
+    current_draft: dict[str, Any] | None,
     latest_draft: dict[str, Any] | None,
     last_assistant_state: dict[str, Any] | None,
     budget_tokens: int | None,
@@ -275,6 +286,8 @@ def _conversation_context(
         "exactMessageCount": len(exact_messages),
         "compressedMessageCount": len(compressed_messages),
         "olderSummary": compressed_messages,
+        "currentDraft": current_draft,
+        "activeDraft": _active_draft_state(current_draft, latest_draft),
         "latestDraft": latest_draft,
         "lastAssistantState": last_assistant_state,
         "appliedActions": request.applied_actions,
@@ -370,6 +383,41 @@ def _latest_draft_state(
     return None
 
 
+def _current_draft_state(
+    request: AgentChatRequest,
+    *,
+    token_budget: int | None,
+) -> dict[str, Any] | None:
+    draft = request.draft_state
+    if draft is None:
+        return None
+
+    return {
+        "id": draft.id,
+        "status": draft.status,
+        "sourceMessageId": draft.source_message_id,
+        "createdAt": draft.created_at,
+        "updatedAt": draft.updated_at,
+        "editCount": draft.edit_count,
+        "edits": _compact_response_edits(
+            draft.edits,
+            token_budget=token_budget,
+        ),
+        "diffs": _compact_draft_diffs(
+            draft.diffs,
+            token_budget=token_budget,
+        ),
+        "resumeOutline": _compact_resume_outline(draft.resume),
+    }
+
+
+def _active_draft_state(
+    current_draft: dict[str, Any] | None,
+    latest_draft: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    return current_draft or latest_draft
+
+
 def _last_assistant_state(
     conversation: list[Any],
     *,
@@ -454,6 +502,115 @@ def _compact_response_edits(
             edits.append(edit)
 
     return edits
+
+
+def _compact_draft_diffs(
+    value: Any,
+    *,
+    token_budget: int | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    diffs: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+
+        diff: dict[str, Any] = {}
+        for key in (
+            "id",
+            "operationId",
+            "path",
+            "kind",
+            "label",
+            "sectionId",
+            "itemId",
+        ):
+            text = _string_value(item.get(key))
+            if text:
+                diff[key] = text
+
+        before = _compact_unknown_value(item.get("before"), token_budget)
+        after = _compact_unknown_value(item.get("after"), token_budget)
+        if before:
+            diff["before"] = before
+        if after:
+            diff["after"] = after
+
+        if diff:
+            candidate = [*diffs, diff]
+            if (
+                token_budget is not None
+                and diffs
+                and _estimated_json_tokens(candidate) > token_budget
+            ):
+                break
+            diffs.append(diff)
+
+    return diffs
+
+
+def _compact_unknown_value(value: Any, token_budget: int | None) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    return _truncate_to_tokens(text.strip(), token_budget)
+
+
+def _compact_resume_outline(resume: Any) -> dict[str, Any]:
+    if not isinstance(resume, dict):
+        return {}
+
+    basic = resume.get("basic")
+    basic_data = basic if isinstance(basic, dict) else {}
+    sections_value = resume.get("sections")
+    sections = sections_value if isinstance(sections_value, list) else []
+
+    return {
+        "basic": {
+            "name": _string_value(basic_data.get("name")),
+            "headline": _string_value(basic_data.get("headline")),
+            "hasSummary": bool(_string_value(basic_data.get("summary"))),
+        },
+        "sectionCount": len(sections),
+        "sections": [_compact_section_outline(section) for section in sections],
+    }
+
+
+def _compact_section_outline(section: Any) -> dict[str, Any]:
+    if not isinstance(section, dict):
+        return {}
+
+    items = section.get("items")
+    item_list = items if isinstance(items, list) else []
+    title = _string_value(section.get("customTitle")) or _string_value(
+        section.get("title"),
+    )
+
+    return {
+        "id": _string_value(section.get("id")),
+        "kind": _string_value(section.get("kind")),
+        "title": title,
+        "itemCount": len(item_list),
+        "items": [_compact_item_outline(item) for item in item_list[:3]],
+    }
+
+
+def _compact_item_outline(item: Any) -> dict[str, str]:
+    if not isinstance(item, dict):
+        return {}
+
+    return {
+        "id": _string_value(item.get("id")),
+        "title": _string_value(item.get("title")),
+        "subtitle": _string_value(item.get("subtitle")),
+    }
 
 
 def _conversation_item_role(item: Any) -> str:

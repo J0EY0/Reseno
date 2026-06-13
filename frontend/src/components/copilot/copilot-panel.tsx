@@ -98,6 +98,7 @@ import type {
   AgentChatAttachment,
   AgentChatMessage,
   AgentConversationMessage,
+  AgentDraftState,
   AgentResumeEditSuggestion,
   AgentSource,
   AgentStoredMessage,
@@ -1046,6 +1047,7 @@ export function CopilotPanel({
   agentSettings,
   onSelectedModelChange,
   hasAgentDraft,
+  agentDraftState,
   onPreviewAgentEdits,
   onApplyAgentDraft,
   onDiscardAgentDraft,
@@ -1064,9 +1066,11 @@ export function CopilotPanel({
   agentSettings: AgentSettings;
   onSelectedModelChange: (modelId: string) => void;
   hasAgentDraft: boolean;
+  agentDraftState: AgentDraftState | null;
   onPreviewAgentEdits: (
     edits: AgentResumeEditSuggestion[],
     baseResume: ResumeData,
+    sourceMessageId?: string,
   ) => void;
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
@@ -1202,7 +1206,10 @@ export function CopilotPanel({
     })();
   }
 
-  function syncPreviewEdits(edits: AgentResumeEditSuggestion[] | undefined) {
+  function syncPreviewEdits(
+    edits: AgentResumeEditSuggestion[] | undefined,
+    sourceMessageId?: string,
+  ) {
     if (!edits?.length) {
       return;
     }
@@ -1214,7 +1221,7 @@ export function CopilotPanel({
     }
 
     previewedEditsKeyRef.current = key;
-    onPreviewAgentEdits(edits, requestResumeRef.current);
+    onPreviewAgentEdits(edits, requestResumeRef.current, sourceMessageId);
   }
 
   const stopResponding = useCallback(() => {
@@ -1302,6 +1309,7 @@ export function CopilotPanel({
               prompt,
               resume,
               resumeId,
+              draftState: agentDraftState,
               settings: agentSettings,
               stream: true,
             },
@@ -1316,7 +1324,7 @@ export function CopilotPanel({
                   t.agentTransientModelStatusTexts,
                 );
 
-                syncPreviewEdits(panelMessage.response?.edits);
+                syncPreviewEdits(panelMessage.response?.edits, panelMessage.id);
                 setStreamingMessage(panelMessage);
               },
               signal: abortController.signal,
@@ -1327,7 +1335,7 @@ export function CopilotPanel({
             return;
           }
 
-          syncPreviewEdits(response.message.edits);
+          syncPreviewEdits(response.message.edits, response.message.id);
           setMessages([
             ...nextMessages,
             toAssistantPanelMessage(

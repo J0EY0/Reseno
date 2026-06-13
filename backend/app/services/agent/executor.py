@@ -51,6 +51,16 @@ def _conversation_depth(request: AgentChatRequest) -> int:
     return len(request.conversation)
 
 
+def _active_resume(request: AgentChatRequest) -> dict[str, Any]:
+    """Return the resume state tools should inspect for this request."""
+
+    draft = request.draft_state
+    if draft and draft.status == "pending" and draft.resume:
+        return draft.resume
+
+    return request.resume
+
+
 def _file_content_excerpt(file: dict[str, Any]) -> str:
     """Return text content supplied with a user attachment."""
 
@@ -175,6 +185,7 @@ class AgentPlanExecutor:
 
     def __init__(self, request: AgentChatRequest) -> None:
         self.request = request
+        self.resume = _active_resume(request)
         self.is_zh = request.locale == "zh"
         self.prompt = _current_prompt(request)
 
@@ -313,7 +324,7 @@ class AgentPlanExecutor:
                 if role:
                     return role
 
-        basic = self.request.resume.get("basic")
+        basic = self.resume.get("basic")
         if isinstance(basic, dict):
             headline = basic.get("headline")
             if isinstance(headline, str) and headline.strip():
@@ -364,9 +375,9 @@ class AgentPlanExecutor:
     def analyze_resume(self) -> ResumeAnalysis:
         """Extract only the resume facts needed for planning."""
 
-        basic = self.request.resume.get("basic")
+        basic = self.resume.get("basic")
         basic_data = basic if isinstance(basic, dict) else {}
-        sections_value = self.request.resume.get("sections")
+        sections_value = self.resume.get("sections")
         sections = sections_value if isinstance(sections_value, list) else []
         normalized_sections: list[dict[str, object]] = []
         empty_section_ids: list[str] = []
@@ -1298,7 +1309,7 @@ class AgentPlanExecutor:
     def find_project_insert_index(self) -> int:
         """Choose a predictable insertion point for generated project sections."""
 
-        sections_value = self.request.resume.get("sections")
+        sections_value = self.resume.get("sections")
         sections = sections_value if isinstance(sections_value, list) else []
 
         for index, section in enumerate(sections):

@@ -117,6 +117,7 @@ import {
 } from "@/lib/workspace-api";
 import { runViewTransition } from "@/lib/view-transition";
 import type {
+  AgentDraftState,
   AgentResumeEditSuggestion,
   WorkspaceSaveResponse,
   WorkspaceVersionSummary,
@@ -129,7 +130,6 @@ import type {
   ModelConfig,
   ResumeBasicInfo,
   ResumeData,
-  ResumeDraftDiff,
   ResumeFontFamily,
   ResumeSection,
   ResumeSectionItem,
@@ -150,11 +150,6 @@ let copilotPanelModulePromise:
   | Promise<typeof import("@/components/copilot/copilot-panel")>
   | null = null;
 
-interface AgentDraftState {
-  resume: ResumeData;
-  diffs: ResumeDraftDiff[];
-  editCount: number;
-}
 let recycleBinPanelModulePromise:
   | Promise<typeof import("@/components/recycle-bin-panel")>
   | null = null;
@@ -1052,6 +1047,9 @@ export function ResumeBuilder({
   const [avatarCropSource, setAvatarCropSource] = useState<string | null>(null);
   const [isAgentPanelCollapsed, setIsAgentPanelCollapsed] = useState(false);
   const [agentDraft, setAgentDraft] = useState<AgentDraftState | null>(null);
+  const [lastAgentDraft, setLastAgentDraft] = useState<AgentDraftState | null>(
+    null,
+  );
   const [previewScale, setPreviewScale] = useState(1);
   const [previewPageHeight, setPreviewPageHeight] = useState(A4_HEIGHT_PX);
   const [documentStickyTop, setDocumentStickyTop] = useState(96);
@@ -1065,6 +1063,7 @@ export function ResumeBuilder({
   const defaultTemplateIdRef = useRef<ResumeTemplateId>(defaultTemplate);
 
   const effectiveResume = agentDraft?.resume ?? resume;
+  const agentDraftState = agentDraft ?? lastAgentDraft;
   const previewResume = useDeferredValue(effectiveResume);
   const deferredTemplatePreviewResume = useDeferredValue(templatePreviewResume);
   const deferredJobBrief = useDeferredValue(jobBrief);
@@ -1500,6 +1499,7 @@ export function ResumeBuilder({
 
   const hydrateResumeWorkspace = useCallback((item: ResumeWorkspaceItem) => {
     setAgentDraft(null);
+    setLastAgentDraft(null);
     setResume(item.resume);
     setTemplatePreviewResume(item.resume);
     setCollapsedState(createEditorCollapsedState(item.resume));
@@ -1513,6 +1513,7 @@ export function ResumeBuilder({
     const emptyResume = createEmptyResume();
 
     setAgentDraft(null);
+    setLastAgentDraft(null);
     setResume(emptyResume);
     setTemplatePreviewResume(emptyResume);
     setCollapsedState(createEditorCollapsedState(emptyResume));
@@ -2010,20 +2011,37 @@ export function ResumeBuilder({
   }
 
   const previewAgentEdits = useCallback(
-    (edits: AgentResumeEditSuggestion[], baseResume = resume) => {
+    (
+      edits: AgentResumeEditSuggestion[],
+      baseResume = resume,
+      sourceMessageId?: string,
+    ) => {
       const result = applyAgentEditsToDraft(baseResume, edits);
 
       if (result.appliedCount === 0) {
         return;
       }
 
-      setAgentDraft({
+      const now = new Date().toISOString();
+      const draftId = sourceMessageId
+        ? `agent-draft-${sourceMessageId}`
+        : createId("agent-draft");
+      const nextDraft: AgentDraftState = {
+        id: draftId,
+        status: "pending",
+        sourceMessageId,
+        createdAt: agentDraft?.id === draftId ? agentDraft.createdAt : now,
+        updatedAt: now,
         resume: result.resume,
-        diffs: result.diffs,
         editCount: result.appliedCount,
-      });
+        edits,
+        diffs: result.diffs,
+      };
+
+      setAgentDraft(nextDraft);
+      setLastAgentDraft(nextDraft);
     },
-    [resume],
+    [agentDraft?.createdAt, agentDraft?.id, resume],
   );
 
   const applyAgentDraft = useCallback(() => {
@@ -2034,6 +2052,11 @@ export function ResumeBuilder({
     setResume(agentDraft.resume);
     setTemplatePreviewResume(agentDraft.resume);
     setCollapsedState(createEditorCollapsedState(agentDraft.resume));
+    setLastAgentDraft({
+      ...agentDraft,
+      status: "applied",
+      updatedAt: new Date().toISOString(),
+    });
     setAgentDraft(null);
     toast.success(t.agentDraftApplied, {
       closeButton: true,
@@ -2045,6 +2068,11 @@ export function ResumeBuilder({
       return;
     }
 
+    setLastAgentDraft({
+      ...agentDraft,
+      status: "discarded",
+      updatedAt: new Date().toISOString(),
+    });
     setAgentDraft(null);
     toast.success(t.agentDraftDiscarded, {
       closeButton: true,
@@ -2988,6 +3016,7 @@ export function ResumeBuilder({
             }))
           }
           hasAgentDraft={Boolean(agentDraft)}
+          agentDraftState={agentDraftState}
           onPreviewAgentEdits={previewAgentEdits}
           onApplyAgentDraft={applyAgentDraft}
           onDiscardAgentDraft={discardAgentDraft}
