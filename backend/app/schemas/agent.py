@@ -24,6 +24,7 @@ class AgentConversationItem(BaseModel):
     text: str
     files: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str | None = Field(default=None, alias="createdAt")
+    response: dict[str, Any] | None = None
 
 
 class AgentChatRequest(BaseModel):

@@ -100,6 +100,7 @@ export interface AgentConversationMessage {
   text: string;
   files?: AgentChatAttachment[];
   createdAt?: string;
+  response?: Partial<AgentChatMessage>;
 }
 
 export interface AgentChatRequest {
@@ -107,7 +108,7 @@ export interface AgentChatRequest {
   prompt: string;
   message?: AgentConversationMessage;
   messages?: AgentConversationMessage[];
-  conversation: Array<Pick<AgentConversationMessage, "role" | "text">>;
+  conversation: AgentConversationMessage[];
   files: AgentChatAttachment[];
   locale: Locale;
   resume: ResumeData;

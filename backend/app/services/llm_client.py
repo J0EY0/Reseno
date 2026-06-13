@@ -39,6 +39,7 @@ class AgentLlmConfig:
     max_tokens: int | None
     timeout_seconds: int
     system_prompt: str
+    context_window_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ def resolve_agent_llm_config(
                 temperature,
                 top_p,
                 max_tokens,
+                context_window_tokens,
                 timeout_seconds,
                 system_prompt
             FROM llm_configs
@@ -114,6 +116,7 @@ def resolve_agent_llm_config(
                 temperature,
                 top_p,
                 max_tokens,
+                context_window_tokens,
                 timeout_seconds,
                 system_prompt
             FROM llm_configs
@@ -138,6 +141,7 @@ def resolve_agent_llm_config(
         max_tokens=row["max_tokens"],
         timeout_seconds=int(row["timeout_seconds"] or REQUEST_TIMEOUT_SECONDS),
         system_prompt=row["system_prompt"] or "",
+        context_window_tokens=row["context_window_tokens"],
     )
 
 

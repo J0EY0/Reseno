@@ -13,6 +13,18 @@ os.environ.setdefault("APP_STORAGE_DIR", str(_BOOTSTRAP_DATA_DIR / "storage"))
 os.environ.setdefault("APP_ENV_FILE", str(_BOOTSTRAP_DATA_DIR / ".env"))
 
 
+@pytest.fixture(autouse=True)
+def stub_model_metadata_fetch(monkeypatch) -> Iterator[None]:
+    from app.services import model_metadata
+
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", lambda: {})
+
+    yield
+
+    model_metadata._CATALOG_CACHE = None
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
     from app.config import get_settings

@@ -158,6 +158,8 @@ function toDraft(locale: Locale, config?: ModelConfig): ModelConfigDraft {
     topP: config?.topP ?? fallback.topP,
     maxTokens:
       typeof config?.maxTokens === "number" ? String(config.maxTokens) : "",
+    contextWindowTokens:
+      config?.contextWindowTokens ?? fallback.contextWindowTokens,
     systemPrompt: config?.systemPrompt ?? fallback.systemPrompt,
   };
 }
@@ -335,6 +337,7 @@ export function ModelConfigFormPopover({
           temperature: clampTemperature(Number(draft.temperature)),
           topP: clampTopP(Number(draft.topP)),
           maxTokens,
+          contextWindowTokens: draft.contextWindowTokens,
           systemPrompt: draft.systemPrompt.trim(),
         },
         apiKey || undefined,
@@ -350,6 +353,7 @@ export function ModelConfigFormPopover({
         temperature: savedConfig.temperature,
         topP: savedConfig.topP,
         maxTokens: savedConfig.maxTokens,
+        contextWindowTokens: savedConfig.contextWindowTokens,
         systemPrompt: savedConfig.systemPrompt,
       });
       toast.success(

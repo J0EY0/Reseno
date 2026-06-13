@@ -9,6 +9,7 @@ from app.services.llm_secrets import (
     mask_api_key,
     mask_encrypted_api_key,
 )
+from app.services.model_metadata import resolve_model_metadata
 
 
 def _row_to_response(row: Row) -> ModelConfigResponse:
@@ -26,6 +27,7 @@ def _row_to_response(row: Row) -> ModelConfigResponse:
         temperature=row["temperature"],
         topP=row["top_p"],
         maxTokens=row["max_tokens"],
+        contextWindowTokens=row["context_window_tokens"],
         systemPrompt=row["system_prompt"] or "",
     )
 
@@ -46,6 +48,7 @@ def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
             temperature,
             top_p,
             max_tokens,
+            context_window_tokens,
             system_prompt
         FROM llm_configs
         WHERE enabled = 1
@@ -85,6 +88,13 @@ def _build_upsert_values(
     max_tokens = (
         item.get("maxTokens") if "maxTokens" in item else item.get("max_tokens")
     )
+    metadata = resolve_model_metadata(provider, model)
+    context_window_tokens = (
+        metadata.context_window_tokens
+        if metadata is not None
+        else _existing_context_window_tokens(existing, provider, model)
+    )
+    max_output_tokens = metadata.max_output_tokens if metadata is not None else None
     system_prompt = str(item.get("systemPrompt") or item.get("system_prompt") or "")
     is_default = int(client_id == default_model_id)
 
@@ -98,10 +108,36 @@ def _build_upsert_values(
         api_key_preview,
         float(temperature) if isinstance(temperature, (int, float)) else 0.7,
         float(top_p) if isinstance(top_p, (int, float)) else 1.0,
-        max_tokens if isinstance(max_tokens, int) else None,
+        _normalize_max_tokens(max_tokens, max_output_tokens),
+        context_window_tokens,
         system_prompt,
         is_default,
     )
+
+
+def _existing_context_window_tokens(
+    existing: Row | None,
+    provider: str,
+    model: str,
+) -> int | None:
+    if existing is None:
+        return None
+
+    if existing["provider"] != provider or existing["model"] != model:
+        return None
+
+    value = existing["context_window_tokens"]
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _normalize_max_tokens(value: Any, max_output_tokens: int | None) -> int | None:
+    if not isinstance(value, int) or value <= 0:
+        return None
+
+    if max_output_tokens is None:
+        return value
+
+    return min(value, max_output_tokens)
 
 
 def _existing_api_key_matches(existing: Row, api_key: str) -> bool:
@@ -131,6 +167,7 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         temperature,
         top_p,
         max_tokens,
+        context_window_tokens,
         system_prompt,
         is_default,
     ) = values
@@ -147,6 +184,7 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         and float(existing["temperature"]) == float(temperature)
         and float(existing["top_p"]) == float(top_p)
         and existing["max_tokens"] == max_tokens
+        and existing["context_window_tokens"] == context_window_tokens
         and existing["system_prompt"] == system_prompt
         and int(existing["is_default"]) == int(is_default)
     )
@@ -168,6 +206,7 @@ def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
             temperature,
             top_p,
             max_tokens,
+            context_window_tokens,
             system_prompt,
             enabled,
             is_default
@@ -268,10 +307,11 @@ def upsert_llm_config_dict(
             temperature,
             top_p,
             max_tokens,
+            context_window_tokens,
             system_prompt,
             is_default
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(client_id) DO UPDATE SET
             name = excluded.name,
             provider = excluded.provider,
@@ -288,6 +328,7 @@ def upsert_llm_config_dict(
             temperature = excluded.temperature,
             top_p = excluded.top_p,
             max_tokens = excluded.max_tokens,
+            context_window_tokens = excluded.context_window_tokens,
             system_prompt = excluded.system_prompt,
             enabled = 1,
             is_default = excluded.is_default,
@@ -309,6 +350,7 @@ def upsert_llm_config_dict(
             temperature,
             top_p,
             max_tokens,
+            context_window_tokens,
             system_prompt
         FROM llm_configs
         WHERE client_id = ?

@@ -16,6 +16,7 @@ from app.exceptions import (
 )
 from app.middleware.auth import jwt_auth_middleware
 from app.routers import agent, auth, exports, health, imports, model_configs, workspace
+from app.services.model_metadata import ensure_model_metadata_cache
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
 
@@ -25,6 +26,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Run startup database migrations before serving requests."""
 
     migrate_db()
+    ensure_model_metadata_cache()
     yield
 
 

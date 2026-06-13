@@ -48,6 +48,7 @@ export function createDefaultModelConfig(
     temperature: 0.4,
     topP: 0.9,
     maxTokens: null,
+    contextWindowTokens: null,
     systemPrompt: getDefaultSystemPrompt(locale),
     ...overrides,
   }
@@ -96,6 +97,7 @@ export function normalizeModelConfig(
     temperature: clampTemperature(temperature),
     topP: clampTopP(topP),
     maxTokens: normalizeMaxTokens(raw.maxTokens),
+    contextWindowTokens: normalizeMaxTokens(raw.contextWindowTokens),
     systemPrompt:
       typeof raw.systemPrompt === 'string' && raw.systemPrompt.trim()
         ? raw.systemPrompt

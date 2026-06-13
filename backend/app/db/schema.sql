@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     temperature REAL NOT NULL DEFAULT 0.7,
     top_p REAL NOT NULL DEFAULT 1.0,
     max_tokens INTEGER,
+    context_window_tokens INTEGER,
     timeout_seconds INTEGER NOT NULL DEFAULT 60,
     system_prompt TEXT NOT NULL DEFAULT '',
 

@@ -215,6 +215,7 @@ export interface ModelConfig {
   temperature: number
   topP: number
   maxTokens: number | null
+  contextWindowTokens: number | null
   systemPrompt: string
 }
 
@@ -229,6 +230,7 @@ export interface LegacyModelConfig {
   topP?: number
   topK?: number
   maxTokens?: number | null
+  contextWindowTokens?: number | null
   systemPrompt?: string
 }
 

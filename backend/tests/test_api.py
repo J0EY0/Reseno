@@ -7,10 +7,12 @@ from fastapi.testclient import TestClient
 from app import config as app_config
 from app.config import get_settings
 from app.db.connection import connect
+from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchResult
 from app.services.agent.editing.operations import _model_edit_suggestions
 from app.services.agent.prompts import EDIT_OPERATION_GUIDE, EDIT_OPERATION_GUIDES
+from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent.section_registry import (
     SECTION_DEFAULT_LAYOUTS,
     SECTION_KIND_ENUM,
@@ -19,6 +21,7 @@ from app.services.agent.section_registry import (
 from app.services.agent.tools import registry as tool_registry
 from app.services.auth_tokens import create_access_token
 from app.services.llm_client import (
+    AgentLlmConfig,
     LlmRequestError,
     LlmStreamDelta,
     LlmToolCall,
@@ -799,6 +802,162 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
     assert row["enabled"] == 0
 
 
+def test_model_config_resolves_litellm_token_limits(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_catalog",
+        lambda: {
+            "openai/gpt-5.1": {
+                "litellm_provider": "openai",
+                "max_input_tokens": 131072,
+                "max_output_tokens": 8192,
+            },
+        },
+    )
+    assert model_metadata.refresh_model_metadata_cache() is True
+
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "id": "llm-token-limits",
+            "provider": "openai",
+            "nickname": "Token Limits",
+            "apiKey": "sk-token-secret",
+            "model": "gpt-5.1",
+            "apiUrl": "https://api.openai.com/v1",
+            "temperature": 0.4,
+            "topP": 0.9,
+            "maxTokens": 999999,
+            "systemPrompt": "test",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["contextWindowTokens"] == 131072
+    assert data["maxTokens"] == 8192
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT max_tokens, context_window_tokens
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            ("llm-token-limits",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["context_window_tokens"] == 131072
+    assert row["max_tokens"] == 8192
+
+
+def test_model_metadata_cache_is_prepared_before_config_save(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_catalog",
+        lambda: {
+            "openai/gpt-5.1": {
+                "litellm_provider": "openai",
+                "max_input_tokens": 131072,
+                "max_output_tokens": 8192,
+            },
+        },
+    )
+
+    assert model_metadata.ensure_model_metadata_cache() is True
+    assert (tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME).exists()
+
+    metadata = model_metadata.resolve_model_metadata("openai", "gpt-5.1")
+
+    assert metadata is not None
+    assert metadata.context_window_tokens == 131072
+    assert metadata.max_output_tokens == 8192
+    get_settings.cache_clear()
+
+
+def test_model_metadata_cache_is_reused_without_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
+    cache_path.write_text(
+        json.dumps(
+            {
+                "openai/gpt-5.1": {
+                    "litellm_provider": "openai",
+                    "max_input_tokens": 131072,
+                    "max_output_tokens": 8192,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    model_metadata._CATALOG_CACHE = None
+
+    def fail_fetch() -> dict[str, object]:
+        raise AssertionError("cached model metadata should not refresh implicitly")
+
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", fail_fetch)
+
+    assert model_metadata.ensure_model_metadata_cache() is True
+    assert model_metadata.resolve_model_metadata("openai", "gpt-5.1") is not None
+    get_settings.cache_clear()
+
+
+def test_model_config_save_does_not_fetch_model_metadata(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    model_metadata._CATALOG_CACHE = {}
+
+    def fail_fetch() -> dict[str, object]:
+        raise AssertionError("model metadata fetch should not run during save")
+
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", fail_fetch)
+
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "id": "llm-no-fetch",
+            "provider": "openai",
+            "nickname": "No Fetch",
+            "apiKey": "sk-no-fetch-secret",
+            "model": "unknown-model",
+            "apiUrl": "https://api.openai.com/v1",
+            "temperature": 0.4,
+            "topP": 0.9,
+            "maxTokens": 4096,
+            "systemPrompt": "test",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["contextWindowTokens"] is None
+    assert data["maxTokens"] == 4096
+
+
 def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
     payload = {
         "id": "llm-noop",
@@ -934,6 +1093,102 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
     assert messages[0]["text"] == "帮我检查项目经历"
     assert messages[1]["response"]["role"] == "assistant"
     assert messages[1]["response"]["text"] == response.json()["data"]["message"]["text"]
+
+
+def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
+    config = AgentLlmConfig(
+        client_id="llm-test",
+        name="Test Model",
+        provider="openai",
+        model="gpt-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=None,
+        timeout_seconds=60,
+        system_prompt="",
+        context_window_tokens=1600,
+    )
+    conversation = [
+        {
+            "id": "agent-user-0",
+            "role": "user",
+            "text": "先帮我写一个项目经历草稿",
+        },
+        {
+            "id": "agent-assistant-draft",
+            "role": "assistant",
+            "text": "已生成项目经历草稿。",
+            "response": {
+                "id": "agent-assistant-draft",
+                "role": "assistant",
+                "text": "已生成项目经历草稿。",
+                "actions": ["execute"],
+                "edits": [
+                    {
+                        "id": "edit-project-1",
+                        "title": "新增项目经历模块",
+                        "target": "sections.project",
+                        "reason": "根据用户提供的项目经历生成草稿。",
+                        "status": "executed",
+                        "operation": {
+                            "type": "insert_section",
+                            "sectionId": "project",
+                        },
+                    },
+                ],
+            },
+        },
+    ]
+    conversation.extend(
+        {
+            "id": f"agent-user-followup-{index}",
+            "role": "user",
+            "text": f"后续补充 {index}",
+        }
+        for index in range(8)
+    )
+    conversation.append(
+        {
+            "id": "agent-user-current",
+            "role": "user",
+            "text": "把刚才那个版本的第二条再短一点",
+        },
+    )
+    request = AgentChatRequest(
+        prompt="把刚才那个版本的第二条再短一点",
+        messages=conversation,
+        conversation=conversation,
+        files=[],
+        locale="zh",
+        resume={"basic": {"name": "王小明"}, "sections": []},
+        jobBrief="",
+        keywordMatch={"matched": [], "missing": [], "score": 0},
+        appliedActions=["execute"],
+        modelConfig=None,
+        settings={},
+        stream=False,
+    )
+
+    messages = build_agent_messages(request, config, mode="tools")
+    payload = json.loads(messages[1]["content"])
+    context = payload["conversationContext"]
+
+    assert context["compression"]["applied"] is True
+    assert context["compression"]["inputBudgetTokens"] < context["totalMessages"] * 200
+    assert context["compressedMessageCount"] > 0
+    assert context["exactMessageCount"] == len(payload["conversation"])
+    assert context["totalMessages"] == len(conversation)
+    assert context["latestDraft"]["messageId"] == "agent-assistant-draft"
+    assert context["latestDraft"]["editCount"] == 1
+    assert context["latestDraft"]["edits"][0]["title"] == "新增项目经历模块"
+    assert context["latestDraft"]["edits"][0]["sectionId"] == "project"
+    assert context["appliedActions"] == ["execute"]
+    assert any(
+        item.get("assistantState", {}).get("editCount") == 1
+        for item in context["olderSummary"]
+    )
 
 
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:

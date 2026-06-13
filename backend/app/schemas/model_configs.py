@@ -15,6 +15,10 @@ class ModelConfigUpsertRequest(BaseModel):
     temperature: float = 0.7
     top_p: float = Field(default=1.0, alias="topP")
     max_tokens: int | None = Field(default=None, alias="maxTokens")
+    context_window_tokens: int | None = Field(
+        default=None,
+        alias="contextWindowTokens",
+    )
     system_prompt: str = Field(default="", alias="systemPrompt")
     is_default: bool = Field(default=False, alias="isDefault")
 
@@ -33,6 +37,7 @@ class ModelConfigResponse(BaseModel):
     temperature: float
     top_p: float = Field(alias="topP")
     max_tokens: int | None = Field(alias="maxTokens")
+    context_window_tokens: int | None = Field(alias="contextWindowTokens")
     system_prompt: str = Field(alias="systemPrompt")
 
 

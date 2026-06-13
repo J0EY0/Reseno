@@ -94,6 +94,16 @@ def _migrate_llm_configs_schema(conn: Connection) -> None:
     conn.execute("DROP TABLE llm_configs_legacy")
 
 
+def _ensure_llm_configs_token_columns(conn: Connection) -> None:
+    """Add token-limit columns introduced after the encrypted-key schema."""
+
+    columns = _table_columns(conn, "llm_configs")
+    if "context_window_tokens" not in columns:
+        conn.execute(
+            "ALTER TABLE llm_configs ADD COLUMN context_window_tokens INTEGER",
+        )
+
+
 def _hydrate_legacy_model_config(config: object) -> object:
     """Attach a plaintext key from env only for one-time legacy migration."""
 
@@ -185,6 +195,7 @@ def migrate_db() -> None:
     with connect() as conn:
         conn.executescript(schema)
         _migrate_llm_configs_schema(conn)
+        _ensure_llm_configs_token_columns(conn)
         from app.services.workspace import (
             migrate_legacy_workspace_snapshots,
             migrate_workspace_templates,

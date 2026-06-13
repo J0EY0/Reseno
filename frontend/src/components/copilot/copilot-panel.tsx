@@ -238,8 +238,45 @@ function toConversationMessage(
   return {
     files: message.files,
     id: message.id,
+    response:
+      message.role === "assistant" && message.response
+        ? toConversationResponse(message.response)
+        : undefined,
     role: message.role,
     text: message.text,
+  };
+}
+
+function toConversationResponse(
+  response: AgentChatMessage,
+): AgentConversationMessage["response"] {
+  return {
+    actions: response.actions,
+    edits: response.edits?.map((edit) => ({
+      id: edit.id,
+      operation: edit.operation,
+      reason: edit.reason,
+      replacement: edit.replacement,
+      status: edit.status,
+      target: edit.target,
+      title: edit.title,
+    })),
+    id: response.id,
+    role: "assistant",
+    sources: response.sources?.map((source) => ({
+      id: source.id,
+      sourceType: source.sourceType,
+      title: source.title,
+      url: source.url,
+    })),
+    text: response.text,
+    timeline: response.timeline,
+    tools: response.tools?.map((tool) => ({
+      id: tool.id,
+      state: tool.state,
+      title: tool.title,
+      type: tool.type,
+    })),
   };
 }
 
@@ -1228,7 +1265,7 @@ export function CopilotPanel({
       text: visiblePrompt,
     };
     const nextMessages = [...messages, userMessage];
-    const apiMessages = nextMessages.slice(-12).map(toConversationMessage);
+    const apiMessages = nextMessages.map(toConversationMessage);
 
     setIsResponding(true);
     setMessages(nextMessages);
@@ -1254,10 +1291,7 @@ export function CopilotPanel({
           const response = await sendAgentChatMessage(
             {
               appliedActions: [],
-              conversation: apiMessages.map(({ role, text: itemText }) => ({
-                role,
-                text: itemText,
-              })),
+              conversation: apiMessages,
               files,
               jobBrief: nextJobBrief,
               keywordMatch: nextKeywordMatch,
