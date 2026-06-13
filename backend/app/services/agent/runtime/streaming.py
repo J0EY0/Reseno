@@ -24,6 +24,7 @@ from app.services.llm_client import (
 
 from ..compat import get_agent_api
 from ..editing import _string_list
+from ..localization import agent_text
 from .context import AgentRunAborted, AgentRuntimeContext
 from .loop import async_iter_agent_tool_call_loop
 from .messages import build_agent_messages
@@ -138,18 +139,8 @@ def _direct_llm_response(
 def _model_setup_message(request: AgentChatRequest) -> AgentChatMessage:
     """Build a direct setup guide when no usable model config exists."""
 
-    is_zh = request.locale == "zh"
-    text = (
-        "当前还没有可用的大模型配置。请先在「大模型配置」中新增模型、填写 API Key "
-        "并设为默认模型，然后再让 Agent 分析或修改简历。"
-        if is_zh
-        else (
-            "No usable model configuration is available yet. Add a model, "
-            "enter its API key, and set it as the default model before asking "
-            "the agent to analyze or edit the resume."
-        )
-    )
-    quick_replies = ["去配置模型"] if is_zh else ["Configure model"]
+    text = agent_text(request.locale, "model.setup.text")
+    quick_replies = [agent_text(request.locale, "model.setup.quick_reply")]
 
     return AgentChatMessage(
         id=f"agent-msg-{uuid4().hex[:12]}",
@@ -175,19 +166,14 @@ def _model_error_message(
 ) -> AgentChatMessage:
     """Build a provider failure message without falling back to mock output."""
 
-    is_zh = request.locale == "zh"
     detail = _llm_error_detail(error)
-    text = (
-        f"已找到模型配置「{config.name}」，但调用模型失败。请检查 API 地址、"
-        "API Key、模型名称和网络连通性后重试。"
-        if is_zh
-        else (
-            f'Model config "{config.name}" was found, but the provider request '
-            "failed. Check the API URL, API key, model name, and network access."
-        )
+    text = agent_text(
+        request.locale,
+        "model.error.text",
+        name=config.name,
     )
     if detail:
-        label = "提供方返回" if is_zh else "Provider response"
+        label = agent_text(request.locale, "model.error.label")
         text = f"{text}\n\n{label}: {detail}"
 
     return AgentChatMessage(

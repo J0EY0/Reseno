@@ -252,6 +252,51 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "resume_lookup",
+            "description": (
+                "Locate specific resume sections or items by id, kind, or query. "
+                "Use this when you need exact sectionId/itemId for a targeted edit "
+                "instead of running broad resume analysis again."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional text to match against section/item content."
+                        ),
+                    },
+                    "sectionId": {"type": "string"},
+                    "itemId": {"type": "string"},
+                    "sectionKind": {"type": "string", "enum": SECTION_KIND_ENUM},
+                    "includeItems": {
+                        "type": "boolean",
+                        "description": "Whether to include matching item snapshots.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draft_diff_summary",
+            "description": (
+                "Inspect the current pending draft edits/diffs so follow-up requests "
+                "can explain, shorten, remove, or continue a previous draft."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_plan",
             "description": (
                 "Create a concise edit plan. Prefer providing explicit steps "
@@ -345,6 +390,148 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                         },
                     },
                 },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_move_item",
+            "description": (
+                "Move one existing resume item within a section or into another "
+                "existing section. Use after resume_lookup/resume_analysis has "
+                "identified sectionId and itemId."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fromSectionId": {"type": "string"},
+                    "toSectionId": {"type": "string"},
+                    "itemId": {"type": "string"},
+                    "index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["fromSectionId", "toSectionId", "itemId"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_split_item",
+            "description": (
+                "Split one long resume item into two clearer items in the same "
+                "section. The first object patches the existing item; the second "
+                "object becomes the inserted item."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sectionId": {"type": "string"},
+                    "itemId": {"type": "string"},
+                    "first": ITEM_PATCH_SCHEMA,
+                    "second": ITEM_SCHEMA,
+                    "index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["sectionId", "itemId", "first", "second"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_merge_items",
+            "description": (
+                "Merge multiple related resume items into the first item and delete "
+                "the rest. Use only when the items represent the same experience "
+                "or should be consolidated."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sectionId": {"type": "string"},
+                    "itemIds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                    },
+                    "mergedItem": ITEM_PATCH_SCHEMA,
+                    "reason": {"type": "string"},
+                },
+                "required": ["sectionId", "itemIds", "mergedItem"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skills_classify",
+            "description": (
+                "Create or replace grouped skill items in the skills section. Use "
+                "this when the user asks to organize, categorize, or normalize "
+                "skills."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sectionId": {"type": "string"},
+                    "groups": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "skills": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["title", "skills"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["groups"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draft_rewrite",
+            "description": (
+                "Apply additional explicit edits to the current pending draft. Use "
+                "this for follow-up requests such as making a previous draft item "
+                "shorter, more specific, or reverting one suggested edit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "target": {"type": "string"},
+                                "reason": {"type": "string"},
+                                "replacement": {"type": "string"},
+                                "operation": OPERATION_SCHEMA,
+                            },
+                            "required": ["title", "target", "reason", "operation"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["edits"],
                 "additionalProperties": False,
             },
         },

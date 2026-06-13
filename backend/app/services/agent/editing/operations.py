@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
 
+from ..localization import agent_text
 from ..models import EditPlanStep
 from ..prompts import (
     DEFAULT_REACT_MAX_ITERATIONS,
@@ -655,8 +656,8 @@ def _model_edit_suggestions_with_diagnostics(
             rejected.append(
                 {
                     "index": index,
-                    "title": f"Edit {index}",
-                    "reason": "Edit entry must be an object.",
+                    "title": agent_text(locale, "edit.default.title", index=index),
+                    "reason": agent_text(locale, "error.edit_entry_must_object"),
                 },
             )
             continue
@@ -666,7 +667,8 @@ def _model_edit_suggestions_with_diagnostics(
             rejected.append(
                 {
                     "index": index,
-                    "title": _model_string(item.get("title")) or f"Edit {index}",
+                    "title": _model_string(item.get("title"))
+                    or agent_text(locale, "edit.default.title", index=index),
                     "reason": _invalid_operation_reason(
                         resume,
                         item.get("operation"),
@@ -675,14 +677,15 @@ def _model_edit_suggestions_with_diagnostics(
             )
             continue
 
-        title = _model_string(item.get("title")) or (
-            f"修改建议 {index}" if locale == "zh" else f"Edit {index}"
+        title = _model_string(item.get("title")) or agent_text(
+            locale,
+            "edit.default.title",
+            index=index,
         )
         target = _model_string(item.get("target")) or _operation_target(operation)
-        reason = _model_string(item.get("reason")) or (
-            "根据当前请求生成可预览草稿。"
-            if locale == "zh"
-            else "Create a previewable draft for the current request."
+        reason = _model_string(item.get("reason")) or agent_text(
+            locale,
+            "edit.default.reason",
         )
         replacement = _model_string(item.get("replacement")) or _operation_replacement(
             operation,

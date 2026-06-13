@@ -19,6 +19,7 @@ from app.services.agent.section_registry import (
     SECTION_KIND_ENUM,
     SECTION_REGISTRY,
 )
+from app.services.agent.tools import AgentToolRunner
 from app.services.agent.tools import registry as tool_registry
 from app.services.auth_tokens import create_access_token
 from app.services.llm_client import (
@@ -1290,6 +1291,164 @@ def test_agent_executor_analyzes_pending_draft_resume() -> None:
     assert [section["id"] for section in analysis.sections] == ["project"]
 
 
+def test_agent_resume_lookup_finds_target_item() -> None:
+    request = AgentChatRequest(
+        prompt="缩短 ResuMate 项目",
+        locale="zh",
+        resume={
+            "basic": {"name": "王小明"},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [
+                        {
+                            "id": "project-1",
+                            "title": "ResuMate",
+                            "subtitle": "AI 简历编辑器",
+                            "meta": "React",
+                            "period": "2026",
+                            "description": "支持多轮 Agent 草稿编辑。",
+                            "highlights": ["实现可预览、可撤回的简历草稿。"],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call("call-lookup", "resume_lookup", {"query": "ResuMate"}),
+    )
+
+    assert tool.title == "resume_lookup"
+    assert result["output"]["sectionCount"] == 1
+    assert result["output"]["itemCount"] == 1
+    assert result["output"]["items"][0]["id"] == "project-1"
+    assert result["output"]["items"][0]["sectionId"] == "project"
+
+
+def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
+    request = AgentChatRequest(
+        prompt="把项目移动到其他经历",
+        locale="zh",
+        resume={
+            "basic": {"name": "王小明"},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [
+                        {
+                            "id": "project-1",
+                            "title": "ResuMate",
+                            "subtitle": "前端开发",
+                            "meta": "React",
+                            "period": "2026",
+                            "description": "",
+                            "highlights": ["实现 Agent 草稿预览。"],
+                        },
+                    ],
+                },
+                {
+                    "id": "other",
+                    "kind": "other",
+                    "layout": "list",
+                    "items": [],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-move",
+            "edit_move_item",
+            {
+                "fromSectionId": "project",
+                "toSectionId": "other",
+                "itemId": "project-1",
+                "reason": "用户要求移动该项目条目。",
+            },
+        ),
+    )
+
+    assert tool.title == "edit_move_item"
+    assert tool.state == "output-available"
+    assert result["output"]["editCount"] == 2
+    assert [edit.operation["type"] for edit in runner.edits] == [
+        "insert_item",
+        "delete_item",
+    ]
+    project_items = runner.draft_resume["sections"][0]["items"]
+    other_items = runner.draft_resume["sections"][1]["items"]
+    assert project_items == []
+    assert other_items[0]["id"] == "project-1"
+
+
+def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
+    request = AgentChatRequest(
+        prompt="把刚才草稿里的项目描述再短一点",
+        locale="zh",
+        resume={"basic": {"name": "王小明"}, "sections": []},
+        draftState={
+            "id": "draft-current",
+            "status": "pending",
+            "resume": {
+                "basic": {"name": "王小明"},
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "layout": "timeline",
+                        "items": [
+                            {
+                                "id": "project-1",
+                                "title": "ResuMate",
+                                "subtitle": "前端开发",
+                                "description": "支持复杂的 Agent 草稿编辑流程。",
+                                "highlights": ["实现可预览、可应用、可撤回草稿。"],
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-rewrite",
+            "draft_rewrite",
+            {
+                "edits": [
+                    {
+                        "title": "缩短项目描述",
+                        "target": "sections.project.items.project-1",
+                        "reason": "用户要求缩短上一版草稿。",
+                        "operation": {
+                            "type": "update_item",
+                            "sectionId": "project",
+                            "itemId": "project-1",
+                            "patch": {"description": "支持 Agent 草稿编辑。"},
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    item = runner.draft_resume["sections"][0]["items"][0]
+    assert tool.title == "draft_rewrite"
+    assert result["output"]["editCount"] == 1
+    assert item["description"] == "支持 Agent 草稿编辑。"
+
+
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
@@ -1779,6 +1938,22 @@ def test_agent_section_registry_drives_schema_and_prompt() -> None:
         assert f"- {kind}:" in EDIT_OPERATION_GUIDES["zh"]
 
 
+def test_agent_fine_grained_tools_are_registered() -> None:
+    tool_names = {
+        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
+    }
+
+    assert {
+        "resume_lookup",
+        "draft_diff_summary",
+        "edit_move_item",
+        "edit_split_item",
+        "edit_merge_items",
+        "skills_classify",
+        "draft_rewrite",
+    } <= tool_names
+
+
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
     variants = tool_registry.OPERATION_SCHEMA["oneOf"]
     by_type = {
@@ -2051,7 +2226,7 @@ def test_agent_chat_reports_invalid_model_edit_operation(
     assert tool["state"] == "output-error"
     assert tool["output"]["rejectedEditCount"] == 1
     assert "itemId" in rejected_edit["reason"]
-    assert "No executable edits were accepted" in tool["errorText"]
+    assert "没有可执行的修改被接受" in tool["errorText"]
 
 
 def test_agent_model_error_does_not_return_llm_tool(

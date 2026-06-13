@@ -14,6 +14,7 @@ from ..executor import (
     _conversation_depth,
     _current_prompt,
 )
+from ..localization import agent_text
 from ..prompts import (
     EDIT_OPERATION_GUIDES,
     FINAL_RESPONSE_PROMPTS,
@@ -750,4 +751,4 @@ def _visible_edit_summaries(
 
 
 def _locale_name(request: AgentChatRequest) -> str:
-    return "Chinese" if request.locale == "zh" else "English"
+    return agent_text(request.locale, "locale.name")

@@ -14,6 +14,7 @@ from app.schemas.agent import (
 
 from .editing import _string_list
 from .integrations import JD_URL_PATTERN, WebReference, WebSearchResult, _compact_text
+from .localization import agent_text, section_label
 from .models import EditPlanStep, JobReference, ResumeAnalysis
 
 
@@ -104,25 +105,19 @@ def _visible_plan_steps(request: AgentChatRequest) -> list[str]:
     )
     asks_export = "pdf" in prompt or "导出" in prompt or "export" in prompt
 
-    if request.locale == "zh":
-        steps = ["检查当前简历内容"]
-        if has_jd_context:
-            steps.append("确认目标岗位要求")
-        steps.extend(["定位需要调整的模块", "生成可预览草稿"])
-        if asks_export:
-            steps.append("准备导出结果")
-        else:
-            steps.append("汇总修改结果")
-        return steps[:5]
-
-    steps = ["Review the current resume"]
+    steps = [agent_text(request.locale, "plan.review_resume")]
     if has_jd_context:
-        steps.append("Confirm target-role requirements")
-    steps.extend(["Identify sections to adjust", "Generate a preview draft"])
+        steps.append(agent_text(request.locale, "plan.confirm_target"))
+    steps.extend(
+        [
+            agent_text(request.locale, "plan.locate_sections"),
+            agent_text(request.locale, "plan.generate_draft"),
+        ],
+    )
     if asks_export:
-        steps.append("Prepare the export result")
+        steps.append(agent_text(request.locale, "plan.prepare_export"))
     else:
-        steps.append("Summarize the changes")
+        steps.append(agent_text(request.locale, "plan.summarize"))
     return steps[:5]
 
 
@@ -150,34 +145,7 @@ def _section_label(section: dict[str, object], locale: str) -> str:
     if isinstance(custom_title, str) and custom_title.strip():
         return custom_title.strip()
 
-    kind = section.get("kind")
-    zh_labels = {
-        "education": "教育经历",
-        "work": "工作经历",
-        "internship": "实习经历",
-        "project": "项目经历",
-        "skills": "技能",
-        "awards": "获奖经历",
-        "certificates": "证书",
-        "languages": "语言能力",
-        "other": "其他经历",
-        "custom": "自定义模块",
-    }
-    en_labels = {
-        "education": "Education",
-        "work": "Work Experience",
-        "internship": "Internship Experience",
-        "project": "Projects",
-        "skills": "Skills",
-        "awards": "Awards",
-        "certificates": "Certificates",
-        "languages": "Languages",
-        "other": "Other",
-        "custom": "Custom Section",
-    }
-    labels = zh_labels if locale == "zh" else en_labels
-
-    return labels.get(str(kind), "模块" if locale == "zh" else "Section")
+    return section_label(section.get("kind"), locale)
 
 
 class AgentPlanExecutor:
@@ -231,10 +199,7 @@ class AgentPlanExecutor:
     def jd_search_query(self, role: str) -> str:
         """Build the deterministic JD search query for the inferred role."""
 
-        if self.is_zh:
-            return f"{role} 岗位 JD 职责 任职要求"
-
-        return f"{role} job description responsibilities requirements"
+        return agent_text(self.request.locale, "jd.search.query", role=role)
 
     def build_url_job_reference_from_web(
         self,
@@ -261,7 +226,7 @@ class AgentPlanExecutor:
             tool_state="output-available" if web_reference else "output-error",
             tool_error=None
             if web_reference
-            else "JD URL could not be fetched or parsed.",
+            else agent_text(self.request.locale, "jd.url.fetch_error"),
             result_count=1 if web_reference else 0,
         )
 
@@ -275,15 +240,7 @@ class AgentPlanExecutor:
     ) -> JobReference:
         """Convert an optional JD search result into agent context."""
 
-        if self.is_zh:
-            fallback_excerpt = (
-                "未检测到 JD URL。已尝试按目标岗位和中文语境搜索 JD 参考。"
-            )
-        else:
-            fallback_excerpt = (
-                "No JD URL was detected. The agent will search a JD reference "
-                "from the target role and response language."
-            )
+        fallback_excerpt = agent_text(self.request.locale, "jd.search.fallback_excerpt")
 
         if search_result:
             excerpt = search_result.excerpt
@@ -330,7 +287,7 @@ class AgentPlanExecutor:
             if isinstance(headline, str) and headline.strip():
                 return headline.strip()[:40]
 
-        return "前端开发工程师" if self.is_zh else "frontend engineer"
+        return agent_text(self.request.locale, "role.default")
 
     def zh_role_patterns(self) -> list[str]:
         """Return conservative Chinese patterns for explicit target roles."""
@@ -451,57 +408,45 @@ class AgentPlanExecutor:
 
         if not self.has_editable_resume_content(analysis):
             if wants_add or wants_bullet:
-                reason = (
-                    "当前简历还没有可编辑条目，先把用户提供的项目内容转成可预览模块。"
-                    if self.is_zh
-                    else (
-                        "The resume has no editable items yet, so first turn "
-                        "the provided project content into a previewable section."
-                    )
+                reason = agent_text(
+                    self.request.locale,
+                    "plan.reason.insert_project_empty_resume",
                 )
                 plan.append(EditPlanStep("insert_project", "sections", reason))
             return plan
 
         if wants_summary:
-            reason = (
-                "简介需要先对齐目标岗位和 JD 关键词。"
-                if self.is_zh
-                else "The summary should align with the target role and JD keywords."
+            reason = agent_text(
+                self.request.locale,
+                "plan.reason.replace_summary",
             )
             plan.append(EditPlanStep("replace_summary", "basic.summary", reason))
 
         if wants_bullet and self.find_first_item_section(analysis):
-            reason = (
-                "最强经历需要更明确地呈现职责、技术和结果。"
-                if self.is_zh
-                else (
-                    "The strongest experience needs clearer responsibility, "
-                    "stack, and outcome."
-                )
+            reason = agent_text(
+                self.request.locale,
+                "plan.reason.update_first_item",
             )
             plan.append(EditPlanStep("update_first_item", "sections.items", reason))
 
         if wants_add or (wants_bullet and not self.find_project_section(analysis)):
-            reason = (
-                "根据目标岗位补充一个可验证的项目模块。"
-                if self.is_zh
-                else "Add a verifiable project section for the target role."
+            reason = agent_text(
+                self.request.locale,
+                "plan.reason.insert_project",
             )
             plan.append(EditPlanStep("insert_project", "sections", reason))
 
         if wants_reorder and len(analysis.sections) > 1:
-            reason = (
-                "把更能证明岗位匹配度的模块放在教育信息之前。"
-                if self.is_zh
-                else "Move stronger role-fit sections ahead of education."
+            reason = agent_text(
+                self.request.locale,
+                "plan.reason.reorder_sections",
             )
             plan.append(EditPlanStep("reorder_sections", "sections", reason))
 
         if wants_delete and analysis.empty_section_ids:
-            reason = (
-                "删除没有可见内容的空模块，减少干扰。"
-                if self.is_zh
-                else "Remove empty sections so the resume is easier to scan."
+            reason = agent_text(
+                self.request.locale,
+                "plan.reason.delete_empty_sections",
             )
             plan.append(EditPlanStep("delete_empty_sections", "sections", reason))
 
@@ -560,25 +505,22 @@ class AgentPlanExecutor:
         """Build the summary replacement operation."""
 
         keywords = analysis.missing_keywords[:3] or analysis.matched_keywords[:3]
-        if self.is_zh:
-            keyword_text = f"，重点覆盖 {'、'.join(keywords)}" if keywords else ""
-            replacement = (
-                f"面向{job_reference.role}岗位，具备与业务场景结合的项目推进、"
-                f"工程实现和跨模块协作经验{keyword_text}。能够把需求拆解为可落地"
-                "方案，并通过清晰的交付结果证明技术能力。"
+        keyword_text = ""
+        if keywords:
+            keyword_text = agent_text(
+                self.request.locale,
+                "summary.keyword_text",
+                keywords=agent_text(self.request.locale, "list.separator").join(
+                    keywords,
+                ),
             )
-            title = "生成可预览的个人简介草稿"
-        else:
-            keyword_text = (
-                f" with emphasis on {', '.join(keywords)}" if keywords else ""
-            )
-            replacement = (
-                f"Targeting {job_reference.role} roles, with practical experience "
-                f"turning product requirements into maintainable engineering "
-                f"solutions{keyword_text}. Known for clear execution, cross-functional "
-                "collaboration, and outcome-oriented delivery."
-            )
-            title = "Create a previewable summary draft"
+        replacement = agent_text(
+            self.request.locale,
+            "summary.replacement",
+            role=job_reference.role,
+            keyword_text=keyword_text,
+        )
+        title = agent_text(self.request.locale, "title.summary_draft")
 
         return AgentResumeEditSuggestion(
             id=f"edit-{uuid4().hex[:8]}",
@@ -623,18 +565,12 @@ class AgentPlanExecutor:
             return None
 
         current_highlights = _string_list(item.get("highlights"))
-        if self.is_zh:
-            new_highlight = (
-                f"围绕{job_reference.role}岗位补充技术取舍、协作边界和可验证结果，"
-                "让经历从职责描述升级为能力证明。"
-            )
-            title = "补强首个经历条目"
-        else:
-            new_highlight = (
-                f"Add role-specific proof for {job_reference.role}: technical "
-                "trade-offs, collaboration scope, and measurable outcome."
-            )
-            title = "Strengthen the first experience item"
+        new_highlight = agent_text(
+            self.request.locale,
+            "highlight.first_item",
+            role=job_reference.role,
+        )
+        title = agent_text(self.request.locale, "title.strengthen_first_item")
 
         section_id = str(section["id"])
         item_id = str(item["id"])
@@ -666,18 +602,11 @@ class AgentPlanExecutor:
         item_id = f"item-agent-project-{uuid4().hex[:8]}"
         prompt_project = self.extract_project_from_prompt()
 
-        if self.is_zh:
-            title = "新增项目经历模块"
-            section_title = "项目经历"
-            project_title = prompt_project["title"]
-            description = prompt_project["description"]
-            highlights = prompt_project["highlights"]
-        else:
-            title = "Add a project section"
-            section_title = "Projects"
-            project_title = prompt_project["title"]
-            description = prompt_project["description"]
-            highlights = prompt_project["highlights"]
+        title = agent_text(self.request.locale, "title.add_project_section")
+        section_title = section_label("project", self.request.locale)
+        project_title = prompt_project["title"]
+        description = prompt_project["description"]
+        highlights = prompt_project["highlights"]
 
         section = {
             "id": section_id,
@@ -869,7 +798,7 @@ class AgentPlanExecutor:
 
         return AgentResumeEditSuggestion(
             id=f"edit-{uuid4().hex[:8]}",
-            title="调整模块顺序" if self.is_zh else "Reorder resume sections",
+            title=agent_text(self.request.locale, "title.reorder_sections"),
             target="sections",
             reason=step.reason,
             replacement=", ".join(ordered_ids),
@@ -903,10 +832,10 @@ class AgentPlanExecutor:
             edits.append(
                 AgentResumeEditSuggestion(
                     id=f"edit-{uuid4().hex[:8]}",
-                    title=(
-                        f"删除空模块：{label}"
-                        if self.is_zh
-                        else f"Delete empty section: {label}"
+                    title=agent_text(
+                        self.request.locale,
+                        "title.delete_empty_section",
+                        label=label,
                     ),
                     target=f"sections.{section_id}",
                     reason=step.reason,
@@ -1121,47 +1050,34 @@ class AgentPlanExecutor:
         """Build short guidance text next to executable edits."""
 
         if not self.has_editable_resume_content(analysis):
-            return (
-                [
-                    "当前简历内容太少，本轮不会生成可执行草稿，避免凭空编造经历。",
-                    "请先补充真实项目、实习、教育或技能信息，再让 Agent 修改。",
-                    f"本轮参考岗位：{job_reference.role}。",
-                ]
-                if self.is_zh
-                else [
-                    (
-                        "The resume has too little content, so no executable "
-                        "draft was generated."
-                    ),
-                    (
-                        "Add real projects, internships, education, or skills "
-                        "before editing."
-                    ),
-                    f"Target role for this pass: {job_reference.role}.",
-                ]
-            )
+            return [
+                agent_text(self.request.locale, "suggestion.low_content"),
+                agent_text(self.request.locale, "suggestion.add_real_experience"),
+                agent_text(
+                    self.request.locale,
+                    "suggestion.target_role",
+                    role=job_reference.role,
+                ),
+            ]
 
-        if self.is_zh:
-            suggestions = [
-                "先在草稿预览中检查高亮区域，再决定应用或撤回。",
-                f"本轮参考岗位：{job_reference.role}。",
-            ]
-            if analysis.missing_keywords:
-                suggestions.append(
-                    f"优先自然补足：{' / '.join(analysis.missing_keywords[:3])}。",
-                )
-        else:
-            suggestions = [
-                "Review highlighted draft areas before applying or discarding.",
-                f"Target role for this pass: {job_reference.role}.",
-            ]
-            if analysis.missing_keywords:
-                suggestions.append(
-                    (
-                        "Work these gaps in naturally: "
-                        f"{', '.join(analysis.missing_keywords[:3])}."
+        suggestions = [
+            agent_text(self.request.locale, "suggestion.review_draft"),
+            agent_text(
+                self.request.locale,
+                "suggestion.target_role",
+                role=job_reference.role,
+            ),
+        ]
+        if analysis.missing_keywords:
+            suggestions.append(
+                agent_text(
+                    self.request.locale,
+                    "suggestion.draft_gap_keywords",
+                    keywords=agent_text(self.request.locale, "list.separator").join(
+                        analysis.missing_keywords[:3],
                     ),
-                )
+                ),
+            )
 
         return suggestions[:3]
 
@@ -1176,11 +1092,7 @@ class AgentPlanExecutor:
         if not terms:
             terms = [job_reference.role]
 
-        detail = (
-            "准备成“概念解释 + 项目例子 + 常见追问”的结构。"
-            if self.is_zh
-            else "Prepare this as definition, project example, and likely follow-ups."
-        )
+        detail = agent_text(self.request.locale, "knowledge.default_detail")
 
         return [AgentKnowledgeItem(title=term, detail=detail) for term in terms]
 
@@ -1191,24 +1103,17 @@ class AgentPlanExecutor:
         """Return quick replies that keep draft editing moving."""
 
         if not edits:
-            return (
-                ["我先补充真实经历", "粘贴目标 JD", "添加项目经历"]
-                if self.is_zh
-                else [
-                    "I will add real experience first",
-                    "Paste the target JD",
-                    "Add a project section",
-                ]
-            )
-
-        if self.is_zh:
-            return ["预览这些修改", "调整模块顺序", "删除空模块", "新增项目经历"]
+            return [
+                agent_text(self.request.locale, "quick.add_real_experience"),
+                agent_text(self.request.locale, "quick.paste_jd"),
+                agent_text(self.request.locale, "quick.add_project"),
+            ]
 
         return [
-            "Preview these edits",
-            "Reorder sections",
-            "Delete empty sections",
-            "Add a project section",
+            agent_text(self.request.locale, "quick.preview_edits"),
+            agent_text(self.request.locale, "quick.reorder_sections"),
+            agent_text(self.request.locale, "quick.delete_empty_sections"),
+            agent_text(self.request.locale, "quick.add_project"),
         ]
 
     def build_actions(
@@ -1236,45 +1141,29 @@ class AgentPlanExecutor:
 
         if finish_status == "blocked":
             reason = finish_reason.strip()
-            if self.is_zh:
-                detail = f"原因：{reason}" if reason else "原因：当前信息不足。"
-                return (
-                    "我还不能生成可靠的可预览修改草稿。"
-                    f"{detail} 请补充目标字段、模块、条目或真实经历后再继续。"
-                )
-
-            detail = f"Reason: {reason}" if reason else "Reason: not enough context."
-            return (
-                "I cannot produce a reliable previewable draft yet. "
-                f"{detail} Provide the target field, section, item, or real "
-                "experience details before continuing."
+            reason_key = (
+                "response.blocked.reason"
+                if reason
+                else "response.blocked.default_reason"
+            )
+            detail = agent_text(
+                self.request.locale,
+                reason_key,
+                reason=reason,
+            )
+            return agent_text(
+                self.request.locale,
+                "response.blocked.text",
+                detail=detail,
             )
 
         if not edits:
-            if self.is_zh:
-                return (
-                    "我已完成本轮需要的工具检查，但没有生成可安全预览的修改草稿。"
-                    "如果你希望我直接改某个模块，请说明目标字段、模块或条目；如果"
-                    "需要按岗位匹配，请补充目标 JD 或岗位名称。"
-                )
+            return agent_text(self.request.locale, "response.no_edits")
 
-            return (
-                "I completed the tool checks needed for this turn, but did not "
-                "produce a safe previewable draft. Tell me which field, section, "
-                "or item to modify; if this should be role-matched, provide the "
-                "target JD or role."
-            )
-
-        if self.is_zh:
-            return (
-                f"我已完成本轮处理，生成了 {len(edits)} 处可预览修改。"
-                "预览区会先显示临时草稿和高亮位置，确认后可以应用或撤回。"
-            )
-
-        return (
-            f"I completed this pass and generated {len(edits)} previewable "
-            "changes. The preview shows a temporary highlighted draft that you "
-            "can apply or discard."
+        return agent_text(
+            self.request.locale,
+            "response.with_edits",
+            count=len(edits),
         )
 
     def find_project_section(

@@ -23,8 +23,17 @@ from ..integrations import (
     _fetch_web_reference,
     _search_jd_reference,
 )
+from ..localization import agent_text
 from ..models import EditPlanStep, JobReference, ResumeAnalysis
 from ..runtime.context import AgentRuntimeContext
+from .structured import (
+    classify_skills_entries,
+    draft_diff_summary,
+    lookup_resume,
+    merge_item_entries,
+    move_item_entries,
+    split_item_entries,
+)
 
 
 class AgentToolRunner:
@@ -69,8 +78,15 @@ class AgentToolRunner:
 
         handlers = {
             "resume_analysis": self.run_resume_analysis,
+            "resume_lookup": self.run_resume_lookup,
+            "draft_diff_summary": self.run_draft_diff_summary,
             "edit_plan": self.run_edit_plan,
             "edit_execute": self.run_edit_execute,
+            "edit_move_item": self.run_edit_move_item,
+            "edit_split_item": self.run_edit_split_item,
+            "edit_merge_items": self.run_edit_merge_items,
+            "skills_classify": self.run_skills_classify,
+            "draft_rewrite": self.run_draft_rewrite,
             "finish": self.run_finish,
         }
         handler = handlers.get(tool_call.name)
@@ -89,7 +105,11 @@ class AgentToolRunner:
             title=tool_call.name,
             state="output-error",
             input=tool_call.arguments,
-            errorText=f"Unknown tool: {tool_call.name}",
+            errorText=agent_text(
+                self.executor.request.locale,
+                "error.unknown_tool",
+                name=tool_call.name,
+            ),
         )
 
     async def run_jd_url_fetch_async(
@@ -111,7 +131,10 @@ class AgentToolRunner:
                 title="jd_url_fetch",
                 state="output-error",
                 input=tool_call.arguments,
-                errorText="Missing JD URL.",
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.jd_url_missing",
+                ),
             )
 
         agent_api = get_agent_api()
@@ -175,6 +198,30 @@ class AgentToolRunner:
         self.analysis = self.executor.analyze_resume()
         return self.executor.build_resume_analysis_tool(self.analysis, tool_call.id)
 
+    def run_resume_lookup(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Locate targeted resume sections/items for smaller edits."""
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type="tool-resume_lookup",
+            title="resume_lookup",
+            state="output-available",
+            input=tool_call.arguments,
+            output=lookup_resume(self.draft_resume, tool_call.arguments),
+        )
+
+    def run_draft_diff_summary(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Expose current draft edits/diffs for follow-up requests."""
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type="tool-draft_diff_summary",
+            title="draft_diff_summary",
+            state="output-available",
+            input=tool_call.arguments,
+            output=draft_diff_summary(self.executor.request.draft_state, self.edits),
+        )
+
     def run_edit_plan(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Create an edit plan from model arguments or conservative fallback."""
 
@@ -198,7 +245,10 @@ class AgentToolRunner:
                 title="edit_plan",
                 state="output-error",
                 input=tool_call.arguments,
-                errorText="Call resume_analysis first or provide explicit plan steps.",
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.edit_plan_missing_inputs",
+                ),
             )
 
         self.plan = self.executor.create_plan(
@@ -245,9 +295,9 @@ class AgentToolRunner:
                     "rejectedEditCount": len(rejected_edits),
                     "rejectedEdits": rejected_edits,
                 },
-                errorText=(
-                    "No executable edits were accepted. Check required fields "
-                    "such as sectionId, itemId, path, patch, and operation type."
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.edit_execute_rejected_detailed",
                 ),
             )
 
@@ -274,7 +324,10 @@ class AgentToolRunner:
                 title="edit_execute",
                 state="output-error",
                 input=tool_call.arguments,
-                errorText="Call edit_plan first or provide explicit executable edits.",
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.edit_execute_missing_inputs",
+                ),
             )
 
         fallback_edits = self.executor.execute_plan(
@@ -297,6 +350,129 @@ class AgentToolRunner:
             observations=observations,
         )
 
+    def run_edit_move_item(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Move one existing item using validated draft operations."""
+
+        entries, error = move_item_entries(
+            self.draft_resume,
+            tool_call.arguments,
+            locale=self.executor.request.locale,
+        )
+        return self.run_structured_edit_tool(tool_call, entries, error)
+
+    def run_edit_split_item(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Split one item into two draft records."""
+
+        entries, error = split_item_entries(
+            tool_call.arguments,
+            locale=self.executor.request.locale,
+        )
+        return self.run_structured_edit_tool(tool_call, entries, error)
+
+    def run_edit_merge_items(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Merge related items into a single draft record."""
+
+        entries, error = merge_item_entries(
+            tool_call.arguments,
+            locale=self.executor.request.locale,
+        )
+        return self.run_structured_edit_tool(tool_call, entries, error)
+
+    def run_skills_classify(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Create or replace grouped skill items."""
+
+        entries, error = classify_skills_entries(
+            self.draft_resume,
+            tool_call.arguments,
+            locale=self.executor.request.locale,
+        )
+        return self.run_structured_edit_tool(tool_call, entries, error)
+
+    def run_draft_rewrite(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Apply follow-up edits against the current draft resume."""
+
+        edits = tool_call.arguments.get("edits")
+        entries = edits if isinstance(edits, list) else []
+        error = (
+            None
+            if entries
+            else agent_text(
+                self.executor.request.locale,
+                "error.draft_rewrite_missing_edits",
+            )
+        )
+        return self.run_structured_edit_tool(tool_call, entries, error)
+
+    def run_structured_edit_tool(
+        self,
+        tool_call: LlmToolCall,
+        entries: list[dict[str, Any]],
+        error: str | None,
+    ) -> AgentToolInvocation:
+        """Apply tool-specific edit entries through the shared validator."""
+
+        if error:
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type=f"tool-{tool_call.name}",
+                title=tool_call.name,
+                state="output-error",
+                input=tool_call.arguments,
+                output={"editCount": 0},
+                errorText=error,
+            )
+
+        model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
+            self.draft_resume,
+            entries,
+            locale=self.executor.request.locale,
+        )
+        if not model_edits:
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type=f"tool-{tool_call.name}",
+                title=tool_call.name,
+                state="output-error",
+                input=tool_call.arguments,
+                output={
+                    "editCount": 0,
+                    "rejectedEditCount": len(rejected_edits),
+                    "rejectedEdits": rejected_edits,
+                },
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.edit_execute_rejected",
+                ),
+            )
+
+        before_resume = deepcopy(self.draft_resume)
+        _apply_edit_operations(self.draft_resume, model_edits)
+        self.edits = _merge_edits(self.edits, model_edits)
+        observations = _edit_observations(
+            before_resume,
+            self.draft_resume,
+            model_edits,
+        )
+        output: dict[str, Any] = {
+            "editCount": len(model_edits),
+            "operationTypes": [
+                edit.operation.get("type") for edit in model_edits if edit.operation
+            ],
+            "observations": observations,
+        }
+        if rejected_edits:
+            output["rejectedEditCount"] = len(rejected_edits)
+            output["rejectedEdits"] = rejected_edits
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-available",
+            input=tool_call.arguments,
+            output=output,
+        )
+
     def run_finish(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Record the model's explicit ReAct finish action without showing it."""
 
@@ -317,9 +493,9 @@ class AgentToolRunner:
             output={
                 "status": status,
                 "reason": reason,
-                "observation": (
-                    "ReAct loop finished. The assistant may now produce the "
-                    "final user-facing answer without exposing system prompts."
+                "observation": agent_text(
+                    self.executor.request.locale,
+                    "tool.finish.observation",
                 ),
             },
         )
