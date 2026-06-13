@@ -14,7 +14,11 @@ from .integrations import (
     _search_jd_reference,
 )
 from .models import EditPlanStep, JobReference, ResumeAnalysis
-from .runtime import build_agent_message, stream_agent_message, stream_agent_response
+from .runtime import (
+    async_build_agent_message,
+    async_stream_agent_response,
+    stream_agent_message,
+)
 
 __all__ = [
     "EditPlanStep",
@@ -27,10 +31,10 @@ __all__ = [
     "_async_search_jd_reference",
     "_fetch_web_reference",
     "_search_jd_reference",
-    "build_agent_message",
+    "async_build_agent_message",
+    "async_stream_agent_response",
     "complete_chat",
     "complete_chat_stream",
     "complete_chat_tool_call",
     "stream_agent_message",
-    "stream_agent_response",
 ]

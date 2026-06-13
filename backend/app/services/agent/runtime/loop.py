@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,98 +62,6 @@ def _tool_call_assistant_message(
         message["reasoning_content"] = reasoning
 
     return message
-
-
-def run_agent_tool_call_loop(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-    *,
-    on_tools: Callable[[list[AgentToolInvocation]], None] | None = None,
-) -> AgentToolRunner:
-    """Let the model choose tools, execute them, and return used-tool state."""
-
-    runner: AgentToolRunner | None = None
-    for event in iter_agent_tool_call_loop(request, config):
-        if event.kind == "tools" and on_tools:
-            on_tools(event.tools or [])
-        if event.kind == "done":
-            runner = event.runner
-
-    if runner is None:
-        raise RuntimeError("Agent tool loop finished without a runner.")
-
-    return runner
-
-
-def iter_agent_tool_call_loop(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> Iterator[AgentToolLoopEvent]:
-    """Yield tool-loop state as each model-selected action executes."""
-
-    executor = AgentPlanExecutor(request)
-    runner = AgentToolRunner(executor)
-    messages = build_agent_messages(request, config, mode="tools")
-    max_iterations = _react_max_iterations(request)
-
-    for _ in range(max_iterations):
-        response = get_agent_api().complete_chat_tool_call(
-            config,
-            messages,
-            AGENT_TOOL_SCHEMAS,
-        )
-        if not response.tool_calls:
-            if response.content:
-                runner.terminal_text = response.content
-                runner.finished = True
-                yield AgentToolLoopEvent(
-                    kind="text",
-                    text=response.content,
-                    terminal=True,
-                )
-                break
-            break
-
-        tool_calls = response.tool_calls
-        if response.content:
-            yield AgentToolLoopEvent(kind="text", text=response.content)
-        messages.append(
-            _tool_call_assistant_message(
-                response.content,
-                tool_calls,
-                response.reasoning,
-            ),
-        )
-        tool_messages: list[dict[str, Any]] = []
-        has_executed_edits = False
-        for tool_call in tool_calls:
-            if tool_call.name != "finish":
-                yield AgentToolLoopEvent(
-                    kind="tools",
-                    tools=[
-                        *runner.tools,
-                        running_model_tool(tool_call),
-                    ],
-                )
-            tool, result = runner.run(tool_call)
-            if tool_call.name != "finish":
-                yield AgentToolLoopEvent(kind="tools", tools=runner.tools)
-            if tool_call.name == "edit_execute" and runner.edits:
-                has_executed_edits = True
-            tool_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result, ensure_ascii=False),
-                },
-            )
-        if has_executed_edits:
-            yield AgentToolLoopEvent(kind="edits", edits=runner.edits)
-        messages.extend(tool_messages)
-        if runner.finished:
-            break
-
-    yield AgentToolLoopEvent(kind="done", runner=runner)
 
 
 async def _async_tool_call_response(
@@ -233,7 +141,7 @@ async def async_iter_agent_tool_call_loop(
                         running_model_tool(tool_call),
                     ],
                 )
-            tool, result = await runner.run_async(tool_call, runtime)
+            tool, result = await runner.run(tool_call, runtime)
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(kind="tools", tools=runner.tools)
             if tool_call.name == "edit_execute" and runner.edits:

@@ -1,24 +1,25 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from sqlite3 import Connection
 
 from app.schemas.agent import AgentChatMessage, AgentChatRequest
 
-from .runtime import build_agent_message, stream_agent_response
+from .runtime import async_build_agent_message, async_stream_agent_response
 
 
 class ResumeAgent:
     """Small facade for the resume agent service."""
 
-    def build_message(
+    async def build_message(
         self,
         request: AgentChatRequest,
         conn: Connection,
     ) -> AgentChatMessage:
-        return build_agent_message(request, conn)
+        return await async_build_agent_message(request, conn)
 
-    def stream_response(
+    async def stream_response(
         self,
         request: AgentChatRequest,
         conn: Connection,
-    ) -> Iterator[str]:
-        yield from stream_agent_response(request, conn)
+    ) -> AsyncIterator[str]:
+        async for chunk in async_stream_agent_response(request, conn):
+            yield chunk

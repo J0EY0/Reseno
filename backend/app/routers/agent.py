@@ -13,7 +13,7 @@ from app.schemas.agent import (
     AgentSessionResponse,
 )
 from app.schemas.common import APP_MESSAGE_BAD_REQUEST, ApiResponse, ok_response
-from app.services.agent import build_agent_message
+from app.services.agent import async_build_agent_message
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import (
@@ -26,11 +26,15 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 DISCONNECT_POLL_SECONDS = 0.25
 
 
-def _build_and_store_message(request: AgentChatRequest) -> AgentChatMessage:
+async def _build_and_store_message(
+    http_request: Request,
+    request: AgentChatRequest,
+) -> AgentChatMessage:
     """Build and persist one non-streaming assistant message."""
 
+    runtime = AgentRuntimeContext(is_aborted=http_request.is_disconnected)
     with closing(connect()) as conn:
-        message = build_agent_message(request, conn)
+        message = await async_build_agent_message(request, conn, runtime)
         append_agent_exchange(conn, request, message)
 
     return message
@@ -127,6 +131,6 @@ async def post_agent_chat(
             media_type="text/event-stream",
         )
 
-    message = await anyio.to_thread.run_sync(_build_and_store_message, request)
+    message = await _build_and_store_message(http_request, request)
 
     return ok_response(AgentChatResponse(message=message))

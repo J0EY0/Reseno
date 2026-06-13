@@ -12,7 +12,6 @@ from app.schemas.agent import (
     AgentToolInvocation,
 )
 
-from .compat import get_agent_api
 from .editing import _string_list
 from .integrations import JD_URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .models import EditPlanStep, JobReference, ResumeAnalysis
@@ -179,23 +178,6 @@ class AgentPlanExecutor:
         self.is_zh = request.locale == "zh"
         self.prompt = _current_prompt(request)
 
-    def build_message(self) -> AgentChatMessage:
-        """Run the analysis, planning, and execution phases."""
-
-        job_reference = self.resolve_job_reference()
-        analysis = self.analyze_resume()
-        plan = self.create_plan(job_reference, analysis)
-        edits = self.execute_plan(plan, job_reference, analysis)
-        tools = self.build_tools(job_reference, analysis, plan, edits)
-
-        return self.build_message_from_parts(
-            job_reference=job_reference,
-            analysis=analysis,
-            plan=plan,
-            edits=edits,
-            tools=tools,
-        )
-
     def build_message_from_parts(
         self,
         *,
@@ -243,21 +225,6 @@ class AgentPlanExecutor:
 
         return f"{role} job description responsibilities requirements"
 
-    def resolve_job_reference(self) -> JobReference:
-        """Resolve the JD URL or a deterministic JD search reference."""
-
-        combined_context = "\n".join(
-            item for item in (self.prompt, self.request.job_brief) if item.strip()
-        )
-        url_match = JD_URL_PATTERN.search(combined_context)
-        role = self.infer_target_role()
-
-        if url_match:
-            url = url_match.group(0).rstrip(".,;，。；")
-            return self.build_url_job_reference(url, role)
-
-        return self.build_search_job_reference(role, self.jd_search_query(role))
-
     def build_url_job_reference_from_web(
         self,
         url: str,
@@ -286,12 +253,6 @@ class AgentPlanExecutor:
             else "JD URL could not be fetched or parsed.",
             result_count=1 if web_reference else 0,
         )
-
-    def build_url_job_reference(self, url: str, role: str) -> JobReference:
-        """Fetch a user-selected JD URL and convert it to agent context."""
-
-        web_reference = get_agent_api()._fetch_web_reference(url)
-        return self.build_url_job_reference_from_web(url, role, web_reference)
 
     def build_search_job_reference_from_result(
         self,
@@ -335,21 +296,6 @@ class AgentPlanExecutor:
             tool_state="output-error" if search_error else "output-available",
             tool_error=search_error,
             result_count=result_count,
-        )
-
-    def build_search_job_reference(self, role: str, query: str) -> JobReference:
-        """Search and fetch a JD reference selected by the model."""
-
-        agent_api = get_agent_api()
-        search_result, result_count, search_error = agent_api._search_jd_reference(
-            query,
-        )
-        return self.build_search_job_reference_from_result(
-            role,
-            query,
-            search_result,
-            result_count,
-            search_error,
         )
 
     def infer_target_role(self) -> str:

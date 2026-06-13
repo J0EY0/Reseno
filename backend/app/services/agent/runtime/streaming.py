@@ -15,7 +15,9 @@ from app.services.llm_client import (
     AgentLlmConfig,
     LlmRequestError,
     LlmStreamDelta,
+    async_complete_chat,
     async_complete_chat_stream,
+    complete_chat,
     complete_chat_stream,
     resolve_agent_llm_config,
 )
@@ -23,11 +25,7 @@ from app.services.llm_client import (
 from ..compat import get_agent_api
 from ..editing import _string_list
 from .context import AgentRunAborted, AgentRuntimeContext
-from .loop import (
-    async_iter_agent_tool_call_loop,
-    iter_agent_tool_call_loop,
-    run_agent_tool_call_loop,
-)
+from .loop import async_iter_agent_tool_call_loop
 from .messages import build_agent_messages
 
 
@@ -219,19 +217,54 @@ def _llm_error_detail(error: LlmRequestError) -> str:
     return detail[:320]
 
 
-def build_agent_message(
+async def _complete_chat_text(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    runtime: AgentRuntimeContext,
+) -> str:
+    """Complete one non-streaming provider response through async runtime."""
+
+    await runtime.checkpoint()
+    agent_api = get_agent_api()
+    sync_complete = agent_api.complete_chat
+    if sync_complete is not complete_chat:
+        return await runtime.run_sync(
+            sync_complete,
+            config,
+            messages,
+            timeout_seconds=config.timeout_seconds,
+        )
+
+    return await runtime.run_async(
+        async_complete_chat,
+        config,
+        messages,
+        timeout_seconds=config.timeout_seconds,
+    )
+
+
+async def async_build_agent_message(
     request: AgentChatRequest,
     conn: Connection,
+    runtime: AgentRuntimeContext | None = None,
 ) -> AgentChatMessage:
-    """Build a real model-backed ReAct assistant message."""
+    """Build a real model-backed ReAct assistant message asynchronously."""
 
+    runtime = runtime or AgentRuntimeContext()
     config = resolve_agent_llm_config(conn, request.model_config_data)
     if config is None:
         return _model_setup_message(request)
 
     draft: AgentChatMessage | None = None
     try:
-        runner = run_agent_tool_call_loop(request, config)
+        runner = None
+        async for event in async_iter_agent_tool_call_loop(request, config, runtime):
+            if event.kind == "done":
+                runner = event.runner
+
+        if runner is None:
+            raise LlmRequestError("Model provider returned an empty response.")
+
         if runner.tools or runner.finish_status:
             draft = runner.build_message()
         if draft and runner.finish_status and not runner.tools:
@@ -247,7 +280,9 @@ def build_agent_message(
 
         messages = build_agent_messages(request, config, mode="final", draft=draft)
 
-        raw_response = get_agent_api().complete_chat(config, messages)
+        raw_response = await _complete_chat_text(config, messages, runtime)
+    except AgentRunAborted:
+        raise
     except LlmRequestError as exc:
         return _model_error_message(request, config, exc)
 
@@ -509,253 +544,6 @@ def stream_agent_message(message: AgentChatMessage) -> Iterator[str]:
         "message_done",
         {"type": "message_done", "message": message_payload},
     )
-
-
-def stream_agent_response(
-    request: AgentChatRequest,
-    conn: Connection,
-    on_complete: Callable[[AgentChatMessage], None] | None = None,
-) -> Iterator[str]:
-    """Stream an agent response while the provider is still generating text."""
-
-    config = resolve_agent_llm_config(conn, request.model_config_data)
-    if config is None:
-        message = _model_setup_message(request)
-        yield from stream_agent_message(message)
-        on_complete_message(on_complete, message)
-        return
-
-    draft: AgentChatMessage | None = None
-    message_id = f"agent-msg-{uuid4().hex[:12]}"
-
-    yield _sse_event(
-        "message_start",
-        {
-            "type": "message_start",
-            "message": {
-                "id": message_id,
-                "role": "assistant",
-                "tone": "default",
-                "text": "",
-                "reasoning": "",
-            },
-        },
-    )
-
-    raw_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    timeline_parts: list[AgentTimelinePart] = []
-    tool_part_ids: dict[str, str] = {}
-
-    try:
-        runner = None
-        terminal_loop_text = False
-        for event in iter_agent_tool_call_loop(request, config):
-            if event.kind == "text":
-                visible_text = _visible_loop_text(event.text)
-                if visible_text:
-                    if event.terminal and not timeline_parts:
-                        raw_parts.append(visible_text)
-                        yield _text_delta(visible_text)
-                    else:
-                        separator = "\n\n" if raw_parts else ""
-                        visible_delta = f"{separator}{visible_text}"
-                        raw_parts.append(visible_delta)
-                        _append_timeline_text(timeline_parts, visible_text)
-                        yield _message_delta_event(
-                            "timeline",
-                            text="".join(raw_parts),
-                            timeline=_timeline_payload(timeline_parts),
-                        )
-                terminal_loop_text = terminal_loop_text or event.terminal
-                continue
-            if event.kind == "tools":
-                new_tool_ids = [
-                    tool.id
-                    for tool in event.tools or []
-                    if tool.id not in tool_part_ids
-                ]
-                if new_tool_ids:
-                    part_id = _append_timeline_tools(
-                        timeline_parts,
-                        new_tool_ids,
-                    )
-                    for tool_id in new_tool_ids:
-                        tool_part_ids[tool_id] = part_id
-                yield _message_delta_event(
-                    "tools",
-                    text="".join(raw_parts),
-                    tools=[
-                        tool.model_dump(mode="json", by_alias=True)
-                        for tool in event.tools or []
-                    ],
-                    timeline=_timeline_payload(timeline_parts),
-                )
-                continue
-            if event.kind == "edits":
-                yield _message_delta_event(
-                    "edits",
-                    edits=[
-                        edit.model_dump(mode="json", by_alias=True)
-                        for edit in event.edits or []
-                    ],
-                )
-                continue
-            if event.kind == "done":
-                runner = event.runner
-
-        if runner and (runner.tools or runner.finish_status):
-            draft = runner.build_message(message_id=message_id)
-
-        if draft and runner and runner.finish_status and not runner.tools:
-            yield _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "message": _message_delta_payload(draft),
-                },
-            )
-            yield _sse_event(
-                "message_done",
-                {
-                    "type": "message_done",
-                    "message": draft.model_dump(mode="json", by_alias=True),
-                },
-            )
-            on_complete_message(on_complete, draft)
-            return
-
-        if terminal_loop_text:
-            raw_response = "".join(raw_parts).strip()
-            if not raw_response:
-                raise LlmRequestError("Model provider returned an empty response.")
-            message = (
-                draft.model_copy(
-                    update={
-                        "text": raw_response,
-                        "timeline": timeline_parts,
-                    },
-                )
-                if draft
-                else _direct_llm_response(raw_response, message_id=message_id)
-            )
-            yield _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "message": _message_delta_payload(message),
-                },
-            )
-            yield _sse_event(
-                "message_done",
-                {
-                    "type": "message_done",
-                    "message": message.model_dump(mode="json", by_alias=True),
-                },
-            )
-            on_complete_message(on_complete, message)
-            return
-
-        if not draft:
-            raise LlmRequestError("Model provider returned an empty response.")
-
-        messages = build_agent_messages(
-            request,
-            config,
-            mode="streaming_final",
-            draft=draft,
-        )
-        if raw_parts:
-            raw_parts.append("\n\n")
-        final_part_id = ""
-        for delta in get_agent_api().complete_chat_stream(config, messages):
-            if delta.kind == "reasoning":
-                reasoning_parts.append(delta.delta)
-                yield _sse_event(
-                    "reasoning_delta",
-                    {
-                        "type": "reasoning_delta",
-                        "delta": delta.delta,
-                    },
-                )
-                continue
-
-            raw_parts.append(delta.delta)
-            if timeline_parts:
-                if not final_part_id:
-                    final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
-                    timeline_parts.append(_timeline_text_part(final_part_id, ""))
-                timeline_parts[-1].text = timeline_parts[-1].text + delta.delta
-                yield _message_delta_event(
-                    "timeline",
-                    text="".join(raw_parts),
-                    timeline=_timeline_payload(timeline_parts),
-                )
-                continue
-
-            yield _sse_event(
-                "text_delta",
-                {
-                    "type": "text_delta",
-                    "delta": delta.delta,
-                },
-            )
-
-        raw_response = "".join(raw_parts).strip()
-        if not raw_response:
-            raise LlmRequestError("Model provider returned an empty response.")
-    except LlmRequestError as exc:
-        message = _model_error_message(request, config, exc)
-        yield _sse_event(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "message": _message_delta_payload(message),
-            },
-        )
-        yield _sse_event(
-            "message_done",
-            {
-                "type": "message_done",
-                "message": message.model_dump(mode="json", by_alias=True),
-            },
-        )
-        on_complete_message(on_complete, message)
-        return
-
-    reasoning = "".join(reasoning_parts).strip()
-    message = (
-        draft.model_copy(
-            update={
-                "text": raw_response,
-                "timeline": timeline_parts,
-            },
-        )
-        if draft
-        else _direct_llm_response(
-            raw_response,
-            message_id=message_id,
-            reasoning=reasoning,
-        )
-    )
-    if draft and reasoning:
-        message = message.model_copy(update={"reasoning": reasoning})
-
-    yield _sse_event(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "message": _message_delta_payload(message),
-        },
-    )
-    yield _sse_event(
-        "message_done",
-        {
-            "type": "message_done",
-            "message": message.model_dump(mode="json", by_alias=True),
-        },
-    )
-    on_complete_message(on_complete, message)
 
 
 async def async_stream_agent_response(

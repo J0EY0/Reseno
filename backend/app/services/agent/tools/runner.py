@@ -44,12 +44,30 @@ class AgentToolRunner:
         self.finish_status = ""
         self.terminal_text = ""
 
-    def run(self, tool_call: LlmToolCall) -> tuple[AgentToolInvocation, dict[str, Any]]:
-        """Execute a model-selected tool and return its tool-message payload."""
+    async def run(
+        self,
+        tool_call: LlmToolCall,
+        runtime: AgentRuntimeContext,
+    ) -> tuple[AgentToolInvocation, dict[str, Any]]:
+        """Execute a model-selected tool through the async runtime."""
+
+        if tool_call.name == "jd_url_fetch":
+            tool = await self.run_jd_url_fetch_async(tool_call, runtime)
+        elif tool_call.name == "jd_reference_search":
+            tool = await self.run_jd_reference_search_async(tool_call, runtime)
+        else:
+            return await runtime.run_sync(self._run_local_tool, tool_call)
+
+        self.tools.append(tool)
+        return tool, self.tool_result(tool)
+
+    def _run_local_tool(
+        self,
+        tool_call: LlmToolCall,
+    ) -> tuple[AgentToolInvocation, dict[str, Any]]:
+        """Run a CPU/local-memory tool without network I/O."""
 
         handlers = {
-            "jd_url_fetch": self.run_jd_url_fetch,
-            "jd_reference_search": self.run_jd_reference_search,
             "resume_analysis": self.run_resume_analysis,
             "edit_plan": self.run_edit_plan,
             "edit_execute": self.run_edit_execute,
@@ -60,23 +78,6 @@ class AgentToolRunner:
 
         if tool_call.name != "finish":
             self.tools.append(tool)
-        return tool, self.tool_result(tool)
-
-    async def run_async(
-        self,
-        tool_call: LlmToolCall,
-        runtime: AgentRuntimeContext,
-    ) -> tuple[AgentToolInvocation, dict[str, Any]]:
-        """Execute a model-selected tool with async integrations when available."""
-
-        if tool_call.name == "jd_url_fetch":
-            tool = await self.run_jd_url_fetch_async(tool_call, runtime)
-        elif tool_call.name == "jd_reference_search":
-            tool = await self.run_jd_reference_search_async(tool_call, runtime)
-        else:
-            return await runtime.run_sync(self.run, tool_call)
-
-        self.tools.append(tool)
         return tool, self.tool_result(tool)
 
     def unknown_tool(self, tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -90,30 +91,6 @@ class AgentToolRunner:
             input=tool_call.arguments,
             errorText=f"Unknown tool: {tool_call.name}",
         )
-
-    def run_jd_url_fetch(self, tool_call: LlmToolCall) -> AgentToolInvocation:
-        """Fetch the JD URL chosen by the model."""
-
-        url = str(tool_call.arguments.get("url") or "").strip()
-        if not url:
-            match = JD_URL_PATTERN.search(self.executor.prompt)
-            url = match.group(0).rstrip(".,;，。；") if match else ""
-
-        if not url:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type="tool-jd_url_fetch",
-                title="jd_url_fetch",
-                state="output-error",
-                input=tool_call.arguments,
-                errorText="Missing JD URL.",
-            )
-
-        self.job_reference = self.executor.build_url_job_reference(
-            url,
-            self.executor.infer_target_role(),
-        )
-        return self.executor.build_jd_tool(self.job_reference, tool_call.id)
 
     async def run_jd_url_fetch_async(
         self,
@@ -154,20 +131,6 @@ class AgentToolRunner:
             self.executor.infer_target_role(),
             web_reference,
         )
-        return self.executor.build_jd_tool(self.job_reference, tool_call.id)
-
-    def run_jd_reference_search(self, tool_call: LlmToolCall) -> AgentToolInvocation:
-        """Search the JD query chosen by the model."""
-
-        role = str(tool_call.arguments.get("role") or "").strip()
-        if not role:
-            role = self.executor.infer_target_role()
-
-        query = str(tool_call.arguments.get("query") or "").strip()
-        if not query:
-            query = self.executor.jd_search_query(role)
-
-        self.job_reference = self.executor.build_search_job_reference(role, query)
         return self.executor.build_jd_tool(self.job_reference, tool_call.id)
 
     async def run_jd_reference_search_async(
