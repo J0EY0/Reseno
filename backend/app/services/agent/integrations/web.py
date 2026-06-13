@@ -2,11 +2,14 @@ import re
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
+
+import httpx
 
 JD_URL_PATTERN = re.compile(r"https?://[^\s)>\"]+")
+WEB_USER_AGENT = "ResuMate/1.0 (+https://resumate.local)"
+FETCH_MAX_BYTES = 220_000
+SEARCH_MAX_BYTES = 240_000
 
 
 @dataclass(frozen=True)
@@ -195,24 +198,22 @@ def _is_useful_web_excerpt(value: str) -> bool:
     return not any(marker in text for marker in blocked_markers)
 
 
-def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
-    """Fetch a URL and return visible text that can be cited."""
+def _web_headers(accept: str) -> dict[str, str]:
+    """Return headers shared by sync and async web requests."""
 
-    request = Request(
-        url,
-        headers={
-            "Accept": "text/html,text/plain;q=0.9,*/*;q=0.8",
-            "User-Agent": "ResuMate/1.0 (+https://resumate.local)",
-        },
-    )
+    return {
+        "Accept": accept,
+        "User-Agent": WEB_USER_AGENT,
+    }
 
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            raw = response.read(220_000)
-            content_type = response.headers.get("content-type", "")
-            charset = response.headers.get_content_charset() or "utf-8"
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
-        return None
+
+def _web_reference_from_response(
+    url: str,
+    raw: bytes,
+    content_type: str,
+    charset: str,
+) -> WebReference | None:
+    """Parse fetched response bytes into a JD reference."""
 
     decoded = raw.decode(charset, errors="replace")
     if "html" not in content_type.lower():
@@ -233,27 +234,106 @@ def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
     return WebReference(title=title or url, excerpt=excerpt)
 
 
+def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
+    """Fetch a URL and return visible text that can be cited."""
+
+    try:
+        with httpx.Client(
+            headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
+            follow_redirects=True,
+            timeout=timeout,
+        ) as client:
+            response = client.get(url)
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    return _web_reference_from_response(
+        url,
+        response.content[:FETCH_MAX_BYTES],
+        response.headers.get("content-type", ""),
+        response.encoding or "utf-8",
+    )
+
+
+async def _async_fetch_web_reference(
+    url: str,
+    timeout: float = 4.0,
+) -> WebReference | None:
+    """Fetch a URL with an async HTTP client and return visible citation text."""
+
+    try:
+        async with httpx.AsyncClient(
+            headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
+            follow_redirects=True,
+            timeout=timeout,
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    raw = response.content[:FETCH_MAX_BYTES]
+    return _web_reference_from_response(
+        url,
+        raw,
+        response.headers.get("content-type", ""),
+        response.encoding or "utf-8",
+    )
+
+
 def _search_web_results(
     query: str,
     timeout: float = 6.0,
 ) -> tuple[list[WebSearchResult], str | None]:
     """Search the web for JD-like pages and return organic result links."""
 
-    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
-    request = Request(
-        search_url,
-        headers={
-            "Accept": "text/html,*/*;q=0.8",
-            "User-Agent": "ResuMate/1.0 (+https://resumate.local)",
-        },
+    try:
+        with httpx.Client(
+            headers=_web_headers("text/html,*/*;q=0.8"),
+            follow_redirects=True,
+            timeout=timeout,
+        ) as client:
+            response = client.get(f"https://duckduckgo.com/html/?q={quote_plus(query)}")
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError) as exc:
+        return [], f"JD search request failed: {exc}"
+
+    return _parse_search_results(
+        response.content[:SEARCH_MAX_BYTES],
+        response.encoding or "utf-8",
     )
 
+
+async def _async_search_web_results(
+    query: str,
+    timeout: float = 6.0,
+) -> tuple[list[WebSearchResult], str | None]:
+    """Search the web for JD-like pages using an async HTTP client."""
+
+    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
     try:
-        with urlopen(request, timeout=timeout) as response:
-            raw = response.read(240_000)
-            charset = response.headers.get_content_charset() or "utf-8"
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        async with httpx.AsyncClient(
+            headers=_web_headers("text/html,*/*;q=0.8"),
+            follow_redirects=True,
+            timeout=timeout,
+        ) as client:
+            response = await client.get(search_url)
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError) as exc:
         return [], f"JD search request failed: {exc}"
+
+    return _parse_search_results(
+        response.content[:SEARCH_MAX_BYTES],
+        response.encoding or "utf-8",
+    )
+
+
+def _parse_search_results(
+    raw: bytes,
+    charset: str,
+) -> tuple[list[WebSearchResult], str | None]:
+    """Parse search result HTML into deduplicated organic links."""
 
     parser = SearchResultParser()
     parser.feed(raw.decode(charset, errors="replace"))
@@ -290,6 +370,33 @@ def _search_jd_reference(query: str) -> tuple[WebSearchResult | None, int, str |
 
     for result in results:
         web_reference = _fetch_web_reference(result.url)
+        if not web_reference:
+            continue
+
+        return (
+            WebSearchResult(
+                title=web_reference.title or result.title,
+                url=result.url,
+                excerpt=web_reference.excerpt,
+            ),
+            len(results),
+            None,
+        )
+
+    return None, len(results), "Search returned links, but no readable JD text."
+
+
+async def _async_search_jd_reference(
+    query: str,
+) -> tuple[WebSearchResult | None, int, str | None]:
+    """Search for a JD page and fetch the first readable result page async."""
+
+    results, error = await _async_search_web_results(query)
+    if error:
+        return None, 0, error
+
+    for result in results:
+        web_reference = await _async_fetch_web_reference(result.url)
         if not web_reference:
             continue
 

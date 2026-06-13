@@ -8,6 +8,8 @@ from .agent import ResumeAgent
 from .integrations import (
     WebReference,
     WebSearchResult,
+    _async_fetch_web_reference,
+    _async_search_jd_reference,
     _fetch_web_reference,
     _search_jd_reference,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "ResumeAnalysis",
     "WebReference",
     "WebSearchResult",
+    "_async_fetch_web_reference",
+    "_async_search_jd_reference",
     "_fetch_web_reference",
     "_search_jd_reference",
     "build_agent_message",

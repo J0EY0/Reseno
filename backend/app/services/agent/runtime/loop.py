@@ -3,8 +3,6 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-import anyio
-
 from app.schemas.agent import (
     AgentChatRequest,
     AgentResumeEditSuggestion,
@@ -22,6 +20,7 @@ from ..compat import get_agent_api
 from ..editing import _react_max_iterations
 from ..executor import AgentPlanExecutor
 from ..tools import AGENT_TOOL_SCHEMAS, AgentToolRunner, running_model_tool
+from .context import AgentRuntimeContext
 from .messages import build_agent_messages
 
 
@@ -160,35 +159,46 @@ def iter_agent_tool_call_loop(
 async def _async_tool_call_response(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
+    runtime: AgentRuntimeContext,
 ) -> LlmToolCallResponse:
     """Return a tool-call response, preserving tests that monkeypatch sync calls."""
 
     agent_api = get_agent_api()
     sync_tool_call = agent_api.complete_chat_tool_call
     if sync_tool_call is not complete_chat_tool_call:
-        return await anyio.to_thread.run_sync(
+        return await runtime.run_sync(
             sync_tool_call,
             config,
             messages,
             AGENT_TOOL_SCHEMAS,
+            timeout_seconds=config.timeout_seconds,
         )
 
-    return await async_complete_chat_tool_call(config, messages, AGENT_TOOL_SCHEMAS)
+    return await runtime.run_async(
+        async_complete_chat_tool_call,
+        config,
+        messages,
+        AGENT_TOOL_SCHEMAS,
+        timeout_seconds=config.timeout_seconds,
+    )
 
 
 async def async_iter_agent_tool_call_loop(
     request: AgentChatRequest,
     config: AgentLlmConfig,
+    runtime: AgentRuntimeContext | None = None,
 ) -> AsyncIterator[AgentToolLoopEvent]:
     """Yield tool-loop state as each async model-selected action executes."""
 
+    runtime = runtime or AgentRuntimeContext()
     executor = AgentPlanExecutor(request)
     runner = AgentToolRunner(executor)
     messages = build_agent_messages(request, config, mode="tools")
     max_iterations = _react_max_iterations(request)
 
     for _ in range(max_iterations):
-        response = await _async_tool_call_response(config, messages)
+        await runtime.checkpoint()
+        response = await _async_tool_call_response(config, messages, runtime)
         if not response.tool_calls:
             if response.content:
                 runner.terminal_text = response.content
@@ -214,6 +224,7 @@ async def async_iter_agent_tool_call_loop(
         tool_messages: list[dict[str, Any]] = []
         has_executed_edits = False
         for tool_call in tool_calls:
+            await runtime.checkpoint()
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(
                     kind="tools",
@@ -222,7 +233,7 @@ async def async_iter_agent_tool_call_loop(
                         running_model_tool(tool_call),
                     ],
                 )
-            tool, result = runner.run(tool_call)
+            tool, result = await runner.run_async(tool_call, runtime)
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(kind="tools", tools=runner.tools)
             if tool_call.name == "edit_execute" and runner.edits:

@@ -14,6 +14,7 @@ from app.schemas.agent import (
 )
 from app.schemas.common import APP_MESSAGE_BAD_REQUEST, ApiResponse, ok_response
 from app.services.agent import build_agent_message
+from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import (
     append_agent_exchange,
@@ -22,6 +23,7 @@ from app.services.agent_sessions import (
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+DISCONNECT_POLL_SECONDS = 0.25
 
 
 def _build_and_store_message(request: AgentChatRequest) -> AgentChatMessage:
@@ -40,6 +42,20 @@ async def _close_async_iterator(iterator: AsyncIterator[str]) -> None:
     close = getattr(iterator, "aclose", None)
     if callable(close):
         await close()
+
+
+async def _cancel_on_disconnect(
+    request: Request,
+    cancel_scope: anyio.CancelScope,
+) -> None:
+    """Cancel the active streaming task as soon as the client disconnects."""
+
+    while True:
+        if await request.is_disconnected():
+            cancel_scope.cancel()
+            return
+
+        await anyio.sleep(DISCONNECT_POLL_SECONDS)
 
 
 @router.get(
@@ -79,21 +95,32 @@ async def post_agent_chat(
         async def event_stream() -> AsyncIterator[str]:
             """Open DB resources for the lifetime of the streaming response."""
 
-            with closing(connect()) as conn:
-                iterator = async_stream_agent_response(
-                    request,
-                    conn,
-                    lambda message: append_agent_exchange(conn, request, message),
-                )
-                try:
-                    async for chunk in iterator:
-                        if await http_request.is_disconnected():
-                            break
-                        yield chunk
-                        if await http_request.is_disconnected():
-                            break
-                finally:
-                    await _close_async_iterator(iterator)
+            runtime = AgentRuntimeContext(is_aborted=http_request.is_disconnected)
+            async with anyio.create_task_group() as task_group:
+                with anyio.CancelScope() as stream_scope:
+                    task_group.start_soon(
+                        _cancel_on_disconnect,
+                        http_request,
+                        stream_scope,
+                    )
+                    with closing(connect()) as conn:
+                        iterator = async_stream_agent_response(
+                            request,
+                            conn,
+                            lambda message: append_agent_exchange(
+                                conn,
+                                request,
+                                message,
+                            ),
+                            runtime,
+                        )
+                        try:
+                            async for chunk in iterator:
+                                yield chunk
+                        finally:
+                            task_group.cancel_scope.cancel()
+                            with anyio.CancelScope(shield=True):
+                                await _close_async_iterator(iterator)
 
         return StreamingResponse(
             event_stream(),

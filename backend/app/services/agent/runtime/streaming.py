@@ -5,8 +5,6 @@ from sqlite3 import Connection
 from typing import Any
 from uuid import uuid4
 
-import anyio
-
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
@@ -24,6 +22,7 @@ from app.services.llm_client import (
 
 from ..compat import get_agent_api
 from ..editing import _string_list
+from .context import AgentRunAborted, AgentRuntimeContext
 from .loop import (
     async_iter_agent_tool_call_loop,
     iter_agent_tool_call_loop,
@@ -318,21 +317,28 @@ def _next_stream_delta(
 async def _complete_chat_stream_deltas(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
+    runtime: AgentRuntimeContext,
 ) -> AsyncIterator[LlmStreamDelta]:
     """Yield provider stream deltas, preserving sync monkeypatches in tests."""
 
+    await runtime.checkpoint()
     agent_api = get_agent_api()
     sync_stream = agent_api.complete_chat_stream
     if sync_stream is not complete_chat_stream:
         iterator = iter(sync_stream(config, messages))
         while True:
-            delta = await anyio.to_thread.run_sync(_next_stream_delta, iterator)
+            delta = await runtime.run_sync(
+                _next_stream_delta,
+                iterator,
+                timeout_seconds=config.timeout_seconds,
+            )
             if isinstance(delta, _StreamDone):
                 break
             yield delta
         return
 
     async for delta in async_complete_chat_stream(config, messages):
+        await runtime.checkpoint()
         yield delta
 
 
@@ -756,9 +762,11 @@ async def async_stream_agent_response(
     request: AgentChatRequest,
     conn: Connection,
     on_complete: Callable[[AgentChatMessage], None] | None = None,
+    runtime: AgentRuntimeContext | None = None,
 ) -> AsyncIterator[str]:
     """Stream an agent response through async provider calls."""
 
+    runtime = runtime or AgentRuntimeContext()
     config = resolve_agent_llm_config(conn, request.model_config_data)
     if config is None:
         message = _model_setup_message(request)
@@ -792,7 +800,11 @@ async def async_stream_agent_response(
     try:
         runner = None
         terminal_loop_text = False
-        async for event in async_iter_agent_tool_call_loop(request, config):
+        async for event in async_iter_agent_tool_call_loop(
+            request,
+            config,
+            runtime,
+        ):
             if event.kind == "text":
                 visible_text = _visible_loop_text(event.text)
                 if visible_text:
@@ -910,7 +922,7 @@ async def async_stream_agent_response(
         if raw_parts:
             raw_parts.append("\n\n")
         final_part_id = ""
-        async for delta in _complete_chat_stream_deltas(config, messages):
+        async for delta in _complete_chat_stream_deltas(config, messages, runtime):
             if delta.kind == "reasoning":
                 reasoning_parts.append(delta.delta)
                 yield _sse_event(
@@ -946,6 +958,8 @@ async def async_stream_agent_response(
         raw_response = "".join(raw_parts).strip()
         if not raw_response:
             raise LlmRequestError("Model provider returned an empty response.")
+    except AgentRunAborted:
+        return
     except LlmRequestError as exc:
         message = _model_error_message(request, config, exc)
         yield _sse_event(

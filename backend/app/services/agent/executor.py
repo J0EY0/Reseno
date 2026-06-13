@@ -14,7 +14,7 @@ from app.schemas.agent import (
 
 from .compat import get_agent_api
 from .editing import _string_list
-from .integrations import JD_URL_PATTERN, _compact_text
+from .integrations import JD_URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .models import EditPlanStep, JobReference, ResumeAnalysis
 
 
@@ -258,10 +258,14 @@ class AgentPlanExecutor:
 
         return self.build_search_job_reference(role, self.jd_search_query(role))
 
-    def build_url_job_reference(self, url: str, role: str) -> JobReference:
-        """Fetch a user-selected JD URL and convert it to agent context."""
+    def build_url_job_reference_from_web(
+        self,
+        url: str,
+        role: str,
+        web_reference: WebReference | None,
+    ) -> JobReference:
+        """Convert an optional fetched JD URL result into agent context."""
 
-        web_reference = get_agent_api()._fetch_web_reference(url)
         excerpt = (
             web_reference.excerpt
             if web_reference
@@ -283,8 +287,21 @@ class AgentPlanExecutor:
             result_count=1 if web_reference else 0,
         )
 
-    def build_search_job_reference(self, role: str, query: str) -> JobReference:
-        """Search and fetch a JD reference selected by the model."""
+    def build_url_job_reference(self, url: str, role: str) -> JobReference:
+        """Fetch a user-selected JD URL and convert it to agent context."""
+
+        web_reference = get_agent_api()._fetch_web_reference(url)
+        return self.build_url_job_reference_from_web(url, role, web_reference)
+
+    def build_search_job_reference_from_result(
+        self,
+        role: str,
+        query: str,
+        search_result: WebSearchResult | None,
+        result_count: int,
+        search_error: str | None,
+    ) -> JobReference:
+        """Convert an optional JD search result into agent context."""
 
         if self.is_zh:
             fallback_excerpt = (
@@ -296,10 +313,6 @@ class AgentPlanExecutor:
                 "from the target role and response language."
             )
 
-        agent_api = get_agent_api()
-        search_result, result_count, search_error = agent_api._search_jd_reference(
-            query,
-        )
         if search_result:
             excerpt = search_result.excerpt
             source_title = search_result.title
@@ -322,6 +335,21 @@ class AgentPlanExecutor:
             tool_state="output-error" if search_error else "output-available",
             tool_error=search_error,
             result_count=result_count,
+        )
+
+    def build_search_job_reference(self, role: str, query: str) -> JobReference:
+        """Search and fetch a JD reference selected by the model."""
+
+        agent_api = get_agent_api()
+        search_result, result_count, search_error = agent_api._search_jd_reference(
+            query,
+        )
+        return self.build_search_job_reference_from_result(
+            role,
+            query,
+            search_result,
+            result_count,
+            search_error,
         )
 
     def infer_target_role(self) -> str:

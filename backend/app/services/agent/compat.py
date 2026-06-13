@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Awaitable, Iterator
 from typing import Any, Protocol, cast
 
 from app.services.llm_client import (
@@ -34,10 +34,20 @@ class AgentApi(Protocol):
 
     def _fetch_web_reference(self, url: str) -> WebReference | None: ...
 
+    def _async_fetch_web_reference(
+        self,
+        url: str,
+    ) -> Awaitable[WebReference | None]: ...
+
     def _search_jd_reference(
         self,
         query: str,
     ) -> tuple[WebSearchResult | None, int, str | None]: ...
+
+    def _async_search_jd_reference(
+        self,
+        query: str,
+    ) -> Awaitable[tuple[WebSearchResult | None, int, str | None]]: ...
 
 
 def get_agent_api() -> AgentApi:

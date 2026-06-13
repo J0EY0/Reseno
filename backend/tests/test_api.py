@@ -85,6 +85,10 @@ def stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
     )
 
 
+async def async_stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
+    return stub_jd_search(query)
+
+
 def tool_call(
     call_id: str,
     name: str,
@@ -1934,7 +1938,10 @@ def test_agent_chat_streams_tool_and_source_metadata(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr(
+        "app.services.agent._async_search_jd_reference",
+        async_stub_jd_search,
+    )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
         stub_tool_call_batches(
