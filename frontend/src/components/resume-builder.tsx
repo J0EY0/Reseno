@@ -113,6 +113,8 @@ import {
   fetchWorkspaceBootstrap,
   fetchWorkspaceVersion,
   fetchWorkspaceVersions,
+  createWorkspaceResumeIdApi,
+  saveUserSettingsApi,
   saveWorkspaceSnapshotApi,
 } from "@/lib/workspace-api";
 import { runViewTransition } from "@/lib/view-transition";
@@ -710,6 +712,7 @@ function createTemplatePreviewSection(kind: SectionKind): ResumeSection {
 }
 
 function createDraftResumeItem(
+  id: string,
   locale: Locale,
   index: number,
   templateId: ResumeTemplateId = defaultTemplate,
@@ -717,7 +720,7 @@ function createDraftResumeItem(
   const nextResume = createEmptyResume();
 
   return {
-    id: createId("resume"),
+    id,
     title: createDefaultResumeTitle(locale, index),
     updatedAt: new Date().toISOString(),
     resume: nextResume,
@@ -739,12 +742,14 @@ function normalizeStoredResumeDocument(
 
   const fallbackTitle =
     value.resume.basic.name || createDefaultResumeTitle(locale, index);
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+
+  if (!id) {
+    return null;
+  }
 
   return {
-    id:
-      typeof value.id === "string" && value.id.trim()
-        ? value.id
-        : createId("resume"),
+    id,
     title: normalizeResumeTitle(value.title, fallbackTitle),
     updatedAt:
       typeof value.updatedAt === "string" && value.updatedAt.trim()
@@ -790,28 +795,7 @@ function normalizeResumeDocuments(
     "resume" in source &&
     (source as { resume?: ResumeData }).resume
   ) {
-    const legacy = source as {
-      savedAt?: string;
-      resume: ResumeData;
-      jobBrief?: string;
-      typography?: ResumeTypographySettings;
-      template?: ResumeTemplateId;
-    };
-
-    return [
-      {
-        id: `resume-${locale}-legacy`,
-        title: normalizeResumeTitle(
-          (legacy as { title?: unknown }).title,
-          legacy.resume.basic.name || createDefaultResumeTitle(locale, 1),
-        ),
-        updatedAt: legacy.savedAt ?? new Date().toISOString(),
-        resume: legacy.resume,
-        jobBrief: legacy.jobBrief ?? "",
-        typography: normalizeResumeTypography(legacy.typography),
-        template: normalizeResumeTemplateId(legacy.template, fallbackTemplateId),
-      },
-    ];
+    return [];
   }
 
   return [];
@@ -825,16 +809,7 @@ function normalizeImportedResumeDocuments(
 
   function normalizeItem(value: unknown): ResumeWorkspaceItem | null {
     if (isResumeData(value)) {
-      return {
-        id: createId("resume"),
-        title: normalizeResumeTitle(undefined, value.basic.name || "Resume"),
-        updatedAt: importedAt,
-        resume: value,
-        jobBrief: "",
-        typography: defaultTypography,
-        template: fallbackTemplateId,
-        templateSettings: undefined,
-      };
+      return null;
     }
 
     if (!isRecord(value)) {
@@ -847,11 +822,17 @@ function normalizeImportedResumeDocuments(
       return null;
     }
 
+    const id = typeof value.id === "string" ? value.id.trim() : "";
+
+    if (!id) {
+      return null;
+    }
+
     const typography = normalizeResumeTypography(value.typography);
     const template = normalizeResumeTemplateId(value.template, fallbackTemplateId);
 
     return {
-      id: createId("resume"),
+      id,
       title: normalizeResumeTitle(
         value.title,
         rawResume.basic.name || "Resume",
@@ -966,6 +947,7 @@ function stripWorkspaceVolatileFields(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== "savedAt" && key !== "updatedAt")
+      .filter(([key]) => key !== "agentSettings" && key !== "theme")
       .map(([key, entryValue]) => [
         key,
         stripWorkspaceVolatileFields(entryValue),
@@ -975,6 +957,10 @@ function stripWorkspaceVolatileFields(value: unknown): unknown {
 
 function createWorkspaceFingerprint(snapshot: WorkspaceSnapshot) {
   return JSON.stringify(stripWorkspaceVolatileFields(snapshot));
+}
+
+function normalizeWorkspaceTheme(value: unknown): ThemeMode {
+  return value === "dark" || value === "system" ? value : "light";
 }
 
 export function ResumeBuilder({
@@ -994,6 +980,7 @@ export function ResumeBuilder({
   const initialLocaleRef = useRef(locale);
 
   const [theme, setTheme] = useState<ThemeMode>("light");
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
   const [activeView, setActiveView] = useState<WorkspaceView>("resume");
   const [resumeDocuments, setResumeDocuments] = useState<ResumeWorkspaceItem[]>(
     [],
@@ -1026,7 +1013,7 @@ export function ResumeBuilder({
   >([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
-    createDefaultAgentSettings([]),
+    createDefaultAgentSettings(),
   );
   const [isLoading, setIsLoading] = useState(true);
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -1253,8 +1240,32 @@ export function ResumeBuilder({
 
   useEffect(() => {
     const root = document.documentElement;
-    root.classList.toggle("dark", theme === "dark");
-    root.style.colorScheme = theme;
+    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+
+    function applyTheme() {
+      const nextTheme =
+        theme === "system"
+          ? mediaQuery?.matches
+            ? "dark"
+            : "light"
+          : theme;
+
+      root.classList.toggle("dark", nextTheme === "dark");
+      root.style.colorScheme = nextTheme;
+      setResolvedTheme(nextTheme);
+    }
+
+    applyTheme();
+
+    if (theme !== "system" || !mediaQuery) {
+      return;
+    }
+
+    mediaQuery.addEventListener("change", applyTheme);
+
+    return () => {
+      mediaQuery.removeEventListener("change", applyTheme);
+    };
   }, [theme]);
 
   useEffect(() => {
@@ -1327,13 +1338,11 @@ export function ResumeBuilder({
         deletedResumes: deletedResumeDocuments,
         deletedTemplates,
         modelConfigs,
-        agentSettings,
         savedAt,
       };
     },
     [
       activeResumeId,
-      agentSettings,
       customTemplates,
       defaultTemplateId,
       deletedResumeDocuments,
@@ -1567,6 +1576,7 @@ export function ResumeBuilder({
           workspaceSource?.agentSettings,
           nextModelConfigs,
         );
+        const nextTheme = normalizeWorkspaceTheme(workspaceSource?.theme);
         const firstResume = nextDocuments[0] ?? null;
         const loadedSnapshot: WorkspaceSnapshot = {
           resumes: nextDocuments,
@@ -1575,7 +1585,6 @@ export function ResumeBuilder({
           deletedResumes: nextDeletedResumes,
           deletedTemplates: nextDeletedTemplates,
           modelConfigs: nextModelConfigs,
-          agentSettings: nextAgentSettings,
           savedAt: payload.savedAt ?? "",
         };
 
@@ -1593,6 +1602,7 @@ export function ResumeBuilder({
         setDeletedTemplates(nextDeletedTemplates);
         setModelConfigs(nextModelConfigs);
         setAgentSettings(nextAgentSettings);
+        setTheme(nextTheme);
         setLastSavedAt(payload.savedAt);
         lastPersistedSnapshotRef.current =
           createWorkspaceFingerprint(loadedSnapshot);
@@ -1776,6 +1786,7 @@ export function ResumeBuilder({
         workspaceSource.agentSettings,
         nextModelConfigs,
       );
+      const nextTheme = normalizeWorkspaceTheme(workspaceSource.theme);
       const firstResume = nextDocuments[0] ?? null;
       const nextActiveResume =
         (activeResumeId &&
@@ -1795,6 +1806,7 @@ export function ResumeBuilder({
       setDeletedTemplates(nextDeletedTemplates);
       setModelConfigs(nextModelConfigs);
       setAgentSettings(nextAgentSettings);
+      setTheme(nextTheme);
       setLastSavedAt(workspaceSource.savedAt);
       setActiveWorkspaceVersionId(result.versionId);
       lastPersistedSnapshotRef.current = createWorkspaceFingerprint({
@@ -1804,7 +1816,6 @@ export function ResumeBuilder({
         deletedResumes: nextDeletedResumes,
         deletedTemplates: nextDeletedTemplates,
         modelConfigs: nextModelConfigs,
-        agentSettings: nextAgentSettings,
         savedAt: workspaceSource.savedAt,
       });
       setSaveState("saved");
@@ -1825,10 +1836,58 @@ export function ResumeBuilder({
   }
 
   useEffect(() => {
-    setAgentSettings((current) =>
-      normalizeAgentSettings(current, modelConfigs),
-    );
+    setAgentSettings((current) => normalizeAgentSettings(current, modelConfigs));
   }, [modelConfigs]);
+
+  const persistUserSettings = useCallback(
+    (
+      nextLocale: Locale,
+      nextTheme: ThemeMode,
+      nextAgentSettings: AgentSettings,
+    ) => {
+      if (isLoading) {
+        return;
+      }
+
+      void saveUserSettingsApi(nextLocale, {
+        agentSettings: nextAgentSettings,
+        theme: nextTheme,
+      }).catch((error) => {
+        console.error("Failed to save user settings.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(t.loadError, {
+            closeButton: true,
+          });
+        }
+      });
+    },
+    [isLoading, t.loadError],
+  );
+
+  const handleSettingsLocaleChange = useCallback(
+    (nextLocale: Locale) => {
+      onLocaleChange(nextLocale);
+      persistUserSettings(nextLocale, theme, agentSettings);
+    },
+    [agentSettings, onLocaleChange, persistUserSettings, theme],
+  );
+
+  const handleSettingsThemeChange = useCallback(
+    (nextTheme: ThemeMode) => {
+      setTheme(nextTheme);
+      persistUserSettings(locale, nextTheme, agentSettings);
+    },
+    [agentSettings, locale, persistUserSettings],
+  );
+
+  const handleAgentSettingsChange = useCallback(
+    (nextSettings: AgentSettings) => {
+      const normalizedSettings = normalizeAgentSettings(nextSettings, modelConfigs);
+      setAgentSettings(normalizedSettings);
+      persistUserSettings(locale, theme, normalizedSettings);
+    },
+    [locale, modelConfigs, persistUserSettings, theme],
+  );
 
   useEffect(() => {
     const hasActiveTemplate = templateCatalog.some(
@@ -1894,39 +1953,50 @@ export function ResumeBuilder({
       return;
     }
 
-    const nextItem = createDraftResumeItem(
-      locale,
-      resumeDocuments.length + 1,
-      defaultTemplateId,
-    );
-    const savedAt = new Date().toISOString();
-    const currentDocuments = resumeDocuments.map((item) =>
-      item.id === activeResumeId
-        ? {
-            ...item,
-            resume,
-            jobBrief,
-            template,
-            templateSettings: templateSettings ?? undefined,
-            typography,
-            updatedAt: savedAt,
-          }
-        : item,
-    );
-    const nextDocuments = [...currentDocuments, nextItem];
-    const nextSnapshot: WorkspaceSnapshot = {
-      resumes: nextDocuments,
-      defaultTemplateId,
-      customTemplates,
-      deletedResumes: deletedResumeDocuments,
-      deletedTemplates,
-      modelConfigs,
-      agentSettings,
-      savedAt,
-    };
-
     try {
+      const { id: resumeId } = await createWorkspaceResumeIdApi();
+      const nextItem = createDraftResumeItem(
+        resumeId,
+        locale,
+        resumeDocuments.length + 1,
+        defaultTemplateId,
+      );
+      const savedAt = new Date().toISOString();
+      const currentDocuments = resumeDocuments.map((item) =>
+        item.id === activeResumeId
+          ? {
+              ...item,
+              resume,
+              jobBrief,
+              template,
+              templateSettings: templateSettings ?? undefined,
+              typography,
+              updatedAt: savedAt,
+            }
+          : item,
+      );
+      const nextDocuments = [...currentDocuments, nextItem];
+      const nextSnapshot: WorkspaceSnapshot = {
+        resumes: nextDocuments,
+        defaultTemplateId,
+        customTemplates,
+        deletedResumes: deletedResumeDocuments,
+        deletedTemplates,
+        modelConfigs,
+        savedAt,
+      };
+
       await persistWorkspaceSnapshot(nextSnapshot);
+
+      setResumeDocuments(nextDocuments);
+      setActiveResumeId(nextItem.id);
+      hydrateResumeWorkspace(nextItem);
+      setActiveView("resume");
+      setShowResumeGallery(false);
+      runViewTransition(
+        () => navigate(getResumePath(nextItem.id)),
+        "nav-forward",
+      );
     } catch (error) {
       console.error("Failed to create resume in backend.", error);
       if (!isApiErrorToastShown(error)) {
@@ -1936,13 +2006,6 @@ export function ResumeBuilder({
       }
       return;
     }
-
-    setResumeDocuments(nextDocuments);
-    setActiveResumeId(nextItem.id);
-    hydrateResumeWorkspace(nextItem);
-    setActiveView("resume");
-    setShowResumeGallery(false);
-    runViewTransition(() => navigate(getResumePath(nextItem.id)), "nav-forward");
   }
 
   async function importResume(file: File) {
@@ -1982,7 +2045,6 @@ export function ResumeBuilder({
         deletedResumes: deletedResumeDocuments,
         deletedTemplates,
         modelConfigs,
-        agentSettings,
         savedAt,
       };
 
@@ -3010,10 +3072,10 @@ export function ResumeBuilder({
           selectedModelId={agentSettings.defaultModelId}
           agentSettings={agentSettings}
           onSelectedModelChange={(modelId) =>
-            setAgentSettings((current) => ({
-              ...current,
+            handleAgentSettingsChange({
+              ...agentSettings,
               defaultModelId: modelId,
-            }))
+            })
           }
           hasAgentDraft={Boolean(agentDraft)}
           agentDraftState={agentDraftState}
@@ -3191,28 +3253,11 @@ export function ResumeBuilder({
           locale={locale}
           t={t}
           theme={theme}
-          onThemeChange={setTheme}
-          onLocaleChange={onLocaleChange}
-          fontFamily={typography.fontFamily}
-          onFontFamilyChange={(value) =>
-            setTypography((current) => ({
-              ...current,
-              fontFamily: value,
-            }))
-          }
-          fontSize={typography.fontSize}
-          onFontSizeChange={(value) =>
-            setTypography((current) => ({
-              ...current,
-              fontSize: value,
-            }))
-          }
+          onThemeChange={handleSettingsThemeChange}
+          onLocaleChange={handleSettingsLocaleChange}
           agentSettings={agentSettings}
-          onAgentSettingsChange={setAgentSettings}
+          onAgentSettingsChange={handleAgentSettingsChange}
           modelConfigs={modelConfigs}
-          onOpenModelConfigs={() =>
-            runViewTransition(() => navigate("/models"), "nav-lateral")
-          }
           onPasswordChanged={onLogout}
         />
       </Suspense>
@@ -3393,10 +3438,12 @@ export function ResumeBuilder({
               title={t.themeToggleLabel}
               aria-label={t.themeToggleLabel}
               onClick={() =>
-                setTheme((current) => (current === "light" ? "dark" : "light"))
+                handleSettingsThemeChange(
+                  resolvedTheme === "dark" ? "light" : "dark",
+                )
               }
             >
-              {theme === "dark" ? (
+              {resolvedTheme === "dark" ? (
                 <Sun className="size-4" />
               ) : (
                 <Moon className="size-4" />

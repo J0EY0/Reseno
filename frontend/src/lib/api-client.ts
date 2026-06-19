@@ -48,6 +48,8 @@ export const apiRoutes = {
   authPassword: "/api/auth/password",
   workspaceBootstrap: "/api/workspace/bootstrap",
   workspaceSnapshot: "/api/workspace/snapshot",
+  workspaceUserSettings: "/api/workspace/user-settings",
+  workspaceResumeId: "/api/workspace/resumes/id",
   workspaceVersions: "/api/workspace/versions",
   workspaceVersion: (versionId: string) => `/api/workspace/versions/${versionId}`,
   resumes: "/api/resumes",

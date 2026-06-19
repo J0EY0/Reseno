@@ -52,7 +52,7 @@ def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
             system_prompt
         FROM llm_configs
         WHERE enabled = 1
-        ORDER BY is_default DESC, updated_at DESC, id DESC
+        ORDER BY updated_at DESC, id DESC
         """,
     ).fetchall()
 
@@ -61,7 +61,6 @@ def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
 
 def _build_upsert_values(
     item: dict[str, Any],
-    default_model_id: str | None,
     existing: Row | None,
 ) -> tuple[Any, ...]:
     """Normalize incoming config data into SQL upsert values."""
@@ -96,8 +95,6 @@ def _build_upsert_values(
     )
     max_output_tokens = metadata.max_output_tokens if metadata is not None else None
     system_prompt = str(item.get("systemPrompt") or item.get("system_prompt") or "")
-    is_default = int(client_id == default_model_id)
-
     return (
         client_id,
         name or model,
@@ -111,7 +108,7 @@ def _build_upsert_values(
         _normalize_max_tokens(max_tokens, max_output_tokens),
         context_window_tokens,
         system_prompt,
-        is_default,
+        0,
     )
 
 
@@ -270,14 +267,12 @@ def upsert_llm_config(
     return upsert_llm_config_dict(
         conn,
         request.model_dump(by_alias=True),
-        request.client_id if request.is_default else None,
     )
 
 
 def upsert_llm_config_dict(
     conn: Connection,
     item: dict[str, Any],
-    default_model_id: str | None,
 ) -> ModelConfigResponse:
     """Create or update one model config from a raw workspace payload item."""
 
@@ -289,7 +284,7 @@ def upsert_llm_config_dict(
     if existing is None:
         _merge_legacy_row_for_client_id(conn, item, client_id)
         existing = _select_llm_config(conn, client_id)
-    values = _build_upsert_values(item, default_model_id, existing)
+    values = _build_upsert_values(item, existing)
 
     if existing is not None and _is_same_upsert_values(existing, values):
         return _row_to_response(existing)
@@ -382,7 +377,6 @@ def delete_llm_config(conn: Connection, client_id: str) -> bool:
 def sync_llm_configs(
     conn: Connection,
     configs: list[Any],
-    default_model_id: str | None,
     *,
     disable_missing: bool = False,
 ) -> None:
@@ -394,7 +388,7 @@ def sync_llm_configs(
             client_id = str(item.get("id") or item.get("client_id") or "").strip()
             if client_id:
                 active_client_ids.append(client_id)
-            upsert_llm_config_dict(conn, item, default_model_id)
+            upsert_llm_config_dict(conn, item)
 
     if not disable_missing:
         return

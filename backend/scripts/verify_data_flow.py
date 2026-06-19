@@ -73,7 +73,7 @@ def main() -> None:
                     "defaultModelId": "llm-script",
                     "responseLanguage": "follow",
                     "behaviorMode": "balanced",
-                    "autoRunMatch": True,
+                    "confirmationMode": "always",
                 },
                 "savedAt": "2026-05-17T00:00:00.000Z",
             }

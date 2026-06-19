@@ -1,11 +1,9 @@
 import {
   Globe,
   Bot,
-  Check,
   Moon,
+  Monitor,
   Sun,
-  Type,
-  ALargeSmall,
   KeyRound,
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
@@ -16,19 +14,19 @@ import {
   type PasswordUpdateFormErrors,
 } from "@/lib/auth-validation";
 import { updateAuthPassword } from "@/lib/auth";
-import { getModelDisplayName } from "@/lib/model-config";
 import { cn } from "@/lib/utils";
 import type {
   AgentBehaviorMode,
+  AgentConfirmationMode,
   AgentResponseLanguage,
   AgentSettings,
   ModelConfig,
-  ResumeFontFamily,
   ThemeMode,
 } from "@/types/resume";
+import { getModelProviderMeta } from "@/lib/model-providers";
 
 import { PasswordField } from "@/components/auth/password-field";
-import { Badge } from "@/components/ui/badge";
+import { ModelProviderIcon } from "@/components/model-provider-icon";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -49,11 +47,11 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
 function ToggleRow({
   label,
   description,
@@ -73,8 +71,6 @@ function ToggleRow({
     </div>
   );
 }
-
-const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 
 function ButtonTabs<T extends string>({
   items,
@@ -113,14 +109,9 @@ export function SettingsPanel({
   theme,
   onThemeChange,
   onLocaleChange,
-  fontFamily,
-  onFontFamilyChange,
-  fontSize,
-  onFontSizeChange,
   agentSettings,
   onAgentSettingsChange,
   modelConfigs,
-  onOpenModelConfigs,
   onPasswordChanged,
 }: {
   locale: Locale;
@@ -128,14 +119,9 @@ export function SettingsPanel({
   theme: ThemeMode;
   onThemeChange: (value: ThemeMode) => void;
   onLocaleChange: (value: Locale) => void;
-  fontFamily: ResumeFontFamily;
-  onFontFamilyChange: (value: ResumeFontFamily) => void;
-  fontSize: number;
-  onFontSizeChange: (value: number) => void;
   agentSettings: AgentSettings;
   onAgentSettingsChange: (value: AgentSettings) => void;
   modelConfigs: ModelConfig[];
-  onOpenModelConfigs: () => void;
   onPasswordChanged: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<"site" | "agent">("site");
@@ -159,12 +145,21 @@ export function SettingsPanel({
   }> = [
     { value: "light", label: t.light, icon: <Sun className="size-4" /> },
     { value: "dark", label: t.dark, icon: <Moon className="size-4" /> },
+    { value: "system", label: t.systemTheme, icon: <Monitor className="size-4" /> },
   ];
 
   const behaviorItems: Array<{ value: AgentBehaviorMode; label: string }> = [
     { value: "balanced", label: t.agentBehaviorBalanced },
     { value: "strict", label: t.agentBehaviorStrict },
     { value: "aggressive", label: t.agentBehaviorAggressive },
+  ];
+  const confirmationItems: Array<{
+    value: AgentConfirmationMode;
+    label: string;
+  }> = [
+    { value: "always", label: t.agentConfirmationAlways },
+    { value: "lowRiskAuto", label: t.agentConfirmationLowRiskAuto },
+    { value: "suggestOnly", label: t.agentConfirmationSuggestOnly },
   ];
 
   const responseLanguageItems: Array<{
@@ -177,6 +172,22 @@ export function SettingsPanel({
   ];
 
   const isSiteTab = activeTab === "site";
+  const selectedDefaultModel =
+    modelConfigs.find((config) => config.id === agentSettings.defaultModelId) ??
+    null;
+
+  function renderModelOption(config: ModelConfig) {
+    const provider = getModelProviderMeta(config.provider);
+    const label =
+      config.nickname.trim() || config.model.trim() || t.agentModelNotConfigured;
+
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        <ModelProviderIcon provider={provider.iconProvider} size={18} />
+        <span className="truncate">{label}</span>
+      </div>
+    );
+  }
 
   function resetPasswordForm() {
     setCurrentPassword("");
@@ -286,48 +297,6 @@ export function SettingsPanel({
                   value={theme}
                   onChange={onThemeChange}
                 />
-              </ToggleRow>
-
-              <ToggleRow label={t.fontFamily} description={t.siteFontHint}>
-                <Select
-                  value={fontFamily}
-                  onValueChange={(value) =>
-                    onFontFamilyChange(value as ResumeFontFamily)
-                  }
-                >
-                  <SelectTrigger className="min-w-[180px] gap-2 bg-card">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <Type className="size-4 text-muted-foreground" />
-                      <SelectValue />
-                    </div>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inter">{t.fontInter}</SelectItem>
-                    <SelectItem value="serif">{t.fontSerif}</SelectItem>
-                    <SelectItem value="plex">{t.fontPlex}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </ToggleRow>
-
-              <ToggleRow label={t.fontSize} description={t.siteFontSizeHint}>
-                <Select
-                  value={String(fontSize)}
-                  onValueChange={(value) => onFontSizeChange(Number(value))}
-                >
-                  <SelectTrigger className="min-w-[140px] gap-2 bg-card">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <ALargeSmall className="size-4 text-muted-foreground" />
-                      <SelectValue />
-                    </div>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {fontSizeOptions.map((size) => (
-                      <SelectItem key={size} value={String(size)}>
-                        {size}pt
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </ToggleRow>
 
               <ToggleRow
@@ -441,24 +410,13 @@ export function SettingsPanel({
             </>
           ) : (
             <>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline">{`${modelConfigs.length} ${t.configuredModels}`}</Badge>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={onOpenModelConfigs}
-                >
-                  {t.openModelSettings}
-                </Button>
-              </div>
-
               <ToggleRow
                 label={t.defaultAgentModel}
                 description={t.defaultAgentModelHint}
               >
                 <Select
-                  value={agentSettings.defaultModelId}
+                  value={selectedDefaultModel?.id}
+                  disabled={modelConfigs.length === 0}
                   onValueChange={(value) =>
                     onAgentSettingsChange({
                       ...agentSettings,
@@ -466,15 +424,21 @@ export function SettingsPanel({
                     })
                   }
                 >
-                  <SelectTrigger className="min-w-[220px] bg-card">
-                    <SelectValue />
+                  <SelectTrigger className="min-w-[280px] bg-card">
+                    <SelectValue placeholder={t.agentModelNotConfigured}>
+                      {selectedDefaultModel
+                        ? renderModelOption(selectedDefaultModel)
+                        : t.agentModelNotConfigured}
+                    </SelectValue>
                   </SelectTrigger>
-                  <SelectContent>
-                    {modelConfigs.map((config) => (
-                      <SelectItem key={config.id} value={config.id}>
-                        {getModelDisplayName(config)}
-                      </SelectItem>
-                    ))}
+                  <SelectContent className="min-w-[280px]">
+                    <SelectGroup>
+                      {modelConfigs.map((config) => (
+                        <SelectItem key={config.id} value={config.id}>
+                          {renderModelOption(config)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </ToggleRow>
@@ -512,25 +476,19 @@ export function SettingsPanel({
               </ToggleRow>
 
               <ToggleRow
-                label={t.autoRunMatch}
-                description={t.autoRunMatchHint}
+                label={t.agentConfirmationMode}
+                description={t.agentConfirmationModeHint}
               >
-                <Button
-                  type="button"
-                  variant={agentSettings.autoRunMatch ? "default" : "outline"}
-                  className="gap-2"
-                  onClick={() =>
+                <ButtonTabs
+                  items={confirmationItems}
+                  value={agentSettings.confirmationMode}
+                  onChange={(value) =>
                     onAgentSettingsChange({
                       ...agentSettings,
-                      autoRunMatch: !agentSettings.autoRunMatch,
+                      confirmationMode: value,
                     })
                   }
-                >
-                  {agentSettings.autoRunMatch ? (
-                    <Check className="size-4" />
-                  ) : null}
-                  {agentSettings.autoRunMatch ? t.enabled : t.disabled}
-                </Button>
+                />
               </ToggleRow>
             </>
           )}

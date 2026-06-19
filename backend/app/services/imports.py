@@ -3,6 +3,8 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 
+from app.services.workspace import generate_resume_id
+
 
 async def load_json_upload(file: UploadFile) -> Any:
     """Read an uploaded file as UTF-8 JSON."""
@@ -33,15 +35,35 @@ def coerce_resume_import(payload: Any) -> list[dict[str, Any]]:
     data = unwrap_api_payload(payload)
 
     if isinstance(data, dict) and isinstance(data.get("resumes"), list):
-        return [item for item in data["resumes"] if isinstance(item, dict)]
+        return [
+            _with_resume_id(item)
+            for item in data["resumes"]
+            if isinstance(item, dict)
+        ]
 
     if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
+        return [_with_resume_id(item) for item in data if isinstance(item, dict)]
 
     if isinstance(data, dict):
-        return [data]
+        return [_with_resume_id(data)]
 
     return []
+
+
+def _with_resume_id(item: dict[str, Any]) -> dict[str, Any]:
+    """Return an imported resume item with a backend-generated id."""
+
+    if _looks_like_resume_data(item):
+        return {"id": generate_resume_id(), "resume": item}
+
+    return {**item, "id": generate_resume_id()}
+
+
+def _looks_like_resume_data(item: dict[str, Any]) -> bool:
+    return isinstance(item.get("basic"), dict) and isinstance(
+        item.get("sections"),
+        list,
+    )
 
 
 def coerce_template_import(payload: Any) -> list[dict[str, Any]]:

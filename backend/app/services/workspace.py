@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
@@ -14,7 +15,12 @@ from app.services.llm_secrets import sanitize_workspace_payload
 from app.services.model_configs import list_llm_configs, sync_llm_configs
 
 SUPPORTED_LOCALES = {"zh", "en"}
+THEME_MODES = {"light", "dark", "system"}
+WORKSPACE_DATA_LOCALE = "__workspace__"
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+RESUME_ID_LENGTH = 16
+USER_SETTINGS_KEYS = {"agentSettings", "theme"}
 WORKSPACE_STATE_EXCLUDED_KEYS = {
     "resumes",
     "deletedResumes",
@@ -22,14 +28,57 @@ WORKSPACE_STATE_EXCLUDED_KEYS = {
     "deletedTemplates",
     "modelConfigs",
     "modelConfig",
+    *USER_SETTINGS_KEYS,
 }
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
+DEFAULT_AGENT_SETTINGS = {
+    "defaultModelId": "",
+    "responseLanguage": "follow",
+    "behaviorMode": "balanced",
+    "confirmationMode": "always",
+}
+AGENT_RESPONSE_LANGUAGES = {"follow", "zh", "en"}
+AGENT_BEHAVIOR_MODES = {"balanced", "strict", "aggressive"}
+AGENT_CONFIRMATION_MODES = {"always", "lowRiskAuto", "suggestOnly"}
 
 
 def normalize_locale(locale: str) -> str:
     """Return a supported locale, falling back to English."""
 
     return locale if locale in SUPPORTED_LOCALES else "en"
+
+
+def workspace_data_locale() -> str:
+    """Return the locale column value used for language-independent workspace data."""
+
+    return WORKSPACE_DATA_LOCALE
+
+
+def generate_resume_id() -> str:
+    """Generate a compact backend-owned resume id."""
+
+    return "".join(
+        secrets.choice(RESUME_ID_ALPHABET) for _ in range(RESUME_ID_LENGTH)
+    )
+
+
+def allocate_resume_id() -> str:
+    """Generate a resume id that does not currently exist in storage."""
+
+    with connect() as conn:
+        for _ in range(20):
+            resume_id = generate_resume_id()
+            row = conn.execute(
+                "SELECT 1 FROM resumes WHERE id = ?",
+                (resume_id,),
+            ).fetchone()
+            if row is None:
+                return resume_id
+
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to allocate a resume id.",
+    )
 
 
 def utc_now() -> str:
@@ -220,6 +269,131 @@ def _workspace_state_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_agent_settings(value: Any) -> dict[str, str]:
+    """Keep only supported Agent settings, tolerating older workspace snapshots."""
+
+    settings = dict(DEFAULT_AGENT_SETTINGS)
+    if not isinstance(value, dict):
+        return settings
+
+    default_model_id = value.get("defaultModelId")
+    if isinstance(default_model_id, str):
+        settings["defaultModelId"] = default_model_id
+
+    response_language = value.get("responseLanguage")
+    if (
+        isinstance(response_language, str)
+        and response_language in AGENT_RESPONSE_LANGUAGES
+    ):
+        settings["responseLanguage"] = response_language
+
+    behavior_mode = value.get("behaviorMode")
+    if isinstance(behavior_mode, str) and behavior_mode in AGENT_BEHAVIOR_MODES:
+        settings["behaviorMode"] = behavior_mode
+
+    confirmation_mode = value.get("confirmationMode")
+    if (
+        isinstance(confirmation_mode, str)
+        and confirmation_mode in AGENT_CONFIRMATION_MODES
+    ):
+        settings["confirmationMode"] = confirmation_mode
+
+    return settings
+
+
+def _normalize_theme(value: Any) -> str | None:
+    """Return a persisted theme value when it is supported."""
+
+    return value if isinstance(value, str) and value in THEME_MODES else None
+
+
+def _normalize_user_settings(value: Any) -> dict[str, Any]:
+    """Normalize settings-page preferences loaded from the JSON settings file."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    settings: dict[str, Any] = {}
+
+    locale = value.get("locale")
+    if isinstance(locale, str) and locale in SUPPORTED_LOCALES:
+        settings["locale"] = locale
+
+    theme = _normalize_theme(value.get("theme"))
+    if theme is not None:
+        settings["theme"] = theme
+
+    if "agentSettings" in value:
+        settings["agentSettings"] = _normalize_agent_settings(
+            value.get("agentSettings")
+        )
+
+    return settings
+
+
+def _load_user_settings() -> dict[str, Any]:
+    """Load persisted settings-page preferences from the configured JSON path."""
+
+    path = get_settings().user_settings_path
+    if not path.exists():
+        return {}
+
+    try:
+        return _normalize_user_settings(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_user_settings(settings: dict[str, Any]) -> None:
+    """Write settings-page preferences atomically."""
+
+    path = get_settings().user_settings_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(_canonical_json(settings), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def save_user_settings(locale: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Persist settings-page preferences without saving the whole workspace."""
+
+    normalized_locale = normalize_locale(locale)
+    next_settings = _load_user_settings()
+    next_settings["locale"] = normalized_locale
+
+    theme = _normalize_theme(settings.get("theme"))
+    if theme is not None:
+        next_settings["theme"] = theme
+
+    if "agentSettings" in settings:
+        next_settings["agentSettings"] = _normalize_agent_settings(
+            settings.get("agentSettings")
+        )
+
+    next_settings = _normalize_user_settings(next_settings)
+    _write_user_settings(next_settings)
+    return next_settings
+
+
+def _apply_user_settings(state: dict[str, Any]) -> dict[str, Any]:
+    """Merge JSON-backed settings into a workspace response."""
+
+    settings = _load_user_settings()
+    workspace = {
+        key: value for key, value in state.items() if key not in USER_SETTINGS_KEYS
+    }
+
+    workspace["agentSettings"] = _normalize_agent_settings(
+        settings.get("agentSettings")
+    )
+
+    theme = _normalize_theme(settings.get("theme"))
+    if theme is not None:
+        workspace["theme"] = theme
+
+    return workspace
+
+
 def _load_workspace_state(conn: Connection, locale: str) -> dict[str, Any]:
     """Load shared workspace state for a locale with sensible defaults."""
 
@@ -234,17 +408,12 @@ def _load_workspace_state(conn: Connection, locale: str) -> dict[str, Any]:
 
     if row is None:
         return {
-            "agentSettings": {
-                "defaultModelId": "",
-                "responseLanguage": "follow",
-                "behaviorMode": "balanced",
-                "autoRunMatch": True,
-            },
             "defaultTemplateId": "minimal",
             "savedAt": "",
         }
 
-    return cast(dict[str, Any], json.loads(row["state_json"]))
+    state = cast(dict[str, Any], json.loads(row["state_json"]))
+    return {key: value for key, value in state.items() if key not in USER_SETTINGS_KEYS}
 
 
 def _resume_title(resume_item: dict[str, Any]) -> str:
@@ -527,7 +696,7 @@ def _mark_missing_templates_purged(
 def _save_workspace_rows(
     conn: Connection,
     *,
-    locale: str,
+    data_locale: str,
     snapshot: dict[str, Any],
     saved_at: str,
 ) -> dict[str, str]:
@@ -538,19 +707,12 @@ def _save_workspace_rows(
         "savedAt": saved_at,
     }
     model_configs = persisted_snapshot.get("modelConfigs")
-    agent_settings = persisted_snapshot.get("agentSettings")
-    default_model_id = (
-        agent_settings.get("defaultModelId")
-        if isinstance(agent_settings, dict)
-        else None
-    )
 
     if isinstance(model_configs, list):
         # Keep llm_configs queryable without duplicating any API key values.
         sync_llm_configs(
             conn,
             model_configs,
-            default_model_id if isinstance(default_model_id, str) else None,
             disable_missing=True,
         )
 
@@ -570,7 +732,7 @@ def _save_workspace_rows(
             saved_at = excluded.saved_at,
             updated_at = CURRENT_TIMESTAMP
         """,
-        (locale, _canonical_json(state), saved_at),
+        (data_locale, _canonical_json(state), saved_at),
     )
 
     seen_resume_ids: set[str] = set()
@@ -578,7 +740,7 @@ def _save_workspace_rows(
     for resume_item in _coerce_resume_items(persisted_snapshot.get("resumes")):
         resume_id, version_id = _save_resume_item(
             conn,
-            locale=locale,
+            locale=data_locale,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=False,
@@ -589,7 +751,7 @@ def _save_workspace_rows(
     for resume_item in _coerce_resume_items(persisted_snapshot.get("deletedResumes")):
         resume_id, version_id = _save_resume_item(
             conn,
-            locale=locale,
+            locale=data_locale,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=True,
@@ -603,7 +765,7 @@ def _save_workspace_rows(
     ):
         template_id = _save_template_item(
             conn,
-            locale=locale,
+            locale=data_locale,
             template_item=template_item,
             saved_at=saved_at,
             deleted=False,
@@ -615,7 +777,7 @@ def _save_workspace_rows(
     ):
         template_id = _save_template_item(
             conn,
-            locale=locale,
+            locale=data_locale,
             template_item=template_item,
             saved_at=saved_at,
             deleted=True,
@@ -624,17 +786,17 @@ def _save_workspace_rows(
 
     _mark_missing_resumes_purged(
         conn,
-        locale=locale,
+        locale=data_locale,
         seen_resume_ids=seen_resume_ids,
     )
     _mark_missing_templates_purged(
         conn,
-        locale=locale,
+        locale=data_locale,
         seen_template_ids=seen_template_ids,
     )
 
     if max_version_id == 0:
-        max_version_id = _max_resume_version(conn, locale)
+        max_version_id = _max_resume_version(conn, data_locale)
 
     return {
         "savedAt": saved_at,
@@ -760,30 +922,30 @@ def _version_saved_at(conn: Connection, locale: str, version_id: int) -> str | N
 def load_workspace(locale: str) -> dict[str, Any]:
     """Load the current workspace payload for a locale."""
 
-    normalized_locale = normalize_locale(locale)
+    data_locale = workspace_data_locale()
 
     with connect() as conn:
-        state = _load_workspace_state(conn, normalized_locale)
+        state = _apply_user_settings(_load_workspace_state(conn, data_locale))
         workspace = {
             **state,
             "resumes": _load_resume_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=False,
             ),
             "deletedResumes": _load_resume_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=True,
             ),
             "customTemplates": _load_template_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=False,
             ),
             "deletedTemplates": _load_template_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=True,
             ),
         }
@@ -791,10 +953,10 @@ def load_workspace(locale: str) -> dict[str, Any]:
         return _attach_model_configs(conn, workspace)
 
 
-def save_workspace(locale: str, snapshot: dict[str, Any]) -> dict[str, str]:
+def save_workspace(_locale: str, snapshot: dict[str, Any]) -> dict[str, str]:
     """Save a workspace snapshot and return save metadata."""
 
-    normalized_locale = normalize_locale(locale)
+    data_locale = workspace_data_locale()
     saved_at = snapshot.get("savedAt")
     if not isinstance(saved_at, str) or not saved_at.strip():
         saved_at = utc_now()
@@ -803,7 +965,7 @@ def save_workspace(locale: str, snapshot: dict[str, Any]) -> dict[str, str]:
         conn.execute("BEGIN")
         result = _save_workspace_rows(
             conn,
-            locale=normalized_locale,
+            data_locale=data_locale,
             snapshot=snapshot,
             saved_at=saved_at,
         )
@@ -815,7 +977,7 @@ def save_workspace(locale: str, snapshot: dict[str, Any]) -> dict[str, str]:
 def list_workspace_versions(locale: str) -> list[dict[str, str]]:
     """List workspace version numbers available for a locale."""
 
-    normalized_locale = normalize_locale(locale)
+    data_locale = workspace_data_locale()
 
     with connect() as conn:
         rows = conn.execute(
@@ -829,7 +991,7 @@ def list_workspace_versions(locale: str) -> list[dict[str, str]]:
             GROUP BY rv.version_id
             ORDER BY rv.version_id DESC
             """,
-            (normalized_locale,),
+            (data_locale,),
         ).fetchall()
 
     return [
@@ -844,7 +1006,7 @@ def list_workspace_versions(locale: str) -> list[dict[str, str]]:
 def load_workspace_version(locale: str, version_id: str) -> dict[str, Any]:
     """Load a workspace snapshot reconstructed from a specific version."""
 
-    normalized_locale = normalize_locale(locale)
+    data_locale = workspace_data_locale()
 
     try:
         requested_version = int(version_id)
@@ -861,39 +1023,41 @@ def load_workspace_version(locale: str, version_id: str) -> dict[str, Any]:
         )
 
     with connect() as conn:
-        if requested_version > _max_resume_version(conn, normalized_locale):
+        if requested_version > _max_resume_version(conn, data_locale):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Workspace version not found.",
             )
 
-        saved_at = _version_saved_at(conn, normalized_locale, requested_version)
-        state = {
-            **_load_workspace_state(conn, normalized_locale),
-            "savedAt": saved_at or "",
-        }
+        saved_at = _version_saved_at(conn, data_locale, requested_version)
+        state = _apply_user_settings(
+            {
+                **_load_workspace_state(conn, data_locale),
+                "savedAt": saved_at or "",
+            }
+        )
         workspace = {
             **state,
             "resumes": _load_resume_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=False,
                 requested_version=requested_version,
             ),
             "deletedResumes": _load_resume_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=True,
                 requested_version=requested_version,
             ),
             "customTemplates": _load_template_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=False,
             ),
             "deletedTemplates": _load_template_items(
                 conn,
-                locale=normalized_locale,
+                locale=data_locale,
                 deleted=True,
             ),
         }
@@ -950,7 +1114,7 @@ def migrate_legacy_workspace_snapshots(conn: Connection) -> None:
 
         _save_workspace_rows(
             conn,
-            locale=normalize_locale(row["locale"]),
+            data_locale=workspace_data_locale(),
             snapshot=snapshot,
             saved_at=row["saved_at"],
         )
@@ -975,14 +1139,14 @@ def migrate_workspace_templates(conn: Connection) -> None:
         if not has_templates:
             continue
 
-        locale = normalize_locale(row["locale"])
+        data_locale = workspace_data_locale()
         saved_at = row["saved_at"]
         seen_template_ids: set[str] = set()
         for template_item in _coerce_template_items(state.get("customTemplates")):
             seen_template_ids.add(
                 _save_template_item(
                     conn,
-                    locale=locale,
+                    locale=data_locale,
                     template_item=template_item,
                     saved_at=saved_at,
                     deleted=False,
@@ -993,7 +1157,7 @@ def migrate_workspace_templates(conn: Connection) -> None:
             seen_template_ids.add(
                 _save_template_item(
                     conn,
-                    locale=locale,
+                    locale=data_locale,
                     template_item=template_item,
                     saved_at=saved_at,
                     deleted=True,
@@ -1002,7 +1166,7 @@ def migrate_workspace_templates(conn: Connection) -> None:
 
         _mark_missing_templates_purged(
             conn,
-            locale=locale,
+            locale=data_locale,
             seen_template_ids=seen_template_ids,
         )
         conn.execute(

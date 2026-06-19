@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -29,6 +30,7 @@ from app.services.llm_client import (
     LlmToolCall,
     LlmToolCallResponse,
 )
+from app.services.workspace import workspace_data_locale
 
 
 def minimal_resume_item(
@@ -146,6 +148,15 @@ def test_workspace_bootstrap_returns_empty_backend_workspace(
     assert payload["code"] == 0
     assert payload["data"]["resumes"] == []
     assert payload["data"]["deletedResumes"] == []
+
+
+def test_workspace_allocates_compact_resume_id(client: TestClient) -> None:
+    response = client.post("/api/workspace/resumes/id")
+
+    assert response.status_code == 200
+    resume_id = response.json()["data"]["id"]
+    assert re.fullmatch(r"[A-Za-z0-9]{16}", resume_id)
+    assert not resume_id.startswith("resume-")
 
 
 def test_auth_login_does_not_return_credentials(
@@ -394,7 +405,27 @@ def test_workspace_snapshot_persists(client: TestClient) -> None:
     assert bootstrap_response.json()["data"]["resumes"][0]["id"] == "resume-test"
 
 
-def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
+def test_workspace_snapshot_is_shared_across_interface_locales(
+    client: TestClient,
+) -> None:
+    snapshot = {
+        "resumes": [minimal_resume_item("resume-shared", "Shared Resume")],
+        "modelConfigs": [],
+        "savedAt": "2026-05-16T00:00:00.000Z",
+    }
+
+    save_response = client.put(
+        "/api/workspace/snapshot?locale=zh",
+        json={"snapshot": snapshot},
+    )
+    bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
+
+    assert save_response.status_code == 200
+    assert bootstrap_response.status_code == 200
+    assert bootstrap_response.json()["data"]["resumes"][0]["id"] == "resume-shared"
+
+
+def test_workspace_snapshot_roundtrip_preserves_content_state(
     client: TestClient,
 ) -> None:
     snapshot = {
@@ -486,8 +517,10 @@ def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
             "defaultModelId": "llm-roundtrip",
             "responseLanguage": "follow",
             "behaviorMode": "balanced",
+            "confirmationMode": "lowRiskAuto",
             "autoRunMatch": True,
         },
+        "theme": "dark",
         "savedAt": "2026-05-16T02:00:00.000Z",
     }
 
@@ -503,7 +536,14 @@ def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
     assert data["resumes"][0]["id"] == "resume-roundtrip"
     assert data["customTemplates"][0]["id"] == "template-custom"
     assert data["modelConfigs"][0]["apiKeyPreview"] == "sk-rou****"
-    assert data["agentSettings"]["defaultModelId"] == "llm-roundtrip"
+    assert data["agentSettings"] == {
+        "defaultModelId": "",
+        "responseLanguage": "follow",
+        "behaviorMode": "balanced",
+        "confirmationMode": "always",
+    }
+    assert "theme" not in data
+    assert not get_settings().user_settings_path.exists()
 
     with connect() as conn:
         resume_row = conn.execute(
@@ -528,7 +568,15 @@ def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
             FROM workspace_state
             WHERE locale = ?
             """,
-            ("en",),
+            (workspace_data_locale(),),
+        ).fetchone()
+        llm_row = conn.execute(
+            """
+            SELECT is_default
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            ("llm-roundtrip",),
         ).fetchone()
 
     assert resume_row is not None
@@ -541,6 +589,10 @@ def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
     assert state_row is not None
     assert "customTemplates" not in state_row["state_json"]
     assert "deletedTemplates" not in state_row["state_json"]
+    assert "agentSettings" not in state_row["state_json"]
+    assert "theme" not in state_row["state_json"]
+    assert llm_row is not None
+    assert llm_row["is_default"] == 0
     resume_json_path = (
         get_settings().storage_dir
         / "resumes"
@@ -553,6 +605,57 @@ def test_workspace_snapshot_roundtrip_preserves_full_frontend_state(
     )
     assert resume_json_path.exists()
     assert template_json_path.exists()
+
+
+def test_user_settings_endpoint_persists_json_preferences(
+    client: TestClient,
+) -> None:
+    settings = {
+        "theme": "system",
+        "agentSettings": {
+            "defaultModelId": "llm-settings",
+            "responseLanguage": "zh",
+            "behaviorMode": "strict",
+            "confirmationMode": "suggestOnly",
+            "autoRunMatch": True,
+        },
+    }
+
+    response = client.put(
+        "/api/workspace/user-settings?locale=zh",
+        json={"settings": settings},
+    )
+    bootstrap_response = client.get("/api/workspace/bootstrap?locale=zh")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "agentSettings": {
+            "defaultModelId": "llm-settings",
+            "responseLanguage": "zh",
+            "behaviorMode": "strict",
+            "confirmationMode": "suggestOnly",
+        },
+        "locale": "zh",
+        "theme": "system",
+    }
+    assert bootstrap_response.status_code == 200
+    bootstrap_data = bootstrap_response.json()["data"]
+    assert bootstrap_data["theme"] == "system"
+    assert bootstrap_data["agentSettings"] == response.json()["data"]["agentSettings"]
+
+    snapshot_response = client.put(
+        "/api/workspace/snapshot?locale=zh",
+        json={"snapshot": {"resumes": [], "savedAt": "2026-05-16T00:00:00.000Z"}},
+    )
+    assert snapshot_response.status_code == 200
+    persisted_settings = json.loads(
+        get_settings().user_settings_path.read_text(encoding="utf-8")
+    )
+    assert persisted_settings["agentSettings"] == response.json()["data"][
+        "agentSettings"
+    ]
+    assert persisted_settings["locale"] == "zh"
+    assert persisted_settings["theme"] == "system"
 
 
 def test_workspace_snapshot_does_not_persist_api_key(client: TestClient) -> None:
@@ -595,7 +698,7 @@ def test_workspace_snapshot_does_not_persist_api_key(client: TestClient) -> None
             FROM workspace_state
             WHERE locale = ?
             """,
-            ("en",),
+            (workspace_data_locale(),),
         ).fetchone()
         llm_row = conn.execute(
             """
@@ -3018,7 +3121,9 @@ def test_import_resume_accepts_json_upload(client: TestClient) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["resumes"]
+    resume = response.json()["data"]["resumes"][0]
+    assert re.fullmatch(r"[A-Za-z0-9]{16}", resume["id"])
+    assert resume["resume"]["basic"]["name"] == "Avery"
 
 
 def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:

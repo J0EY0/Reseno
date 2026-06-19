@@ -94,6 +94,7 @@ def _agent_payload(
         "files": _agent_file_context(request.files),
         "keywordMatch": request.keyword_match,
         "resume": _active_resume(request),
+        "agentSettings": _visible_agent_settings(request),
         "conversationDepth": _conversation_depth(request),
     }
 
@@ -120,6 +121,14 @@ def _agent_payload(
     payload["conversationContext"] = conversation_payload["conversationContext"]
 
     return payload
+
+
+def _visible_agent_settings(request: AgentChatRequest) -> dict[str, Any]:
+    return {
+        "responseLanguage": request.settings.get("responseLanguage", "follow"),
+        "behaviorMode": request.settings.get("behaviorMode", "balanced"),
+        "confirmationMode": request.settings.get("confirmationMode", "always"),
+    }
 
 
 def _conversation_payload(

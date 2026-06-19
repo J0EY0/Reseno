@@ -11,7 +11,7 @@ export type SectionKind =
   | 'custom'
 export type SectionLayout = 'timeline' | 'list'
 export type ResumeFontFamily = 'inter' | 'serif' | 'plex'
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode = 'light' | 'dark' | 'system'
 export type BuiltinResumeTemplateId = 'minimal' | 'modern' | 'compact'
 export type ResumeBasicInfoLayout = 'centered' | 'profile' | 'sidebar'
 export type ResumeAvatarPosition = 'right' | 'left' | 'center'
@@ -27,6 +27,7 @@ export type ResumeTemplateId = string
 export type WorkspaceView = 'resume' | 'templates' | 'trash' | 'models' | 'settings'
 export type AgentResponseLanguage = 'follow' | 'zh' | 'en'
 export type AgentBehaviorMode = 'balanced' | 'strict' | 'aggressive'
+export type AgentConfirmationMode = 'always' | 'lowRiskAuto' | 'suggestOnly'
 
 export interface CustomField {
   id: string
@@ -238,7 +239,7 @@ export interface AgentSettings {
   defaultModelId: string
   responseLanguage: AgentResponseLanguage
   behaviorMode: AgentBehaviorMode
-  autoRunMatch: boolean
+  confirmationMode: AgentConfirmationMode
 }
 
 export interface ResumeWorkspaceItem {
@@ -269,6 +270,7 @@ export interface WorkspacePayload {
   modelConfigs?: ModelConfig[]
   modelConfig?: LegacyModelConfig
   agentSettings?: AgentSettings
+  theme?: ThemeMode
 }
 
 export interface WorkspaceSnapshot {
@@ -279,6 +281,10 @@ export interface WorkspaceSnapshot {
   deletedTemplates?: DeletedResumeTemplateDefinition[]
   modelConfigs: ModelConfig[]
   modelConfig?: LegacyModelConfig
-  agentSettings?: AgentSettings
   savedAt: string
+}
+
+export interface WorkspaceVersionSnapshot extends WorkspaceSnapshot {
+  agentSettings?: AgentSettings
+  theme?: ThemeMode
 }

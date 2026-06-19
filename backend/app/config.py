@@ -47,6 +47,7 @@ class Settings:
     db_path: Path
     storage_dir: Path
     export_dir: Path
+    user_settings_path: Path
     env_file_path: Path
     host: str
     port: int
@@ -443,6 +444,10 @@ def get_settings() -> Settings:
         db_path=_path_from_env("APP_DB_PATH", data_dir / "app.db"),
         storage_dir=storage_dir,
         export_dir=_path_from_env("EXPORT_DIR", storage_dir / "exports"),
+        user_settings_path=_path_from_env(
+            "APP_USER_SETTINGS_PATH",
+            data_dir / "user_settings.json",
+        ),
         env_file_path=env_file_path,
         host=os.getenv("APP_HOST", "127.0.0.1"),
         port=_parse_int(os.getenv("APP_PORT"), 8000),

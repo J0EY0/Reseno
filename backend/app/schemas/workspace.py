@@ -11,6 +11,18 @@ class WorkspaceSaveRequest(BaseModel):
     snapshot: JsonObject
 
 
+class UserSettingsSaveRequest(BaseModel):
+    """Request body containing settings-page preferences."""
+
+    settings: JsonObject
+
+
+class WorkspaceResumeIdResponse(BaseModel):
+    """Backend-generated id for a new resume document."""
+
+    id: str
+
+
 class WorkspaceSaveResponse(BaseModel):
     """Save metadata returned after persisting a workspace snapshot."""
 

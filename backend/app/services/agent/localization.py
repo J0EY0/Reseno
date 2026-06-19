@@ -62,8 +62,7 @@ TEXT: dict[str, dict[str, str]] = {
         "model.setup.quick_reply": "Configure model",
         "model.setup.text": (
             "No usable model configuration is available yet. Add a model, enter "
-            "its API key, and set it as the default model before asking the "
-            "agent to analyze or edit the resume."
+            "its API key, then ask the agent to analyze or edit the resume."
         ),
         "locale.name": "English",
         "list.separator": ", ",
@@ -229,7 +228,7 @@ TEXT: dict[str, dict[str, str]] = {
         "model.setup.quick_reply": "去配置模型",
         "model.setup.text": (
             "当前还没有可用的大模型配置。请先在「大模型配置」中新增模型、填写 "
-            "API Key 并设为默认模型，然后再让 Agent 分析或修改简历。"
+            "API Key，然后再让 Agent 分析或修改简历。"
         ),
         "locale.name": "Chinese",
         "list.separator": "、",

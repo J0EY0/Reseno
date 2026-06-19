@@ -10,6 +10,7 @@ import type {
   ResumeWorkspaceItem,
   WorkspacePayload,
   WorkspaceSnapshot,
+  WorkspaceVersionSnapshot,
 } from "@/types/resume";
 
 export interface ApiResponse<T> {
@@ -34,7 +35,7 @@ export interface WorkspaceBootstrapQuery {
 export type WorkspaceBootstrapResponse = WorkspacePayload;
 
 export interface WorkspaceBootstrapResult {
-  workspace: WorkspacePayload | WorkspaceSnapshot;
+  workspace: WorkspacePayload;
   savedAt: string | null;
   source: "backend";
 }
@@ -48,6 +49,10 @@ export interface WorkspaceSaveResponse {
   versionId?: string;
 }
 
+export interface WorkspaceResumeIdResponse {
+  id: string;
+}
+
 export interface WorkspaceVersionSummary {
   versionId: string;
   savedAt: string;
@@ -59,7 +64,7 @@ export interface WorkspaceVersionsResponse {
 
 export interface WorkspaceVersionResponse {
   versionId: string;
-  snapshot: WorkspaceSnapshot;
+  snapshot: WorkspaceVersionSnapshot;
 }
 
 export interface ImportResumeResponse {

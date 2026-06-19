@@ -121,7 +121,7 @@ def resolve_agent_llm_config(
                 system_prompt
             FROM llm_configs
             WHERE enabled = 1
-            ORDER BY is_default DESC, updated_at DESC, id DESC
+            ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,
         ).fetchone()

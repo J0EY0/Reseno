@@ -12,6 +12,7 @@ from app.services.llm_secrets import (
 from app.services.model_configs import sync_llm_configs
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+USER_SETTINGS_KEYS = {"agentSettings", "theme"}
 
 
 def _table_columns(conn: Connection, table_name: str) -> set[str]:
@@ -154,12 +155,6 @@ def _purge_workspace_model_secrets(conn: Connection, table_name: str) -> None:
             continue
 
         model_configs = snapshot.get("modelConfigs")
-        agent_settings = snapshot.get("agentSettings")
-        default_model_id = (
-            agent_settings.get("defaultModelId")
-            if isinstance(agent_settings, dict)
-            else None
-        )
         if isinstance(model_configs, list):
             hydrated_model_configs = [
                 _hydrate_legacy_model_config(config) for config in model_configs
@@ -167,7 +162,6 @@ def _purge_workspace_model_secrets(conn: Connection, table_name: str) -> None:
             sync_llm_configs(
                 conn,
                 hydrated_model_configs,
-                default_model_id if isinstance(default_model_id, str) else None,
             )
 
         sanitized, changed = sanitize_workspace_payload(snapshot)
@@ -185,6 +179,69 @@ def _purge_workspace_model_secrets(conn: Connection, table_name: str) -> None:
                 row["rowid"],
             ),
         )
+
+
+def _purge_workspace_user_settings(conn: Connection, table_name: str) -> None:
+    """Remove settings-page preferences from legacy workspace snapshot tables."""
+
+    table = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    if table is None:
+        return
+
+    rows = conn.execute(
+        f"""
+        SELECT rowid, snapshot_json
+        FROM {table_name}
+        """,
+    ).fetchall()
+
+    for row in rows:
+        snapshot = json.loads(row["snapshot_json"])
+        if not isinstance(snapshot, dict):
+            continue
+
+        sanitized = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in USER_SETTINGS_KEYS
+        }
+        if sanitized == snapshot:
+            continue
+
+        conn.execute(
+            f"""
+            UPDATE {table_name}
+            SET snapshot_json = ?
+            WHERE rowid = ?
+            """,
+            (
+                json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")),
+                row["rowid"],
+            ),
+        )
+
+
+def _clear_llm_default_flags(conn: Connection) -> None:
+    """Clear legacy default-model preference stored on model config rows."""
+
+    columns = _table_columns(conn, "llm_configs")
+    if "is_default" not in columns:
+        return
+
+    conn.execute(
+        """
+        UPDATE llm_configs
+        SET is_default = 0
+        WHERE is_default != 0
+        """,
+    )
 
 
 def migrate_db() -> None:
@@ -205,3 +262,6 @@ def migrate_db() -> None:
         migrate_workspace_templates(conn)
         _purge_workspace_model_secrets(conn, "workspace_snapshots")
         _purge_workspace_model_secrets(conn, "workspace_versions")
+        _purge_workspace_user_settings(conn, "workspace_snapshots")
+        _purge_workspace_user_settings(conn, "workspace_versions")
+        _clear_llm_default_flags(conn)

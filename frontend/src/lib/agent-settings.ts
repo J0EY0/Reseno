@@ -1,19 +1,19 @@
 import type { AgentSettings, ModelConfig } from '@/types/resume'
 
 export function createDefaultAgentSettings(
-  modelConfigs: ModelConfig[],
+  modelConfigs: ModelConfig[] = [],
 ): AgentSettings {
   return {
     defaultModelId: modelConfigs[0]?.id ?? '',
     responseLanguage: 'follow',
     behaviorMode: 'balanced',
-    autoRunMatch: true,
+    confirmationMode: 'always',
   }
 }
 
 export function normalizeAgentSettings(
   value: unknown,
-  modelConfigs: ModelConfig[],
+  modelConfigs: ModelConfig[] = [],
 ): AgentSettings {
   const defaults = createDefaultAgentSettings(modelConfigs)
 
@@ -22,14 +22,14 @@ export function normalizeAgentSettings(
   }
 
   const raw = value as Partial<AgentSettings>
-  const defaultModelId =
-    typeof raw.defaultModelId === 'string' &&
-    modelConfigs.some((item) => item.id === raw.defaultModelId)
-      ? raw.defaultModelId
-      : defaults.defaultModelId
+  const rawDefaultModelId =
+    typeof raw.defaultModelId === 'string' ? raw.defaultModelId : ''
+  const hasDefaultModel = modelConfigs.some(
+    (config) => config.id === rawDefaultModelId,
+  )
 
   return {
-    defaultModelId,
+    defaultModelId: hasDefaultModel ? rawDefaultModelId : defaults.defaultModelId,
     responseLanguage:
       raw.responseLanguage === 'zh' ||
       raw.responseLanguage === 'en' ||
@@ -42,9 +42,11 @@ export function normalizeAgentSettings(
       raw.behaviorMode === 'balanced'
         ? raw.behaviorMode
         : defaults.behaviorMode,
-    autoRunMatch:
-      typeof raw.autoRunMatch === 'boolean'
-        ? raw.autoRunMatch
-        : defaults.autoRunMatch,
+    confirmationMode:
+      raw.confirmationMode === 'lowRiskAuto' ||
+      raw.confirmationMode === 'suggestOnly' ||
+      raw.confirmationMode === 'always'
+        ? raw.confirmationMode
+        : defaults.confirmationMode,
   }
 }

@@ -32,6 +32,7 @@ def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
 
     monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
     monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    monkeypatch.delenv("APP_USER_SETTINGS_PATH", raising=False)
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
@@ -60,6 +61,7 @@ def unauthenticated_client(tmp_path, monkeypatch) -> Iterator[TestClient]:
 
     monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
     monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    monkeypatch.delenv("APP_USER_SETTINGS_PATH", raising=False)
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))

@@ -155,6 +155,7 @@ type WorkspacePayload = {
   modelConfigs?: ModelConfig[]
   modelConfig?: ModelConfig
   agentSettings?: AgentSettings
+  theme?: "light" | "dark" | "system"
 }
 ```
 
@@ -166,6 +167,17 @@ workspace snapshot 存入 SQLite；每份简历会拆分为独立版本 JSON 文
 请求：
 
 ```ts
+type WorkspaceSnapshot = {
+  resumes: ResumeWorkspaceItem[]
+  defaultTemplateId?: string
+  customTemplates?: ResumeTemplateDefinition[]
+  deletedResumes?: ResumeWorkspaceItem[]
+  deletedTemplates?: ResumeTemplateDefinition[]
+  modelConfigs: ModelConfig[]
+  modelConfig?: ModelConfig
+  savedAt: string
+}
+
 type WorkspaceSaveRequest = {
   snapshot: WorkspaceSnapshot
 }
@@ -760,10 +772,10 @@ type ModelConfigDeleteResponse = {
 
 ```ts
 type AgentSettings = {
-  defaultModelId?: string
-  responseLanguage: "zh" | "en"
-  behaviorMode: string
-  autoRunMatch: boolean
+  defaultModelId: string
+  responseLanguage: "follow" | "zh" | "en"
+  behaviorMode: "balanced" | "strict" | "aggressive"
+  confirmationMode: "always" | "lowRiskAuto" | "suggestOnly"
 }
 ```
 

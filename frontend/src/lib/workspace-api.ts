@@ -3,12 +3,13 @@ import { apiRoutes, requestApi } from "@/lib/api-client";
 import type {
   WorkspaceBootstrapResponse,
   WorkspaceBootstrapResult,
+  WorkspaceResumeIdResponse,
   WorkspaceSaveRequest,
   WorkspaceSaveResponse,
   WorkspaceVersionResponse,
   WorkspaceVersionsResponse,
 } from "@/types/api";
-import type { WorkspaceSnapshot } from "@/types/resume";
+import type { AgentSettings, ThemeMode, WorkspaceSnapshot } from "@/types/resume";
 
 export async function fetchWorkspaceBootstrap(
   locale: Locale,
@@ -43,6 +44,26 @@ export async function saveWorkspaceSnapshotApi(
     body: request,
     method: "PUT",
     searchParams: { locale },
+  });
+}
+
+export function saveUserSettingsApi(
+  locale: Locale,
+  settings: {
+    agentSettings?: AgentSettings;
+    theme?: ThemeMode;
+  },
+) {
+  return requestApi<Record<string, unknown>>(apiRoutes.workspaceUserSettings, {
+    body: { settings },
+    method: "PUT",
+    searchParams: { locale },
+  });
+}
+
+export function createWorkspaceResumeIdApi() {
+  return requestApi<WorkspaceResumeIdResponse>(apiRoutes.workspaceResumeId, {
+    method: "POST",
   });
 }
 

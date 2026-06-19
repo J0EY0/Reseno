@@ -20,7 +20,6 @@ class ModelConfigUpsertRequest(BaseModel):
         alias="contextWindowTokens",
     )
     system_prompt: str = Field(default="", alias="systemPrompt")
-    is_default: bool = Field(default=False, alias="isDefault")
 
 
 class ModelConfigResponse(BaseModel):
