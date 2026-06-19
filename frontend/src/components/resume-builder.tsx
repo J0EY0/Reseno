@@ -2162,6 +2162,11 @@ export function ResumeBuilder({
       remaining.find((item) => item.id === activeResumeId) ??
       remaining[0] ??
       null;
+    const removedActiveResume =
+      activeResumeId !== null && resumeIds.includes(activeResumeId);
+    const removedRouteResume =
+      currentRoute.kind === "resume-detail" &&
+      resumeIds.includes(currentRoute.id);
 
     setResumeDocuments(remaining);
     setDeletedResumeDocuments((previous) => [
@@ -2169,7 +2174,7 @@ export function ResumeBuilder({
       ...previous,
     ]);
 
-    if (activeResumeId && resumeIds.includes(activeResumeId)) {
+    if (removedRouteResume) {
       setActiveResumeId(nextActiveResume?.id ?? null);
 
       if (nextActiveResume) {
@@ -2185,6 +2190,8 @@ export function ResumeBuilder({
           ),
         nextActiveResume ? "nav-forward" : "nav-back",
       );
+    } else if (removedActiveResume) {
+      setActiveResumeId(null);
     }
 
     toast.success(resumeIds.length > 1 ? t.resumesDeleted : t.resumeDeleted, {
