@@ -1,5 +1,4 @@
 import {
-  ALargeSmall,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -11,7 +10,6 @@ import {
   Plus,
   SlidersHorizontal,
   Sun,
-  Type,
 } from "lucide-react";
 import {
   lazy,
@@ -63,6 +61,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Toaster } from "@/components/ui/sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
 import {
   SidebarInset,
   SidebarProvider,
@@ -684,6 +683,14 @@ function normalizeResumeTemplateId(
     : fallbackTemplateId;
 }
 
+function formatControlNumber(value: number, precision: number) {
+  const formattedValue = value.toFixed(precision);
+
+  return formattedValue.includes(".")
+    ? formattedValue.replace(/\.?0+$/, "")
+    : formattedValue;
+}
+
 function FormatSliderField({
   label,
   value,
@@ -701,16 +708,81 @@ function FormatSliderField({
   suffix?: string;
   onChange: (value: number) => void;
 }) {
+  const precision = step < 1 ? 2 : 0;
+  const [inputValue, setInputValue] = useState(() =>
+    formatControlNumber(value, precision),
+  );
+
+  useEffect(() => {
+    setInputValue(formatControlNumber(value, precision));
+  }, [precision, value]);
+
+  function commitInputValue(nextInputValue: string) {
+    if (!nextInputValue.trim()) {
+      setInputValue(formatControlNumber(value, precision));
+      return;
+    }
+
+    const parsedValue = Number(nextInputValue);
+
+    if (!Number.isFinite(parsedValue)) {
+      setInputValue(formatControlNumber(value, precision));
+      return;
+    }
+
+    const clampedValue = Math.min(max, Math.max(min, parsedValue));
+    const steppedValue =
+      Math.round((clampedValue - min) / step) * step + min;
+    const nextValue = Number(
+      Math.min(max, Math.max(min, steppedValue)).toFixed(precision),
+    );
+
+    setInputValue(formatControlNumber(nextValue, precision));
+    onChange(nextValue);
+  }
+
   return (
-    <div className="rounded-xl border border-border bg-card p-3">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <span className="text-sm font-medium">{label}</span>
-        <span className="rounded-lg border border-border bg-background px-2 py-1 text-sm tabular-nums">
-          {value.toFixed(step < 1 ? 2 : 0)}
-          {suffix ?? ""}
-        </span>
+    <div className="grid gap-2 py-1">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <div className="flex items-center gap-0.5">
+          <Input
+            aria-label={label}
+            inputMode="decimal"
+            value={inputValue}
+            className="h-7 w-9 rounded-md border-0 bg-muted/60 px-1.5 py-0 text-center text-sm tabular-nums text-muted-foreground shadow-none focus-visible:border-transparent focus-visible:ring-1"
+            onBlur={(event) => commitInputValue(event.currentTarget.value)}
+            onChange={(event) => {
+              const nextValue = event.currentTarget.value;
+
+              if (/^\d*\.?\d*$/.test(nextValue)) {
+                setInputValue(nextValue);
+              }
+            }}
+            onFocus={(event) => event.currentTarget.select()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitInputValue(event.currentTarget.value);
+                event.currentTarget.blur();
+              }
+
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setInputValue(formatControlNumber(value, precision));
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          {suffix ? (
+            <span className="text-sm tabular-nums text-muted-foreground">
+              {suffix}
+            </span>
+          ) : null}
+        </div>
       </div>
       <Slider
+        className="[&_[data-slot=slider-thumb]]:size-3.5 [&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-track]]:bg-muted/70"
         min={min}
         max={max}
         step={step}
@@ -3286,10 +3358,6 @@ export function ResumeBuilder({
     const RailIcon = isAgentPanelCollapsed
       ? ChevronLeft
       : ChevronRight;
-    const railHeight = previewPageHeight * previewScale + 64;
-    const railStyle = {
-      "--agent-seam-rail-height": `${railHeight}px`,
-    } as CSSProperties;
 
     return (
       <div
@@ -3297,7 +3365,6 @@ export function ResumeBuilder({
           "agent-seam-rail hidden print:hidden 2xl:flex",
           isAgentPanelCollapsed && "agent-seam-rail--collapsed",
         )}
-        style={railStyle}
       >
         <TooltipProvider delayDuration={180}>
           <Tooltip>
@@ -3431,7 +3498,7 @@ export function ResumeBuilder({
     const renderCopilotPanel = (mode: "docked" | "sheet") => (
       <Suspense
         fallback={
-          <Card className="h-[calc(100svh-7rem)] min-h-[720px] rounded-[32px] border-border/60">
+          <Card className="h-full min-h-0 rounded-[32px] border-border/60">
             <CardContent className="space-y-5 p-4">
               <div className="flex items-center gap-3">
                 <Skeleton className="size-11 rounded-2xl" />
@@ -3551,7 +3618,7 @@ export function ResumeBuilder({
         <aside
           aria-hidden={!shouldDockAgent}
           className={cn(
-            "relative hidden min-w-0 overflow-hidden print:hidden 2xl:block 2xl:self-start",
+            "agent-panel-dock relative hidden min-w-0 overflow-hidden print:hidden 2xl:block 2xl:self-start",
             "transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
             !shouldDockAgent && "pointer-events-none opacity-0",
           )}
@@ -3909,66 +3976,74 @@ export function ResumeBuilder({
                       {t.format}
                     </PopoverTrigger>
                     <PopoverContent align="end" className="w-[340px] p-3">
-                      <div className="grid gap-3">
-                        <label className="grid gap-2">
-                          <span className="text-sm font-medium">
-                            {t.fontFamily}
-                          </span>
-                          <Select
-                            value={typography.fontFamily}
-                            onValueChange={(value) =>
-                              setTypography((current) => ({
-                                ...current,
-                                fontFamily: value as ResumeFontFamily,
-                              }))
-                            }
-                          >
-                            <SelectTrigger>
-                              <div className="flex min-w-0 items-center gap-2">
-                                <Type className="size-4 text-muted-foreground" />
-                                <SelectValue />
-                              </div>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Object.entries(fontLabels).map(
-                                ([value, labelKey]) => (
-                                  <SelectItem key={value} value={value}>
-                                    {t[labelKey]}
-                                  </SelectItem>
-                                ),
-                              )}
-                            </SelectContent>
-                          </Select>
-                        </label>
+                      <div className="grid gap-2.5">
+                        <div className="px-0.5 text-sm font-semibold">
+                          {t.formatTypography}
+                        </div>
 
-                        <label className="grid gap-2">
-                          <span className="text-sm font-medium">
-                            {t.fontSize}
-                          </span>
-                          <Select
-                            value={String(typography.fontSize)}
-                            onValueChange={(value) =>
-                              setTypography((current) => ({
-                                ...current,
-                                fontSize: Number(value),
-                              }))
-                            }
-                          >
-                            <SelectTrigger>
-                              <div className="flex min-w-0 items-center gap-2">
-                                <ALargeSmall className="size-4 text-muted-foreground" />
+                        <div className="grid gap-1">
+                          <div className="flex min-h-8 items-center justify-between gap-3">
+                            <span className="text-sm font-medium text-foreground">
+                              {t.fontFamily}
+                            </span>
+                            <Select
+                              value={typography.fontFamily}
+                              onValueChange={(value) =>
+                                setTypography((current) => ({
+                                  ...current,
+                                  fontFamily: value as ResumeFontFamily,
+                                }))
+                              }
+                            >
+                              <SelectTrigger
+                                aria-label={t.fontFamily}
+                                className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                              >
                                 <SelectValue />
-                              </div>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {fontSizeOptions.map((size) => (
-                                <SelectItem key={size} value={String(size)}>
-                                  {size}pt
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </label>
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Object.entries(fontLabels).map(
+                                  ([value, labelKey]) => (
+                                    <SelectItem key={value} value={value}>
+                                      {t[labelKey]}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div className="flex min-h-8 items-center justify-between gap-3">
+                            <span className="text-sm font-medium text-foreground">
+                              {t.fontSize}
+                            </span>
+                            <Select
+                              value={String(typography.fontSize)}
+                              onValueChange={(value) =>
+                                setTypography((current) => ({
+                                  ...current,
+                                  fontSize: Number(value),
+                                }))
+                              }
+                            >
+                              <SelectTrigger
+                                aria-label={t.fontSize}
+                                className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {fontSizeOptions.map((size) => (
+                                  <SelectItem key={size} value={String(size)}>
+                                    {size} pt
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+
+                        <Separator />
 
                         <FormatSliderField
                           label={t.pageMargin}

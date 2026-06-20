@@ -4,15 +4,14 @@ import {
   fetchApiResource,
   requestApi,
   resolveApiUrl,
-  unwrapApiResponse,
 } from "@/lib/api-client";
-import { createThrottledCallback } from "@/lib/async-control";
 import type {
   AgentChatActionId,
   AgentChatMessage,
   AgentChatRequest,
   AgentChatResponse,
   AgentResumeEditSuggestion,
+  AgentSessionReplaceRequest,
   AgentSessionResponse,
   AgentSource,
   AgentTimelinePart,
@@ -321,6 +320,12 @@ function getPayloadPatch(payload: unknown, key: string) {
   return payload[key] ?? payload;
 }
 
+function yieldToRenderer() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
 async function readAgentChatStream(
   response: Response,
   options: AgentChatStreamOptions,
@@ -334,12 +339,9 @@ async function readAgentChatStream(
   let buffer = "";
   let message = createEmptyAssistantMessage();
   let receivedEvent = false;
-  const emitMessage = options.onMessage
-    ? createThrottledCallback(options.onMessage, 80)
-    : null;
 
   const publishMessage = () => {
-    emitMessage?.(message);
+    options.onMessage?.(message);
   };
 
   const applyEvent = (type: string, payload: unknown) => {
@@ -405,7 +407,6 @@ async function readAgentChatStream(
 
     if (type === "message_done") {
       message = mergeAgentMessage(message, getPayloadPatch(payload, "message"));
-      emitMessage?.cancel();
       options.onMessage?.(message);
       return;
     }
@@ -420,17 +421,21 @@ async function readAgentChatStream(
     }
   };
 
-  const flushBlocks = (blocks: string[]) => {
-    blocks.forEach((block) => {
+  const flushBlocks = async (blocks: string[]) => {
+    for (const [index, block] of blocks.entries()) {
       const event = parseServerSentEventBlock(block);
 
       if (!event) {
-        return;
+        continue;
       }
 
       receivedEvent = true;
       applyEvent(event.type, event.payload);
-    });
+
+      if (index < blocks.length - 1) {
+        await yieldToRenderer();
+      }
+    }
   };
 
   while (true) {
@@ -444,20 +449,18 @@ async function readAgentChatStream(
 
     const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
-    flushBlocks(blocks);
+    await flushBlocks(blocks);
   }
 
   buffer += decoder.decode();
 
   if (buffer.trim()) {
-    flushBlocks([buffer]);
+    await flushBlocks([buffer]);
   }
 
   if (!receivedEvent) {
     throw new Error("Agent stream completed without events.");
   }
-
-  emitMessage?.flush();
 
   return message;
 }
@@ -466,17 +469,10 @@ export async function sendAgentChatMessage(
   request: AgentChatRequest,
   options: AgentChatStreamOptions = {},
 ) {
-  if (!request.stream) {
-    return requestApi<AgentChatResponse>(apiRoutes.agentChat, {
-      body: request,
-      method: "POST",
-    });
-  }
-
   const response = await fetchApiResource(
     resolveApiUrl(apiRoutes.agentChat),
     {
-      body: JSON.stringify(request),
+      body: JSON.stringify({ ...request, stream: true }),
       cache: "no-store",
       headers: {
         Accept: "text/event-stream",
@@ -496,15 +492,7 @@ export async function sendAgentChatMessage(
   const contentType = response.headers.get("Content-Type") ?? "";
 
   if (!contentType.toLowerCase().includes("text/event-stream")) {
-    const payload = (await response.json()) as unknown;
-    const data = unwrapApiResponse<AgentChatResponse>(payload);
-
-    options.onMessage?.(data.message);
-    if (request.resumeId) {
-      clearApiCache(apiRoutes.agentResumeSession(request.resumeId));
-    }
-
-    return data;
+    throw new Error("Agent chat endpoint did not return an event stream.");
   }
 
   const message = await readAgentChatStream(response, options);
@@ -518,5 +506,15 @@ export async function sendAgentChatMessage(
 export async function loadAgentSession(resumeId: string) {
   return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
     cacheTtlMs: 2000,
+  });
+}
+
+export async function replaceAgentSession(
+  resumeId: string,
+  request: AgentSessionReplaceRequest,
+) {
+  return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
+    body: request,
+    method: "PUT",
   });
 }

@@ -9,6 +9,7 @@ from uuid import uuid4
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
+    AgentConversationItem,
     AgentSessionResponse,
     AgentStoredMessage,
 )
@@ -110,6 +111,51 @@ def append_agent_exchange(
         _trim_session_messages(conn, resume_id)
 
 
+def replace_agent_session_messages(
+    conn: Connection,
+    resume_id: str,
+    *,
+    locale: str,
+    messages: list[AgentConversationItem],
+) -> AgentSessionResponse:
+    """Replace persisted messages for a resume Agent session."""
+
+    safe_resume_id = resume_id.strip()
+    if not safe_resume_id or not is_valid_resume_id(safe_resume_id):
+        return AgentSessionResponse(resumeId=resume_id, messages=[])
+
+    now = _now_iso()
+    normalized_messages = _normalize_replacement_messages(messages)
+
+    with conn:
+        _upsert_replacement_session(
+            conn,
+            safe_resume_id,
+            locale,
+            _replacement_session_title(normalized_messages),
+            now,
+        )
+        conn.execute(
+            "DELETE FROM agent_messages WHERE session_id = ?",
+            (safe_resume_id,),
+        )
+
+        for sequence, message in enumerate(normalized_messages, start=1):
+            _insert_message(
+                conn,
+                session_id=safe_resume_id,
+                message_id=message["id"],
+                role=message["role"],
+                text=message["text"],
+                files=message["files"],
+                response=message["response"],
+                sequence=sequence,
+                created_at=message["created_at"] or now,
+            )
+
+    return load_agent_session(conn, safe_resume_id)
+
+
 def _now_iso() -> str:
     """Return a compact UTC timestamp for persisted chat records."""
 
@@ -203,6 +249,18 @@ def _session_title(user_message: UserAgentMessage | None) -> str:
     return user_message.text[:80]
 
 
+def _replacement_session_title(
+    messages: list[dict[str, Any]],
+) -> str:
+    """Use the first replacement user message as the session title."""
+
+    for message in messages:
+        if message["role"] == "user":
+            return str(message["text"])[:80]
+
+    return ""
+
+
 def _upsert_session(
     conn: Connection,
     request: AgentChatRequest,
@@ -237,6 +295,114 @@ def _upsert_session(
             updated_at,
         ),
     )
+
+
+def _upsert_replacement_session(
+    conn: Connection,
+    resume_id: str,
+    locale: str,
+    title: str,
+    updated_at: str,
+) -> None:
+    """Create or refresh a session row while replacing its messages."""
+
+    conn.execute(
+        """
+        INSERT INTO agent_sessions (
+            id,
+            resume_id,
+            locale,
+            title,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            resume_id = excluded.resume_id,
+            locale = excluded.locale,
+            title = excluded.title,
+            updated_at = excluded.updated_at
+        """,
+        (
+            resume_id,
+            resume_id,
+            locale,
+            title,
+            updated_at,
+            updated_at,
+        ),
+    )
+
+
+def _normalize_replacement_messages(
+    messages: list[AgentConversationItem],
+) -> list[dict[str, Any]]:
+    """Normalize client-supplied messages before storing them."""
+
+    normalized: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+
+    for message in messages[:MAX_AGENT_SESSION_MESSAGES]:
+        text = message.text.strip()
+        files = [file for file in message.files if isinstance(file, dict)]
+
+        if not text and not files and not message.response:
+            continue
+
+        raw_id = (message.id or "").strip()
+        message_id = (
+            raw_id
+            if raw_id and raw_id not in used_ids
+            else f"agent-{message.role}-{uuid4().hex[:12]}"
+        )
+        used_ids.add(message_id)
+
+        normalized.append(
+            {
+                "id": message_id,
+                "role": message.role,
+                "text": text,
+                "files": files,
+                "response": _replacement_assistant_response(
+                    message_id,
+                    text,
+                    message.response,
+                )
+                if message.role == "assistant"
+                else None,
+                "created_at": message.created_at,
+            },
+        )
+
+    return normalized
+
+
+def _replacement_assistant_response(
+    message_id: str,
+    text: str,
+    response: dict[str, Any] | None,
+) -> AgentChatMessage:
+    """Build a valid assistant payload from replacement history."""
+
+    payload = response if isinstance(response, dict) else {}
+    fallback_text = text or str(payload.get("text") or "")
+    response_id = payload.get("id")
+
+    try:
+        return AgentChatMessage.model_validate(
+            {
+                **payload,
+                "id": response_id if isinstance(response_id, str) else message_id,
+                "role": "assistant",
+                "text": fallback_text,
+            },
+        )
+    except ValueError:
+        return AgentChatMessage(
+            id=message_id,
+            role="assistant",
+            text=fallback_text,
+        )
 
 
 def _next_message_sequence(conn: Connection, session_id: str) -> int:

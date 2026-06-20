@@ -197,7 +197,7 @@ export interface AgentChatRequest {
   draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
   settings: AgentSettings;
-  stream?: boolean;
+  stream?: true;
 }
 
 export type AgentChatActionId =
@@ -286,6 +286,11 @@ export interface AgentStoredMessage extends AgentConversationMessage {
 export interface AgentSessionResponse {
   resumeId: string;
   messages: AgentStoredMessage[];
+}
+
+export interface AgentSessionReplaceRequest {
+  locale: Locale;
+  messages: AgentConversationMessage[];
 }
 
 export type AgentChatStreamEvent =

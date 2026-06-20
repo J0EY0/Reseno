@@ -12,6 +12,8 @@ import {
 } from "@/components/ai-elements/conversation";
 import {
   Message,
+  MessageAction,
+  MessageActions,
   MessageContent,
   MessageResponse,
 } from "@/components/ai-elements/message";
@@ -60,15 +62,18 @@ import {
   InlineCitationText,
 } from "@/components/ai-elements/inline-citation";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  Bot,
   Check,
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Copy,
   FileText,
+  Pencil,
   RotateCcw,
   SquareTerminal,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -86,7 +91,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { loadAgentSession, sendAgentChatMessage } from "@/lib/agent-api";
+import {
+  loadAgentSession,
+  replaceAgentSession,
+  sendAgentChatMessage,
+} from "@/lib/agent-api";
 import {
   getModelProviderMeta,
   inferModelProviderId,
@@ -702,6 +711,148 @@ function AgentToolShimmerStatus({
   );
 }
 
+function AgentUserMessage({
+  copied,
+  disabled,
+  editedText,
+  isEditing,
+  message,
+  onCancelEdit,
+  onCopy,
+  onEditTextChange,
+  onStartEdit,
+  onSubmitEdit,
+  t,
+}: {
+  copied: boolean;
+  disabled: boolean;
+  editedText: string;
+  isEditing: boolean;
+  message: AgentPanelMessage;
+  onCancelEdit: () => void;
+  onCopy: () => void;
+  onEditTextChange: (value: string) => void;
+  onStartEdit: () => void;
+  onSubmitEdit: () => void;
+  t: AppMessages;
+}) {
+  const submitDisabled = disabled || !editedText.trim();
+
+  return (
+    <div
+      className={cn(
+        "group/user-message flex max-w-full flex-col items-end",
+        isEditing && "w-full",
+      )}
+    >
+      <MessageContent
+        className={cn(
+          "ml-auto min-w-8 max-w-full self-end overflow-visible text-foreground",
+          isEditing
+            ? "!w-full !rounded-2xl border border-border/70 !bg-background !px-2.5 !py-1.5 shadow-[0_4px_18px_rgba(15,23,42,0.08)] transition-[border-color,box-shadow] focus-within:border-ring/35 focus-within:shadow-[0_8px_26px_rgba(15,23,42,0.10)]"
+            : "w-fit !rounded-xl bg-secondary !px-3 !py-1 text-[15px] leading-5",
+        )}
+      >
+        {isEditing ? (
+          <div className="grid gap-1.5">
+            <Textarea
+              autoFocus
+              value={editedText}
+              rows={1}
+              className="max-h-36 min-h-7 resize-none border-0 bg-transparent px-1 py-0 text-[15px] leading-6 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0"
+              onChange={(event) => onEditTextChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onCancelEdit();
+                  return;
+                }
+
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  onSubmitEdit();
+                }
+              }}
+            />
+            <div className="flex items-center justify-end gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="h-6 rounded-md px-2 text-xs text-muted-foreground hover:bg-[#f5f5f6] hover:text-foreground"
+                onClick={onCancelEdit}
+              >
+                <X className="size-3" />
+                {t.agentCancelEdit}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                className="h-6 rounded-md bg-foreground px-2.5 text-xs text-background shadow-none hover:bg-foreground/90"
+                disabled={submitDisabled}
+                onClick={onSubmitEdit}
+              >
+                <Check className="size-3" />
+                {t.agentSubmitEdit}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">
+            {message.text}
+          </span>
+        )}
+
+        {message.files?.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {message.files.map((file) => (
+              <span
+                key={file.id ?? file.url ?? file.filename}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-primary-foreground/20 bg-primary-foreground/10 px-2.5 py-1 text-xs"
+              >
+                <FileText className="size-3" />
+                <span className="truncate">
+                  {file.filename || "Attachment"}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </MessageContent>
+
+      {!isEditing ? (
+        <MessageActions className="pointer-events-none mr-1 mt-0.5 h-5 justify-end gap-1 opacity-0 transition-opacity duration-150 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 group-focus-within/user-message:pointer-events-auto group-focus-within/user-message:opacity-100">
+          <MessageAction
+            tooltip={copied ? t.agentCopiedMessage : t.agentCopyMessage}
+            label={copied ? t.agentCopiedMessage : t.agentCopyMessage}
+            variant="ghost"
+            size="icon-xs"
+            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-[#f5f5f6] hover:text-foreground hover:shadow-[0_2px_8px_rgba(15,23,42,0.10)] focus-visible:bg-[#f5f5f6] focus-visible:text-foreground focus-visible:shadow-[0_2px_8px_rgba(15,23,42,0.10)]"
+            onClick={onCopy}
+          >
+            {copied ? (
+              <Check className="size-3" />
+            ) : (
+              <Copy className="size-3" />
+            )}
+          </MessageAction>
+          <MessageAction
+            tooltip={t.agentEditMessage}
+            label={t.agentEditMessage}
+            variant="ghost"
+            size="icon-xs"
+            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-[#f5f5f6] hover:text-foreground hover:shadow-[0_2px_8px_rgba(15,23,42,0.10)] focus-visible:bg-[#f5f5f6] focus-visible:text-foreground focus-visible:shadow-[0_2px_8px_rgba(15,23,42,0.10)]"
+            disabled={disabled}
+            onClick={onStartEdit}
+          >
+            <Pencil className="size-3" />
+          </MessageAction>
+        </MessageActions>
+      ) : null}
+    </div>
+  );
+}
+
 function formatCountMessage(template: string, count: number) {
   return template.replace("{count}", String(count));
 }
@@ -1081,7 +1232,11 @@ export function CopilotPanel({
     useState<AgentPanelMessage | null>(null);
   const [isResponding, setIsResponding] = useState(false);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
   const replyTimerRef = useRef<number | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const activeRequestAbortRef = useRef<AbortController | null>(null);
   const streamingMessageRef = useRef<AgentPanelMessage | null>(null);
   const previewedEditsKeyRef = useRef<string | null>(null);
@@ -1143,6 +1298,9 @@ export function CopilotPanel({
     setMessages([]);
     setStreamingMessage(null);
     setIsResponding(false);
+    setCopiedMessageId(null);
+    setEditingMessageId(null);
+    setEditingMessageText("");
 
     if (!resumeId) {
       return () => {
@@ -1180,6 +1338,9 @@ export function CopilotPanel({
       if (replyTimerRef.current) {
         window.clearTimeout(replyTimerRef.current);
       }
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
       activeRequestAbortRef.current?.abort();
     };
   }, []);
@@ -1191,6 +1352,43 @@ export function CopilotPanel({
     },
     [onSelectedModelChange],
   );
+
+  const copyUserMessage = useCallback(
+    async (message: AgentPanelMessage) => {
+      try {
+        await navigator.clipboard.writeText(message.text);
+        setCopiedMessageId(message.id);
+
+        if (copyTimerRef.current) {
+          window.clearTimeout(copyTimerRef.current);
+        }
+
+        copyTimerRef.current = window.setTimeout(() => {
+          setCopiedMessageId((currentId) =>
+            currentId === message.id ? null : currentId,
+          );
+          copyTimerRef.current = null;
+        }, 1200);
+      } catch (error) {
+        console.error("Failed to copy agent user message.", error);
+      }
+    },
+    [],
+  );
+
+  function startEditingUserMessage(message: AgentPanelMessage) {
+    if (isResponding) {
+      return;
+    }
+
+    setEditingMessageId(message.id);
+    setEditingMessageText(message.text);
+  }
+
+  function cancelEditingUserMessage() {
+    setEditingMessageId(null);
+    setEditingMessageText("");
+  }
 
   function submitPrompt(message: PromptInputMessage) {
     if (!hasConfiguredModel) {
@@ -1248,7 +1446,38 @@ export function CopilotPanel({
     setIsResponding(false);
   }, []);
 
-  async function sendPrompt(text: string, files: AgentChatAttachment[] = []) {
+  async function submitEditedUserMessage(message: AgentPanelMessage) {
+    const nextText = editingMessageText.trim();
+
+    if (!nextText) {
+      toast.info(t.agentEditEmpty, {
+        closeButton: true,
+      });
+      return;
+    }
+
+    const messageIndex = messages.findIndex((item) => item.id === message.id);
+    if (messageIndex < 0 || isResponding) {
+      return;
+    }
+
+    cancelEditingUserMessage();
+    await sendPrompt(nextText, message.files ?? [], {
+      baseMessages: messages.slice(0, messageIndex),
+      messageId: message.id,
+      replaceSessionBeforeSend: true,
+    });
+  }
+
+  async function sendPrompt(
+    text: string,
+    files: AgentChatAttachment[] = [],
+    options: {
+      baseMessages?: AgentPanelMessage[];
+      messageId?: string;
+      replaceSessionBeforeSend?: boolean;
+    } = {},
+  ) {
     const prompt = text.trim();
     const attachmentSummary = files
       .map((file) => file.filename || file.url || "Attachment")
@@ -1260,6 +1489,7 @@ export function CopilotPanel({
       return;
     }
 
+    const baseMessages = options.baseMessages ?? messages;
     const looksLikeJobBrief = isLikelyJobBriefPrompt(prompt);
     const nextJobBrief = looksLikeJobBrief ? prompt : jobBrief;
     const nextKeywordMatch = looksLikeJobBrief
@@ -1267,11 +1497,11 @@ export function CopilotPanel({
       : keywordMatch;
     const userMessage: AgentPanelMessage = {
       files,
-      id: createId("agent-user"),
+      id: options.messageId ?? createId("agent-user"),
       role: "user",
       text: visiblePrompt,
     };
-    const nextMessages = [...messages, userMessage];
+    const nextMessages = [...baseMessages, userMessage];
     const apiMessages = nextMessages.map(toConversationMessage);
 
     setIsResponding(true);
@@ -1286,6 +1516,20 @@ export function CopilotPanel({
 
     if (replyTimerRef.current) {
       window.clearTimeout(replyTimerRef.current);
+    }
+
+    if (options.replaceSessionBeforeSend && resumeId) {
+      try {
+        await replaceAgentSession(resumeId, {
+          locale,
+          messages: apiMessages,
+        });
+      } catch (error) {
+        console.warn(
+          "Failed to replace agent session before editing; continuing with chat request.",
+          error,
+        );
+      }
     }
 
     replyTimerRef.current = window.setTimeout(() => {
@@ -1373,51 +1617,52 @@ export function CopilotPanel({
         className={cn(
           "agent-panel-card flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm transition-all duration-300 print:hidden",
           mode === "docked"
-            ? "xl:self-start"
+            ? "h-full xl:self-start"
             : "h-full",
         )}
       >
-          <div className="flex items-center gap-3 px-4 py-4">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
-              <Bot className="size-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-base font-semibold tracking-tight">{t.aiTitle}</h3>
-            </div>
+          <div className="px-4 pb-2 pt-3">
+            <h3 className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              {t.aiTitle}
+            </h3>
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <Conversation className="min-h-0 min-w-0 flex-1 overflow-x-hidden">
-              <ConversationContent
-                className={cn(
-                  "min-w-0 overflow-x-hidden px-3 pb-4",
-                  visibleMessages.length === 0 &&
-                    "h-full min-h-full flex-1 justify-center",
-                )}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <Conversation
+                className="min-h-0 min-w-0 flex-1 overflow-x-hidden"
               >
-                {visibleMessages.length === 0 ? (
-                  <ConversationEmptyState
-                    className="px-6 py-10"
-                  >
-                    <div className="mx-auto grid max-w-[260px] justify-items-center gap-3 text-center">
-                      <p className="text-sm leading-6 text-muted-foreground">
-                        {t.agentEmptyPrompt}
-                      </p>
-                      {!hasConfiguredModel ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="h-8 rounded-xl px-3 text-xs"
-                          onClick={onOpenModelSettings}
-                        >
-                          {t.openModelSettings}
-                        </Button>
-                      ) : null}
-                    </div>
-                  </ConversationEmptyState>
-                ) : (
-                  <div className="grid gap-3">
-                    {visibleMessages.map((message) => {
+                <ConversationContent
+                  scrollClassName="agent-thread-scroll"
+                  className={cn(
+                    "agent-thread-content-mask min-w-0 overflow-x-hidden px-3 pb-[132px]",
+                    visibleMessages.length === 0 &&
+                      "h-full min-h-full flex-1 justify-center",
+                  )}
+                >
+                  {visibleMessages.length === 0 ? (
+                    <ConversationEmptyState
+                      className="px-6 py-10"
+                    >
+                      <div className="mx-auto grid max-w-[260px] justify-items-center gap-3 text-center">
+                        <p className="text-sm leading-6 text-muted-foreground">
+                          {t.agentEmptyPrompt}
+                        </p>
+                        {!hasConfiguredModel ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8 rounded-xl px-3 text-xs"
+                            onClick={onOpenModelSettings}
+                          >
+                            {t.openModelSettings}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </ConversationEmptyState>
+                  ) : (
+                    <div className="grid gap-3">
+                      {visibleMessages.map((message) => {
                       const response = message.response;
                       const isStreamingAssistant =
                         isResponding && streamingMessage?.id === message.id;
@@ -1446,21 +1691,42 @@ export function CopilotPanel({
                         !isStreamingAssistant;
                       const hasRenderableAssistantContent =
                         hasAssistantRenderableContent(message);
+                      const isEditingUserMessage =
+                        message.role === "user" &&
+                        editingMessageId === message.id;
 
                       return (
-                        <Message key={message.id} from={message.role}>
-                          <MessageContent
-                            className={cn(
-                              message.role === "user"
-                                ? "ml-auto w-fit min-w-8 max-w-full self-end overflow-visible rounded-2xl bg-secondary px-4 py-2.5 text-foreground"
-                                : "w-full min-w-0 max-w-full px-0 py-1 text-foreground",
-                            )}
-                          >
-                            {message.role === "user" ? (
-                              <span className="block whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
-                                {message.text}
-                              </span>
-                            ) : (
+                        <Message
+                          key={message.id}
+                          from={message.role}
+                          className={cn(
+                            isEditingUserMessage && "w-full !max-w-full",
+                          )}
+                        >
+                          {message.role === "user" ? (
+                            <AgentUserMessage
+                              copied={copiedMessageId === message.id}
+                              disabled={isResponding}
+                              editedText={
+                                editingMessageId === message.id
+                                  ? editingMessageText
+                                  : message.text
+                              }
+                              isEditing={editingMessageId === message.id}
+                              message={message}
+                              t={t}
+                              onCancelEdit={cancelEditingUserMessage}
+                              onCopy={() => {
+                                void copyUserMessage(message);
+                              }}
+                              onEditTextChange={setEditingMessageText}
+                              onStartEdit={() => startEditingUserMessage(message)}
+                              onSubmitEdit={() => {
+                                void submitEditedUserMessage(message);
+                              }}
+                            />
+                          ) : (
+                            <MessageContent className="w-full min-w-0 max-w-full px-0 py-1 text-foreground">
                               <>
                                 {shouldRenderTimeline ? (
                                   <AgentMessageTimeline
@@ -1521,46 +1787,31 @@ export function CopilotPanel({
                                   />
                                 ) : null}
                               </>
-                            )}
-
-                            {message.files?.length ? (
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                {message.files.map((file) => (
-                                  <span
-                                    key={file.id ?? file.url ?? file.filename}
-                                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-primary-foreground/20 bg-primary-foreground/10 px-2.5 py-1 text-xs"
-                                  >
-                                    <FileText className="size-3" />
-                                    <span className="truncate">
-                                      {file.filename || "Attachment"}
-                                    </span>
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-
-                          </MessageContent>
+                            </MessageContent>
+                          )}
                         </Message>
                       );
-                    })}
+                      })}
 
-                    {isResponding && !streamingMessage ? (
-                      <Message from="assistant">
-                        <MessageContent className="w-full px-0 py-1 text-muted-foreground">
-                          <AgentToolShimmerStatus
-                            className="mt-2 text-sm"
-                            label={t.agentToolThinking}
-                          />
-                        </MessageContent>
-                      </Message>
-                    ) : null}
-                  </div>
-                )}
-              </ConversationContent>
-              <ConversationScrollButton />
-            </Conversation>
+                      {isResponding && !streamingMessage ? (
+                        <Message from="assistant">
+                          <MessageContent className="w-full px-0 py-1 text-muted-foreground">
+                            <AgentToolShimmerStatus
+                              className="mt-2 text-sm"
+                              label={t.agentToolThinking}
+                            />
+                          </MessageContent>
+                        </Message>
+                      ) : null}
 
-            <section className="px-4 pb-4 pt-3">
+                    </div>
+                  )}
+                </ConversationContent>
+                <ConversationScrollButton className="bottom-[132px] z-20" />
+              </Conversation>
+              <section className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3">
+                <div aria-hidden="true" className="absolute bottom-0 left-0 right-3 h-8 bg-card" />
+                <div className="pointer-events-auto relative">
               <PromptInputProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1581,7 +1832,7 @@ export function CopilotPanel({
                         )}
                       >
                         <AgentPromptAttachmentsDisplay />
-                        <PromptInputBody className="px-5 pt-4">
+                        <PromptInputBody className="px-4 pt-3">
                           <PromptInputTextarea
                             rows={1}
                             disabled={!hasConfiguredModel}
@@ -1590,7 +1841,7 @@ export function CopilotPanel({
                                 ? t.agentPromptPlaceholderShort
                                 : ""
                             }
-                            className="min-h-[78px] max-h-[156px] px-5 pb-0 pt-4 text-[15px] leading-[22px] text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed"
+                            className="min-h-[58px] max-h-[132px] px-4 pb-0 pt-3 text-[15px] leading-[22px] text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed"
                           />
                         </PromptInputBody>
 
@@ -1599,7 +1850,7 @@ export function CopilotPanel({
                             <PromptInputActionMenu>
                               <PromptInputActionMenuTrigger
                                 disabled={!hasConfiguredModel}
-                                className="size-8 rounded-[14px] text-foreground transition-none hover:!bg-muted/45 hover:!text-foreground disabled:cursor-not-allowed"
+                                className="text-foreground disabled:cursor-not-allowed"
                               />
                               <PromptInputActionMenuContent>
                                 <PromptInputActionAddAttachments
@@ -1623,7 +1874,7 @@ export function CopilotPanel({
                                       ? getModelDisplayName(selectedModel)
                                       : t.agentModelConfigureHover
                                   }
-                                  className="h-8 min-w-[72px] max-w-[132px] justify-start text-foreground transition-colors duration-200"
+                                  className="h-8 w-fit min-w-0 max-w-none justify-start text-foreground transition-colors duration-200"
                                 >
                                   {selectedModel ? (
                                     <ModelSelectorLogo
@@ -1637,7 +1888,7 @@ export function CopilotPanel({
                                   )}
                                   <ModelSelectorName
                                     className={cn(
-                                      "max-w-[76px] truncate text-[12px] font-medium",
+                                      "flex-none overflow-visible text-clip whitespace-nowrap text-[12px] font-medium",
                                       !selectedModel && "text-muted-foreground",
                                     )}
                                   >
@@ -1729,7 +1980,9 @@ export function CopilotPanel({
                   ) : null}
                 </Tooltip>
               </PromptInputProvider>
+                </div>
             </section>
+            </div>
           </div>
       </aside>
     </TooltipProvider>

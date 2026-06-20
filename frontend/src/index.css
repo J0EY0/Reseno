@@ -129,12 +129,67 @@
 }
 
 .agent-thread-scroll {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overscroll-behavior-y: contain;
+  overflow-x: hidden;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+  -ms-overflow-style: auto;
 }
 
 .agent-thread-scroll::-webkit-scrollbar {
-  display: none;
+  height: 10px;
+  width: 10px;
+}
+
+.agent-thread-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.agent-thread-scroll::-webkit-scrollbar-thumb {
+  background-clip: content-box;
+  background-color: transparent;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.agent-thread-scroll:hover,
+.agent-thread-scroll:focus-within {
+  scrollbar-color: color-mix(
+      in srgb,
+      var(--muted-foreground) 38%,
+      transparent
+    )
+    transparent;
+}
+
+.agent-thread-scroll:hover::-webkit-scrollbar-thumb,
+.agent-thread-scroll:focus-within::-webkit-scrollbar-thumb {
+  background-color: color-mix(
+    in srgb,
+    var(--muted-foreground) 38%,
+    transparent
+  );
+}
+
+.agent-thread-content-mask {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - 132px),
+    transparent calc(100% - 92px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - 132px),
+    transparent calc(100% - 92px),
+    transparent 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 
 @keyframes fade {
@@ -738,16 +793,27 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   }
 
   .app-shell--document .resume-preview-card,
-  .app-shell--document .agent-panel-card[data-mode="docked"] {
+  .app-shell--document .agent-seam-rail,
+  .app-shell--document .agent-panel-dock {
     position: sticky;
     top: var(--document-sticky-top);
   }
 
-  .app-shell--document .agent-panel-card[data-mode="docked"] {
+  .app-shell--document .agent-seam-rail,
+  .app-shell--document .agent-panel-dock {
     height: calc(
       100svh - var(--document-sticky-top) -
         var(--document-sticky-bottom-gap)
     );
+    max-height: calc(
+      100svh - var(--document-sticky-top) -
+        var(--document-sticky-bottom-gap)
+    );
+  }
+
+  .app-shell--document .agent-panel-card[data-mode="docked"] {
+    height: 100%;
+    max-height: 100%;
   }
 }
 

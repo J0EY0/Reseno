@@ -127,6 +127,47 @@ def create_agent_model_config(client: TestClient) -> dict:
     return response.json()["data"]
 
 
+def parse_agent_stream_message(body: str) -> dict:
+    message_done_frame = next(
+        frame
+        for frame in body.split("\n\n")
+        if frame.startswith("event: message_done\n")
+    )
+    message_done_data = next(
+        line.removeprefix("data: ")
+        for line in message_done_frame.splitlines()
+        if line.startswith("data: ")
+    )
+    return json.loads(message_done_data)["message"]
+
+
+def post_agent_chat_stream(
+    client: TestClient,
+    payload: dict,
+) -> tuple[str, dict]:
+    stream_payload = {**payload, "stream": True}
+    with client.stream(
+        "POST",
+        "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
+        json=stream_payload,
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers.get("content-type", "").lower()
+    assert response.headers.get("cache-control") == "no-cache"
+    assert response.headers.get("x-accel-buffering") == "no"
+    return body, parse_agent_stream_message(body)
+
+
+def stub_stream_text(text: str):
+    def stream_response(*_: object) -> object:
+        yield LlmStreamDelta(kind="text", delta=text)
+
+    return stream_response
+
+
 def stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
     return (
         WebSearchResult(
@@ -1046,9 +1087,9 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
 
 
 def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "Find missing keywords",
             "conversation": [],
             "files": [],
@@ -1069,21 +1110,18 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
             "appliedActions": [],
             "modelConfig": None,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert "No usable model configuration" in data["message"]["text"]
-    assert data["message"]["edits"] == []
-    assert data["message"]["tools"] == []
+    assert "No usable model configuration" in message["text"]
+    assert message["edits"] == []
+    assert message["tools"] == []
 
 
 def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, response_message = post_agent_chat_stream(
+        client,
+        {
             "resumeId": "resume-test",
             "prompt": "帮我检查项目经历",
             "message": {
@@ -1109,12 +1147,10 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
             "appliedActions": [],
             "modelConfig": None,
             "settings": {},
-            "stream": False,
         },
     )
     session_response = client.get("/api/agent/resumes/resume-test/session")
 
-    assert response.status_code == 200
     assert session_response.status_code == 200
     session_data = session_response.json()["data"]
     messages = session_data["messages"]
@@ -1123,7 +1159,81 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
     assert messages[0]["id"] == "agent-user-session-1"
     assert messages[0]["text"] == "帮我检查项目经历"
     assert messages[1]["response"]["role"] == "assistant"
-    assert messages[1]["response"]["text"] == response.json()["data"]["message"]["text"]
+    assert messages[1]["response"]["text"] == response_message["text"]
+
+
+def test_agent_session_put_replaces_persisted_messages(
+    client: TestClient,
+) -> None:
+    first_response = client.put(
+        "/api/agent/resumes/resume-edit/session",
+        json={
+            "locale": "zh",
+            "messages": [
+                {
+                    "id": "agent-user-original",
+                    "role": "user",
+                    "text": "原来的问题",
+                },
+                {
+                    "id": "agent-assistant-original",
+                    "role": "assistant",
+                    "text": "原来的回答",
+                    "response": {
+                        "id": "agent-assistant-original",
+                        "role": "assistant",
+                        "text": "原来的回答",
+                        "quickReplies": ["继续"],
+                    },
+                },
+                {
+                    "id": "agent-user-tail",
+                    "role": "user",
+                    "text": "后续问题",
+                },
+            ],
+        },
+    )
+    second_response = client.put(
+        "/api/agent/resumes/resume-edit/session",
+        json={
+            "locale": "zh",
+            "messages": [
+                {
+                    "id": "agent-user-original",
+                    "role": "user",
+                    "text": "修改后的问题",
+                },
+            ],
+        },
+    )
+
+    assert first_response.status_code == 200
+    first_messages = first_response.json()["data"]["messages"]
+    assert [message["id"] for message in first_messages] == [
+        "agent-user-original",
+        "agent-assistant-original",
+        "agent-user-tail",
+    ]
+    assert first_messages[1]["response"]["quickReplies"] == ["继续"]
+
+    assert second_response.status_code == 200
+    second_messages = second_response.json()["data"]["messages"]
+    assert [message["id"] for message in second_messages] == [
+        "agent-user-original",
+    ]
+    assert second_messages[0]["text"] == "修改后的问题"
+
+    with connect() as conn:
+        stored_count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM agent_messages
+            WHERE session_id = 'resume-edit'
+            """,
+        ).fetchone()["count"]
+
+    assert stored_count == 1
 
 
 def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
@@ -1245,7 +1355,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         appliedActions=["execute"],
         modelConfig=None,
         settings={},
-        stream=False,
     )
 
     messages = build_agent_messages(request, config, mode="tools")
@@ -1311,7 +1420,6 @@ def test_agent_executor_analyzes_pending_draft_resume() -> None:
         appliedActions=[],
         modelConfig=None,
         settings={},
-        stream=False,
     )
 
     analysis = AgentPlanExecutor(request).analyze_resume()
@@ -1481,8 +1589,8 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: (
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text(
             '{"text":"Real model response","suggestions":["Use TypeScript"],'
             '"knowledge":[{"title":"TypeScript","detail":"Prepare examples."}],'
             '"quickReplies":["Preview edits"]}'
@@ -1533,9 +1641,9 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     )
     monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "Find missing keywords",
             "message": {
                 "id": "agent-user-1",
@@ -1583,35 +1691,32 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["message"]["role"] == "assistant"
-    assert data["message"]["text"] == "Real model response"
-    assert data["message"]["actions"]
-    assert data["message"]["tools"]
-    assert data["message"]["sources"]
-    assert data["message"]["edits"]
-    assert data["message"]["quickReplies"]
+    assert message["role"] == "assistant"
+    assert message["text"] == "Real model response"
+    assert message["actions"]
+    assert message["tools"]
+    assert message["sources"]
+    assert message["edits"]
+    assert message["quickReplies"]
     assert any(
-        source["sourceType"] == "jobBrief" for source in data["message"]["sources"]
+        source["sourceType"] == "jobBrief" for source in message["sources"]
     )
     assert any(
         source["sourceType"] == "attachment"
         and source["excerpt"] == "TypeScript JD attachment text"
-        for source in data["message"]["sources"]
+        for source in message["sources"]
     )
     assert not any(
         source["sourceType"] in {"resume", "system"}
-        for source in data["message"]["sources"]
+        for source in message["sources"]
     )
-    assert data["message"]["edits"][0]["status"] == "executed"
-    assert data["message"]["edits"][0]["operation"]["type"] == "replace_field"
+    assert message["edits"][0]["status"] == "executed"
+    assert message["edits"][0]["operation"]["type"] == "replace_field"
     assert any(
-        tool["title"] == "jd_reference_search" for tool in data["message"]["tools"]
+        tool["title"] == "jd_reference_search" for tool in message["tools"]
     )
 
 
@@ -1621,8 +1726,8 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: '{"text":"已生成项目经历修改草稿"}',
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text('{"text":"已生成项目经历修改草稿"}'),
     )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
@@ -1669,9 +1774,9 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "把项目经历写得更像推荐算法工程师",
             "message": {
                 "role": "user",
@@ -1712,12 +1817,9 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     tool_titles = [tool["title"] for tool in message["tools"]]
     assert tool_titles == ["edit_execute"]
     observations = message["tools"][0]["output"]["observations"]
@@ -1750,8 +1852,8 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
         "负责 Spring Boot、MySQL、Redis、Docker 和 SQL 优化。"
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: '{"text":"已生成项目经历草稿"}',
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text('{"text":"已生成项目经历草稿"}'),
     )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
@@ -1790,9 +1892,9 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": prompt,
             "message": {"role": "user", "text": prompt},
             "messages": [],
@@ -1805,12 +1907,9 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     tool_titles = [tool["title"] for tool in message["tools"]]
     assert tool_titles == ["resume_analysis", "edit_plan", "edit_execute"]
     assert message["edits"]
@@ -1847,8 +1946,8 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
         "设计并实现订单模块，通过 SQL 优化将查询时间从 2s 降至 0.3s。"
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: '{"text":"已生成项目经历草稿"}',
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text('{"text":"已生成项目经历草稿"}'),
     )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
@@ -1917,9 +2016,9 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": prompt,
             "message": {"role": "user", "text": prompt},
             "messages": [],
@@ -1932,12 +2031,10 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    operation = response.json()["data"]["message"]["edits"][0]["operation"]
+    operation = message["edits"][0]["operation"]
     section = operation["section"]
     item = section["items"][0]
     assert section["kind"] == "project"
@@ -2080,9 +2177,58 @@ def test_agent_chat_plain_message_does_not_return_tools(
             tool_calls=[],
         ),
     )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text("你好，我可以回答简历相关问题。"),
+    )
 
-    response = client.post(
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "你好",
+            "message": {"role": "user", "text": "你好"},
+            "messages": [{"role": "user", "text": "你好"}],
+            "conversation": [{"role": "user", "text": "你好"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert message["text"] == "你好，我可以回答简历相关问题。"
+    assert message["tools"] == []
+    assert message["edits"] == []
+    assert message["actions"] == []
+
+
+def test_agent_chat_plain_stream_uses_final_completion(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        lambda *_: LlmToolCallResponse(
+            content="工具选择阶段的半截回答",
+            tool_calls=[],
+        ),
+    )
+
+    def stream_response(*_: object) -> object:
+        yield LlmStreamDelta(kind="text", delta="最终")
+        yield LlmStreamDelta(kind="text", delta="完整回答")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    with client.stream(
+        "POST",
         "/api/agent/chat",
+        headers={"accept": "text/event-stream"},
         json={
             "prompt": "你好",
             "message": {"role": "user", "text": "你好"},
@@ -2096,16 +2242,14 @@ def test_agent_chat_plain_message_does_not_return_tools(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
+            "stream": True,
         },
-    )
+    ) as response:
+        body = "".join(response.iter_text())
 
     assert response.status_code == 200
-    message = response.json()["data"]["message"]
-    assert message["text"] == "你好，我可以回答简历相关问题。"
-    assert message["tools"] == []
-    assert message["edits"] == []
-    assert message["actions"] == []
+    assert "最终完整回答" in body
+    assert "工具选择阶段的半截回答" not in body
 
 
 def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
@@ -2134,9 +2278,9 @@ def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "帮我修改简历",
             "message": {"role": "user", "text": "帮我修改简历"},
             "messages": [{"role": "user", "text": "帮我修改简历"}],
@@ -2149,12 +2293,9 @@ def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     assert "不能生成可靠" in message["text"]
     assert "缺少要修改的目标模块或条目" in message["text"]
     assert message["tools"] == []
@@ -2206,9 +2347,9 @@ def test_agent_chat_reports_invalid_model_edit_operation(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "补强项目结果",
             "message": {"role": "user", "text": "补强项目结果"},
             "messages": [{"role": "user", "text": "补强项目结果"}],
@@ -2242,12 +2383,9 @@ def test_agent_chat_reports_invalid_model_edit_operation(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     tool = message["tools"][0]
     rejected_edit = tool["output"]["rejectedEdits"][0]
     assert message["text"] == "需要补充 itemId 后才能继续生成可预览草稿。"
@@ -2272,9 +2410,9 @@ def test_agent_model_error_does_not_return_llm_tool(
         raise_provider_error,
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "你好",
             "message": {"role": "user", "text": "你好"},
             "messages": [{"role": "user", "text": "你好"}],
@@ -2287,12 +2425,9 @@ def test_agent_model_error_does_not_return_llm_tool(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     assert "调用模型失败" in message["text"]
     assert "provider unavailable" in message["text"]
     assert message["tools"] == []
@@ -2304,8 +2439,8 @@ def test_agent_chat_uses_provided_jd_url(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: '{"text":"Real model response for JD URL"}',
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text('{"text":"Real model response for JD URL"}'),
     )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
@@ -2336,9 +2471,9 @@ def test_agent_chat_uses_provided_jd_url(
         ),
     )
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "请基于 https://example.test/jobs/frontend 调整模块顺序",
             "message": {
                 "id": "agent-user-1",
@@ -2403,14 +2538,11 @@ def test_agent_chat_uses_provided_jd_url(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert any(tool["title"] == "jd_url_fetch" for tool in data["message"]["tools"])
-    assert data["message"]["sources"] == [
+    assert any(tool["title"] == "jd_url_fetch" for tool in message["tools"])
+    assert message["sources"] == [
         {
             "id": "source-jd-url",
             "title": "Frontend Engineer Job",
@@ -2421,7 +2553,7 @@ def test_agent_chat_uses_provided_jd_url(
     ]
     assert any(
         edit["operation"]["type"] == "reorder_sections"
-        for edit in data["message"]["edits"]
+        for edit in message["edits"]
     )
 
 
@@ -2431,8 +2563,8 @@ def test_agent_chat_cleans_chinese_target_role(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat",
-        lambda *_: '{"text":"已分析目标岗位"}',
+        "app.services.agent.complete_chat_stream",
+        stub_stream_text('{"text":"已分析目标岗位"}'),
     )
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
@@ -2454,9 +2586,9 @@ def test_agent_chat_cleans_chinese_target_role(
     )
     monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
 
-    response = client.post(
-        "/api/agent/chat",
-        json={
+    _, message = post_agent_chat_stream(
+        client,
+        {
             "prompt": "帮我优化简历，应聘的职位是AI应用开发",
             "message": {
                 "role": "user",
@@ -2476,12 +2608,9 @@ def test_agent_chat_cleans_chinese_target_role(
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
-            "stream": False,
         },
     )
 
-    assert response.status_code == 200
-    message = response.json()["data"]["message"]
     jd_tool = next(
         tool for tool in message["tools"] if tool["title"] == "jd_reference_search"
     )
@@ -3004,6 +3133,12 @@ def test_agent_chat_streams_plain_model_tokens(
             tool_calls=[],
         ),
     )
+
+    def stream_response(*_: object) -> object:
+        yield LlmStreamDelta(kind="text", delta="你好，")
+        yield LlmStreamDelta(kind="text", delta="我可以帮你看简历。")
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
 
     with client.stream(
         "POST",

@@ -62,7 +62,7 @@ class AgentChatRequest(BaseModel):
     draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
     settings: dict[str, Any] = Field(default_factory=dict)
-    stream: bool = False
+    stream: bool = True
 
 
 class AgentKnowledgeItem(BaseModel):
@@ -175,3 +175,10 @@ class AgentSessionResponse(BaseModel):
 
     resume_id: str = Field(alias="resumeId")
     messages: list[AgentStoredMessage] = Field(default_factory=list)
+
+
+class AgentSessionReplaceRequest(BaseModel):
+    """Request body for replacing one resume's persisted Agent conversation."""
+
+    locale: Literal["zh", "en"] = "zh"
+    messages: list[AgentConversationItem] = Field(default_factory=list)
