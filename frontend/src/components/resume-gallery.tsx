@@ -59,6 +59,7 @@ export function ResumeGallery({
   t,
   resumes,
   templates,
+  defaultTemplateId,
   onOpenResume,
   onCreateResume,
   onImportResume,
@@ -69,6 +70,7 @@ export function ResumeGallery({
   t: AppMessages;
   resumes: ResumeWorkspaceItem[];
   templates: ResumeTemplateDefinition[];
+  defaultTemplateId: string;
   onOpenResume: (resumeId: string) => void;
   onCreateResume: () => void;
   onImportResume: (file: File) => void;
@@ -282,7 +284,11 @@ export function ResumeGallery({
         </Card>
 
         {paginatedResumes.map((item) => {
-          const template = getTemplateById(templates, item.template);
+          const template = getTemplateById(
+            templates,
+            item.template,
+            defaultTemplateId,
+          );
           const isSelected = selectedIdSet.has(item.id);
 
           return (

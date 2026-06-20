@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 from sqlite3 import Connection
@@ -7,12 +6,9 @@ from app.db.connection import connect
 from app.services.llm_secrets import (
     encrypt_api_key,
     mask_api_key,
-    sanitize_workspace_payload,
 )
-from app.services.model_configs import sync_llm_configs
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-USER_SETTINGS_KEYS = {"agentSettings", "theme"}
 
 
 def _table_columns(conn: Connection, table_name: str) -> set[str]:
@@ -105,126 +101,51 @@ def _ensure_llm_configs_token_columns(conn: Connection) -> None:
         )
 
 
-def _hydrate_legacy_model_config(config: object) -> object:
-    """Attach a plaintext key from env only for one-time legacy migration."""
+def _ensure_resume_lifecycle_columns(conn: Connection) -> None:
+    """Add resume lifecycle metadata introduced after soft delete support."""
 
-    if not isinstance(config, dict):
-        return config
-
-    if isinstance(config.get("apiKey"), str) and config["apiKey"].strip():
-        return config
-
-    env_name = config.get("apiKeyEnvName") or config.get("api_key_env_name")
-    if not isinstance(env_name, str) or not env_name.strip():
-        return config
-
-    api_key = os.getenv(env_name.strip())
-    if not api_key:
-        return config
-
-    return {
-        **config,
-        "apiKey": api_key,
-    }
-
-
-def _purge_workspace_model_secrets(conn: Connection, table_name: str) -> None:
-    """Move legacy workspace model keys into llm_configs and scrub snapshots."""
-
-    table = conn.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table' AND name = ?
-        """,
-        (table_name,),
-    ).fetchone()
-    if table is None:
-        return
-
-    rows = conn.execute(
-        f"""
-        SELECT rowid, snapshot_json
-        FROM {table_name}
-        """,
-    ).fetchall()
-
-    for row in rows:
-        snapshot = json.loads(row["snapshot_json"])
-        if not isinstance(snapshot, dict):
-            continue
-
-        model_configs = snapshot.get("modelConfigs")
-        if isinstance(model_configs, list):
-            hydrated_model_configs = [
-                _hydrate_legacy_model_config(config) for config in model_configs
-            ]
-            sync_llm_configs(
-                conn,
-                hydrated_model_configs,
-            )
-
-        sanitized, changed = sanitize_workspace_payload(snapshot)
-        if not changed:
-            continue
-
+    columns = _table_columns(conn, "resumes")
+    if "deleted_at" not in columns:
+        conn.execute("ALTER TABLE resumes ADD COLUMN deleted_at TEXT")
         conn.execute(
-            f"""
-            UPDATE {table_name}
-            SET snapshot_json = ?
-            WHERE rowid = ?
+            """
+            UPDATE resumes
+            SET deleted_at = saved_at
+            WHERE deleted != 0 AND deleted_at IS NULL
             """,
-            (
-                json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")),
-                row["rowid"],
-            ),
         )
 
 
-def _purge_workspace_user_settings(conn: Connection, table_name: str) -> None:
-    """Remove settings-page preferences from legacy workspace snapshot tables."""
+def _ensure_template_lifecycle_columns(conn: Connection) -> None:
+    """Add template lifecycle metadata introduced after soft delete support."""
 
-    table = conn.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table' AND name = ?
-        """,
-        (table_name,),
-    ).fetchone()
-    if table is None:
-        return
-
-    rows = conn.execute(
-        f"""
-        SELECT rowid, snapshot_json
-        FROM {table_name}
-        """,
-    ).fetchall()
-
-    for row in rows:
-        snapshot = json.loads(row["snapshot_json"])
-        if not isinstance(snapshot, dict):
-            continue
-
-        sanitized = {
-            key: value
-            for key, value in snapshot.items()
-            if key not in USER_SETTINGS_KEYS
-        }
-        if sanitized == snapshot:
-            continue
-
+    columns = _table_columns(conn, "templates")
+    if "deleted_at" not in columns:
+        conn.execute("ALTER TABLE templates ADD COLUMN deleted_at TEXT")
         conn.execute(
-            f"""
-            UPDATE {table_name}
-            SET snapshot_json = ?
-            WHERE rowid = ?
+            """
+            UPDATE templates
+            SET deleted_at = saved_at
+            WHERE deleted != 0 AND deleted_at IS NULL
             """,
-            (
-                json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")),
-                row["rowid"],
-            ),
+        )
+
+
+def _ensure_workspace_state_schema(conn: Connection) -> None:
+    """Replace legacy JSON workspace state with explicit current columns."""
+
+    columns = _table_columns(conn, "workspace_state")
+    if columns and "default_template_id" not in columns:
+        conn.execute("DROP TABLE workspace_state")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workspace_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                default_template_id TEXT NOT NULL DEFAULT 'minimal',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
         )
 
 
@@ -253,15 +174,7 @@ def migrate_db() -> None:
         conn.executescript(schema)
         _migrate_llm_configs_schema(conn)
         _ensure_llm_configs_token_columns(conn)
-        from app.services.workspace import (
-            migrate_legacy_workspace_snapshots,
-            migrate_workspace_templates,
-        )
-
-        migrate_legacy_workspace_snapshots(conn)
-        migrate_workspace_templates(conn)
-        _purge_workspace_model_secrets(conn, "workspace_snapshots")
-        _purge_workspace_model_secrets(conn, "workspace_versions")
-        _purge_workspace_user_settings(conn, "workspace_snapshots")
-        _purge_workspace_user_settings(conn, "workspace_versions")
+        _ensure_resume_lifecycle_columns(conn)
+        _ensure_template_lifecycle_columns(conn)
+        _ensure_workspace_state_schema(conn)
         _clear_llm_default_flags(conn)

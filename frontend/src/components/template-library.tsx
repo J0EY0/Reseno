@@ -294,14 +294,14 @@ export function TemplateLibrary({
     [activeTemplateId, templates],
   );
   const isTemplateReadonly = Boolean(activeTemplate?.isBuiltIn);
-  const templateIdSet = useMemo(
-    () => new Set(templates.map((item) => item.id)),
+  const customTemplateIdSet = useMemo(
+    () => new Set(templates.filter((item) => !item.isBuiltIn).map((item) => item.id)),
     [templates],
   );
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedTemplateIds = useMemo(
-    () => selectedIds.filter((id) => templateIdSet.has(id)),
-    [selectedIds, templateIdSet],
+    () => selectedIds.filter((id) => customTemplateIdSet.has(id)),
+    [customTemplateIdSet, selectedIds],
   );
   const normalizedQuery = deferredSearchQuery.trim().toLowerCase();
   const visibleTemplates = useMemo(
@@ -350,11 +350,15 @@ export function TemplateLibrary({
   }
 
   function requestDelete(templateIds: string[]) {
-    if (templateIds.length === 0) {
+    const customTemplateIds = templateIds.filter((id) =>
+      customTemplateIdSet.has(id),
+    );
+
+    if (customTemplateIds.length === 0) {
       return;
     }
 
-    setPendingDeleteIds(templateIds);
+    setPendingDeleteIds(customTemplateIds);
     setIsDeleteDialogOpen(true);
   }
 
@@ -657,7 +661,7 @@ export function TemplateLibrary({
                       )}
 
                       {isSelecting ? (
-                        isSelected ? (
+                        isSelected && !item.isBuiltIn ? (
                           <Button
                             type="button"
                             size="sm"

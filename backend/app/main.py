@@ -15,7 +15,17 @@ from app.exceptions import (
     validation_exception_handler,
 )
 from app.middleware.auth import jwt_auth_middleware
-from app.routers import agent, auth, exports, health, imports, model_configs, workspace
+from app.routers import (
+    agent,
+    auth,
+    exports,
+    health,
+    imports,
+    model_configs,
+    resumes,
+    templates,
+    workspace,
+)
 from app.services.model_metadata import ensure_model_metadata_cache
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
@@ -61,6 +71,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(workspace.router)
+    app.include_router(resumes.router)
+    app.include_router(templates.router)
     app.include_router(imports.router)
     app.include_router(model_configs.router)
     app.include_router(agent.router)

@@ -1,15 +1,30 @@
 import type { Locale } from "@/i18n";
 import { apiRoutes, requestApi } from "@/lib/api-client";
 import type {
+  DefaultTemplateSaveResponse,
+  DeletedResumeListResponse,
+  DeletedTemplateListResponse,
+  ResumeCreateRequest,
+  ResumeDeleteResponse,
+  ResumeDetailResponse,
+  ResumeListResponse,
+  ResumeSaveRequest,
+  ResumeTrashEmptyResponse,
+  ResumeTrashResponse,
+  TemplateDeleteResponse,
+  TemplateDetailResponse,
+  TemplateListResponse,
+  TemplateTrashEmptyResponse,
+  TemplateTrashResponse,
   WorkspaceBootstrapResponse,
   WorkspaceBootstrapResult,
-  WorkspaceResumeIdResponse,
-  WorkspaceSaveRequest,
-  WorkspaceSaveResponse,
-  WorkspaceVersionResponse,
   WorkspaceVersionsResponse,
 } from "@/types/api";
-import type { AgentSettings, ThemeMode, WorkspaceSnapshot } from "@/types/resume";
+import type {
+  AgentSettings,
+  ResumeTemplateDefinition,
+  ThemeMode,
+} from "@/types/resume";
 
 export async function fetchWorkspaceBootstrap(
   locale: Locale,
@@ -32,21 +47,6 @@ export async function fetchWorkspaceBootstrap(
   };
 }
 
-export async function saveWorkspaceSnapshotApi(
-  locale: Locale,
-  snapshot: WorkspaceSnapshot,
-) {
-  const request: WorkspaceSaveRequest = {
-    snapshot,
-  };
-
-  return requestApi<WorkspaceSaveResponse>(apiRoutes.workspaceSnapshot, {
-    body: request,
-    method: "PUT",
-    searchParams: { locale },
-  });
-}
-
 export function saveUserSettingsApi(
   locale: Locale,
   settings: {
@@ -61,25 +61,146 @@ export function saveUserSettingsApi(
   });
 }
 
-export function createWorkspaceResumeIdApi() {
-  return requestApi<WorkspaceResumeIdResponse>(apiRoutes.workspaceResumeId, {
+export function saveDefaultTemplateApi(templateId: string) {
+  return requestApi<DefaultTemplateSaveResponse>(
+    apiRoutes.workspaceDefaultTemplate,
+    {
+      body: { templateId },
+      method: "PUT",
+    },
+  );
+}
+
+export function fetchResumesApi(status: "active" = "active") {
+  return requestApi<ResumeListResponse>(apiRoutes.resumes, {
+    cacheTtlMs: 3000,
+    searchParams: { status },
+  });
+}
+
+export function fetchDeletedResumesApi() {
+  return requestApi<DeletedResumeListResponse>(apiRoutes.resumes, {
+    cacheTtlMs: 3000,
+    searchParams: { status: "deleted" },
+  });
+}
+
+export function createResumeApi(request: ResumeCreateRequest = {}) {
+  return requestApi<ResumeDetailResponse>(apiRoutes.resumes, {
+    body: request,
     method: "POST",
   });
 }
 
-export function fetchWorkspaceVersions(locale: Locale) {
-  return requestApi<WorkspaceVersionsResponse>(apiRoutes.workspaceVersions, {
+export function fetchResumeApi(resumeId: string) {
+  return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
     cacheTtlMs: 3000,
-    searchParams: { locale },
   });
 }
 
-export function fetchWorkspaceVersion(locale: Locale, versionId: string) {
-  return requestApi<WorkspaceVersionResponse>(
-    apiRoutes.workspaceVersion(versionId),
+export function saveResumeApi(resumeId: string, request: ResumeSaveRequest) {
+  return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
+    body: request,
+    method: "PUT",
+  });
+}
+
+export function moveResumeToTrashApi(resumeId: string) {
+  return requestApi<ResumeTrashResponse>(apiRoutes.resumeTrash(resumeId), {
+    method: "POST",
+  });
+}
+
+export function restoreResumeApi(resumeId: string) {
+  return requestApi<ResumeDetailResponse>(apiRoutes.resumeRestore(resumeId), {
+    method: "POST",
+  });
+}
+
+export function deleteResumeForeverApi(resumeId: string) {
+  return requestApi<ResumeDeleteResponse>(apiRoutes.resume(resumeId), {
+    method: "DELETE",
+  });
+}
+
+export function emptyResumeTrashApi() {
+  return requestApi<ResumeTrashEmptyResponse>(apiRoutes.resumeTrashEmpty, {
+    method: "DELETE",
+  });
+}
+
+export function fetchResumeVersionsApi(resumeId: string) {
+  return requestApi<WorkspaceVersionsResponse>(
+    apiRoutes.resumeVersions(resumeId),
     {
-      cacheTtlMs: 10000,
-      searchParams: { locale },
+      cacheTtlMs: 3000,
     },
   );
+}
+
+export function fetchResumeVersionApi(resumeId: string, versionId: string) {
+  return requestApi<ResumeDetailResponse>(
+    apiRoutes.resumeVersion(resumeId, versionId),
+    {
+      cacheTtlMs: 10000,
+    },
+  );
+}
+
+export function fetchTemplatesApi(status: "active" = "active") {
+  return requestApi<TemplateListResponse>(apiRoutes.templates, {
+    cacheTtlMs: 3000,
+    searchParams: { status },
+  });
+}
+
+export function fetchDeletedTemplatesApi() {
+  return requestApi<DeletedTemplateListResponse>(apiRoutes.templates, {
+    cacheTtlMs: 3000,
+    searchParams: { status: "deleted" },
+  });
+}
+
+export function createTemplateApi(template: ResumeTemplateDefinition) {
+  return requestApi<TemplateDetailResponse>(apiRoutes.templates, {
+    body: { template },
+    method: "POST",
+  });
+}
+
+export function saveTemplateApi(
+  templateId: string,
+  template: ResumeTemplateDefinition,
+) {
+  return requestApi<TemplateDetailResponse>(apiRoutes.template(templateId), {
+    body: { template },
+    method: "PUT",
+  });
+}
+
+export function moveTemplateToTrashApi(templateId: string) {
+  return requestApi<TemplateTrashResponse>(apiRoutes.templateTrash(templateId), {
+    method: "POST",
+  });
+}
+
+export function restoreTemplateApi(templateId: string) {
+  return requestApi<TemplateDetailResponse>(
+    apiRoutes.templateRestore(templateId),
+    {
+      method: "POST",
+    },
+  );
+}
+
+export function deleteTemplateForeverApi(templateId: string) {
+  return requestApi<TemplateDeleteResponse>(apiRoutes.template(templateId), {
+    method: "DELETE",
+  });
+}
+
+export function emptyTemplateTrashApi() {
+  return requestApi<TemplateTrashEmptyResponse>(apiRoutes.templateTrashEmpty, {
+    method: "DELETE",
+  });
 }

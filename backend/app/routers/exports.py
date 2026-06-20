@@ -12,7 +12,7 @@ from app.services.pdf import (
     safe_file_name,
     write_resume_pdf,
 )
-from app.services.workspace import find_resume, load_workspace, load_workspace_version
+from app.services.workspace import load_resume, load_resume_version
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 
@@ -24,18 +24,16 @@ def export_resume_pdf(
 ) -> ApiResponse[ExportResumePdfResponse]:
     """Generate a PDF export for a saved resume."""
 
-    workspace = (
-        load_workspace_version(request.locale, request.version_id)
-        if request.version_id
-        else load_workspace(request.locale)
-    )
-    resume_item = find_resume(workspace, request.resume_id)
-
-    if resume_item is None:
+    try:
+        if request.version_id:
+            load_resume_version(request.resume_id, request.version_id)
+        else:
+            load_resume(request.resume_id)
+    except HTTPException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Resume not found for PDF export.",
-        )
+        ) from exc
 
     export_id = create_export_id()
     file_name = safe_file_name(request.file_name_seed)

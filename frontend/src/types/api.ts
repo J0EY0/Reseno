@@ -1,6 +1,8 @@
 import type { Locale } from "@/i18n";
 import type {
   AgentSettings,
+  DeletedResumeTemplateDefinition,
+  DeletedResumeWorkspaceItem,
   KeywordMatch,
   ModelConfig,
   ResumeData,
@@ -9,8 +11,6 @@ import type {
   ResumeTemplateDefinition,
   ResumeWorkspaceItem,
   WorkspacePayload,
-  WorkspaceSnapshot,
-  WorkspaceVersionSnapshot,
 } from "@/types/resume";
 
 export interface ApiResponse<T> {
@@ -40,17 +40,9 @@ export interface WorkspaceBootstrapResult {
   source: "backend";
 }
 
-export interface WorkspaceSaveRequest {
-  snapshot: WorkspaceSnapshot;
-}
-
-export interface WorkspaceSaveResponse {
+export interface SaveResponse {
   savedAt: string;
   versionId?: string;
-}
-
-export interface WorkspaceResumeIdResponse {
-  id: string;
 }
 
 export interface WorkspaceVersionSummary {
@@ -62,9 +54,77 @@ export interface WorkspaceVersionsResponse {
   versions: WorkspaceVersionSummary[];
 }
 
-export interface WorkspaceVersionResponse {
+export interface ResumeCreateRequest {
+  title?: string;
+  resume?: ResumeData;
+  jobBrief?: string;
+  typography?: ResumeWorkspaceItem["typography"];
+  template?: ResumeWorkspaceItem["template"];
+  templateSettings?: ResumeWorkspaceItem["templateSettings"] | null;
+}
+
+export type ResumeSaveRequest = ResumeCreateRequest;
+
+export interface ResumeDetailResponse {
+  resume: ResumeWorkspaceItem;
+  savedAt: string;
   versionId: string;
-  snapshot: WorkspaceVersionSnapshot;
+}
+
+export interface ResumeListResponse {
+  resumes: ResumeWorkspaceItem[];
+}
+
+export interface DeletedResumeListResponse {
+  resumes: DeletedResumeWorkspaceItem[];
+}
+
+export interface ResumeTrashResponse {
+  resume: DeletedResumeWorkspaceItem;
+}
+
+export interface ResumeDeleteResponse {
+  id: string;
+}
+
+export interface ResumeTrashEmptyResponse {
+  deletedCount: number;
+}
+
+export interface DefaultTemplateSaveRequest {
+  templateId: string;
+}
+
+export interface DefaultTemplateSaveResponse {
+  defaultTemplateId: string;
+}
+
+export interface TemplateSaveRequest {
+  template: ResumeTemplateDefinition;
+}
+
+export interface TemplateDetailResponse {
+  template: ResumeTemplateDefinition;
+}
+
+export interface TemplateListResponse {
+  templates: ResumeTemplateDefinition[];
+}
+
+export interface DeletedTemplateListResponse {
+  templates: DeletedResumeTemplateDefinition[];
+}
+
+export interface TemplateTrashResponse {
+  template: DeletedResumeTemplateDefinition;
+}
+
+export interface TemplateDeleteResponse {
+  id: string;
+}
+
+export interface TemplateTrashEmptyResponse {
+  deletedCount: number;
 }
 
 export interface ImportResumeResponse {

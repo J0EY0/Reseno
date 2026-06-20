@@ -15,7 +15,11 @@ import {
   normalizeCustomTemplates,
   normalizeDeletedTemplates,
 } from "@/lib/templates";
-import { fetchWorkspaceBootstrap } from "@/lib/workspace-api";
+import {
+  fetchResumeApi,
+  fetchResumeVersionApi,
+  fetchWorkspaceBootstrap,
+} from "@/lib/workspace-api";
 import type {
   ResumeTemplateDefinition,
   ResumeTypographySettings,
@@ -92,6 +96,7 @@ export function PdfExportRenderer() {
   const [searchParams] = useSearchParams();
   const locale = resolveLocale(searchParams.get("locale"));
   const resumeId = searchParams.get("resumeId") ?? "";
+  const versionId = searchParams.get("versionId");
   const [state, setState] = useState<PdfExportState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
@@ -108,16 +113,15 @@ export function PdfExportRenderer() {
 
     async function loadExportData() {
       try {
-        const [messages, result] = await Promise.all([
+        const [messages, result, resumeResult] = await Promise.all([
           loadMessages(locale).catch(() => defaultMessages),
           fetchWorkspaceBootstrap(locale),
+          versionId
+            ? fetchResumeVersionApi(resumeId, versionId)
+            : fetchResumeApi(resumeId),
         ]);
         const workspace = result.workspace;
-        const resumeItem = workspace.resumes.find((item) => item.id === resumeId);
-
-        if (!resumeItem) {
-          throw new Error("Resume not found.");
-        }
+        const resumeItem = resumeResult.resume;
 
         const deletedTemplates = normalizeDeletedTemplates(workspace);
         const templateCatalog = getTemplateCatalog(
@@ -128,6 +132,10 @@ export function PdfExportRenderer() {
         const template = getTemplateById(
           templateCatalog,
           getResumeTemplateId(resumeItem, workspace.defaultTemplateId),
+          getResumeTemplateId(
+            { ...resumeItem, template: undefined },
+            workspace.defaultTemplateId,
+          ),
         );
 
         if (!template) {
@@ -162,7 +170,7 @@ export function PdfExportRenderer() {
     return () => {
       cancelled = true;
     };
-  }, [locale, resumeId]);
+  }, [locale, resumeId, versionId]);
 
   useEffect(() => {
     if (!state) {

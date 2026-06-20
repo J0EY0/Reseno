@@ -30,7 +30,6 @@ from app.services.llm_client import (
     LlmToolCall,
     LlmToolCallResponse,
 )
-from app.services.workspace import workspace_data_locale
 
 
 def minimal_resume_item(
@@ -57,6 +56,54 @@ def minimal_resume_item(
             },
             "sections": [],
         },
+    }
+
+
+def minimal_template_definition(
+    template_id: str = "template-client-id",
+    name: str = "Custom Template",
+) -> dict:
+    return {
+        "id": template_id,
+        "preset": "minimal",
+        "name": name,
+        "description": "Custom template",
+        "layout": {
+            "basicInfo": "centered",
+            "section": "plain",
+            "avatarPosition": "right",
+            "avatarShape": "rounded",
+            "avatarWidth": 25,
+            "avatarHeight": 32,
+            "avatarOffsetX": 0,
+            "avatarOffsetY": 0,
+            "avatarBorderWidth": 0,
+            "avatarBorderColor": "#ffffff",
+            "images": [],
+        },
+        "typography": {"fontFamily": "inter", "fontSize": 16},
+        "settings": {
+            "pagePaddingTop": 14,
+            "pagePaddingX": 12,
+            "pagePaddingBottom": 12,
+            "sectionGap": 1.4,
+            "itemGap": 1,
+            "bodyLineHeight": 1.8,
+            "nameScale": 2.15,
+            "sectionTitleScale": 1.28,
+            "itemTitleScale": 1.02,
+            "metaScale": 0.92,
+            "bodyScale": 0.96,
+            "pageBackground": "#ffffff",
+            "surfaceColor": "#f8fafc",
+            "headingColor": "#111827",
+            "bodyColor": "#334155",
+            "mutedColor": "#64748b",
+            "dividerColor": "#202020",
+            "dividerThickness": 1,
+        },
+        "updatedAt": "2026-05-16T02:00:00.000Z",
+        "isBuiltIn": False,
     }
 
 
@@ -146,17 +193,122 @@ def test_workspace_bootstrap_returns_empty_backend_workspace(
     assert response.status_code == 200
     payload = response.json()
     assert payload["code"] == 0
-    assert payload["data"]["resumes"] == []
-    assert payload["data"]["deletedResumes"] == []
+    assert payload["data"]["defaultTemplateId"] == "minimal"
+    assert payload["data"]["customTemplates"] == []
+    assert payload["data"]["deletedTemplates"] == []
+    assert "resumes" not in payload["data"]
+    assert "deletedResumes" not in payload["data"]
 
 
-def test_workspace_allocates_compact_resume_id(client: TestClient) -> None:
-    response = client.post("/api/workspace/resumes/id")
+def test_resume_command_flow_owns_identity_versions_and_lifecycle(
+    client: TestClient,
+) -> None:
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "新建简历1"},
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()["data"]
+    resume_id = created["resume"]["id"]
+    assert re.fullmatch(r"[A-Za-z0-9]{16}", resume_id)
+    assert created["resume"]["title"] == "新建简历1"
+    assert created["versionId"] == "1"
+
+    save_payload = {
+        **created["resume"],
+        "title": "Backend Managed Resume",
+        "resume": {
+            **created["resume"]["resume"],
+            "basic": {
+                **created["resume"]["resume"]["basic"],
+                "name": "Backend Managed",
+            },
+        },
+        "templateSettings": None,
+    }
+    first_save = client.put(f"/api/resumes/{resume_id}", json=save_payload)
+    second_save = client.put(f"/api/resumes/{resume_id}", json=save_payload)
+    versions_response = client.get(f"/api/resumes/{resume_id}/versions")
+
+    assert first_save.status_code == 200
+    assert second_save.status_code == 200
+    assert first_save.json()["data"]["versionId"] == "2"
+    assert second_save.json()["data"]["versionId"] == "2"
+    version_ids = [
+        item["versionId"] for item in versions_response.json()["data"]["versions"]
+    ]
+    assert version_ids == ["2", "1"]
+
+    trash_response = client.post(f"/api/resumes/{resume_id}/trash")
+    deleted_list_response = client.get("/api/resumes?status=deleted")
+    save_deleted_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
+
+    assert trash_response.status_code == 200
+    assert trash_response.json()["data"]["resume"]["deletedAt"]
+    assert trash_response.json()["data"]["resume"]["resume"]["sections"] == []
+    assert deleted_list_response.json()["data"]["resumes"][0]["id"] == resume_id
+    assert save_deleted_response.json()["code"] != 0
+
+    restore_response = client.post(f"/api/resumes/{resume_id}/restore")
+
+    assert restore_response.status_code == 200
+    assert restore_response.json()["data"]["resume"]["id"] == resume_id
+    assert (
+        restore_response.json()["data"]["resume"]["title"]
+        == "Backend Managed Resume"
+    )
+
+    client.post(f"/api/resumes/{resume_id}/trash")
+    delete_response = client.delete(f"/api/resumes/{resume_id}")
+    detail_after_delete_response = client.get(f"/api/resumes/{resume_id}")
+    resume_dir = get_settings().storage_dir / "resumes" / resume_id
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"]["id"] == resume_id
+    assert detail_after_delete_response.json()["code"] != 0
+    assert not resume_dir.exists()
+
+
+def test_empty_resume_trash_physically_deletes_resumes_and_agent_sessions(
+    client: TestClient,
+) -> None:
+    first_id = client.post(
+        "/api/resumes",
+        json={"title": "First"},
+    ).json()["data"]["resume"]["id"]
+    second_id = client.post(
+        "/api/resumes",
+        json={"title": "Second"},
+    ).json()["data"]["resume"]["id"]
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_sessions (id, resume_id, locale, title)
+            VALUES (?, ?, 'en', 'Trash Session')
+            """,
+            (first_id, first_id),
+        )
+
+    client.post(f"/api/resumes/{first_id}/trash")
+    client.post(f"/api/resumes/{second_id}/trash")
+
+    response = client.delete("/api/resumes/trash")
 
     assert response.status_code == 200
-    resume_id = response.json()["data"]["id"]
-    assert re.fullmatch(r"[A-Za-z0-9]{16}", resume_id)
-    assert not resume_id.startswith("resume-")
+    assert response.json()["data"]["deletedCount"] == 2
+    assert not (get_settings().storage_dir / "resumes" / first_id).exists()
+    assert not (get_settings().storage_dir / "resumes" / second_id).exists()
+    with connect() as conn:
+        resume_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM resumes",
+        ).fetchone()["count"]
+        session_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM agent_sessions",
+        ).fetchone()["count"]
+
+    assert resume_count == 0
+    assert session_count == 0
 
 
 def test_auth_login_does_not_return_credentials(
@@ -385,226 +537,87 @@ def test_expired_jwt_is_rejected(client: TestClient) -> None:
     assert response.json()["message"] == "UNAUTHORIZED_REQUEST"
 
 
-def test_workspace_snapshot_persists(client: TestClient) -> None:
-    snapshot = {
-        "resumes": [minimal_resume_item()],
-        "modelConfigs": [],
-        "savedAt": "2026-05-16T00:00:00.000Z",
-    }
-
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": snapshot},
-    )
-    bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
-
-    assert save_response.status_code == 200
-    assert save_response.json()["data"]["savedAt"] == snapshot["savedAt"]
-    assert bootstrap_response.status_code == 200
-    assert bootstrap_response.json()["data"]["savedAt"] == snapshot["savedAt"]
-    assert bootstrap_response.json()["data"]["resumes"][0]["id"] == "resume-test"
-
-
-def test_workspace_snapshot_is_shared_across_interface_locales(
+def test_template_command_flow_owns_identity_and_lifecycle(
     client: TestClient,
 ) -> None:
-    snapshot = {
-        "resumes": [minimal_resume_item("resume-shared", "Shared Resume")],
-        "modelConfigs": [],
-        "savedAt": "2026-05-16T00:00:00.000Z",
-    }
-
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=zh",
-        json={"snapshot": snapshot},
+    create_response = client.post(
+        "/api/templates",
+        json={"template": minimal_template_definition()},
     )
+
+    assert create_response.status_code == 200
+    created = create_response.json()["data"]["template"]
+    template_id = created["id"]
+    assert template_id != "template-client-id"
+    assert re.fullmatch(r"template-[A-Za-z0-9]{16}", template_id)
+    assert created["isBuiltIn"] is False
+
+    update_payload = {**created, "name": "Backend Template"}
+    update_response = client.put(
+        f"/api/templates/{template_id}",
+        json={"template": update_payload},
+    )
+    active_response = client.get("/api/templates")
+
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["template"]["name"] == "Backend Template"
+    assert active_response.json()["data"]["templates"][0]["id"] == template_id
+
+    default_response = client.put(
+        "/api/workspace/default-template",
+        json={"templateId": template_id},
+    )
+    trash_response = client.post(f"/api/templates/{template_id}/trash")
     bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
+    deleted_response = client.get("/api/templates?status=deleted")
+    set_deleted_default_response = client.put(
+        "/api/workspace/default-template",
+        json={"templateId": template_id},
+    )
 
-    assert save_response.status_code == 200
-    assert bootstrap_response.status_code == 200
-    assert bootstrap_response.json()["data"]["resumes"][0]["id"] == "resume-shared"
+    assert default_response.status_code == 200
+    assert default_response.json()["data"]["defaultTemplateId"] == template_id
+    assert trash_response.status_code == 200
+    assert trash_response.json()["data"]["template"]["deletedAt"]
+    assert bootstrap_response.json()["data"]["defaultTemplateId"] == "minimal"
+    assert deleted_response.json()["data"]["templates"][0]["id"] == template_id
+    assert set_deleted_default_response.json()["code"] != 0
+
+    restore_response = client.post(f"/api/templates/{template_id}/restore")
+
+    assert restore_response.status_code == 200
+    assert restore_response.json()["data"]["template"]["id"] == template_id
+
+    client.post(f"/api/templates/{template_id}/trash")
+    delete_response = client.delete(f"/api/templates/{template_id}")
+    template_dir = get_settings().storage_dir / "templates" / template_id
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"]["id"] == template_id
+    assert not template_dir.exists()
 
 
-def test_workspace_snapshot_roundtrip_preserves_content_state(
+def test_empty_template_trash_physically_deletes_templates(
     client: TestClient,
 ) -> None:
-    snapshot = {
-        "resumes": [
-            {
-                "id": "resume-roundtrip",
-                "title": "Roundtrip Resume",
-                "updatedAt": "2026-05-16T02:00:00.000Z",
-                "jobBrief": "Backend data flow",
-                "typography": {"fontFamily": "inter", "fontSize": 18},
-                "template": "template-custom",
-                "resume": {
-                    "basic": {
-                        "name": "Round Trip",
-                        "headline": "Engineer",
-                        "phone": "",
-                        "email": "",
-                        "location": "",
-                        "avatar": "",
-                        "summary": "",
-                        "customFields": [],
-                    },
-                    "sections": [],
-                },
-            }
-        ],
-        "defaultTemplateId": "template-custom",
-        "customTemplates": [
-            {
-                "id": "template-custom",
-                "preset": "minimal",
-                "name": "Custom",
-                "description": "Custom template",
-                "layout": {
-                    "basicInfo": "centered",
-                    "section": "plain",
-                    "avatarPosition": "right",
-                    "avatarShape": "rounded",
-                    "avatarWidth": 96,
-                    "avatarHeight": 96,
-                    "avatarOffsetX": 0,
-                    "avatarOffsetY": 0,
-                    "avatarBorderWidth": 0,
-                    "avatarBorderColor": "#ffffff",
-                    "images": [],
-                },
-                "typography": {"fontFamily": "inter", "fontSize": 16},
-                "settings": {
-                    "pagePaddingTop": 48,
-                    "pagePaddingX": 48,
-                    "pagePaddingBottom": 48,
-                    "sectionGap": 18,
-                    "itemGap": 12,
-                    "bodyLineHeight": 1.5,
-                    "nameScale": 1.8,
-                    "sectionTitleScale": 1,
-                    "itemTitleScale": 1,
-                    "metaScale": 0.9,
-                    "bodyScale": 1,
-                    "pageBackground": "#ffffff",
-                    "surfaceColor": "#ffffff",
-                    "headingColor": "#111111",
-                    "bodyColor": "#222222",
-                    "mutedColor": "#666666",
-                    "dividerColor": "#dddddd",
-                    "dividerThickness": 1,
-                },
-                "updatedAt": "2026-05-16T02:00:00.000Z",
-                "isBuiltIn": False,
-            }
-        ],
-        "deletedResumes": [],
-        "deletedTemplates": [],
-        "modelConfigs": [
-            {
-                "id": "llm-roundtrip",
-                "provider": "openai",
-                "nickname": "Roundtrip GPT",
-                "apiKey": "sk-roundtrip-secret",
-                "model": "gpt-5.1",
-                "apiUrl": "https://api.openai.com/v1",
-                "temperature": 0.4,
-                "topP": 0.9,
-                "maxTokens": 1200,
-                "systemPrompt": "Roundtrip",
-            }
-        ],
-        "agentSettings": {
-            "defaultModelId": "llm-roundtrip",
-            "responseLanguage": "follow",
-            "behaviorMode": "balanced",
-            "confirmationMode": "lowRiskAuto",
-            "autoRunMatch": True,
-        },
-        "theme": "dark",
-        "savedAt": "2026-05-16T02:00:00.000Z",
-    }
+    first_id = client.post(
+        "/api/templates",
+        json={"template": minimal_template_definition(name="First")},
+    ).json()["data"]["template"]["id"]
+    second_id = client.post(
+        "/api/templates",
+        json={"template": minimal_template_definition(name="Second")},
+    ).json()["data"]["template"]["id"]
 
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": snapshot},
-    )
-    bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
+    client.post(f"/api/templates/{first_id}/trash")
+    client.post(f"/api/templates/{second_id}/trash")
 
-    assert save_response.status_code == 200
-    assert bootstrap_response.status_code == 200
-    data = bootstrap_response.json()["data"]
-    assert data["resumes"][0]["id"] == "resume-roundtrip"
-    assert data["customTemplates"][0]["id"] == "template-custom"
-    assert data["modelConfigs"][0]["apiKeyPreview"] == "sk-rou****"
-    assert data["agentSettings"] == {
-        "defaultModelId": "",
-        "responseLanguage": "follow",
-        "behaviorMode": "balanced",
-        "confirmationMode": "always",
-    }
-    assert "theme" not in data
-    assert not get_settings().user_settings_path.exists()
+    response = client.delete("/api/templates/trash")
 
-    with connect() as conn:
-        resume_row = conn.execute(
-            """
-            SELECT id, current_version_id, title
-            FROM resumes
-            WHERE id = ?
-            """,
-            ("resume-roundtrip",),
-        ).fetchone()
-        template_row = conn.execute(
-            """
-            SELECT id, name, deleted, purged
-            FROM templates
-            WHERE id = ?
-            """,
-            ("template-custom",),
-        ).fetchone()
-        state_row = conn.execute(
-            """
-            SELECT state_json
-            FROM workspace_state
-            WHERE locale = ?
-            """,
-            (workspace_data_locale(),),
-        ).fetchone()
-        llm_row = conn.execute(
-            """
-            SELECT is_default
-            FROM llm_configs
-            WHERE client_id = ?
-            """,
-            ("llm-roundtrip",),
-        ).fetchone()
-
-    assert resume_row is not None
-    assert resume_row["current_version_id"] == 1
-    assert resume_row["title"] == "Roundtrip Resume"
-    assert template_row is not None
-    assert template_row["name"] == "Custom"
-    assert template_row["deleted"] == 0
-    assert template_row["purged"] == 0
-    assert state_row is not None
-    assert "customTemplates" not in state_row["state_json"]
-    assert "deletedTemplates" not in state_row["state_json"]
-    assert "agentSettings" not in state_row["state_json"]
-    assert "theme" not in state_row["state_json"]
-    assert llm_row is not None
-    assert llm_row["is_default"] == 0
-    resume_json_path = (
-        get_settings().storage_dir
-        / "resumes"
-        / "resume-roundtrip"
-        / "versions"
-        / "1.json"
-    )
-    template_json_path = (
-        get_settings().storage_dir / "templates" / "template-custom" / "current.json"
-    )
-    assert resume_json_path.exists()
-    assert template_json_path.exists()
+    assert response.status_code == 200
+    assert response.json()["data"]["deletedCount"] == 2
+    assert not (get_settings().storage_dir / "templates" / first_id).exists()
+    assert not (get_settings().storage_dir / "templates" / second_id).exists()
 
 
 def test_user_settings_endpoint_persists_json_preferences(
@@ -643,11 +656,6 @@ def test_user_settings_endpoint_persists_json_preferences(
     assert bootstrap_data["theme"] == "system"
     assert bootstrap_data["agentSettings"] == response.json()["data"]["agentSettings"]
 
-    snapshot_response = client.put(
-        "/api/workspace/snapshot?locale=zh",
-        json={"snapshot": {"resumes": [], "savedAt": "2026-05-16T00:00:00.000Z"}},
-    )
-    assert snapshot_response.status_code == 200
     persisted_settings = json.loads(
         get_settings().user_settings_path.read_text(encoding="utf-8")
     )
@@ -658,120 +666,27 @@ def test_user_settings_endpoint_persists_json_preferences(
     assert persisted_settings["theme"] == "system"
 
 
-def test_workspace_snapshot_does_not_persist_api_key(client: TestClient) -> None:
-    snapshot = {
-        "resumes": [],
-        "modelConfigs": [
-            {
-                "id": "llm-test",
-                "provider": "openai",
-                "nickname": "Test",
-                "apiKey": "sk-workspace-secret",
-                "model": "gpt-5.1",
-                "apiUrl": "https://api.openai.com/v1",
-                "temperature": 0.4,
-                "topP": 0.9,
-                "maxTokens": None,
-                "systemPrompt": "test",
-            },
-        ],
-        "savedAt": "2026-05-16T00:00:00.000Z",
-    }
-
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": snapshot},
-    )
-    bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
-
-    assert save_response.status_code == 200
-    assert bootstrap_response.status_code == 200
-    model_config = bootstrap_response.json()["data"]["modelConfigs"][0]
-    assert "apiKey" not in model_config
-    assert "apiKeyEnvName" not in model_config
-    assert model_config["apiKeyPreview"] == "sk-wor****"
-
-    with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT state_json
-            FROM workspace_state
-            WHERE locale = ?
-            """,
-            (workspace_data_locale(),),
-        ).fetchone()
-        llm_row = conn.execute(
-            """
-            SELECT encrypted_api_key, api_key_preview
-            FROM llm_configs
-            WHERE provider = ?
-            """,
-            ("openai",),
-        ).fetchone()
-
-    assert row is not None
-    assert llm_row is not None
-    assert llm_row["encrypted_api_key"] != "sk-workspace-secret"
-    assert llm_row["api_key_preview"] == model_config["apiKeyPreview"]
-    state_json = row["state_json"]
-    assert "sk-workspace-secret" not in state_json
-    assert "modelConfigs" not in state_json
-
-
-def test_workspace_versions_can_be_listed_and_loaded(client: TestClient) -> None:
-    snapshot = {
-        "resumes": [minimal_resume_item("resume-versioned", "Versioned")],
-        "modelConfigs": [],
-        "savedAt": "2026-05-16T01:00:00.000Z",
-    }
-
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=zh",
-        json={"snapshot": snapshot},
-    )
-    version_id = save_response.json()["data"]["versionId"]
-
-    versions_response = client.get("/api/workspace/versions?locale=zh")
-    version_response = client.get(f"/api/workspace/versions/{version_id}?locale=zh")
-
-    assert versions_response.status_code == 200
-    versions = versions_response.json()["data"]["versions"]
-    assert versions[0]["versionId"] == version_id
-    assert version_response.status_code == 200
-    assert version_response.json()["data"]["snapshot"]["savedAt"] == snapshot["savedAt"]
-    assert (
-        version_response.json()["data"]["snapshot"]["resumes"][0]["id"]
-        == "resume-versioned"
-    )
-
-
 def test_identical_resume_hash_does_not_create_new_version(
     client: TestClient,
 ) -> None:
-    first_snapshot = {
-        "resumes": [minimal_resume_item("resume-hash", "Hash Stable")],
-        "modelConfigs": [],
-        "savedAt": "2026-05-16T01:00:00.000Z",
-    }
-    second_snapshot = {
-        "resumes": [
-            {
-                **minimal_resume_item("resume-hash", "Hash Stable"),
-                "updatedAt": "2026-05-17T01:00:00.000Z",
-            }
-        ],
-        "modelConfigs": [],
-        "savedAt": "2026-05-17T01:00:00.000Z",
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Hash Stable",
+            "resume": minimal_resume_item("ignored", "Hash Stable")["resume"],
+            "template": "minimal",
+        },
+    )
+    resume = create_response.json()["data"]["resume"]
+    resume_id = resume["id"]
+    save_payload = {
+        **resume,
+        "updatedAt": "2026-05-17T01:00:00.000Z",
+        "templateSettings": None,
     }
 
-    first_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": first_snapshot},
-    )
-    second_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": second_snapshot},
-    )
+    first_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
+    second_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
@@ -785,7 +700,7 @@ def test_identical_resume_hash_does_not_create_new_version(
             FROM resume_versions
             WHERE resume_id = ?
             """,
-            ("resume-hash",),
+            (resume_id,),
         ).fetchone()["version_count"]
 
     assert version_count == 1
@@ -879,10 +794,13 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
         },
     )
     list_response = client.get("/api/model-configs")
-    delete_response = client.delete("/api/model-configs/llm-api")
+    model_config_id = response.json()["data"]["id"]
+    delete_response = client.delete(f"/api/model-configs/{model_config_id}")
     empty_list_response = client.get("/api/model-configs")
 
     assert response.status_code == 200
+    assert model_config_id != "llm-api"
+    assert re.fullmatch(r"llm-[A-Za-z0-9]{16}", model_config_id)
     assert list_response.status_code == 200
     assert delete_response.status_code == 200
     assert empty_list_response.status_code == 200
@@ -898,7 +816,7 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
             FROM llm_configs
             WHERE client_id = ?
             """,
-            ("llm-api",),
+            (model_config_id,),
         ).fetchone()
 
     assert row is not None
@@ -945,6 +863,8 @@ def test_model_config_resolves_litellm_token_limits(
 
     assert response.status_code == 200
     data = response.json()["data"]
+    assert data["id"] != "llm-token-limits"
+    assert re.fullmatch(r"llm-[A-Za-z0-9]{16}", data["id"])
     assert data["contextWindowTokens"] == 131072
     assert data["maxTokens"] == 8192
 
@@ -955,7 +875,7 @@ def test_model_config_resolves_litellm_token_limits(
             FROM llm_configs
             WHERE client_id = ?
             """,
-            ("llm-token-limits",),
+            (data["id"],),
         ).fetchone()
 
     assert row is not None
@@ -1080,6 +1000,12 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
     first_response = client.post("/api/model-configs", json=payload)
 
     assert first_response.status_code == 200
+    model_config_id = first_response.json()["data"]["id"]
+    assert model_config_id != "llm-noop"
+    update_payload = {
+        **payload,
+        "id": model_config_id,
+    }
 
     with connect() as conn:
         conn.execute(
@@ -1088,7 +1014,7 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
             SET updated_at = ?
             WHERE client_id = ?
             """,
-            ("2000-01-01 00:00:00", "llm-noop"),
+            ("2000-01-01 00:00:00", model_config_id),
         )
         row_before = conn.execute(
             """
@@ -1096,10 +1022,10 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
             FROM llm_configs
             WHERE client_id = ?
             """,
-            ("llm-noop",),
+            (model_config_id,),
         ).fetchone()
 
-    second_response = client.post("/api/model-configs", json=payload)
+    second_response = client.post("/api/model-configs", json=update_payload)
 
     assert second_response.status_code == 200
 
@@ -1110,7 +1036,7 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
             FROM llm_configs
             WHERE client_id = ?
             """,
-            ("llm-noop",),
+            (model_config_id,),
         ).fetchone()
 
     assert row_before is not None
@@ -3142,17 +3068,16 @@ def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:
 
     monkeypatch.setattr("app.routers.exports.write_resume_pdf", write_test_pdf)
 
-    resume_id = "resume-export"
-    snapshot = {
-        "resumes": [minimal_resume_item(resume_id=resume_id, title="Export Resume")],
-        "modelConfigs": [],
-        "savedAt": "2026-05-16T00:00:00.000Z",
-    }
-    save_response = client.put(
-        "/api/workspace/snapshot?locale=en",
-        json={"snapshot": snapshot},
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Export Resume",
+            "resume": minimal_resume_item(title="Export Resume")["resume"],
+            "template": "minimal",
+        },
     )
-    assert save_response.status_code == 200
+    assert create_response.status_code == 200
+    resume_id = create_response.json()["data"]["resume"]["id"]
 
     response = client.post(
         "/api/exports/resume-pdf",

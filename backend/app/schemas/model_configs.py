@@ -6,7 +6,7 @@ class ModelConfigUpsertRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    client_id: str = Field(alias="id")
+    client_id: str | None = Field(default=None, alias="id")
     provider: str
     nickname: str = ""
     api_key: str | None = Field(default=None, alias="apiKey")

@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS workspace_state (
-    locale TEXT PRIMARY KEY,
-    state_json TEXT NOT NULL,
-    saved_at TEXT NOT NULL,
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    default_template_id TEXT NOT NULL DEFAULT 'minimal',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -13,6 +12,7 @@ CREATE TABLE IF NOT EXISTS resumes (
     title TEXT NOT NULL DEFAULT '',
     saved_at TEXT NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
     purged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS templates (
     name TEXT NOT NULL DEFAULT '',
     saved_at TEXT NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
     purged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

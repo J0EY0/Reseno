@@ -1,3 +1,4 @@
+import secrets
 from sqlite3 import Connection, Row
 from typing import Any
 
@@ -10,6 +11,11 @@ from app.services.llm_secrets import (
     mask_encrypted_api_key,
 )
 from app.services.model_metadata import resolve_model_metadata
+
+MODEL_CONFIG_ID_ALPHABET = (
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+)
+MODEL_CONFIG_ID_LENGTH = 16
 
 
 def _row_to_response(row: Row) -> ModelConfigResponse:
@@ -57,6 +63,31 @@ def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
     ).fetchall()
 
     return [_row_to_response(row) for row in rows]
+
+
+def generate_model_config_id() -> str:
+    """Generate a backend-owned model config id."""
+
+    suffix = "".join(
+        secrets.choice(MODEL_CONFIG_ID_ALPHABET)
+        for _ in range(MODEL_CONFIG_ID_LENGTH)
+    )
+    return f"llm-{suffix}"
+
+
+def _allocate_llm_config_id(conn: Connection) -> str:
+    """Generate a model config id that does not currently exist."""
+
+    for _ in range(20):
+        client_id = generate_model_config_id()
+        row = conn.execute(
+            "SELECT 1 FROM llm_configs WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        if row is None:
+            return client_id
+
+    raise RuntimeError("Failed to allocate a model config id.")
 
 
 def _build_upsert_values(
@@ -215,49 +246,6 @@ def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
     return row if isinstance(row, Row) else None
 
 
-def _merge_legacy_row_for_client_id(
-    conn: Connection,
-    item: dict[str, Any],
-    client_id: str,
-) -> None:
-    """Attach a legacy generated row to the stable frontend client id."""
-
-    provider = str(item.get("provider") or "").strip()
-    model = str(item.get("model") or "").strip()
-    name = str(item.get("nickname") or item.get("name") or model).strip()
-
-    if not provider or not model:
-        return
-
-    legacy = conn.execute(
-        """
-        SELECT client_id
-        FROM llm_configs
-        WHERE
-            client_id LIKE 'llm-db-%'
-            AND provider = ?
-            AND model = ?
-            AND name = ?
-        ORDER BY id ASC
-        LIMIT 1
-        """,
-        (provider, model, name or model),
-    ).fetchone()
-    if legacy is None:
-        return
-
-    conn.execute(
-        """
-        UPDATE llm_configs
-        SET
-            client_id = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE client_id = ?
-        """,
-        (client_id, legacy["client_id"]),
-    )
-
-
 def upsert_llm_config(
     conn: Connection,
     request: ModelConfigUpsertRequest,
@@ -276,14 +264,22 @@ def upsert_llm_config_dict(
 ) -> ModelConfigResponse:
     """Create or update one model config from a raw workspace payload item."""
 
-    client_id = str(item.get("id") or item.get("client_id") or "").strip()
-    if not client_id:
-        raise ValueError("Model config id is required.")
-
-    existing = _select_llm_config(conn, client_id)
-    if existing is None:
-        _merge_legacy_row_for_client_id(conn, item, client_id)
-        existing = _select_llm_config(conn, client_id)
+    requested_client_id = str(
+        item.get("id") or item.get("client_id") or "",
+    ).strip()
+    existing = (
+        _select_llm_config(conn, requested_client_id)
+        if requested_client_id
+        else None
+    )
+    client_id = (
+        requested_client_id if existing is not None else _allocate_llm_config_id(conn)
+    )
+    item = {
+        **item,
+        "id": client_id,
+        "client_id": client_id,
+    }
     values = _build_upsert_values(item, existing)
 
     if existing is not None and _is_same_upsert_values(existing, values):
@@ -372,48 +368,3 @@ def delete_llm_config(conn: Connection, client_id: str) -> bool:
     )
 
     return cursor.rowcount > 0
-
-
-def sync_llm_configs(
-    conn: Connection,
-    configs: list[Any],
-    *,
-    disable_missing: bool = False,
-) -> None:
-    """Mirror frontend model settings into llm_configs without storing plaintext."""
-
-    active_client_ids: list[str] = []
-    for item in configs:
-        if isinstance(item, dict):
-            client_id = str(item.get("id") or item.get("client_id") or "").strip()
-            if client_id:
-                active_client_ids.append(client_id)
-            upsert_llm_config_dict(conn, item)
-
-    if not disable_missing:
-        return
-
-    if not active_client_ids:
-        conn.execute(
-            """
-            UPDATE llm_configs
-            SET
-                enabled = 0,
-                is_default = 0,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-        )
-        return
-
-    placeholders = ",".join("?" for _ in active_client_ids)
-    conn.execute(
-        f"""
-        UPDATE llm_configs
-        SET
-            enabled = 0,
-            is_default = 0,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE client_id NOT IN ({placeholders})
-        """,
-        active_client_ids,
-    )

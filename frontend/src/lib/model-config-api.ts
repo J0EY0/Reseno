@@ -1,7 +1,10 @@
 import { apiRoutes, requestApi } from '@/lib/api-client'
 import type { ModelConfig } from '@/types/resume'
 
-export async function saveModelConfig(config: ModelConfig, apiKey?: string) {
+export async function saveModelConfig(
+  config: Omit<ModelConfig, 'id'> & { id?: string },
+  apiKey?: string,
+) {
   return requestApi<ModelConfig>(apiRoutes.modelConfigs, {
     method: 'POST',
     body: {

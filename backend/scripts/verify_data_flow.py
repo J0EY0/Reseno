@@ -31,74 +31,68 @@ def main() -> None:
             access_token = login.json()["data"]["accessToken"]
             client.headers.update({"Authorization": f"Bearer {access_token}"})
 
-            snapshot = {
-                "resumes": [
-                    {
-                        "id": "resume-script",
-                        "title": "Script Resume",
-                        "updatedAt": "2026-05-17T00:00:00.000Z",
-                        "jobBrief": "Data flow",
-                        "typography": {"fontFamily": "inter", "fontSize": 16},
-                        "template": "minimal",
-                        "resume": {
-                            "basic": {
-                                "name": "Script Resume",
-                                "headline": "",
-                                "phone": "",
-                                "email": "",
-                                "location": "",
-                                "avatar": "",
-                                "summary": "",
-                                "customFields": [],
-                            },
-                            "sections": [],
-                        },
-                    }
-                ],
-                "modelConfigs": [
-                    {
-                        "id": "llm-script",
-                        "provider": "openai",
-                        "nickname": "Script",
-                        "apiKey": "sk-script-workspace-secret",
-                        "model": "gpt-5.1",
-                        "apiUrl": "https://api.openai.com/v1",
-                        "temperature": 0.4,
-                        "topP": 0.9,
-                        "maxTokens": None,
-                        "systemPrompt": "script",
-                    }
-                ],
-                "agentSettings": {
-                    "defaultModelId": "llm-script",
-                    "responseLanguage": "follow",
-                    "behaviorMode": "balanced",
-                    "confirmationMode": "always",
+            model_saved = client.post(
+                "/api/model-configs",
+                json={
+                    "id": "llm-script",
+                    "provider": "openai",
+                    "nickname": "Script",
+                    "apiKey": "sk-script-workspace-secret",
+                    "model": "gpt-5.1",
+                    "apiUrl": "https://api.openai.com/v1",
+                    "temperature": 0.4,
+                    "topP": 0.9,
+                    "maxTokens": None,
+                    "systemPrompt": "script",
                 },
-                "savedAt": "2026-05-17T00:00:00.000Z",
-            }
-            saved = client.put(
-                "/api/workspace/snapshot?locale=en",
-                json={"snapshot": snapshot},
             )
-            assert saved.status_code == 200
+            assert model_saved.status_code == 200
+
+            resume_saved = client.post(
+                "/api/resumes",
+                json={
+                    "title": "Script Resume",
+                    "jobBrief": "Data flow",
+                    "typography": {"fontFamily": "inter", "fontSize": 16},
+                    "template": "minimal",
+                    "resume": {
+                        "basic": {
+                            "name": "Script Resume",
+                            "headline": "",
+                            "phone": "",
+                            "email": "",
+                            "location": "",
+                            "avatar": "",
+                            "summary": "",
+                            "customFields": [],
+                        },
+                        "sections": [],
+                    },
+                },
+            )
+            assert resume_saved.status_code == 200
+            resume_id = resume_saved.json()["data"]["resume"]["id"]
 
             bootstrap = client.get("/api/workspace/bootstrap?locale=en")
             assert bootstrap.status_code == 200
-            assert bootstrap.json()["data"]["resumes"][0]["id"] == "resume-script"
+            assert "resumes" not in bootstrap.json()["data"]
             model_config = bootstrap.json()["data"]["modelConfigs"][0]
             assert "apiKey" not in model_config
             assert "apiKeyEnvName" not in model_config
             assert model_config["apiKeyPreview"] == "sk-scr****"
 
-            versions = client.get("/api/workspace/versions?locale=en")
+            resumes = client.get("/api/resumes")
+            assert resumes.status_code == 200
+            assert resumes.json()["data"]["resumes"][0]["id"] == resume_id
+
+            versions = client.get(f"/api/resumes/{resume_id}/versions")
             assert versions.status_code == 200
             assert versions.json()["data"]["versions"]
             assert (
                 data_dir
                 / "storage"
                 / "resumes"
-                / "resume-script"
+                / resume_id
                 / "versions"
                 / "1.json"
             ).exists()

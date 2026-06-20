@@ -563,9 +563,11 @@ export function getTemplateCatalog(
 export function getTemplateById(
   templates: ResumeTemplateDefinition[],
   templateId: ResumeTemplateId | null | undefined,
+  fallbackTemplateId?: ResumeTemplateId | null,
 ) {
   return (
     templates.find((item) => item.id === templateId) ??
+    templates.find((item) => item.id === fallbackTemplateId) ??
     templates.find((item) => item.id === 'minimal') ??
     templates[0]
   )

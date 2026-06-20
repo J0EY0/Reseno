@@ -262,29 +262,13 @@ export interface DeletedResumeTemplateDefinition extends ResumeTemplateDefinitio
 }
 
 export interface WorkspacePayload {
-  resumes: ResumeWorkspaceItem[]
+  resumes?: ResumeWorkspaceItem[]
   defaultTemplateId?: ResumeTemplateId
   customTemplates?: ResumeTemplateDefinition[]
   deletedResumes?: DeletedResumeWorkspaceItem[]
   deletedTemplates?: DeletedResumeTemplateDefinition[]
   modelConfigs?: ModelConfig[]
   modelConfig?: LegacyModelConfig
-  agentSettings?: AgentSettings
-  theme?: ThemeMode
-}
-
-export interface WorkspaceSnapshot {
-  resumes: ResumeWorkspaceItem[]
-  defaultTemplateId?: ResumeTemplateId
-  customTemplates?: ResumeTemplateDefinition[]
-  deletedResumes?: DeletedResumeWorkspaceItem[]
-  deletedTemplates?: DeletedResumeTemplateDefinition[]
-  modelConfigs: ModelConfig[]
-  modelConfig?: LegacyModelConfig
-  savedAt: string
-}
-
-export interface WorkspaceVersionSnapshot extends WorkspaceSnapshot {
   agentSettings?: AgentSettings
   theme?: ThemeMode
 }

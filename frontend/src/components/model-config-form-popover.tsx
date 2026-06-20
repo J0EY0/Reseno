@@ -23,7 +23,6 @@ import {
   isProviderApiKeyRequired,
   MODEL_PROVIDERS,
 } from "@/lib/model-providers";
-import { createId } from "@/lib/resume";
 import type { ModelConfig } from "@/types/resume";
 
 import { ModelProviderIcon } from "@/components/model-provider-icon";
@@ -321,14 +320,12 @@ export function ModelConfigFormPopover({
       ? normalizeMaxTokens(Number(draft.maxTokens))
       : null;
     const apiKey = draft.apiKey.trim();
-    const configId = initialConfig?.id ?? createId("llm");
-
     setSubmitting(true);
 
     try {
       const savedConfig = await saveModelConfig(
         {
-          id: configId,
+          ...(initialConfig?.id ? { id: initialConfig.id } : {}),
           provider: draft.provider,
           nickname: draft.nickname.trim(),
           apiKeyPreview: draft.apiKeyPreview.trim(),

@@ -5,7 +5,6 @@ import {
   getProviderDefaultModel,
   inferModelProviderId,
 } from '@/lib/model-providers'
-import { createId } from '@/lib/resume'
 import type { LegacyModelConfig, ModelConfig } from '@/types/resume'
 
 export function clampTemperature(value: number) {
@@ -39,7 +38,7 @@ export function createDefaultModelConfig(
   const provider = overrides.provider ?? DEFAULT_MODEL_PROVIDER_ID
 
   return {
-    id: createId('llm'),
+    id: '',
     provider,
     nickname: '',
     apiKeyPreview: '',
@@ -74,7 +73,7 @@ export function normalizeModelConfig(
       : 0.9
 
   return createDefaultModelConfig(locale, {
-    id: typeof raw.id === 'string' ? raw.id : createId('llm'),
+    id: typeof raw.id === 'string' ? raw.id : '',
     nickname:
       typeof raw.nickname === 'string' && raw.nickname.trim()
         ? raw.nickname
