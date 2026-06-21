@@ -2295,6 +2295,8 @@ def _assert_language_pattern_schema(
 
 def test_agent_supported_locales_cover_resources() -> None:
     supported = set(SUPPORTED_AGENT_LOCALES)
+    prompt_dir = Path(__file__).parents[1] / "app/services/agent/prompts"
+    system_core = (prompt_dir / "system.md").read_text(encoding="utf-8").strip()
 
     assert DEFAULT_AGENT_LOCALE in supported
     assert set(supported_agent_text_locales()) == supported
@@ -2304,6 +2306,14 @@ def test_agent_supported_locales_cover_resources() -> None:
     assert set(STREAMING_FINAL_RESPONSE_PROMPTS) == supported
     assert set(EDIT_OPERATION_GUIDES) == supported
     assert EDIT_OPERATION_GUIDE == EDIT_OPERATION_GUIDES[DEFAULT_AGENT_LOCALE]
+    assert not (prompt_dir / "system.en.md").exists()
+    assert not (prompt_dir / "system.zh.md").exists()
+
+    for locale in SUPPORTED_AGENT_LOCALES:
+        locale_addendum = (
+            prompt_dir / f"system.locale.{locale}.md"
+        ).read_text(encoding="utf-8").strip()
+        assert SYSTEM_PROMPTS[locale] == f"{system_core}\n\n{locale_addendum}"
 
 
 def test_agent_intent_patterns_are_externalized() -> None:

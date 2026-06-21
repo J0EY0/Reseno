@@ -19,8 +19,19 @@ def load_prompt(filename: str) -> str:
     return (PROMPT_DIR / filename).read_text(encoding="utf-8").strip()
 
 
+def _render_system_prompt(locale: str) -> str:
+    """Compose the shared system prompt with a short locale-specific addendum."""
+
+    return "\n\n".join(
+        [
+            load_prompt("system.md"),
+            load_prompt(f"system.locale.{locale}.md"),
+        ],
+    )
+
+
 SYSTEM_PROMPTS = {
-    locale: load_prompt(f"system.{locale}.md") for locale in SUPPORTED_AGENT_LOCALES
+    locale: _render_system_prompt(locale) for locale in SUPPORTED_AGENT_LOCALES
 }
 
 FINAL_RESPONSE_PROMPTS = {

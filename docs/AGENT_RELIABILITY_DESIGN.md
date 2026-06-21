@@ -25,6 +25,9 @@ ResuMate Agent 的下一阶段目标不是做通用 Agent 平台，而是在现�
 5. 避免工具膨胀  
    不为每个小需求拆工具。工具数量和 schema token 都会影响模型选择质量。
 
+6. System prompt 单核心维护
+   核心系统规则只维护 `system.md` 一份英文版本，避免中英文长 prompt 漂移。语言差异只放在很短的 `system.locale.zh.md` / `system.locale.en.md` 中，用于补充简历表达和用户可见输出风格。
+
 ## 隐私边界
 
 姓名、手机、邮箱、地址、头像默认完全隐藏，不进入 LLM payload，也不允许被写入。
