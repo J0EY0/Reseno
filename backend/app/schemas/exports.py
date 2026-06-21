@@ -1,13 +1,13 @@
-from typing import Literal
-
 from pydantic import BaseModel, Field
+
+from app.agent_locales import AgentLocale
 
 
 class ExportResumePdfRequest(BaseModel):
     """Request body for exporting a saved resume as PDF."""
 
     resume_id: str = Field(alias="resumeId")
-    locale: Literal["zh", "en"]
+    locale: AgentLocale
     file_name_seed: str = Field(alias="fileNameSeed")
     saved_at: str = Field(alias="savedAt")
     version_id: str | None = Field(default=None, alias="versionId")

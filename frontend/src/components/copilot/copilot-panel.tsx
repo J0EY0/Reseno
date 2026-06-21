@@ -31,10 +31,6 @@ import {
 } from "@/components/ai-elements/model-selector";
 import {
   PromptInput,
-  PromptInputActionAddAttachments,
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputButton,
   PromptInputFooter,
@@ -71,6 +67,7 @@ import {
   Copy,
   FileText,
   Pencil,
+  Plus,
   RotateCcw,
   SquareTerminal,
   X,
@@ -84,7 +81,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 
-import type { AppMessages, Locale } from "@/i18n";
+import { getMessagesSync, locales, type AppMessages, type Locale } from "@/i18n";
 import {
   Tooltip,
   TooltipContent,
@@ -101,6 +98,7 @@ import {
   inferModelProviderId,
 } from "@/lib/model-providers";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import languagePatterns from "@/lib/language-patterns.json";
 import { createId, getKeywordMatch } from "@/lib/resume";
 import { cn } from "@/lib/utils";
 import type {
@@ -125,6 +123,13 @@ const AGENT_REQUEST_DEBOUNCE_MS = 420;
 const MAX_ATTACHMENT_TEXT_LENGTH = 16_000;
 const TEXT_ATTACHMENT_PATTERN =
   /^(text\/|application\/json|application\/xml|application\/.*\+json)/i;
+const JOB_BRIEF_PROMPT_PATTERN = new RegExp(
+  languagePatterns.jobBriefPrompt.map(escapeRegExp).join("|"),
+  "i",
+);
+const ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS = locales.flatMap(
+  (locale) => getMessagesSync(locale).agentTransientModelStatusTexts,
+);
 const AGENT_MARKDOWN_CLASSNAME =
   "[&_h1]:!mb-2 [&_h1]:!mt-3 [&_h1]:!text-base [&_h1]:!font-semibold [&_h1]:!leading-7 [&_h1]:!tracking-normal [&_h2]:!mb-2 [&_h2]:!mt-3 [&_h2]:!text-base [&_h2]:!font-semibold [&_h2]:!leading-7 [&_h2]:!tracking-normal [&_h3]:!mb-1.5 [&_h3]:!mt-2.5 [&_h3]:!text-sm [&_h3]:!font-semibold [&_h3]:!leading-6";
 
@@ -140,6 +145,10 @@ function getModelProvider(config: ModelConfig) {
   const provider = getModelProviderMeta(inferModelProviderId(config));
 
   return { id: provider.iconProvider, label: provider.label };
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function getModelDisplayName(config: ModelConfig) {
@@ -193,15 +202,35 @@ function AgentPromptAttachmentsDisplay() {
   );
 }
 
+function AgentPromptAttachmentButton({
+  disabled,
+  label,
+}: {
+  disabled: boolean;
+  label: string;
+}) {
+  const attachments = usePromptInputAttachments();
+
+  return (
+    <PromptInputButton
+      aria-label={label}
+      className="text-foreground disabled:cursor-not-allowed"
+      disabled={disabled}
+      onClick={() => attachments.openFileDialog()}
+      tooltip={label}
+    >
+      <Plus className="size-4" />
+    </PromptInputButton>
+  );
+}
+
 function isLikelyJobBriefPrompt(prompt: string) {
   const trimmed = prompt.trim();
 
   return (
     trimmed.length >= 140 ||
     trimmed.split(/\n+/).filter(Boolean).length >= 3 ||
-    /(岗位|jd|职责|任职|要求|job description|responsibilities|requirements|qualifications)/i.test(
-      trimmed,
-    )
+    JOB_BRIEF_PROMPT_PATTERN.test(trimmed)
   );
 }
 
@@ -1313,7 +1342,7 @@ export function CopilotPanel({
         if (!cancelled) {
           setMessages(
             session.messages.map((message) =>
-              toPanelMessage(message, t.agentTransientModelStatusTexts),
+              toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
             ),
           );
         }
@@ -1327,7 +1356,7 @@ export function CopilotPanel({
     return () => {
       cancelled = true;
     };
-  }, [resumeId, t.agentTransientModelStatusTexts]);
+  }, [resumeId]);
 
   useEffect(() => {
     streamingMessageRef.current = streamingMessage;
@@ -1847,17 +1876,10 @@ export function CopilotPanel({
 
                         <PromptInputFooter className="justify-between gap-2.5 px-4 pb-3.5 pt-1">
                           <PromptInputTools className="min-w-0 gap-1.5">
-                            <PromptInputActionMenu>
-                              <PromptInputActionMenuTrigger
-                                disabled={!hasConfiguredModel}
-                                className="text-foreground disabled:cursor-not-allowed"
-                              />
-                              <PromptInputActionMenuContent>
-                                <PromptInputActionAddAttachments
-                                  label={t.agentAddAttachments}
-                                />
-                              </PromptInputActionMenuContent>
-                            </PromptInputActionMenu>
+                            <AgentPromptAttachmentButton
+                              disabled={!hasConfiguredModel}
+                              label={t.agentAddAttachments}
+                            />
 
                             <ModelSelector
                               open={modelSelectorOpen}

@@ -1,5 +1,5 @@
 支持的 ResumeEditOperation 结构：
-- replace_field {type,path,value} 用于 basic.name/headline/phone/email/location/avatar/summary。
+- replace_field {type,path,value} 仅用于 basic.headline 或 basic.summary；不要编辑 name/phone/email/location/avatar。
 - update_item {type,sectionId,itemId,patch:{title,subtitle,meta,period,description,highlights}}。
 - insert_item {type,sectionId,item,index?}。
 - update_section {type,sectionId,patch:{section_type,layout,customTitle}}。

@@ -357,7 +357,6 @@ export function ResumeGallery({
                       style={{ width: "210mm", height: "297mm" }}
                     >
                       <ResumePreview
-                        locale={locale}
                         t={t}
                         resume={item.resume}
                         fontFamily={item.typography?.fontFamily ?? "inter"}
@@ -397,7 +396,7 @@ export function ResumeGallery({
       <GalleryPagination
         currentPage={safeCurrentPage}
         totalPages={totalPages}
-        locale={locale}
+        t={t}
         onPageChange={setCurrentPage}
       />
     </section>

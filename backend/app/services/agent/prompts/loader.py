@@ -1,6 +1,12 @@
 from functools import cache
 from pathlib import Path
 
+from app.agent_locales import (
+    DEFAULT_AGENT_LOCALE,
+    SUPPORTED_AGENT_LOCALES,
+    locale_display_order,
+)
+
 from ..section_registry import section_kind_values, section_label_lines
 
 PROMPT_DIR = Path(__file__).resolve().parent
@@ -14,18 +20,17 @@ def load_prompt(filename: str) -> str:
 
 
 SYSTEM_PROMPTS = {
-    "zh": load_prompt("system.zh.md"),
-    "en": load_prompt("system.en.md"),
+    locale: load_prompt(f"system.{locale}.md") for locale in SUPPORTED_AGENT_LOCALES
 }
 
 FINAL_RESPONSE_PROMPTS = {
-    "zh": load_prompt("final_response.zh.md"),
-    "en": load_prompt("final_response.en.md"),
+    locale: load_prompt(f"final_response.{locale}.md")
+    for locale in SUPPORTED_AGENT_LOCALES
 }
 
 STREAMING_FINAL_RESPONSE_PROMPTS = {
-    "zh": load_prompt("streaming_final_response.zh.md"),
-    "en": load_prompt("streaming_final_response.en.md"),
+    locale: load_prompt(f"streaming_final_response.{locale}.md")
+    for locale in SUPPORTED_AGENT_LOCALES
 }
 
 def _render_edit_operation_guide(
@@ -43,16 +48,13 @@ def _render_edit_operation_guide(
 
 
 EDIT_OPERATION_GUIDES = {
-    "zh": _render_edit_operation_guide(
-        "edit_operation_guide.zh.md",
-        label_locale_order=("zh", "en"),
-    ),
-    "en": _render_edit_operation_guide(
-        "edit_operation_guide.en.md",
-        label_locale_order=("en", "zh"),
-    ),
+    locale: _render_edit_operation_guide(
+        f"edit_operation_guide.{locale}.md",
+        label_locale_order=locale_display_order(locale),
+    )
+    for locale in SUPPORTED_AGENT_LOCALES
 }
-EDIT_OPERATION_GUIDE = EDIT_OPERATION_GUIDES["en"]
+EDIT_OPERATION_GUIDE = EDIT_OPERATION_GUIDES[DEFAULT_AGENT_LOCALE]
 
 DEFAULT_REACT_MAX_ITERATIONS = 5
 MIN_REACT_MAX_ITERATIONS = 1

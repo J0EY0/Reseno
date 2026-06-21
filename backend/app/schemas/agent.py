@@ -2,6 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent_locales import AgentLocale
+
 AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
 AgentToolState = Literal[
     "input-streaming",
@@ -54,7 +56,7 @@ class AgentChatRequest(BaseModel):
     messages: list[AgentConversationItem] = Field(default_factory=list)
     conversation: list[AgentConversationItem] = Field(default_factory=list)
     files: list[dict[str, Any]] = Field(default_factory=list)
-    locale: Literal["zh", "en"] = "zh"
+    locale: AgentLocale = "zh"
     resume: dict[str, Any] = Field(default_factory=dict)
     job_brief: str = Field(default="", alias="jobBrief")
     keyword_match: dict[str, Any] = Field(default_factory=dict, alias="keywordMatch")
@@ -180,5 +182,5 @@ class AgentSessionResponse(BaseModel):
 class AgentSessionReplaceRequest(BaseModel):
     """Request body for replacing one resume's persisted Agent conversation."""
 
-    locale: Literal["zh", "en"] = "zh"
+    locale: AgentLocale = "zh"
     messages: list[AgentConversationItem] = Field(default_factory=list)

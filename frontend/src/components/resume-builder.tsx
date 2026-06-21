@@ -100,7 +100,7 @@ import {
   normalizeCustomTemplates,
   normalizeDeletedTemplates,
 } from "@/lib/templates";
-import { type AppMessages, type Locale } from "@/i18n";
+import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import {
   createEmptyResume,
   createId,
@@ -623,8 +623,8 @@ function isResumeData(value: unknown): value is ResumeData {
   );
 }
 
-function createDefaultResumeTitle(locale: Locale, index: number) {
-  return locale === "zh" ? `新建简历${index}` : `New Resume ${index}`;
+function createDefaultResumeTitle(t: AppMessages, index: number) {
+  return t.defaultResumeTitle.replace("{index}", String(index));
 }
 
 function normalizeResumeTitle(value: unknown, fallback: string) {
@@ -814,7 +814,7 @@ function normalizeStoredResumeDocument(
   }
 
   const fallbackTitle =
-    value.resume.basic.name || createDefaultResumeTitle(locale, index);
+    value.resume.basic.name || createDefaultResumeTitle(getMessagesSync(locale), index);
   const id = typeof value.id === "string" ? value.id.trim() : "";
 
   if (!id) {
@@ -1233,8 +1233,7 @@ export function ResumeBuilder({
   );
   const activeResumeTitle = activeResumeDocument?.title ?? "";
   const activeResumeToolbarTitle = activeResumeTitle || t.untitledResume;
-  const resumeTitleSaveLabel =
-    t.saveResumeTitle || (locale === "zh" ? "保存" : "Save");
+  const resumeTitleSaveLabel = t.saveResumeTitle;
   const showEditorControls =
     activeView !== "trash" &&
     activeView !== "models" &&
@@ -2044,7 +2043,7 @@ export function ResumeBuilder({
 
         const fallbackTitle =
           item.resume.basic.name ||
-          createDefaultResumeTitle(locale, index + 1) ||
+          createDefaultResumeTitle(t, index + 1) ||
           t.untitledResume;
         const nextTitle = normalizeResumeTitle(resumeTitleDraft, fallbackTitle);
 
@@ -2257,7 +2256,7 @@ export function ResumeBuilder({
       await saveCurrentWorkspace();
 
       const result = await createResumeApi({
-        title: createDefaultResumeTitle(locale, resumeDocuments.length + 1),
+        title: createDefaultResumeTitle(t, resumeDocuments.length + 1),
         template: defaultTemplateId,
       });
       const nextItem = result.resume;
@@ -3317,7 +3316,6 @@ export function ResumeBuilder({
               >
                 <ResumePreview
                   ref={previewRef}
-                  locale={locale}
                   t={t}
                   resume={previewDocument}
                   fontFamily={
@@ -3444,7 +3442,6 @@ export function ResumeBuilder({
         >
           <TemplateLibrary
             mode="gallery"
-            locale={locale}
             t={t}
             resume={deferredTemplatePreviewResume}
             templates={templateCatalog}
@@ -3512,7 +3509,7 @@ export function ResumeBuilder({
         }
       >
         <CopilotPanel
-          key={`${activeResumeId ?? "resume"}-${locale}-${mode}`}
+          key={`${activeResumeId ?? "resume"}-${mode}`}
           mode={mode}
           resumeId={activeResumeId ?? undefined}
           t={t}
@@ -3650,7 +3647,6 @@ export function ResumeBuilder({
           <Suspense fallback={<WorkspacePanelSkeleton />}>
             <TemplateLibrary
               mode="editor"
-              locale={locale}
               t={t}
               resume={deferredTemplatePreviewResume}
               templates={templateCatalog}
@@ -3933,13 +3929,13 @@ export function ResumeBuilder({
               items={[
                 {
                   key: "zh",
-                  label: "中文",
+                  label: t.languageChinese,
                   active: locale === "zh",
                   onClick: () => onLocaleChange("zh"),
                 },
                 {
                   key: "en",
-                  label: "EN",
+                  label: t.languageEnglish,
                   active: locale === "en",
                   onClick: () => onLocaleChange("en"),
                 },

@@ -356,5 +356,6 @@ export type AgentChatStreamEvent =
     }
   | {
       type: "error";
-      message: string;
+      message?: string;
+      error?: string;
     };

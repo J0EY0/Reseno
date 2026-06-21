@@ -1,4 +1,4 @@
-import type { Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { useMemo } from "react";
 
 import {
@@ -52,16 +52,14 @@ function getPaginationItems(
 export function GalleryPagination({
   currentPage,
   totalPages,
-  locale,
+  t,
   onPageChange,
 }: {
   currentPage: number;
   totalPages: number;
-  locale: Locale;
+  t: AppMessages;
   onPageChange: (page: number) => void;
 }) {
-  const previousLabel = locale === "zh" ? "上一页" : "Previous";
-  const nextLabel = locale === "zh" ? "下一页" : "Next";
   const pageItems = useMemo(
     () => getPaginationItems(currentPage, totalPages),
     [currentPage, totalPages],
@@ -88,7 +86,7 @@ export function GalleryPagination({
         <PaginationItem>
           <PaginationPrevious
             href="#"
-            label={previousLabel}
+            label={t.paginationPrevious}
             aria-disabled={currentPage === 1}
             className={cn(
               "h-8 rounded-full text-xs",
@@ -126,7 +124,7 @@ export function GalleryPagination({
         <PaginationItem>
           <PaginationNext
             href="#"
-            label={nextLabel}
+            label={t.paginationNext}
             aria-disabled={currentPage === totalPages}
             className={cn(
               "h-8 rounded-full text-xs",

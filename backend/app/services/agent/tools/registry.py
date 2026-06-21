@@ -1,5 +1,6 @@
 from typing import Any
 
+from ..models import PLAN_INTENT_ENUM
 from ..prompts import EDIT_OPERATION_GUIDE
 from ..section_registry import SECTION_KIND_ENUM
 
@@ -192,17 +193,34 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "jd_url_fetch",
-            "description": "Fetch and extract text from a user-provided JD URL.",
+            "name": "web_fetch",
+            "description": (
+                "Fetch and extract text from a user-provided URL for an explicit "
+                "resume-editing purpose. Do not infer personal experience facts "
+                "from fetched pages; use them only as reference material."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "The job description URL to fetch.",
+                        "description": "The user-provided URL to fetch.",
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "enum": [
+                            "jd",
+                            "project_reference",
+                            "portfolio_reference",
+                            "company_reference",
+                        ],
+                        "description": (
+                            "Why this URL should be fetched. If unsure, ask the "
+                            "user before calling this tool."
+                        ),
                     },
                 },
-                "required": ["url"],
+                "required": ["url", "purpose"],
                 "additionalProperties": False,
             },
         },
@@ -210,29 +228,33 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "jd_reference_search",
+            "name": "web_search",
             "description": (
-                "Search the web for a target-role JD when the user did not "
-                "provide a JD URL. Do not use this for a normal resume edit "
-                "unless the user explicitly asks for target-role or JD matching."
+                "Search the web only for target role, JD, company, or public "
+                "reference context. Never use search as evidence for the user's "
+                "personal experience."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query for the target role JD.",
+                        "description": "Search query for external reference context.",
                     },
                     "role": {
                         "type": "string",
                         "description": "Target role inferred from the user prompt.",
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "enum": ["jd", "target_context", "company_reference"],
                     },
                     "language": {
                         "type": "string",
                         "enum": ["zh", "en"],
                     },
                 },
-                "required": ["query"],
+                "required": ["query", "purpose"],
                 "additionalProperties": False,
             },
         },
@@ -321,6 +343,17 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                         "insert_item, insert_section, update_section, "
                                         "delete_item, delete_section, reorder_items, "
                                         "reorder_sections."
+                                    ),
+                                },
+                                "intent": {
+                                    "type": "string",
+                                    "enum": PLAN_INTENT_ENUM,
+                                    "description": (
+                                        "Optional machine-readable edit intent for "
+                                        "draft-changing plans. Do not use this for "
+                                        "explaining an existing draft; use "
+                                        "draft_diff_summary and a natural-language "
+                                        "answer instead."
                                     ),
                                 },
                                 "target": {
@@ -567,4 +600,17 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-__all__ = ["AGENT_TOOL_SCHEMAS"]
+
+def agent_tool_schemas_for_names(
+    tool_names: set[str] | frozenset[str],
+) -> list[dict[str, Any]]:
+    """Return registered tool schemas in stable order for allowed tool names."""
+
+    return [
+        schema
+        for schema in AGENT_TOOL_SCHEMAS
+        if schema["function"]["name"] in tool_names
+    ]
+
+
+__all__ = ["AGENT_TOOL_SCHEMAS", "agent_tool_schemas_for_names"]

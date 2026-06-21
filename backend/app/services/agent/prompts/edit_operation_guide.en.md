@@ -1,5 +1,5 @@
 Supported ResumeEditOperation shapes:
-- replace_field {type,path,value} for basic.name/headline/phone/email/location/avatar/summary.
+- replace_field {type,path,value} only for basic.headline or basic.summary; do not edit name/phone/email/location/avatar.
 - update_item {type,sectionId,itemId,patch:{title,subtitle,meta,period,description,highlights}}.
 - insert_item {type,sectionId,item,index?}.
 - update_section {type,sectionId,patch:{section_type,layout,customTitle}}.

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.agent_locales import SUPPORTED_AGENT_LOCALES
+
 REGISTRY_PATH = Path(__file__).with_name("section_registry.json")
 
 
@@ -24,8 +26,11 @@ def _load_section_registry() -> list[dict[str, Any]]:
             raise ValueError(f"Duplicate section kind in registry: {kind}")
         if layout not in {"timeline", "list"}:
             raise ValueError(f"Invalid defaultLayout for section kind: {kind}")
-        if not isinstance(labels, dict) or not labels.get("zh") or not labels.get("en"):
-            raise ValueError(f"Section kind {kind} must define zh/en labels.")
+        if not isinstance(labels, dict) or any(
+            not labels.get(locale) for locale in SUPPORTED_AGENT_LOCALES
+        ):
+            expected = "/".join(SUPPORTED_AGENT_LOCALES)
+            raise ValueError(f"Section kind {kind} must define {expected} labels.")
         kinds.add(kind)
 
     return sections
@@ -52,7 +57,7 @@ def section_kind_values() -> str:
     return ", ".join(SECTION_KIND_ENUM)
 
 
-def section_label_lines(locale_order: tuple[str, ...] = ("zh", "en")) -> str:
+def section_label_lines(locale_order: tuple[str, ...] = SUPPORTED_AGENT_LOCALES) -> str:
     lines = []
     for section in SECTION_REGISTRY:
         kind = section["kind"]

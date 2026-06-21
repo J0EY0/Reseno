@@ -415,9 +415,18 @@ async function readAgentChatStream(
       const errorMessage =
         isRecord(payload) && typeof payload.message === "string"
           ? payload.message
-          : "Agent stream failed.";
+          : isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : "";
 
-      throw new Error(errorMessage);
+      if (errorMessage) {
+        message = {
+          ...message,
+          text: message.text || errorMessage,
+        };
+        publishMessage();
+      }
+      return;
     }
   };
 

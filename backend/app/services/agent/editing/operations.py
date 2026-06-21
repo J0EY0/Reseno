@@ -7,6 +7,8 @@ from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
 
 from ..localization import agent_text
 from ..models import EditPlanStep
+from ..parsing_patterns import compiled_agent_pattern
+from ..privacy import AGENT_WRITABLE_BASIC_FIELDS, is_pii_basic_path
 from ..prompts import (
     DEFAULT_REACT_MAX_ITERATIONS,
     MAX_REACT_MAX_ITERATIONS,
@@ -35,30 +37,10 @@ BASIC_EDIT_FIELDS = {
 }
 SECTION_PATCH_FIELDS = {"kind", "section_type", "layout", "customTitle"}
 ITEM_PATCH_FIELDS = {"title", "subtitle", "meta", "period", "description", "highlights"}
-FIELD_ONLY_LABEL_RE = re.compile(
-    r"^\s*(?:项目名称|项目名|项目|公司|学校|证书|奖项|名称|title|project name|"
-    r"company|school|certificate|award|时间|日期|周期|date|period|time|角色|"
-    r"职位|岗位|专业|学位|role|position|major|degree|技术栈|技术|gpa|地点|"
-    r"组织|tech stack|stack|location|organization)\s*[:：]",
-    re.IGNORECASE,
-)
-CONTENT_LABEL_RE = re.compile(
-    r"^\s*(?:工作内容|职责|负责内容|行动|方案|结果|成果|影响|要点|"
-    r"responsibility|action|solution|result|impact|highlight)\s*[:：]\s*",
-    re.IGNORECASE,
-)
-MIXED_FIELD_LABEL_RE = re.compile(
-    r"(?:项目名称|项目名|时间|日期|角色|职位|技术栈|技术|title|project name|"
-    r"date|period|role|position|tech stack|stack)\s*[:：]",
-    re.IGNORECASE,
-)
-REQUEST_PREFIX_RE = re.compile(
-    r"^\s*(?:请|麻烦|帮我|please)?\s*"
-    r"(?:添加|新增|补充|修改|优化|润色|生成|add|create|insert|modify|"
-    r"rewrite|improve)?\s*(?:我的|一段|以下|the)?\s*"
-    r"(?:简历|项目经历|工作经历|实习经历|resume|project|experience)?\s*[:：,，-]*\s*",
-    re.IGNORECASE,
-)
+FIELD_ONLY_LABEL_RE = compiled_agent_pattern("editing.field_only_label")
+CONTENT_LABEL_RE = compiled_agent_pattern("editing.content_label")
+MIXED_FIELD_LABEL_RE = compiled_agent_pattern("editing.mixed_field_label")
+REQUEST_PREFIX_RE = compiled_agent_pattern("editing.request_prefix")
 
 
 def _resume_sections(resume: dict[str, Any]) -> list[dict[str, Any]]:
@@ -385,7 +367,7 @@ def _normalize_edit_operation(
         value = operation.get("value")
         if (
             path.startswith("basic.")
-            and path[6:] in BASIC_EDIT_FIELDS
+            and path[6:] in AGENT_WRITABLE_BASIC_FIELDS
             and isinstance(value, str)
         ):
             return {"type": "replace_field", "path": path, "value": value}
@@ -569,8 +551,12 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
 
     if operation_type == "replace_field":
         path = _model_string(operation.get("path"))
+        if is_pii_basic_path(path):
+            return "replace_field cannot edit hidden personal fields."
         if not path.startswith("basic.") or path[6:] not in BASIC_EDIT_FIELDS:
             return "replace_field requires path basic.<writableField>."
+        if path[6:] not in AGENT_WRITABLE_BASIC_FIELDS:
+            return "replace_field can only edit basic.headline or basic.summary."
         if not isinstance(operation.get("value"), str):
             return "replace_field requires a string value."
 

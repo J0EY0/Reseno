@@ -27,7 +27,7 @@ export type ResumeTemplateId = string
 export type WorkspaceView = 'resume' | 'templates' | 'trash' | 'models' | 'settings'
 export type AgentResponseLanguage = 'follow' | 'zh' | 'en'
 export type AgentBehaviorMode = 'balanced' | 'strict' | 'aggressive'
-export type AgentConfirmationMode = 'always' | 'lowRiskAuto' | 'suggestOnly'
+export type AgentConfirmationMode = 'always' | 'suggestOnly'
 
 export interface CustomField {
   id: string

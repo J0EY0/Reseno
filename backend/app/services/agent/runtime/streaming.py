@@ -23,6 +23,7 @@ from app.services.llm_client import (
 from ..compat import get_agent_api
 from ..editing import _string_list
 from ..localization import agent_text
+from ..parsing_patterns import agent_patterns
 from .context import AgentRunAborted, AgentRuntimeContext
 from .loop import async_iter_agent_tool_call_loop
 from .messages import build_agent_messages
@@ -240,6 +241,16 @@ def _message_delta_event(event_name: str, **fields: object) -> str:
     )
 
 
+def _tool_stream_event(event_name: str, tool: dict[str, object]) -> str:
+    return _sse_event(
+        event_name,
+        {
+            "type": event_name,
+            "tool": tool,
+        },
+    )
+
+
 class _StreamDone:
     """Sentinel used when a sync stream is exhausted."""
 
@@ -302,15 +313,7 @@ def _visible_loop_text(text: str | None) -> str:
     if not text:
         return ""
 
-    blocked_prefixes = (
-        "thought:",
-        "reasoning:",
-        "action:",
-        "observation:",
-        "工具:",
-        "工具名:",
-        "字段路径:",
-    )
+    blocked_prefixes = agent_patterns("streaming.blocked_visible_loop_prefixes")
     lines = []
     for raw_line in text.strip().splitlines():
         line = raw_line.strip()
@@ -493,6 +496,8 @@ async def async_stream_agent_response(
     reasoning_parts: list[str] = []
     timeline_parts: list[AgentTimelinePart] = []
     tool_part_ids: dict[str, str] = {}
+    started_tool_ids: set[str] = set()
+    completed_tool_ids: set[str] = set()
 
     try:
         runner = None
@@ -521,6 +526,25 @@ async def async_stream_agent_response(
                 terminal_loop_text = terminal_loop_text or event.terminal
                 continue
             if event.kind == "tools":
+                tool_payloads = [
+                    tool.model_dump(mode="json", by_alias=True)
+                    for tool in event.tools or []
+                ]
+                for tool_payload in tool_payloads:
+                    tool_id = str(tool_payload.get("id") or "")
+                    if not tool_id:
+                        continue
+                    if tool_id not in started_tool_ids:
+                        started_tool_ids.add(tool_id)
+                        yield _tool_stream_event("tool_start", tool_payload)
+                    yield _tool_stream_event("tool_delta", tool_payload)
+                    state = str(tool_payload.get("state") or "")
+                    if (
+                        state.startswith("output-")
+                        and tool_id not in completed_tool_ids
+                    ):
+                        completed_tool_ids.add(tool_id)
+                        yield _tool_stream_event("tool_done", tool_payload)
                 new_tool_ids = [
                     tool.id
                     for tool in event.tools or []
@@ -536,10 +560,7 @@ async def async_stream_agent_response(
                 yield _message_delta_event(
                     "tools",
                     text="".join(raw_parts),
-                    tools=[
-                        tool.model_dump(mode="json", by_alias=True)
-                        for tool in event.tools or []
-                    ],
+                    tools=tool_payloads,
                     timeline=_timeline_payload(timeline_parts),
                 )
                 continue
@@ -656,6 +677,13 @@ async def async_stream_agent_response(
         return
     except LlmRequestError as exc:
         message = _model_error_message(request, config, exc)
+        yield _sse_event(
+            "error",
+            {
+                "type": "error",
+                "error": _llm_error_detail(exc) or "Agent request failed.",
+            },
+        )
         yield _sse_event(
             "message_delta",
             {

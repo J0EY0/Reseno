@@ -1,4 +1,5 @@
 import type { AppMessages } from '@/i18n'
+import languagePatterns from '@/lib/language-patterns.json'
 import { stripRichText } from '@/lib/rich-text'
 import type {
   KeywordMatch,
@@ -9,46 +10,8 @@ import type {
   SectionLayout,
 } from '@/types/resume'
 
-const latinStopWords = new Set([
-  'about',
-  'after',
-  'also',
-  'and',
-  'build',
-  'for',
-  'from',
-  'into',
-  'role',
-  'strong',
-  'that',
-  'the',
-  'their',
-  'this',
-  'with',
-  'your',
-  'our',
-  'platform',
-  'needs',
-  'need',
-  'team',
-  'work',
-])
-
-const chineseStopWords = new Set([
-  '负责',
-  '相关',
-  '以及',
-  '能够',
-  '需要',
-  '具有',
-  '良好',
-  '参与',
-  '协作',
-  '工作',
-  '进行',
-  '项目',
-  '岗位',
-])
+const latinStopWords = new Set(languagePatterns.keywordStopWords.latin)
+const cjkStopWords = new Set(languagePatterns.keywordStopWords.cjk)
 
 export function createId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
@@ -155,7 +118,7 @@ function extractKeywords(text: string) {
   const chineseMatches =
     text
       .match(/[\u4e00-\u9fff]{2,8}/g)
-      ?.filter((token) => !chineseStopWords.has(token)) ?? []
+      ?.filter((token) => !cjkStopWords.has(token)) ?? []
 
   return Array.from(new Set([...normalizedLatin, ...chineseMatches]))
 }

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import type { AppMessages, Locale } from '@/i18n'
+import type { AppMessages } from '@/i18n'
 import { getInitials, getSectionTitle, hasItemContent } from '@/lib/resume'
 import {
   isRichTextEmpty,
@@ -32,7 +32,6 @@ import type {
 } from '@/types/resume'
 
 interface ResumePreviewProps {
-  locale: Locale
   t: AppMessages
   resume: ResumeData
   fontFamily: ResumeFontFamily
@@ -126,8 +125,8 @@ function parsePixelValue(value: string) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function getFallbackName(locale: Locale) {
-  return locale === 'zh' ? '姓名' : 'Your Name'
+function getFallbackName(t: AppMessages) {
+  return t.resumePreviewFallbackName
 }
 
 function getContactItems(basic: ResumeBasicInfo) {
@@ -208,7 +207,7 @@ function createDiffLookup(diffs: ResumeDraftDiff[]) {
   return { sectionDiffById, itemDiffById, summaryDiff }
 }
 
-function getAvatarPlaceholderLabel(src: string) {
+function getAvatarPlaceholderLabel(src: string, fallbackLabel: string) {
   if (!src.startsWith('data:image/svg+xml')) {
     return null
   }
@@ -220,7 +219,7 @@ function getAvatarPlaceholderLabel(src: string) {
       return null
     }
 
-    return decoded.match(/data-placeholder-label="([^"]*)"/)?.[1] ?? '照片'
+    return decoded.match(/data-placeholder-label="([^"]*)"/)?.[1] ?? fallbackLabel
   } catch {
     return null
   }
@@ -229,11 +228,13 @@ function getAvatarPlaceholderLabel(src: string) {
 function AvatarPreview({
   basic,
   layout,
+  t,
   className,
   imageClassName,
 }: {
   basic: ResumeBasicInfo
   layout: ResumeTemplateLayout
+  t: AppMessages
   className: string
   imageClassName?: string
 }) {
@@ -241,7 +242,10 @@ function AvatarPreview({
     return null
   }
 
-  const placeholderLabel = getAvatarPlaceholderLabel(basic.avatar)
+  const placeholderLabel = getAvatarPlaceholderLabel(
+    basic.avatar,
+    t.resumePreviewAvatarPlaceholder,
+  )
   const isPlaceholder = Boolean(placeholderLabel)
   const placeholderBorderColor =
     layout.avatarBorderWidth > 0
@@ -518,14 +522,12 @@ function ContactLine({
 }
 
 function StandardBasicInfo({
-  locale,
   t,
   basic,
   settings,
   layout,
   summaryDiff,
 }: {
-  locale: Locale
   t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
@@ -542,6 +544,7 @@ function StandardBasicInfo({
     <AvatarPreview
       basic={basic}
       layout={layout}
+      t={t}
       className={cn(
         shouldFloatSideAvatar &&
           (avatarPosition === 'left'
@@ -566,7 +569,7 @@ function StandardBasicInfo({
           fontSize: `${settings.nameScale}em`,
         }}
       >
-        {basic.name || getFallbackName(locale)}
+        {basic.name || getFallbackName(t)}
       </h1>
       {basic.headline ? (
         <p
@@ -648,14 +651,12 @@ function StandardBasicInfo({
 }
 
 function SidebarBasicInfo({
-  locale,
   t,
   basic,
   settings,
   layout,
   summaryDiff,
 }: {
-  locale: Locale
   t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
@@ -672,6 +673,7 @@ function SidebarBasicInfo({
       <AvatarPreview
         basic={basic}
         layout={layout}
+        t={t}
         className={cn(
           'mx-auto bg-white/10',
           layout.avatarShape === 'circle' ? 'size-[108px]' : 'h-[118px] w-[96px]',
@@ -683,7 +685,7 @@ function SidebarBasicInfo({
           className="font-semibold tracking-[-0.03em]"
           style={{ fontSize: `${settings.nameScale}em` }}
         >
-          {basic.name || getFallbackName(locale)}
+          {basic.name || getFallbackName(t)}
         </h1>
         {basic.headline ? (
           <p className="text-white/75" style={{ fontSize: `${settings.bodyScale}em` }}>
@@ -695,7 +697,7 @@ function SidebarBasicInfo({
       {contactItems.length > 0 ? (
         <div className="grid gap-2">
           <p className="font-semibold" style={{ fontSize: `${settings.sectionTitleScale}em` }}>
-            {locale === 'zh' ? '联系方式' : 'Contact'}
+            {t.resumePreviewContactTitle}
           </p>
           <div
             className="grid gap-1.5 text-white/90"
@@ -714,7 +716,7 @@ function SidebarBasicInfo({
       {basic.summary ? (
         <div className="grid gap-2">
           <p className="font-semibold" style={{ fontSize: `${settings.sectionTitleScale}em` }}>
-            {locale === 'zh' ? '个人简介' : 'Summary'}
+            {t.resumePreviewSummaryTitle}
           </p>
           <p
             className={cn('text-white/80', getDiffClassName(summaryDiff))}
@@ -1315,7 +1317,6 @@ function calculateResumePagination({
 }
 
 export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(function ResumePreview({
-  locale,
   t,
   resume,
   fontFamily,
@@ -1448,7 +1449,6 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
     fontFamily,
     fontSize,
     isSidebarLayout,
-    locale,
     resume,
     settings,
     standardContentHeightMm,
@@ -1468,7 +1468,6 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
       <div className="relative z-10" data-resume-flow-content="true">
         {includeBasicInfo ? (
           <StandardBasicInfo
-            locale={locale}
             t={t}
             basic={resume.basic}
             settings={settings}
@@ -1512,7 +1511,6 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
             data-resume-flow-content="true"
           >
             <SidebarBasicInfo
-              locale={locale}
               t={t}
               basic={resume.basic}
               settings={settings}

@@ -134,8 +134,8 @@ export function SettingsPanel({
   const [isPasswordSubmitting, setIsPasswordSubmitting] = useState(false);
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
   const languageItems: Array<{ value: Locale; label: string }> = [
-    { value: "zh", label: "中文" },
-    { value: "en", label: "EN" },
+    { value: "zh", label: t.languageChinese },
+    { value: "en", label: t.languageEnglish },
   ];
 
   const themeItems: Array<{
@@ -158,7 +158,6 @@ export function SettingsPanel({
     label: string;
   }> = [
     { value: "always", label: t.agentConfirmationAlways },
-    { value: "lowRiskAuto", label: t.agentConfirmationLowRiskAuto },
     { value: "suggestOnly", label: t.agentConfirmationSuggestOnly },
   ];
 
@@ -167,8 +166,8 @@ export function SettingsPanel({
     label: string;
   }> = [
     { value: "follow", label: t.followSystemLanguage },
-    { value: "zh", label: "中文" },
-    { value: "en", label: "EN" },
+    { value: "zh", label: t.languageChinese },
+    { value: "en", label: t.languageEnglish },
   ];
 
   const isSiteTab = activeTab === "site";

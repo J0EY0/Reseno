@@ -775,7 +775,7 @@ type AgentSettings = {
   defaultModelId: string
   responseLanguage: "follow" | "zh" | "en"
   behaviorMode: "balanced" | "strict" | "aggressive"
-  confirmationMode: "always" | "lowRiskAuto" | "suggestOnly"
+  confirmationMode: "always" | "suggestOnly"
 }
 ```
 

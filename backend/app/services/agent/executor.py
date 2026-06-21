@@ -16,6 +16,9 @@ from .editing import _string_list
 from .integrations import JD_URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .localization import agent_text, section_label
 from .models import EditPlanStep, JobReference, ResumeAnalysis
+from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
+from .policy import AgentTaskIntent, infer_agent_task_intent
+from .privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_text
 
 
 def _current_prompt(request: AgentChatRequest) -> str:
@@ -62,19 +65,29 @@ def _active_resume(request: AgentChatRequest) -> dict[str, Any]:
     return request.resume
 
 
-def _file_content_excerpt(file: dict[str, Any]) -> str:
+def _file_content_excerpt(
+    file: dict[str, Any],
+    *,
+    hidden_terms: tuple[str, ...] = (),
+) -> str:
     """Return text content supplied with a user attachment."""
 
     content = file.get("content")
-    return _compact_text(content) if isinstance(content, str) else ""
+    if not isinstance(content, str):
+        return ""
+    return _compact_text(sanitize_agent_text(content, hidden_terms=hidden_terms))
 
 
-def _agent_file_context(files: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _agent_file_context(
+    files: list[dict[str, Any]],
+    *,
+    hidden_terms: tuple[str, ...] = (),
+) -> list[dict[str, str]]:
     """Build the text-only attachment context sent to the model."""
 
     file_context: list[dict[str, str]] = []
     for file in files:
-        excerpt = _file_content_excerpt(file)
+        excerpt = _file_content_excerpt(file, hidden_terms=hidden_terms)
         if not excerpt:
             continue
 
@@ -98,12 +111,9 @@ def _visible_plan_steps(request: AgentChatRequest) -> list[str]:
     has_jd_context = bool(
         request.job_brief.strip()
         or JD_URL_PATTERN.search(prompt)
-        or "jd" in prompt
-        or "岗位" in prompt
-        or "job" in prompt
-        or "role" in prompt
+        or matches_agent_pattern(prompt, "visible_plan.job_context")
     )
-    asks_export = "pdf" in prompt or "导出" in prompt or "export" in prompt
+    asks_export = matches_agent_pattern(prompt, "visible_plan.export")
 
     steps = [agent_text(request.locale, "plan.review_resume")]
     if has_jd_context:
@@ -154,6 +164,11 @@ class AgentPlanExecutor:
     def __init__(self, request: AgentChatRequest) -> None:
         self.request = request
         self.resume = _active_resume(request)
+        self.hidden_terms = resume_hidden_terms(self.resume)
+        self.visible_resume = sanitize_agent_resume(
+            self.resume,
+            hidden_terms=self.hidden_terms,
+        )
         self.is_zh = request.locale == "zh"
         self.prompt = _current_prompt(request)
 
@@ -215,14 +230,21 @@ class AgentPlanExecutor:
             else self.request.job_brief.strip()[:260]
             or self.prompt.replace(url, "").strip()[:260]
         )
+        source_excerpt = web_reference.excerpt if web_reference else ""
         return JobReference(
             mode="url",
             role=role,
             query="",
             url=url,
-            excerpt=excerpt,
-            source_title=web_reference.title if web_reference else "",
-            source_excerpt=web_reference.excerpt if web_reference else "",
+            excerpt=sanitize_agent_text(excerpt, hidden_terms=self.hidden_terms),
+            source_title=sanitize_agent_text(
+                web_reference.title if web_reference else "",
+                hidden_terms=self.hidden_terms,
+            ),
+            source_excerpt=sanitize_agent_text(
+                source_excerpt,
+                hidden_terms=self.hidden_terms,
+            ),
             tool_state="output-available" if web_reference else "output-error",
             tool_error=None
             if web_reference
@@ -258,9 +280,15 @@ class AgentPlanExecutor:
             role=role,
             query=query,
             url=source_url,
-            excerpt=excerpt,
-            source_title=source_title,
-            source_excerpt=source_excerpt,
+            excerpt=sanitize_agent_text(excerpt, hidden_terms=self.hidden_terms),
+            source_title=sanitize_agent_text(
+                source_title,
+                hidden_terms=self.hidden_terms,
+            ),
+            source_excerpt=sanitize_agent_text(
+                source_excerpt,
+                hidden_terms=self.hidden_terms,
+            ),
             tool_state="output-error" if search_error else "output-available",
             tool_error=search_error,
             result_count=result_count,
@@ -281,7 +309,7 @@ class AgentPlanExecutor:
                 if role:
                     return role
 
-        basic = self.resume.get("basic")
+        basic = self.visible_resume.get("basic")
         if isinstance(basic, dict):
             headline = basic.get("headline")
             if isinstance(headline, str) and headline.strip():
@@ -292,38 +320,20 @@ class AgentPlanExecutor:
     def zh_role_patterns(self) -> list[str]:
         """Return conservative Chinese patterns for explicit target roles."""
 
-        return [
-            (
-                r"(?:应聘|目标|投递|申请)(?:的)?(?:岗位|职位)?"
-                r"(?:是|为|:|：|\s)+([^\n，。,.；;]{2,40})"
-            ),
-            r"(?:岗位|职位)(?:是|为|:|：|\s)+([^\n，。,.；;]{2,40})",
-            r"(?:应聘|投递|申请)([^\n，。,.；;]{2,40}?)(?:岗位|职位)",
-        ]
+        return list(agent_patterns("role.explicit", locale="zh"))
 
     def en_role_patterns(self) -> list[str]:
         """Return conservative English patterns for explicit target roles."""
 
-        return [
-            (
-                r"(?:target\s+)?(?:role|position)\s*"
-                r"(?:is|as|:|-)?\s+([^\n,.]{2,40})"
-            ),
-            r"(?:applying|apply)\s+(?:for|to)\s+(?:a|an|the)?\s*([^\n,.]{2,40})",
-            (
-                r"(frontend|backend|full[- ]?stack|data|machine learning|product)"
-                r"\s+engineer"
-            ),
-        ]
+        return list(agent_patterns("role.explicit", locale="en"))
 
     def clean_inferred_role(self, value: str) -> str:
         """Remove connective words that are not part of the target role."""
 
         role = value.strip()
-        role = re.sub(r"^(?:的)?(?:岗位|职位)?(?:是|为|:|：|\s)+", "", role)
-        role = re.sub(r"^(?:role|position)\s+(?:is|as)\s+", "", role, flags=re.I)
+        role = re.sub(agent_pattern("role.cleanup_prefix"), "", role, flags=re.I)
         role = re.split(
-            r"(?:\s+请|\s+帮我|\s+优化|\s+修改|\s+调整|，|。|,|；|;)",
+            agent_pattern("role.trailing_context"),
             role,
             maxsplit=1,
         )[0]
@@ -332,9 +342,9 @@ class AgentPlanExecutor:
     def analyze_resume(self) -> ResumeAnalysis:
         """Extract only the resume facts needed for planning."""
 
-        basic = self.resume.get("basic")
+        basic = self.visible_resume.get("basic")
         basic_data = basic if isinstance(basic, dict) else {}
-        sections_value = self.resume.get("sections")
+        sections_value = self.visible_resume.get("sections")
         sections = sections_value if isinstance(sections_value, list) else []
         normalized_sections: list[dict[str, object]] = []
         empty_section_ids: list[str] = []
@@ -359,11 +369,9 @@ class AgentPlanExecutor:
                 empty_section_ids.append(section_id)
 
         title = "resume"
-        for key in ("name", "headline"):
-            value = basic_data.get(key)
-            if isinstance(value, str) and value.strip():
-                title = value.strip()
-                break
+        headline = basic_data.get("headline")
+        if isinstance(headline, str) and headline.strip():
+            title = headline.strip()
 
         summary_value = basic_data.get("summary")
         summary = summary_value.strip() if isinstance(summary_value, str) else ""
@@ -389,21 +397,11 @@ class AgentPlanExecutor:
         """Create readable, conservative plan steps from user intent."""
 
         prompt = self.prompt.lower()
-        wants_add = bool(
-            re.search(r"新增|添加|补充|add|insert|create|项目|project", prompt),
-        )
-        wants_delete = bool(
-            re.search(r"删除|移除|去掉|delete|remove", prompt),
-        )
-        wants_reorder = bool(
-            re.search(r"顺序|排序|前置|调整模块|reorder|order|move", prompt),
-        )
-        wants_summary = bool(
-            re.search(r"简介|summary|概述|profile|优化|润色|rewrite", prompt),
-        )
-        wants_bullet = bool(
-            re.search(r"经历|项目|bullet|量化|impact|experience", prompt),
-        )
+        wants_add = matches_agent_pattern(prompt, "plan.add")
+        wants_delete = matches_agent_pattern(prompt, "plan.delete")
+        wants_reorder = matches_agent_pattern(prompt, "plan.reorder")
+        wants_summary = matches_agent_pattern(prompt, "plan.summary")
+        wants_bullet = matches_agent_pattern(prompt, "plan.bullet")
         plan: list[EditPlanStep] = []
 
         if not self.has_editable_resume_content(analysis):
@@ -656,49 +654,53 @@ class AgentPlanExecutor:
                 return match.group(1).strip(" ，。；;,")[:limit]
             return ""
 
-        stop_labels = (
-            r"项目名称|项目名|项目|时间|日期|周期|角色|职位|岗位|技术栈|技术|"
-            r"背景|描述|简介|工作内容|职责|负责|结果|成果|影响|"
-            r"project(?:\s+name)?|time|date|period|role|position|tech stack|"
-            r"stack|description|context|responsibility|action|result|impact"
-        )
+        stop_labels = agent_pattern("project.stop_labels")
         title = labeled_value(
-            r"项目名称|项目名|project(?:\s+name)?",
+            agent_pattern("project.title_labels"),
             stop_labels,
             60,
         )
         if not title:
-            title = labeled_value(r"项目|project", stop_labels, 60)
-        subtitle = labeled_value(r"角色|职位|岗位|role|position", stop_labels, 60)
-        meta = labeled_value(r"技术栈|技术|tech stack|stack", stop_labels, 120)
+            title = labeled_value(
+                agent_pattern("project.fallback_title_labels"),
+                stop_labels,
+                60,
+            )
+        subtitle = labeled_value(
+            agent_pattern("project.subtitle_labels"),
+            stop_labels,
+            60,
+        )
+        meta = labeled_value(agent_pattern("project.meta_labels"), stop_labels, 120)
 
         period_match = re.search(
-            r"((?:20\d{2})[./-]\d{1,2}\s*(?:-|–|—|至|到)\s*(?:20\d{2})?[./-]?\d{0,2})",
+            agent_pattern("project.period_range"),
             text,
         )
         if period_match:
             period = period_match.group(1).strip()
         else:
-            period = labeled_value(r"时间|日期|周期|time|date|period", stop_labels, 60)
+            period = labeled_value(
+                agent_pattern("project.period_labels"),
+                stop_labels,
+                60,
+            )
 
         cleaned = re.sub(
-            r"^(?:帮我|请|麻烦)?(?:修改|优化|润色|新增|添加|补充|生成)?"
-            r"(?:我的|这段|以下)?(?:简历|项目经历|项目)?[:：,，\s]*",
+            agent_pattern("project.request_prefix"),
             "",
             text,
             flags=re.IGNORECASE,
         ).strip()
         description = labeled_value(
-            r"背景|描述|简介|description|context",
+            agent_pattern("project.description_labels"),
             stop_labels,
             120,
         )
 
         parts = [
             re.sub(
-                r"^(?:工作内容|职责|负责内容|行动|方案|结果|成果|影响|要点|"
-                r"responsibility|action|solution|result|impact|highlight)"
-                r"[:：]\s*",
+                agent_pattern("project.content_label_prefix"),
                 "",
                 part.strip(" -•\t"),
                 flags=re.IGNORECASE,
@@ -713,9 +715,7 @@ class AgentPlanExecutor:
             if value
         }
         field_label_pattern = re.compile(
-            r"^(?:项目名称|项目名|项目|时间|日期|周期|角色|职位|岗位|技术栈|技术|"
-            r"背景|描述|简介|project(?:\s+name)?|time|date|period|role|"
-            r"position|tech stack|stack|description|context)[:：]",
+            agent_pattern("project.field_label_prefix"),
             flags=re.IGNORECASE,
         )
         highlights: list[str] = []
@@ -725,8 +725,7 @@ class AgentPlanExecutor:
                 continue
             if field_label_pattern.search(part):
                 responsibility_match = re.search(
-                    r"(?:工作内容|职责|负责内容|responsibility|action)[:：]\s*(.+)"
-                    r"|(?:^|\s)(负责\s+.+)$",
+                    agent_pattern("project.responsibility_value"),
                     part,
                     flags=re.IGNORECASE,
                 )
@@ -879,19 +878,22 @@ class AgentPlanExecutor:
         self,
         job_reference: JobReference,
         tool_id: str | None = None,
+        tool_name: str | None = None,
     ) -> AgentToolInvocation:
         """Return the completed JD fetch/search tool invocation."""
 
-        jd_tool_type = (
-            "tool-jd_url_fetch"
-            if job_reference.mode == "url"
-            else "tool-jd_reference_search"
+        default_tool_name = (
+            "jd_url_fetch" if job_reference.mode == "url" else "jd_reference_search"
         )
+        resolved_tool_name = tool_name or default_tool_name
+        jd_tool_type = f"tool-{resolved_tool_name}"
         jd_input = (
             {"url": job_reference.url}
             if job_reference.mode == "url"
             else {"query": job_reference.query, "language": self.request.locale}
         )
+        if resolved_tool_name.startswith("web_"):
+            jd_input["purpose"] = "jd"
         jd_output = {
             "mode": job_reference.mode,
             "role": job_reference.role,
@@ -904,9 +906,7 @@ class AgentPlanExecutor:
         return AgentToolInvocation(
             id=tool_id or f"tool-{uuid4().hex[:8]}",
             type=jd_tool_type,
-            title=(
-                "jd_url_fetch" if job_reference.mode == "url" else "jd_reference_search"
-            ),
+            title=resolved_tool_name,
             state=job_reference.tool_state,
             input=jd_input,
             output=jd_output,
@@ -1156,6 +1156,12 @@ class AgentPlanExecutor:
                 "response.blocked.text",
                 detail=detail,
             )
+
+        if (
+            not edits
+            and infer_agent_task_intent(self.request) == AgentTaskIntent.EXPLAIN_DRAFT
+        ):
+            return agent_text(self.request.locale, "response.explain_draft")
 
         if not edits:
             return agent_text(self.request.locale, "response.no_edits")

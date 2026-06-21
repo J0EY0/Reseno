@@ -43,9 +43,7 @@ export function normalizeAgentSettings(
         ? raw.behaviorMode
         : defaults.behaviorMode,
     confirmationMode:
-      raw.confirmationMode === 'lowRiskAuto' ||
-      raw.confirmationMode === 'suggestOnly' ||
-      raw.confirmationMode === 'always'
+      raw.confirmationMode === 'suggestOnly' || raw.confirmationMode === 'always'
         ? raw.confirmationMode
         : defaults.confirmationMode,
   }

@@ -15,6 +15,7 @@ from ..executor import (
     _current_prompt,
 )
 from ..localization import agent_text
+from ..privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_value
 from ..prompts import (
     EDIT_OPERATION_GUIDES,
     FINAL_RESPONSE_PROMPTS,
@@ -87,13 +88,15 @@ def _agent_payload(
     draft: AgentChatMessage | None = None,
     system_content: str,
 ) -> dict[str, Any]:
+    active_resume = _active_resume(request)
+    hidden_terms = resume_hidden_terms(active_resume)
     payload = {
         "responseLanguage": _locale_name(request),
         "userPrompt": _current_prompt(request),
         "jobBrief": request.job_brief,
-        "files": _agent_file_context(request.files),
+        "files": _agent_file_context(request.files, hidden_terms=hidden_terms),
         "keywordMatch": request.keyword_match,
-        "resume": _active_resume(request),
+        "resume": sanitize_agent_resume(active_resume, hidden_terms=hidden_terms),
         "agentSettings": _visible_agent_settings(request),
         "conversationDepth": _conversation_depth(request),
     }
@@ -120,14 +123,19 @@ def _agent_payload(
     payload["conversation"] = conversation_payload["conversation"]
     payload["conversationContext"] = conversation_payload["conversationContext"]
 
-    return payload
+    return sanitize_agent_value(payload, hidden_terms=hidden_terms)
 
 
 def _visible_agent_settings(request: AgentChatRequest) -> dict[str, Any]:
+    confirmation_mode = request.settings.get("confirmationMode")
     return {
         "responseLanguage": request.settings.get("responseLanguage", "follow"),
         "behaviorMode": request.settings.get("behaviorMode", "balanced"),
-        "confirmationMode": request.settings.get("confirmationMode", "always"),
+        "confirmationMode": (
+            confirmation_mode
+            if confirmation_mode in {"always", "suggestOnly"}
+            else "always"
+        ),
     }
 
 
@@ -584,10 +592,10 @@ def _compact_resume_outline(resume: Any) -> dict[str, Any]:
 
     return {
         "basic": {
-            "name": _string_value(basic_data.get("name")),
             "headline": _string_value(basic_data.get("headline")),
             "hasSummary": bool(_string_value(basic_data.get("summary"))),
         },
+        "basicFieldStatus": sanitize_agent_resume(resume).get("basicFieldStatus", {}),
         "sectionCount": len(sections),
         "sections": [_compact_section_outline(section) for section in sections],
     }

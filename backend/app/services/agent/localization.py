@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-DEFAULT_LOCALE = "en"
-
+from app.agent_locales import (
+    DEFAULT_AGENT_LOCALE,
+    SUPPORTED_AGENT_LOCALES,
+    normalize_agent_locale,
+)
 
 TEXT: dict[str, dict[str, str]] = {
     "en": {
@@ -44,7 +47,40 @@ TEXT: dict[str, dict[str, str]] = {
         "error.split_item_missing_args": (
             "split_item requires sectionId, itemId, first, and second."
         ),
+        "error.tool_blocked_by_policy": (
+            "This tool is not available for the current agent task."
+        ),
+        "error.tool_blocked_clarify_only": (
+            "This turn needs clarification before tools can modify the resume."
+        ),
+        "error.tool_blocked_read_only": (
+            "This turn is read-only, so draft-editing tools are disabled."
+        ),
+        "error.tool_blocked_suggest_only": (
+            "Suggestion-only mode disables draft-editing tools."
+        ),
+        "error.tool_requires_pending_draft": (
+            "This request needs an existing pending draft first."
+        ),
+        "error.tool_requires_delete_intent": (
+            "Delete operations require an explicit delete request from the user."
+        ),
+        "error.tool_requires_reorder_intent": (
+            "Move or reorder operations require an explicit reorder request."
+        ),
         "error.unknown_tool": "Unknown tool: {name}",
+        "error.web_fetch_failed": (
+            "The URL could not be fetched. Ask the user to paste the content or "
+            "provide another link."
+        ),
+        "error.web_fetch_purpose_required": (
+            "web_fetch requires an explicit purpose for the URL."
+        ),
+        "error.web_fetch_url_missing": "web_fetch requires a user-provided URL.",
+        "error.web_search_failed": "web_search did not return usable context.",
+        "error.web_search_purpose_required": (
+            "web_search requires an explicit reference purpose."
+        ),
         "jd.search.fallback_excerpt": (
             "No JD URL was detected. The agent will search a JD reference from "
             "the target role and response language."
@@ -98,6 +134,10 @@ TEXT: dict[str, dict[str, str]] = {
             "I cannot produce a reliable previewable draft yet. {detail} "
             "Provide the target field, section, item, or real experience details "
             "before continuing."
+        ),
+        "response.explain_draft": (
+            "I inspected the pending draft changes and summarized what changed. "
+            "No new resume edits were created in this explanation turn."
         ),
         "response.no_edits": (
             "I completed the tool checks needed for this turn, but did not "
@@ -213,7 +253,29 @@ TEXT: dict[str, dict[str, str]] = {
         "error.split_item_missing_args": (
             "split_item 需要 sectionId、itemId、first 和 second。"
         ),
+        "error.tool_blocked_by_policy": "当前 Agent 任务不允许调用这个工具。",
+        "error.tool_blocked_clarify_only": (
+            "本轮需要先澄清信息，不能调用会修改简历的工具。"
+        ),
+        "error.tool_blocked_read_only": (
+            "本轮是只读任务，已禁用草稿编辑工具。"
+        ),
+        "error.tool_blocked_suggest_only": (
+            "仅给建议模式下已禁用草稿编辑工具。"
+        ),
+        "error.tool_requires_pending_draft": "这个请求需要先有一个待确认草稿。",
+        "error.tool_requires_delete_intent": "删除操作需要用户明确提出删除请求。",
+        "error.tool_requires_reorder_intent": (
+            "移动或排序操作需要用户明确提出调整顺序请求。"
+        ),
         "error.unknown_tool": "未知工具：{name}",
+        "error.web_fetch_failed": (
+            "无法抓取这个链接。请让用户粘贴内容，或提供另一个可访问链接。"
+        ),
+        "error.web_fetch_purpose_required": "web_fetch 需要明确说明链接用途。",
+        "error.web_fetch_url_missing": "web_fetch 需要用户提供 URL。",
+        "error.web_search_failed": "web_search 没有返回可用参考内容。",
+        "error.web_search_purpose_required": "web_search 需要明确说明搜索用途。",
         "jd.search.fallback_excerpt": (
             "未检测到 JD URL。已尝试按目标岗位和中文语境搜索 JD 参考。"
         ),
@@ -251,6 +313,10 @@ TEXT: dict[str, dict[str, str]] = {
         "response.blocked.text": (
             "我还不能生成可靠的可预览修改草稿。{detail} "
             "请补充目标字段、模块、条目或真实经历后再继续。"
+        ),
+        "response.explain_draft": (
+            "我已读取当前待确认草稿的修改差异，并会围绕这些差异进行解释；"
+            "本轮不会生成新的简历修改。"
         ),
         "response.no_edits": (
             "我已完成本轮需要的工具检查，但没有生成可安全预览的修改草稿。"
@@ -340,9 +406,16 @@ SECTION_LABEL_KEYS = {
 def agent_text(locale: str, key: str, **values: Any) -> str:
     """Return one localized agent runtime string."""
 
-    bundle = TEXT.get(locale) or TEXT[DEFAULT_LOCALE]
-    template = bundle.get(key) or TEXT[DEFAULT_LOCALE].get(key) or key
+    safe_locale = normalize_agent_locale(locale)
+    bundle = TEXT.get(safe_locale) or TEXT[DEFAULT_AGENT_LOCALE]
+    template = bundle.get(key) or TEXT[DEFAULT_AGENT_LOCALE].get(key) or key
     return template.format(**values) if values else template
+
+
+def supported_agent_text_locales() -> tuple[str, ...]:
+    """Return locales expected to exist in the agent localization table."""
+
+    return SUPPORTED_AGENT_LOCALES
 
 
 def section_label(kind: object, locale: str) -> str:

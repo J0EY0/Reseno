@@ -34,7 +34,7 @@ DEFAULT_AGENT_SETTINGS = {
 }
 AGENT_RESPONSE_LANGUAGES = {"follow", "zh", "en"}
 AGENT_BEHAVIOR_MODES = {"balanced", "strict", "aggressive"}
-AGENT_CONFIRMATION_MODES = {"always", "lowRiskAuto", "suggestOnly"}
+AGENT_CONFIRMATION_MODES = {"always", "suggestOnly"}
 
 
 def normalize_locale(locale: str) -> str:

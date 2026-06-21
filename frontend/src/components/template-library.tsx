@@ -17,7 +17,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { AppMessages, Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
 import { createId, getSectionTitle } from "@/lib/resume";
 import { cn } from "@/lib/utils";
@@ -243,7 +243,6 @@ function createTemplateImageElement(
 
 export function TemplateLibrary({
   mode,
-  locale,
   t,
   resume,
   templates,
@@ -260,7 +259,6 @@ export function TemplateLibrary({
   onRemovePreviewSection,
 }: {
   mode: "gallery" | "editor";
-  locale: Locale;
   t: AppMessages;
   resume: ResumeData;
   templates: ResumeTemplateDefinition[];
@@ -609,7 +607,6 @@ export function TemplateLibrary({
                             style={{ width: "210mm", height: "297mm" }}
                           >
                             <ResumePreview
-                              locale={locale}
                               t={t}
                               resume={resume}
                               fontFamily={item.typography.fontFamily}
@@ -701,7 +698,7 @@ export function TemplateLibrary({
         <GalleryPagination
           currentPage={safeCurrentPage}
           totalPages={totalPages}
-          locale={locale}
+          t={t}
           onPageChange={setCurrentPage}
         />
       </section>
@@ -788,9 +785,10 @@ export function TemplateLibrary({
                   variant="outline"
                   className="shrink-0 rounded-xl border-transparent bg-background/85 px-2.5 py-1.5 text-xs font-medium text-muted-foreground shadow-none ring-1 ring-border/35"
                 >
-                  {locale === "zh"
-                    ? `${previewModuleCount} 个模块`
-                    : `${previewModuleCount} modules`}
+                  {t.templatePreviewModuleCount.replace(
+                    "{count}",
+                    String(previewModuleCount),
+                  )}
                 </Badge>
               }
             >

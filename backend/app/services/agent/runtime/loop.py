@@ -19,7 +19,12 @@ from app.services.llm_client import (
 from ..compat import get_agent_api
 from ..editing import _react_max_iterations
 from ..executor import AgentPlanExecutor
-from ..tools import AGENT_TOOL_SCHEMAS, AgentToolRunner, running_model_tool
+from ..policy import capability_policy_for_request
+from ..tools import (
+    AgentToolRunner,
+    agent_tool_schemas_for_names,
+    running_model_tool,
+)
 from .context import AgentRuntimeContext
 from .messages import build_agent_messages
 
@@ -68,6 +73,7 @@ async def _async_tool_call_response(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
     runtime: AgentRuntimeContext,
+    tool_schemas: list[dict[str, Any]],
 ) -> LlmToolCallResponse:
     """Return a tool-call response, preserving tests that monkeypatch sync calls."""
 
@@ -78,7 +84,7 @@ async def _async_tool_call_response(
             sync_tool_call,
             config,
             messages,
-            AGENT_TOOL_SCHEMAS,
+            tool_schemas,
             timeout_seconds=config.timeout_seconds,
         )
 
@@ -86,7 +92,7 @@ async def _async_tool_call_response(
         async_complete_chat_tool_call,
         config,
         messages,
-        AGENT_TOOL_SCHEMAS,
+        tool_schemas,
         timeout_seconds=config.timeout_seconds,
     )
 
@@ -103,10 +109,17 @@ async def async_iter_agent_tool_call_loop(
     runner = AgentToolRunner(executor)
     messages = build_agent_messages(request, config, mode="tools")
     max_iterations = _react_max_iterations(request)
+    policy = capability_policy_for_request(request)
+    tool_schemas = agent_tool_schemas_for_names(policy.allowed_tools)
 
     for _ in range(max_iterations):
         await runtime.checkpoint()
-        response = await _async_tool_call_response(config, messages, runtime)
+        response = await _async_tool_call_response(
+            config,
+            messages,
+            runtime,
+            tool_schemas,
+        )
         if not response.tool_calls:
             if response.content:
                 runner.terminal_text = response.content

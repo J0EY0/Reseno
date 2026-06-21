@@ -219,7 +219,6 @@ export function PdfExportRenderer() {
       data-pdf-ready={isReady ? "true" : "false"}
     >
       <ResumePreview
-        locale={state.locale}
         t={state.messages}
         resume={state.resumeItem.resume}
         fontFamily={state.typography.fontFamily}

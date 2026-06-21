@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx
 
+from ..parsing_patterns import agent_patterns
+
 JD_URL_PATTERN = re.compile(r"https?://[^\s)>\"]+")
 WEB_USER_AGENT = "ResuMate/1.0 (+https://resumate.local)"
 FETCH_MAX_BYTES = 220_000
@@ -187,14 +189,7 @@ def _is_useful_web_excerpt(value: str) -> bool:
     if len(text) < 80:
         return False
 
-    blocked_markers = (
-        "正在加载中",
-        "enable javascript",
-        "please enable javascript",
-        "access denied",
-        "captcha",
-        "安全验证",
-    )
+    blocked_markers = agent_patterns("web.blocked_excerpt_markers")
     return not any(marker in text for marker in blocked_markers)
 
 

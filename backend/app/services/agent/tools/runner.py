@@ -25,6 +25,15 @@ from ..integrations import (
 )
 from ..localization import agent_text
 from ..models import EditPlanStep, JobReference, ResumeAnalysis
+from ..policy import (
+    ALL_KNOWN_TOOL_NAMES,
+    capability_policy_for_request,
+    has_explicit_delete_intent,
+    has_explicit_merge_intent,
+    has_explicit_reorder_intent,
+    tool_block_reason,
+)
+from ..privacy import sanitize_agent_resume, sanitize_agent_value
 from ..runtime.context import AgentRuntimeContext
 from .structured import (
     classify_skills_entries,
@@ -35,12 +44,21 @@ from .structured import (
     split_item_entries,
 )
 
+WEB_FETCH_PURPOSES = {
+    "jd",
+    "project_reference",
+    "portfolio_reference",
+    "company_reference",
+}
+WEB_SEARCH_PURPOSES = {"jd", "target_context", "company_reference"}
+
 
 class AgentToolRunner:
     """Execute only the tools explicitly selected by the model."""
 
     def __init__(self, executor: AgentPlanExecutor) -> None:
         self.executor = executor
+        self.policy = capability_policy_for_request(executor.request)
         self.draft_resume = deepcopy(executor.resume)
         self.job_reference: JobReference | None = None
         self.analysis: ResumeAnalysis | None = None
@@ -60,10 +78,16 @@ class AgentToolRunner:
     ) -> tuple[AgentToolInvocation, dict[str, Any]]:
         """Execute a model-selected tool through the async runtime."""
 
-        if tool_call.name == "jd_url_fetch":
-            tool = await self.run_jd_url_fetch_async(tool_call, runtime)
-        elif tool_call.name == "jd_reference_search":
-            tool = await self.run_jd_reference_search_async(tool_call, runtime)
+        blocked_tool = self.blocked_tool_call(tool_call)
+        if blocked_tool:
+            if tool_call.name != "finish":
+                self.tools.append(blocked_tool)
+            return blocked_tool, self.tool_result(blocked_tool)
+
+        if tool_call.name in {"jd_url_fetch", "web_fetch"}:
+            tool = await self.run_web_fetch_async(tool_call, runtime)
+        elif tool_call.name in {"jd_reference_search", "web_search"}:
+            tool = await self.run_web_search_async(tool_call, runtime)
         else:
             return await runtime.run_sync(self._run_local_tool, tool_call)
 
@@ -75,6 +99,12 @@ class AgentToolRunner:
         tool_call: LlmToolCall,
     ) -> tuple[AgentToolInvocation, dict[str, Any]]:
         """Run a CPU/local-memory tool without network I/O."""
+
+        blocked_tool = self.blocked_tool_call(tool_call)
+        if blocked_tool:
+            if tool_call.name != "finish":
+                self.tools.append(blocked_tool)
+            return blocked_tool, self.tool_result(blocked_tool)
 
         handlers = {
             "resume_analysis": self.run_resume_analysis,
@@ -96,6 +126,26 @@ class AgentToolRunner:
             self.tools.append(tool)
         return tool, self.tool_result(tool)
 
+    def blocked_tool_call(self, tool_call: LlmToolCall) -> AgentToolInvocation | None:
+        """Return a policy error for known tools outside this turn's capability."""
+
+        if tool_call.name not in ALL_KNOWN_TOOL_NAMES:
+            return None
+
+        reason_key = tool_block_reason(self.policy, tool_call.name)
+        if not reason_key:
+            return None
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-error",
+            input=tool_call.arguments,
+            output={"blocked": True},
+            errorText=agent_text(self.executor.request.locale, reason_key),
+        )
+
     def unknown_tool(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Return a model-observable error for unsupported tool names."""
 
@@ -112,30 +162,29 @@ class AgentToolRunner:
             ),
         )
 
-    async def run_jd_url_fetch_async(
+    async def run_web_fetch_async(
         self,
         tool_call: LlmToolCall,
         runtime: AgentRuntimeContext,
     ) -> AgentToolInvocation:
-        """Fetch the JD URL chosen by the model using an async HTTP client."""
+        """Fetch a user-provided URL for an explicit reference purpose."""
+
+        purpose = str(tool_call.arguments.get("purpose") or "").strip()
+        if tool_call.name == "jd_url_fetch":
+            purpose = "jd"
+        elif purpose not in WEB_FETCH_PURPOSES:
+            return self.web_tool_error(
+                tool_call,
+                "error.web_fetch_purpose_required",
+            )
 
         url = str(tool_call.arguments.get("url") or "").strip()
-        if not url:
+        if not url and purpose == "jd":
             match = JD_URL_PATTERN.search(self.executor.prompt)
             url = match.group(0).rstrip(".,;，。；") if match else ""
 
         if not url:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type="tool-jd_url_fetch",
-                title="jd_url_fetch",
-                state="output-error",
-                input=tool_call.arguments,
-                errorText=agent_text(
-                    self.executor.request.locale,
-                    "error.jd_url_missing",
-                ),
-            )
+            return self.web_tool_error(tool_call, "error.web_fetch_url_missing")
 
         agent_api = get_agent_api()
         if agent_api._fetch_web_reference is not _fetch_web_reference:
@@ -149,19 +198,54 @@ class AgentToolRunner:
                 url,
             )
 
+        if purpose != "jd":
+            if not web_reference:
+                return self.web_tool_error(tool_call, "error.web_fetch_failed")
+
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type=f"tool-{tool_call.name}",
+                title=tool_call.name,
+                state="output-available",
+                input={"url": url, "purpose": purpose},
+                output=sanitize_agent_value(
+                    {
+                        "purpose": purpose,
+                        "url": url,
+                        "title": web_reference.title,
+                        "excerpt": web_reference.excerpt,
+                        "canSupportResumeFacts": True,
+                    },
+                    hidden_terms=self.executor.hidden_terms,
+                ),
+            )
+
         self.job_reference = self.executor.build_url_job_reference_from_web(
             url,
             self.executor.infer_target_role(),
             web_reference,
         )
-        return self.executor.build_jd_tool(self.job_reference, tool_call.id)
+        return self.executor.build_jd_tool(
+            self.job_reference,
+            tool_call.id,
+            tool_name=tool_call.name if tool_call.name == "web_fetch" else None,
+        )
 
-    async def run_jd_reference_search_async(
+    async def run_web_search_async(
         self,
         tool_call: LlmToolCall,
         runtime: AgentRuntimeContext,
     ) -> AgentToolInvocation:
-        """Search the JD query chosen by the model using an async HTTP client."""
+        """Search external reference context chosen by the model."""
+
+        purpose = str(tool_call.arguments.get("purpose") or "").strip()
+        if tool_call.name == "jd_reference_search":
+            purpose = "jd"
+        elif purpose not in WEB_SEARCH_PURPOSES:
+            return self.web_tool_error(
+                tool_call,
+                "error.web_search_purpose_required",
+            )
 
         role = str(tool_call.arguments.get("role") or "").strip()
         if not role:
@@ -183,6 +267,50 @@ class AgentToolRunner:
                 query,
             )
 
+        if purpose != "jd":
+            if search_error or not search_result:
+                return AgentToolInvocation(
+                    id=tool_call.id,
+                    type=f"tool-{tool_call.name}",
+                    title=tool_call.name,
+                    state="output-error",
+                    input={
+                        "query": query,
+                        "purpose": purpose,
+                        "language": self.executor.request.locale,
+                    },
+                    output={"resultCount": result_count},
+                    errorText=search_error
+                    or agent_text(
+                        self.executor.request.locale,
+                        "error.web_search_failed",
+                    ),
+                )
+
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type=f"tool-{tool_call.name}",
+                title=tool_call.name,
+                state="output-available",
+                input={
+                    "query": query,
+                    "purpose": purpose,
+                    "language": self.executor.request.locale,
+                },
+                output=sanitize_agent_value(
+                    {
+                        "purpose": purpose,
+                        "query": query,
+                        "resultCount": result_count,
+                        "url": search_result.url,
+                        "title": search_result.title,
+                        "excerpt": search_result.excerpt,
+                        "personalExperienceEvidence": False,
+                    },
+                    hidden_terms=self.executor.hidden_terms,
+                ),
+            )
+
         self.job_reference = self.executor.build_search_job_reference_from_result(
             role,
             query,
@@ -190,7 +318,28 @@ class AgentToolRunner:
             result_count,
             search_error,
         )
-        return self.executor.build_jd_tool(self.job_reference, tool_call.id)
+        return self.executor.build_jd_tool(
+            self.job_reference,
+            tool_call.id,
+            tool_name=tool_call.name if tool_call.name == "web_search" else None,
+        )
+
+    def web_tool_error(
+        self,
+        tool_call: LlmToolCall,
+        message_key: str,
+    ) -> AgentToolInvocation:
+        """Return a consistent web tool validation error."""
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-error",
+            input=tool_call.arguments,
+            output={"blocked": True},
+            errorText=agent_text(self.executor.request.locale, message_key),
+        )
 
     def run_resume_analysis(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Analyze the current resume only when the model asks for it."""
@@ -207,7 +356,13 @@ class AgentToolRunner:
             title="resume_lookup",
             state="output-available",
             input=tool_call.arguments,
-            output=lookup_resume(self.draft_resume, tool_call.arguments),
+            output=lookup_resume(
+                sanitize_agent_resume(
+                    self.draft_resume,
+                    hidden_terms=self.executor.hidden_terms,
+                ),
+                tool_call.arguments,
+            ),
         )
 
     def run_draft_diff_summary(self, tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -219,7 +374,10 @@ class AgentToolRunner:
             title="draft_diff_summary",
             state="output-available",
             input=tool_call.arguments,
-            output=draft_diff_summary(self.executor.request.draft_state, self.edits),
+            output=sanitize_agent_value(
+                draft_diff_summary(self.executor.request.draft_state, self.edits),
+                hidden_terms=self.executor.hidden_terms,
+            ),
         )
 
     def run_edit_plan(self, tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -261,6 +419,13 @@ class AgentToolRunner:
         """Execute model-supplied draft edits or a previously created plan."""
 
         explicit_edits_value = tool_call.arguments.get("edits")
+        guard_error = self.edit_entries_policy_error(
+            explicit_edits_value,
+            tool_call.name,
+        )
+        if guard_error:
+            return self.guarded_edit_tool_error(tool_call, guard_error)
+
         model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
             explicit_edits_value,
@@ -422,6 +587,10 @@ class AgentToolRunner:
                 errorText=error,
             )
 
+        guard_error = self.edit_entries_policy_error(entries, tool_call.name)
+        if guard_error:
+            return self.guarded_edit_tool_error(tool_call, guard_error)
+
         model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
             entries,
@@ -473,6 +642,57 @@ class AgentToolRunner:
             output=output,
         )
 
+    def edit_entries_policy_error(
+        self,
+        entries: object,
+        tool_name: str,
+    ) -> str | None:
+        """Return a guard error key for implicit destructive/reorder edits."""
+
+        if not isinstance(entries, list):
+            return None
+
+        prompt = self.executor.prompt
+        delete_allowed = has_explicit_delete_intent(prompt)
+        reorder_allowed = has_explicit_reorder_intent(prompt)
+        merge_allowed = has_explicit_merge_intent(prompt)
+        if tool_name == "edit_move_item" and not reorder_allowed:
+            return "error.tool_requires_reorder_intent"
+
+        for entry in entries:
+            operation = entry.get("operation") if isinstance(entry, dict) else None
+            if not isinstance(operation, dict):
+                continue
+
+            operation_type = str(operation.get("type") or "")
+            if operation_type in {"reorder_sections", "reorder_items"}:
+                if not reorder_allowed:
+                    return "error.tool_requires_reorder_intent"
+            if operation_type in {"delete_section", "delete_item"}:
+                if tool_name == "edit_move_item" and reorder_allowed:
+                    continue
+                if tool_name == "edit_merge_items" and merge_allowed:
+                    continue
+                if not delete_allowed:
+                    return "error.tool_requires_delete_intent"
+
+        return None
+
+    def guarded_edit_tool_error(
+        self,
+        tool_call: LlmToolCall,
+        message_key: str,
+    ) -> AgentToolInvocation:
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-error",
+            input=tool_call.arguments,
+            output={"blocked": True},
+            errorText=agent_text(self.executor.request.locale, message_key),
+        )
+
     def run_finish(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Record the model's explicit ReAct finish action without showing it."""
 
@@ -517,9 +737,18 @@ class AgentToolRunner:
         return {
             "title": tool.title,
             "state": tool.state,
-            "input": tool.input,
-            "output": tool.output,
-            "errorText": tool.error_text,
+            "input": sanitize_agent_value(
+                tool.input,
+                hidden_terms=self.executor.hidden_terms,
+            ),
+            "output": sanitize_agent_value(
+                tool.output,
+                hidden_terms=self.executor.hidden_terms,
+            ),
+            "errorText": sanitize_agent_value(
+                tool.error_text,
+                hidden_terms=self.executor.hidden_terms,
+            ),
         }
 
     def build_message(self, message_id: str | None = None) -> AgentChatMessage:

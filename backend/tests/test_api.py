@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -6,14 +7,44 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app import config as app_config
+from app.agent_locales import DEFAULT_AGENT_LOCALE, SUPPORTED_AGENT_LOCALES
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchResult
-from app.services.agent.editing.operations import _model_edit_suggestions
+from app.services.agent.editing.operations import (
+    _model_edit_suggestions,
+    _model_edit_suggestions_with_diagnostics,
+)
 from app.services.agent.executor import AgentPlanExecutor
-from app.services.agent.prompts import EDIT_OPERATION_GUIDE, EDIT_OPERATION_GUIDES
+from app.services.agent.intent_patterns import (
+    INTENT_PATTERN_FILE,
+    matches_intent_pattern,
+)
+from app.services.agent.localization import (
+    TEXT as AGENT_LOCALIZED_TEXT,
+)
+from app.services.agent.localization import (
+    supported_agent_text_locales,
+)
+from app.services.agent.parsing_patterns import (
+    PARSING_PATTERN_FILE,
+    matches_agent_pattern,
+)
+from app.services.agent.policy import (
+    AgentCapabilityMode,
+    AgentTaskIntent,
+    capability_policy_for_request,
+)
+from app.services.agent.prompts import (
+    EDIT_OPERATION_GUIDE,
+    EDIT_OPERATION_GUIDES,
+    FINAL_RESPONSE_PROMPTS,
+    STREAMING_FINAL_RESPONSE_PROMPTS,
+    SYSTEM_PROMPTS,
+)
+from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent.section_registry import (
     SECTION_DEFAULT_LAYOUTS,
@@ -1382,6 +1413,81 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     )
 
 
+def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
+    config = AgentLlmConfig(
+        client_id="llm-test",
+        name="Test Model",
+        provider="openai",
+        model="gpt-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=None,
+        timeout_seconds=60,
+        system_prompt="",
+        context_window_tokens=4096,
+    )
+    request = AgentChatRequest(
+        prompt="帮王小明优化简介，电话 13800138000",
+        messages=[
+            {
+                "id": "agent-user-1",
+                "role": "user",
+                "text": "王小明的邮箱是 xiaoming@example.com",
+            },
+        ],
+        conversation=[],
+        files=[
+            {
+                "filename": "note.txt",
+                "mediaType": "text/plain",
+                "content": "联系人 王小明，邮箱 xiaoming@example.com，电话 13800138000",
+            },
+        ],
+        locale="zh",
+        resume={
+            "basic": {
+                "name": "王小明",
+                "headline": "前端工程师",
+                "phone": "13800138000",
+                "email": "xiaoming@example.com",
+                "location": "上海",
+                "avatar": "https://avatar.example/wxm.png",
+                "summary": (
+                    "前端工程师，可通过 xiaoming@example.com 或 13800138000 联系。"
+                ),
+            },
+            "sections": [],
+        },
+        jobBrief="候选人邮箱 xiaoming@example.com",
+        keywordMatch={"matched": [], "missing": [], "score": 0},
+        appliedActions=[],
+        modelConfig=None,
+        settings={},
+    )
+
+    messages = build_agent_messages(request, config, mode="tools")
+    content = messages[1]["content"]
+    payload = json.loads(content)
+
+    assert "王小明" not in content
+    assert "13800138000" not in content
+    assert "xiaoming@example.com" not in content
+    assert "https://avatar.example/wxm.png" not in content
+    assert payload["resume"]["basic"]["name"] == ""
+    assert payload["resume"]["basic"]["phone"] == ""
+    assert payload["resume"]["basic"]["email"] == ""
+    assert payload["resume"]["basic"]["avatar"] == ""
+    assert payload["resume"]["basicFieldStatus"]["name"] == "present"
+    assert payload["resume"]["basicFieldStatus"]["phone"] == "present"
+    assert payload["resume"]["basicFieldStatus"]["email"] == "present"
+    assert "[redacted_email]" in payload["resume"]["basic"]["summary"]
+    assert "[redacted_phone]" in payload["resume"]["basic"]["summary"]
+    assert "[redacted_email]" in payload["files"][0]["excerpt"]
+    assert "[redacted_phone]" in payload["files"][0]["excerpt"]
+
+
 def test_agent_executor_analyzes_pending_draft_resume() -> None:
     request = AgentChatRequest(
         prompt="继续修改刚才的草稿",
@@ -1433,7 +1539,11 @@ def test_agent_resume_lookup_finds_target_item() -> None:
         prompt="缩短 ResuMate 项目",
         locale="zh",
         resume={
-            "basic": {"name": "王小明"},
+            "basic": {
+                "name": "王小明",
+                "phone": "13800138000",
+                "email": "xiaoming@example.com",
+            },
             "sections": [
                 {
                     "id": "project",
@@ -1446,7 +1556,9 @@ def test_agent_resume_lookup_finds_target_item() -> None:
                             "subtitle": "AI 简历编辑器",
                             "meta": "React",
                             "period": "2026",
-                            "description": "支持多轮 Agent 草稿编辑。",
+                            "description": (
+                                "支持多轮 Agent 草稿编辑，联系 13800138000。"
+                            ),
                             "highlights": ["实现可预览、可撤回的简历草稿。"],
                         },
                     ],
@@ -1465,6 +1577,83 @@ def test_agent_resume_lookup_finds_target_item() -> None:
     assert result["output"]["itemCount"] == 1
     assert result["output"]["items"][0]["id"] == "project-1"
     assert result["output"]["items"][0]["sectionId"] == "project"
+    output_text = json.dumps(result["output"], ensure_ascii=False)
+    assert "13800138000" not in output_text
+    assert "xiaoming@example.com" not in output_text
+    assert "[redacted_phone]" in output_text
+
+
+def test_agent_draft_diff_summary_hides_personal_identity() -> None:
+    request = AgentChatRequest(
+        prompt="解释刚才的草稿",
+        locale="zh",
+        resume={
+            "basic": {
+                "name": "王小明",
+                "phone": "13800138000",
+                "email": "xiaoming@example.com",
+            },
+            "sections": [],
+        },
+        draftState={
+            "id": "draft-current",
+            "status": "pending",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "editCount": 1,
+            "edits": [
+                {
+                    "id": "edit-summary",
+                    "title": "优化王小明简介",
+                    "target": "basic.summary",
+                    "replacement": "联系 xiaoming@example.com 或 13800138000。",
+                },
+            ],
+            "diffs": [
+                {
+                    "id": "diff-summary",
+                    "label": "王小明简介",
+                    "before": "邮箱 xiaoming@example.com",
+                    "after": "电话 13800138000",
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    _, result = runner._run_local_tool(
+        tool_call("call-diff", "draft_diff_summary", {}),
+    )
+
+    output_text = json.dumps(result["output"], ensure_ascii=False)
+    assert "王小明" not in output_text
+    assert "13800138000" not in output_text
+    assert "xiaoming@example.com" not in output_text
+    assert "[redacted_name]" in output_text
+    assert "[redacted_phone]" in output_text
+    assert "[redacted_email]" in output_text
+
+
+def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
+    edits, rejected = _model_edit_suggestions_with_diagnostics(
+        {"basic": {"email": "xiaoming@example.com"}, "sections": []},
+        [
+            {
+                "title": "更新邮箱",
+                "target": "basic.email",
+                "reason": "用户要求修改邮箱。",
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.email",
+                    "value": "new@example.com",
+                },
+            },
+        ],
+        locale="zh",
+    )
+
+    assert edits == []
+    assert len(rejected) == 1
+    assert "hidden personal fields" in rejected[0]["reason"]
 
 
 def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
@@ -2080,6 +2269,446 @@ def test_agent_fine_grained_tools_are_registered() -> None:
     } <= tool_names
 
 
+def _assert_language_pattern_schema(
+    patterns: dict[str, object],
+    *,
+    locale_required_groups: set[str],
+) -> None:
+    allowed_keys = {"common", *SUPPORTED_AGENT_LOCALES}
+
+    for group_name, group in patterns.items():
+        assert isinstance(group, dict), group_name
+        assert set(group) <= allowed_keys, group_name
+
+        for key, value in group.items():
+            assert isinstance(key, str)
+            assert isinstance(value, list), f"{group_name}.{key}"
+            assert all(isinstance(item, str) and item for item in value)
+
+        if group_name in locale_required_groups:
+            for locale in SUPPORTED_AGENT_LOCALES:
+                assert group.get(locale), f"{group_name}.{locale}"
+
+
+def test_agent_supported_locales_cover_resources() -> None:
+    supported = set(SUPPORTED_AGENT_LOCALES)
+
+    assert DEFAULT_AGENT_LOCALE in supported
+    assert set(supported_agent_text_locales()) == supported
+    assert set(AGENT_LOCALIZED_TEXT) == supported
+    assert set(SYSTEM_PROMPTS) == supported
+    assert set(FINAL_RESPONSE_PROMPTS) == supported
+    assert set(STREAMING_FINAL_RESPONSE_PROMPTS) == supported
+    assert set(EDIT_OPERATION_GUIDES) == supported
+    assert EDIT_OPERATION_GUIDE == EDIT_OPERATION_GUIDES[DEFAULT_AGENT_LOCALE]
+
+
+def test_agent_intent_patterns_are_externalized() -> None:
+    patterns = json.loads(INTENT_PATTERN_FILE.read_text(encoding="utf-8"))
+    required_groups = {
+        "explain_draft",
+        "previous_draft_reference",
+        "draft_reference",
+        "draft_revision",
+        "job_request",
+        "analyze_resume",
+        "edit_resume",
+        "delete_intent",
+        "reorder_intent",
+        "merge_intent",
+    }
+    policy_source = (
+        Path(__file__).parents[1] / "app/services/agent/policy.py"
+    ).read_text(encoding="utf-8")
+
+    assert required_groups <= set(patterns)
+    _assert_language_pattern_schema(
+        patterns,
+        locale_required_groups=required_groups,
+    )
+    assert matches_intent_pattern("帮我生成一个项目经历草稿", "edit_resume")
+    assert matches_intent_pattern("把刚才的草稿再短一点", "draft_revision")
+    assert matches_intent_pattern("rewrite my summary", "edit_resume", locale="en")
+    assert not matches_intent_pattern("rewrite my summary", "edit_resume", locale="zh")
+    assert not re.search(r"[\u4e00-\u9fff]", policy_source)
+
+
+def test_agent_parsing_patterns_are_externalized() -> None:
+    patterns = json.loads(PARSING_PATTERN_FILE.read_text(encoding="utf-8"))
+    required_groups = {
+        "visible_plan.job_context",
+        "visible_plan.export",
+        "role.explicit",
+        "role.cleanup_prefix",
+        "role.trailing_context",
+        "plan.add",
+        "plan.delete",
+        "plan.reorder",
+        "plan.summary",
+        "plan.bullet",
+        "project.stop_labels",
+        "editing.field_only_label",
+        "streaming.blocked_visible_loop_prefixes",
+        "web.blocked_excerpt_markers",
+    }
+    source_paths = [
+        Path(__file__).parents[1] / "app/services/agent/executor.py",
+        Path(__file__).parents[1] / "app/services/agent/editing/operations.py",
+        Path(__file__).parents[1] / "app/services/agent/runtime/streaming.py",
+        Path(__file__).parents[1] / "app/services/agent/integrations/web.py",
+    ]
+
+    assert required_groups <= set(patterns)
+    _assert_language_pattern_schema(
+        patterns,
+        locale_required_groups={
+            "visible_plan.job_context",
+            "visible_plan.export",
+            "role.explicit",
+            "plan.add",
+            "plan.delete",
+            "plan.reorder",
+            "plan.summary",
+            "plan.bullet",
+            "project.stop_labels",
+        },
+    )
+    assert matches_agent_pattern("目标岗位是前端工程师", "visible_plan.job_context")
+    assert matches_agent_pattern("导出 PDF", "visible_plan.export")
+    assert matches_agent_pattern("export", "visible_plan.export", locale="en")
+    assert not matches_agent_pattern("export", "visible_plan.export", locale="zh")
+    for source_path in source_paths:
+        source = source_path.read_text(encoding="utf-8")
+        assert not re.search(r"[\u4e00-\u9fff]", source)
+
+
+def test_agent_web_tools_replace_legacy_jd_schema_names() -> None:
+    tool_names = {
+        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
+    }
+
+    assert {"web_fetch", "web_search"} <= tool_names
+    assert "jd_url_fetch" not in tool_names
+    assert "jd_reference_search" not in tool_names
+
+
+def test_agent_web_fetch_requires_explicit_purpose() -> None:
+    request = AgentChatRequest(
+        prompt="参考这个链接 https://example.test/project",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = asyncio.run(
+        runner.run(
+            tool_call(
+                "call-web-fetch",
+                "web_fetch",
+                {"url": "https://example.test/project"},
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.title == "web_fetch"
+    assert tool.state == "output-error"
+    assert result["output"]["blocked"] is True
+    assert "链接用途" in tool.error_text
+
+
+def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    request = AgentChatRequest(
+        prompt="帮我了解 AI application developer 岗位",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = asyncio.run(
+        runner.run(
+            tool_call(
+                "call-web-search",
+                "web_search",
+                {
+                    "query": "AI application developer responsibilities",
+                    "purpose": "target_context",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.title == "web_search"
+    assert tool.state == "output-available"
+    assert result["output"]["purpose"] == "target_context"
+    assert result["output"]["personalExperienceEvidence"] is False
+
+
+def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
+    request = AgentChatRequest(
+        prompt="优化个人简介",
+        locale="zh",
+        resume={
+            "basic": {"summary": "已有简介"},
+            "sections": [],
+        },
+        settings={"confirmationMode": "suggestOnly"},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "resume_analysis" in schema_names
+    assert "edit_execute" not in schema_names
+
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-execute",
+            "edit_execute",
+            {
+                "edits": [
+                    {
+                        "title": "优化简介",
+                        "target": "basic.summary",
+                        "reason": "用户要求优化。",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.summary",
+                            "value": "新的简介",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["blocked"] is True
+    assert "仅给建议" in tool.error_text
+    assert runner.edits == []
+    assert runner.draft_resume["basic"]["summary"] == "已有简介"
+
+
+def test_agent_explain_draft_policy_allows_diff_summary_only() -> None:
+    request = AgentChatRequest(
+        prompt="解释刚才的草稿改了什么",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+        draftState={
+            "id": "draft-current",
+            "status": "pending",
+            "resume": {"basic": {}, "sections": []},
+            "editCount": 1,
+            "edits": [
+                {
+                    "id": "edit-summary",
+                    "title": "优化简介",
+                    "target": "basic.summary",
+                    "replacement": "新的简介",
+                },
+            ],
+            "diffs": [],
+        },
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.EXPLAIN_DRAFT
+    assert schema_names == {"draft_diff_summary", "finish"}
+
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    diff_tool, _ = runner._run_local_tool(
+        tool_call("call-diff", "draft_diff_summary", {}),
+    )
+    message = runner.build_message()
+    edit_tool, _ = runner._run_local_tool(
+        tool_call(
+            "call-execute",
+            "edit_execute",
+            {
+                "edits": [
+                    {
+                        "title": "不应执行",
+                        "target": "basic.summary",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.summary",
+                            "value": "新的简介",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert diff_tool.state == "output-available"
+    assert "不会生成新的简历修改" in message.text
+    assert edit_tool.state == "output-error"
+    assert "只读任务" in edit_tool.error_text
+    assert runner.edits == []
+
+
+def test_agent_rewrite_draft_requires_pending_draft() -> None:
+    request = AgentChatRequest(
+        prompt="把刚才的草稿再短一点",
+        locale="zh",
+        resume={"basic": {"summary": "已有简介"}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.REWRITE_DRAFT
+    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
+    assert schema_names == {"finish"}
+
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    tool, _ = runner._run_local_tool(
+        tool_call(
+            "call-rewrite",
+            "draft_rewrite",
+            {"edits": [{"operation": {"type": "replace_field"}}]},
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert "待确认草稿" in tool.error_text
+    assert runner.edits == []
+
+
+def test_agent_plain_edit_phrase_does_not_require_pending_draft() -> None:
+    request = AgentChatRequest(
+        prompt="把项目标题改成更像后端工程师",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.EDIT_RESUME
+    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
+    assert "edit_execute" in schema_names
+    assert "draft_rewrite" not in schema_names
+
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-rewrite",
+            "draft_rewrite",
+            {"edits": [{"operation": {"type": "replace_field"}}]},
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["blocked"] is True
+
+
+def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
+    request = AgentChatRequest(
+        prompt="帮我生成一个项目经历草稿",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.EDIT_RESUME
+    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
+    assert "edit_plan" in schema_names
+    assert "edit_execute" in schema_names
+    assert "draft_rewrite" not in schema_names
+
+
+def test_agent_revising_named_draft_requires_pending_draft() -> None:
+    request = AgentChatRequest(
+        prompt="把草稿改短一点",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.REWRITE_DRAFT
+    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
+    assert schema_names == {"finish"}
+
+
+def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
+    request = AgentChatRequest(
+        prompt="这份简历整体怎么样？",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+        keywordMatch={"matched": [], "missing": ["TypeScript"], "score": 0},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.ANALYZE_RESUME
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "resume_analysis" in schema_names
+    assert "edit_execute" not in schema_names
+    assert "web_search" not in schema_names
+
+
+def test_agent_delete_operations_require_explicit_delete_intent() -> None:
+    request = AgentChatRequest(
+        prompt="优化项目经历",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "items": [{"id": "project-1", "title": "ResuMate"}],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-delete",
+            "edit_execute",
+            {
+                "edits": [
+                    {
+                        "title": "删除项目",
+                        "target": "sections.project.items.project-1",
+                        "operation": {
+                            "type": "delete_item",
+                            "sectionId": "project",
+                            "itemId": "project-1",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["blocked"] is True
+    assert "明确提出删除" in tool.error_text
+    assert runner.edits == []
+
+
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
     variants = tool_registry.OPERATION_SCHEMA["oneOf"]
     by_type = {
@@ -2410,7 +3039,7 @@ def test_agent_model_error_does_not_return_llm_tool(
         raise_provider_error,
     )
 
-    _, message = post_agent_chat_stream(
+    body, message = post_agent_chat_stream(
         client,
         {
             "prompt": "你好",
@@ -2430,6 +3059,7 @@ def test_agent_model_error_does_not_return_llm_tool(
 
     assert "调用模型失败" in message["text"]
     assert "provider unavailable" in message["text"]
+    assert "event: error" in body
     assert message["tools"] == []
 
 
@@ -2659,10 +3289,17 @@ def test_agent_chat_streams_tool_and_source_metadata(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "优化个人简介",
-            "message": {"role": "user", "text": "优化个人简介"},
-            "messages": [{"role": "user", "text": "优化个人简介"}],
-            "conversation": [{"role": "user", "text": "优化个人简介"}],
+            "prompt": "针对前端开发工程师岗位优化个人简介",
+            "message": {
+                "role": "user",
+                "text": "针对前端开发工程师岗位优化个人简介",
+            },
+            "messages": [
+                {"role": "user", "text": "针对前端开发工程师岗位优化个人简介"},
+            ],
+            "conversation": [
+                {"role": "user", "text": "针对前端开发工程师岗位优化个人简介"},
+            ],
             "files": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
@@ -2687,6 +3324,9 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "event: text_delta" not in body
     assert "我先分析目标岗位和当前简历" not in body
     assert "event: tools" in body
+    assert "event: tool_start" in body
+    assert "event: tool_delta" in body
+    assert "event: tool_done" in body
     assert '"state":"input-available"' in body
     assert '"state":"output-available"' in body
     assert "event: message_delta" in body

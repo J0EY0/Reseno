@@ -1,0 +1,350 @@
+# ResuMate Agent 可靠性设计记录
+
+日期：2026-06-21
+
+## 目标
+
+ResuMate Agent 的下一阶段目标不是做通用 Agent 平台，而是在现有简历编辑架构上提升可靠性。Agent 的核心产物是一组可预览、可应用、可撤回的简历草稿修改；自然语言回复负责解释修改，而不是替代结构化编辑。
+
+设计参考 pi-agent 的 runtime、harness、工具契约和事件流思路，但不照搬通用插件系统。所有抽象都应服务“更可靠的简历编辑 Agent”。
+
+## 核心原则
+
+1. 编辑结果可靠性优先  
+   所有会改变简历的结果都应落到结构化 `ResumeEditOperation`，并经过统一校验、应用和 observation。
+
+2. 用户确认是最终门槛  
+   Agent 只生成 pending draft 或建议，不自动写回正式简历。第一阶段移除或隐藏“低风险自动应用”。
+
+3. 事实不变，表达增强  
+   Agent 可以职业化包装已有事实，但不能编造经历、公司、项目、技能、指标、时间、职位或成果。第一阶段通过 prompt 约束事实边界，不做复杂事实校验。
+
+4. Prompt 约束事实，系统硬隔离隐私  
+   事实边界先靠 prompt；PII 边界必须由系统保证，包括输入脱敏和写入拒绝。
+
+5. 避免工具膨胀  
+   不为每个小需求拆工具。工具数量和 schema token 都会影响模型选择质量。
+
+## 隐私边界
+
+姓名、手机、邮箱、地址、头像默认完全隐藏，不进入 LLM payload，也不允许被写入。
+
+Agent 只能看到状态：
+
+```json
+{
+  "basicFieldStatus": {
+    "name": "present",
+    "phone": "missing",
+    "email": "invalid",
+    "location": "present",
+    "avatar": "missing"
+  }
+}
+```
+
+`basic.headline` 和 `basic.summary` 属于职业表达，可以读取和编辑；但其中出现的手机号、邮箱等联系方式也需要模式脱敏。
+
+所有读路径都应使用 sanitized resume，包括 prompt payload、`resume_analysis`、`resume_lookup`、`draft_diff_summary`。内部执行 apply 时可以使用真实 draft，但 Tool Guard 必须拒绝 PII path 写入。
+
+GitHub、LinkedIn、作品集等公开链接不按手机/邮箱级别脱敏；但普通请求不自动读取 customFields 中的链接。只有用户本轮明确要求基于该链接作为材料时，才进入 `web_fetch`。
+
+## Task Intent 与编辑 Intent
+
+需要区分两层 intent：
+
+```text
+AgentTaskIntent:
+- answer_advice
+- explain_draft
+- edit_resume
+- rewrite_draft
+- analyze_resume
+- match_jd
+
+EditPlanIntent:
+- rewrite_summary
+- rewrite_item
+- insert_item
+- insert_section
+- move_item
+- split_item
+- merge_items
+- classify_skills
+- delete_item
+- delete_section
+- reorder_items
+- reorder_sections
+```
+
+`AgentTaskIntent` 是后端内部路由策略，不暴露给前端用户协议。前端仍根据事实事件和数据渲染：有没有工具事件、有没有 edits、有没有 message。
+
+`explain_draft` 是顶层只读任务意图，不是 `edit_plan.intent`。它只用于解释 pending draft，必须走 `draft_diff_summary`，不能调用 `edit_plan` 或 `edit_execute`。
+
+## Capability Policy 与 Tool Guard
+
+可靠性不只靠 intent classifier，而是三层：
+
+1. `AgentTaskIntent`：用户这轮大概想做什么。
+2. `CapabilityPolicy`：系统允许这轮做什么。
+3. `Tool Guard`：每次工具执行前的硬拦截。
+
+第一版 policy：
+
+```text
+read_only:
+  允许 resume_lookup, resume_analysis, draft_diff_summary, finish
+  禁止所有写工具
+
+can_draft:
+  允许 read tools, edit_plan, edit_execute, finish
+  根据明显需求开启 move/split/merge/classify 等专项编辑工具
+  禁止 auto apply 和 PII path
+
+can_rewrite_draft:
+  需要 pending draft
+  允许 draft_diff_summary, draft_rewrite, edit_execute, finish
+  禁止从 formal resume 重新生成
+
+clarify_only:
+  只允许 finish 或自然语言澄清
+```
+
+`suggestOnly` 永远映射为 `read_only` 或 `clarify_only`，不能被用户本轮 prompt 覆盖。
+
+`always` 不等于默认可写。它只表示如果生成草稿，必须等待用户确认；是否可写仍由 task intent 决定。
+
+Tool Guard 第一阶段只硬拦系统边界：
+
+- read-only / suggestOnly 下的写工具。
+- rewrite draft 但没有 pending draft。
+- PII path 写入。
+- 删除或大范围重排缺少明确用户意图。
+- `edit_execute` 缺少明确目标字段、sectionId 或 itemId。
+- 未注册工具、未知参数、schema 无效。
+
+不硬拦写作质量、STAR 完整度、JD 匹配度或复杂事实校验。
+
+## 工具设计
+
+第一阶段保留现有细粒度编辑工具，不合并进 `edit_execute.action`。
+
+对模型暴露的写工具可以仍包括：
+
+```text
+edit_execute
+edit_move_item
+edit_split_item
+edit_merge_items
+skills_classify
+draft_rewrite
+```
+
+但代码层必须收敛为共享执行核心：
+
+```text
+write tool -> build edit entries -> validate -> apply -> observations
+```
+
+这样既保留细粒度工具对模型的清晰度，又避免写入逻辑分散。
+
+`ToolSpec` 第一版保持最小：
+
+```python
+ToolSpec(
+    name: str,
+    description: str,
+    schema: dict,
+    mode: "read" | "write" | "control",
+    allowed_policies: set[CapabilityPolicy],
+    requires_pending_draft: bool = False,
+    execute: Callable,
+)
+```
+
+暂不做 hooks、插件、并行策略和复杂 streaming callback。
+
+## `edit_plan` 合同
+
+`edit_plan` 不只是展示文案，而是执行前合同。但第一阶段渐进增强，不一次强制所有字段。
+
+第一阶段强制：
+
+```text
+intent
+target
+reason
+```
+
+兼容现有 `action`。
+
+第一阶段可选收集：
+
+```text
+stepId
+riskLevel
+evidence
+targetContext
+expectedOperationTypes
+```
+
+后续 replay 覆盖稳定后，再对中高风险操作逐步要求 evidence 和 risk。
+
+`evidence` 和 `targetContext` 分开：
+
+- `evidence`：支持用户确实有这些经历、项目、技能。
+- `targetContext`：支持目标岗位希望强调什么。
+
+来源规则：
+
+```text
+resume_lookup -> evidence
+用户本轮输入 / 附件 -> evidence
+web_fetch(project_reference / portfolio_reference, canSupportResumeFacts=true) -> evidence
+web_fetch(jd) -> targetContext
+web_search -> targetContext
+JD -> targetContext
+```
+
+第一阶段记录 evidence，不做强事实校验。
+
+## Web 工具
+
+将现有 JD fetch/search 的底层能力抽成更通用的 web 能力，但保留边界：
+
+```text
+web_fetch:
+  抓取用户本轮明确提供且 purpose 明确的 URL。
+
+web_search:
+  只用于 JD、岗位、行业表达参考，不作为用户经历事实来源。
+```
+
+`web_fetch` 必须声明 `purpose`：
+
+```text
+jd
+project_reference
+portfolio_reference
+company_reference
+```
+
+未知用途 URL 先确认，不直接抓。
+
+`web_fetch` 抓取失败时，不自动转搜索替代；请用户粘贴内容或换链接。
+
+`web_fetch` 输出应包含结构化标记：
+
+```json
+{
+  "title": "...",
+  "url": "...",
+  "purpose": "project_reference",
+  "excerpt": "...",
+  "sourceType": "web_fetch",
+  "canSupportResumeFacts": true
+}
+```
+
+用户明确提供的 GitHub repo、作品集项目页、JD URL 可以进入 sources 并展示完整 URL。
+
+## `explain_draft`
+
+`explain_draft` 由自然语言 prompt 触发，不需要 UI 上的“解释”按钮。
+
+必须调用 `draft_diff_summary`，不能从压缩历史里猜。
+
+输出粒度：
+
+- 按 edit/diff 分组。
+- 说明改了哪里、为什么改、影响范围。
+- 可以给是否建议应用的克制判断。
+- 不展示 raw operation JSON、字段路径、tool 参数或内部 intent/action 名称。
+
+`draft_diff_summary` 后续应支持选择参数：
+
+```json
+{
+  "editId": "edit-xxx",
+  "index": 2,
+  "query": "项目经历"
+}
+```
+
+找不到目标时返回 `selectionError`，由模型向用户确认。
+
+无 pending draft 时，不自动分析正式简历，也不生成新草稿；应 `finish(blocked, missing=["pending_draft"])`。
+
+## Event Stream v2
+
+第一版事件集合保持最小：
+
+```text
+message_start
+message_delta
+message_done
+tool_start
+tool_delta
+tool_done
+edits
+error
+```
+
+不单独暴露 `task_intent`、`policy` 或 `plan_*` 事件。前端 timeline 由事件顺序派生。
+
+## Blocked 出口
+
+`finish(status=blocked)` 是澄清出口。第一版增加可选 `missing` 枚举：
+
+```text
+pending_draft
+draft_edit_target
+resume_target
+user_material
+url_purpose
+explicit_delete_intent
+explicit_reorder_intent
+model_config
+```
+
+## Replay Harness 场景
+
+第一批 replay 场景：
+
+1. `explain_draft_success`  
+   pending draft 存在，用户问第二条改了什么，只调用 `draft_diff_summary`，不调用写工具。
+
+2. `explain_draft_no_pending`  
+   无 pending draft，返回 `finish(blocked, missing=["pending_draft"])`。
+
+3. `suggest_only_blocks_draft`  
+   `suggestOnly` 下用户要求优化，不产生 edits。
+
+4. `pii_hidden_and_write_blocked`  
+   payload 和读工具输出不含 name、phone、email、location；写 PII path 被拒。
+
+5. `rewrite_project_with_lookup`  
+   项目 bullet 改写必须经过 lookup、plan、execute，生成 pending draft。
+
+6. `explicit_web_fetch_project_reference`  
+   用户明确给 GitHub repo 并要求基于项目优化，`web_fetch(project_reference)` 可作为 evidence。
+
+7. `customfield_github_not_auto_fetched`  
+   customFields 有 GitHub URL，但普通优化请求不调用 web_fetch。
+
+8. `unknown_url_purpose_blocked`  
+   用户只发未知 URL，返回 `blocked(url_purpose)`。
+
+9. `delete_requires_explicit_intent`  
+   泛泛“优化结构”不能调用 delete 或 reorder。
+
+10. `draft_rewrite_uses_pending_draft`  
+    继续改刚才草稿时基于 pending draft，不从 formal resume 重来。
+
+## 落地顺序
+
+1. 文档/ADR 固化原则。
+2. 实现 PII sanitized resume。
+3. 引入 ToolSpec 和 active tools。
+4. 接入 AgentTaskIntent、CapabilityPolicy、Tool Guard。
+5. 实现 Event Stream v2 和 replay harness。

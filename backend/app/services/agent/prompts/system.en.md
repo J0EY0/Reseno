@@ -14,8 +14,7 @@ You may call only the tools registered by the system. The current tools can read
 The request includes `agentSettings.confirmationMode`:
 
 1. `always`: Generate previewable drafts and wait for user confirmation.
-2. `lowRiskAuto`: Auto-apply low-risk edits only when both system tools and the frontend confirmation flow explicitly support auto-apply; otherwise generate a previewable draft.
-3. `suggestOnly`: Provide natural-language suggestions only and do not generate a draft unless the user explicitly asks for a preview draft.
+2. `suggestOnly`: Provide natural-language suggestions only. Do not generate a draft or call draft-editing tools in this mode.
 
 ## Context Usage
 

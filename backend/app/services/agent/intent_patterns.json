@@ -1,0 +1,177 @@
+{
+  "explain_draft": {
+    "common": [],
+    "zh": [
+      "解释",
+      "说明",
+      "为什么",
+      "改了什么",
+      "修改了什么",
+      "这(?:个|些)修改",
+      "草稿差异"
+    ],
+    "en": [
+      "explain",
+      "why",
+      "what changed",
+      "draft diff",
+      "summari[sz]e changes"
+    ]
+  },
+  "previous_draft_reference": {
+    "common": [],
+    "zh": [
+      "刚才",
+      "上一版",
+      "上一条",
+      "上次",
+      "这版",
+      "这个版本",
+      "当前草稿",
+      "现有草稿",
+      "已有草稿"
+    ],
+    "en": [
+      "previous",
+      "last version",
+      "current draft",
+      "pending draft"
+    ]
+  },
+  "draft_reference": {
+    "common": [],
+    "zh": [
+      "草稿"
+    ],
+    "en": [
+      "draft"
+    ]
+  },
+  "draft_revision": {
+    "common": [],
+    "zh": [
+      "短一点",
+      "长一点",
+      "改短",
+      "改长",
+      "再改",
+      "继续改",
+      "改成",
+      "换成"
+    ],
+    "en": [
+      "shorter",
+      "longer"
+    ]
+  },
+  "job_request": {
+    "common": [
+      "jd"
+    ],
+    "zh": [
+      "岗位",
+      "职位",
+      "匹配",
+      "投递",
+      "申请",
+      "关键词",
+      "缺失关键词"
+    ],
+    "en": [
+      "job description",
+      "target role",
+      "missing keywords",
+      "keyword match"
+    ]
+  },
+  "analyze_resume": {
+    "common": [],
+    "zh": [
+      "分析",
+      "评价",
+      "建议",
+      "诊断",
+      "怎么样",
+      "如何",
+      "好不好"
+    ],
+    "en": [
+      "review",
+      "analy[sz]e",
+      "advice",
+      "suggest"
+    ]
+  },
+  "edit_resume": {
+    "common": [],
+    "zh": [
+      "修改",
+      "优化",
+      "润色",
+      "改写",
+      "写得",
+      "生成",
+      "新增",
+      "添加",
+      "补充",
+      "补强",
+      "删除",
+      "调整",
+      "移动",
+      "缩短",
+      "精简",
+      "扩写",
+      "更像"
+    ],
+    "en": [
+      "edit",
+      "rewrite",
+      "improve",
+      "add",
+      "insert",
+      "delete",
+      "remove",
+      "reorder"
+    ]
+  },
+  "delete_intent": {
+    "common": [],
+    "zh": [
+      "删除",
+      "移除",
+      "去掉",
+      "删掉"
+    ],
+    "en": [
+      "delete",
+      "remove"
+    ]
+  },
+  "reorder_intent": {
+    "common": [],
+    "zh": [
+      "顺序",
+      "排序",
+      "前置",
+      "后置",
+      "调整模块",
+      "调整顺序",
+      "移动"
+    ],
+    "en": [
+      "move",
+      "reorder",
+      "order",
+      "sort"
+    ]
+  },
+  "merge_intent": {
+    "common": [],
+    "zh": [
+      "合并"
+    ],
+    "en": [
+      "merge"
+    ]
+  }
+}

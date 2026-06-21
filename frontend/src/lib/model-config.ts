@@ -1,4 +1,4 @@
-import type { Locale } from '@/i18n'
+import { getMessagesSync, type Locale } from '@/i18n'
 import {
   DEFAULT_MODEL_PROVIDER_ID,
   getProviderApiUrl,
@@ -26,9 +26,7 @@ export function normalizeMaxTokens(value: unknown) {
 }
 
 function getDefaultSystemPrompt(locale: Locale) {
-  return locale === 'zh'
-    ? '你是 ResuMate 的简历优化助手。输出应简洁、结构化，并优先强化经历中的结果与关键词覆盖。'
-    : "You are ResuMate's resume copilot. Keep suggestions concise, structured, and biased toward quantified impact plus stronger keyword coverage."
+  return getMessagesSync(locale).defaultModelSystemPrompt
 }
 
 export function createDefaultModelConfig(
