@@ -7,7 +7,7 @@ from app.services.llm_client import (
     LlmToolCallResponse,
 )
 
-from .integrations import WebReference, WebSearchResult
+from .integrations import WebReference, WebSearchReference, WebSearchResult
 
 
 class AgentApi(Protocol):
@@ -48,6 +48,18 @@ class AgentApi(Protocol):
         self,
         query: str,
     ) -> Awaitable[tuple[WebSearchResult | None, int, str | None]]: ...
+
+    def _search_web_reference_summary(
+        self,
+        queries: list[str],
+        max_results: int = ...,
+    ) -> WebSearchReference: ...
+
+    def _async_search_web_reference_summary(
+        self,
+        queries: list[str],
+        max_results: int = ...,
+    ) -> Awaitable[WebSearchReference]: ...
 
 
 def get_agent_api() -> AgentApi:

@@ -360,6 +360,7 @@ def move_item_entries(
 
 
 def split_item_entries(
+    resume: dict[str, Any],
     args: dict[str, Any],
     *,
     locale: str,
@@ -378,11 +379,15 @@ def split_item_entries(
     ):
         return [], agent_text(locale, "error.split_item_missing_args")
 
+    section = find_section(resume, section_id)
+    if not section or not find_item(section, item_id):
+        return [], agent_text(locale, "error.split_item_missing_target")
+
     reason = string_arg(args, "reason") or agent_text(
         locale,
         "structured.reason.split_item",
     )
-    second_item = {"id": f"item-agent-split-{uuid4().hex[:8]}", **second}
+    second_item = {**second, "id": f"item-agent-split-{uuid4().hex[:8]}"}
     index = int_arg(args, "index")
 
     insert_operation: dict[str, Any] = {
@@ -415,6 +420,7 @@ def split_item_entries(
 
 
 def merge_item_entries(
+    resume: dict[str, Any],
     args: dict[str, Any],
     *,
     locale: str,
@@ -430,6 +436,13 @@ def merge_item_entries(
             agent_text(locale, "error.merge_items_missing_args"),
         )
 
+    unique_item_ids = list(dict.fromkeys(item_ids))
+    section = find_section(resume, section_id)
+    if len(unique_item_ids) < 2 or not section:
+        return [], agent_text(locale, "error.merge_items_missing_targets")
+    if any(not find_item(section, item_id) for item_id in unique_item_ids):
+        return [], agent_text(locale, "error.merge_items_missing_targets")
+
     reason = string_arg(args, "reason") or agent_text(
         locale,
         "structured.reason.merge_items",
@@ -437,17 +450,17 @@ def merge_item_entries(
     entries = [
         edit_entry(
             agent_text(locale, "structured.title.merge_item_content"),
-            f"sections.{section_id}.items.{item_ids[0]}",
+            f"sections.{section_id}.items.{unique_item_ids[0]}",
             reason,
             {
                 "type": "update_item",
                 "sectionId": section_id,
-                "itemId": item_ids[0],
+                "itemId": unique_item_ids[0],
                 "patch": merged_item,
             },
         ),
     ]
-    for item_id in item_ids[1:]:
+    for item_id in unique_item_ids[1:]:
         entries.append(
             edit_entry(
                 agent_text(locale, "structured.title.delete_merged_item"),

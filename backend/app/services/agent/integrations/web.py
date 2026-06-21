@@ -9,9 +9,16 @@ import httpx
 from ..parsing_patterns import agent_patterns
 
 URL_PATTERN = re.compile(r"https?://[^\s)>\"]+")
-WEB_USER_AGENT = "ResuMate/1.0 (+https://resumate.local)"
+WEB_USER_AGENT = "Mozilla/5.0 (compatible; ResuMate/1.0)"
+WEB_ACCEPT_LANGUAGE = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
 FETCH_MAX_BYTES = 220_000
 SEARCH_MAX_BYTES = 240_000
+SEARCH_ENDPOINTS = (
+    "https://html.duckduckgo.com/html/?q={query}",
+    "https://duckduckgo.com/html/?q={query}",
+)
+MAX_WEB_SEARCH_QUERIES = 5
+MAX_WEB_SEARCH_RESULTS = 10
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,25 @@ class WebSearchResult:
     title: str
     url: str
     excerpt: str
+
+
+@dataclass(frozen=True)
+class WebSearchReference:
+    """Aggregated web search context across one or more queries."""
+
+    query: str
+    results: tuple[WebSearchResult, ...]
+    query_count: int
+    result_count: int
+    error: str | None = None
+
+    @property
+    def primary(self) -> WebSearchResult | None:
+        return self.results[0] if self.results else None
+
+    @property
+    def excerpt(self) -> str:
+        return _compact_text(" ".join(result.excerpt for result in self.results))
 
 
 def _search_result_url(href: str | None) -> str:
@@ -193,11 +219,25 @@ def _is_useful_web_excerpt(value: str) -> bool:
     return not any(marker in text for marker in blocked_markers)
 
 
+def _is_useful_search_snippet(value: str) -> bool:
+    """Return whether a search-result snippet is useful as fallback context."""
+
+    text = _compact_text(value, limit=1_000).lower()
+    if len(text) < 50:
+        return False
+
+    blocked_markers = agent_patterns("web.blocked_excerpt_markers")
+    return not any(marker in text for marker in blocked_markers)
+
+
 def _web_headers(accept: str) -> dict[str, str]:
     """Return headers shared by sync and async web requests."""
 
     return {
         "Accept": accept,
+        "Accept-Language": WEB_ACCEPT_LANGUAGE,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "User-Agent": WEB_USER_AGENT,
     }
 
@@ -283,21 +323,29 @@ def _search_web_results(
 ) -> tuple[list[WebSearchResult], str | None]:
     """Search the web for reference pages and return organic result links."""
 
-    try:
-        with httpx.Client(
-            headers=_web_headers("text/html,*/*;q=0.8"),
-            follow_redirects=True,
-            timeout=timeout,
-        ) as client:
-            response = client.get(f"https://duckduckgo.com/html/?q={quote_plus(query)}")
-            response.raise_for_status()
-    except (httpx.HTTPError, ValueError) as exc:
-        return [], f"Web search request failed: {exc}"
+    last_error: str | None = None
+    with httpx.Client(
+        headers=_web_headers("text/html,*/*;q=0.8"),
+        follow_redirects=True,
+        timeout=timeout,
+    ) as client:
+        for search_url in _search_urls(query):
+            try:
+                response = client.get(search_url)
+                response.raise_for_status()
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = f"Web search request failed: {exc}"
+                continue
 
-    return _parse_search_results(
-        response.content[:SEARCH_MAX_BYTES],
-        response.encoding or "utf-8",
-    )
+            results, parse_error = _parse_search_results(
+                response.content[:SEARCH_MAX_BYTES],
+                response.encoding or "utf-8",
+            )
+            if results:
+                return results, None
+            last_error = parse_error
+
+    return [], last_error or "Web search returned no usable result links."
 
 
 async def _async_search_web_results(
@@ -306,22 +354,34 @@ async def _async_search_web_results(
 ) -> tuple[list[WebSearchResult], str | None]:
     """Search the web for reference pages using an async HTTP client."""
 
-    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
-    try:
-        async with httpx.AsyncClient(
-            headers=_web_headers("text/html,*/*;q=0.8"),
-            follow_redirects=True,
-            timeout=timeout,
-        ) as client:
-            response = await client.get(search_url)
-            response.raise_for_status()
-    except (httpx.HTTPError, ValueError) as exc:
-        return [], f"Web search request failed: {exc}"
+    last_error: str | None = None
+    async with httpx.AsyncClient(
+        headers=_web_headers("text/html,*/*;q=0.8"),
+        follow_redirects=True,
+        timeout=timeout,
+    ) as client:
+        for search_url in _search_urls(query):
+            try:
+                response = await client.get(search_url)
+                response.raise_for_status()
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = f"Web search request failed: {exc}"
+                continue
 
-    return _parse_search_results(
-        response.content[:SEARCH_MAX_BYTES],
-        response.encoding or "utf-8",
-    )
+            results, parse_error = _parse_search_results(
+                response.content[:SEARCH_MAX_BYTES],
+                response.encoding or "utf-8",
+            )
+            if results:
+                return results, None
+            last_error = parse_error
+
+    return [], last_error or "Web search returned no usable result links."
+
+
+def _search_urls(query: str) -> tuple[str, ...]:
+    encoded_query = quote_plus(query)
+    return tuple(endpoint.format(query=encoded_query) for endpoint in SEARCH_ENDPOINTS)
 
 
 def _parse_search_results(
@@ -363,9 +423,11 @@ def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str 
     if error:
         return None, 0, error
 
+    snippet_fallback: WebSearchResult | None = None
     for result in results:
         web_reference = _fetch_web_reference(result.url)
         if not web_reference:
+            snippet_fallback = snippet_fallback or _search_snippet_fallback(result)
             continue
 
         return (
@@ -378,7 +440,40 @@ def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str 
             None,
         )
 
+    if snippet_fallback:
+        return snippet_fallback, len(results), None
+
     return None, len(results), "Search returned links, but no readable page text."
+
+
+def _search_web_reference_results(
+    query: str,
+    max_results: int,
+) -> tuple[list[WebSearchResult], int, str | None]:
+    """Search for reference pages and return multiple readable/snippet results."""
+
+    results, error = _search_web_results(query)
+    if error:
+        return [], 0, error
+
+    references: list[WebSearchResult] = []
+    for result in results:
+        if len(references) >= max_results:
+            break
+
+        web_reference = _fetch_web_reference(result.url)
+        if web_reference:
+            references.append(_web_search_result_from_reference(result, web_reference))
+            continue
+
+        snippet_fallback = _search_snippet_fallback(result)
+        if snippet_fallback:
+            references.append(snippet_fallback)
+
+    if references:
+        return references, len(results), None
+
+    return [], len(results), "Search returned links, but no readable page text."
 
 
 async def _async_search_web_reference(
@@ -390,9 +485,11 @@ async def _async_search_web_reference(
     if error:
         return None, 0, error
 
+    snippet_fallback: WebSearchResult | None = None
     for result in results:
         web_reference = await _async_fetch_web_reference(result.url)
         if not web_reference:
+            snippet_fallback = snippet_fallback or _search_snippet_fallback(result)
             continue
 
         return (
@@ -405,4 +502,163 @@ async def _async_search_web_reference(
             None,
         )
 
+    if snippet_fallback:
+        return snippet_fallback, len(results), None
+
     return None, len(results), "Search returned links, but no readable page text."
+
+
+async def _async_search_web_reference_results(
+    query: str,
+    max_results: int,
+) -> tuple[list[WebSearchResult], int, str | None]:
+    """Search for multiple readable/snippet reference pages async."""
+
+    results, error = await _async_search_web_results(query)
+    if error:
+        return [], 0, error
+
+    references: list[WebSearchResult] = []
+    for result in results:
+        if len(references) >= max_results:
+            break
+
+        web_reference = await _async_fetch_web_reference(result.url)
+        if web_reference:
+            references.append(_web_search_result_from_reference(result, web_reference))
+            continue
+
+        snippet_fallback = _search_snippet_fallback(result)
+        if snippet_fallback:
+            references.append(snippet_fallback)
+
+    if references:
+        return references, len(results), None
+
+    return [], len(results), "Search returned links, but no readable page text."
+
+
+def _search_web_reference_summary(
+    queries: list[str],
+    max_results: int = MAX_WEB_SEARCH_RESULTS,
+) -> WebSearchReference:
+    """Search multiple query variants and return deduplicated reference context."""
+
+    normalized_queries = _normalized_search_queries(queries)
+    result_limit = _normalized_max_search_results(max_results)
+    results: list[WebSearchResult] = []
+    seen_urls: set[str] = set()
+    total_result_count = 0
+    last_error: str | None = None
+
+    for query in normalized_queries:
+        remaining = result_limit - len(results)
+        if remaining <= 0:
+            break
+
+        query_results, result_count, error = _search_web_reference_results(
+            query,
+            remaining,
+        )
+        total_result_count += result_count
+        if error:
+            last_error = error
+        for result in query_results:
+            if result.url in seen_urls:
+                continue
+
+            seen_urls.add(result.url)
+            results.append(result)
+
+    return WebSearchReference(
+        query=normalized_queries[0] if normalized_queries else "",
+        results=tuple(results),
+        query_count=len(normalized_queries),
+        result_count=total_result_count,
+        error=None if results else last_error,
+    )
+
+
+async def _async_search_web_reference_summary(
+    queries: list[str],
+    max_results: int = MAX_WEB_SEARCH_RESULTS,
+) -> WebSearchReference:
+    """Search multiple query variants async and return deduplicated context."""
+
+    normalized_queries = _normalized_search_queries(queries)
+    result_limit = _normalized_max_search_results(max_results)
+    results: list[WebSearchResult] = []
+    seen_urls: set[str] = set()
+    total_result_count = 0
+    last_error: str | None = None
+
+    for query in normalized_queries:
+        remaining = result_limit - len(results)
+        if remaining <= 0:
+            break
+
+        query_results, result_count, error = await _async_search_web_reference_results(
+            query,
+            remaining,
+        )
+        total_result_count += result_count
+        if error:
+            last_error = error
+        for result in query_results:
+            if result.url in seen_urls:
+                continue
+
+            seen_urls.add(result.url)
+            results.append(result)
+
+    return WebSearchReference(
+        query=normalized_queries[0] if normalized_queries else "",
+        results=tuple(results),
+        query_count=len(normalized_queries),
+        result_count=total_result_count,
+        error=None if results else last_error,
+    )
+
+
+def _normalized_search_queries(queries: list[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        compacted = _compact_text(query, limit=160)
+        key = compacted.casefold()
+        if not compacted or key in seen:
+            continue
+
+        normalized.append(compacted)
+        seen.add(key)
+        if len(normalized) >= MAX_WEB_SEARCH_QUERIES:
+            break
+
+    return tuple(normalized)
+
+
+def _normalized_max_search_results(max_results: int) -> int:
+    return min(max(max_results, 1), MAX_WEB_SEARCH_RESULTS)
+
+
+def _web_search_result_from_reference(
+    result: WebSearchResult,
+    web_reference: WebReference,
+) -> WebSearchResult:
+    return WebSearchResult(
+        title=web_reference.title or result.title,
+        url=result.url,
+        excerpt=web_reference.excerpt,
+    )
+
+
+def _search_snippet_fallback(result: WebSearchResult) -> WebSearchResult | None:
+    excerpt = _compact_text(result.excerpt)
+    if not _is_useful_search_snippet(excerpt):
+        return None
+
+    return WebSearchResult(
+        title=result.title,
+        url=result.url,
+        excerpt=excerpt,
+    )

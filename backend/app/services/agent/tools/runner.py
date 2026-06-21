@@ -21,8 +21,11 @@ from ..editing import (
 from ..executor import AgentPlanExecutor
 from ..integrations import (
     URL_PATTERN,
+    WebSearchReference,
+    WebSearchResult,
     _fetch_web_reference,
     _search_web_reference,
+    _search_web_reference_summary,
 )
 from ..localization import agent_text
 from ..materials import DEFAULT_MATERIAL_CANDIDATES, extract_resume_materials
@@ -59,6 +62,8 @@ WEB_FETCH_PURPOSES = {
     "company_reference",
 }
 WEB_SEARCH_PURPOSES = {"jd", "target_context", "company_reference"}
+MAX_WEB_SEARCH_QUERY_COUNT = 5
+MAX_WEB_SEARCH_RESULT_COUNT = 10
 
 
 class AgentToolRunner:
@@ -257,9 +262,23 @@ class AgentToolRunner:
         if not role:
             role = self.executor.infer_target_role()
 
-        query = str(tool_call.arguments.get("query") or "").strip()
-        if not query:
-            query = self.executor.jd_search_query(role)
+        queries = self.web_search_queries(tool_call, role)
+        query = queries[0]
+        has_queries_argument = isinstance(tool_call.arguments.get("queries"), list)
+        max_results = self.web_search_max_results(
+            tool_call,
+            default=MAX_WEB_SEARCH_RESULT_COUNT if has_queries_argument else 1,
+        )
+
+        if len(queries) > 1 or has_queries_argument or max_results > 1:
+            return await self.run_web_search_summary_async(
+                tool_call,
+                runtime,
+                role=role,
+                purpose=purpose,
+                queries=queries,
+                max_results=max_results,
+            )
 
         agent_api = get_agent_api()
         if agent_api._search_web_reference is not _search_web_reference:
@@ -293,6 +312,13 @@ class AgentToolRunner:
                     ),
                 )
 
+            self.job_reference = self.executor.build_search_job_reference_from_result(
+                role,
+                query,
+                search_result,
+                result_count,
+                search_error,
+            )
             return AgentToolInvocation(
                 id=tool_call.id,
                 type=f"tool-{tool_call.name}",
@@ -328,6 +354,199 @@ class AgentToolRunner:
             self.job_reference,
             tool_call.id,
             tool_name=tool_call.name,
+        )
+
+    def web_search_queries(self, tool_call: LlmToolCall, role: str) -> list[str]:
+        """Return deduplicated search queries for one web_search invocation."""
+
+        raw_values: list[str] = []
+        query = str(tool_call.arguments.get("query") or "").strip()
+        if query:
+            raw_values.append(query)
+
+        queries = tool_call.arguments.get("queries")
+        if isinstance(queries, list):
+            raw_values.extend(value for value in queries if isinstance(value, str))
+
+        if not raw_values:
+            raw_values.append(self.executor.jd_search_query(role))
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in raw_values:
+            compacted = " ".join(value.split()).strip()[:160]
+            key = compacted.casefold()
+            if not compacted or key in seen:
+                continue
+
+            normalized.append(compacted)
+            seen.add(key)
+            if len(normalized) >= MAX_WEB_SEARCH_QUERY_COUNT:
+                break
+
+        return normalized or [self.executor.jd_search_query(role)]
+
+    def web_search_max_results(self, tool_call: LlmToolCall, *, default: int) -> int:
+        """Return the bounded maxResults value for aggregated web_search."""
+
+        value = tool_call.arguments.get("maxResults")
+        if not isinstance(value, int) or isinstance(value, bool):
+            return default
+
+        return min(max(value, 1), MAX_WEB_SEARCH_RESULT_COUNT)
+
+    async def run_web_search_summary_async(
+        self,
+        tool_call: LlmToolCall,
+        runtime: AgentRuntimeContext,
+        *,
+        role: str,
+        purpose: str,
+        queries: list[str],
+        max_results: int,
+    ) -> AgentToolInvocation:
+        """Search multiple query variants as one model-visible tool call."""
+
+        agent_api = get_agent_api()
+        if agent_api._search_web_reference_summary is not _search_web_reference_summary:
+            summary = await runtime.run_sync(
+                agent_api._search_web_reference_summary,
+                queries,
+                max_results,
+            )
+        else:
+            summary = await runtime.run_async(
+                agent_api._async_search_web_reference_summary,
+                queries,
+                max_results,
+            )
+
+        if purpose != "jd":
+            if summary.primary and not summary.error:
+                self.job_reference = (
+                    self.executor.build_search_job_reference_from_result(
+                        role,
+                        summary.query,
+                        self.web_search_summary_primary_result(summary),
+                        summary.result_count,
+                        summary.error,
+                    )
+                )
+            return self.web_search_summary_tool(
+                tool_call,
+                purpose,
+                queries,
+                max_results,
+                summary,
+            )
+
+        search_result = self.web_search_summary_primary_result(summary)
+        self.job_reference = self.executor.build_search_job_reference_from_result(
+            role,
+            summary.query,
+            search_result,
+            summary.result_count,
+            summary.error,
+        )
+        tool = self.executor.build_jd_tool(
+            self.job_reference,
+            tool_call.id,
+            tool_name=tool_call.name,
+        )
+        tool.input = {
+            "query": summary.query,
+            "queries": queries,
+            "maxResults": max_results,
+            "purpose": purpose,
+            "language": self.executor.request.locale,
+        }
+        if isinstance(tool.output, dict):
+            tool.output["queryCount"] = summary.query_count
+            tool.output["maxResults"] = max_results
+        return tool
+
+    def web_search_summary_tool(
+        self,
+        tool_call: LlmToolCall,
+        purpose: str,
+        queries: list[str],
+        max_results: int,
+        summary: WebSearchReference,
+    ) -> AgentToolInvocation:
+        """Return a model-visible tool result for non-JD multi-search context."""
+
+        input_payload = {
+            "query": summary.query,
+            "queries": queries,
+            "maxResults": max_results,
+            "purpose": purpose,
+            "language": self.executor.request.locale,
+        }
+        if summary.error or not summary.primary:
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type=f"tool-{tool_call.name}",
+                title=tool_call.name,
+                state="output-error",
+                input=input_payload,
+                output={
+                    "queryCount": summary.query_count,
+                    "resultCount": summary.result_count,
+                },
+                errorText=summary.error
+                or agent_text(
+                    self.executor.request.locale,
+                    "error.web_search_failed",
+                ),
+            )
+
+        results = [
+            {
+                "url": result.url,
+                "title": result.title,
+                "excerpt": result.excerpt,
+            }
+            for result in summary.results
+        ]
+        primary = summary.primary
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-available",
+            input=input_payload,
+            output=sanitize_agent_value(
+                {
+                    "purpose": purpose,
+                    "query": summary.query,
+                    "queries": queries,
+                    "queryCount": summary.query_count,
+                    "maxResults": max_results,
+                    "resultCount": summary.result_count,
+                    "results": results,
+                    "url": primary.url,
+                    "title": primary.title,
+                    "excerpt": summary.excerpt or primary.excerpt,
+                    "personalExperienceEvidence": False,
+                },
+                hidden_terms=self.executor.hidden_terms,
+            ),
+        )
+
+    def web_search_summary_primary_result(
+        self,
+        summary: WebSearchReference,
+    ) -> WebSearchResult | None:
+        """Return the primary result with the combined excerpt for JD context."""
+
+        primary = summary.primary
+        if not primary:
+            return None
+
+        return WebSearchResult(
+            title=primary.title,
+            url=primary.url,
+            excerpt=summary.excerpt or primary.excerpt,
         )
 
     def web_tool_error(
@@ -580,6 +799,7 @@ class AgentToolRunner:
         """Split one item into two draft records."""
 
         entries, error = split_item_entries(
+            self.draft_resume,
             tool_call.arguments,
             locale=self.executor.request.locale,
         )
@@ -589,6 +809,7 @@ class AgentToolRunner:
         """Merge related items into a single draft record."""
 
         entries, error = merge_item_entries(
+            self.draft_resume,
             tool_call.arguments,
             locale=self.executor.request.locale,
         )
@@ -730,6 +951,8 @@ class AgentToolRunner:
                 if tool_name == "edit_move_item" and reorder_allowed:
                     continue
                 if tool_name == "edit_merge_items" and merge_allowed:
+                    continue
+                if tool_name == "skills_classify":
                     continue
                 if not delete_allowed:
                     return "error.tool_requires_delete_intent"

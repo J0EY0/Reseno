@@ -246,15 +246,38 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
         "name": "web_search",
         "description": (
             "Search the web only for target role, JD, company, or public "
-            "reference context. Never use search as evidence for the user's "
-            "personal experience."
+            "reference context. For role exploration, prefer one call with "
+            "3-5 complementary queries and summarize the combined results. "
+            "Never use search as evidence for the user's personal experience."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query for external reference context.",
+                    "description": (
+                        "Single search query for external reference context."
+                    ),
+                },
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "description": (
+                        "Optional complementary queries for one search task, "
+                        "such as responsibilities, required skills, and resume "
+                        "keywords for the same target role."
+                    ),
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": (
+                        "Maximum deduplicated search references to return. "
+                        "Use up to 10 for role exploration."
+                    ),
                 },
                 "role": {
                     "type": "string",
@@ -269,7 +292,7 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
                     "enum": ["zh", "en"],
                 },
             },
-            "required": ["query", "purpose"],
+            "required": ["purpose"],
             "additionalProperties": False,
         },
     },

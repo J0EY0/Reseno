@@ -32,6 +32,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.merge_items_missing_args": (
             "merge_items requires sectionId, at least two itemIds, and mergedItem."
         ),
+        "error.merge_items_missing_targets": (
+            "merge_items requires existing, distinct itemIds in the target section."
+        ),
         "error.move_item_missing_item": (
             "move_item requires an existing itemId in fromSectionId."
         ),
@@ -46,6 +49,9 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "error.split_item_missing_args": (
             "split_item requires sectionId, itemId, first, and second."
+        ),
+        "error.split_item_missing_target": (
+            "split_item requires an existing sectionId and itemId."
         ),
         "error.tool_blocked_by_policy": (
             "This tool is not available for the current agent task."
@@ -134,6 +140,16 @@ TEXT: dict[str, dict[str, str]] = {
             "I cannot produce a reliable previewable draft yet. {detail} "
             "Provide the target field, section, item, or real experience details "
             "before continuing."
+        ),
+        "response.blocked.material": (
+            "I cannot produce a reliable previewable draft yet because the resume "
+            "does not include enough user-provided evidence for this content.\n"
+            "Please answer 2-4 of these questions, and I can turn the answers into "
+            "resume bullets:\n"
+            "- What part did you personally own?\n"
+            "- What technologies, methods, or implementation choices did you use?\n"
+            "- What problem did this solve, and for whom?\n"
+            "- What result, deliverable, metric, or visible impact can be stated?"
         ),
         "response.explain_draft": (
             "I inspected the pending draft changes and summarized what changed. "
@@ -240,6 +256,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.merge_items_missing_args": (
             "merge_items 需要 sectionId、至少两个 itemIds 和 mergedItem。"
         ),
+        "error.merge_items_missing_targets": (
+            "merge_items 需要目标模块中存在且不重复的 itemIds。"
+        ),
         "error.move_item_missing_item": (
             "move_item 需要 fromSectionId 中存在的 itemId。"
         ),
@@ -252,6 +271,9 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "error.split_item_missing_args": (
             "split_item 需要 sectionId、itemId、first 和 second。"
+        ),
+        "error.split_item_missing_target": (
+            "split_item 需要已存在的 sectionId 和 itemId。"
         ),
         "error.tool_blocked_by_policy": "当前 Agent 任务不允许调用这个工具。",
         "error.tool_blocked_clarify_only": (
@@ -313,6 +335,15 @@ TEXT: dict[str, dict[str, str]] = {
         "response.blocked.text": (
             "我还不能生成可靠的可预览修改草稿。{detail} "
             "请补充目标字段、模块、条目或真实经历后再继续。"
+        ),
+        "response.blocked.material": (
+            "我还不能生成可靠的可预览修改草稿，因为当前简历和本轮输入里缺少"
+            "足够的真实经历证据。\n"
+            "你可以先回答下面 2-4 个问题，我再把答案整理成简历要点：\n"
+            "- 你本人具体负责哪一部分？\n"
+            "- 用了哪些技术、方法或实现方案？\n"
+            "- 解决了什么问题，面向谁或什么场景？\n"
+            "- 有没有结果、交付物、指标或可公开描述的影响？"
         ),
         "response.explain_draft": (
             "我已读取当前待确认草稿的修改差异，并会围绕这些差异进行解释；"

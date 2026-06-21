@@ -1,10 +1,12 @@
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from app.schemas.agent import AgentChatRequest
 
 from .intent_patterns import matches_intent_pattern
+from .materials import extract_resume_materials
 from .tools.registry import (
     ALL_KNOWN_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
@@ -19,6 +21,8 @@ from .tools.registry import (
 class AgentTaskIntent(StrEnum):
     ANSWER_ADVICE = "answer_advice"
     EXPLAIN_DRAFT = "explain_draft"
+    RESEARCH_ROLE = "research_role"
+    DIAGNOSE_JD_GAP = "diagnose_jd_gap"
     EDIT_RESUME = "edit_resume"
     REWRITE_DRAFT = "rewrite_draft"
     ANALYZE_RESUME = "analyze_resume"
@@ -46,6 +50,7 @@ def capability_policy_for_request(
     """Return the tool capability boundary for this agent turn."""
 
     intent = infer_agent_task_intent(request)
+    prompt = _current_prompt(request).lower()
     if _confirmation_mode(request) == "suggestOnly":
         return AgentCapabilityPolicy(
             intent=intent,
@@ -83,11 +88,27 @@ def capability_policy_for_request(
             reason="pending_draft",
         )
 
-    if intent in {AgentTaskIntent.ANSWER_ADVICE, AgentTaskIntent.ANALYZE_RESUME}:
+    if intent in {
+        AgentTaskIntent.ANSWER_ADVICE,
+        AgentTaskIntent.ANALYZE_RESUME,
+        AgentTaskIntent.RESEARCH_ROLE,
+        AgentTaskIntent.DIAGNOSE_JD_GAP,
+    }:
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.READ_ONLY,
             allowed_tools=_read_tools_for_request(request, intent),
+        )
+
+    if intent == AgentTaskIntent.EDIT_RESUME and _needs_material_followup(
+        request,
+        prompt,
+    ):
+        return AgentCapabilityPolicy(
+            intent=intent,
+            mode=AgentCapabilityMode.CLARIFY_ONLY,
+            allowed_tools=CONTROL_TOOL_NAMES,
+            reason="source_material",
         )
 
     return AgentCapabilityPolicy(
@@ -118,6 +139,19 @@ def infer_agent_task_intent(request: AgentChatRequest) -> AgentTaskIntent:
         and _matches_intent(prompt, "draft_revision")
     ):
         return AgentTaskIntent.REWRITE_DRAFT
+
+    if (
+        _matches_intent(prompt, "jd_gap_diagnosis")
+        and _has_target_context(request, prompt)
+        and not _matches_intent(prompt, "edit_resume")
+    ):
+        return AgentTaskIntent.DIAGNOSE_JD_GAP
+
+    if _matches_intent(prompt, "role_research") and not _matches_intent(
+        prompt,
+        "edit_resume",
+    ):
+        return AgentTaskIntent.RESEARCH_ROLE
 
     if _matches_intent(prompt, "job_request"):
         return AgentTaskIntent.MATCH_JD
@@ -169,9 +203,13 @@ def _read_tools_for_request(
     intent: AgentTaskIntent,
 ) -> frozenset[str]:
     tools = set(LOCAL_READ_TOOL_NAMES | CONTROL_TOOL_NAMES)
-    if intent == AgentTaskIntent.MATCH_JD:
+    if intent in {AgentTaskIntent.MATCH_JD, AgentTaskIntent.DIAGNOSE_JD_GAP}:
         tools.update(WEB_FETCH_TOOL_NAMES)
         tools.update(WEB_SEARCH_TOOL_NAMES)
+    elif intent == AgentTaskIntent.RESEARCH_ROLE:
+        tools.update(WEB_SEARCH_TOOL_NAMES)
+        if _prompt_has_url(request):
+            tools.update(WEB_FETCH_TOOL_NAMES)
     elif _prompt_has_url(request):
         tools.update(WEB_FETCH_TOOL_NAMES)
     return frozenset(tools)
@@ -195,6 +233,73 @@ def _has_pending_draft(request: AgentChatRequest) -> bool:
 
 def _prompt_has_url(request: AgentChatRequest) -> bool:
     return _matches(_current_prompt(request), r"https?://")
+
+
+def _has_target_context(request: AgentChatRequest, prompt: str) -> bool:
+    return bool(
+        request.job_brief.strip()
+        or _prompt_has_url(request)
+        or _matches_intent(prompt, "job_request")
+        or _matches_intent(prompt, "role_research"),
+    )
+
+
+def _needs_material_followup(request: AgentChatRequest, prompt: str) -> bool:
+    return (
+        _matches_intent(prompt, "material_generation_request")
+        and not _has_resume_item_evidence(request)
+        and not _has_user_resume_material(request)
+    )
+
+
+def _has_user_resume_material(request: AgentChatRequest) -> bool:
+    materials = extract_resume_materials(
+        prompt=_current_prompt(request),
+        job_brief="",
+        files=request.files,
+        focus="resume_facts",
+        max_items=1,
+    )
+    usage = materials.get("usage")
+    return isinstance(usage, dict) and usage.get("canSupportResumeFacts") is True
+
+
+def _has_resume_item_evidence(request: AgentChatRequest) -> bool:
+    resume = _policy_resume(request)
+    sections = resume.get("sections") if isinstance(resume, dict) else None
+    if not isinstance(sections, list):
+        return False
+
+    return any(_section_has_item_evidence(section) for section in sections)
+
+
+def _section_has_item_evidence(section: object) -> bool:
+    if not isinstance(section, dict):
+        return False
+    items = section.get("items")
+    if not isinstance(items, list):
+        return False
+    return any(_item_has_content(item) for item in items)
+
+
+def _item_has_content(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    for key in ("title", "subtitle", "meta", "period", "description"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    highlights = item.get("highlights")
+    return isinstance(highlights, list) and any(
+        isinstance(value, str) and value.strip() for value in highlights
+    )
+
+
+def _policy_resume(request: AgentChatRequest) -> dict[str, Any]:
+    draft = request.draft_state
+    if draft and draft.status == "pending" and draft.resume:
+        return draft.resume
+    return request.resume
 
 
 def _confirmation_mode(request: AgentChatRequest) -> str:

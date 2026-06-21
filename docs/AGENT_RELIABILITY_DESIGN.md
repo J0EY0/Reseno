@@ -60,6 +60,8 @@ GitHub、LinkedIn、作品集等公开链接不按手机/邮箱级别脱敏；�
 AgentTaskIntent:
 - answer_advice
 - explain_draft
+- research_role
+- diagnose_jd_gap
 - edit_resume
 - rewrite_draft
 - analyze_resume
@@ -83,6 +85,12 @@ EditPlanIntent:
 `AgentTaskIntent` 是后端内部路由策略，不暴露给前端用户协议。前端仍根据事实事件和数据渲染：有没有工具事件、有没有 edits、有没有 message。
 
 `explain_draft` 是顶层只读任务意图，不是 `edit_plan.intent`。它只用于解释 pending draft，必须走 `draft_diff_summary`，不能调用 `edit_plan` 或 `edit_execute`。
+
+`research_role` 是岗位情报只读任务意图。它允许 `web_search` 聚合公开岗位/JD/技能表达参考，但不能调用写工具，也不能把公开信息写成用户个人经历。
+
+`diagnose_jd_gap` 是 JD/岗位差距诊断只读任务意图。它允许读取目标上下文和 `resume_analysis`，输出已匹配内容、缺失关键词、可强化经历和需要用户补充的证据，但不能生成草稿修改。
+
+当用户要求新增或生成经历，但当前简历和本轮输入没有足够真实材料时，Agent 不应生成空泛草稿。第一阶段用 `clarify_only` + `finish(status="blocked", missing=["source_material", "user_evidence"])` 输出一次性证据追问，问题聚焦职责、技术方案、解决的问题和结果/指标。
 
 ## Capability Policy 与 Tool Guard
 
@@ -236,6 +244,8 @@ web_search:
   只用于 JD、岗位、行业表达参考，不作为用户经历事实来源。
 ```
 
+`web_search` 可以接收单个 `query`，也可以接收最多 5 个 `queries` 和最多 10 个 `maxResults`。当用户只是想了解某类岗位、行业方向或常见要求时，Agent 应优先用一次 `web_search` 传入 3-5 个互补查询，例如职责、技能要求、简历关键词、行业表达、面试/JD 常见要求，再基于合并后的结果输出自然语言总结。这样减少重复工具调用，也避免把中间可恢复失败暴露给用户。
+
 `web_fetch` 必须声明 `purpose`：
 
 ```text
@@ -248,6 +258,10 @@ company_reference
 未知用途 URL 先确认，不直接抓。
 
 `web_fetch` 抓取失败时，不自动转搜索替代；请用户粘贴内容或换链接。
+
+`web_search` 可以先尝试抓取搜索结果正文；如果结果页不可读，但搜索结果摘要本身足够明确，则可降级使用搜索摘要作为岗位/JD 参考，避免把可恢复的抓取失败暴露成工具失败。
+
+多查询 `web_search` 的输出保留兼容字段 `query`、`url`、`title`、`excerpt`，同时增加 `queries`、`queryCount`、`maxResults` 和 `results`。`results` 只作为 target context，不是用户个人经历证据。
 
 `web_fetch` 输出应包含结构化标记：
 

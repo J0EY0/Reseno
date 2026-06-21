@@ -12,12 +12,13 @@ from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumePdfRequest
-from app.services.agent import WebReference, WebSearchResult
+from app.services.agent import WebReference, WebSearchReference, WebSearchResult
 from app.services.agent.editing.operations import (
     _model_edit_suggestions,
     _model_edit_suggestions_with_diagnostics,
 )
 from app.services.agent.executor import AgentPlanExecutor
+from app.services.agent.integrations import web as agent_web
 from app.services.agent.intent_patterns import (
     INTENT_PATTERN_FILE,
     matches_intent_pattern,
@@ -213,6 +214,31 @@ def stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
 
 async def async_stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
     return stub_jd_search(query)
+
+
+def stub_web_search_summary(
+    queries: list[str],
+    max_results: int = 10,
+) -> WebSearchReference:
+    return WebSearchReference(
+        query=queries[0],
+        results=(
+            WebSearchResult(
+                title="AI Application Developer Responsibilities",
+                url="https://example.test/roles/ai-application-developer",
+                excerpt="AI application developers build LLM features and workflows.",
+            ),
+            WebSearchResult(
+                title="AI Application Developer Skills",
+                url="https://example.test/roles/ai-application-developer-skills",
+                excerpt=(
+                    "Common requirements include Python, APIs, evaluation, and RAG."
+                ),
+            ),
+        ),
+        query_count=len(queries),
+        result_count=max_results,
+    )
 
 
 def tool_call(
@@ -1716,6 +1742,169 @@ def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
     assert other_items[0]["id"] == "project-1"
 
 
+def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -> None:
+    request = AgentChatRequest(
+        prompt="拆分项目经历",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [{"id": "project-1", "title": "ResuMate"}],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-split",
+            "edit_split_item",
+            {
+                "sectionId": "project",
+                "itemId": "missing",
+                "first": {"description": "第一段"},
+                "second": {"title": "第二段"},
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["editCount"] == 0
+    assert runner.edits == []
+    assert runner.draft_resume["sections"][0]["items"] == [
+        {"id": "project-1", "title": "ResuMate"},
+    ]
+
+
+def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
+    request = AgentChatRequest(
+        prompt="拆分项目经历",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [{"id": "project-1", "title": "ResuMate"}],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-split",
+            "edit_split_item",
+            {
+                "sectionId": "project",
+                "itemId": "project-1",
+                "first": {"description": "负责 Agent 草稿流程。"},
+                "second": {
+                    "id": "project-1",
+                    "title": "ResuMate 指标优化",
+                    "highlights": ["优化草稿预览链路。"],
+                },
+                "index": 1,
+            },
+        ),
+    )
+
+    items = runner.draft_resume["sections"][0]["items"]
+    assert tool.state == "output-available"
+    assert result["output"]["editCount"] == 2
+    assert items[0]["description"] == "负责 Agent 草稿流程。"
+    assert items[1]["title"] == "ResuMate 指标优化"
+    assert items[1]["id"] != "project-1"
+
+
+def test_agent_edit_merge_items_rejects_missing_target_without_partial_delete() -> None:
+    request = AgentChatRequest(
+        prompt="合并项目经历",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [
+                        {"id": "project-1", "title": "ResuMate A"},
+                        {"id": "project-2", "title": "ResuMate B"},
+                    ],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-merge",
+            "edit_merge_items",
+            {
+                "sectionId": "project",
+                "itemIds": ["project-1", "missing"],
+                "mergedItem": {"description": "合并后的项目经历。"},
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["editCount"] == 0
+    assert runner.edits == []
+    assert [item["id"] for item in runner.draft_resume["sections"][0]["items"]] == [
+        "project-1",
+        "project-2",
+    ]
+
+
+def test_agent_edit_merge_items_rejects_duplicate_item_ids() -> None:
+    request = AgentChatRequest(
+        prompt="合并项目经历",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "project",
+                    "kind": "project",
+                    "layout": "timeline",
+                    "items": [{"id": "project-1", "title": "ResuMate"}],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-merge",
+            "edit_merge_items",
+            {
+                "sectionId": "project",
+                "itemIds": ["project-1", "project-1"],
+                "mergedItem": {"description": "合并后的项目经历。"},
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert result["output"]["editCount"] == 0
+    assert runner.edits == []
+    assert runner.draft_resume["sections"][0]["items"] == [
+        {"id": "project-1", "title": "ResuMate"},
+    ]
+
+
 def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
     request = AgentChatRequest(
         prompt="把刚才草稿里的项目描述再短一点",
@@ -1836,11 +2025,11 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "Find missing keywords",
+            "prompt": "Find missing keywords and edit my summary",
             "message": {
                 "id": "agent-user-1",
                 "role": "user",
-                "text": "Find missing keywords",
+                "text": "Find missing keywords and edit my summary",
                 "files": [
                     {
                         "id": "file-1",
@@ -1852,10 +2041,16 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 ],
             },
             "messages": [
-                {"role": "user", "text": "Find missing keywords"},
+                {
+                    "role": "user",
+                    "text": "Find missing keywords and edit my summary",
+                },
             ],
             "conversation": [
-                {"role": "user", "text": "Find missing keywords"},
+                {
+                    "role": "user",
+                    "text": "Find missing keywords and edit my summary",
+                },
             ],
             "files": [
                 {
@@ -2324,8 +2519,11 @@ def test_agent_intent_patterns_are_externalized() -> None:
         "draft_reference",
         "draft_revision",
         "job_request",
+        "role_research",
+        "jd_gap_diagnosis",
         "analyze_resume",
         "edit_resume",
+        "material_generation_request",
         "delete_intent",
         "reorder_intent",
         "merge_intent",
@@ -2340,6 +2538,15 @@ def test_agent_intent_patterns_are_externalized() -> None:
         locale_required_groups=required_groups,
     )
     assert matches_intent_pattern("帮我生成一个项目经历草稿", "edit_resume")
+    assert matches_intent_pattern("拆分项目经历", "edit_resume")
+    assert matches_intent_pattern("合并项目经历", "edit_resume")
+    assert matches_intent_pattern("整理技能分组", "edit_resume")
+    assert matches_intent_pattern(
+        "帮我生成一个项目经历草稿",
+        "material_generation_request",
+    )
+    assert matches_intent_pattern("帮我了解 AI应用开发工程师", "role_research")
+    assert matches_intent_pattern("这份简历和 JD 的差距在哪里", "jd_gap_diagnosis")
     assert matches_intent_pattern("把刚才的草稿再短一点", "draft_revision")
     assert matches_intent_pattern("rewrite my summary", "edit_resume", locale="en")
     assert not matches_intent_pattern("rewrite my summary", "edit_resume", locale="zh")
@@ -2419,6 +2626,20 @@ def test_agent_tool_specs_match_schema_and_runner_handlers() -> None:
         assert hasattr(AgentToolRunner, spec.handler_name)
 
 
+def test_agent_web_search_schema_supports_multi_queries() -> None:
+    schema = next(
+        schema
+        for schema in tool_registry.AGENT_TOOL_SCHEMAS
+        if schema["function"]["name"] == "web_search"
+    )
+    parameters = schema["function"]["parameters"]
+
+    assert parameters["required"] == ["purpose"]
+    assert parameters["properties"]["queries"]["maxItems"] == 5
+    assert parameters["properties"]["queries"]["items"]["type"] == "string"
+    assert parameters["properties"]["maxResults"]["maximum"] == 10
+
+
 def test_agent_web_fetch_requires_explicit_purpose() -> None:
     request = AgentChatRequest(
         prompt="参考这个链接 https://example.test/project",
@@ -2471,6 +2692,187 @@ def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
     assert tool.state == "output-available"
     assert result["output"]["purpose"] == "target_context"
     assert result["output"]["personalExperienceEvidence"] is False
+
+
+def test_agent_web_search_accepts_multi_query_target_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        stub_web_search_summary,
+    )
+    request = AgentChatRequest(
+        prompt="帮我了解 AI application developer 岗位",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = asyncio.run(
+        runner.run(
+            tool_call(
+                "call-web-search",
+                "web_search",
+                {
+                    "queries": [
+                        "AI application developer responsibilities",
+                        "AI application developer skills",
+                        "AI application developer resume keywords",
+                    ],
+                    "maxResults": 10,
+                    "purpose": "target_context",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.title == "web_search"
+    assert tool.state == "output-available"
+    assert result["input"]["query"] == "AI application developer responsibilities"
+    assert result["input"]["maxResults"] == 10
+    assert result["output"]["queryCount"] == 3
+    assert result["output"]["maxResults"] == 10
+    assert len(result["output"]["results"]) == 2
+    assert result["output"]["url"] == "https://example.test/roles/ai-application-developer"
+    assert result["output"]["personalExperienceEvidence"] is False
+
+
+def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        stub_web_search_summary,
+    )
+    config = AgentLlmConfig(
+        client_id="llm-test",
+        name="Test Model",
+        provider="openai",
+        model="gpt-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=None,
+        timeout_seconds=60,
+        system_prompt="",
+        context_window_tokens=4096,
+    )
+    request = AgentChatRequest(
+        prompt="帮我了解 AI application developer 岗位",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    asyncio.run(
+        runner.run(
+            tool_call(
+                "call-web-search",
+                "web_search",
+                {
+                    "queries": [
+                        "AI application developer responsibilities",
+                        "AI application developer skills",
+                    ],
+                    "purpose": "target_context",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+    draft = runner.build_message()
+    messages = build_agent_messages(
+        request,
+        config,
+        mode="streaming_final",
+        draft=draft,
+    )
+    payload = json.loads(messages[1]["content"])
+    web_context = payload["toolContext"]["webSearch"][0]
+
+    assert draft.edits == []
+    assert draft.sources[0].url == "https://example.test/roles/ai-application-developer"
+    assert web_context["purpose"] == "target_context"
+    assert len(web_context["results"]) == 2
+    assert "LLM features" in web_context["results"][0]["excerpt"]
+    assert "evaluation" in web_context["results"][1]["excerpt"]
+
+
+def test_agent_web_search_falls_back_to_search_snippet(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent_web,
+        "_search_web_results",
+        lambda _query: (
+            [
+                WebSearchResult(
+                    title="Frontend engineer JD",
+                    url="https://example.test/jobs/frontend",
+                    excerpt=(
+                        "Frontend engineer responsibilities include React, "
+                        "TypeScript, performance optimization, collaboration "
+                        "with product teams, and accessible UI delivery."
+                    ),
+                ),
+            ],
+            None,
+        ),
+    )
+    monkeypatch.setattr(agent_web, "_fetch_web_reference", lambda _url: None)
+
+    result, count, error = agent_web._search_web_reference("frontend engineer jd")
+
+    assert error is None
+    assert count == 1
+    assert result is not None
+    assert result.url == "https://example.test/jobs/frontend"
+    assert "React" in result.excerpt
+
+
+def test_agent_web_search_summary_dedupes_and_limits_queries(monkeypatch) -> None:
+    calls: list[tuple[str, int]] = []
+
+    def fake_search(
+        query: str,
+        max_results: int,
+    ) -> tuple[list[WebSearchResult], int, None]:
+        calls.append((query, max_results))
+        available_results = [
+            WebSearchResult(
+                title=f"{query} unique",
+                url=f"https://example.test/{query}",
+                excerpt=f"Unique context for {query}.",
+            ),
+            WebSearchResult(
+                title=f"{query} shared",
+                url="https://example.test/shared",
+                excerpt=f"Shared context for {query}.",
+            ),
+        ]
+        return (
+            available_results[:max_results],
+            len(available_results),
+            None,
+        )
+
+    monkeypatch.setattr(agent_web, "_search_web_reference_results", fake_search)
+
+    summary = agent_web._search_web_reference_summary(
+        ["first", "first", "second", "third", "fourth", "fifth", "sixth"],
+        max_results=3,
+    )
+
+    assert calls == [("first", 3), ("second", 1)]
+    assert summary.query == "first"
+    assert summary.query_count == 5
+    assert summary.result_count == 4
+    assert len(summary.results) == 3
+
+
+def test_agent_web_headers_are_browser_compatible() -> None:
+    headers = agent_web._web_headers("text/html")
+
+    assert headers["Accept"] == "text/html"
+    assert "Mozilla/5.0" in headers["User-Agent"]
+    assert "resumate.local" not in headers["User-Agent"]
+    assert headers["Accept-Language"]
 
 
 def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
@@ -2642,7 +3044,10 @@ def test_agent_plain_edit_phrase_does_not_require_pending_draft() -> None:
 
 def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
     request = AgentChatRequest(
-        prompt="帮我生成一个项目经历草稿",
+        prompt=(
+            "帮我生成一个项目经历草稿：项目名称：智能客服系统；"
+            "职责：负责 RAG 检索和接口开发；技术：Python、FastAPI、Milvus。"
+        ),
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -2656,6 +3061,23 @@ def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
     assert "edit_plan" in schema_names
     assert "edit_execute" in schema_names
     assert "draft_rewrite" not in schema_names
+
+
+def test_agent_material_generation_requires_user_evidence() -> None:
+    request = AgentChatRequest(
+        prompt="帮我生成一个项目经历草稿",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.EDIT_RESUME
+    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
+    assert policy.reason == "source_material"
+    assert schema_names == {"finish"}
 
 
 def test_agent_revising_named_draft_requires_pending_draft() -> None:
@@ -2691,6 +3113,64 @@ def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
     assert "resume_analysis" in schema_names
     assert "edit_execute" not in schema_names
     assert "web_search" not in schema_names
+
+
+def test_agent_role_research_policy_allows_web_search_without_edits() -> None:
+    request = AgentChatRequest(
+        prompt="帮我了解 AI应用开发工程师",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.RESEARCH_ROLE
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "web_search" in schema_names
+    assert "web_fetch" not in schema_names
+    assert "edit_plan" not in schema_names
+    assert "edit_execute" not in schema_names
+
+
+def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
+    request = AgentChatRequest(
+        prompt="这份简历和 JD 的差距在哪里？",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+        jobBrief="AI application developer requires Python, RAG, and evaluation.",
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.DIAGNOSE_JD_GAP
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "resume_analysis" in schema_names
+    assert "web_search" in schema_names
+    assert "web_fetch" in schema_names
+    assert "edit_plan" not in schema_names
+    assert "edit_execute" not in schema_names
+
+
+def test_agent_jd_optimization_request_can_still_draft() -> None:
+    request = AgentChatRequest(
+        prompt="根据这个 JD 优化简历，并看一下差距",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+        jobBrief="AI application developer requires Python, RAG, and evaluation.",
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.MATCH_JD
+    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
+    assert "edit_plan" in schema_names
+    assert "edit_execute" in schema_names
 
 
 def test_agent_delete_operations_require_explicit_delete_intent() -> None:
@@ -2734,6 +3214,51 @@ def test_agent_delete_operations_require_explicit_delete_intent() -> None:
     assert result["output"]["blocked"] is True
     assert "明确提出删除" in tool.error_text
     assert runner.edits == []
+
+
+def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() -> None:
+    request = AgentChatRequest(
+        prompt="整理技能分组",
+        locale="zh",
+        resume={
+            "basic": {},
+            "sections": [
+                {
+                    "id": "skills",
+                    "kind": "skills",
+                    "layout": "list",
+                    "items": [
+                        {
+                            "id": "skill-1",
+                            "title": "旧技能",
+                            "highlights": ["HTML"],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-skills",
+            "skills_classify",
+            {
+                "groups": [
+                    {"title": "前端", "skills": ["React", "TypeScript"]},
+                    {"title": "后端", "skills": ["Python"]},
+                ],
+            },
+        ),
+    )
+
+    items = runner.draft_resume["sections"][0]["items"]
+    assert tool.state == "output-available"
+    assert result["output"]["editCount"] == 3
+    assert [item["title"] for item in items] == ["前端", "后端"]
+    assert items[0]["highlights"] == ["React", "TypeScript"]
+    assert items[1]["highlights"] == ["Python"]
 
 
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
@@ -2956,6 +3481,61 @@ def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
     assert "缺少要修改的目标模块或条目" in message["text"]
     assert message["tools"] == []
     assert message["edits"] == []
+
+
+def test_agent_chat_material_gap_asks_followup_questions(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def unexpected_final_completion(*_: object) -> str:
+        raise AssertionError(
+            "finish-only material gap should not call final completion"
+        )
+
+    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {
+                        "status": "blocked",
+                        "reason": "缺少可写入简历的项目事实。",
+                        "missing": ["source_material", "user_evidence"],
+                    },
+                ),
+            ],
+        ),
+    )
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "帮我生成一个项目经历草稿",
+            "message": {"role": "user", "text": "帮我生成一个项目经历草稿"},
+            "messages": [{"role": "user", "text": "帮我生成一个项目经历草稿"}],
+            "conversation": [{"role": "user", "text": "帮我生成一个项目经历草稿"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert message["tools"] == []
+    assert message["edits"] == []
+    assert message["finishMissing"] == ["source_material", "user_evidence"]
+    assert "你本人具体负责哪一部分" in message["text"]
+    assert "用了哪些技术" in message["text"]
+    assert "有没有结果" in message["text"]
 
 
 def test_agent_chat_reports_invalid_model_edit_operation(
@@ -3281,6 +3861,193 @@ def test_agent_chat_cleans_chinese_target_role(
     assert jd_tool["input"]["query"] == "AI应用开发 岗位 JD 职责 任职要求"
     assert message["knowledge"][0]["title"] == "AI应用开发"
     assert not any("的职位是" in suggestion for suggestion in message["suggestions"])
+
+
+def test_agent_chat_streams_role_research_web_summary(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        stub_web_search_summary,
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-role-research",
+                    "web_search",
+                    {
+                        "queries": [
+                            "AI application developer responsibilities",
+                            "AI application developer skills",
+                            "AI application developer resume keywords",
+                        ],
+                        "maxResults": 10,
+                        "purpose": "target_context",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    def stream_response(
+        _config: AgentLlmConfig,
+        messages: list[dict],
+        *_: object,
+        **__: object,
+    ) -> object:
+        payload = json.loads(messages[1]["content"])
+        web_context = payload["toolContext"]["webSearch"][0]
+        assert web_context["purpose"] == "target_context"
+        assert len(web_context["results"]) == 2
+        yield LlmStreamDelta(
+            kind="text",
+            delta="岗位情报：核心职责、技能要求、简历关键词。",
+        )
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "帮我了解 AI应用开发工程师",
+            "message": {
+                "role": "user",
+                "text": "帮我了解 AI应用开发工程师",
+            },
+            "messages": [{"role": "user", "text": "帮我了解 AI应用开发工程师"}],
+            "conversation": [{"role": "user", "text": "帮我了解 AI应用开发工程师"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    web_tool = next(
+        tool for tool in message["tools"] if tool["title"] == "web_search"
+    )
+    assert message["edits"] == []
+    assert "岗位情报" in message["text"]
+    assert web_tool["input"]["maxResults"] == 10
+    assert web_tool["output"]["queryCount"] == 3
+    assert web_tool["output"]["personalExperienceEvidence"] is False
+
+
+def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        stub_web_search_summary,
+    )
+    monkeypatch.setattr(
+        "app.services.agent.complete_chat_tool_call",
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-target-context",
+                    "web_search",
+                    {
+                        "queries": [
+                            "AI application developer JD requirements",
+                            "AI application developer resume keywords",
+                        ],
+                        "purpose": "target_context",
+                        "maxResults": 10,
+                    },
+                ),
+            ],
+            [tool_call("call-analysis", "resume_analysis")],
+        ),
+    )
+
+    def stream_response(
+        _config: AgentLlmConfig,
+        messages: list[dict],
+        *_: object,
+        **__: object,
+    ) -> object:
+        payload = json.loads(messages[1]["content"])
+        analysis_context = payload["toolContext"]["resumeAnalysis"][0]
+        assert analysis_context["matchedKeywords"] == ["Python"]
+        assert analysis_context["missingKeywords"] == ["RAG", "evaluation"]
+        assert analysis_context["targetFit"]["hasTargetContext"] is True
+        assert payload["toolContext"]["webSearch"][0]["purpose"] == "target_context"
+        yield LlmStreamDelta(
+            kind="text",
+            delta=(
+                "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；"
+                "需要补充项目证据。"
+            ),
+        )
+
+    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "这份简历和 JD 的差距在哪里？",
+            "message": {
+                "role": "user",
+                "text": "这份简历和 JD 的差距在哪里？",
+            },
+            "messages": [{"role": "user", "text": "这份简历和 JD 的差距在哪里？"}],
+            "conversation": [
+                {"role": "user", "text": "这份简历和 JD 的差距在哪里？"},
+            ],
+            "files": [],
+            "locale": "zh",
+            "resume": {
+                "basic": {"headline": "AI 应用开发工程师", "summary": "熟悉 Python"},
+                "sections": [
+                    {
+                        "id": "project",
+                        "kind": "project",
+                        "layout": "list",
+                        "items": [
+                            {
+                                "id": "project-1",
+                                "title": "智能客服项目",
+                                "subtitle": "后端开发",
+                                "meta": "Python",
+                                "period": "2025",
+                                "description": "负责 API 开发。",
+                                "highlights": ["使用 Python 实现业务接口。"],
+                            },
+                        ],
+                    },
+                ],
+            },
+            "jobBrief": (
+                "AI application developer requires Python, RAG, and evaluation."
+            ),
+            "keywordMatch": {
+                "matched": ["Python"],
+                "missing": ["RAG", "evaluation"],
+                "score": 34,
+            },
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    tool_titles = [tool["title"] for tool in message["tools"]]
+    assert message["edits"] == []
+    assert "差距诊断" in message["text"]
+    assert tool_titles == ["web_search", "resume_analysis"]
+    assert "edit_plan" not in tool_titles
+    assert "edit_execute" not in tool_titles
 
 
 def test_agent_chat_streams_tool_and_source_metadata(

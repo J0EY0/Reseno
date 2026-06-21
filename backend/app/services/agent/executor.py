@@ -202,6 +202,7 @@ class AgentPlanExecutor:
                 edits,
                 finish_status=finish_status,
                 finish_reason=finish_reason,
+                finish_missing=finish_missing or [],
             ),
             plan=_visible_plan_steps(self.request),
             suggestions=self.build_suggestions(job_reference, analysis),
@@ -1227,10 +1228,15 @@ class AgentPlanExecutor:
         *,
         finish_status: str = "",
         finish_reason: str = "",
+        finish_missing: list[AgentFinishMissing] | None = None,
     ) -> str:
         """Build the assistant message body shown in the conversation."""
 
         if finish_status == "blocked":
+            missing = finish_missing or []
+            if any(value in {"source_material", "user_evidence"} for value in missing):
+                return agent_text(self.request.locale, "response.blocked.material")
+
             reason = finish_reason.strip()
             reason_key = (
                 "response.blocked.reason"

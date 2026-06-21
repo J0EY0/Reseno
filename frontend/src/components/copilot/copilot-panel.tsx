@@ -98,6 +98,12 @@ import {
   inferModelProviderId,
 } from "@/lib/model-providers";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import {
+  getVisibleCompletedTools,
+  getVisibleToolIds,
+  isToolRunning,
+} from "@/lib/agent-tool-display";
+import { isPlainAgentText } from "@/lib/agent-message-rendering";
 import languagePatterns from "@/lib/language-patterns.json";
 import { createId, getKeywordMatch } from "@/lib/resume";
 import { cn } from "@/lib/utils";
@@ -411,10 +417,6 @@ function splitTrailingCitationText(text: string) {
   };
 }
 
-function isPlainAgentText(text: string) {
-  return !/(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>|```)|[`|[\]]/.test(text);
-}
-
 function AgentInlineCitationCard({
   sources,
 }: {
@@ -572,14 +574,6 @@ function toPanelMessage(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
-}
-
-function isToolRunning(state: AgentToolInvocation["state"]) {
-  return (
-    state === "approval-requested" ||
-    state === "input-available" ||
-    state === "input-streaming"
-  );
 }
 
 function hasAssistantRenderableContent(message: AgentPanelMessage) {
@@ -982,7 +976,7 @@ function AgentToolDetailsDisclosure({
   tools: AgentToolInvocation[];
   t: AppMessages;
 }) {
-  const completedTools = tools.filter((tool) => !isToolRunning(tool.state));
+  const completedTools = getVisibleCompletedTools(tools);
   const [isOpen, setIsOpen] = useState(false);
 
   if (completedTools.length === 0) {
@@ -1076,6 +1070,7 @@ function AgentMessageTimeline({
   const lastTextPartId = [...visibleParts]
     .reverse()
     .find((part) => part.type === "text")?.id;
+  const visibleToolIds = getVisibleToolIds(tools);
 
   if (visibleParts.length === 0) {
     return null;
@@ -1096,8 +1091,10 @@ function AgentMessageTimeline({
           );
         }
 
-        const partTools = tools.filter((tool) =>
-          part.toolIds?.includes(tool.id),
+        const partTools = tools.filter(
+          (tool) =>
+            part.toolIds?.includes(tool.id) &&
+            (isToolRunning(tool.state) || visibleToolIds.has(tool.id)),
         );
 
         if (partTools.length === 0) {

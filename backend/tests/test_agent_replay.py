@@ -584,7 +584,22 @@ def test_replay_material_extract_does_not_treat_short_prompt_as_material() -> No
             request=AgentChatRequest(
                 prompt="根据附件补充项目经历",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={
+                    "basic": {},
+                    "sections": [
+                        {
+                            "id": "project",
+                            "kind": "project",
+                            "items": [
+                                {
+                                    "id": "project-1",
+                                    "title": "已有项目",
+                                    "description": "已有简历事实。",
+                                },
+                            ],
+                        },
+                    ],
+                },
             ),
             tool_calls=[
                 ReplayToolCall(

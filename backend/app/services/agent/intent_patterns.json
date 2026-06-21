@@ -84,6 +84,45 @@
       "keyword match"
     ]
   },
+  "role_research": {
+    "common": [],
+    "zh": [
+      "了解.*(?:岗位|职位|工程师|开发|方向)",
+      "(?:岗位|职位|工程师|开发|方向).*(?:是什么|做什么|职责|要求|技能|画像|前景|趋势)",
+      "(?:什么是|介绍|讲讲|说说).*(?:岗位|职位|工程师|开发|方向)"
+    ],
+    "en": [
+      "what is .* (?:role|position|engineer|developer)",
+      "learn about .* (?:role|position|engineer|developer)",
+      "(?:role|position|engineer|developer).*(?:responsibilities|requirements|skills|market|trends)"
+    ]
+  },
+  "jd_gap_diagnosis": {
+    "common": [
+      "gap analysis"
+    ],
+    "zh": [
+      "差距",
+      "缺口",
+      "缺什么",
+      "还缺",
+      "匹配度",
+      "匹配.*(?:怎么样|如何|吗)",
+      "已匹配",
+      "可强化",
+      "需要.*(?:补充|证据)",
+      "哪里.*(?:不足|不够)"
+    ],
+    "en": [
+      "gap",
+      "fit",
+      "matched",
+      "missing",
+      "what.*missing",
+      "need.*evidence",
+      "strengthen"
+    ]
+  },
   "analyze_resume": {
     "common": [],
     "zh": [
@@ -118,6 +157,11 @@
       "删除",
       "调整",
       "移动",
+      "拆分",
+      "合并",
+      "整理",
+      "归类",
+      "分类",
       "缩短",
       "精简",
       "扩写",
@@ -131,7 +175,23 @@
       "insert",
       "delete",
       "remove",
-      "reorder"
+      "reorder",
+      "move",
+      "split",
+      "merge",
+      "organize",
+      "classify"
+    ]
+  },
+  "material_generation_request": {
+    "common": [],
+    "zh": [
+      "(?:生成|新增|添加|补充|写).*(?:项目经历|工作经历|实习经历|经历|项目|要点|bullet|关键词)",
+      "(?:项目经历|工作经历|实习经历).*(?:生成|新增|添加|补充|写)"
+    ],
+    "en": [
+      "(?:generate|create|add|write).*(?:project|experience|work|internship|bullet|keyword)",
+      "(?:project|experience|work|internship).*(?:generate|create|add|write)"
     ]
   },
   "delete_intent": {

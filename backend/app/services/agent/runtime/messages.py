@@ -112,6 +112,7 @@ def _agent_payload(
                 "draftStatusText": draft.text,
                 "draftEditCount": len(draft.edits),
                 "draftEdits": _visible_edit_summaries(draft.edits),
+                "toolContext": _visible_tool_context(draft.tools),
             },
         )
 
@@ -764,6 +765,122 @@ def _visible_edit_summaries(
             summaries.append(summary)
 
     return summaries
+
+
+def _visible_tool_context(tools: list[Any]) -> dict[str, Any]:
+    web_searches: list[dict[str, Any]] = []
+    resume_analyses: list[dict[str, Any]] = []
+    for tool in tools:
+        if getattr(tool, "state", "") != "output-available":
+            continue
+
+        output = getattr(tool, "output", None)
+        if not isinstance(output, dict):
+            continue
+
+        title = getattr(tool, "title", "")
+        if title == "web_search":
+            search_context = _visible_web_search_context(output)
+            if search_context:
+                web_searches.append(search_context)
+        elif title == "resume_analysis":
+            analysis_context = _visible_resume_analysis_context(output)
+            if analysis_context:
+                resume_analyses.append(analysis_context)
+
+    context: dict[str, Any] = {}
+    if web_searches:
+        context["webSearch"] = web_searches
+    if resume_analyses:
+        context["resumeAnalysis"] = resume_analyses
+    return context
+
+
+def _visible_web_search_context(output: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    for key in ("purpose", "query"):
+        text = _string_value(output.get(key))
+        if text:
+            context[key] = text
+
+    queries = _string_list(output.get("queries"))[:5]
+    if queries:
+        context["queries"] = queries
+
+    results = _visible_web_search_results(output.get("results"))
+    if results:
+        context["results"] = results
+    else:
+        single_result = _visible_web_search_result(output)
+        if single_result:
+            context["results"] = [single_result]
+
+    return context
+
+
+def _visible_web_search_results(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    results: list[dict[str, str]] = []
+    for item in value[:10]:
+        result = _visible_web_search_result(item)
+        if result:
+            results.append(result)
+
+    return results
+
+
+def _visible_web_search_result(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for key in ("title", "url", "excerpt"):
+        text = _string_value(value.get(key))
+        if text:
+            result[key] = _truncate_to_tokens(text, 180 if key == "excerpt" else 80)
+
+    return result
+
+
+def _visible_resume_analysis_context(output: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    matched_keywords = _string_list(output.get("matchedKeywords"))[:8]
+    missing_keywords = _string_list(output.get("missingKeywords"))[:8]
+    empty_section_ids = _string_list(output.get("emptySectionIds"))[:8]
+
+    if matched_keywords:
+        context["matchedKeywords"] = matched_keywords
+    if missing_keywords:
+        context["missingKeywords"] = missing_keywords
+    if empty_section_ids:
+        context["emptySectionIds"] = empty_section_ids
+
+    target_fit = output.get("targetFit")
+    if isinstance(target_fit, dict):
+        context["targetFit"] = _visible_target_fit_context(target_fit)
+
+    return context
+
+
+def _visible_target_fit_context(target_fit: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    for key in ("hasTargetContext", "score"):
+        value = target_fit.get(key)
+        if isinstance(value, (bool, int, float)) and not isinstance(value, str):
+            context[key] = value
+
+    target_role = _string_value(target_fit.get("targetRole"))
+    if target_role:
+        context["targetRole"] = target_role
+
+    for key in ("recommendedTargets", "warnings"):
+        value = target_fit.get(key)
+        if isinstance(value, list):
+            context[key] = value[:6]
+
+    return context
 
 
 def _locale_name(request: AgentChatRequest) -> str:
