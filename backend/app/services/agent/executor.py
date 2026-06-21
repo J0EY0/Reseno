@@ -6,6 +6,7 @@ from app.schemas.agent import (
     AgentAction,
     AgentChatMessage,
     AgentChatRequest,
+    AgentFinishMissing,
     AgentKnowledgeItem,
     AgentResumeEditSuggestion,
     AgentSource,
@@ -13,7 +14,7 @@ from app.schemas.agent import (
 )
 
 from .editing import _string_list
-from .integrations import JD_URL_PATTERN, WebReference, WebSearchResult, _compact_text
+from .integrations import URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .localization import agent_text, section_label
 from .models import EditPlanStep, JobReference, ResumeAnalysis
 from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
@@ -110,7 +111,7 @@ def _visible_plan_steps(request: AgentChatRequest) -> list[str]:
     prompt = _current_prompt(request).lower()
     has_jd_context = bool(
         request.job_brief.strip()
-        or JD_URL_PATTERN.search(prompt)
+        or URL_PATTERN.search(prompt)
         or matches_agent_pattern(prompt, "visible_plan.job_context")
     )
     asks_export = matches_agent_pattern(prompt, "visible_plan.export")
@@ -183,6 +184,7 @@ class AgentPlanExecutor:
         message_id: str | None = None,
         finish_status: str = "",
         finish_reason: str = "",
+        finish_missing: list[AgentFinishMissing] | None = None,
     ) -> AgentChatMessage:
         """Assemble the final assistant payload from executed tool outputs."""
 
@@ -207,6 +209,7 @@ class AgentPlanExecutor:
             tools=tools,
             sources=sources,
             edits=edits,
+            finishMissing=finish_missing or [],
             quickReplies=self.build_quick_replies(edits),
             actions=self.build_actions(edits),
         )
@@ -882,9 +885,7 @@ class AgentPlanExecutor:
     ) -> AgentToolInvocation:
         """Return the completed JD fetch/search tool invocation."""
 
-        default_tool_name = (
-            "jd_url_fetch" if job_reference.mode == "url" else "jd_reference_search"
-        )
+        default_tool_name = "web_fetch" if job_reference.mode == "url" else "web_search"
         resolved_tool_name = tool_name or default_tool_name
         jd_tool_type = f"tool-{resolved_tool_name}"
         jd_input = (
@@ -892,8 +893,7 @@ class AgentPlanExecutor:
             if job_reference.mode == "url"
             else {"query": job_reference.query, "language": self.request.locale}
         )
-        if resolved_tool_name.startswith("web_"):
-            jd_input["purpose"] = "jd"
+        jd_input["purpose"] = "jd"
         jd_output = {
             "mode": job_reference.mode,
             "role": job_reference.role,
@@ -934,8 +934,95 @@ class AgentPlanExecutor:
                 "missingKeywords": analysis.missing_keywords,
                 "matchedKeywords": analysis.matched_keywords,
                 "emptySectionIds": analysis.empty_section_ids,
+                "targetFit": self.build_target_fit_summary(analysis),
             },
         )
+
+    def build_target_fit_summary(
+        self,
+        analysis: ResumeAnalysis,
+    ) -> dict[str, Any]:
+        """Return structured target-role fit hints for resume-only planning."""
+
+        has_target_context = bool(
+            self.request.job_brief.strip()
+            or analysis.matched_keywords
+            or analysis.missing_keywords
+            or matches_agent_pattern(self.prompt, "visible_plan.job_context")
+        )
+        warnings: list[str] = []
+        if not has_target_context:
+            warnings.append("missing_target_context")
+        if analysis.missing_keywords:
+            warnings.append("missing_keywords_require_user_evidence")
+        if not self.has_editable_resume_content(analysis):
+            warnings.append("empty_resume_limits_matching")
+
+        return {
+            "hasTargetContext": has_target_context,
+            "targetRole": self.infer_target_role(),
+            "score": self.keyword_match_score(),
+            "matchedKeywordCount": len(analysis.matched_keywords),
+            "missingKeywordCount": len(analysis.missing_keywords),
+            "recommendedTargets": self.target_fit_edit_targets(analysis),
+            "warnings": warnings,
+        }
+
+    def keyword_match_score(self) -> int | float | None:
+        """Return a bounded keyword match score from request state."""
+
+        score = self.request.keyword_match.get("score")
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            return None
+        return min(100, max(0, score))
+
+    def target_fit_edit_targets(
+        self,
+        analysis: ResumeAnalysis,
+    ) -> list[dict[str, str]]:
+        """Return stable edit targets likely useful for role matching."""
+
+        if not analysis.missing_keywords:
+            return []
+
+        targets: list[dict[str, str]] = []
+        if analysis.summary:
+            targets.append(
+                {
+                    "target": "basic.summary",
+                    "reason": "summary_keyword_alignment",
+                },
+            )
+
+        item_target = self.first_visible_item_target(analysis)
+        if item_target:
+            targets.append(
+                {
+                    "target": item_target,
+                    "reason": "experience_keyword_evidence",
+                },
+            )
+
+        return targets[:2]
+
+    def first_visible_item_target(self, analysis: ResumeAnalysis) -> str:
+        """Return the first visible item target path, if one exists."""
+
+        section = self.find_first_item_section(analysis)
+        section_id = section.get("id") if section else None
+        items = section.get("items") if section else None
+        if not isinstance(section_id, str) or not isinstance(items, list):
+            return ""
+
+        for item in items:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+                and _has_item_content(item)
+            ):
+                return f"sections.{section_id}.items.{item['id']}"
+
+        return ""
 
     def build_plan_tool(
         self,
@@ -967,16 +1054,20 @@ class AgentPlanExecutor:
         tool_id: str | None = None,
         *,
         observations: list[dict[str, Any]] | None = None,
+        quality_issues: list[dict[str, Any]] | None = None,
         rejected_edits: list[dict[str, Any]] | None = None,
     ) -> AgentToolInvocation:
         """Return the completed draft edit execution tool invocation."""
 
+        issues = quality_issues or []
         output: dict[str, Any] = {
             "editCount": len(edits),
             "operationTypes": [
                 edit.operation.get("type") for edit in edits if edit.operation
             ],
             "observations": observations or [],
+            "qualityIssueCount": len(issues),
+            "qualityIssues": issues,
         }
         if rejected_edits:
             output["rejectedEditCount"] = len(rejected_edits)

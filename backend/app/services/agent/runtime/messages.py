@@ -4,6 +4,7 @@ from typing import Any, Literal
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
+    AgentConversationItem,
     AgentResumeEditSuggestion,
 )
 from app.services.llm_client import AgentLlmConfig
@@ -123,7 +124,8 @@ def _agent_payload(
     payload["conversation"] = conversation_payload["conversation"]
     payload["conversationContext"] = conversation_payload["conversationContext"]
 
-    return sanitize_agent_value(payload, hidden_terms=hidden_terms)
+    sanitized_payload = sanitize_agent_value(payload, hidden_terms=hidden_terms)
+    return sanitized_payload if isinstance(sanitized_payload, dict) else {}
 
 
 def _visible_agent_settings(request: AgentChatRequest) -> dict[str, Any]:
@@ -210,7 +212,7 @@ def _compressed_conversation_payload(
     request: AgentChatRequest,
     *,
     base_tokens: int,
-    budget_tokens: int | None,
+    budget_tokens: int,
     exact_messages: list[dict[str, str]],
     latest_draft: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
@@ -320,7 +322,7 @@ def _conversation_context(
 
 def _conversation_with_current_prompt(
     request: AgentChatRequest,
-) -> list[Any]:
+) -> list[AgentConversationItem]:
     conversation = list(request.messages or request.conversation)
     prompt = _current_prompt(request)
 
@@ -330,10 +332,7 @@ def _conversation_with_current_prompt(
         for item in conversation
     ):
         conversation.append(
-            {
-                "role": "user",
-                "text": prompt,
-            },
+            AgentConversationItem(role="user", text=prompt),
         )
 
     return conversation

@@ -201,51 +201,89 @@ def draft_diff_summary(
     """Return the current draft changes that follow-up prompts can reference."""
 
     if edits:
+        edit_summaries = [
+            {
+                "index": index,
+                "id": edit.id,
+                "title": edit.title,
+                "target": edit.target,
+                "replacement": compact_text(edit.replacement),
+                "operationType": edit.operation.get("type")
+                if isinstance(edit.operation, dict)
+                else None,
+            }
+            for index, edit in enumerate(edits[:12], start=1)
+        ]
         return {
             "status": "pending",
             "editCount": len(edits),
-            "edits": [
-                {
-                    "id": edit.id,
-                    "title": edit.title,
-                    "target": edit.target,
-                    "replacement": compact_text(edit.replacement),
-                    "operationType": edit.operation.get("type")
-                    if isinstance(edit.operation, dict)
-                    else None,
-                }
-                for edit in edits[:12]
-            ],
+            "edits": edit_summaries,
+            "referenceMap": _draft_reference_map(edit_summaries),
         }
 
     if not draft_state:
-        return {"status": "none", "editCount": 0, "edits": [], "diffs": []}
+        return {
+            "status": "none",
+            "editCount": 0,
+            "edits": [],
+            "diffs": [],
+            "referenceMap": [],
+        }
+
+    edit_summaries = [
+        {
+            "index": index,
+            "id": str(edit.get("id") or ""),
+            "title": compact_text(edit.get("title")),
+            "target": compact_text(edit.get("target")),
+            "replacement": compact_text(edit.get("replacement")),
+            "operationType": _operation_type(edit.get("operation")),
+            "status": compact_text(edit.get("status")),
+        }
+        for index, edit in enumerate(draft_state.edits[:12], start=1)
+        if isinstance(edit, dict)
+    ]
 
     return {
         "id": draft_state.id,
         "status": draft_state.status,
         "editCount": draft_state.edit_count,
-        "edits": [
-            {
-                "id": str(edit.get("id") or ""),
-                "title": compact_text(edit.get("title")),
-                "target": compact_text(edit.get("target")),
-                "replacement": compact_text(edit.get("replacement")),
-            }
-            for edit in draft_state.edits[:12]
-            if isinstance(edit, dict)
-        ],
+        "edits": edit_summaries,
         "diffs": [
             {
+                "index": index,
                 "id": str(diff.get("id") or diff.get("operationId") or ""),
+                "operationId": str(diff.get("operationId") or ""),
+                "path": compact_text(diff.get("path")),
                 "label": compact_text(diff.get("label") or diff.get("title")),
                 "before": compact_text(diff.get("before")),
                 "after": compact_text(diff.get("after")),
             }
-            for diff in draft_state.diffs[:12]
+            for index, diff in enumerate(draft_state.diffs[:12], start=1)
             if isinstance(diff, dict)
         ],
+        "referenceMap": _draft_reference_map(edit_summaries),
     }
+
+
+def _draft_reference_map(edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return compact index-to-target hints for follow-up draft references."""
+
+    return [
+        {
+            "index": edit.get("index"),
+            "editId": edit.get("id"),
+            "target": edit.get("target"),
+            "operationType": edit.get("operationType"),
+        }
+        for edit in edits
+    ]
+
+
+def _operation_type(value: object) -> str | None:
+    if not isinstance(value, dict) or not value.get("type"):
+        return None
+    return str(value.get("type"))
 
 
 def move_item_entries(

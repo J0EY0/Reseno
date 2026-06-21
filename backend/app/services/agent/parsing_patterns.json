@@ -304,6 +304,91 @@
     "zh": [],
     "en": []
   },
+  "material.splitter": {
+    "common": [
+      "\\n+|(?<=[。！？.!?])\\s+"
+    ],
+    "zh": [],
+    "en": []
+  },
+  "material.project": {
+    "common": [
+      "github|demo|repo|repository"
+    ],
+    "zh": [
+      "项目|系统|平台|小程序|应用|后台|前台"
+    ],
+    "en": [
+      "project|system|platform|application|app|dashboard"
+    ]
+  },
+  "material.work": {
+    "common": [],
+    "zh": [
+      "工作经历|任职|公司|团队|业务|上线|交付"
+    ],
+    "en": [
+      "work experience|company|team|business|shipped|delivered"
+    ]
+  },
+  "material.internship": {
+    "common": [],
+    "zh": [
+      "实习|实习生"
+    ],
+    "en": [
+      "internship|intern"
+    ]
+  },
+  "material.skills": {
+    "common": [
+      "react|vue|typescript|javascript|python|java|go|node|sql|docker|kubernetes|aws|llm|ai"
+    ],
+    "zh": [
+      "技能|技术栈|框架|工具|数据库|算法"
+    ],
+    "en": [
+      "skills|tech stack|framework|tools|database|algorithm"
+    ]
+  },
+  "material.education": {
+    "common": [
+      "gpa"
+    ],
+    "zh": [
+      "教育|学校|大学|学院|专业|学位|本科|硕士|博士"
+    ],
+    "en": [
+      "education|school|university|college|major|degree|bachelor|master|phd"
+    ]
+  },
+  "material.awards": {
+    "common": [],
+    "zh": [
+      "获奖|奖项|荣誉|竞赛"
+    ],
+    "en": [
+      "award|honor|competition"
+    ]
+  },
+  "material.certificates": {
+    "common": [],
+    "zh": [
+      "证书|认证"
+    ],
+    "en": [
+      "certificate|certification"
+    ]
+  },
+  "material.jd": {
+    "common": [],
+    "zh": [
+      "岗位职责|任职要求|职位描述|招聘|jd"
+    ],
+    "en": [
+      "job description|responsibilities|requirements|qualifications|jd"
+    ]
+  },
   "streaming.blocked_visible_loop_prefixes": {
     "common": [
       "thought:",

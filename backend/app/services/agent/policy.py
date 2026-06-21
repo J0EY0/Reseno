@@ -5,6 +5,15 @@ from enum import StrEnum
 from app.schemas.agent import AgentChatRequest
 
 from .intent_patterns import matches_intent_pattern
+from .tools.registry import (
+    ALL_KNOWN_TOOL_NAMES,
+    CONTROL_TOOL_NAMES,
+    DRAFT_WRITE_TOOL_NAMES,
+    LOCAL_READ_TOOL_NAMES,
+    WEB_FETCH_TOOL_NAMES,
+    WEB_SEARCH_TOOL_NAMES,
+    WRITE_TOOL_NAMES,
+)
 
 
 class AgentTaskIntent(StrEnum):
@@ -21,32 +30,6 @@ class AgentCapabilityMode(StrEnum):
     CAN_DRAFT = "can_draft"
     CAN_REWRITE_DRAFT = "can_rewrite_draft"
     CLARIFY_ONLY = "clarify_only"
-
-
-LOCAL_READ_TOOL_NAMES = frozenset(
-    {
-        "resume_analysis",
-        "resume_lookup",
-        "draft_diff_summary",
-        "finish",
-    },
-)
-WEB_FETCH_TOOL_NAMES = frozenset({"web_fetch", "jd_url_fetch"})
-WEB_SEARCH_TOOL_NAMES = frozenset({"web_search", "jd_reference_search"})
-READ_TOOL_NAMES = LOCAL_READ_TOOL_NAMES | WEB_FETCH_TOOL_NAMES | WEB_SEARCH_TOOL_NAMES
-DRAFT_WRITE_TOOL_NAMES = frozenset(
-    {
-        "edit_plan",
-        "edit_execute",
-        "edit_move_item",
-        "edit_split_item",
-        "edit_merge_items",
-        "skills_classify",
-    },
-)
-FOLLOWUP_DRAFT_TOOL_NAMES = frozenset({"draft_rewrite"})
-WRITE_TOOL_NAMES = DRAFT_WRITE_TOOL_NAMES | FOLLOWUP_DRAFT_TOOL_NAMES
-ALL_KNOWN_TOOL_NAMES = READ_TOOL_NAMES | WRITE_TOOL_NAMES
 
 
 @dataclass(frozen=True)
@@ -76,12 +59,12 @@ def capability_policy_for_request(
             return AgentCapabilityPolicy(
                 intent=intent,
                 mode=AgentCapabilityMode.READ_ONLY,
-                allowed_tools=frozenset({"draft_diff_summary", "finish"}),
+                allowed_tools=frozenset({"draft_diff_summary"}) | CONTROL_TOOL_NAMES,
             )
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.CLARIFY_ONLY,
-            allowed_tools=frozenset({"finish"}),
+            allowed_tools=CONTROL_TOOL_NAMES,
             reason="pending_draft",
         )
 
@@ -96,7 +79,7 @@ def capability_policy_for_request(
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.CLARIFY_ONLY,
-            allowed_tools=frozenset({"finish"}),
+            allowed_tools=CONTROL_TOOL_NAMES,
             reason="pending_draft",
         )
 
@@ -185,7 +168,7 @@ def _read_tools_for_request(
     request: AgentChatRequest,
     intent: AgentTaskIntent,
 ) -> frozenset[str]:
-    tools = set(LOCAL_READ_TOOL_NAMES)
+    tools = set(LOCAL_READ_TOOL_NAMES | CONTROL_TOOL_NAMES)
     if intent == AgentTaskIntent.MATCH_JD:
         tools.update(WEB_FETCH_TOOL_NAMES)
         tools.update(WEB_SEARCH_TOOL_NAMES)

@@ -8,7 +8,7 @@ import httpx
 
 from ..parsing_patterns import agent_patterns
 
-JD_URL_PATTERN = re.compile(r"https?://[^\s)>\"]+")
+URL_PATTERN = re.compile(r"https?://[^\s)>\"]+")
 WEB_USER_AGENT = "ResuMate/1.0 (+https://resumate.local)"
 FETCH_MAX_BYTES = 220_000
 SEARCH_MAX_BYTES = 240_000
@@ -183,7 +183,7 @@ def _compact_text(value: str, limit: int = 700) -> str:
 
 
 def _is_useful_web_excerpt(value: str) -> bool:
-    """Return whether fetched page text is useful enough as JD context."""
+    """Return whether fetched page text is useful enough as reference context."""
 
     text = _compact_text(value, limit=1_000).lower()
     if len(text) < 80:
@@ -208,7 +208,7 @@ def _web_reference_from_response(
     content_type: str,
     charset: str,
 ) -> WebReference | None:
-    """Parse fetched response bytes into a JD reference."""
+    """Parse fetched response bytes into a web reference."""
 
     decoded = raw.decode(charset, errors="replace")
     if "html" not in content_type.lower():
@@ -281,7 +281,7 @@ def _search_web_results(
     query: str,
     timeout: float = 6.0,
 ) -> tuple[list[WebSearchResult], str | None]:
-    """Search the web for JD-like pages and return organic result links."""
+    """Search the web for reference pages and return organic result links."""
 
     try:
         with httpx.Client(
@@ -292,7 +292,7 @@ def _search_web_results(
             response = client.get(f"https://duckduckgo.com/html/?q={quote_plus(query)}")
             response.raise_for_status()
     except (httpx.HTTPError, ValueError) as exc:
-        return [], f"JD search request failed: {exc}"
+        return [], f"Web search request failed: {exc}"
 
     return _parse_search_results(
         response.content[:SEARCH_MAX_BYTES],
@@ -304,7 +304,7 @@ async def _async_search_web_results(
     query: str,
     timeout: float = 6.0,
 ) -> tuple[list[WebSearchResult], str | None]:
-    """Search the web for JD-like pages using an async HTTP client."""
+    """Search the web for reference pages using an async HTTP client."""
 
     search_url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
     try:
@@ -316,7 +316,7 @@ async def _async_search_web_results(
             response = await client.get(search_url)
             response.raise_for_status()
     except (httpx.HTTPError, ValueError) as exc:
-        return [], f"JD search request failed: {exc}"
+        return [], f"Web search request failed: {exc}"
 
     return _parse_search_results(
         response.content[:SEARCH_MAX_BYTES],
@@ -351,13 +351,13 @@ def _parse_search_results(
             break
 
     if not deduped_results:
-        return [], "JD search returned no usable result links."
+        return [], "Web search returned no usable result links."
 
     return deduped_results, None
 
 
-def _search_jd_reference(query: str) -> tuple[WebSearchResult | None, int, str | None]:
-    """Search for a JD page and fetch the first readable result page."""
+def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str | None]:
+    """Search for a reference page and fetch the first readable result page."""
 
     results, error = _search_web_results(query)
     if error:
@@ -378,13 +378,13 @@ def _search_jd_reference(query: str) -> tuple[WebSearchResult | None, int, str |
             None,
         )
 
-    return None, len(results), "Search returned links, but no readable JD text."
+    return None, len(results), "Search returned links, but no readable page text."
 
 
-async def _async_search_jd_reference(
+async def _async_search_web_reference(
     query: str,
 ) -> tuple[WebSearchResult | None, int, str | None]:
-    """Search for a JD page and fetch the first readable result page async."""
+    """Search for a reference page and fetch the first readable result page async."""
 
     results, error = await _async_search_web_results(query)
     if error:
@@ -405,4 +405,4 @@ async def _async_search_jd_reference(
             None,
         )
 
-    return None, len(results), "Search returned links, but no readable JD text."
+    return None, len(results), "Search returned links, but no readable page text."

@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar
+from typing import Any, TypeVar
 
 import anyio
 
@@ -8,7 +8,6 @@ from app.services.llm_client import LlmRequestError
 
 DEFAULT_BLOCKING_TIMEOUT_SECONDS = 30.0
 
-P = ParamSpec("P")
 T = TypeVar("T")
 
 
@@ -33,8 +32,8 @@ class AgentRuntimeContext:
 
     async def run_sync(
         self,
-        func: Callable[P, T],
-        *args: P.args,
+        func: Callable[..., T],
+        *args: Any,
         timeout_seconds: float | None = None,
     ) -> T:
         """Run sync work without pinning the event loop after cancellation."""
@@ -55,8 +54,8 @@ class AgentRuntimeContext:
 
     async def run_async(
         self,
-        func: Callable[P, Awaitable[T]],
-        *args: P.args,
+        func: Callable[..., Awaitable[T]],
+        *args: Any,
         timeout_seconds: float | None = None,
     ) -> T:
         """Run async work inside the same cancellation and timeout budget."""

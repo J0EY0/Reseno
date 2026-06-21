@@ -7,6 +7,7 @@ import {
 } from "@/lib/api-client";
 import type {
   AgentChatActionId,
+  AgentFinishMissing,
   AgentChatMessage,
   AgentChatRequest,
   AgentChatResponse,
@@ -29,6 +30,18 @@ const agentActionIds = new Set<AgentChatActionId>([
   "keywords",
   "plan",
   "execute",
+]);
+const agentFinishMissingValues = new Set<AgentFinishMissing>([
+  "pending_draft",
+  "url_purpose",
+  "resume_target",
+  "draft_edit_target",
+  "source_material",
+  "target_role",
+  "user_evidence",
+  "explicit_delete_intent",
+  "explicit_reorder_intent",
+  "model_config",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -77,6 +90,20 @@ function toActionIds(value: unknown): AgentChatActionId[] | undefined {
     );
 
   return actions.length > 0 ? actions : undefined;
+}
+
+function toFinishMissing(value: unknown): AgentChatMessage["finishMissing"] {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const missing = value.filter(
+    (item): item is AgentFinishMissing =>
+      typeof item === "string" &&
+      agentFinishMissingValues.has(item as AgentFinishMissing),
+  );
+
+  return missing.length > 0 ? missing : undefined;
 }
 
 function toSourceType(value: unknown): AgentSource["sourceType"] | undefined {
@@ -250,6 +277,7 @@ function mergeAgentMessage(
   const tools = toToolInvocations(patch.tools);
   const sources = toSources(patch.sources);
   const edits = toEditSuggestions(patch.edits);
+  const finishMissing = toFinishMissing(patch.finishMissing);
   const quickReplies = toStringArray(patch.quickReplies);
 
   return {
@@ -271,6 +299,7 @@ function mergeAgentMessage(
     tools: tools ?? current.tools,
     sources: sources ?? current.sources,
     edits: edits ?? current.edits,
+    finishMissing: finishMissing ?? current.finishMissing,
     quickReplies: quickReplies ?? current.quickReplies,
     actions: actions ?? current.actions,
   };

@@ -51,8 +51,8 @@ from app.services.agent.section_registry import (
     SECTION_KIND_ENUM,
     SECTION_REGISTRY,
 )
-from app.services.agent.tools import AgentToolRunner
 from app.services.agent.tools import registry as tool_registry
+from app.services.agent.tools.runner import AgentToolRunner
 from app.services.auth_tokens import create_access_token
 from app.services.llm_client import (
     AgentLlmConfig,
@@ -1791,8 +1791,11 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             [
                 tool_call(
                     "call-jd",
-                    "jd_reference_search",
-                    {"query": "frontend engineer job description"},
+                    "web_search",
+                    {
+                        "query": "frontend engineer job description",
+                        "purpose": "jd",
+                    },
                 ),
             ],
             [
@@ -1828,7 +1831,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             ],
         ),
     )
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
 
     _, message = post_agent_chat_stream(
         client,
@@ -1905,7 +1908,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     assert message["edits"][0]["status"] == "executed"
     assert message["edits"][0]["operation"]["type"] == "replace_field"
     assert any(
-        tool["title"] == "jd_reference_search" for tool in message["tools"]
+        tool["title"] == "web_search" for tool in message["tools"]
     )
 
 
@@ -2392,6 +2395,20 @@ def test_agent_web_tools_replace_legacy_jd_schema_names() -> None:
     assert "jd_reference_search" not in tool_names
 
 
+def test_agent_tool_specs_match_schema_and_runner_handlers() -> None:
+    spec_names = [spec.name for spec in tool_registry.AGENT_TOOL_SPECS]
+    schema_names = [
+        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
+    ]
+
+    assert len(spec_names) == len(set(spec_names))
+    assert schema_names == spec_names
+    assert tool_registry.ALL_KNOWN_TOOL_NAMES == set(spec_names)
+    for spec in tool_registry.AGENT_TOOL_SPECS:
+        assert spec.schema["function"]["name"] == spec.name
+        assert hasattr(AgentToolRunner, spec.handler_name)
+
+
 def test_agent_web_fetch_requires_explicit_purpose() -> None:
     request = AgentChatRequest(
         prompt="参考这个链接 https://example.test/project",
@@ -2418,7 +2435,7 @@ def test_agent_web_fetch_requires_explicit_purpose() -> None:
 
 
 def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     request = AgentChatRequest(
         prompt="帮我了解 AI application developer 岗位",
         locale="zh",
@@ -3078,8 +3095,11 @@ def test_agent_chat_uses_provided_jd_url(
             [
                 tool_call(
                     "call-jd",
-                    "jd_url_fetch",
-                    {"url": "https://example.test/jobs/frontend"},
+                    "web_fetch",
+                    {
+                        "url": "https://example.test/jobs/frontend",
+                        "purpose": "jd",
+                    },
                 ),
             ],
             [
@@ -3171,7 +3191,7 @@ def test_agent_chat_uses_provided_jd_url(
         },
     )
 
-    assert any(tool["title"] == "jd_url_fetch" for tool in message["tools"])
+    assert any(tool["title"] == "web_fetch" for tool in message["tools"])
     assert message["sources"] == [
         {
             "id": "source-jd-url",
@@ -3202,8 +3222,11 @@ def test_agent_chat_cleans_chinese_target_role(
             [
                 tool_call(
                     "call-jd",
-                    "jd_reference_search",
-                    {"query": "AI应用开发 岗位 JD 职责 任职要求"},
+                    "web_search",
+                    {
+                        "query": "AI应用开发 岗位 JD 职责 任职要求",
+                        "purpose": "jd",
+                    },
                 ),
             ],
             [
@@ -3214,7 +3237,7 @@ def test_agent_chat_cleans_chinese_target_role(
             ],
         ),
     )
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
 
     _, message = post_agent_chat_stream(
         client,
@@ -3242,7 +3265,7 @@ def test_agent_chat_cleans_chinese_target_role(
     )
 
     jd_tool = next(
-        tool for tool in message["tools"] if tool["title"] == "jd_reference_search"
+        tool for tool in message["tools"] if tool["title"] == "web_search"
     )
     assert jd_tool["output"]["role"] == "AI应用开发"
     assert jd_tool["input"]["query"] == "AI应用开发 岗位 JD 职责 任职要求"
@@ -3256,7 +3279,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent._async_search_jd_reference",
+        "app.services.agent._async_search_web_reference",
         async_stub_jd_search,
     )
     monkeypatch.setattr(
@@ -3265,8 +3288,11 @@ def test_agent_chat_streams_tool_and_source_metadata(
             [
                 tool_call(
                     "call-jd",
-                    "jd_reference_search",
-                    {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
+                    "web_search",
+                    {
+                        "query": "前端开发工程师 岗位 JD 职责 任职要求",
+                        "purpose": "jd",
+                    },
                 ),
             ],
             [
@@ -3332,7 +3358,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "event: message_delta" in body
     assert "event: message_done" in body
     assert "流式真实模型响应" in body
-    assert body.index("jd_reference_search") < body.index("resume_analysis")
+    assert body.index("web_search") < body.index("resume_analysis")
     assert body.index("resume_analysis") < body.index("edit_plan")
     assert body.index("event: tools") < body.index("流式真实模型响应")
     assert body.index("流式真实模型响应") < body.index('"source-jd-search"')
@@ -3508,7 +3534,7 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
         stub_tool_call_responses(
@@ -3518,8 +3544,11 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
                     tool_call("call-analysis", "resume_analysis"),
                     tool_call(
                         "call-jd",
-                        "jd_reference_search",
-                        {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
+                        "web_search",
+                        {
+                            "query": "前端开发工程师 岗位 JD 职责 任职要求",
+                            "purpose": "jd",
+                        },
                     ),
                 ],
             ),
@@ -3565,8 +3594,8 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     )
     assert "已读取当前简历结构" not in body
     assert "已拿到岗位参考" not in body
-    assert body.index("resume_analysis") < body.index("jd_reference_search")
-    assert body.index("jd_reference_search") < body.index(
+    assert body.index("resume_analysis") < body.index("web_search")
+    assert body.index("web_search") < body.index(
         "下一步会基于这些结果给出草稿。",
     )
 
@@ -3669,15 +3698,18 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr("app.services.agent._search_jd_reference", stub_jd_search)
+    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     monkeypatch.setattr(
         "app.services.agent.complete_chat_tool_call",
         stub_tool_call_batches(
             [
                 tool_call(
                     "call-jd",
-                    "jd_reference_search",
-                    {"query": "前端开发工程师 岗位 JD 职责 任职要求"},
+                    "web_search",
+                    {
+                        "query": "前端开发工程师 岗位 JD 职责 任职要求",
+                        "purpose": "jd",
+                    },
                 ),
             ],
             [

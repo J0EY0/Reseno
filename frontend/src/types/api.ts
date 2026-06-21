@@ -207,6 +207,18 @@ export type AgentChatActionId =
   | "plan"
   | "execute";
 
+export type AgentFinishMissing =
+  | "pending_draft"
+  | "url_purpose"
+  | "resume_target"
+  | "draft_edit_target"
+  | "source_material"
+  | "target_role"
+  | "user_evidence"
+  | "explicit_delete_intent"
+  | "explicit_reorder_intent"
+  | "model_config";
+
 export interface AgentSource {
   id: string;
   title: string;
@@ -269,6 +281,7 @@ export interface AgentChatMessage {
   tools?: AgentToolInvocation[];
   sources?: AgentSource[];
   edits?: AgentResumeEditSuggestion[];
+  finishMissing?: AgentFinishMissing[];
   quickReplies?: string[];
   actions?: AgentChatActionId[];
 }

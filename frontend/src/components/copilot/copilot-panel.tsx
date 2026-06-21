@@ -300,6 +300,7 @@ function toConversationResponse(
       target: edit.target,
       title: edit.title,
     })),
+    finishMissing: response.finishMissing,
     id: response.id,
     role: "assistant",
     sources: response.sources?.map((source) => ({
@@ -597,17 +598,22 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
 
 function getToolActivityLabel(tool: AgentToolInvocation, t: AppMessages) {
   const toolName = `${tool.type} ${tool.title}`.toLowerCase();
+  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
 
-  if (toolName.includes("jd_url_fetch")) {
+  if (toolName.includes("web_fetch") && purpose === "jd") {
     return t.agentToolFetchingJob;
   }
 
-  if (toolName.includes("jd_reference_search")) {
+  if (toolName.includes("web_search")) {
     return t.agentToolSearchingJob;
   }
 
   if (toolName.includes("resume") && toolName.includes("analysis")) {
     return t.agentToolAnalyzingResume;
+  }
+
+  if (toolName.includes("material_extract")) {
+    return t.agentToolExtractingMaterial;
   }
 
   if (toolName.includes("edit_plan")) {
@@ -623,17 +629,22 @@ function getToolActivityLabel(tool: AgentToolInvocation, t: AppMessages) {
 
 function getToolCompleteLabel(tool: AgentToolInvocation, t: AppMessages) {
   const toolName = `${tool.type} ${tool.title}`.toLowerCase();
+  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
 
-  if (toolName.includes("jd_url_fetch")) {
+  if (toolName.includes("web_fetch") && purpose === "jd") {
     return t.agentToolFetchingJobDone;
   }
 
-  if (toolName.includes("jd_reference_search")) {
+  if (toolName.includes("web_search")) {
     return t.agentToolSearchingJobDone;
   }
 
   if (toolName.includes("resume") && toolName.includes("analysis")) {
     return t.agentToolAnalyzingResumeDone;
+  }
+
+  if (toolName.includes("material_extract")) {
+    return t.agentToolExtractingMaterialDone;
   }
 
   if (toolName.includes("edit_plan")) {
@@ -649,17 +660,22 @@ function getToolCompleteLabel(tool: AgentToolInvocation, t: AppMessages) {
 
 function getToolErrorLabel(tool: AgentToolInvocation, t: AppMessages) {
   const toolName = `${tool.type} ${tool.title}`.toLowerCase();
+  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
 
-  if (toolName.includes("jd_url_fetch")) {
+  if (toolName.includes("web_fetch") && purpose === "jd") {
     return t.agentToolFetchingJobFailed;
   }
 
-  if (toolName.includes("jd_reference_search")) {
+  if (toolName.includes("web_search")) {
     return t.agentToolSearchingJobFailed;
   }
 
   if (toolName.includes("resume") && toolName.includes("analysis")) {
     return t.agentToolAnalyzingResumeFailed;
+  }
+
+  if (toolName.includes("material_extract")) {
+    return t.agentToolExtractingMaterialFailed;
   }
 
   if (toolName.includes("edit_plan")) {

@@ -18,6 +18,20 @@ PLAN_INTENT_ENUM = [
 ]
 PLAN_INTENT_SET = set(PLAN_INTENT_ENUM)
 
+FINISH_MISSING_ENUM = [
+    "pending_draft",
+    "url_purpose",
+    "resume_target",
+    "draft_edit_target",
+    "source_material",
+    "target_role",
+    "user_evidence",
+    "explicit_delete_intent",
+    "explicit_reorder_intent",
+    "model_config",
+]
+FINISH_MISSING_SET = set(FINISH_MISSING_ENUM)
+
 
 @dataclass(frozen=True)
 class JobReference:

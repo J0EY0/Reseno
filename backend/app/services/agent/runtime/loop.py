@@ -20,11 +20,8 @@ from ..compat import get_agent_api
 from ..editing import _react_max_iterations
 from ..executor import AgentPlanExecutor
 from ..policy import capability_policy_for_request
-from ..tools import (
-    AgentToolRunner,
-    agent_tool_schemas_for_names,
-    running_model_tool,
-)
+from ..tools.registry import agent_tool_schemas_for_names
+from ..tools.runner import AgentToolRunner, running_model_tool
 from .context import AgentRuntimeContext
 from .messages import build_agent_messages
 

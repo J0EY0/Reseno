@@ -52,7 +52,10 @@ def compiled_agent_pattern(
 
 @lru_cache(maxsize=1)
 def _pattern_values() -> dict[str, Any]:
-    return json.loads(PARSING_PATTERN_FILE.read_text(encoding="utf-8"))
+    loaded = json.loads(PARSING_PATTERN_FILE.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("Agent parsing patterns must be a JSON object.")
+    return {str(key): value for key, value in loaded.items()}
 
 
 @cache

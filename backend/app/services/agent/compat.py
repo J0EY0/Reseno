@@ -39,12 +39,12 @@ class AgentApi(Protocol):
         url: str,
     ) -> Awaitable[WebReference | None]: ...
 
-    def _search_jd_reference(
+    def _search_web_reference(
         self,
         query: str,
     ) -> tuple[WebSearchResult | None, int, str | None]: ...
 
-    def _async_search_jd_reference(
+    def _async_search_web_reference(
         self,
         query: str,
     ) -> Awaitable[tuple[WebSearchResult | None, int, str | None]]: ...

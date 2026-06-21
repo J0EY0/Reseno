@@ -23,7 +23,10 @@ def matches_intent_pattern(
 
 @lru_cache(maxsize=1)
 def _pattern_groups() -> dict[str, Any]:
-    return json.loads(INTENT_PATTERN_FILE.read_text(encoding="utf-8"))
+    loaded = json.loads(INTENT_PATTERN_FILE.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("Agent intent patterns must be a JSON object.")
+    return {str(key): value for key, value in loaded.items()}
 
 
 @cache

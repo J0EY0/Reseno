@@ -1,8 +1,9 @@
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 from app.schemas.agent import (
     AgentChatMessage,
+    AgentFinishMissing,
     AgentResumeEditSuggestion,
     AgentToolInvocation,
 )
@@ -19,14 +20,19 @@ from ..editing import (
 )
 from ..executor import AgentPlanExecutor
 from ..integrations import (
-    JD_URL_PATTERN,
+    URL_PATTERN,
     _fetch_web_reference,
-    _search_jd_reference,
+    _search_web_reference,
 )
 from ..localization import agent_text
-from ..models import EditPlanStep, JobReference, ResumeAnalysis
+from ..materials import DEFAULT_MATERIAL_CANDIDATES, extract_resume_materials
+from ..models import (
+    FINISH_MISSING_SET,
+    EditPlanStep,
+    JobReference,
+    ResumeAnalysis,
+)
 from ..policy import (
-    ALL_KNOWN_TOOL_NAMES,
     capability_policy_for_request,
     has_explicit_delete_intent,
     has_explicit_merge_intent,
@@ -34,7 +40,9 @@ from ..policy import (
     tool_block_reason,
 )
 from ..privacy import sanitize_agent_resume, sanitize_agent_value
+from ..quality import draft_quality_issues
 from ..runtime.context import AgentRuntimeContext
+from .registry import ALL_KNOWN_TOOL_NAMES
 from .structured import (
     classify_skills_entries,
     draft_diff_summary,
@@ -69,6 +77,7 @@ class AgentToolRunner:
         self.finished = False
         self.finish_reason = ""
         self.finish_status = ""
+        self.finish_missing: list[AgentFinishMissing] = []
         self.terminal_text = ""
 
     async def run(
@@ -84,9 +93,9 @@ class AgentToolRunner:
                 self.tools.append(blocked_tool)
             return blocked_tool, self.tool_result(blocked_tool)
 
-        if tool_call.name in {"jd_url_fetch", "web_fetch"}:
+        if tool_call.name == "web_fetch":
             tool = await self.run_web_fetch_async(tool_call, runtime)
-        elif tool_call.name in {"jd_reference_search", "web_search"}:
+        elif tool_call.name == "web_search":
             tool = await self.run_web_search_async(tool_call, runtime)
         else:
             return await runtime.run_sync(self._run_local_tool, tool_call)
@@ -107,6 +116,7 @@ class AgentToolRunner:
             return blocked_tool, self.tool_result(blocked_tool)
 
         handlers = {
+            "material_extract": self.run_material_extract,
             "resume_analysis": self.run_resume_analysis,
             "resume_lookup": self.run_resume_lookup,
             "draft_diff_summary": self.run_draft_diff_summary,
@@ -170,9 +180,7 @@ class AgentToolRunner:
         """Fetch a user-provided URL for an explicit reference purpose."""
 
         purpose = str(tool_call.arguments.get("purpose") or "").strip()
-        if tool_call.name == "jd_url_fetch":
-            purpose = "jd"
-        elif purpose not in WEB_FETCH_PURPOSES:
+        if purpose not in WEB_FETCH_PURPOSES:
             return self.web_tool_error(
                 tool_call,
                 "error.web_fetch_purpose_required",
@@ -180,7 +188,7 @@ class AgentToolRunner:
 
         url = str(tool_call.arguments.get("url") or "").strip()
         if not url and purpose == "jd":
-            match = JD_URL_PATTERN.search(self.executor.prompt)
+            match = URL_PATTERN.search(self.executor.prompt)
             url = match.group(0).rstrip(".,;，。；") if match else ""
 
         if not url:
@@ -228,7 +236,7 @@ class AgentToolRunner:
         return self.executor.build_jd_tool(
             self.job_reference,
             tool_call.id,
-            tool_name=tool_call.name if tool_call.name == "web_fetch" else None,
+            tool_name=tool_call.name,
         )
 
     async def run_web_search_async(
@@ -239,9 +247,7 @@ class AgentToolRunner:
         """Search external reference context chosen by the model."""
 
         purpose = str(tool_call.arguments.get("purpose") or "").strip()
-        if tool_call.name == "jd_reference_search":
-            purpose = "jd"
-        elif purpose not in WEB_SEARCH_PURPOSES:
+        if purpose not in WEB_SEARCH_PURPOSES:
             return self.web_tool_error(
                 tool_call,
                 "error.web_search_purpose_required",
@@ -256,14 +262,14 @@ class AgentToolRunner:
             query = self.executor.jd_search_query(role)
 
         agent_api = get_agent_api()
-        if agent_api._search_jd_reference is not _search_jd_reference:
+        if agent_api._search_web_reference is not _search_web_reference:
             search_result, result_count, search_error = await runtime.run_sync(
-                agent_api._search_jd_reference,
+                agent_api._search_web_reference,
                 query,
             )
         else:
             search_result, result_count, search_error = await runtime.run_async(
-                agent_api._async_search_jd_reference,
+                agent_api._async_search_web_reference,
                 query,
             )
 
@@ -321,7 +327,7 @@ class AgentToolRunner:
         return self.executor.build_jd_tool(
             self.job_reference,
             tool_call.id,
-            tool_name=tool_call.name if tool_call.name == "web_search" else None,
+            tool_name=tool_call.name,
         )
 
     def web_tool_error(
@@ -346,6 +352,33 @@ class AgentToolRunner:
 
         self.analysis = self.executor.analyze_resume()
         return self.executor.build_resume_analysis_tool(self.analysis, tool_call.id)
+
+    def run_material_extract(self, tool_call: LlmToolCall) -> AgentToolInvocation:
+        """Extract candidate resume facts from user-provided materials."""
+
+        max_items = tool_call.arguments.get("maxItems")
+        if not isinstance(max_items, int) or isinstance(max_items, bool):
+            max_items = DEFAULT_MATERIAL_CANDIDATES
+
+        output = extract_resume_materials(
+            prompt=self.executor.prompt,
+            job_brief=self.executor.request.job_brief,
+            files=self.executor.request.files,
+            focus=str(tool_call.arguments.get("focus") or "all").strip(),
+            max_items=max_items,
+            hidden_terms=self.executor.hidden_terms,
+        )
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type="tool-material_extract",
+            title="material_extract",
+            state="output-available",
+            input=tool_call.arguments,
+            output=sanitize_agent_value(
+                output,
+                hidden_terms=self.executor.hidden_terms,
+            ),
+        )
 
     def run_resume_lookup(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Locate targeted resume sections/items for smaller edits."""
@@ -440,11 +473,17 @@ class AgentToolRunner:
                 self.draft_resume,
                 model_edits,
             )
+            quality_issues = draft_quality_issues(
+                before_resume,
+                self.draft_resume,
+                model_edits,
+            )
             return self.executor.build_execute_tool(
                 self.plan,
                 self.edits,
                 tool_call.id,
                 observations=observations,
+                quality_issues=quality_issues,
                 rejected_edits=rejected_edits,
             )
 
@@ -475,11 +514,17 @@ class AgentToolRunner:
                 self.draft_resume,
                 self.planned_edits,
             )
+            quality_issues = draft_quality_issues(
+                before_resume,
+                self.draft_resume,
+                self.planned_edits,
+            )
             return self.executor.build_execute_tool(
                 self.plan,
                 self.edits,
                 tool_call.id,
                 observations=observations,
+                quality_issues=quality_issues,
             )
 
         if not self.plan or not self.analysis:
@@ -508,11 +553,17 @@ class AgentToolRunner:
             self.draft_resume,
             fallback_edits,
         )
+        quality_issues = draft_quality_issues(
+            before_resume,
+            self.draft_resume,
+            fallback_edits,
+        )
         return self.executor.build_execute_tool(
             self.plan,
             self.edits,
             tool_call.id,
             observations=observations,
+            quality_issues=quality_issues,
         )
 
     def run_edit_move_item(self, tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -622,12 +673,19 @@ class AgentToolRunner:
             self.draft_resume,
             model_edits,
         )
+        quality_issues = draft_quality_issues(
+            before_resume,
+            self.draft_resume,
+            model_edits,
+        )
         output: dict[str, Any] = {
             "editCount": len(model_edits),
             "operationTypes": [
                 edit.operation.get("type") for edit in model_edits if edit.operation
             ],
             "observations": observations,
+            "qualityIssueCount": len(quality_issues),
+            "qualityIssues": quality_issues,
         }
         if rejected_edits:
             output["rejectedEditCount"] = len(rejected_edits)
@@ -700,9 +758,13 @@ class AgentToolRunner:
         if status not in {"ready", "blocked"}:
             status = "ready"
         reason = str(tool_call.arguments.get("reason") or "").strip()
+        missing = self.finish_missing_values(tool_call.arguments.get("missing"))
+        if status != "blocked":
+            missing = []
         self.finished = True
         self.finish_status = status
         self.finish_reason = reason
+        self.finish_missing = missing
 
         return AgentToolInvocation(
             id=tool_call.id,
@@ -713,6 +775,7 @@ class AgentToolRunner:
             output={
                 "status": status,
                 "reason": reason,
+                "missing": missing,
                 "observation": agent_text(
                     self.executor.request.locale,
                     "tool.finish.observation",
@@ -765,7 +828,22 @@ class AgentToolRunner:
             message_id=message_id,
             finish_status=self.finish_status,
             finish_reason=self.finish_reason,
+            finish_missing=self.finish_missing,
         )
+
+    def finish_missing_values(self, value: object) -> list[AgentFinishMissing]:
+        """Return valid structured blocked-reason hints from finish arguments."""
+
+        raw_values = value if isinstance(value, list) else []
+        missing: list[AgentFinishMissing] = []
+        for item in raw_values:
+            if not isinstance(item, str):
+                continue
+            normalized = item.strip()
+            if normalized in FINISH_MISSING_SET and normalized not in missing:
+                missing.append(cast(AgentFinishMissing, normalized))
+
+        return missing
 
 
 def running_model_tool(tool_call: LlmToolCall) -> AgentToolInvocation:

@@ -5,6 +5,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent_locales import AgentLocale
 
 AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
+AgentFinishMissing = Literal[
+    "pending_draft",
+    "url_purpose",
+    "resume_target",
+    "draft_edit_target",
+    "source_material",
+    "target_role",
+    "user_evidence",
+    "explicit_delete_intent",
+    "explicit_reorder_intent",
+    "model_config",
+]
 AgentToolState = Literal[
     "input-streaming",
     "input-available",
@@ -149,6 +161,10 @@ class AgentChatMessage(BaseModel):
     tools: list[AgentToolInvocation] = Field(default_factory=list)
     sources: list[AgentSource] = Field(default_factory=list)
     edits: list[AgentResumeEditSuggestion] = Field(default_factory=list)
+    finish_missing: list[AgentFinishMissing] = Field(
+        default_factory=list,
+        alias="finishMissing",
+    )
     quick_replies: list[str] = Field(default_factory=list, alias="quickReplies")
     actions: list[AgentAction] = Field(default_factory=list)
 

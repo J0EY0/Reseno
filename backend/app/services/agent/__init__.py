@@ -9,9 +9,9 @@ from .integrations import (
     WebReference,
     WebSearchResult,
     _async_fetch_web_reference,
-    _async_search_jd_reference,
+    _async_search_web_reference,
     _fetch_web_reference,
-    _search_jd_reference,
+    _search_web_reference,
 )
 from .models import EditPlanStep, JobReference, ResumeAnalysis
 from .runtime import (
@@ -27,9 +27,9 @@ __all__ = [
     "WebReference",
     "WebSearchResult",
     "_async_fetch_web_reference",
-    "_async_search_jd_reference",
+    "_async_search_web_reference",
     "_fetch_web_reference",
-    "_search_jd_reference",
+    "_search_web_reference",
     "async_stream_agent_response",
     "complete_chat",
     "complete_chat_stream",

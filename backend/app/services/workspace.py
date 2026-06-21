@@ -966,7 +966,7 @@ def _resume_version_row(
             detail="Resume version not found.",
         )
 
-    return row
+    return cast(Row, row)
 
 
 def _load_resume_detail(

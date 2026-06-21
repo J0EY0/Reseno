@@ -148,21 +148,34 @@ write tool -> build edit entries -> validate -> apply -> observations
 
 这样既保留细粒度工具对模型的清晰度，又避免写入逻辑分散。
 
-`ToolSpec` 第一版保持最小：
+对模型暴露的简历专用读工具保持克制：
+
+```text
+resume_analysis
+resume_lookup
+draft_diff_summary
+material_extract
+web_fetch
+web_search
+```
+
+`material_extract` 只整理用户 prompt、jobBrief、附件中的候选片段，不做事实校验，也不直接写草稿。`resume_analysis` 输出 `targetFit`，用于表达目标岗位、关键词缺口、建议编辑目标和风险代码。
+
+`ToolSpec` 第一版保持最小，只描述工具元数据；是否允许本轮调用仍由
+`CapabilityPolicy` 根据请求上下文判断：
 
 ```python
-ToolSpec(
+AgentToolSpec(
     name: str,
-    description: str,
     schema: dict,
     mode: "read" | "write" | "control",
-    allowed_policies: set[CapabilityPolicy],
+    handler_name: str,
     requires_pending_draft: bool = False,
-    execute: Callable,
 )
 ```
 
-暂不做 hooks、插件、并行策略和复杂 streaming callback。
+`finish` 属于 control tool，不混入 read tools。暂不做 hooks、插件、
+并行策略、动态 handler dispatch 和复杂 streaming callback。
 
 ## `edit_plan` 合同
 
@@ -261,7 +274,9 @@ company_reference
 - 可以给是否建议应用的克制判断。
 - 不展示 raw operation JSON、字段路径、tool 参数或内部 intent/action 名称。
 
-`draft_diff_summary` 后续应支持选择参数：
+`draft_diff_summary` 输出必须包含稳定的 `index` 和 `referenceMap`，用于把“第二条修改”“上一版项目修改”等多轮指代映射到 editId/target。
+
+后续可以继续支持选择参数：
 
 ```json
 {
@@ -300,7 +315,9 @@ error
 pending_draft
 draft_edit_target
 resume_target
-user_material
+source_material
+target_role
+user_evidence
 url_purpose
 explicit_delete_intent
 explicit_reorder_intent
@@ -326,19 +343,34 @@ model_config
 5. `rewrite_project_with_lookup`  
    项目 bullet 改写必须经过 lookup、plan、execute，生成 pending draft。
 
-6. `explicit_web_fetch_project_reference`  
+6. `explicit_web_fetch_project_reference`
    用户明确给 GitHub repo 并要求基于项目优化，`web_fetch(project_reference)` 可作为 evidence。
 
-7. `customfield_github_not_auto_fetched`  
+7. `material_extract_attachment`
+   用户上传/粘贴材料时，`material_extract` 提取脱敏候选片段和建议模块。
+
+8. `material_extract_jd_reference_only`
+   JD 中出现技能关键词时仍保持 referenceOnly，不作为可直接写入简历的用户事实。
+
+9. `resume_analysis_target_fit`
+   `resume_analysis` 返回 `targetFit`，包含目标角色、关键词计数、建议编辑目标和风险代码。
+
+10. `draft_diff_reference_map`
+   pending draft 的 edits/diffs 输出稳定 index/referenceMap，支持多轮定位。
+
+11. `quality_issue_*`
+    写工具成功后仍返回非阻断 `qualityIssues`，replay event 记录 `qualityIssueCount`。
+
+12. `customfield_github_not_auto_fetched`
    customFields 有 GitHub URL，但普通优化请求不调用 web_fetch。
 
-8. `unknown_url_purpose_blocked`  
+13. `unknown_url_purpose_blocked`
    用户只发未知 URL，返回 `blocked(url_purpose)`。
 
-9. `delete_requires_explicit_intent`  
+14. `delete_requires_explicit_intent`
    泛泛“优化结构”不能调用 delete 或 reorder。
 
-10. `draft_rewrite_uses_pending_draft`  
+15. `draft_rewrite_uses_pending_draft`
     继续改刚才草稿时基于 pending draft，不从 formal resume 重来。
 
 ## 落地顺序
