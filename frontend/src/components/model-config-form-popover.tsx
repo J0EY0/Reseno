@@ -376,7 +376,7 @@ export function ModelConfigFormPopover({
       <DialogTrigger asChild>{renderTrigger()}</DialogTrigger>
       <DialogContent
         showCloseButton={false}
-        className="max-h-[min(680px,calc(100dvh-2rem))] w-[min(600px,calc(100vw-2rem))] overflow-hidden border-border/70 bg-background/95 p-0 shadow-[0_30px_100px_rgba(0,0,0,0.24)] backdrop-blur-xl"
+        className="max-h-[min(680px,calc(100dvh-2rem))] w-[min(600px,calc(100vw-2rem))] overflow-hidden border-border/70 bg-background p-0 shadow-[0_30px_100px_rgba(0,0,0,0.24)]"
       >
         <form
           className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
@@ -448,7 +448,6 @@ export function ModelConfigFormPopover({
                 </SelectTrigger>
                 <SelectContent
                   className="max-h-[320px] min-w-[var(--radix-select-trigger-width)]"
-                  portalled={false}
                   position="popper"
                 >
                   <SelectGroup>
@@ -646,7 +645,7 @@ export function ModelConfigFormPopover({
             </div>
           </div>
 
-          <DialogFooter className="shrink-0 border-t border-border/70 bg-background/90 px-6 py-4 backdrop-blur">
+          <DialogFooter className="shrink-0 border-t border-border/70 bg-background px-6 py-4">
             <DialogClose asChild>
               <Button type="button" variant="outline">
                 {t.cancel}

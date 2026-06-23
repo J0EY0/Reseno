@@ -121,10 +121,9 @@ export type ModelSelectorLogoProps = Omit<
     | "alibaba"
     | "xai"
     | "vultr"
-    | "nvidia"
     | "upstage"
-    | "groq"
     | "github-copilot"
+    | "minimax"
     | "mistral"
     | "vercel"
     | "nebius"
@@ -135,7 +134,6 @@ export type ModelSelectorLogoProps = Omit<
     | "chutes"
     | "cortecs"
     | "github-models"
-    | "togetherai"
     | "azure"
     | "baseten"
     | "huggingface"
@@ -164,12 +162,10 @@ export type ModelSelectorLogoProps = Omit<
     | "lmstudio"
     | "anthropic"
     | "aihubmix"
-    | "fireworks-ai"
     | "modelscope"
     | "llama"
     | "scaleway"
     | "amazon-bedrock"
-    | "cerebras"
     // oxlint-disable-next-line typescript-eslint(ban-types) -- intentional pattern for autocomplete-friendly string union
     | (string & {});
 };

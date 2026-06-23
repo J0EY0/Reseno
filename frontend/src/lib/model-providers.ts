@@ -135,52 +135,22 @@ export const MODEL_PROVIDERS: ModelProviderMeta[] = [
     authRequired: true,
   },
   {
+    id: 'minimax',
+    label: 'MiniMax',
+    iconProvider: 'minimax',
+    apiUrl: 'https://api.minimax.io/v1',
+    officialUrl: 'https://platform.minimax.io/docs',
+    defaultModel: 'MiniMax-M3',
+    local: false,
+    authRequired: true,
+  },
+  {
     id: 'mistral',
     label: 'Mistral AI',
     iconProvider: 'mistral',
     apiUrl: 'https://api.mistral.ai/v1',
     officialUrl: 'https://docs.mistral.ai/api/',
     defaultModel: 'mistral-large-latest',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'cohere',
-    label: 'Cohere',
-    iconProvider: 'cohere',
-    apiUrl: 'https://api.cohere.com/v2',
-    officialUrl: 'https://docs.cohere.com/reference/about',
-    defaultModel: 'command-r-plus',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'groq',
-    label: 'Groq',
-    iconProvider: 'groq',
-    apiUrl: 'https://api.groq.com/openai/v1',
-    officialUrl: 'https://console.groq.com/docs/api-reference',
-    defaultModel: 'llama-3.3-70b-versatile',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'togetherai',
-    label: 'Together AI',
-    iconProvider: 'togetherai',
-    apiUrl: 'https://api.together.xyz/v1',
-    officialUrl: 'https://docs.together.ai/reference',
-    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'fireworks-ai',
-    label: 'Fireworks AI',
-    iconProvider: 'fireworks-ai',
-    apiUrl: 'https://api.fireworks.ai/inference/v1',
-    officialUrl: 'https://docs.fireworks.ai/api-reference/introduction',
-    defaultModel: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
     local: false,
     authRequired: true,
   },
@@ -202,27 +172,6 @@ export const MODEL_PROVIDERS: ModelProviderMeta[] = [
     apiUrl: 'https://api-inference.modelscope.cn/v1',
     officialUrl: 'https://modelscope.cn/docs/model-service/API-Inference/intro',
     defaultModel: 'Qwen/Qwen2.5-72B-Instruct',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'nvidia',
-    label: 'NVIDIA NIM',
-    iconProvider: 'nvidia',
-    apiUrl: 'https://integrate.api.nvidia.com/v1',
-    officialUrl:
-      'https://docs.nvidia.com/nim/large-language-models/latest/getting-started.html',
-    defaultModel: 'meta/llama-3.1-70b-instruct',
-    local: false,
-    authRequired: true,
-  },
-  {
-    id: 'cerebras',
-    label: 'Cerebras',
-    iconProvider: 'cerebras',
-    apiUrl: 'https://api.cerebras.ai/v1',
-    officialUrl: 'https://inference-docs.cerebras.ai/api-reference',
-    defaultModel: 'llama3.1-70b',
     local: false,
     authRequired: true,
   },
@@ -287,24 +236,19 @@ const PROVIDER_ALIASES: Record<string, string> = {
   anthropic: 'anthropic',
   azure: 'azure',
   bedrock: 'bedrock',
-  cerebras: 'cerebras',
   claude: 'anthropic',
   cloudflare: 'cloudflare-workers-ai',
   'cloudflare-workers-ai': 'cloudflare-workers-ai',
-  cohere: 'cohere',
   dashscope: 'qwen',
   deepseek: 'deepseek',
-  fireworks: 'fireworks-ai',
-  'fireworks-ai': 'fireworks-ai',
   gemini: 'google',
   google: 'google',
-  groq: 'groq',
   lmstudio: 'lmstudio',
   modelscope: 'modelscope',
   moonshot: 'moonshotai',
   moonshotai: 'moonshotai',
+  minimax: 'minimax',
   mistral: 'mistral',
-  nvidia: 'nvidia',
   ollama: 'ollama',
   openai: 'openai',
   openrouter: 'openrouter',
@@ -313,8 +257,6 @@ const PROVIDER_ALIASES: Record<string, string> = {
   sglang: 'sglang',
   siliconcloud: 'siliconcloud',
   siliconflow: 'siliconcloud',
-  together: 'togetherai',
-  togetherai: 'togetherai',
   vllm: 'vllm',
   xai: 'xai',
   zhipu: 'zhipuai',
@@ -371,17 +313,12 @@ export function inferModelProviderId(source: {
   if (combined.includes('dashscope') || combined.includes('qwen')) return 'qwen'
   if (combined.includes('zhipu') || combined.includes('glm')) return 'zhipuai'
   if (combined.includes('moonshot') || combined.includes('kimi')) return 'moonshotai'
+  if (combined.includes('minimax')) return 'minimax'
   if (combined.includes('mistral') || combined.includes('codestral')) return 'mistral'
-  if (combined.includes('cohere') || combined.includes('command-r')) return 'cohere'
-  if (combined.includes('groq')) return 'groq'
-  if (combined.includes('together')) return 'togetherai'
-  if (combined.includes('fireworks')) return 'fireworks-ai'
   if (combined.includes('siliconcloud') || combined.includes('siliconflow')) {
     return 'siliconcloud'
   }
   if (combined.includes('modelscope')) return 'modelscope'
-  if (combined.includes('nvidia')) return 'nvidia'
-  if (combined.includes('cerebras')) return 'cerebras'
   if (combined.includes('cloudflare')) return 'cloudflare-workers-ai'
   if (combined.includes('perplexity') || combined.includes('sonar')) return 'perplexity'
   if (combined.includes('x.ai') || combined.includes('grok')) return 'xai'
