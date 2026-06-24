@@ -12,7 +12,7 @@
 - 简历编辑器支持基本信息、头像、自定义字段、模块增删改名、折叠、排序和富文本要点编辑。
 - 中间区域支持真实 A4 预览，PDF 导出入口已改为保存当前版本后调用后端导出服务。
 - 模板系统支持内置模板、自定义模板、默认模板、只读内置模板、创建可编辑副本、布局/字体/颜色/背景/装饰图片配置。
-- 大模型配置支持远程和本地模型服务，包括 OpenAI、Anthropic、OpenRouter、Ollama、vLLM、SGLang 等 provider 元信息。
+- 大模型配置已收敛为云端 provider、本地 OpenAI-compatible runtime、自定义云端 API 三种模式；云端和本地 provider 由后端 manifest 和模型发现接口驱动。
 - Agent 对话栏已接入后端接口，输入框支持附件和模型选择。
 - Agent 普通 JSON 与 SSE 流式响应格式已固定。
 - i18n 已拆分为动态 JSON；登录页默认跟随系统语言，不支持时 fallback 到英文。

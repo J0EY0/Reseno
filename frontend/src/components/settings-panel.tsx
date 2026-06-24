@@ -23,7 +23,6 @@ import type {
   ModelConfig,
   ThemeMode,
 } from "@/types/resume";
-import { getModelProviderMeta } from "@/lib/model-providers";
 
 import { PasswordField } from "@/components/auth/password-field";
 import { ModelProviderIcon } from "@/components/model-provider-icon";
@@ -176,13 +175,15 @@ export function SettingsPanel({
     null;
 
   function renderModelOption(config: ModelConfig) {
-    const provider = getModelProviderMeta(config.provider);
     const label =
       config.nickname.trim() || config.model.trim() || t.agentModelNotConfigured;
 
     return (
       <div className="flex min-w-0 items-center gap-2">
-        <ModelProviderIcon provider={provider.iconProvider} size={18} />
+        <ModelProviderIcon
+          provider={config.iconProvider || config.provider}
+          size={18}
+        />
         <span className="truncate">{label}</span>
       </div>
     );

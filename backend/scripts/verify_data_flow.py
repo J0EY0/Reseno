@@ -36,6 +36,8 @@ def main() -> None:
                 json={
                     "id": "llm-script",
                     "provider": "openai",
+                    "providerKind": "custom",
+                    "apiFamily": "openai_compatible_chat",
                     "nickname": "Script",
                     "apiKey": "sk-script-workspace-secret",
                     "model": "gpt-5.1",
@@ -43,7 +45,6 @@ def main() -> None:
                     "temperature": 0.4,
                     "topP": 0.9,
                     "maxTokens": None,
-                    "systemPrompt": "script",
                 },
             )
             assert model_saved.status_code == 200

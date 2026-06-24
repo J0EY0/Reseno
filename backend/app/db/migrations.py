@@ -1,12 +1,7 @@
-import os
 from pathlib import Path
 from sqlite3 import Connection
 
 from app.db.connection import connect
-from app.services.llm_secrets import (
-    encrypt_api_key,
-    mask_api_key,
-)
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -16,89 +11,6 @@ def _table_columns(conn: Connection, table_name: str) -> set[str]:
 
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row["name"] for row in rows}
-
-
-def _migrate_llm_configs_schema(conn: Connection) -> None:
-    """Upgrade legacy LLM config rows into the encrypted-key schema."""
-
-    columns = _table_columns(conn, "llm_configs")
-    required_columns = {
-        "client_id",
-        "encrypted_api_key",
-        "api_key_preview",
-        "top_p",
-        "system_prompt",
-    }
-    if not columns or required_columns.issubset(columns):
-        return
-
-    legacy_rows = conn.execute(
-        """
-        SELECT *
-        FROM llm_configs
-        ORDER BY id ASC
-        """,
-    ).fetchall()
-
-    conn.execute("ALTER TABLE llm_configs RENAME TO llm_configs_legacy")
-    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-
-    for row in legacy_rows:
-        env_name = row["api_key_env_name"] if "api_key_env_name" in columns else None
-        api_key = os.getenv(env_name) if isinstance(env_name, str) else None
-        encrypted_api_key = encrypt_api_key(api_key) if api_key else None
-        api_key_preview = mask_api_key(api_key) if api_key else ""
-        client_id = f"llm-db-{row['id']}"
-
-        conn.execute(
-            """
-            INSERT INTO llm_configs (
-                client_id,
-                name,
-                provider,
-                model,
-                base_url,
-                encrypted_api_key,
-                api_key_preview,
-                temperature,
-                max_tokens,
-                timeout_seconds,
-                enabled,
-                is_default,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                client_id,
-                row["name"],
-                row["provider"],
-                row["model"],
-                row["base_url"],
-                encrypted_api_key,
-                api_key_preview,
-                row["temperature"],
-                row["max_tokens"],
-                row["timeout_seconds"],
-                row["enabled"],
-                row["is_default"],
-                row["created_at"],
-                row["updated_at"],
-            ),
-        )
-
-    conn.execute("DROP TABLE llm_configs_legacy")
-
-
-def _ensure_llm_configs_token_columns(conn: Connection) -> None:
-    """Add token-limit columns introduced after the encrypted-key schema."""
-
-    columns = _table_columns(conn, "llm_configs")
-    if "context_window_tokens" not in columns:
-        conn.execute(
-            "ALTER TABLE llm_configs ADD COLUMN context_window_tokens INTEGER",
-        )
 
 
 def _ensure_resume_lifecycle_columns(conn: Connection) -> None:
@@ -172,8 +84,6 @@ def migrate_db() -> None:
 
     with connect() as conn:
         conn.executescript(schema)
-        _migrate_llm_configs_schema(conn)
-        _ensure_llm_configs_token_columns(conn)
         _ensure_resume_lifecycle_columns(conn)
         _ensure_template_lifecycle_columns(conn)
         _ensure_workspace_state_schema(conn)

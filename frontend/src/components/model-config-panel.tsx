@@ -8,7 +8,6 @@ import {
   getModelDisplayName,
 } from '@/lib/model-config'
 import { deleteModelConfig } from '@/lib/model-config-api'
-import { getModelProviderMeta } from '@/lib/model-providers'
 import type { ModelConfig } from '@/types/resume'
 
 import { ModelConfigFormPopover } from '@/components/model-config-form-popover'
@@ -41,11 +40,12 @@ export function ModelConfigPanel({
         accessorKey: 'model',
         header: t.model,
         cell: ({ row }) => {
-          const provider = getModelProviderMeta(row.original.provider)
-
           return (
             <div className="flex min-w-[220px] items-center gap-3">
-              <ModelProviderIcon provider={provider.iconProvider} size={22} />
+              <ModelProviderIcon
+                provider={row.original.iconProvider || row.original.provider}
+                size={22}
+              />
               <div className="grid min-w-0 gap-1">
                 <span
                   className="truncate font-medium text-foreground"
@@ -76,37 +76,30 @@ export function ModelConfigPanel({
         ),
       },
       {
-        accessorKey: 'temperature',
-        header: () => <span className="block text-center">{t.temperature}</span>,
-        cell: ({ row }) => (
-          <div className="flex justify-center">
-            <span className="font-medium">
-              {row.original.temperature.toFixed(1)}
-            </span>
-          </div>
-        ),
-      },
-      {
-        accessorKey: 'topP',
-        header: () => <span className="block text-center">{t.topP}</span>,
-        cell: ({ row }) => (
-          <div className="flex justify-center">
-            <span className="font-medium">
-              {row.original.topP.toFixed(2)}
-            </span>
-          </div>
-        ),
-      },
-      {
-        accessorKey: 'maxTokens',
-        header: () => <span className="block text-center">{t.maxTokens}</span>,
+        accessorKey: 'contextWindowTokens',
+        header: () => <span className="block text-center">{t.contextWindow}</span>,
         cell: ({ row }) => (
           <div className="flex justify-center">
             <span className="font-medium tabular-nums">
-              {typeof row.original.maxTokens === 'number'
-                ? row.original.maxTokens
-                : '—'}
+              {row.original.contextWindowTokens}
             </span>
+          </div>
+        ),
+      },
+      {
+        accessorKey: 'supportsImage',
+        header: () => <span className="block text-center">{t.capabilities}</span>,
+        cell: ({ row }) => (
+          <div className="flex justify-center gap-1">
+            {row.original.supportsImage ? (
+              <Badge variant="outline">{t.imageInput}</Badge>
+            ) : null}
+            {row.original.supportsThinking ? (
+              <Badge variant="outline">{t.thinking}</Badge>
+            ) : null}
+            {!row.original.supportsImage && !row.original.supportsThinking ? (
+              <span className="text-muted-foreground">—</span>
+            ) : null}
           </div>
         ),
       },

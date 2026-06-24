@@ -76,9 +76,6 @@ def _system_parts(
     elif mode == "streaming_final":
         parts.append(STREAMING_FINAL_RESPONSE_PROMPTS[request.locale])
 
-    if config.system_prompt.strip():
-        parts.append(config.system_prompt.strip())
-
     return parts
 
 

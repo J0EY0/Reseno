@@ -42,6 +42,7 @@ def _tool_call_assistant_message(
     content: str,
     tool_calls: list[LlmToolCall],
     reasoning: str = "",
+    provider_steps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Serialize a model tool-call choice back into chat history."""
 
@@ -62,6 +63,8 @@ def _tool_call_assistant_message(
     }
     if reasoning:
         message["reasoning_content"] = reasoning
+    if provider_steps:
+        message["provider_steps"] = provider_steps
 
     return message
 
@@ -137,6 +140,7 @@ async def async_iter_agent_tool_call_loop(
                 response.content,
                 tool_calls,
                 response.reasoning,
+                response.provider_steps,
             ),
         )
         tool_messages: list[dict[str, Any]] = []

@@ -209,30 +209,46 @@ export interface ResumeTemplateDefinition {
 export interface ModelConfig {
   id: string
   provider: string
+  providerLabel: string
+  iconProvider: string
+  providerKind: 'cloud' | 'local' | 'custom'
+  apiFamily:
+    | 'openai_responses'
+    | 'openai_compatible_chat'
+    | 'anthropic_messages'
+    | 'google_gemini'
   nickname: string
   apiKeyPreview: string
   model: string
   apiUrl: string
-  temperature: number
-  topP: number
+  temperature: number | null
+  topP: number | null
   maxTokens: number | null
-  contextWindowTokens: number | null
-  systemPrompt: string
+  contextWindowTokens: number
+  supportsImage: boolean
+  supportsThinking: boolean
+  thinkingEnabled: boolean
 }
 
 export interface LegacyModelConfig {
   provider?: string
+  providerLabel?: string
+  iconProvider?: string
   nickname?: string
   apiKey?: string
   apiKeyPreview?: string
   model?: string
   apiUrl?: string
+  providerKind?: 'cloud' | 'local' | 'custom'
+  apiFamily?: ModelConfig['apiFamily']
   temperature?: number
   topP?: number
   topK?: number
   maxTokens?: number | null
   contextWindowTokens?: number | null
-  systemPrompt?: string
+  supportsImage?: boolean
+  supportsThinking?: boolean
+  thinkingEnabled?: boolean
 }
 
 export interface AgentSettings {

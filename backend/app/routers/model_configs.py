@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.db.connection import connect
 from app.schemas.common import ApiResponse, ok_response
@@ -33,7 +33,17 @@ def post_model_config(
     """Create or update one encrypted model config."""
 
     with connect() as conn:
-        response = upsert_llm_config(conn, request)
+        try:
+            response = upsert_llm_config(conn, request)
+        except ValueError as exc:
+            detail = str(exc) or "BAD_REQUEST"
+            if detail not in {
+                "MODEL_DISCOVERY_FAILED",
+                "MODEL_CONFIG_INVALID_PROVIDER",
+                "MODEL_CONFIG_MODEL_NOT_DISCOVERED",
+            }:
+                detail = "BAD_REQUEST"
+            raise HTTPException(status_code=400, detail=detail) from exc
 
     return ok_response(response)
 

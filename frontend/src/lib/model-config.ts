@@ -1,9 +1,8 @@
-import { getMessagesSync, type Locale } from '@/i18n'
+import type { Locale } from '@/i18n'
 import {
   DEFAULT_MODEL_PROVIDER_ID,
-  getProviderApiUrl,
-  getProviderDefaultModel,
   inferModelProviderId,
+  normalizeProviderId,
 } from '@/lib/model-providers'
 import type { LegacyModelConfig, ModelConfig } from '@/types/resume'
 
@@ -25,28 +24,30 @@ export function normalizeMaxTokens(value: unknown) {
   return Math.max(1, Math.round(value))
 }
 
-function getDefaultSystemPrompt(locale: Locale) {
-  return getMessagesSync(locale).defaultModelSystemPrompt
-}
-
 export function createDefaultModelConfig(
-  locale: Locale,
+  _locale: Locale,
   overrides: Partial<ModelConfig> = {},
 ): ModelConfig {
-  const provider = overrides.provider ?? DEFAULT_MODEL_PROVIDER_ID
+  const provider = normalizeProviderId(overrides.provider ?? DEFAULT_MODEL_PROVIDER_ID)
 
   return {
     id: '',
     provider,
+    providerLabel: provider,
+    iconProvider: provider,
+    providerKind: 'custom',
+    apiFamily: 'openai_compatible_chat',
     nickname: '',
     apiKeyPreview: '',
-    model: getProviderDefaultModel(provider),
-    apiUrl: getProviderApiUrl(provider),
-    temperature: 0.4,
-    topP: 0.9,
+    model: '',
+    apiUrl: '',
+    temperature: null,
+    topP: null,
     maxTokens: null,
-    contextWindowTokens: null,
-    systemPrompt: getDefaultSystemPrompt(locale),
+    contextWindowTokens: 32768,
+    supportsImage: false,
+    supportsThinking: false,
+    thinkingEnabled: false,
     ...overrides,
   }
 }
@@ -61,17 +62,21 @@ export function normalizeModelConfig(
 
   const raw = value as LegacyModelConfig & Partial<ModelConfig>
   const provider = inferModelProviderId(raw)
+  const providerKind = raw.providerKind ?? 'custom'
+  const apiFamily = raw.apiFamily ?? 'openai_compatible_chat'
   const temperature =
     typeof raw.temperature === 'number' && Number.isFinite(raw.temperature)
       ? raw.temperature
-      : 0.4
+      : null
   const topP =
     typeof raw.topP === 'number' && Number.isFinite(raw.topP)
       ? raw.topP
-      : 0.9
+      : null
 
   return createDefaultModelConfig(locale, {
     id: typeof raw.id === 'string' ? raw.id : '',
+    providerKind,
+    apiFamily,
     nickname:
       typeof raw.nickname === 'string' && raw.nickname.trim()
         ? raw.nickname
@@ -82,23 +87,30 @@ export function normalizeModelConfig(
       typeof raw.apiKeyPreview === 'string' && raw.apiKeyPreview.trim()
         ? raw.apiKeyPreview.trim()
         : '',
+    providerLabel:
+      typeof raw.providerLabel === 'string' && raw.providerLabel.trim()
+        ? raw.providerLabel.trim()
+        : provider,
+    iconProvider:
+      typeof raw.iconProvider === 'string' && raw.iconProvider.trim()
+        ? raw.iconProvider.trim()
+        : provider,
     model:
       typeof raw.model === 'string' && raw.model.trim()
         ? raw.model
-        : getProviderDefaultModel(provider),
+        : '',
     provider,
     apiUrl:
       typeof raw.apiUrl === 'string' && raw.apiUrl.trim()
         ? raw.apiUrl
-        : getProviderApiUrl(provider),
-    temperature: clampTemperature(temperature),
-    topP: clampTopP(topP),
+        : '',
+    temperature: temperature === null ? null : clampTemperature(temperature),
+    topP: topP === null ? null : clampTopP(topP),
     maxTokens: normalizeMaxTokens(raw.maxTokens),
-    contextWindowTokens: normalizeMaxTokens(raw.contextWindowTokens),
-    systemPrompt:
-      typeof raw.systemPrompt === 'string' && raw.systemPrompt.trim()
-        ? raw.systemPrompt
-        : getDefaultSystemPrompt(locale),
+    contextWindowTokens: normalizeMaxTokens(raw.contextWindowTokens) ?? 32768,
+    supportsImage: Boolean(raw.supportsImage),
+    supportsThinking: Boolean(raw.supportsThinking),
+    thinkingEnabled: Boolean(raw.thinkingEnabled && raw.supportsThinking),
   })
 }
 

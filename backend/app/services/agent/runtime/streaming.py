@@ -474,6 +474,16 @@ async def async_stream_agent_response(
             yield chunk
         on_complete_message(on_complete, message)
         return
+    if _request_has_image_files(request) and not config.supports_image:
+        message = _model_error_message(
+            request,
+            config,
+            LlmRequestError("Selected model does not support image input."),
+        )
+        for chunk in stream_agent_message(message):
+            yield chunk
+        on_complete_message(on_complete, message)
+        return
 
     draft: AgentChatMessage | None = None
     message_id = f"agent-msg-{uuid4().hex[:12]}"
@@ -741,3 +751,16 @@ def on_complete_message(
 
     if callback:
         callback(message)
+
+
+def _request_has_image_files(request: AgentChatRequest) -> bool:
+    return any(_is_image_file(file) for file in request.files)
+
+
+def _is_image_file(file: dict[str, Any]) -> bool:
+    media_type = file.get("mediaType") or file.get("mimeType") or ""
+    if isinstance(media_type, str) and media_type.lower().startswith("image/"):
+        return True
+
+    filename = str(file.get("filename") or "").lower()
+    return filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))

@@ -62,6 +62,11 @@ from app.services.llm_client import (
     LlmToolCall,
     LlmToolCallResponse,
 )
+from app.services.model_discovery_cache import (
+    MODEL_DISCOVERY_CACHE_NAME,
+    write_cached_provider_models,
+)
+from app.services.model_providers import DiscoveredModel
 
 
 def minimal_resume_item(
@@ -145,6 +150,8 @@ def create_agent_model_config(client: TestClient) -> dict:
         json={
             "id": "llm-agent",
             "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
             "nickname": "Agent Model",
             "apiKey": "sk-agent-secret",
             "model": "gpt-5.1",
@@ -152,11 +159,300 @@ def create_agent_model_config(client: TestClient) -> dict:
             "temperature": 0.4,
             "topP": 0.9,
             "maxTokens": 1200,
-            "systemPrompt": "",
         },
     )
     assert response.status_code == 200
     return response.json()["data"]
+
+
+def test_model_provider_manifest_includes_local_runtimes(
+    client: TestClient,
+) -> None:
+    response = client.get("/api/model-providers")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 0
+    providers = payload["data"]["providers"]
+    provider_ids = [provider["id"] for provider in providers]
+
+    assert "ollama" in provider_ids
+    assert "vllm" in provider_ids
+    assert "sglang" in provider_ids
+    assert "local" not in provider_ids
+
+    ollama = next(provider for provider in providers if provider["id"] == "ollama")
+    assert ollama["label"] == "Ollama"
+    assert ollama["kind"] == "local"
+    assert ollama["supportsModelDiscovery"] is False
+
+
+def test_model_provider_manifest_includes_requested_cloud_providers(
+    client: TestClient,
+) -> None:
+    response = client.get("/api/model-providers")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 0
+    providers = payload["data"]["providers"]
+    providers_by_id = {provider["id"]: provider for provider in providers}
+
+    assert providers_by_id["moonshot"]["label"] == "Moonshot AI"
+    assert providers_by_id["moonshot"]["kind"] == "cloud"
+    assert providers_by_id["glm"]["label"] == "Z.ai"
+    assert providers_by_id["glm"]["kind"] == "cloud"
+    assert providers_by_id["xai"]["label"] == "xAI"
+    assert providers_by_id["xai"]["kind"] == "cloud"
+
+
+def test_local_model_provider_does_not_offer_model_discovery(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "ollama",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "http://localhost:11434/v1",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 40000
+    assert payload["message"] == "MODEL_DISCOVERY_FAILED"
+
+
+def test_deepseek_model_provider_discovers_from_deepseek_route(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
+        assert url == "https://api.deepseek.com/models"
+        assert headers["Authorization"] == "Bearer sk-deepseek-secret"
+        return {"data": [{"id": "deepseek-chat"}]}
+
+    monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "deepseek",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://api.deepseek.com",
+            "apiKey": "sk-deepseek-secret",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 0
+    assert payload["data"]["models"][0]["id"] == "deepseek-chat"
+
+
+def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class ForbiddenOpenAIClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            raise AssertionError("Model discovery routes must be explicit.")
+
+    expected_routes = {
+        "openai": (
+            "openai_responses",
+            "https://api.openai.com/v1",
+            "https://api.openai.com/v1/models",
+        ),
+        "anthropic": (
+            "anthropic_messages",
+            "https://api.anthropic.com/v1",
+            "https://api.anthropic.com/v1/models",
+        ),
+        "google": (
+            "google_gemini",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "https://generativelanguage.googleapis.com/v1beta/models",
+        ),
+        "deepseek": (
+            "openai_compatible_chat",
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/models",
+        ),
+        "qwen": (
+            "openai_compatible_chat",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        ),
+        "minimax": (
+            "openai_compatible_chat",
+            "https://api.minimax.io/v1",
+            "https://api.minimax.io/v1/models",
+        ),
+        "glm": (
+            "openai_compatible_chat",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://open.bigmodel.cn/api/paas/v4/models",
+        ),
+        "moonshot": (
+            "openai_compatible_chat",
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.ai/v1/models",
+        ),
+        "xai": (
+            "openai_responses",
+            "https://api.x.ai/v1",
+            "https://api.x.ai/v1/models",
+        ),
+    }
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
+        calls.append((url, dict(headers)))
+        return {
+            "data": [{"id": "test-chat"}],
+            "models": [
+                {
+                    "name": "models/test-chat",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.model_providers.OpenAI",
+        ForbiddenOpenAIClient,
+        raising=False,
+    )
+    monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
+
+    for provider_id, (api_family, api_url, expected_url) in expected_routes.items():
+        payload = {
+            "provider": provider_id,
+            "apiFamily": api_family,
+            "apiUrl": api_url,
+            "refresh": True,
+        }
+        payload["apiKey"] = f"sk-{provider_id}-secret"
+
+        response = client.post("/api/model-providers/discover-models", json=payload)
+
+        assert response.status_code == 200
+        assert response.json()["code"] == 0
+        assert calls[-1][0] == expected_url
+        headers = calls[-1][1]
+        if provider_id == "anthropic":
+            assert headers["x-api-key"] == payload["apiKey"]
+            assert headers["anthropic-version"]
+        elif provider_id == "google":
+            assert headers["x-goog-api-key"] == payload["apiKey"]
+        else:
+            assert headers["Authorization"] == f"Bearer {payload['apiKey']}"
+
+
+def test_model_provider_discovery_reads_cached_models_without_refresh(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    write_cached_provider_models(
+        "deepseek",
+        [
+            DiscoveredModel(
+                id="deepseek-cached",
+                label="deepseek-cached",
+                context_window_tokens=65536,
+                max_output_tokens=4096,
+                supports_image=False,
+                supports_thinking=True,
+                metadata_source="provider",
+            ),
+        ],
+    )
+
+    def fail_discovery(**_: object) -> list[DiscoveredModel]:
+        raise AssertionError("cached discovery should not call provider")
+
+    monkeypatch.setattr(
+        "app.routers.model_providers.discover_provider_models",
+        fail_discovery,
+    )
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "deepseek",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://api.deepseek.com",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["source"] == "cache"
+    assert data["models"][0]["id"] == "deepseek-cached"
+
+
+def test_model_provider_discovery_refresh_writes_cache(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fake_discovery(**_: object) -> list[DiscoveredModel]:
+        return [
+            DiscoveredModel(
+                id="deepseek-live",
+                label="deepseek-live",
+                context_window_tokens=131072,
+                max_output_tokens=8192,
+                supports_image=True,
+                supports_thinking=True,
+                metadata_source="provider",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "app.routers.model_providers.discover_provider_models",
+        fake_discovery,
+    )
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "deepseek",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://api.deepseek.com",
+            "apiKey": "sk-deepseek-secret",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["source"] == "provider"
+    assert data["models"][0]["id"] == "deepseek-live"
+    assert (get_settings().data_dir / MODEL_DISCOVERY_CACHE_NAME).exists()
+
+    def fail_discovery(**_: object) -> list[DiscoveredModel]:
+        raise AssertionError("cache read should not call provider after refresh")
+
+    monkeypatch.setattr(
+        "app.routers.model_providers.discover_provider_models",
+        fail_discovery,
+    )
+
+    cached_response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "deepseek",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://api.deepseek.com",
+        },
+    )
+
+    assert cached_response.status_code == 200
+    assert cached_response.json()["data"]["source"] == "cache"
+    assert cached_response.json()["data"]["models"][0]["id"] == "deepseek-live"
 
 
 def parse_agent_stream_message(body: str) -> dict:
@@ -881,6 +1177,8 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
         json={
             "id": "llm-api",
             "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
             "nickname": "API",
             "apiKey": "sk-new-secret",
             "model": "gpt-5.1",
@@ -888,7 +1186,6 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
             "temperature": 0.4,
             "topP": 0.9,
             "maxTokens": None,
-            "systemPrompt": "test",
         },
     )
     list_response = client.get("/api/model-configs")
@@ -948,6 +1245,8 @@ def test_model_config_resolves_litellm_token_limits(
         json={
             "id": "llm-token-limits",
             "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
             "nickname": "Token Limits",
             "apiKey": "sk-token-secret",
             "model": "gpt-5.1",
@@ -955,7 +1254,6 @@ def test_model_config_resolves_litellm_token_limits(
             "temperature": 0.4,
             "topP": 0.9,
             "maxTokens": 999999,
-            "systemPrompt": "test",
         },
     )
 
@@ -979,6 +1277,99 @@ def test_model_config_resolves_litellm_token_limits(
     assert row is not None
     assert row["context_window_tokens"] == 131072
     assert row["max_tokens"] == 8192
+
+
+def test_cloud_model_config_stores_provider_defaults(
+    client: TestClient,
+) -> None:
+    write_cached_provider_models(
+        "openai",
+        [
+            DiscoveredModel(
+                id="gpt-cloud",
+                label="gpt-cloud",
+                context_window_tokens=131072,
+                max_output_tokens=8192,
+                supports_image=True,
+                supports_thinking=True,
+                metadata_source="provider",
+            ),
+        ],
+    )
+
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "openai",
+            "providerKind": "cloud",
+            "apiFamily": "openai_responses",
+            "nickname": "Cloud",
+            "apiKey": "sk-cloud-secret",
+            "model": "gpt-cloud",
+            "apiUrl": "https://api.openai.com/v1",
+            "temperature": 0.4,
+            "topP": 0.9,
+            "maxTokens": 4096,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["temperature"] is None
+    assert data["topP"] is None
+    assert data["maxTokens"] is None
+    assert data["contextWindowTokens"] == 131072
+    assert data["supportsImage"] is True
+    assert data["supportsThinking"] is True
+    assert data["thinkingEnabled"] is True
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT temperature, top_p, max_tokens
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            (data["id"],),
+        ).fetchone()
+
+    assert row is not None
+    assert row["temperature"] is None
+    assert row["top_p"] is None
+    assert row["max_tokens"] is None
+
+
+def test_local_model_config_stores_manual_capabilities(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "ollama",
+            "providerKind": "local",
+            "apiFamily": "openai_compatible_chat",
+            "nickname": "Local Vision",
+            "model": "llava:latest",
+            "apiUrl": "http://localhost:11434/v1",
+            "contextWindowTokens": 65536,
+            "maxTokens": 4096,
+            "supportsImage": True,
+            "supportsThinking": True,
+            "thinkingEnabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["provider"] == "ollama"
+    assert data["providerKind"] == "local"
+    assert data["temperature"] is None
+    assert data["topP"] is None
+    assert data["contextWindowTokens"] == 65536
+    assert data["maxTokens"] == 4096
+    assert data["supportsImage"] is True
+    assert data["supportsThinking"] is True
+    assert data["thinkingEnabled"] is True
 
 
 def test_model_metadata_cache_is_prepared_before_config_save(
@@ -1064,6 +1455,8 @@ def test_model_config_save_does_not_fetch_model_metadata(
         json={
             "id": "llm-no-fetch",
             "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
             "nickname": "No Fetch",
             "apiKey": "sk-no-fetch-secret",
             "model": "unknown-model",
@@ -1071,13 +1464,12 @@ def test_model_config_save_does_not_fetch_model_metadata(
             "temperature": 0.4,
             "topP": 0.9,
             "maxTokens": 4096,
-            "systemPrompt": "test",
         },
     )
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["contextWindowTokens"] is None
+    assert data["contextWindowTokens"] == 32768
     assert data["maxTokens"] == 4096
 
 
@@ -1085,6 +1477,8 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
     payload = {
         "id": "llm-noop",
         "provider": "openai",
+        "providerKind": "custom",
+        "apiFamily": "openai_compatible_chat",
         "nickname": "Noop",
         "apiKey": "sk-noop-secret",
         "model": "gpt-5.1",
@@ -1092,7 +1486,6 @@ def test_identical_model_config_does_not_update_row(client: TestClient) -> None:
         "temperature": 0.4,
         "topP": 0.9,
         "maxTokens": None,
-        "systemPrompt": "test",
     }
 
     first_response = client.post("/api/model-configs", json=payload)
@@ -1305,7 +1698,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         top_p=0.9,
         max_tokens=None,
         timeout_seconds=60,
-        system_prompt="",
         context_window_tokens=1600,
     )
     conversation = [
@@ -1451,7 +1843,6 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         top_p=0.9,
         max_tokens=None,
         timeout_seconds=60,
-        system_prompt="",
         context_window_tokens=4096,
     )
     request = AgentChatRequest(
@@ -2752,7 +3143,6 @@ def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> N
         top_p=0.9,
         max_tokens=None,
         timeout_seconds=60,
-        system_prompt="",
         context_window_tokens=4096,
     )
     request = AgentChatRequest(

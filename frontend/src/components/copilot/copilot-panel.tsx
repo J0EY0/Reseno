@@ -93,10 +93,6 @@ import {
   replaceAgentSession,
   sendAgentChatMessage,
 } from "@/lib/agent-api";
-import {
-  getModelProviderMeta,
-  inferModelProviderId,
-} from "@/lib/model-providers";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   getVisibleCompletedTools,
@@ -127,6 +123,9 @@ import type {
 
 const AGENT_REQUEST_DEBOUNCE_MS = 420;
 const MAX_ATTACHMENT_TEXT_LENGTH = 16_000;
+const TEXT_ATTACHMENT_ACCEPT =
+  "application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const IMAGE_ATTACHMENT_ACCEPT = `image/*,${TEXT_ATTACHMENT_ACCEPT}`;
 const TEXT_ATTACHMENT_PATTERN =
   /^(text\/|application\/json|application\/xml|application\/.*\+json)/i;
 const JOB_BRIEF_PROMPT_PATTERN = new RegExp(
@@ -148,9 +147,10 @@ interface AgentPanelMessage {
 }
 
 function getModelProvider(config: ModelConfig) {
-  const provider = getModelProviderMeta(inferModelProviderId(config));
-
-  return { id: provider.iconProvider, label: provider.label };
+  return {
+    id: config.iconProvider || config.provider,
+    label: config.providerLabel || config.provider,
+  };
 }
 
 function escapeRegExp(value: string) {
@@ -1864,6 +1864,11 @@ export function CopilotPanel({
                       )}
                     >
                       <PromptInput
+                        accept={
+                          selectedModel?.supportsImage
+                            ? IMAGE_ATTACHMENT_ACCEPT
+                            : TEXT_ATTACHMENT_ACCEPT
+                        }
                         globalDrop
                         multiple
                         onSubmit={submitPrompt}

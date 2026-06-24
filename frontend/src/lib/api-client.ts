@@ -64,6 +64,8 @@ export const apiRoutes = {
     `/api/templates/${templateId}/restore`,
   templateTrashEmpty: "/api/templates/trash",
   modelConfigs: "/api/model-configs",
+  modelProviders: "/api/model-providers",
+  modelProviderDiscovery: "/api/model-providers/discover-models",
   agentSettings: "/api/agent/settings",
   agentResumeSession: (resumeId: string) =>
     `/api/agent/resumes/${encodeURIComponent(resumeId)}/session`,

@@ -605,6 +605,8 @@ GET    /api/model-configs
 POST   /api/model-configs
 PUT    /api/model-configs/:id
 DELETE /api/model-configs/:id
+GET    /api/model-providers
+POST   /api/model-providers/discover-models
 
 GET    /api/agent/settings
 PUT    /api/agent/settings
@@ -698,14 +700,25 @@ type ResumeTemplateDefinition = {
 type ModelConfig = {
   id: string
   provider: string
+  providerLabel: string
+  iconProvider: string
+  providerKind: "cloud" | "local" | "custom"
+  apiFamily:
+    | "openai_responses"
+    | "openai_compatible_chat"
+    | "anthropic_messages"
+    | "google_gemini"
   nickname?: string
   apiKeyPreview: string
   model: string
   apiUrl: string
-  temperature: number
-  topP: number
+  temperature: number | null
+  topP: number | null
   maxTokens: number | null
-  systemPrompt: string
+  contextWindowTokens: number
+  supportsImage: boolean
+  supportsThinking: boolean
+  thinkingEnabled: boolean
 }
 ```
 
@@ -737,14 +750,23 @@ type ModelConfigsResponse = {
 type ModelConfigUpsertRequest = {
   id: string
   provider: string
+  providerKind: "cloud" | "local" | "custom"
+  apiFamily:
+    | "openai_responses"
+    | "openai_compatible_chat"
+    | "anthropic_messages"
+    | "google_gemini"
   nickname?: string
   apiKey?: string
   model: string
   apiUrl: string
-  temperature?: number
-  topP?: number
+  temperature?: number | null
+  topP?: number | null
   maxTokens?: number | null
-  systemPrompt?: string
+  contextWindowTokens?: number | null
+  supportsImage?: boolean
+  supportsThinking?: boolean
+  thinkingEnabled?: boolean
   isDefault?: boolean
 }
 ```
@@ -753,6 +775,65 @@ type ModelConfigUpsertRequest = {
 
 ```ts
 type ModelConfigUpsertResponse = ModelConfig
+```
+
+### GET `/api/model-providers`
+
+用途：返回后端维护的 provider manifest。前端只用它渲染选项和默认 API
+地址，不自行维护云端 provider 清单。
+
+响应数据：
+
+```ts
+type ModelProvidersResponse = {
+  providers: Array<{
+    id: string
+    label: string
+    kind: "cloud" | "local" | "custom"
+    apiFamily: ModelConfig["apiFamily"] | null
+    iconProvider: string
+    defaultBaseUrl: string
+    officialUrl: string
+    authRequired: boolean
+    supportsModelDiscovery: boolean
+    supportsCustomCapabilities: boolean
+  }>
+}
+```
+
+### POST `/api/model-providers/discover-models`
+
+用途：用用户提供的 API Key 和 API 地址即时获取当前 provider 支持的模型
+列表。刷新获取的模型列表会写入本地模型发现缓存，普通请求优先返回缓存。
+
+请求：
+
+```ts
+type DiscoverModelsRequest = {
+  provider: string
+  apiFamily?: ModelConfig["apiFamily"]
+  apiUrl: string
+  apiKey?: string
+  configId?: string
+  refresh?: boolean
+}
+```
+
+响应数据：
+
+```ts
+type DiscoverModelsResponse = {
+  models: Array<{
+    id: string
+    label: string
+    contextWindowTokens: number
+    maxOutputTokens: number | null
+    supportsImage: boolean
+    supportsThinking: boolean
+    metadataSource: "provider" | "litellm" | "fallback" | string
+  }>
+  source: "cache" | "provider"
+}
 ```
 
 ### DELETE `/api/model-configs/{id}`

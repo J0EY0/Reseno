@@ -7,8 +7,9 @@ const LOBE_PROVIDER_ALIASES: Record<string, string> = {
   "google-vertex": "google",
   "google-vertex-anthropic": "anthropic",
   moonshotai: "moonshot",
-  zhipuai: "zhipu",
 };
+
+const ZAI_PROVIDER_IDS = new Set(["glm", "zai", "zhipu", "zhipuai"]);
 
 type LobeProviderIconProps = {
   className?: string;
@@ -30,6 +31,9 @@ let providerIconLoadFailed = false;
 let qwenIconPromise: Promise<LobeCompoundIcon | null> | null = null;
 let cachedQwenIcon: LobeCompoundIcon | null = null;
 let qwenIconLoadFailed = false;
+let zaiIconPromise: Promise<LobeCompoundIcon | null> | null = null;
+let cachedZaiIcon: LobeCompoundIcon | null = null;
+let zaiIconLoadFailed = false;
 
 const loadProviderIcon = () => {
   if (cachedProviderIcon || providerIconLoadFailed) {
@@ -68,6 +72,24 @@ const loadQwenIcon = () => {
   return qwenIconPromise;
 };
 
+const loadZaiIcon = () => {
+  if (cachedZaiIcon || zaiIconLoadFailed) {
+    return Promise.resolve(cachedZaiIcon);
+  }
+
+  zaiIconPromise ??= import("@lobehub/icons")
+    .then((module) => {
+      cachedZaiIcon = module.ZAI as LobeCompoundIcon;
+      return cachedZaiIcon;
+    })
+    .catch(() => {
+      zaiIconLoadFailed = true;
+      return null;
+    });
+
+  return zaiIconPromise;
+};
+
 export function ModelProviderIcon({
   provider,
   className,
@@ -82,6 +104,8 @@ export function ModelProviderIcon({
   const [LoadedProviderIcon, setLoadedProviderIcon] =
     useState<ComponentType<LobeProviderIconProps> | null>(null);
   const [LoadedQwenIcon, setLoadedQwenIcon] =
+    useState<LobeCompoundIcon | null>(null);
+  const [LoadedZaiIcon, setLoadedZaiIcon] =
     useState<LobeCompoundIcon | null>(null);
 
   useEffect(() => {
@@ -109,6 +133,24 @@ export function ModelProviderIcon({
     loadQwenIcon().then((component) => {
       if (mounted && component) {
         setLoadedQwenIcon(() => component);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [provider]);
+
+  useEffect(() => {
+    if (!ZAI_PROVIDER_IDS.has(provider)) {
+      return;
+    }
+
+    let mounted = true;
+
+    loadZaiIcon().then((component) => {
+      if (mounted && component) {
+        setLoadedZaiIcon(() => component);
       }
     });
 
@@ -148,6 +190,28 @@ export function ModelProviderIcon({
 
     return (
       <QwenIcon
+        className={cn("shrink-0 text-foreground", className)}
+        size={size}
+        type={type}
+      />
+    );
+  }
+
+  if (ZAI_PROVIDER_IDS.has(provider)) {
+    const ZaiIcon = type === "avatar" ? LoadedZaiIcon?.Avatar : LoadedZaiIcon;
+
+    if (!ZaiIcon) {
+      return (
+        <span
+          aria-hidden="true"
+          className={cn("inline-block shrink-0", className)}
+          style={{ height: size, width: size }}
+        />
+      );
+    }
+
+    return (
+      <ZaiIcon
         className={cn("shrink-0 text-foreground", className)}
         size={size}
         type={type}
