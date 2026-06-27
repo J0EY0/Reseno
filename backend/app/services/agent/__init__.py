@@ -1,9 +1,3 @@
-from app.services.llm_client import (
-    complete_chat,
-    complete_chat_stream,
-    complete_chat_tool_call,
-)
-
 from .agent import ResumeAgent
 from .integrations import (
     WebReference,
@@ -37,8 +31,5 @@ __all__ = [
     "_search_web_reference",
     "_search_web_reference_summary",
     "async_stream_agent_response",
-    "complete_chat",
-    "complete_chat_stream",
-    "complete_chat_tool_call",
     "stream_agent_message",
 ]

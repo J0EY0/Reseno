@@ -7,7 +7,7 @@ from app.schemas.agent import (
     AgentConversationItem,
     AgentResumeEditSuggestion,
 )
-from app.services.llm_client import AgentLlmConfig
+from app.services.llm import AgentLlmConfig
 
 from ..executor import (
     _active_resume,

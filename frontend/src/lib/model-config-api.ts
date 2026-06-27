@@ -9,6 +9,8 @@ export interface DiscoveredModel {
   maxOutputTokens: number | null
   supportsImage: boolean
   supportsThinking: boolean
+  supportsTools: boolean
+  supportsStreaming: boolean
   metadataSource: string
 }
 

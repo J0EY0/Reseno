@@ -40,6 +40,8 @@ def get_model_providers() -> ApiResponse[ModelProvidersResponse]:
             authRequired=provider.auth_required,
             supportsModelDiscovery=provider.supports_model_discovery,
             supportsCustomCapabilities=provider.supports_custom_capabilities,
+            supportsTools=provider.supports_tools,
+            supportsStreaming=provider.supports_streaming,
         )
         for provider in list_model_providers()
     ]
@@ -54,7 +56,11 @@ def discover_models(
     """Discover models for one provider without persisting credentials."""
 
     provider = get_model_provider(request.provider)
-    if provider is None or not provider.supports_model_discovery:
+    if (
+        provider is None
+        or provider.kind != "cloud"
+        or not provider.supports_model_discovery
+    ):
         raise HTTPException(status_code=400, detail="MODEL_DISCOVERY_FAILED")
 
     api_family = request.api_family or provider.api_family
@@ -72,6 +78,8 @@ def discover_models(
                         maxOutputTokens=model.max_output_tokens,
                         supportsImage=model.supports_image,
                         supportsThinking=model.supports_thinking,
+                        supportsTools=model.supports_tools,
+                        supportsStreaming=model.supports_streaming,
                         metadataSource=model.metadata_source,
                     )
                     for model in (read_cached_provider_models(provider.id) or [])
@@ -90,7 +98,10 @@ def discover_models(
         models = discover_provider_models(
             provider_id=provider.id,
             api_family=api_family,
-            api_url=request.api_url or provider.default_base_url,
+            # Discovery cache is keyed by official cloud provider. Custom-cloud
+            # and local endpoints do not participate, so use the backend manifest
+            # route instead of letting request-scoped URLs poison the cache.
+            api_url=provider.default_base_url,
             api_key=api_key,
         )
     except ModelDiscoveryError as exc:
@@ -114,6 +125,8 @@ def discover_models(
                     maxOutputTokens=model.max_output_tokens,
                     supportsImage=model.supports_image,
                     supportsThinking=model.supports_thinking,
+                    supportsTools=model.supports_tools,
+                    supportsStreaming=model.supports_streaming,
                     metadataSource=model.metadata_source,
                 )
                 for model in models

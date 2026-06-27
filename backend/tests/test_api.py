@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -55,18 +56,24 @@ from app.services.agent.section_registry import (
 from app.services.agent.tools import registry as tool_registry
 from app.services.agent.tools.runner import AgentToolRunner
 from app.services.auth_tokens import create_access_token
-from app.services.llm_client import (
+from app.services.llm import (
     AgentLlmConfig,
+    LlmAssistantMessage,
     LlmRequestError,
-    LlmStreamDelta,
+    LlmStreamEvent,
     LlmToolCall,
-    LlmToolCallResponse,
 )
 from app.services.model_discovery_cache import (
     MODEL_DISCOVERY_CACHE_NAME,
     write_cached_provider_models,
 )
 from app.services.model_providers import DiscoveredModel
+
+ASYNC_COMPLETE_TOOL_CALL_PATH = (
+    "app.services.agent.runtime.loop.async_complete_tool_call"
+)
+ASYNC_COMPLETE_CHAT_PATH = "app.services.agent.runtime.streaming.async_complete_chat"
+ASYNC_STREAM_CHAT_PATH = "app.services.agent.runtime.streaming.async_stream_chat"
 
 
 def minimal_resume_item(
@@ -185,6 +192,8 @@ def test_model_provider_manifest_includes_local_runtimes(
     assert ollama["label"] == "Ollama"
     assert ollama["kind"] == "local"
     assert ollama["supportsModelDiscovery"] is False
+    assert ollama["supportsTools"] is True
+    assert ollama["supportsStreaming"] is True
 
 
 def test_model_provider_manifest_includes_requested_cloud_providers(
@@ -200,6 +209,8 @@ def test_model_provider_manifest_includes_requested_cloud_providers(
 
     assert providers_by_id["moonshot"]["label"] == "Moonshot AI"
     assert providers_by_id["moonshot"]["kind"] == "cloud"
+    assert providers_by_id["moonshot"]["supportsTools"] is True
+    assert providers_by_id["moonshot"]["supportsStreaming"] is True
     assert providers_by_id["glm"]["label"] == "Z.ai"
     assert providers_by_id["glm"]["kind"] == "cloud"
     assert providers_by_id["xai"]["label"] == "xAI"
@@ -252,6 +263,60 @@ def test_deepseek_model_provider_discovers_from_deepseek_route(
     assert payload["data"]["models"][0]["id"] == "deepseek-chat"
 
 
+def test_model_provider_discovery_merges_litellm_metadata(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
+        assert url == "https://api.deepseek.com/models"
+        assert headers["Authorization"] == "Bearer sk-deepseek-secret"
+        return {"data": [{"id": "deepseek-v4-pro", "supports_vision": True}]}
+
+    monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_catalog",
+        lambda: {
+            "azure_ai/deepseek-v4-pro": {
+                "litellm_provider": "azure_ai",
+                "max_input_tokens": 200000,
+            },
+            "deepseek/deepseek-v4-pro": {
+                "litellm_provider": "deepseek",
+                "max_input_tokens": 1000000,
+                "max_output_tokens": 8192,
+                "supports_reasoning": True,
+                "supports_tool_choice": True,
+                "supports_vision": False,
+            },
+        },
+    )
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "deepseek",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://api.deepseek.com",
+            "apiKey": "sk-deepseek-secret",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    model = response.json()["data"]["models"][0]
+    assert model["id"] == "deepseek-v4-pro"
+    assert model["contextWindowTokens"] == 1000000
+    assert model["maxOutputTokens"] == 8192
+    assert model["supportsThinking"] is True
+    assert model["supportsTools"] is True
+    assert model["supportsImage"] is True
+    assert model["metadataSource"] == "litellm"
+
+
 def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
     client: TestClient,
     monkeypatch,
@@ -288,8 +353,8 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
         ),
         "minimax": (
             "openai_compatible_chat",
-            "https://api.minimax.io/v1",
-            "https://api.minimax.io/v1/models",
+            "https://api.minimaxi.com/v1",
+            "https://api.minimaxi.com/v1/models",
         ),
         "glm": (
             "openai_compatible_chat",
@@ -328,11 +393,11 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
     )
     monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
 
-    for provider_id, (api_family, api_url, expected_url) in expected_routes.items():
+    for provider_id, (api_family, _api_url, expected_url) in expected_routes.items():
         payload = {
             "provider": provider_id,
             "apiFamily": api_family,
-            "apiUrl": api_url,
+            "apiUrl": f"https://override.example/{provider_id}/v1",
             "refresh": True,
         }
         payload["apiKey"] = f"sk-{provider_id}-secret"
@@ -392,6 +457,8 @@ def test_model_provider_discovery_reads_cached_models_without_refresh(
     data = response.json()["data"]
     assert data["source"] == "cache"
     assert data["models"][0]["id"] == "deepseek-cached"
+    assert data["models"][0]["supportsTools"] is True
+    assert data["models"][0]["supportsStreaming"] is True
 
 
 def test_model_provider_discovery_refresh_writes_cache(
@@ -490,8 +557,12 @@ def post_agent_chat_stream(
 
 
 def stub_stream_text(text: str):
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta=text)
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta=text)
+        yield LlmStreamEvent(
+            type="done",
+            message=LlmAssistantMessage(content=text, stop_reason="stop"),
+        )
 
     return stream_response
 
@@ -556,25 +627,32 @@ def stub_tool_call_batches(
 ):
     pending = list(batches)
 
-    def call_tools(*_: object) -> LlmToolCallResponse:
+    async def call_tools(*_: object) -> LlmAssistantMessage:
         if pending:
-            return LlmToolCallResponse(content="", tool_calls=pending.pop(0))
+            return LlmAssistantMessage(content="", tool_calls=pending.pop(0))
 
-        return LlmToolCallResponse(content="", tool_calls=[])
+        return LlmAssistantMessage(content="", tool_calls=[])
 
     return call_tools
 
 
 def stub_tool_call_responses(
-    *responses: LlmToolCallResponse,
+    *responses: LlmAssistantMessage,
 ):
     pending = list(responses)
 
-    def call_tools(*_: object) -> LlmToolCallResponse:
+    async def call_tools(*_: object) -> LlmAssistantMessage:
         if pending:
             return pending.pop(0)
 
-        return LlmToolCallResponse(content="", tool_calls=[])
+        return LlmAssistantMessage(content="", tool_calls=[])
+
+    return call_tools
+
+
+def stub_terminal_tool_text(text: str):
+    async def call_tools(*_: object) -> LlmAssistantMessage:
+        return LlmAssistantMessage(content=text, tool_calls=[])
 
     return call_tools
 
@@ -1220,6 +1298,50 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
     assert row["enabled"] == 0
 
 
+def test_migrate_db_rebuilds_legacy_llm_configs_table(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.migrations import LLM_CONFIG_REQUIRED_COLUMNS, migrate_db
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE llm_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL
+            )
+            """,
+        )
+        conn.execute(
+            """
+            INSERT INTO llm_configs (client_id, name, provider, model)
+            VALUES ('llm-legacy', 'Legacy', 'openai', 'gpt-legacy')
+            """,
+        )
+
+    migrate_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(llm_configs)")
+        }
+        row_count = conn.execute("SELECT COUNT(*) FROM llm_configs").fetchone()[0]
+
+    assert LLM_CONFIG_REQUIRED_COLUMNS.issubset(columns)
+    assert row_count == 0
+    get_settings.cache_clear()
+
+
 def test_model_config_resolves_litellm_token_limits(
     client: TestClient,
     monkeypatch,
@@ -1235,6 +1357,10 @@ def test_model_config_resolves_litellm_token_limits(
                 "litellm_provider": "openai",
                 "max_input_tokens": 131072,
                 "max_output_tokens": 8192,
+            },
+            "openai/gpt-proxy": {
+                "litellm_provider": "azure_ai",
+                "max_input_tokens": 9999999,
             },
         },
     )
@@ -1321,12 +1447,14 @@ def test_cloud_model_config_stores_provider_defaults(
     assert data["contextWindowTokens"] == 131072
     assert data["supportsImage"] is True
     assert data["supportsThinking"] is True
+    assert data["supportsTools"] is True
+    assert data["supportsStreaming"] is True
     assert data["thinkingEnabled"] is True
 
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT temperature, top_p, max_tokens
+            SELECT temperature, top_p, max_tokens, supports_tools, supports_streaming
             FROM llm_configs
             WHERE client_id = ?
             """,
@@ -1337,6 +1465,8 @@ def test_cloud_model_config_stores_provider_defaults(
     assert row["temperature"] is None
     assert row["top_p"] is None
     assert row["max_tokens"] is None
+    assert row["supports_tools"] == 1
+    assert row["supports_streaming"] == 1
 
 
 def test_local_model_config_stores_manual_capabilities(
@@ -1355,6 +1485,8 @@ def test_local_model_config_stores_manual_capabilities(
             "maxTokens": 4096,
             "supportsImage": True,
             "supportsThinking": True,
+            "supportsTools": False,
+            "supportsStreaming": False,
             "thinkingEnabled": True,
         },
     )
@@ -1369,7 +1501,23 @@ def test_local_model_config_stores_manual_capabilities(
     assert data["maxTokens"] == 4096
     assert data["supportsImage"] is True
     assert data["supportsThinking"] is True
+    assert data["supportsTools"] is False
+    assert data["supportsStreaming"] is False
     assert data["thinkingEnabled"] is True
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT supports_tools, supports_streaming
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            (data["id"],),
+        ).fetchone()
+
+    assert row is not None
+    assert row["supports_tools"] == 0
+    assert row["supports_streaming"] == 0
 
 
 def test_model_metadata_cache_is_prepared_before_config_save(
@@ -1394,7 +1542,16 @@ def test_model_metadata_cache_is_prepared_before_config_save(
     )
 
     assert model_metadata.ensure_model_metadata_cache() is True
-    assert (tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME).exists()
+    cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
+    assert cache_path.exists()
+    cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert set(cache_data) == {"version", "source", "fetchedAt", "providers"}
+    assert cache_data["providers"]["openai"]["gpt-5.1"] == {
+        "sourceKey": "openai/gpt-5.1",
+        "contextWindowTokens": 131072,
+        "maxOutputTokens": 8192,
+    }
+    assert "gpt-proxy" not in cache_data["providers"]["openai"]
 
     metadata = model_metadata.resolve_model_metadata("openai", "gpt-5.1")
 
@@ -1413,13 +1570,21 @@ def test_model_metadata_cache_is_reused_without_refresh(
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
         json.dumps(
             {
-                "openai/gpt-5.1": {
-                    "litellm_provider": "openai",
-                    "max_input_tokens": 131072,
-                    "max_output_tokens": 8192,
+                "version": 1,
+                "source": "litellm:model_prices_and_context_window",
+                "fetchedAt": "2026-06-27T00:00:00+00:00",
+                "providers": {
+                    "openai": {
+                        "gpt-5.1": {
+                            "sourceKey": "openai/gpt-5.1",
+                            "contextWindowTokens": 131072,
+                            "maxOutputTokens": 8192,
+                        },
+                    },
                 },
             },
         ),
@@ -1434,6 +1599,110 @@ def test_model_metadata_cache_is_reused_without_refresh(
 
     assert model_metadata.ensure_model_metadata_cache() is True
     assert model_metadata.resolve_model_metadata("openai", "gpt-5.1") is not None
+    get_settings.cache_clear()
+
+
+def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "source": "litellm:model_prices_and_context_window",
+                "fetchedAt": "2026-06-01T00:00:00+00:00",
+                "providers": {
+                    "deepseek": {
+                        "deepseek-chat": {
+                            "sourceKey": "deepseek-chat",
+                            "contextWindowTokens": 131072,
+                            "maxOutputTokens": 8192,
+                        },
+                    },
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(model_metadata, "MODEL_METADATA_CACHE_TTL_SECONDS", -1)
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_catalog",
+        lambda: {
+            "deepseek-v4-pro": {
+                "litellm_provider": "deepseek",
+                "max_input_tokens": 1000000,
+                "max_output_tokens": 8192,
+                "supports_reasoning": True,
+                "supports_tool_choice": True,
+            },
+        },
+    )
+
+    assert model_metadata.ensure_model_metadata_cache() is True
+    metadata = model_metadata.resolve_model_metadata("deepseek", "deepseek-v4-pro")
+
+    assert metadata is not None
+    assert metadata.context_window_tokens == 1000000
+    assert metadata.max_output_tokens == 8192
+    assert metadata.supports_thinking is True
+    assert metadata.supports_tools is True
+    get_settings.cache_clear()
+
+
+def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.services import model_metadata
+
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "source": "litellm:model_prices_and_context_window",
+                "fetchedAt": "2026-06-01T00:00:00+00:00",
+                "providers": {
+                    "deepseek": {
+                        "deepseek-v4-pro": {
+                            "sourceKey": "deepseek/deepseek-v4-pro",
+                            "contextWindowTokens": 1000000,
+                        },
+                    },
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    model_metadata._CATALOG_CACHE = None
+    monkeypatch.setattr(
+        model_metadata,
+        "_fetch_catalog",
+        lambda: {
+            "openai/gpt-5.1": {
+                "litellm_provider": "openai",
+                "max_input_tokens": 131072,
+            },
+        },
+    )
+
+    assert model_metadata.refresh_model_metadata_cache(provider="deepseek") is False
+    metadata = model_metadata.resolve_model_metadata("deepseek", "deepseek-v4-pro")
+
+    assert metadata is not None
+    assert metadata.context_window_tokens == 1000000
     get_settings.cache_clear()
 
 
@@ -2358,7 +2627,7 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text(
             '{"text":"Real model response","suggestions":["Use TypeScript"],'
             '"knowledge":[{"title":"TypeScript","detail":"Prepare examples."}],'
@@ -2366,7 +2635,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -2504,11 +2773,11 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text('{"text":"已生成项目经历修改草稿"}'),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -2630,11 +2899,11 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
         "负责 Spring Boot、MySQL、Redis、Docker 和 SQL 优化。"
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text('{"text":"已生成项目经历草稿"}'),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call("call-analysis", "resume_analysis"),
@@ -2724,11 +2993,11 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
         "设计并实现订单模块，通过 SQL 优化将查询时间从 2s 降至 0.3s。"
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text('{"text":"已生成项目经历草稿"}'),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -3742,14 +4011,11 @@ def test_agent_chat_plain_message_does_not_return_tools(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
-        lambda *_: LlmToolCallResponse(
-            content="你好，我可以回答简历相关问题。",
-            tool_calls=[],
-        ),
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_terminal_tool_text("你好，我可以回答简历相关问题。"),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text("你好，我可以回答简历相关问题。"),
     )
 
@@ -3783,18 +4049,15 @@ def test_agent_chat_plain_stream_uses_final_completion(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
-        lambda *_: LlmToolCallResponse(
-            content="工具选择阶段的半截回答",
-            tool_calls=[],
-        ),
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_terminal_tool_text("工具选择阶段的半截回答"),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="最终")
-        yield LlmStreamDelta(kind="text", delta="完整回答")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="最终")
+        yield LlmStreamEvent(type="text_delta", delta="完整回答")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -3823,18 +4086,116 @@ def test_agent_chat_plain_stream_uses_final_completion(
     assert "工具选择阶段的半截回答" not in body
 
 
+def test_agent_chat_without_tool_support_still_streams_plain_response(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE llm_configs
+            SET supports_tools = 0
+            WHERE client_id = ?
+            """,
+            (model_config["id"],),
+        )
+
+    async def unexpected_tool_call(*_: object) -> object:
+        raise AssertionError("tool loop should be skipped for this model")
+
+    monkeypatch.setattr(ASYNC_COMPLETE_TOOL_CALL_PATH, unexpected_tool_call)
+    monkeypatch.setattr(
+        ASYNC_STREAM_CHAT_PATH,
+        stub_stream_text("这个模型不能调用工具，但可以直接回答问题。"),
+    )
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "你好",
+            "message": {"role": "user", "text": "你好"},
+            "messages": [{"role": "user", "text": "你好"}],
+            "conversation": [{"role": "user", "text": "你好"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert message["text"] == "这个模型不能调用工具，但可以直接回答问题。"
+    assert message["tools"] == []
+    assert message["edits"] == []
+
+
+def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE llm_configs
+            SET supports_tools = 0,
+                supports_streaming = 0
+            WHERE client_id = ?
+            """,
+            (model_config["id"],),
+        )
+
+    async def unexpected_tool_call(*_: object) -> object:
+        raise AssertionError("tool loop should be skipped for this model")
+
+    async def unexpected_stream(*_: object) -> object:
+        raise AssertionError("provider stream should be skipped for this model")
+
+    async def complete_response(*_: object) -> LlmAssistantMessage:
+        return LlmAssistantMessage(
+            content="这个模型不支持流式，但仍然可以直接回答问题。",
+            stop_reason="stop",
+        )
+
+    monkeypatch.setattr(ASYNC_COMPLETE_TOOL_CALL_PATH, unexpected_tool_call)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_stream)
+    monkeypatch.setattr(ASYNC_COMPLETE_CHAT_PATH, complete_response)
+
+    body, message = post_agent_chat_stream(
+        client,
+        {
+            "prompt": "你好",
+            "message": {"role": "user", "text": "你好"},
+            "messages": [{"role": "user", "text": "你好"}],
+            "conversation": [{"role": "user", "text": "你好"}],
+            "files": [],
+            "locale": "zh",
+            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert "text_delta" in body
+    assert message["text"] == "这个模型不支持流式，但仍然可以直接回答问题。"
+    assert message["tools"] == []
+    assert message["edits"] == []
+
+
 def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
     client: TestClient,
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-
-    def unexpected_final_completion(*_: object) -> str:
-        raise AssertionError("finish-only responses should not call final completion")
-
-    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -3878,15 +4239,8 @@ def test_agent_chat_material_gap_asks_followup_questions(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-
-    def unexpected_final_completion(*_: object) -> str:
-        raise AssertionError(
-            "finish-only material gap should not call final completion"
-        )
-
-    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -3933,15 +4287,10 @@ def test_agent_chat_reports_invalid_model_edit_operation(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-
-    def unexpected_final_completion(*_: object) -> str:
-        raise AssertionError("terminal loop text should not call final completion")
-
-    monkeypatch.setattr("app.services.agent.complete_chat", unexpected_final_completion)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="",
                 tool_calls=[
                     tool_call(
@@ -3966,7 +4315,7 @@ def test_agent_chat_reports_invalid_model_edit_operation(
                     ),
                 ],
             ),
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="需要补充 itemId 后才能继续生成可预览草稿。",
                 tool_calls=[],
             ),
@@ -4032,7 +4381,7 @@ def test_agent_model_error_does_not_return_llm_tool(
         raise LlmRequestError("provider unavailable")
 
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         raise_provider_error,
     )
 
@@ -4066,11 +4415,11 @@ def test_agent_chat_uses_provided_jd_url(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text('{"text":"Real model response for JD URL"}'),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4193,11 +4542,11 @@ def test_agent_chat_cleans_chinese_target_role(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_stream",
+        ASYNC_STREAM_CHAT_PATH,
         stub_stream_text('{"text":"已分析目标岗位"}'),
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4263,7 +4612,7 @@ def test_agent_chat_streams_role_research_web_summary(
         stub_web_search_summary,
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4283,7 +4632,7 @@ def test_agent_chat_streams_role_research_web_summary(
         ),
     )
 
-    def stream_response(
+    async def stream_response(
         _config: AgentLlmConfig,
         messages: list[dict],
         *_: object,
@@ -4293,12 +4642,12 @@ def test_agent_chat_streams_role_research_web_summary(
         web_context = payload["toolContext"]["webSearch"][0]
         assert web_context["purpose"] == "target_context"
         assert len(web_context["results"]) == 2
-        yield LlmStreamDelta(
-            kind="text",
+        yield LlmStreamEvent(
+            type="text_delta",
             delta="岗位情报：核心职责、技能要求、简历关键词。",
         )
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     _, message = post_agent_chat_stream(
         client,
@@ -4341,7 +4690,7 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         stub_web_search_summary,
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4361,7 +4710,7 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         ),
     )
 
-    def stream_response(
+    async def stream_response(
         _config: AgentLlmConfig,
         messages: list[dict],
         *_: object,
@@ -4373,15 +4722,15 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         assert analysis_context["missingKeywords"] == ["RAG", "evaluation"]
         assert analysis_context["targetFit"]["hasTargetContext"] is True
         assert payload["toolContext"]["webSearch"][0]["purpose"] == "target_context"
-        yield LlmStreamDelta(
-            kind="text",
+        yield LlmStreamEvent(
+            type="text_delta",
             delta=(
                 "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；"
                 "需要补充项目证据。"
             ),
         )
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     _, message = post_agent_chat_stream(
         client,
@@ -4450,7 +4799,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
         async_stub_jd_search,
     )
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4471,11 +4820,11 @@ def test_agent_chat_streams_tool_and_source_metadata(
         ),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="流式")
-        yield LlmStreamDelta(kind="text", delta="真实模型响应")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="流式")
+        yield LlmStreamEvent(type="text_delta", delta="真实模型响应")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -4546,9 +4895,9 @@ def test_agent_chat_streams_finish_blocked_without_visible_tools(
     def unexpected_stream(*_: object) -> object:
         raise AssertionError("finish-only responses should not stream final completion")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", unexpected_stream)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_stream)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4609,23 +4958,23 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="我先看一下当前简历内容。",
                 tool_calls=[tool_call("call-analysis", "resume_analysis")],
             ),
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="我发现简介比较短，下一步先整理可执行的修改方向。",
                 tool_calls=[tool_call("call-plan", "edit_plan")],
             ),
         ),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="最后给出草稿建议。")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="最后给出草稿建议。")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -4703,9 +5052,9 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     model_config = create_agent_model_config(client)
     monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="我先同时检查简历结构和岗位参考。",
                 tool_calls=[
                     tool_call("call-analysis", "resume_analysis"),
@@ -4722,10 +5071,10 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
         ),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="下一步会基于这些结果给出草稿。")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="下一步会基于这些结果给出草稿。")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -4793,23 +5142,23 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="我先读取当前简历。",
                 tool_calls=[tool_call("call-analysis", "resume_analysis")],
             ),
-            LlmToolCallResponse(
+            LlmAssistantMessage(
                 content="当前简历已经足够回答这个问题，我不会继续调用工具。",
                 tool_calls=[],
             ),
         ),
     )
 
-    def stream_response(*_: object) -> object:
+    async def stream_response(*_: object) -> object:
         raise AssertionError("terminal tool-loop text should not request final stream")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -4867,7 +5216,7 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     model_config = create_agent_model_config(client)
     monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -4891,11 +5240,11 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
         ),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="模型")
-        yield LlmStreamDelta(kind="text", delta="完成分析")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="模型")
+        yield LlmStreamEvent(type="text_delta", delta="完成分析")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -4966,18 +5315,15 @@ def test_agent_chat_streams_plain_model_tokens(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent.complete_chat_tool_call",
-        lambda *_: LlmToolCallResponse(
-            content="你好，我可以帮你看简历。",
-            tool_calls=[],
-        ),
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_terminal_tool_text("你好，我可以帮你看简历。"),
     )
 
-    def stream_response(*_: object) -> object:
-        yield LlmStreamDelta(kind="text", delta="你好，")
-        yield LlmStreamDelta(kind="text", delta="我可以帮你看简历。")
+    async def stream_response(*_: object) -> object:
+        yield LlmStreamEvent(type="text_delta", delta="你好，")
+        yield LlmStreamEvent(type="text_delta", delta="我可以帮你看简历。")
 
-    monkeypatch.setattr("app.services.agent.complete_chat_stream", stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",

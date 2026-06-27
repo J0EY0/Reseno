@@ -7,7 +7,7 @@ from app.schemas.agent import (
     AgentResumeEditSuggestion,
     AgentToolInvocation,
 )
-from app.services.llm_client import LlmToolCall
+from app.services.llm import LlmToolCall
 
 from ..compat import get_agent_api
 from ..editing import (

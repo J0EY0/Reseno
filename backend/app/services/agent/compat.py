@@ -1,36 +1,11 @@
-from collections.abc import Awaitable, Iterator
-from typing import Any, Protocol, cast
-
-from app.services.llm_client import (
-    AgentLlmConfig,
-    LlmStreamDelta,
-    LlmToolCallResponse,
-)
+from collections.abc import Awaitable
+from typing import Protocol, cast
 
 from .integrations import WebReference, WebSearchReference, WebSearchResult
 
 
 class AgentApi(Protocol):
-    """Legacy monkeypatch surface exposed through app.services.agent."""
-
-    def complete_chat(
-        self,
-        config: AgentLlmConfig,
-        messages: list[dict[str, Any]],
-    ) -> str: ...
-
-    def complete_chat_stream(
-        self,
-        config: AgentLlmConfig,
-        messages: list[dict[str, Any]],
-    ) -> Iterator[LlmStreamDelta]: ...
-
-    def complete_chat_tool_call(
-        self,
-        config: AgentLlmConfig,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-    ) -> LlmToolCallResponse: ...
+    """Monkeypatch surface for agent web integrations."""
 
     def _fetch_web_reference(self, url: str) -> WebReference | None: ...
 

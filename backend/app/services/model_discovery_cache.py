@@ -101,6 +101,8 @@ def _model_to_cache_item(model: DiscoveredModel) -> dict[str, Any]:
         "maxOutputTokens": model.max_output_tokens,
         "supportsImage": model.supports_image,
         "supportsThinking": model.supports_thinking,
+        "supportsTools": model.supports_tools,
+        "supportsStreaming": model.supports_streaming,
         "metadataSource": model.metadata_source,
     }
 
@@ -135,4 +137,10 @@ def _model_from_cache_item(item: object) -> DiscoveredModel | None:
         supports_image=bool(item.get("supportsImage")),
         supports_thinking=bool(item.get("supportsThinking")),
         metadata_source=metadata_source,
+        supports_tools=_optional_bool(item.get("supportsTools"), default=True),
+        supports_streaming=_optional_bool(item.get("supportsStreaming"), default=True),
     )
+
+
+def _optional_bool(value: object, *, default: bool) -> bool:
+    return value if isinstance(value, bool) else default

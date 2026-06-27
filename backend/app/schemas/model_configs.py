@@ -26,6 +26,8 @@ class ModelProviderResponse(BaseModel):
     auth_required: bool = Field(alias="authRequired")
     supports_model_discovery: bool = Field(alias="supportsModelDiscovery")
     supports_custom_capabilities: bool = Field(alias="supportsCustomCapabilities")
+    supports_tools: bool = Field(alias="supportsTools")
+    supports_streaming: bool = Field(alias="supportsStreaming")
 
 
 class ModelProvidersResponse(BaseModel):
@@ -45,6 +47,8 @@ class DiscoveredModelResponse(BaseModel):
     max_output_tokens: int | None = Field(default=None, alias="maxOutputTokens")
     supports_image: bool = Field(alias="supportsImage")
     supports_thinking: bool = Field(alias="supportsThinking")
+    supports_tools: bool = Field(alias="supportsTools")
+    supports_streaming: bool = Field(alias="supportsStreaming")
     metadata_source: str = Field(alias="metadataSource")
 
 
@@ -92,6 +96,8 @@ class ModelConfigUpsertRequest(BaseModel):
     )
     supports_image: bool = Field(default=False, alias="supportsImage")
     supports_thinking: bool = Field(default=False, alias="supportsThinking")
+    supports_tools: bool = Field(default=True, alias="supportsTools")
+    supports_streaming: bool = Field(default=True, alias="supportsStreaming")
     thinking_enabled: bool = Field(default=True, alias="thinkingEnabled")
 
 
@@ -116,6 +122,8 @@ class ModelConfigResponse(BaseModel):
     context_window_tokens: int = Field(alias="contextWindowTokens")
     supports_image: bool = Field(alias="supportsImage")
     supports_thinking: bool = Field(alias="supportsThinking")
+    supports_tools: bool = Field(alias="supportsTools")
+    supports_streaming: bool = Field(alias="supportsStreaming")
     thinking_enabled: bool = Field(alias="thinkingEnabled")
 
 

@@ -4,6 +4,32 @@ from sqlite3 import Connection
 from app.db.connection import connect
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+LLM_CONFIG_REQUIRED_COLUMNS = {
+    "id",
+    "client_id",
+    "name",
+    "provider",
+    "provider_kind",
+    "api_family",
+    "model",
+    "base_url",
+    "encrypted_api_key",
+    "api_key_preview",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "context_window_tokens",
+    "supports_image",
+    "supports_thinking",
+    "supports_tools",
+    "supports_streaming",
+    "thinking_enabled",
+    "timeout_seconds",
+    "enabled",
+    "is_default",
+    "created_at",
+    "updated_at",
+}
 
 
 def _table_columns(conn: Connection, table_name: str) -> set[str]:
@@ -61,20 +87,14 @@ def _ensure_workspace_state_schema(conn: Connection) -> None:
         )
 
 
-def _clear_llm_default_flags(conn: Connection) -> None:
-    """Clear legacy default-model preference stored on model config rows."""
+def _ensure_current_llm_config_schema(conn: Connection) -> None:
+    """Discard development-era model configs when the table shape is obsolete."""
 
     columns = _table_columns(conn, "llm_configs")
-    if "is_default" not in columns:
+    if not columns or LLM_CONFIG_REQUIRED_COLUMNS.issubset(columns):
         return
 
-    conn.execute(
-        """
-        UPDATE llm_configs
-        SET is_default = 0
-        WHERE is_default != 0
-        """,
-    )
+    conn.execute("DROP TABLE llm_configs")
 
 
 def migrate_db() -> None:
@@ -83,8 +103,8 @@ def migrate_db() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
 
     with connect() as conn:
+        _ensure_current_llm_config_schema(conn)
         conn.executescript(schema)
         _ensure_resume_lifecycle_columns(conn)
         _ensure_template_lifecycle_columns(conn)
         _ensure_workspace_state_schema(conn)
-        _clear_llm_default_flags(conn)

@@ -6,7 +6,11 @@ from typing import Any
 import httpx
 
 from app.schemas.model_configs import ApiFamily, ProviderKind
-from app.services.model_metadata import resolve_model_metadata
+from app.services.model_metadata import (
+    ModelMetadata,
+    ensure_provider_model_metadata,
+    resolve_model_metadata,
+)
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
 DISCOVERY_TIMEOUT_SECONDS = 12
@@ -30,6 +34,8 @@ class ModelProvider:
     auth_required: bool
     supports_model_discovery: bool
     supports_custom_capabilities: bool
+    supports_tools: bool = True
+    supports_streaming: bool = True
     model_list_path: str = "/models"
 
 
@@ -44,6 +50,8 @@ class DiscoveredModel:
     supports_image: bool
     supports_thinking: bool
     metadata_source: str
+    supports_tools: bool = True
+    supports_streaming: bool = True
 
 
 MODEL_PROVIDERS: tuple[ModelProvider, ...] = (
@@ -121,7 +129,7 @@ MODEL_PROVIDERS: tuple[ModelProvider, ...] = (
         kind="cloud",
         api_family="openai_compatible_chat",
         icon_provider="minimax",
-        default_base_url="https://api.minimax.io/v1",
+        default_base_url="https://api.minimaxi.com/v1",
         official_url="https://platform.minimax.io/docs",
         auth_required=True,
         supports_model_discovery=True,
@@ -268,6 +276,11 @@ def discover_provider_models(
         api_family=api_family,
         api_url=api_url,
         api_key=api_key,
+    )
+    raw_model_ids = [_model_id_from_raw(raw) for raw in raw_models]
+    ensure_provider_model_metadata(
+        provider.id,
+        [model_id for model_id in raw_model_ids if model_id],
     )
     normalized = [
         _normalize_discovered_model(provider.id, raw)
@@ -463,9 +476,26 @@ def _normalize_discovered_model(
         label=model_id,
         context_window_tokens=provider_context,
         max_output_tokens=provider_output,
-        supports_image=_supports_image(provider_id, model_id, raw),
-        supports_thinking=_supports_thinking(provider_id, model_id, raw),
+        supports_image=_supports_image(
+            provider_id,
+            model_id,
+            raw,
+            litellm_metadata,
+        ),
+        supports_thinking=_supports_thinking(
+            provider_id,
+            model_id,
+            raw,
+            litellm_metadata,
+        ),
         metadata_source=metadata_source,
+        supports_tools=_supports_tools(provider_id, model_id, raw, litellm_metadata),
+        supports_streaming=_supports_streaming(
+            provider_id,
+            model_id,
+            raw,
+            litellm_metadata,
+        ),
     )
 
 
@@ -506,39 +536,117 @@ def _is_text_generation_model(provider_id: str, model_id: str) -> bool:
     return True
 
 
-def _supports_image(provider_id: str, model_id: str, raw: dict[str, Any]) -> bool:
+def _supports_image(
+    provider_id: str,
+    model_id: str,
+    raw: dict[str, Any],
+    metadata: ModelMetadata | None,
+) -> bool:
     lowered = model_id.lower()
+    heuristic = False
     if provider_id == "google":
         methods = raw.get("supportedGenerationMethods")
         if isinstance(methods, list) and "generateContent" not in methods:
-            return False
-        return lowered.startswith("gemini-")
-    if provider_id == "openai":
-        return lowered.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4"))
-    if provider_id == "anthropic":
-        return lowered.startswith("claude-3") or lowered.startswith("claude-")
-    if provider_id == "qwen":
-        return "vl" in lowered or "omni" in lowered
-    if provider_id == "glm":
-        return "-v" in lowered or lowered.endswith("v") or "vision" in lowered
-    if provider_id == "minimax":
-        return "vl" in lowered or "vision" in lowered
+            heuristic = False
+        else:
+            heuristic = lowered.startswith("gemini-")
+    elif provider_id == "openai":
+        heuristic = lowered.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o3", "o4"))
+    elif provider_id == "anthropic":
+        heuristic = lowered.startswith("claude-3") or lowered.startswith("claude-")
+    elif provider_id == "qwen":
+        heuristic = "vl" in lowered or "omni" in lowered
+    elif provider_id == "glm":
+        heuristic = "-v" in lowered or lowered.endswith("v") or "vision" in lowered
+    elif provider_id == "minimax":
+        heuristic = "vl" in lowered or "vision" in lowered
 
-    return False
+    value = _metadata_bool(
+        metadata.supports_image if metadata is not None else None,
+        heuristic,
+    )
+    explicit = _explicit_bool(raw, "supports_image", "supportsImage", "supports_vision")
+    return explicit if explicit is not None else value
 
 
-def _supports_thinking(provider_id: str, model_id: str, raw: dict[str, Any]) -> bool:
+def _supports_thinking(
+    provider_id: str,
+    model_id: str,
+    raw: dict[str, Any],
+    metadata: ModelMetadata | None,
+) -> bool:
     lowered = model_id.lower()
+    heuristic = False
     if provider_id == "openai":
-        return lowered.startswith(("o1", "o3", "o4", "gpt-5"))
-    if provider_id == "anthropic":
-        return "3.7" in lowered or "4" in lowered or "sonnet" in lowered
-    if provider_id == "google":
-        return "2.5" in lowered or "thinking" in lowered
-    if provider_id in {"deepseek", "qwen", "glm", "minimax"}:
-        return "reason" in lowered or "thinking" in lowered or "-r1" in lowered
+        heuristic = lowered.startswith(("o1", "o3", "o4", "gpt-5"))
+    elif provider_id == "anthropic":
+        heuristic = "3.7" in lowered or "4" in lowered or "sonnet" in lowered
+    elif provider_id == "google":
+        heuristic = "2.5" in lowered or "thinking" in lowered
+    elif provider_id in {"deepseek", "qwen", "glm", "minimax"}:
+        heuristic = "reason" in lowered or "thinking" in lowered or "-r1" in lowered
 
-    return bool(raw.get("supports_reasoning") or raw.get("supportsThinking"))
+    explicit = _explicit_bool(raw, "supports_reasoning", "supportsThinking")
+    value = _metadata_bool(
+        metadata.supports_thinking if metadata is not None else None,
+        heuristic,
+    )
+    return explicit if explicit is not None else value
+
+
+def _supports_tools(
+    provider_id: str,
+    model_id: str,
+    raw: dict[str, Any],
+    metadata: ModelMetadata | None,
+) -> bool:
+    """Return whether the selected model can drive the agent tool loop."""
+
+    provider = get_model_provider(provider_id)
+    default = provider.supports_tools if provider is not None else True
+    value = _metadata_bool(
+        metadata.supports_tools if metadata is not None else None,
+        default,
+    )
+    explicit = _explicit_bool(
+        raw,
+        "supports_tools",
+        "supportsTools",
+        "supports_function_calling",
+        "supportsFunctionCalling",
+    )
+    return explicit if explicit is not None else value
+
+
+def _supports_streaming(
+    provider_id: str,
+    model_id: str,
+    raw: dict[str, Any],
+    metadata: ModelMetadata | None,
+) -> bool:
+    """Return whether the selected model can stream final agent responses."""
+
+    provider = get_model_provider(provider_id)
+    default = provider.supports_streaming if provider is not None else True
+    value = _metadata_bool(
+        metadata.supports_streaming if metadata is not None else None,
+        default,
+    )
+    explicit = _explicit_bool(raw, "supports_streaming", "supportsStreaming")
+    return explicit if explicit is not None else value
+
+
+def _metadata_bool(value: bool | None, fallback: bool) -> bool:
+    return value if value is not None else fallback
+
+
+def _explicit_bool(raw: dict[str, Any], *keys: str) -> bool | None:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            return value
+
+    return None
 
 
 def _normalized_base_url(api_url: str) -> str:

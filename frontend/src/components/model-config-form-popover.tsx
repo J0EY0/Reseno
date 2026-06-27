@@ -13,6 +13,8 @@ import { toast } from "sonner";
 
 import type { AppMessages, Locale } from "@/i18n";
 import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_MODEL_API_FAMILY,
   createDefaultModelConfig,
   normalizeMaxTokens,
 } from "@/lib/model-config";
@@ -67,7 +69,7 @@ type ModelConfigDraft = Omit<
 type ModelConfigErrors = Partial<Record<keyof ModelConfigDraft | "discovery", string>>;
 
 const PROVIDER_KIND_TAG_CLASS_NAME =
-  "shrink-0 rounded-full border border-border/60 bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground";
+  "inline-flex h-4 shrink-0 items-center rounded-full border border-border/60 bg-muted/50 px-1 text-[9px] leading-none text-muted-foreground";
 
 const CAPABILITY_CHECKBOX_CLASS_NAME =
   "size-5 shrink-0 rounded-md border border-border/70 accent-foreground";
@@ -106,7 +108,7 @@ function isValidContextWindow(value: string) {
 }
 
 function providerById(providers: ModelProviderMeta[], providerId: string) {
-  return providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null;
+  return providers.find((provider) => provider.id === providerId) ?? null;
 }
 
 function providerDisplayLabel(provider: ModelProviderMeta, t: AppMessages) {
@@ -130,6 +132,8 @@ function discoveredFromConfig(config?: ModelConfig): DiscoveredModel[] {
       maxOutputTokens: config.maxTokens,
       supportsImage: config.supportsImage,
       supportsThinking: config.supportsThinking,
+      supportsTools: config.supportsTools,
+      supportsStreaming: config.supportsStreaming,
       metadataSource: "saved",
     },
   ];
@@ -153,9 +157,13 @@ function toDraft(locale: Locale, config?: ModelConfig): ModelConfigDraft {
     topP: typeof source.topP === "number" ? String(source.topP) : "",
     maxTokens:
       typeof source.maxTokens === "number" ? String(source.maxTokens) : "",
-    contextWindowTokens: String(source.contextWindowTokens || 32768),
+    contextWindowTokens: String(
+      source.contextWindowTokens || DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ),
     supportsImage: source.supportsImage,
     supportsThinking: source.supportsThinking,
+    supportsTools: source.supportsTools,
+    supportsStreaming: source.supportsStreaming,
     thinkingEnabled: source.thinkingEnabled,
   };
 }
@@ -278,9 +286,11 @@ export function ModelConfigFormPopover({
               ...current,
               model: "",
               maxTokens: "",
-              contextWindowTokens: "32768",
+              contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
               supportsImage: false,
               supportsThinking: false,
+              supportsTools: true,
+              supportsStreaming: true,
               thinkingEnabled: false,
             };
           }
@@ -298,6 +308,8 @@ export function ModelConfigFormPopover({
               : "",
           supportsImage: selectedModel.supportsImage,
           supportsThinking: selectedModel.supportsThinking,
+          supportsTools: selectedModel.supportsTools,
+          supportsStreaming: selectedModel.supportsStreaming,
           thinkingEnabled: selectedModel.supportsThinking,
         };
       });
@@ -324,7 +336,9 @@ export function ModelConfigFormPopover({
         setProviders(nextProviders);
         setProvidersLoaded(true);
         setDraft((current) => {
-          const nextProvider = providerById(nextProviders, current.provider);
+          const nextProvider =
+            providerById(nextProviders, current.provider) ??
+            (initialConfig ? null : nextProviders[0]);
 
           if (!nextProvider) {
             return current;
@@ -347,8 +361,10 @@ export function ModelConfigFormPopover({
             ...current,
             provider: nextProvider.id,
             providerKind: nextProvider.kind,
-            apiFamily: nextProvider.apiFamily ?? "openai_compatible_chat",
+            apiFamily: nextProvider.apiFamily ?? DEFAULT_MODEL_API_FAMILY,
             apiUrl: nextProvider.defaultBaseUrl,
+            supportsTools: nextProvider.supportsTools,
+            supportsStreaming: nextProvider.supportsStreaming,
           };
         });
       })
@@ -417,8 +433,7 @@ export function ModelConfigFormPopover({
       return;
     }
 
-    const nextApiFamily =
-      nextProviderMeta.apiFamily ?? "openai_compatible_chat";
+    const nextApiFamily = nextProviderMeta.apiFamily ?? DEFAULT_MODEL_API_FAMILY;
 
     setDraft((current) => ({
       ...current,
@@ -432,9 +447,11 @@ export function ModelConfigFormPopover({
       temperature: "",
       topP: "",
       maxTokens: "",
-      contextWindowTokens: "32768",
+      contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
       supportsImage: false,
       supportsThinking: false,
+      supportsTools: nextProviderMeta.supportsTools,
+      supportsStreaming: nextProviderMeta.supportsStreaming,
       thinkingEnabled: false,
     }));
     setDiscoveredModels([]);
@@ -465,6 +482,8 @@ export function ModelConfigFormPopover({
           : "",
       supportsImage: model.supportsImage,
       supportsThinking: model.supportsThinking,
+      supportsTools: model.supportsTools,
+      supportsStreaming: model.supportsStreaming,
       thinkingEnabled: model.supportsThinking,
     }));
     setErrors((current) => {
@@ -527,6 +546,8 @@ export function ModelConfigFormPopover({
           model: "",
           supportsImage: false,
           supportsThinking: false,
+          supportsTools: selectedProvider?.supportsTools ?? true,
+          supportsStreaming: selectedProvider?.supportsStreaming ?? true,
           thinkingEnabled: false,
         }));
       }
@@ -584,7 +605,6 @@ export function ModelConfigFormPopover({
           name="model-name"
           autoComplete="off"
           value={draft.model}
-          placeholder={t.placeholders.modelName}
           aria-invalid={Boolean(errors.model)}
           onChange={(event) => updateField("model", event.target.value)}
         />
@@ -637,6 +657,8 @@ export function ModelConfigFormPopover({
       contextWindowTokens: Number(draft.contextWindowTokens),
       supportsImage: draft.supportsImage,
       supportsThinking,
+      supportsTools: draft.supportsTools,
+      supportsStreaming: draft.supportsStreaming,
       thinkingEnabled,
     };
 
@@ -794,9 +816,7 @@ export function ModelConfigFormPopover({
               ) : null}
             </div>
 
-            {usesManualModelSettings ? (
-              renderManualModelField(t.modelId)
-            ) : null}
+            {usesManualModelSettings ? renderManualModelField(t.model) : null}
 
             <label className="grid gap-2 text-sm">
               <FieldLabel
@@ -955,15 +975,13 @@ export function ModelConfigFormPopover({
                     <input
                       className={CAPABILITY_CHECKBOX_CLASS_NAME}
                       type="checkbox"
-                      checked
-                      readOnly
-                      aria-readonly="true"
+                      checked={draft.supportsTools}
+                      onChange={(event) =>
+                        updateField("supportsTools", event.target.checked)
+                      }
                     />
                     <span className="min-w-0 flex-1 truncate">
                       {t.toolUseCapability}
-                    </span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {t.requiredCapability}
                     </span>
                   </label>
                 </div>

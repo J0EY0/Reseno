@@ -14,7 +14,7 @@ from app.services.agent.runtime.events import (
     agent_tool_outcome,
 )
 from app.services.agent.tools.runner import AgentToolRunner
-from app.services.llm_client import LlmToolCall
+from app.services.llm import LlmToolCall
 
 
 @dataclass(frozen=True)

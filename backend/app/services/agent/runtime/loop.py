@@ -8,15 +8,15 @@ from app.schemas.agent import (
     AgentResumeEditSuggestion,
     AgentToolInvocation,
 )
-from app.services.llm_client import (
+from app.services.llm import (
     AgentLlmConfig,
+    LlmAssistantMessage,
+    LlmRequestError,
     LlmToolCall,
-    LlmToolCallResponse,
-    async_complete_chat_tool_call,
-    complete_chat_tool_call,
+    async_complete_tool_call,
 )
+from app.services.llm.validation import validation_error_observation
 
-from ..compat import get_agent_api
 from ..editing import _react_max_iterations
 from ..executor import AgentPlanExecutor
 from ..policy import capability_policy_for_request
@@ -42,7 +42,7 @@ def _tool_call_assistant_message(
     content: str,
     tool_calls: list[LlmToolCall],
     reasoning: str = "",
-    provider_steps: list[dict[str, Any]] | None = None,
+    provider_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize a model tool-call choice back into chat history."""
 
@@ -63,8 +63,8 @@ def _tool_call_assistant_message(
     }
     if reasoning:
         message["reasoning_content"] = reasoning
-    if provider_steps:
-        message["provider_steps"] = provider_steps
+    if provider_state:
+        message["provider_state"] = provider_state
 
     return message
 
@@ -74,22 +74,11 @@ async def _async_tool_call_response(
     messages: list[dict[str, Any]],
     runtime: AgentRuntimeContext,
     tool_schemas: list[dict[str, Any]],
-) -> LlmToolCallResponse:
-    """Return a tool-call response, preserving tests that monkeypatch sync calls."""
-
-    agent_api = get_agent_api()
-    sync_tool_call = agent_api.complete_chat_tool_call
-    if sync_tool_call is not complete_chat_tool_call:
-        return await runtime.run_sync(
-            sync_tool_call,
-            config,
-            messages,
-            tool_schemas,
-            timeout_seconds=config.timeout_seconds,
-        )
+) -> LlmAssistantMessage:
+    """Return a validated tool-call response through the async LLM runtime."""
 
     return await runtime.run_async(
-        async_complete_chat_tool_call,
+        async_complete_tool_call,
         config,
         messages,
         tool_schemas,
@@ -105,12 +94,18 @@ async def async_iter_agent_tool_call_loop(
     """Yield tool-loop state as each async model-selected action executes."""
 
     runtime = runtime or AgentRuntimeContext()
+    if not config.supports_tools:
+        # Tool support controls only the agent action loop. Models without it
+        # can still answer the user through the final chat-completion stream.
+        return
+
     executor = AgentPlanExecutor(request)
     runner = AgentToolRunner(executor)
     messages = build_agent_messages(request, config, mode="tools")
     max_iterations = _react_max_iterations(request)
     policy = capability_policy_for_request(request)
     tool_schemas = agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_retry_used = False
 
     for _ in range(max_iterations):
         await runtime.checkpoint()
@@ -120,6 +115,43 @@ async def async_iter_agent_tool_call_loop(
             runtime,
             tool_schemas,
         )
+        if response.stop_reason == "length":
+            raise LlmRequestError(
+                "Model output was truncated. Increase max output tokens or use "
+                "a model with a larger output budget.",
+            )
+        if response.validation_errors:
+            if schema_retry_used:
+                raise LlmRequestError(
+                    "Model tool arguments failed validation after retry.",
+                )
+
+            schema_retry_used = True
+            invalid_tool_calls = [
+                error.tool_call for error in response.validation_errors
+            ]
+            messages.append(
+                _tool_call_assistant_message(
+                    response.content,
+                    invalid_tool_calls,
+                    response.reasoning,
+                    response.provider_state,
+                ),
+            )
+            messages.extend(
+                {
+                    "role": "tool",
+                    "tool_call_id": error.tool_call.id,
+                    "content": json.dumps(
+                        validation_error_observation(error),
+                        ensure_ascii=False,
+                    ),
+                }
+                for error in response.validation_errors
+            )
+            continue
+
+        schema_retry_used = False
         if not response.tool_calls:
             if response.content:
                 runner.terminal_text = response.content
@@ -140,7 +172,7 @@ async def async_iter_agent_tool_call_loop(
                 response.content,
                 tool_calls,
                 response.reasoning,
-                response.provider_steps,
+                response.provider_state,
             ),
         )
         tool_messages: list[dict[str, Any]] = []

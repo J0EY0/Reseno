@@ -1,10 +1,8 @@
 import type { Locale } from '@/i18n'
-import {
-  DEFAULT_MODEL_PROVIDER_ID,
-  inferModelProviderId,
-  normalizeProviderId,
-} from '@/lib/model-providers'
 import type { LegacyModelConfig, ModelConfig } from '@/types/resume'
+
+export const DEFAULT_MODEL_API_FAMILY = 'openai_compatible_chat'
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
 
 export function clampTemperature(value: number) {
   const safe = Number.isFinite(value) ? value : 0
@@ -28,7 +26,8 @@ export function createDefaultModelConfig(
   _locale: Locale,
   overrides: Partial<ModelConfig> = {},
 ): ModelConfig {
-  const provider = normalizeProviderId(overrides.provider ?? DEFAULT_MODEL_PROVIDER_ID)
+  const provider =
+    typeof overrides.provider === 'string' ? overrides.provider.trim() : ''
 
   return {
     id: '',
@@ -36,7 +35,7 @@ export function createDefaultModelConfig(
     providerLabel: provider,
     iconProvider: provider,
     providerKind: 'custom',
-    apiFamily: 'openai_compatible_chat',
+    apiFamily: DEFAULT_MODEL_API_FAMILY,
     nickname: '',
     apiKeyPreview: '',
     model: '',
@@ -44,9 +43,11 @@ export function createDefaultModelConfig(
     temperature: null,
     topP: null,
     maxTokens: null,
-    contextWindowTokens: 32768,
+    contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
     supportsImage: false,
     supportsThinking: false,
+    supportsTools: true,
+    supportsStreaming: true,
     thinkingEnabled: false,
     ...overrides,
   }
@@ -61,9 +62,9 @@ export function normalizeModelConfig(
   }
 
   const raw = value as LegacyModelConfig & Partial<ModelConfig>
-  const provider = inferModelProviderId(raw)
+  const provider = typeof raw.provider === 'string' ? raw.provider.trim() : ''
   const providerKind = raw.providerKind ?? 'custom'
-  const apiFamily = raw.apiFamily ?? 'openai_compatible_chat'
+  const apiFamily = raw.apiFamily ?? DEFAULT_MODEL_API_FAMILY
   const temperature =
     typeof raw.temperature === 'number' && Number.isFinite(raw.temperature)
       ? raw.temperature
@@ -107,9 +108,12 @@ export function normalizeModelConfig(
     temperature: temperature === null ? null : clampTemperature(temperature),
     topP: topP === null ? null : clampTopP(topP),
     maxTokens: normalizeMaxTokens(raw.maxTokens),
-    contextWindowTokens: normalizeMaxTokens(raw.contextWindowTokens) ?? 32768,
+    contextWindowTokens:
+      normalizeMaxTokens(raw.contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
     supportsImage: Boolean(raw.supportsImage),
     supportsThinking: Boolean(raw.supportsThinking),
+    supportsTools: raw.supportsTools !== false,
+    supportsStreaming: raw.supportsStreaming !== false,
     thinkingEnabled: Boolean(raw.thinkingEnabled && raw.supportsThinking),
   })
 }

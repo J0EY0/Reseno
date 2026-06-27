@@ -11,16 +11,16 @@ from app.schemas.agent import (
     AgentKnowledgeItem,
     AgentTimelinePart,
 )
-from app.services.llm_client import (
+from app.services.llm import (
     AgentLlmConfig,
+    LlmAssistantMessage,
     LlmRequestError,
-    LlmStreamDelta,
-    async_complete_chat_stream,
-    complete_chat_stream,
+    LlmStreamEvent,
+    async_complete_chat,
+    async_stream_chat,
     resolve_agent_llm_config,
 )
 
-from ..compat import get_agent_api
 from ..editing import _string_list
 from ..localization import agent_text
 from ..parsing_patterns import agent_patterns
@@ -251,50 +251,30 @@ def _tool_stream_event(event_name: str, tool: dict[str, object]) -> str:
     )
 
 
-class _StreamDone:
-    """Sentinel used when a sync stream is exhausted."""
-
-
-_STREAM_DONE = _StreamDone()
-
-
-def _next_stream_delta(
-    iterator: Iterator[LlmStreamDelta],
-) -> LlmStreamDelta | _StreamDone:
-    """Return the next sync stream delta or a sentinel."""
-
-    try:
-        return next(iterator)
-    except StopIteration:
-        return _STREAM_DONE
-
-
-async def _complete_chat_stream_deltas(
+async def _complete_chat_stream_events(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
     runtime: AgentRuntimeContext,
-) -> AsyncIterator[LlmStreamDelta]:
-    """Yield provider stream deltas, preserving sync monkeypatches in tests."""
+) -> AsyncIterator[LlmStreamEvent]:
+    """Yield provider stream events inside the agent cancellation budget."""
 
-    await runtime.checkpoint()
-    agent_api = get_agent_api()
-    sync_stream = agent_api.complete_chat_stream
-    if sync_stream is not complete_chat_stream:
-        iterator = iter(sync_stream(config, messages))
-        while True:
-            delta = await runtime.run_sync(
-                _next_stream_delta,
-                iterator,
-                timeout_seconds=config.timeout_seconds,
-            )
-            if isinstance(delta, _StreamDone):
-                break
-            yield delta
+    if not config.supports_streaming:
+        await runtime.checkpoint()
+        message = await runtime.run_async(
+            async_complete_chat,
+            config,
+            messages,
+            timeout_seconds=config.timeout_seconds,
+        )
+        if message.content:
+            yield LlmStreamEvent(type="text_delta", delta=message.content)
+        yield LlmStreamEvent(type="done", message=message)
         return
 
-    async for delta in async_complete_chat_stream(config, messages):
+    await runtime.checkpoint()
+    async for event in async_stream_chat(config, messages):
         await runtime.checkpoint()
-        yield delta
+        yield event
 
 
 def _is_tool_running_state(state: str) -> bool:
@@ -503,7 +483,6 @@ async def async_stream_agent_response(
     )
 
     raw_parts: list[str] = []
-    reasoning_parts: list[str] = []
     timeline_parts: list[AgentTimelinePart] = []
     tool_part_ids: dict[str, str] = {}
     started_tool_ids: set[str] = set()
@@ -647,37 +626,48 @@ async def async_stream_agent_response(
         if raw_parts:
             raw_parts.append("\n\n")
         final_part_id = ""
-        async for delta in _complete_chat_stream_deltas(config, messages, runtime):
-            if delta.kind == "reasoning":
-                reasoning_parts.append(delta.delta)
+        stream_message: LlmAssistantMessage | None = None
+        async for stream_event in _complete_chat_stream_events(
+            config,
+            messages,
+            runtime,
+        ):
+            if stream_event.type == "done":
+                stream_message = stream_event.message
+                continue
+            if stream_event.type == "reasoning_delta":
+                # Reasoning is transient backend metadata; it is intentionally
+                # not streamed or persisted into user-visible agent messages.
+                continue
+
+            if stream_event.delta:
+                raw_parts.append(stream_event.delta)
+                if timeline_parts:
+                    if not final_part_id:
+                        final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
+                        timeline_parts.append(_timeline_text_part(final_part_id, ""))
+                    timeline_parts[-1].text = (
+                        timeline_parts[-1].text + stream_event.delta
+                    )
+                    yield _message_delta_event(
+                        "timeline",
+                        text="".join(raw_parts),
+                        timeline=_timeline_payload(timeline_parts),
+                    )
+                    continue
+
                 yield _sse_event(
-                    "reasoning_delta",
+                    "text_delta",
                     {
-                        "type": "reasoning_delta",
-                        "delta": delta.delta,
+                        "type": "text_delta",
+                        "delta": stream_event.delta,
                     },
                 )
-                continue
 
-            raw_parts.append(delta.delta)
-            if timeline_parts:
-                if not final_part_id:
-                    final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
-                    timeline_parts.append(_timeline_text_part(final_part_id, ""))
-                timeline_parts[-1].text = timeline_parts[-1].text + delta.delta
-                yield _message_delta_event(
-                    "timeline",
-                    text="".join(raw_parts),
-                    timeline=_timeline_payload(timeline_parts),
-                )
-                continue
-
-            yield _sse_event(
-                "text_delta",
-                {
-                    "type": "text_delta",
-                    "delta": delta.delta,
-                },
+        if stream_message and stream_message.stop_reason == "length":
+            raise LlmRequestError(
+                "Model output was truncated. Increase max output tokens or use "
+                "a model with a larger output budget.",
             )
 
         raw_response = "".join(raw_parts).strip()
@@ -711,7 +701,6 @@ async def async_stream_agent_response(
         on_complete_message(on_complete, message)
         return
 
-    reasoning = "".join(reasoning_parts).strip()
     if draft:
         message = _merge_llm_response(
             draft.model_copy(update={"timeline": timeline_parts}),
@@ -721,10 +710,7 @@ async def async_stream_agent_response(
         message = _direct_llm_response(
             raw_response,
             message_id=message_id,
-            reasoning=reasoning,
         )
-    if draft and reasoning:
-        message = message.model_copy(update={"reasoning": reasoning})
 
     yield _sse_event(
         "message_delta",

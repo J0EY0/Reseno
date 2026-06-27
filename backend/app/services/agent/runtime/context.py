@@ -4,7 +4,7 @@ from typing import Any, TypeVar
 
 import anyio
 
-from app.services.llm_client import LlmRequestError
+from app.services.llm import LlmRequestError
 
 DEFAULT_BLOCKING_TIMEOUT_SECONDS = 30.0
 

@@ -227,6 +227,8 @@ export interface ModelConfig {
   contextWindowTokens: number
   supportsImage: boolean
   supportsThinking: boolean
+  supportsTools: boolean
+  supportsStreaming: boolean
   thinkingEnabled: boolean
 }
 
@@ -248,6 +250,8 @@ export interface LegacyModelConfig {
   contextWindowTokens?: number | null
   supportsImage?: boolean
   supportsThinking?: boolean
+  supportsTools?: boolean
+  supportsStreaming?: boolean
   thinkingEnabled?: boolean
 }
 

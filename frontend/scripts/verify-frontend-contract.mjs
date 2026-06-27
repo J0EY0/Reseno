@@ -99,15 +99,28 @@ assert(
   "ModelConfig responses must carry backend provider display metadata.",
 );
 assert(
+  /interface ModelConfig[\s\S]*supportsTools:\s*boolean[\s\S]*supportsStreaming:\s*boolean/.test(
+    resumeTypes,
+  ),
+  "ModelConfig responses must carry agent-critical capability metadata.",
+);
+assert(
   !/export const MODEL_PROVIDERS|defaultBaseUrl:\s*["']|officialUrl:\s*["']|authRequired:\s*(true|false)/.test(
     modelProviders,
   ),
   "Frontend must not maintain provider manifest entries; use the backend manifest.",
 );
 assert(
-  /PROVIDER_ALIASES/.test(modelProviders) &&
-    /function normalizeProviderId/.test(modelProviders),
-  "Frontend provider helpers should only normalize aliases and infer legacy provider ids.",
+  !/PROVIDER_ALIASES|normalizeProviderId|inferModelProviderId|DEFAULT_MODEL_PROVIDER_ID/.test(
+    modelProviders,
+  ),
+  "Frontend must not normalize or infer provider ids; provider ids come from the backend manifest.",
+);
+assert(
+  /interface ModelProviderMeta[\s\S]*supportsTools:\s*boolean[\s\S]*supportsStreaming:\s*boolean/.test(
+    modelProviders,
+  ),
+  "Provider manifest metadata must expose agent-critical capabilities.",
 );
 
 assert(
@@ -179,10 +192,10 @@ assert(
   "Manual provider form state must cover local and custom providers.",
 );
 assert(
-  /usesManualModelSettings \? \([\s\S]*?t\.capabilities[\s\S]*?t\.visionCapability[\s\S]*?t\.reasoningCapability[\s\S]*?t\.toolUseCapability[\s\S]*?t\.requiredCapability[\s\S]*?t\.advancedSettings[\s\S]*?name="model-context-window"[\s\S]*?name="model-max-tokens"[\s\S]*?\) : null/.test(
+  /usesManualModelSettings \? \([\s\S]*?t\.capabilities[\s\S]*?t\.visionCapability[\s\S]*?t\.reasoningCapability[\s\S]*?t\.toolUseCapability[\s\S]*?t\.advancedSettings[\s\S]*?name="model-context-window"[\s\S]*?name="model-max-tokens"[\s\S]*?\) : null/.test(
     modelConfigForm,
   ),
-  "Manual model configs must expose capabilities, required tool calling, context window, and max output tokens.",
+  "Manual model configs must expose capabilities, context window, and max output tokens.",
 );
 assert(
   !/name="model-temperature"|name="model-top-p"/.test(modelConfigForm),
@@ -201,10 +214,10 @@ assert(
   "Manual model configs must submit configured capabilities.",
 );
 assert(
-  /checked[\s\S]*readOnly[\s\S]*aria-readonly="true"[\s\S]*t\.toolUseCapability/.test(
+  /checked=\{draft\.supportsTools\}[\s\S]*updateField\("supportsTools",\s*event\.target\.checked\)[\s\S]*t\.toolUseCapability/.test(
     modelConfigForm,
   ),
-  "Tool calling must be shown as a required manual model capability.",
+  "Manual model configs must let users declare tool support.",
 );
 assert(
   /ZAI_PROVIDER_IDS\s*=\s*new Set\(\[[\s\S]*"glm"[\s\S]*"zai"[\s\S]*"zhipu"[\s\S]*"zhipuai"[\s\S]*\]\)/.test(
