@@ -534,9 +534,9 @@ function StandardBasicInfo({
   layout: ResumeTemplateLayout
   summaryDiff?: ResumeDraftDiff
 }) {
-  const hasAvatar = Boolean(basic.avatar.trim())
   const isProfile = layout.basicInfo === 'profile'
   const avatarPosition = layout.avatarPosition
+  const hasAvatar = avatarPosition !== 'none' && Boolean(basic.avatar.trim())
   const shouldFloatSideAvatar =
     hasAvatar && !isProfile && avatarPosition !== 'center'
   const contactItems = getContactItems(basic)
@@ -664,12 +664,8 @@ function SidebarBasicInfo({
   summaryDiff?: ResumeDraftDiff
 }) {
   const contactItems = getContactItems(basic)
-
-  return (
-    <aside
-      className="flex min-h-[297mm] flex-col gap-8 px-7 py-10 text-white"
-      style={{ backgroundColor: settings.surfaceColor }}
-    >
+  const avatar =
+    layout.avatarPosition === 'none' ? null : (
       <AvatarPreview
         basic={basic}
         layout={layout}
@@ -679,6 +675,14 @@ function SidebarBasicInfo({
           layout.avatarShape === 'circle' ? 'size-[108px]' : 'h-[118px] w-[96px]',
         )}
       />
+    )
+
+  return (
+    <aside
+      className="flex min-h-[297mm] flex-col gap-8 px-7 py-10 text-white"
+      style={{ backgroundColor: settings.surfaceColor }}
+    >
+      {avatar}
 
       <div className="grid gap-2">
         <h1

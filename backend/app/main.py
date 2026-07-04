@@ -24,6 +24,7 @@ from app.routers import (
     model_configs,
     model_providers,
     resumes,
+    section_registry,
     templates,
     workspace,
 )
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(imports.router)
     app.include_router(model_providers.router)
     app.include_router(model_configs.router)
+    app.include_router(section_registry.router)
     app.include_router(agent.router)
     app.include_router(exports.router)
 

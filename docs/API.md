@@ -243,9 +243,11 @@ type WorkspaceVersionResponse = {
 
 ### POST `/api/exports/resume-pdf`
 
-用途：基于刚保存的简历版本生成 PDF。前端点击导出时必须先调用
-`PUT /api/workspace/snapshot` 保存当前版本，再调用该接口；PDF 生成由后端完成，
-前端不再在浏览器内渲染 PDF。
+用途：基于刚保存的简历版本生成 PDF。调用方必须先保存当前简历版本，
+再调用该接口；PDF 生成由后端完成。
+
+当前前端导出按钮默认通过同源隐藏 iframe 加载 `/pdf-export?print=1`，
+并触发浏览器原生打印/保存 PDF 对话框，不依赖该后端接口。
 
 请求：
 

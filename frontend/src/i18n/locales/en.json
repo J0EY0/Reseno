@@ -47,23 +47,28 @@
   "resumeGalleryHint": "Start from the resume gallery, then open a specific resume to edit.",
   "resumeEditorHint": "You are editing the current resume. Changes on the left sync to the live preview.",
   "createResume": "Create Resume",
-  "createResumeHint": "Start from a blank resume or import an existing JSON resume file.",
+  "createResumeHint": "Start from a blank resume or import a text-based PDF resume.",
   "newResume": "New",
   "newTemplate": "New",
   "importResume": "Import",
   "importResumeSuccess": "Resume imported",
-  "importResumeFailed": "Import failed. Check the JSON file format.",
+  "importResumeFailed": "Import failed. Confirm the PDF is not scanned, or check the JSON file format.",
+  "importedResumeFallbackSection": "Imported Content",
   "openResume": "Open Resume",
   "selected": "Selected",
   "backToResumes": "Back to Gallery",
   "backToTemplates": "Back to Templates",
   "searchResumesPlaceholder": "Search by name, title, email, or phone",
+  "emptyResumes": "No resumes",
+  "emptyResumeSearch": "No matching resumes",
   "searchTemplatesPlaceholder": "Search by template name or description",
+  "emptyTemplates": "No templates",
+  "emptyTemplateSearch": "No matching templates",
   "selectItems": "Select",
   "cancelSelection": "Cancel",
   "bulkDelete": "Batch Delete",
   "recycleBin": "Recycle Bin",
-  "trashHint": "Review deleted resumes and templates here, then restore or remove them permanently.",
+  "trashHint": "Deleted resumes and templates are kept temporarily. Restore them to keep editing. Permanently deleted items cannot be recovered.",
   "confirmDeleteAction": "Delete",
   "confirmDeleteResumeTitle": "Delete this resume?",
   "confirmDeleteResumeDescription": "This resume will first be moved to the recycle bin and can still be restored there.",
@@ -82,9 +87,10 @@
   "confirmEmptyTemplateTrashTitle": "Empty the template recycle bin?",
   "confirmEmptyTemplateTrashDescription": "All templates in the recycle bin will be permanently removed and cannot be restored.",
   "deleteSelectedResumes": "Delete Selected",
-  "resumeRecycleBin": "Resume Recycle Bin",
-  "templateRecycleBin": "Template Recycle Bin",
-  "recycleBinHint": "Deleted items are moved here first, where they can be restored or removed permanently.",
+  "resumeRecycleBin": "Resumes",
+  "templateRecycleBin": "Templates",
+  "recycleBinHint": "Deleted resumes and templates are kept temporarily. Restore them to keep editing. Permanently deleted items cannot be recovered.",
+  "recycleBinDeletedAtPrefix": "Deleted at",
   "restore": "Restore",
   "deleteForever": "Delete Forever",
   "emptyTrash": "Empty Trash",
@@ -124,8 +130,8 @@
   "saveVersions": "Save Versions",
   "currentVersion": "Current",
   "noSaveVersions": "No saved versions yet",
-  "exportFailed": "PDF export failed. Confirm the backend export service is running and try again.",
-  "exporting": "Exporting",
+  "exportFailed": "PDF export failed. Please try again.",
+  "exporting": "Preparing export",
   "language": "Language",
   "languageChinese": "中文",
   "languageEnglish": "EN",
@@ -154,7 +160,7 @@
   "previewTitle": "Live Preview",
   "exportPdf": "Export PDF",
   "logout": "Log Out",
-  "exportSuccess": "PDF Exported",
+  "exportSuccess": "Opening browser PDF export",
   "exportWarning": "PDF exported, but some images were skipped",
   "templatesTitle": "Template Library",
   "templatesHint": "Switch templates and the A4 preview updates immediately. Export uses the active template.",
@@ -183,13 +189,79 @@
   "templateReadonlyStatus": "Built-in · Read-only",
   "templateEditableStatus": "Custom · Editable",
   "createEditableCopy": "Create Editable Copy",
-  "templateModulesTab": "Modules",
-  "templateAddableModules": "Addable Modules",
-  "templateCurrentModules": "Current Modules",
-  "templateModuleFixed": "Fixed",
-  "templatePreviewModules": "Preview Content Modules",
-  "templatePreviewModulesHint": "Adjust the modules used by the template preview. Real resume data is not changed.",
-  "templatePreviewModuleCount": "{count} modules",
+  "templatePreviewSample": {
+    "basic": {
+      "name": "Alex Lin",
+      "headline": "Software Engineering | Product-minded Frontend",
+      "phone": "138-0000-0000",
+      "email": "alex.lin@example.com",
+      "location": "Remote / Open to relocate",
+      "summary": "Turns user pain points into reliable forms, preview workflows, and practical AI tools."
+    },
+    "education": {
+      "title": "Sample Institute",
+      "subtitle": "B.S. in Software Engineering",
+      "meta": "GPA: 3.8/4.0",
+      "period": "2021.09 - 2025.06",
+      "highlights": [
+        "Coursework: Data Structures, Software Engineering, Databases, Human-Computer Interaction"
+      ]
+    },
+    "internship": {
+      "title": "Collaboration Tools Team",
+      "subtitle": "Frontend Engineering Intern",
+      "meta": "Collaboration Tools",
+      "period": "2024.06 - 2024.09",
+      "highlights": [
+        "Facing scattered setup flows, mapped the user journey and rebuilt three form states, reducing submission errors by 28%.",
+        "To support weekly releases, added contract checks and a regression list, cutting validation time to 40 minutes."
+      ]
+    },
+    "projectPrimary": {
+      "title": "Structured Resume Editor",
+      "subtitle": "Personal Project",
+      "meta": "React / TypeScript / PDF Preview",
+      "period": "2023.03 - 2023.06",
+      "highlights": [
+        "When previews drifted across pages, designed a pagination measurement layer, reducing export rework by 35%.",
+        "To lower editing friction, merged duplicate input paths and added instant validation, shortening first-draft time by 20%."
+      ]
+    },
+    "projectSecondary": {
+      "title": "Task Review Dashboard",
+      "subtitle": "Course Project",
+      "meta": "Node.js / SQL / Dashboard",
+      "period": "2022.09 - 2022.12",
+      "highlights": [
+        "Facing scattered review records, normalized the data model and shipped filters, reducing lookup time by 30%."
+      ]
+    },
+    "skills": [
+      {
+        "title": "Languages",
+        "subtitle": "TypeScript, JavaScript, Python, SQL"
+      },
+      {
+        "title": "Engineering",
+        "subtitle": "React, Node.js, PDF rendering, testing and automation"
+      }
+    ],
+    "awards": [
+      {
+        "title": "Awards",
+        "subtitle": "Merit Scholarship, Product Prototype Showcase"
+      },
+      {
+        "title": "Language",
+        "subtitle": "Comfortable reading and discussing English technical docs"
+      }
+    ],
+    "other": {
+      "sectionTitle": "Self Evaluation",
+      "title": "Strengths",
+      "description": "Fast learner who cares about engineering quality and user experience; clarifies goals early and drives delivery."
+    }
+  },
   "templateName": "Template Name",
   "templateDescription": "Template Description",
   "templateDescriptionFallback": "Add the intended role or usage notes for this layout in the template editor.",
@@ -199,13 +271,14 @@
   "basicInfoLayoutCentered": "Centered Header",
   "basicInfoLayoutProfile": "Profile Header",
   "basicInfoLayoutSidebar": "Sidebar",
-  "sectionTemplateStyle": "Global Section Format",
+  "sectionTemplateStyle": "Section Title Style",
   "sectionStyleRuled": "Ruled Title",
   "sectionStyleBoxed": "Boxed Card",
   "sectionStyleAccent": "Accent Title",
   "sectionStylePlain": "Plain Title",
   "sectionStyleBand": "Band Title",
   "avatarPosition": "Avatar Position",
+  "avatarPositionNone": "Hide Avatar",
   "avatarPositionRight": "Right",
   "avatarPositionLeft": "Left",
   "avatarPositionCenter": "Center",
@@ -222,10 +295,17 @@
   "pagePaddingTop": "Top Padding",
   "pagePaddingX": "Horizontal Padding",
   "pagePaddingBottom": "Bottom Padding",
+  "pageMarginCompact": "Compact",
+  "pageMarginStandard": "Standard",
+  "pageMarginRelaxed": "Relaxed",
   "sectionGap": "Section Gap",
   "itemGap": "Entry Gap",
   "bodyLineHeight": "Body Line Height",
   "dividerThickness": "Divider Thickness",
+  "templateDividerStyle": "Divider Style",
+  "templateDividerThin": "Thin",
+  "templateDividerMedium": "Standard",
+  "templateDividerBold": "Bold",
   "nameSize": "Name Size",
   "sectionTitleSize": "Section Title Size",
   "itemTitleSize": "Entry Title Size",
@@ -233,8 +313,8 @@
   "bodySize": "Body Size",
   "templateLayoutTab": "Layout",
   "templateTypographyTab": "Font",
-  "templateVisualTab": "Color / Background",
-  "templateImagesTab": "Decoration / Images",
+  "templateVisualTab": "Color",
+  "templateImagesTab": "Decoration",
   "templateLayoutStructure": "Layout Structure",
   "templateAvatarControls": "Avatar Position & Border",
   "templateSpacingRules": "Page Spacing & Rules",
@@ -242,7 +322,6 @@
   "templateTypographyScale": "Type Scale",
   "templateColorSystem": "Color System",
   "templateImageControls": "Image Elements",
-  "templateImagesEmpty": "No extra image yet. Add a school logo, background texture, or placeholder, then tune its position and border.",
   "addTemplateImage": "Add Image Placeholder",
   "imageName": "Image Name",
   "imageUrl": "Image URL or Data URL",

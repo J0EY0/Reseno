@@ -1,16 +1,29 @@
-import { Clock3, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { RotateCcw, Trash2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import type { AppMessages, Locale } from "@/i18n";
+import { getTemplateById } from "@/lib/templates";
 import type {
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
+  ResumeData,
+  ResumeTemplateDefinition,
 } from "@/types/resume";
 
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
+import { ResumePreview } from "@/components/preview/resume-preview";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+const trashTableGridClassName =
+  "md:grid-cols-[minmax(360px,1fr)_160px_84px]";
 
 function formatAt(locale: Locale, value: string) {
   return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
@@ -21,6 +34,8 @@ function formatAt(locale: Locale, value: string) {
   }).format(new Date(value));
 }
 
+type RecycleBinTab = "resumes" | "templates";
+
 type PendingTrashAction =
   | { type: "resume-item"; ids: string[] }
   | { type: "template-item"; ids: string[] }
@@ -28,11 +43,149 @@ type PendingTrashAction =
   | { type: "template-empty" }
   | null;
 
+function CountBadge({ count }: { count: number }) {
+  return (
+    <Badge
+      variant="secondary"
+      className="h-5 min-w-5 rounded-full px-1.5 text-[11px] text-muted-foreground"
+    >
+      {count}
+    </Badge>
+  );
+}
+
+function PreviewThumbnail({
+  t,
+  resume,
+  template,
+  fontFamily,
+  fontSize,
+}: {
+  t: AppMessages;
+  resume: ResumeData;
+  template: ResumeTemplateDefinition;
+  fontFamily: ResumeTemplateDefinition["typography"]["fontFamily"];
+  fontSize: number;
+}) {
+  return (
+    <div className="relative h-[96px] w-[68px] shrink-0 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div
+        className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.084]"
+        style={{ width: "210mm", height: "297mm" }}
+      >
+        <ResumePreview
+          t={t}
+          resume={resume}
+          fontFamily={fontFamily}
+          fontSize={fontSize}
+          template={template}
+          variant="thumbnail"
+        />
+      </div>
+    </div>
+  );
+}
+
+function EmptyTrashState({ children }: { children: string }) {
+  return (
+    <div className="flex min-h-[128px] items-center justify-center text-sm font-medium text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
+function TrashItemRow({
+  thumbnail,
+  title,
+  subtitle,
+  deletedAt,
+  deletedAtText,
+  restoreLabel,
+  deleteLabel,
+  onRestore,
+  onDelete,
+}: {
+  thumbnail: ReactNode;
+  title: string;
+  subtitle: string;
+  deletedAt: string;
+  deletedAtText: string;
+  restoreLabel: string;
+  deleteLabel: string;
+  onRestore: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={`grid gap-4 border-b border-border/60 px-6 py-4 last:border-b-0 md:items-center ${trashTableGridClassName}`}
+    >
+      <div className="flex min-w-0 items-center gap-4">
+        {thumbnail}
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold text-foreground">
+            {title}
+          </p>
+          {subtitle ? (
+            <p className="mt-1 truncate text-sm text-muted-foreground">
+              {subtitle}
+            </p>
+          ) : null}
+          <p className="mt-1 text-sm text-muted-foreground md:hidden">
+            {deletedAtText}
+          </p>
+        </div>
+      </div>
+
+      <p className="hidden text-center text-sm text-muted-foreground md:block">
+        {deletedAt}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-1 md:justify-center">
+        <TooltipProvider delayDuration={160}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label={restoreLabel}
+                onClick={onRestore}
+              >
+                <RotateCcw className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{restoreLabel}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-md text-red-500 hover:bg-muted hover:text-red-600"
+                aria-label={deleteLabel}
+                onClick={onDelete}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{deleteLabel}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+    </div>
+  );
+}
+
 export function RecycleBinPanel({
   locale,
   t,
   deletedResumes,
   deletedTemplates,
+  templates,
+  defaultTemplateId,
+  templatePreviewResume,
   onRestoreResume,
   onDeleteResumeForever,
   onEmptyResumeTrash,
@@ -44,6 +197,9 @@ export function RecycleBinPanel({
   t: AppMessages;
   deletedResumes: DeletedResumeWorkspaceItem[];
   deletedTemplates: DeletedResumeTemplateDefinition[];
+  templates: ResumeTemplateDefinition[];
+  defaultTemplateId: string;
+  templatePreviewResume: ResumeData;
   onRestoreResume: (resumeIds: string[]) => void;
   onDeleteResumeForever: (resumeIds: string[]) => void;
   onEmptyResumeTrash: () => void;
@@ -51,10 +207,13 @@ export function RecycleBinPanel({
   onDeleteTemplateForever: (templateIds: string[]) => void;
   onEmptyTemplateTrash: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"resumes" | "templates">("resumes");
+  const [activeTab, setActiveTab] = useState<RecycleBinTab>("resumes");
   const [pendingAction, setPendingAction] = useState<PendingTrashAction>(null);
 
   const isDialogOpen = Boolean(pendingAction);
+  const previewTemplates = [...templates, ...deletedTemplates];
+  const activeItemCount =
+    activeTab === "resumes" ? deletedResumes.length : deletedTemplates.length;
 
   function closeDialog() {
     setPendingAction(null);
@@ -76,6 +235,14 @@ export function RecycleBinPanel({
     }
 
     closeDialog();
+  }
+
+  function requestEmptyActiveTab() {
+    setPendingAction(
+      activeTab === "resumes"
+        ? { type: "resume-empty" }
+        : { type: "template-empty" },
+    );
   }
 
   const dialogTitle =
@@ -121,180 +288,135 @@ export function RecycleBinPanel({
         }}
       />
 
-      <section className="grid gap-4">
-      <Card className="rounded-[30px] border-border/70 bg-gradient-to-br from-background via-background to-muted/20 shadow-sm">
-        <CardContent className="p-4 sm:p-6">
-          <Tabs
-            value={activeTab}
-            onValueChange={(value) =>
-              setActiveTab(value as "resumes" | "templates")
-              }
+      <section className="rounded-[26px] border border-border bg-background p-4 text-foreground sm:p-6">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as RecycleBinTab)}
+          className="gap-0"
+        >
+          <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border/70">
+            <TabsList className="h-auto gap-8 rounded-none border-0 bg-transparent p-0">
+              <TabsTrigger
+                value="resumes"
+                className="min-w-0 rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base font-semibold text-muted-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+              >
+                {t.resumeRecycleBin}
+                <CountBadge count={deletedResumes.length} />
+              </TabsTrigger>
+              <TabsTrigger
+                value="templates"
+                className="min-w-0 rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base font-semibold text-muted-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+              >
+                {t.templateRecycleBin}
+                <CountBadge count={deletedTemplates.length} />
+              </TabsTrigger>
+            </TabsList>
+
+            <Button
+              type="button"
+              variant="destructive"
+              className="mb-3 h-10 rounded-lg px-4 font-semibold data-[hidden=true]:pointer-events-none data-[hidden=true]:opacity-0"
+              data-hidden={activeItemCount === 0}
+              aria-hidden={activeItemCount === 0}
+              tabIndex={activeItemCount === 0 ? -1 : undefined}
+              onClick={requestEmptyActiveTab}
             >
-              <TabsList className="h-12 rounded-2xl bg-muted/70 p-1">
-                <TabsTrigger value="resumes">{t.resumeRecycleBin}</TabsTrigger>
-                <TabsTrigger value="templates">{t.templateRecycleBin}</TabsTrigger>
-              </TabsList>
+              <Trash2 className="size-4" />
+              {t.emptyTrash}
+            </Button>
+          </div>
 
-              <TabsContent value="resumes" className="mt-5">
-                <Card className="rounded-[28px] border-border/60 bg-background/80 shadow-[0_18px_50px_-38px_rgba(15,23,42,0.45)]">
-                  <CardContent className="p-5 sm:p-6">
-                    {deletedResumes.length > 0 ? (
-                      <div className="mb-4 flex justify-end">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setPendingAction({ type: "resume-empty" })}
-                      >
-                        <Trash2 className="size-4" />
-                        {t.emptyTrash}
-                      </Button>
-                      </div>
-                    ) : null}
-                    {deletedResumes.length > 0 ? (
-                      <div className="grid gap-3">
-                        {deletedResumes.map((item) => (
-                          <div
-                            key={item.id}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate font-medium">
-                                {item.title ||
-                                  item.resume.basic.name ||
-                                  t.untitledResume}
-                              </p>
-                              <p className="mt-1 truncate text-xs text-muted-foreground">
-                                {item.resume.basic.headline ||
-                                  item.resume.basic.email ||
-                                  item.resume.basic.phone}
-                              </p>
-                              <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                <Clock3 className="size-3" />
-                                {formatAt(locale, item.deletedAt)}
-                              </p>
-                            </div>
+          <TabsContent value="resumes" className="mt-5">
+            <div className="overflow-hidden">
+              {deletedResumes.length > 0 ? (
+                deletedResumes.map((item) => {
+                  const title =
+                    item.title || item.resume.basic.name || t.untitledResume;
+                  const deletedAt = formatAt(locale, item.deletedAt);
+                  const template = getTemplateById(
+                    previewTemplates,
+                    item.template,
+                    defaultTemplateId,
+                  );
 
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => onRestoreResume([item.id])}
-                              >
-                                {t.restore}
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                className="border border-red-600 bg-red-600 text-white hover:bg-red-600/90"
-                                onClick={() =>
-                                  setPendingAction({
-                                    type: "resume-item",
-                                    ids: [item.id],
-                                  })
-                                }
-                              >
-                                <Trash2 className="size-4" />
-                                {t.deleteForever}
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                        <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-                          <Trash2 className="size-5" />
-                        </div>
-                        <p className="mt-4 text-sm font-medium text-muted-foreground">
-                          {t.emptyResumeTrash}
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                  return (
+                    <TrashItemRow
+                      key={item.id}
+                      thumbnail={
+                        <PreviewThumbnail
+                          t={t}
+                          resume={item.resume}
+                          template={template}
+                          fontFamily={item.typography?.fontFamily ?? "inter"}
+                          fontSize={item.typography?.fontSize ?? 15}
+                        />
+                      }
+                      title={title}
+                      subtitle={
+                        item.resume.basic.headline ||
+                        item.resume.basic.email ||
+                        item.resume.basic.phone
+                      }
+                      deletedAt={deletedAt}
+                      deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
+                      restoreLabel={t.restore}
+                      deleteLabel={t.deleteForever}
+                      onRestore={() => onRestoreResume([item.id])}
+                      onDelete={() =>
+                        setPendingAction({
+                          type: "resume-item",
+                          ids: [item.id],
+                        })
+                      }
+                    />
+                  );
+                })
+              ) : (
+                <EmptyTrashState>{t.emptyResumeTrash}</EmptyTrashState>
+              )}
+            </div>
+          </TabsContent>
 
-              <TabsContent value="templates" className="mt-5">
-                <Card className="rounded-[28px] border-border/60 bg-background/80 shadow-[0_18px_50px_-38px_rgba(15,23,42,0.45)]">
-                  <CardContent className="p-5 sm:p-6">
-                    {deletedTemplates.length > 0 ? (
-                      <div className="mb-4 flex justify-end">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setPendingAction({ type: "template-empty" })}
-                      >
-                        <Trash2 className="size-4" />
-                        {t.emptyTrash}
-                      </Button>
-                      </div>
-                    ) : null}
-                    {deletedTemplates.length > 0 ? (
-                      <div className="grid gap-3">
-                        {deletedTemplates.map((item) => (
-                          <div
-                            key={item.id}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate font-medium">{item.name}</p>
-                              <p className="mt-1 truncate text-xs text-muted-foreground">
-                                {item.description || t.templateDescriptionFallback}
-                              </p>
-                              <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                <Clock3 className="size-3" />
-                                {formatAt(locale, item.deletedAt)}
-                              </p>
-                            </div>
+          <TabsContent value="templates" className="mt-5">
+            <div className="overflow-hidden">
+              {deletedTemplates.length > 0 ? (
+                deletedTemplates.map((item) => {
+                  const deletedAt = formatAt(locale, item.deletedAt);
 
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => onRestoreTemplate([item.id])}
-                              >
-                                {t.restore}
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                className="border border-red-600 bg-red-600 text-white hover:bg-red-600/90"
-                                onClick={() =>
-                                  setPendingAction({
-                                    type: "template-item",
-                                    ids: [item.id],
-                                  })
-                                }
-                              >
-                                <Trash2 className="size-4" />
-                                {t.deleteForever}
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                        <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-                          <Trash2 className="size-5" />
-                        </div>
-                        <p className="mt-4 text-sm font-medium text-muted-foreground">
-                          {t.emptyTemplateTrash}
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
+                  return (
+                    <TrashItemRow
+                      key={item.id}
+                      thumbnail={
+                        <PreviewThumbnail
+                          t={t}
+                          resume={templatePreviewResume}
+                          template={item}
+                          fontFamily={item.typography.fontFamily}
+                          fontSize={item.typography.fontSize}
+                        />
+                      }
+                      title={item.name}
+                      subtitle={item.description || t.templateDescriptionFallback}
+                      deletedAt={deletedAt}
+                      deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
+                      restoreLabel={t.restore}
+                      deleteLabel={t.deleteForever}
+                      onRestore={() => onRestoreTemplate([item.id])}
+                      onDelete={() =>
+                        setPendingAction({
+                          type: "template-item",
+                          ids: [item.id],
+                        })
+                      }
+                    />
+                  );
+                })
+              ) : (
+                <EmptyTrashState>{t.emptyTemplateTrash}</EmptyTrashState>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </section>
     </main>
   );

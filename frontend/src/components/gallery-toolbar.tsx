@@ -1,4 +1,5 @@
 import { Search, Trash2 } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ export function GalleryToolbar({
   cancelLabel,
   bulkDeleteLabel,
   onBulkDelete,
+  leadingActions,
 }: {
   searchPlaceholder: string;
   searchValue: string;
@@ -26,6 +28,7 @@ export function GalleryToolbar({
   cancelLabel: string;
   bulkDeleteLabel: string;
   onBulkDelete: () => void;
+  leadingActions?: ReactNode;
 }) {
   return (
     <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -38,6 +41,10 @@ export function GalleryToolbar({
           className="h-9 rounded-full border-border bg-card pl-9 shadow-sm"
         />
       </div>
+
+      {leadingActions ? (
+        <div className="flex flex-wrap items-center gap-2">{leadingActions}</div>
+      ) : null}
 
       <div className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
         <Button

@@ -47,23 +47,28 @@
   "resumeGalleryHint": "先从简历列表中选择一份简历，再进入具体编辑",
   "resumeEditorHint": "正在编辑当前简历，左侧修改会实时同步到中间预览",
   "createResume": "创建简历",
-  "createResumeHint": "从空白简历开始，或导入已有 JSON 简历文件",
+  "createResumeHint": "从空白简历开始，或导入可复制文本的 PDF 简历",
   "newResume": "新建",
   "newTemplate": "新建",
   "importResume": "导入",
   "importResumeSuccess": "简历导入成功",
-  "importResumeFailed": "导入失败，请检查 JSON 文件格式",
+  "importResumeFailed": "导入失败，请确认 PDF 不是扫描件，或检查 JSON 文件格式",
+  "importedResumeFallbackSection": "导入内容",
   "openResume": "打开简历",
   "selected": "已选中",
   "backToResumes": "返回简历列表",
   "backToTemplates": "返回模板列表",
   "searchResumesPlaceholder": "搜索简历名称、标题、邮箱或电话",
+  "emptyResumes": "无简历",
+  "emptyResumeSearch": "无匹配简历",
   "searchTemplatesPlaceholder": "搜索模板名称或描述",
+  "emptyTemplates": "无模板",
+  "emptyTemplateSearch": "无匹配模板",
   "selectItems": "选择",
   "cancelSelection": "取消选择",
   "bulkDelete": "批量删除",
   "recycleBin": "回收站",
-  "trashHint": "集中查看已删除的简历和模板，并按需恢复或彻底删除",
+  "trashHint": "已删除的简历和模板会暂时保留，恢复后可以继续编辑。彻底删除后无法找回",
   "confirmDeleteAction": "确认删除",
   "confirmDeleteResumeTitle": "确认删除这份简历？",
   "confirmDeleteResumeDescription": "删除后这份简历会先移动到回收站，你仍然可以在回收站中恢复它",
@@ -82,9 +87,10 @@
   "confirmEmptyTemplateTrashTitle": "确认清空模板回收站？",
   "confirmEmptyTemplateTrashDescription": "清空后，回收站中的模板将被彻底删除且无法恢复",
   "deleteSelectedResumes": "批量删除",
-  "resumeRecycleBin": "简历回收站",
-  "templateRecycleBin": "模板回收站",
-  "recycleBinHint": "删除的内容会先进入回收站，你可以恢复或彻底清除",
+  "resumeRecycleBin": "简历",
+  "templateRecycleBin": "模板",
+  "recycleBinHint": "已删除的简历和模板会暂时保留，恢复后可以继续编辑。彻底删除后无法找回",
+  "recycleBinDeletedAtPrefix": "删除于",
   "restore": "恢复",
   "deleteForever": "彻底删除",
   "emptyTrash": "清空回收站",
@@ -124,8 +130,8 @@
   "saveVersions": "保存版本",
   "currentVersion": "当前",
   "noSaveVersions": "暂无保存版本",
-  "exportFailed": "PDF 导出失败，请确认后端导出服务已启动后重试",
-  "exporting": "导出中",
+  "exportFailed": "PDF 导出失败，请重试",
+  "exporting": "准备导出",
   "language": "语言",
   "languageChinese": "中文",
   "languageEnglish": "EN",
@@ -154,7 +160,7 @@
   "previewTitle": "实时预览",
   "exportPdf": "导出 PDF",
   "logout": "退出登录",
-  "exportSuccess": "PDF 已导出",
+  "exportSuccess": "正在打开浏览器 PDF 导出",
   "exportWarning": "PDF 已导出，但图片已被忽略",
   "templatesTitle": "模板库",
   "templatesHint": "切换模板后，中间 A4 预览会即时更新，导出会沿用当前模板",
@@ -183,13 +189,79 @@
   "templateReadonlyStatus": "内置模板 · 只读",
   "templateEditableStatus": "自定义模板 · 可编辑",
   "createEditableCopy": "创建可编辑副本",
-  "templateModulesTab": "模块",
-  "templateAddableModules": "可添加模块",
-  "templateCurrentModules": "当前模块",
-  "templateModuleFixed": "固定",
-  "templatePreviewModules": "预览内容模块",
-  "templatePreviewModulesHint": "调整模板预览使用的模块，不会影响真实简历",
-  "templatePreviewModuleCount": "{count} 个模块",
+  "templatePreviewSample": {
+    "basic": {
+      "name": "林知予",
+      "headline": "软件工程方向 | 产品型前端工程师",
+      "phone": "138-0000-0000",
+      "email": "lin.zhiyu@example.com",
+      "location": "远程 / 可到岗",
+      "summary": "关注复杂表单、预览工作流与 AI 工具落地，能把用户问题拆成可验证方案。"
+    },
+    "education": {
+      "title": "示例学院",
+      "subtitle": "软件工程（本科）",
+      "meta": "GPA：3.8/4.0",
+      "period": "2021.09 - 2025.06",
+      "highlights": [
+        "主修课程：数据结构、软件工程、数据库系统、人机交互"
+      ]
+    },
+    "internship": {
+      "title": "协作工具项目组",
+      "subtitle": "前端开发实习生",
+      "meta": "协作工具方向",
+      "period": "2024.06 - 2024.09",
+      "highlights": [
+        "面对配置流程分散的问题，梳理用户路径并重构 3 个表单状态，使提交错误率下降 28%。",
+        "为支持周迭代交付，补齐契约测试与回归清单，将发布验证时间缩短至 40 分钟。"
+      ]
+    },
+    "projectPrimary": {
+      "title": "结构化简历编辑器",
+      "subtitle": "个人项目",
+      "meta": "React / TypeScript / PDF Preview",
+      "period": "2023.03 - 2023.06",
+      "highlights": [
+        "针对预览频繁错位，设计分页测量方案并抽象渲染状态，使导出返工减少 35%。",
+        "为降低填写成本，合并重复输入路径并增加即时校验，使首版填写时间缩短 20%。"
+      ]
+    },
+    "projectSecondary": {
+      "title": "任务复盘面板",
+      "subtitle": "课程项目",
+      "meta": "Node.js / SQL / Dashboard",
+      "period": "2022.09 - 2022.12",
+      "highlights": [
+        "面对复盘信息分散的问题，设计统一数据表并实现筛选面板，使记录查找时间减少 30%。"
+      ]
+    },
+    "skills": [
+      {
+        "title": "编程语言",
+        "subtitle": "TypeScript、JavaScript、Python、SQL"
+      },
+      {
+        "title": "工程能力",
+        "subtitle": "React、Node.js、PDF 渲染、测试与自动化"
+      }
+    ],
+    "awards": [
+      {
+        "title": "奖项",
+        "subtitle": "综合奖学金、产品原型赛优秀作品"
+      },
+      {
+        "title": "语言",
+        "subtitle": "具备英文技术文档阅读与沟通能力"
+      }
+    ],
+    "other": {
+      "sectionTitle": "自我评价",
+      "title": "综合素质",
+      "description": "学习能力强，注重工程质量和用户体验；能主动澄清目标并推进落地。"
+    }
+  },
   "templateName": "模板名称",
   "templateDescription": "模板描述",
   "templateDescriptionFallback": "可在模板编辑器中补充这套版式适用的岗位或使用场景",
@@ -199,13 +271,14 @@
   "basicInfoLayoutCentered": "居中标题",
   "basicInfoLayoutProfile": "头像头图",
   "basicInfoLayoutSidebar": "左侧栏",
-  "sectionTemplateStyle": "模块通用格式",
+  "sectionTemplateStyle": "模块标题样式",
   "sectionStyleRuled": "标题横线",
   "sectionStyleBoxed": "边框卡片",
   "sectionStyleAccent": "强调标题",
   "sectionStylePlain": "纯标题",
   "sectionStyleBand": "色带标题",
   "avatarPosition": "头像位置",
+  "avatarPositionNone": "不显示头像",
   "avatarPositionRight": "右侧",
   "avatarPositionLeft": "左侧",
   "avatarPositionCenter": "居中",
@@ -222,10 +295,17 @@
   "pagePaddingTop": "页边距上",
   "pagePaddingX": "页边距左右",
   "pagePaddingBottom": "页边距下",
+  "pageMarginCompact": "紧凑",
+  "pageMarginStandard": "标准",
+  "pageMarginRelaxed": "宽松",
   "sectionGap": "模块间距",
   "itemGap": "模块内条目间距",
   "bodyLineHeight": "正文行高",
   "dividerThickness": "分隔线粗细",
+  "templateDividerStyle": "分割线样式",
+  "templateDividerThin": "细线",
+  "templateDividerMedium": "标准",
+  "templateDividerBold": "粗线",
   "nameSize": "姓名字号",
   "sectionTitleSize": "模块标题字号",
   "itemTitleSize": "条目标题字号",
@@ -233,8 +313,8 @@
   "bodySize": "正文字号",
   "templateLayoutTab": "布局",
   "templateTypographyTab": "字体",
-  "templateVisualTab": "颜色 / 背景",
-  "templateImagesTab": "装饰 / 图片",
+  "templateVisualTab": "配色",
+  "templateImagesTab": "装饰",
   "templateLayoutStructure": "布局结构",
   "templateAvatarControls": "头像位置与边框",
   "templateSpacingRules": "页面间距与线条",
@@ -242,7 +322,6 @@
   "templateTypographyScale": "字号层级",
   "templateColorSystem": "颜色系统",
   "templateImageControls": "图片元素",
-  "templateImagesEmpty": "还没有额外图片。可以添加校徽、背景纹理或占位符，并控制其位置和边框",
   "addTemplateImage": "添加图片占位符",
   "imageName": "图片名称",
   "imageUrl": "图片 URL 或 Data URL",

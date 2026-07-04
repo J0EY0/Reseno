@@ -26,12 +26,12 @@ const templateSettingsByPreset: Record<
   ResumeTemplateSettings
 > = {
   minimal: {
-    pagePaddingTop: 14,
+    pagePaddingTop: 13,
     pagePaddingX: 12,
-    pagePaddingBottom: 12,
-    sectionGap: 1.4,
-    itemGap: 1,
-    bodyLineHeight: 1.8,
+    pagePaddingBottom: 11,
+    sectionGap: 1.25,
+    itemGap: 0.88,
+    bodyLineHeight: 1.7,
     nameScale: 2.15,
     sectionTitleScale: 1.28,
     itemTitleScale: 1.02,
@@ -46,13 +46,13 @@ const templateSettingsByPreset: Record<
     dividerThickness: 1,
   },
   modern: {
-    pagePaddingTop: 12,
+    pagePaddingTop: 10,
     pagePaddingX: 12,
-    pagePaddingBottom: 12,
-    sectionGap: 1.3,
-    itemGap: 0.95,
-    bodyLineHeight: 1.72,
-    nameScale: 2.25,
+    pagePaddingBottom: 10,
+    sectionGap: 0.92,
+    itemGap: 0.62,
+    bodyLineHeight: 1.46,
+    nameScale: 1.98,
     sectionTitleScale: 0.82,
     itemTitleScale: 1.04,
     metaScale: 0.92,
@@ -112,7 +112,7 @@ const templateLayoutByPreset: Record<
   minimal: {
     basicInfo: 'centered',
     section: 'ruled',
-    avatarPosition: 'right',
+    avatarPosition: 'none',
     avatarShape: 'rounded',
     avatarWidth: 25,
     avatarHeight: 32,
@@ -127,11 +127,11 @@ const templateLayoutByPreset: Record<
     section: 'accent',
     avatarPosition: 'center',
     avatarShape: 'circle',
-    avatarWidth: 30,
-    avatarHeight: 30,
+    avatarWidth: 24,
+    avatarHeight: 24,
     avatarOffsetX: 0,
     avatarOffsetY: 0,
-    avatarBorderWidth: 4,
+    avatarBorderWidth: 2,
     avatarBorderColor: '#ffffff',
     images: [],
   },
@@ -276,6 +276,7 @@ export function createTemplateLayout(
       ? overrides.section
       : defaults.section
   const avatarPosition =
+    overrides.avatarPosition === 'none' ||
     overrides.avatarPosition === 'right' ||
     overrides.avatarPosition === 'left' ||
     overrides.avatarPosition === 'center'

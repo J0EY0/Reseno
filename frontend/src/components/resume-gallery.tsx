@@ -21,7 +21,6 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { ViewTransitionBoundary } from "@/components/ui/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 
@@ -84,7 +83,7 @@ export function ResumeGallery({
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 1 });
+  const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 0 });
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
   function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
@@ -219,7 +218,7 @@ export function ResumeGallery({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".json,application/json"
+        accept=".pdf,application/pdf,.json,application/json"
         className="hidden"
         onChange={handleImportChange}
       />
@@ -238,50 +237,40 @@ export function ResumeGallery({
         cancelLabel={t.cancelSelection}
         bulkDeleteLabel={t.bulkDelete}
         onBulkDelete={() => requestDelete(selectedResumeIds)}
+        leadingActions={
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8.5 rounded-lg bg-background px-4 font-semibold shadow-sm"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <FileUp className="size-4" />
+              {t.importResume}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8.5 rounded-lg px-4 font-semibold shadow-sm"
+              onClick={onCreateResume}
+            >
+              <PlusSquare className="size-4" />
+              {t.newResume}
+            </Button>
+          </>
+        }
       />
 
       <div
         ref={gridRef}
         className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
       >
-        <Card className="h-full rounded-[24px] border-border/80 bg-card text-card-foreground shadow-none">
-          <CardContent className="flex h-full flex-col p-2.5">
-            <div className="rounded-[18px] bg-muted/55 p-2">
-              <div className="flex h-[258px] items-center justify-center rounded-[14px] border border-dashed border-border bg-background">
-                <div className="text-center">
-                  <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-                    <PlusSquare className="size-6" />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
-              <div>
-                <p className="text-[15px] font-semibold">{t.createResume}</p>
-                <p className="mt-1 text-xs leading-[1.45] text-muted-foreground">
-                  {t.createResumeHint}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-2.5">
-                <Button type="button" className="h-8.5" onClick={onCreateResume}>
-                  <PlusSquare className="size-4" />
-                  {t.newResume}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-8.5 bg-background"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <FileUp className="size-4" />
-                  {t.importResume}
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        {paginatedResumes.length === 0 ? (
+          <div className="col-span-full flex min-h-[390px] items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-card/55 text-sm font-medium text-muted-foreground">
+            {resumes.length === 0 ? t.emptyResumes : t.emptyResumeSearch}
+          </div>
+        ) : null}
 
         {paginatedResumes.map((item) => {
           const template = getTemplateById(

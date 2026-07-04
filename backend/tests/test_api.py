@@ -1069,6 +1069,51 @@ def test_template_command_flow_owns_identity_and_lifecycle(
     assert not template_dir.exists()
 
 
+def test_template_save_does_not_create_resume_versions(
+    client: TestClient,
+) -> None:
+    create_response = client.post(
+        "/api/templates",
+        json={"template": minimal_template_definition(name="Versionless Template")},
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()["data"]["template"]
+    template_id = created["id"]
+
+    update_payload = {
+        **created,
+        "name": "Versionless Template Updated",
+        "settings": {
+            **created["settings"],
+            "bodyLineHeight": 1.65,
+        },
+    }
+    update_response = client.put(
+        f"/api/templates/{template_id}",
+        json={"template": update_payload},
+    )
+
+    assert update_response.status_code == 200
+    assert (
+        update_response.json()["data"]["template"]["name"]
+        == "Versionless Template Updated"
+    )
+
+    template_path = get_settings().storage_dir / "templates" / template_id / "current.json"
+    stored_template = json.loads(template_path.read_text(encoding="utf-8"))
+
+    assert stored_template["name"] == "Versionless Template Updated"
+    assert stored_template["settings"]["bodyLineHeight"] == 1.65
+
+    with connect() as conn:
+        version_count = conn.execute(
+            "SELECT COUNT(*) AS version_count FROM resume_versions"
+        ).fetchone()["version_count"]
+
+    assert version_count == 0
+
+
 def test_empty_template_trash_physically_deletes_templates(
     client: TestClient,
 ) -> None:

@@ -1,12 +1,20 @@
 import {
   Check,
   ChevronDown,
+  CircleUserRound,
   CopyPlus,
   FileUp,
+  Image as ImageIcon,
   ImagePlus,
-  Plus,
+  LayoutTemplate,
+  ListMinus,
+  Palette,
+  SlidersHorizontal,
+  SquareDashed,
   Sparkles,
   Trash2,
+  Type,
+  type LucideIcon,
 } from "lucide-react";
 import {
   useDeferredValue,
@@ -14,16 +22,16 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 
 import type { AppMessages } from "@/i18n";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
-import { createId, getSectionTitle } from "@/lib/resume";
+import { createId } from "@/lib/resume";
 import { cn } from "@/lib/utils";
 import type {
   ResumeAvatarPosition,
-  ResumeAvatarShape,
   ResumeBasicInfoLayout,
   ResumeData,
   ResumeFontFamily,
@@ -33,7 +41,6 @@ import type {
   ResumeTemplateImageFit,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
-  SectionKind,
 } from "@/types/resume";
 
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
@@ -63,20 +70,114 @@ import { ViewTransitionBoundary } from "@/components/ui/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
-const previewSectionKinds: SectionKind[] = [
-  "education",
-  "work",
-  "internship",
-  "project",
-  "skills",
-  "awards",
-  "certificates",
-  "languages",
-  "other",
-  "custom",
-];
 
 type TemplateEditorTab = "layout" | "typography" | "visual" | "images";
+type TemplatePageMarginPreset = "compact" | "standard" | "relaxed";
+type TemplateDividerStyle = "thin" | "medium" | "bold";
+
+const pageMarginPresetValues: Record<
+  TemplatePageMarginPreset,
+  Pick<
+    ResumeTemplateSettings,
+    "pagePaddingTop" | "pagePaddingX" | "pagePaddingBottom"
+  >
+> = {
+  compact: {
+    pagePaddingTop: 10,
+    pagePaddingX: 10,
+    pagePaddingBottom: 10,
+  },
+  standard: {
+    pagePaddingTop: 14,
+    pagePaddingX: 12,
+    pagePaddingBottom: 12,
+  },
+  relaxed: {
+    pagePaddingTop: 18,
+    pagePaddingX: 16,
+    pagePaddingBottom: 16,
+  },
+};
+
+const dividerStyleValues: Record<TemplateDividerStyle, number> = {
+  thin: 1,
+  medium: 1.5,
+  bold: 2.5,
+};
+
+const readonlyDisabledControlClassName =
+  "disabled:pointer-events-auto disabled:cursor-not-allowed";
+
+function getPageMarginPreset(
+  settings: ResumeTemplateSettings,
+): TemplatePageMarginPreset {
+  if (
+    settings.pagePaddingTop >= 16 ||
+    settings.pagePaddingX >= 15 ||
+    settings.pagePaddingBottom >= 15
+  ) {
+    return "relaxed";
+  }
+
+  if (
+    settings.pagePaddingTop <= 11 ||
+    settings.pagePaddingX <= 10 ||
+    settings.pagePaddingBottom <= 10
+  ) {
+    return "compact";
+  }
+
+  return "standard";
+}
+
+function getDividerStyle(settings: ResumeTemplateSettings): TemplateDividerStyle {
+  if (settings.dividerThickness >= 2) {
+    return "bold";
+  }
+
+  if (settings.dividerThickness > 1) {
+    return "medium";
+  }
+
+  return "thin";
+}
+
+function TemplateTabLabel({
+  icon: Icon,
+  children,
+}: {
+  icon: LucideIcon;
+  children: ReactNode;
+}) {
+  return (
+    <span className="inline-flex max-w-full min-w-0 translate-y-1 items-center justify-center gap-1.5">
+      <Icon className="size-4 shrink-0" />
+      <span className="min-w-0 truncate">{children}</span>
+    </span>
+  );
+}
+
+function TemplateSelectRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate text-sm font-medium text-foreground">
+          {label}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
 
 function TemplateEditorPanel({
   title,
@@ -141,13 +242,15 @@ function TemplateSliderField({
   return (
     <div
       className={cn(
-        "grid gap-2 rounded-[18px] bg-muted/35 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]",
-        disabled && "opacity-70",
+        "grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4 py-2",
+        disabled && "cursor-not-allowed text-muted-foreground",
       )}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
         <span className="text-sm font-medium">{label}</span>
-        <span className="text-xs text-muted-foreground">{displayValue}</span>
+        <span className="mt-0.5 block text-xs text-muted-foreground">
+          {displayValue}
+        </span>
       </div>
       <Slider
         min={min}
@@ -156,6 +259,7 @@ function TemplateSliderField({
         value={[value]}
         onValueChange={(next) => onChange(next[0] ?? value)}
         disabled={disabled}
+        className={disabled ? "cursor-not-allowed" : undefined}
       />
     </div>
   );
@@ -175,22 +279,25 @@ function TemplateColorField({
   return (
     <div
       className={cn(
-        "grid gap-2 rounded-[18px] bg-muted/35 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]",
-        disabled && "opacity-70",
+        "grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4 py-2",
+        disabled && "cursor-not-allowed text-muted-foreground",
       )}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{label}</span>
+      <div className="min-w-0">
+        <span className="block text-sm font-medium">{label}</span>
         <span className="rounded-md border border-border/70 bg-background px-2 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           {value}
         </span>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <Input
           type="color"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="h-10 w-14 shrink-0 cursor-pointer rounded-lg border border-border/70 bg-background p-1"
+          className={cn(
+            "h-10 w-14 shrink-0 cursor-pointer rounded-lg border border-border/70 bg-background p-1",
+            disabled && readonlyDisabledControlClassName,
+          )}
           disabled={disabled}
         />
         <div
@@ -255,8 +362,6 @@ export function TemplateLibrary({
   onUpdateTemplate,
   onDeleteTemplate,
   onBulkDeleteTemplates,
-  onAddPreviewSection,
-  onRemovePreviewSection,
 }: {
   mode: "gallery" | "editor";
   t: AppMessages;
@@ -274,8 +379,6 @@ export function TemplateLibrary({
   ) => void;
   onDeleteTemplate: (templateId: string) => void;
   onBulkDeleteTemplates: (templateIds: string[]) => void;
-  onAddPreviewSection?: (kind: SectionKind) => void;
-  onRemovePreviewSection?: (sectionId: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -285,7 +388,7 @@ export function TemplateLibrary({
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [editorTab, setEditorTab] = useState<TemplateEditorTab>("layout");
   const [currentPage, setCurrentPage] = useState(1);
-  const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 1 });
+  const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 0 });
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const activeTemplate = useMemo(
     () => templates.find((item) => item.id === activeTemplateId) ?? templates[0],
@@ -316,8 +419,6 @@ export function TemplateLibrary({
     (safeCurrentPage - 1) * pageSize,
     safeCurrentPage * pageSize,
   );
-  const previewModuleCount = resume.sections.length + 1;
-
   function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
 
@@ -472,6 +573,18 @@ export function TemplateLibrary({
     onOpenTemplate(item.id);
   }
 
+  function handleTemplateCardKeyDown(
+    event: KeyboardEvent<HTMLDivElement>,
+    item: ResumeTemplateDefinition,
+  ) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    handleTemplateCardAction(item);
+  }
+
   if (mode === "gallery") {
     return (
       <section className="rounded-[26px] border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
@@ -520,56 +633,40 @@ export function TemplateLibrary({
           cancelLabel={t.cancelSelection}
           bulkDeleteLabel={t.bulkDelete}
           onBulkDelete={() => requestDelete(selectedTemplateIds)}
+          leadingActions={
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8.5 rounded-lg bg-background px-4 font-semibold shadow-sm"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <FileUp className="size-4" />
+                {t.importTemplate}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8.5 rounded-lg px-4 font-semibold shadow-sm"
+                onClick={onCreateCustomTemplate}
+              >
+                <CopyPlus className="size-4" />
+                {t.newTemplate}
+              </Button>
+            </>
+          }
         />
 
         <div
           ref={gridRef}
           className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
         >
-          <Card className="h-full rounded-[24px] border-border/80 bg-card text-card-foreground shadow-none">
-            <CardContent className="flex h-full flex-col p-2.5">
-              <div className="rounded-[18px] bg-muted/55 p-2">
-                <div className="flex h-[258px] items-center justify-center rounded-[14px] border border-dashed border-border bg-background">
-                  <div className="text-center">
-                    <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-                      <CopyPlus className="size-6" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
-                <div>
-                  <p className="text-[15px] font-semibold">
-                    {t.createCustomTemplate}
-                  </p>
-                  <p className="mt-1 text-xs leading-[1.45] text-muted-foreground">
-                    {t.templateManagerHint}
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 pt-2.5">
-                  <Button
-                    type="button"
-                    className="h-8.5"
-                    onClick={onCreateCustomTemplate}
-                  >
-                    <CopyPlus className="size-4" />
-                    {t.newTemplate}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-8.5 bg-background"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <FileUp className="size-4" />
-                    {t.importTemplate}
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          {paginatedTemplates.length === 0 ? (
+            <div className="col-span-full flex min-h-[390px] items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-card/55 text-sm font-medium text-muted-foreground">
+              {templates.length === 0 ? t.emptyTemplates : t.emptyTemplateSearch}
+            </div>
+          ) : null}
 
           {paginatedTemplates.map((item) => {
             const isSelected = selectedIdSet.has(item.id);
@@ -589,11 +686,13 @@ export function TemplateLibrary({
                     isSelected && "border-primary bg-accent/20",
                   )}
                 >
-                  <button
-                    type="button"
+                  <div
+                    role="button"
+                    tabIndex={0}
                     className="cursor-pointer select-none rounded-[18px] text-left outline-none"
                     aria-pressed={isSelecting ? isSelected : undefined}
                     onClick={() => handleTemplateCardAction(item)}
+                    onKeyDown={(event) => handleTemplateCardKeyDown(event, item)}
                   >
                     <div className="rounded-[18px] bg-muted/55 p-2">
                       <ViewTransitionBoundary
@@ -628,10 +727,28 @@ export function TemplateLibrary({
                               <Check className="size-3.5" />
                             </span>
                           ) : null}
+
+                          {isSelecting && isSelected && !item.isBuiltIn ? (
+                            <button
+                              type="button"
+                              className={cn(
+                                "absolute right-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur transition-colors",
+                                "border-red-600 bg-red-600 text-white hover:bg-red-600/90",
+                              )}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDelete([item.id]);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              aria-label={t.confirmDeleteAction}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          ) : null}
                         </div>
                       </ViewTransitionBoundary>
                     </div>
-                  </button>
+                  </div>
 
                   <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
                     <button
@@ -657,19 +774,7 @@ export function TemplateLibrary({
                         <span />
                       )}
 
-                      {isSelecting ? (
-                        isSelected && !item.isBuiltIn ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-7 rounded-full border-red-600 bg-red-600 px-2.5 text-[11px] text-white hover:border-red-700 hover:bg-red-700 hover:text-white"
-                            onClick={() => requestDelete([item.id])}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        ) : null
-                      ) : isDefaultTemplate ? (
+                      {isSelecting ? null : isDefaultTemplate ? (
                         <Badge
                           variant="outline"
                           className="h-7 rounded-full border-border/80 bg-muted px-2.5 text-[11px] font-medium text-muted-foreground"
@@ -716,7 +821,7 @@ export function TemplateLibrary({
       />
 
       {mode === "editor" && activeTemplate ? (
-        <Card className="rounded-[30px] border border-border/60 bg-card shadow-[0_18px_60px_-48px_rgba(15,23,42,0.5)]">
+        <Card className="overflow-hidden rounded-[30px] border border-border/80 bg-card shadow-[0_18px_60px_-48px_rgba(15,23,42,0.5)]">
           <CardContent className="template-editor-scroll p-0">
             <div className="sticky top-0 z-20 border-b border-border/40 bg-card/95 px-5 py-4 backdrop-blur">
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -733,14 +838,6 @@ export function TemplateLibrary({
                         ? t.templateReadonlyStatus
                         : t.templateEditableStatus}
                     </Badge>
-                    {activeTemplate.id === defaultTemplateId ? (
-                      <Badge
-                        variant="outline"
-                        className="h-7 rounded-xl border-transparent bg-muted/70 px-2.5 text-[11px] font-medium text-muted-foreground shadow-none"
-                      >
-                        {t.defaultTemplateLabel}
-                      </Badge>
-                    ) : null}
                   </div>
                   <p className="mt-1 max-w-[460px] text-sm leading-6 text-muted-foreground">
                     {activeTemplate.description ||
@@ -753,189 +850,132 @@ export function TemplateLibrary({
                     <Button
                       type="button"
                       size="sm"
-                      className="h-9 rounded-2xl px-3 shadow-none"
+                      className="h-9 rounded-lg px-3 shadow-none"
                       onClick={onCreateCustomTemplate}
                     >
                       <CopyPlus className="size-4" />
                       {t.createEditableCopy}
                     </Button>
                   ) : null}
-                  {activeTemplate.id !== defaultTemplateId ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-9 rounded-2xl border-transparent bg-background/80 px-3 shadow-none ring-1 ring-border/35 hover:bg-muted"
-                      onClick={() => onSetDefaultTemplate(activeTemplate.id)}
-                    >
-                      {t.setDefaultTemplate}
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className={cn(
+                      "h-9 rounded-lg border-transparent px-3 shadow-none",
+                      activeTemplate.id === defaultTemplateId
+                        ? "bg-muted/70 text-muted-foreground ring-0 hover:bg-muted/70 hover:text-muted-foreground focus-visible:ring-0 disabled:pointer-events-auto disabled:cursor-default disabled:opacity-100"
+                        : "bg-background/80 ring-1 ring-border/35 hover:bg-muted",
+                    )}
+                    onClick={() => onSetDefaultTemplate(activeTemplate.id)}
+                    disabled={activeTemplate.id === defaultTemplateId}
+                  >
+                    {activeTemplate.id === defaultTemplateId
+                      ? t.defaultTemplateLabel
+                      : t.setDefaultTemplate}
+                  </Button>
                 </div>
               </div>
             </div>
 
             <div className="grid gap-4 p-5">
-            <TemplateEditorPanel
-              title={t.templatePreviewModules}
-              description={t.templatePreviewModulesHint}
-              defaultOpen={false}
-              badge={
-                <Badge
-                  variant="outline"
-                  className="shrink-0 rounded-xl border-transparent bg-background/85 px-2.5 py-1.5 text-xs font-medium text-muted-foreground shadow-none ring-1 ring-border/35"
-                >
-                  {t.templatePreviewModuleCount.replace(
-                    "{count}",
-                    String(previewModuleCount),
-                  )}
-                </Badge>
-              }
-            >
-              <div className="grid gap-5">
-
-              <div className="grid gap-2.5 rounded-[22px] bg-background/65 p-3.5 ring-1 ring-border/20">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                  {t.templateAddableModules}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {previewSectionKinds.map((kind) => (
-                    <Button
-                      key={kind}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8 rounded-2xl border-transparent bg-muted/45 px-3 text-xs shadow-none transition-colors hover:bg-muted"
-                      onClick={() => onAddPreviewSection?.(kind)}
-                      disabled={!onAddPreviewSection}
-                    >
-                      <Plus className="size-3" />
-                      {t.sectionTitles[kind]}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                  {t.templateCurrentModules}
-                </p>
-                <div className="flex h-10 items-center rounded-2xl bg-background/85 px-3 text-sm shadow-none ring-1 ring-border/30">
-                  <span className="font-semibold text-foreground">
-                    {t.basicInfo}
-                  </span>
-                </div>
-
-                {resume.sections.map((section) => (
-                  <div
-                    key={section.id}
-                    className="flex h-10 max-w-full items-center justify-between gap-2 rounded-2xl bg-background/85 pl-3 pr-2 text-sm shadow-none ring-1 ring-border/30"
-                  >
-                    <span className="min-w-0 truncate font-semibold text-foreground">
-                      {getSectionTitle(section, t)}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-6 shrink-0 rounded-full text-muted-foreground hover:text-destructive"
-                      onClick={() => onRemovePreviewSection?.(section.id)}
-                      disabled={!onRemovePreviewSection}
-                      aria-label={t.deleteSection}
-                    >
-                      <Trash2 className="size-3" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-              </div>
-            </TemplateEditorPanel>
-
-            <div className="grid gap-3 rounded-[26px] bg-muted/15 p-3">
-              {!isTemplateReadonly ? (
-                <TemplateEditorPanel
-                  title={t.templateInfoPanel}
-                  defaultOpen={false}
-                  badge={
-                    <Badge
-                      variant="outline"
-                      className="h-7 rounded-xl border-transparent bg-background/80 px-2.5 text-[11px] font-medium text-muted-foreground shadow-none ring-1 ring-border/35"
-                    >
-                      {t.customTemplate}
-                    </Badge>
-                  }
-                >
-                  <div className="grid gap-4">
-
-                    <label className="grid gap-2 text-sm">
-                      <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                        {t.templateName}
-                      </span>
-                      <Input
-                        className="h-11 rounded-xl bg-background/80 shadow-none"
-                        value={activeTemplate.name}
-                        onChange={(event) =>
-                          onUpdateTemplate(activeTemplate.id, {
-                            name: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-
-                    <label className="grid gap-2 text-sm">
-                      <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                        {t.templateDescription}
-                      </span>
-                      <Textarea
-                        className="rounded-xl bg-background/80 shadow-none"
-                        rows={3}
-                        value={activeTemplate.description}
-                        onChange={(event) =>
-                          onUpdateTemplate(activeTemplate.id, {
-                            description: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                </TemplateEditorPanel>
-              ) : null}
-
-              <Tabs
-                    value={editorTab}
-                    onValueChange={(value) =>
-                      setEditorTab(value as TemplateEditorTab)
-                    }
-                    className="gap-4"
-                  >
-                    <TabsList className="w-full justify-start rounded-[18px] bg-background/80 p-1.5 shadow-sm ring-1 ring-border/35">
-                      <TabsTrigger value="layout">
-                        {t.templateLayoutTab}
-                      </TabsTrigger>
-                      <TabsTrigger value="typography">
-                        {t.templateTypographyTab}
-                      </TabsTrigger>
-                      <TabsTrigger value="visual">
-                        {t.templateVisualTab}
-                      </TabsTrigger>
-                      <TabsTrigger value="images">
-                        {t.templateImagesTab}
-                      </TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent
-                      value="layout"
-                      className="grid gap-3"
-                    >
-                      <TemplateEditorPanel
-                        title={t.templateLayoutStructure}
-                        defaultOpen
+              <div className="grid gap-3">
+                {!isTemplateReadonly ? (
+                  <TemplateEditorPanel
+                    title={t.templateInfoPanel}
+                    defaultOpen={false}
+                    badge={
+                      <Badge
+                        variant="outline"
+                        className="h-7 rounded-xl border-transparent bg-background/80 px-2.5 text-[11px] font-medium text-muted-foreground shadow-none ring-1 ring-border/35"
                       >
-                        <div className="grid gap-3 md:grid-cols-2">
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">
-                            {t.basicInfoLayout}
-                          </span>
+                        {t.customTemplate}
+                      </Badge>
+                    }
+                  >
+                    <div className="grid gap-4">
+                      <label className="grid gap-2 text-sm">
+                        <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                          {t.templateName}
+                        </span>
+                        <Input
+                          className="h-11 rounded-xl bg-background/80 shadow-none"
+                          value={activeTemplate.name}
+                          onChange={(event) =>
+                            onUpdateTemplate(activeTemplate.id, {
+                              name: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+
+                      <label className="grid gap-2 text-sm">
+                        <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                          {t.templateDescription}
+                        </span>
+                        <Textarea
+                          className="rounded-xl bg-background/80 shadow-none"
+                          rows={3}
+                          value={activeTemplate.description}
+                          onChange={(event) =>
+                            onUpdateTemplate(activeTemplate.id, {
+                              description: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </TemplateEditorPanel>
+                ) : null}
+
+                <Tabs
+                  value={editorTab}
+                  onValueChange={(value) =>
+                    setEditorTab(value as TemplateEditorTab)
+                  }
+                  className="grid gap-0"
+                >
+                  <TabsList className="grid h-12 w-full grid-cols-[1fr_0.82fr_0.9fr_1.28fr] gap-0 rounded-none border-0 border-b border-border/70 bg-transparent p-0 text-muted-foreground">
+                    <TabsTrigger
+                      value="layout"
+                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                    >
+                      <TemplateTabLabel icon={LayoutTemplate}>
+                        {t.templateLayoutTab}
+                      </TemplateTabLabel>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="typography"
+                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                    >
+                      <TemplateTabLabel icon={Type}>
+                        {t.templateTypographyTab}
+                      </TemplateTabLabel>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="visual"
+                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                    >
+                      <TemplateTabLabel icon={Palette}>
+                        {t.templateVisualTab}
+                      </TemplateTabLabel>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="images"
+                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                    >
+                      <TemplateTabLabel icon={Sparkles}>
+                        {t.templateImagesTab}
+                      </TemplateTabLabel>
+                    </TabsTrigger>
+                  </TabsList>
+
+                    <TabsContent value="layout" className="m-0 px-1 py-4">
+                      <div className="grid">
+                        <TemplateSelectRow
+                          icon={ImageIcon}
+                          label={t.basicInfoLayout}
+                        >
                           <Select
                             value={activeTemplate.layout.basicInfo}
                             disabled={isTemplateReadonly}
@@ -945,7 +985,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -960,12 +1000,12 @@ export function TemplateLibrary({
                               </SelectItem>
                             </SelectContent>
                           </Select>
-                        </label>
+                        </TemplateSelectRow>
 
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">
-                            {t.sectionTemplateStyle}
-                          </span>
+                        <TemplateSelectRow
+                          icon={SlidersHorizontal}
+                          label={t.sectionTemplateStyle}
+                        >
                           <Select
                             value={activeTemplate.layout.section}
                             disabled={isTemplateReadonly}
@@ -975,7 +1015,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -996,20 +1036,12 @@ export function TemplateLibrary({
                               </SelectItem>
                             </SelectContent>
                           </Select>
-                        </label>
+                        </TemplateSelectRow>
 
-                        </div>
-                      </TemplateEditorPanel>
-
-                      <TemplateEditorPanel
-                        title={t.templateAvatarControls}
-                        defaultOpen={false}
-                      >
-                        <div className="grid gap-3 md:grid-cols-2">
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">
-                            {t.avatarPosition}
-                          </span>
+                        <TemplateSelectRow
+                          icon={CircleUserRound}
+                          label={t.avatarPosition}
+                        >
                           <Select
                             value={activeTemplate.layout.avatarPosition}
                             disabled={isTemplateReadonly}
@@ -1019,10 +1051,13 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
+                              <SelectItem value="none">
+                                {t.avatarPositionNone}
+                              </SelectItem>
                               <SelectItem value="right">
                                 {t.avatarPositionRight}
                               </SelectItem>
@@ -1034,212 +1069,91 @@ export function TemplateLibrary({
                               </SelectItem>
                             </SelectContent>
                           </Select>
-                        </label>
+                        </TemplateSelectRow>
 
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">{t.avatarShape}</span>
+                        <TemplateSelectRow
+                          icon={SquareDashed}
+                          label={t.pageMargin}
+                        >
                           <Select
-                            value={activeTemplate.layout.avatarShape}
+                            value={getPageMarginPreset(activeTemplate.settings)}
                             disabled={isTemplateReadonly}
                             onValueChange={(value) =>
-                              updateLayout({
-                                avatarShape: value as ResumeAvatarShape,
-                              })
+                              updateSettings(
+                                pageMarginPresetValues[
+                                  value as TemplatePageMarginPreset
+                                ],
+                              )
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="rounded">
-                                {t.avatarShapeRounded}
+                              <SelectItem value="compact">
+                                {t.pageMarginCompact}
                               </SelectItem>
-                              <SelectItem value="circle">
-                                {t.avatarShapeCircle}
+                              <SelectItem value="standard">
+                                {t.pageMarginStandard}
                               </SelectItem>
-                              <SelectItem value="square">
-                                {t.avatarShapeSquare}
+                              <SelectItem value="relaxed">
+                                {t.pageMarginRelaxed}
                               </SelectItem>
                             </SelectContent>
                           </Select>
-                        </label>
+                        </TemplateSelectRow>
 
-                        <TemplateSliderField
-                          label={t.avatarWidth}
-                          min={16}
-                          max={48}
-                          step={0.5}
-                          value={activeTemplate.layout.avatarWidth}
-                          displayValue={`${activeTemplate.layout.avatarWidth.toFixed(1)}mm`}
-                          onChange={(value) =>
-                            updateLayout({ avatarWidth: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        <TemplateSliderField
-                          label={t.avatarHeight}
-                          min={16}
-                          max={56}
-                          step={0.5}
-                          value={activeTemplate.layout.avatarHeight}
-                          displayValue={`${activeTemplate.layout.avatarHeight.toFixed(1)}mm`}
-                          onChange={(value) =>
-                            updateLayout({ avatarHeight: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        <TemplateSliderField
-                          label={t.avatarOffsetX}
-                          min={-40}
-                          max={40}
-                          step={0.5}
-                          value={activeTemplate.layout.avatarOffsetX}
-                          displayValue={`${activeTemplate.layout.avatarOffsetX.toFixed(1)}mm`}
-                          onChange={(value) =>
-                            updateLayout({ avatarOffsetX: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        <TemplateSliderField
-                          label={t.avatarOffsetY}
-                          min={-40}
-                          max={40}
-                          step={0.5}
-                          value={activeTemplate.layout.avatarOffsetY}
-                          displayValue={`${activeTemplate.layout.avatarOffsetY.toFixed(1)}mm`}
-                          onChange={(value) =>
-                            updateLayout({ avatarOffsetY: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        <TemplateSliderField
-                          label={t.avatarBorderWidth}
-                          min={0}
-                          max={8}
-                          step={0.5}
-                          value={activeTemplate.layout.avatarBorderWidth}
-                          displayValue={`${activeTemplate.layout.avatarBorderWidth.toFixed(1)}px`}
-                          onChange={(value) =>
-                            updateLayout({ avatarBorderWidth: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        <TemplateColorField
-                          label={t.avatarBorderColor}
-                          value={activeTemplate.layout.avatarBorderColor}
-                          onChange={(value) =>
-                            updateLayout({ avatarBorderColor: value })
-                          }
-                          disabled={isTemplateReadonly}
-                        />
-                        </div>
-                      </TemplateEditorPanel>
+                        <TemplateSelectRow
+                          icon={ListMinus}
+                          label={t.templateDividerStyle}
+                        >
+                          <Select
+                            value={getDividerStyle(activeTemplate.settings)}
+                            disabled={isTemplateReadonly}
+                            onValueChange={(value) =>
+                              updateSettings({
+                                dividerThickness:
+                                  dividerStyleValues[
+                                    value as TemplateDividerStyle
+                                  ],
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="thin">
+                                {t.templateDividerThin}
+                              </SelectItem>
+                              <SelectItem value="medium">
+                                {t.templateDividerMedium}
+                              </SelectItem>
+                              <SelectItem value="bold">
+                                {t.templateDividerBold}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TemplateSelectRow>
+                      </div>
 
-                      <TemplateEditorPanel
-                        title={t.templateSpacingRules}
-                        defaultOpen={false}
-                      >
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <TemplateSliderField
-                            label={t.pagePaddingTop}
-                            min={8}
-                            max={20}
-                            step={1}
-                            value={activeTemplate.settings.pagePaddingTop}
-                            displayValue={`${activeTemplate.settings.pagePaddingTop}mm`}
-                            onChange={(value) =>
-                              updateSettings({ pagePaddingTop: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.pagePaddingX}
-                            min={8}
-                            max={18}
-                            step={1}
-                            value={activeTemplate.settings.pagePaddingX}
-                            displayValue={`${activeTemplate.settings.pagePaddingX}mm`}
-                            onChange={(value) =>
-                              updateSettings({ pagePaddingX: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.pagePaddingBottom}
-                            min={8}
-                            max={18}
-                            step={1}
-                            value={activeTemplate.settings.pagePaddingBottom}
-                            displayValue={`${activeTemplate.settings.pagePaddingBottom}mm`}
-                            onChange={(value) =>
-                              updateSettings({ pagePaddingBottom: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.sectionGap}
-                            min={0.8}
-                            max={2.4}
-                            step={0.1}
-                            value={activeTemplate.settings.sectionGap}
-                            displayValue={`${activeTemplate.settings.sectionGap.toFixed(1)}em`}
-                            onChange={(value) =>
-                              updateSettings({ sectionGap: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.itemGap}
-                            min={0.4}
-                            max={1.8}
-                            step={0.1}
-                            value={activeTemplate.settings.itemGap}
-                            displayValue={`${activeTemplate.settings.itemGap.toFixed(1)}em`}
-                            onChange={(value) => updateSettings({ itemGap: value })}
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.bodyLineHeight}
-                            min={1.4}
-                            max={2.2}
-                            step={0.05}
-                            value={activeTemplate.settings.bodyLineHeight}
-                            displayValue={activeTemplate.settings.bodyLineHeight.toFixed(
-                              2,
-                            )}
-                            onChange={(value) =>
-                              updateSettings({ bodyLineHeight: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                          <TemplateSliderField
-                            label={t.dividerThickness}
-                            min={0.5}
-                            max={3}
-                            step={0.5}
-                            value={activeTemplate.settings.dividerThickness}
-                            displayValue={`${activeTemplate.settings.dividerThickness.toFixed(1)}px`}
-                            onChange={(value) =>
-                              updateSettings({ dividerThickness: value })
-                            }
-                            disabled={isTemplateReadonly}
-                          />
-                        </div>
-                      </TemplateEditorPanel>
                     </TabsContent>
 
                     <TabsContent
                       value="typography"
                       className={cn(
-                        "grid gap-3",
-                        isTemplateReadonly && "pointer-events-none opacity-70",
+                        "m-0 grid gap-1 px-1 py-4",
+                        isTemplateReadonly && "opacity-70",
                       )}
                     >
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">{t.fontFamily}</span>
+                      <div className="grid">
+                        <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4 py-2 text-sm">
+                          <span className="min-w-0 truncate font-medium">
+                            {t.fontFamily}
+                          </span>
                           <Select
                             value={activeTemplate.typography.fontFamily}
+                            disabled={isTemplateReadonly}
                             onValueChange={(value) =>
                               onUpdateTemplate(activeTemplate.id, {
                                 typography: {
@@ -1249,7 +1163,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1260,10 +1174,13 @@ export function TemplateLibrary({
                           </Select>
                         </label>
 
-                        <label className="grid gap-2 rounded-[18px] bg-muted/35 p-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                          <span className="font-medium">{t.fontSize}</span>
+                        <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4 py-2 text-sm">
+                          <span className="min-w-0 truncate font-medium">
+                            {t.fontSize}
+                          </span>
                           <Select
                             value={String(activeTemplate.typography.fontSize)}
+                            disabled={isTemplateReadonly}
                             onValueChange={(value) =>
                               onUpdateTemplate(activeTemplate.id, {
                                 typography: {
@@ -1273,7 +1190,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 rounded-lg bg-background">
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1300,6 +1217,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ nameScale: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateSliderField
                         label={t.sectionTitleSize}
@@ -1314,6 +1232,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ sectionTitleScale: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateSliderField
                         label={t.itemTitleSize}
@@ -1328,6 +1247,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ itemTitleScale: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateSliderField
                         label={t.metaSize}
@@ -1342,6 +1262,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ metaScale: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateSliderField
                         label={t.bodySize}
@@ -1356,14 +1277,15 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ bodyScale: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                     </TabsContent>
 
                     <TabsContent
                       value="visual"
                       className={cn(
-                        "grid gap-3",
-                        isTemplateReadonly && "pointer-events-none opacity-70",
+                        "m-0 grid gap-1 px-1 py-4",
+                        isTemplateReadonly && "opacity-70",
                       )}
                     >
                       <TemplateColorField
@@ -1372,6 +1294,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ pageBackground: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateColorField
                         label={t.surfaceColor}
@@ -1379,6 +1302,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ surfaceColor: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateColorField
                         label={t.headingColor}
@@ -1386,6 +1310,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ headingColor: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateColorField
                         label={t.bodyColor}
@@ -1393,6 +1318,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ bodyColor: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateColorField
                         label={t.mutedColor}
@@ -1400,6 +1326,7 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ mutedColor: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                       <TemplateColorField
                         label={t.dividerColor}
@@ -1407,31 +1334,30 @@ export function TemplateLibrary({
                         onChange={(value) =>
                           updateSettings({ dividerColor: value })
                         }
+                        disabled={isTemplateReadonly}
                       />
                     </TabsContent>
 
                     <TabsContent
                       value="images"
                       className={cn(
-                        "grid gap-3",
-                        isTemplateReadonly && "pointer-events-none opacity-70",
+                        "m-0 grid gap-3 px-1 py-4",
+                        isTemplateReadonly && "opacity-70",
                       )}
                     >
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-11 justify-center rounded-xl border-dashed bg-background"
+                        className={cn(
+                          "h-11 justify-center rounded-xl border-dashed bg-background",
+                          readonlyDisabledControlClassName,
+                        )}
                         onClick={addTemplateImage}
+                        disabled={isTemplateReadonly}
                       >
                         <ImagePlus className="size-4" />
                         {t.addTemplateImage}
                       </Button>
-
-                      {(activeTemplate.layout.images ?? []).length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 p-4 text-sm text-muted-foreground">
-                          {t.templateImagesEmpty}
-                        </div>
-                      ) : null}
 
                       {(activeTemplate.layout.images ?? []).map((image, index) => {
                         const fileInputId = `template-image-${image.id}`;
@@ -1477,6 +1403,12 @@ export function TemplateLibrary({
                                     })
                                   }
                                   placeholder={`${t.imageName} ${index + 1}`}
+                                  disabled={isTemplateReadonly}
+                                  className={
+                                    isTemplateReadonly
+                                      ? readonlyDisabledControlClassName
+                                      : undefined
+                                  }
                                 />
                                 <Input
                                   value={image.src}
@@ -1486,6 +1418,12 @@ export function TemplateLibrary({
                                     })
                                   }
                                   placeholder={t.imageUrl}
+                                  disabled={isTemplateReadonly}
+                                  className={
+                                    isTemplateReadonly
+                                      ? readonlyDisabledControlClassName
+                                      : undefined
+                                  }
                                 />
                               </div>
 
@@ -1493,9 +1431,13 @@ export function TemplateLibrary({
                                 type="button"
                                 variant="ghost"
                                 size="icon"
-                                className="shrink-0 text-muted-foreground hover:text-destructive"
+                                className={cn(
+                                  "shrink-0 text-muted-foreground hover:text-destructive",
+                                  readonlyDisabledControlClassName,
+                                )}
                                 onClick={() => removeTemplateImage(image.id)}
                                 aria-label={t.removeImage}
+                                disabled={isTemplateReadonly}
                               >
                                 <Trash2 className="size-4" />
                               </Button>
@@ -1507,6 +1449,7 @@ export function TemplateLibrary({
                                 type="file"
                                 accept="image/*"
                                 className="hidden"
+                                disabled={isTemplateReadonly}
                                 onChange={(event) => {
                                   void handleTemplateImageUpload(
                                     image.id,
@@ -1519,16 +1462,30 @@ export function TemplateLibrary({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="rounded-full bg-background"
+                                className={cn(
+                                  "rounded-full bg-background",
+                                  readonlyDisabledControlClassName,
+                                )}
                                 asChild
                               >
-                                <label htmlFor={fileInputId} className="cursor-pointer">
+                                <label
+                                  htmlFor={
+                                    isTemplateReadonly ? undefined : fileInputId
+                                  }
+                                  aria-disabled={isTemplateReadonly}
+                                  className={cn(
+                                    isTemplateReadonly
+                                      ? "cursor-not-allowed"
+                                      : "cursor-pointer",
+                                  )}
+                                >
                                   <FileUp className="size-4" />
                                   {t.uploadImage}
                                 </label>
                               </Button>
                               <Select
                                 value={image.objectFit}
+                                disabled={isTemplateReadonly}
                                 onValueChange={(value) =>
                                   updateTemplateImage(image.id, {
                                     objectFit: value as ResumeTemplateImageFit,
@@ -1560,6 +1517,7 @@ export function TemplateLibrary({
                                 onChange={(value) =>
                                   updateTemplateImage(image.id, { x: value })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imagePositionY}
@@ -1571,6 +1529,7 @@ export function TemplateLibrary({
                                 onChange={(value) =>
                                   updateTemplateImage(image.id, { y: value })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imageWidth}
@@ -1582,6 +1541,7 @@ export function TemplateLibrary({
                                 onChange={(value) =>
                                   updateTemplateImage(image.id, { width: value })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imageHeight}
@@ -1593,6 +1553,7 @@ export function TemplateLibrary({
                                 onChange={(value) =>
                                   updateTemplateImage(image.id, { height: value })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imageOpacity}
@@ -1604,6 +1565,7 @@ export function TemplateLibrary({
                                 onChange={(value) =>
                                   updateTemplateImage(image.id, { opacity: value })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imageBorderWidth}
@@ -1617,6 +1579,7 @@ export function TemplateLibrary({
                                     borderWidth: value,
                                   })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateSliderField
                                 label={t.imageBorderRadius}
@@ -1630,6 +1593,7 @@ export function TemplateLibrary({
                                     borderRadius: value,
                                   })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                               <TemplateColorField
                                 label={t.imageBorderColor}
@@ -1639,6 +1603,7 @@ export function TemplateLibrary({
                                     borderColor: value,
                                   })
                                 }
+                                disabled={isTemplateReadonly}
                               />
                             </div>
                           </div>

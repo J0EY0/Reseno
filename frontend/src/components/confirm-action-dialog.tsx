@@ -1,12 +1,13 @@
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export function ConfirmActionDialog({
   open,
@@ -29,31 +30,27 @@ export function ConfirmActionDialog({
   const resolvedDescription = description || "";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton className="w-[min(440px,calc(100vw-2rem))]">
-        <DialogHeader>
-          <DialogTitle>{resolvedTitle}</DialogTitle>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="w-[min(440px,calc(100vw-2rem))]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{resolvedTitle}</AlertDialogTitle>
           {resolvedDescription ? (
-            <DialogDescription>{resolvedDescription}</DialogDescription>
+            <AlertDialogDescription>{resolvedDescription}</AlertDialogDescription>
           ) : null}
-        </DialogHeader>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel type="button">
             {cancelLabel}
-          </Button>
-          <Button
+          </AlertDialogCancel>
+          <AlertDialogAction
             type="button"
-            className="border border-red-600 bg-red-600 text-white hover:bg-red-600/90"
+            variant="destructive"
             onClick={onConfirm}
           >
             {confirmLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

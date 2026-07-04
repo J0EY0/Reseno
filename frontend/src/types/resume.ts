@@ -14,7 +14,7 @@ export type ResumeFontFamily = 'inter' | 'serif' | 'plex'
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type BuiltinResumeTemplateId = 'minimal' | 'modern' | 'compact'
 export type ResumeBasicInfoLayout = 'centered' | 'profile' | 'sidebar'
-export type ResumeAvatarPosition = 'right' | 'left' | 'center'
+export type ResumeAvatarPosition = 'none' | 'right' | 'left' | 'center'
 export type ResumeAvatarShape = 'rounded' | 'circle' | 'square'
 export type ResumeSectionTemplateStyle =
   | 'ruled'

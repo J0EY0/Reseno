@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { ResumePreview } from "@/components/preview/resume-preview";
@@ -97,9 +97,11 @@ export function PdfExportRenderer() {
   const locale = resolveLocale(searchParams.get("locale"));
   const resumeId = searchParams.get("resumeId") ?? "";
   const versionId = searchParams.get("versionId");
+  const shouldPrint = searchParams.get("print") === "1";
   const [state, setState] = useState<PdfExportState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const hasPrintedRef = useRef(false);
   const initialMessages = useMemo(() => getMessagesSync(locale), [locale]);
 
   useEffect(() => {
@@ -190,6 +192,23 @@ export function PdfExportRenderer() {
       cancelled = true;
     };
   }, [state]);
+
+  useEffect(() => {
+    if (!shouldPrint || !isReady || hasPrintedRef.current) {
+      return;
+    }
+
+    hasPrintedRef.current = true;
+    // Browser-native PDF export depends on the print dialog, so wait until
+    // fonts/images have settled before asking the browser to print the page.
+    const printTimer = window.setTimeout(() => {
+      window.print();
+    }, 100);
+
+    return () => {
+      window.clearTimeout(printTimer);
+    };
+  }, [isReady, shouldPrint]);
 
   if (error) {
     return (

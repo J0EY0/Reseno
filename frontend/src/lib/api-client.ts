@@ -73,6 +73,7 @@ export const apiRoutes = {
   resumePdfExport: "/api/exports/resume-pdf",
   resumeImport: "/api/import/resume",
   templateImport: "/api/import/templates",
+  sectionRegistry: "/api/section-registry",
 } as const;
 
 function buildSearchParams(
