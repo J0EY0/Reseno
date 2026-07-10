@@ -5,6 +5,7 @@ import {
   Languages,
   LayoutTemplate,
   LogOut,
+  Minimize2,
   Moon,
   Pencil,
   Plus,
@@ -277,6 +278,58 @@ const A4_HEIGHT_PX = (297 / 25.4) * 96;
 const PREVIEW_FRAME_GUTTER_PX = 48;
 const MAX_RESUME_TITLE_LENGTH = 20;
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
+const SMART_ONE_PAGE_MAX_PAGE_COUNT = 1;
+const SMART_ONE_PAGE_MIN_FONT_SIZE = 12;
+const SMART_ONE_PAGE_LAYOUT_LEVELS = [
+  {
+    pagePaddingDelta: 2,
+    sectionGap: 1,
+    itemGap: 0.7,
+    bodyLineHeight: 1.55,
+  },
+  {
+    pagePaddingDelta: 3,
+    sectionGap: 0.9,
+    itemGap: 0.6,
+    bodyLineHeight: 1.48,
+    sectionTitleScale: 1.12,
+  },
+  {
+    pagePaddingDelta: 4,
+    sectionGap: 0.8,
+    itemGap: 0.5,
+    bodyLineHeight: 1.42,
+    sectionTitleScale: 1,
+    itemTitleScale: 0.96,
+    metaScale: 0.86,
+  },
+  {
+    pagePaddingDelta: 5,
+    sectionGap: 0.8,
+    itemGap: 0.4,
+    bodyLineHeight: 1.4,
+    nameScale: 1.85,
+    sectionTitleScale: 0.9,
+    itemTitleScale: 0.92,
+    metaScale: 0.82,
+    bodyScale: 0.9,
+  },
+] satisfies Array<{
+  pagePaddingDelta: number;
+  sectionGap: number;
+  itemGap: number;
+  bodyLineHeight: number;
+  nameScale?: number;
+  sectionTitleScale?: number;
+  itemTitleScale?: number;
+  metaScale?: number;
+  bodyScale?: number;
+}>;
+
+type SmartOnePageStyleSnapshot = {
+  typography: ResumeTypographySettings;
+  templateSettings: ResumeTemplateSettings | null;
+};
 
 function WorkspacePanelSkeleton() {
   return (
@@ -670,6 +723,159 @@ function normalizeResumeTemplateSettings(
   return isRecord(value)
     ? createTemplateSettings("minimal", value as Partial<ResumeTemplateSettings>)
     : undefined;
+}
+
+function getPreviewPageCount(element: HTMLElement | null) {
+  const rawPageCount = element?.dataset.resumePageCount;
+  const pageCount = rawPageCount ? Number(rawPageCount) : 1;
+
+  return Number.isFinite(pageCount) && pageCount > 0 ? pageCount : 1;
+}
+
+function waitForPreviewPagination() {
+  let remainingFrames = 8;
+
+  // ResumePreview schedules pagination in requestAnimationFrame after layout.
+  // Waiting a few frames keeps the fit check tied to the rendered preview
+  // instead of duplicating the pagination algorithm here.
+  return new Promise<void>((resolve) => {
+    const tick = () => {
+      remainingFrames -= 1;
+
+      if (remainingFrames <= 0) {
+        resolve();
+        return;
+      }
+
+      window.requestAnimationFrame(tick);
+    };
+
+    window.requestAnimationFrame(tick);
+  });
+}
+
+function getNextSmallerFontSize(fontSize: number) {
+  const smallerSizes = fontSizeOptions.filter((size) => size < fontSize);
+
+  return smallerSizes.at(-1) ?? fontSize;
+}
+
+function compactNumber(current: number, target: number | undefined, min: number) {
+  return Number(Math.max(min, Math.min(current, target ?? current)).toFixed(2));
+}
+
+function compactPagePadding(current: number, delta: number) {
+  return Math.max(8, current - delta);
+}
+
+function createSmartOnePageSettingsCandidate(
+  settings: ResumeTemplateSettings,
+  level: (typeof SMART_ONE_PAGE_LAYOUT_LEVELS)[number],
+): ResumeTemplateSettings {
+  return {
+    ...settings,
+    pagePaddingTop: compactPagePadding(settings.pagePaddingTop, level.pagePaddingDelta),
+    pagePaddingX: compactPagePadding(settings.pagePaddingX, level.pagePaddingDelta),
+    pagePaddingBottom: compactPagePadding(
+      settings.pagePaddingBottom,
+      level.pagePaddingDelta,
+    ),
+    sectionGap: compactNumber(settings.sectionGap, level.sectionGap, 0.8),
+    itemGap: compactNumber(settings.itemGap, level.itemGap, 0.4),
+    bodyLineHeight: compactNumber(
+      settings.bodyLineHeight,
+      level.bodyLineHeight,
+      1.4,
+    ),
+    nameScale: compactNumber(settings.nameScale, level.nameScale, 1.6),
+    sectionTitleScale: compactNumber(
+      settings.sectionTitleScale,
+      level.sectionTitleScale,
+      0.75,
+    ),
+    itemTitleScale: compactNumber(
+      settings.itemTitleScale,
+      level.itemTitleScale,
+      0.85,
+    ),
+    metaScale: compactNumber(settings.metaScale, level.metaScale, 0.75),
+    bodyScale: compactNumber(settings.bodyScale, level.bodyScale, 0.85),
+  };
+}
+
+function areTemplateSettingsEqual(
+  left: ResumeTemplateSettings,
+  right: ResumeTemplateSettings,
+) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function areSmartOnePageSnapshotsEqual(
+  left: SmartOnePageStyleSnapshot,
+  right: SmartOnePageStyleSnapshot,
+) {
+  return (
+    left.typography.fontFamily === right.typography.fontFamily &&
+    left.typography.fontSize === right.typography.fontSize &&
+    Boolean(left.templateSettings) === Boolean(right.templateSettings) &&
+    (!left.templateSettings ||
+      !right.templateSettings ||
+      areTemplateSettingsEqual(left.templateSettings, right.templateSettings))
+  );
+}
+
+function createSmartOnePageCandidates(
+  typography: ResumeTypographySettings,
+  settings: ResumeTemplateSettings,
+) {
+  const candidates: SmartOnePageStyleSnapshot[] = [];
+  let fontSize = typography.fontSize;
+
+  SMART_ONE_PAGE_LAYOUT_LEVELS.forEach((level, index) => {
+    if (index > 0) {
+      fontSize = Math.max(
+        SMART_ONE_PAGE_MIN_FONT_SIZE,
+        getNextSmallerFontSize(fontSize),
+      );
+    }
+
+    candidates.push({
+      typography: {
+        ...typography,
+        fontSize,
+      },
+      templateSettings: createSmartOnePageSettingsCandidate(settings, level),
+    });
+  });
+
+  const strongestLevel =
+    SMART_ONE_PAGE_LAYOUT_LEVELS[SMART_ONE_PAGE_LAYOUT_LEVELS.length - 1];
+
+  while (fontSize > SMART_ONE_PAGE_MIN_FONT_SIZE) {
+    fontSize = Math.max(
+      SMART_ONE_PAGE_MIN_FONT_SIZE,
+      getNextSmallerFontSize(fontSize),
+    );
+
+    candidates.push({
+      typography: {
+        ...typography,
+        fontSize,
+      },
+      templateSettings: createSmartOnePageSettingsCandidate(
+        settings,
+        strongestLevel,
+      ),
+    });
+  }
+
+  return candidates.filter((candidate, index, allCandidates) => {
+    const firstMatchingIndex = allCandidates.findIndex((item) =>
+      areSmartOnePageSnapshotsEqual(item, candidate),
+    );
+
+    return firstMatchingIndex === index;
+  });
 }
 
 function normalizeResumeTemplateId(
@@ -1143,6 +1349,7 @@ export function ResumeBuilder({
   );
   const [previewScale, setPreviewScale] = useState(1);
   const [previewPageHeight, setPreviewPageHeight] = useState(A4_HEIGHT_PX);
+  const [isSmartFittingOnePage, setIsSmartFittingOnePage] = useState(false);
   const [documentStickyTop, setDocumentStickyTop] = useState(96);
   const documentHeaderRef = useRef<HTMLElement | null>(null);
   const previewScaleFrameRef = useRef<HTMLDivElement | null>(null);
@@ -3080,6 +3287,76 @@ export function ResumeBuilder({
     });
   }
 
+  async function fitActiveResumeToOnePage() {
+    if (!isResumeDetailView || isSmartFittingOnePage) {
+      return;
+    }
+
+    setIsSmartFittingOnePage(true);
+
+    const previousSnapshot: SmartOnePageStyleSnapshot = {
+      typography,
+      templateSettings,
+    };
+    const previousEffectiveSettings = activeResumeTemplateDefinition.settings;
+
+    try {
+      await waitForPreviewPagination();
+
+      if (
+        getPreviewPageCount(previewRef.current) <= SMART_ONE_PAGE_MAX_PAGE_COUNT
+      ) {
+        toast.info(t.smartOnePageAlready, {
+          duration: 1800,
+        });
+        return;
+      }
+
+      const candidates = createSmartOnePageCandidates(
+        typography,
+        previousEffectiveSettings,
+      ).filter(
+        (candidate) =>
+          !areSmartOnePageSnapshotsEqual(candidate, {
+            typography,
+            templateSettings: previousEffectiveSettings,
+          }),
+      );
+
+      for (const candidate of candidates) {
+        setTypography(candidate.typography);
+        setTemplateSettings(candidate.templateSettings);
+
+        await waitForPreviewPagination();
+
+        if (
+          getPreviewPageCount(previewRef.current) <=
+          SMART_ONE_PAGE_MAX_PAGE_COUNT
+        ) {
+          toast.success(t.smartOnePageApplied, {
+            duration: 2600,
+            action: {
+              label: t.undoAction,
+              onClick: () => {
+                setTypography(previousSnapshot.typography);
+                setTemplateSettings(previousSnapshot.templateSettings);
+              },
+            },
+          });
+          return;
+        }
+      }
+
+      setTypography(previousSnapshot.typography);
+      setTemplateSettings(previousSnapshot.templateSettings);
+      toast.info(t.smartOnePageNoChange, {
+        duration: 1800,
+      });
+    } finally {
+      setIsSmartFittingOnePage(false);
+    }
+  }
+
   function handleViewChange(view: WorkspaceView) {
     requestWorkspaceLeave(() => {
       preloadWorkspaceView(view);
@@ -4059,6 +4336,24 @@ export function ResumeBuilder({
                   {formatResumeTitleForToolbar(activeResumeToolbarTitle)}
                 </span>
                 <Pencil className="size-3.5 text-muted-foreground" />
+              </Button>
+            ) : null}
+            {showEditorControls && isResumeDetailView ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void fitActiveResumeToOnePage()}
+                disabled={isSmartFittingOnePage}
+                title={t.smartOnePage}
+                aria-label={t.smartOnePage}
+              >
+                <Minimize2
+                  className={cn(
+                    "size-4",
+                    isSmartFittingOnePage && "animate-pulse",
+                  )}
+                />
+                {t.smartOnePage}
               </Button>
             ) : null}
             <SegmentTabs
