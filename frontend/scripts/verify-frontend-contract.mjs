@@ -142,10 +142,10 @@ assert(
   "Provider options must show local or cloud tags consistently.",
 );
 assert(
-  /PROVIDER_KIND_TAG_CLASS_NAME\s*=\s*[\s\S]*rounded-full[\s\S]*border-border\/60/.test(
+  /function ProviderKindBadge[\s\S]*?<Badge[\s\S]*?variant="outline"/.test(
     modelConfigForm,
-  ),
-  "Provider kind tags must use the bordered pill style in both trigger and options.",
+  ) && (modelConfigForm.match(/<ProviderKindBadge>/g) ?? []).length >= 3,
+  "Provider kind tags must use the shared outlined Badge in both trigger and options.",
 );
 assert(
   /\{draft\.providerKind !== "cloud" \? \([\s\S]*?name="model-api-url"[\s\S]*?\) : null\}/.test(
@@ -174,7 +174,7 @@ assert(
   "Model discovery must only auto-select when exactly one model is available.",
 );
 assert(
-  /onValueChange=\{handleModelSelect\}[\s\S]*?<SelectTrigger className="[^"]*\bw-full\b[\s\S]*?<SelectValue[\s\S]*?<SelectContent[\s\S]*?position="popper"/.test(
+  /onValueChange=\{handleModelSelect\}[\s\S]*?<SelectTrigger[^>]*className="[^"]*\bw-full\b[^>]*>[\s\S]*?<SelectValue[\s\S]*?<SelectContent[\s\S]*?position="popper"/.test(
     modelConfigForm,
   ),
   "Discovered model selection must render a full-width popper dropdown.",
@@ -214,7 +214,7 @@ assert(
   "Manual model configs must submit configured capabilities.",
 );
 assert(
-  /checked=\{draft\.supportsTools\}[\s\S]*updateField\("supportsTools",\s*event\.target\.checked\)[\s\S]*t\.toolUseCapability/.test(
+  /<Checkbox[\s\S]*id="model-supports-tools"[\s\S]*checked=\{draft\.supportsTools\}[\s\S]*onCheckedChange=\{\(checked\) =>[\s\S]*updateField\("supportsTools", checked === true\)[\s\S]*t\.toolUseCapability/.test(
     modelConfigForm,
   ),
   "Manual model configs must let users declare tool support.",

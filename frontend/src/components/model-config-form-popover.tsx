@@ -1,4 +1,4 @@
-import { ExternalLink, Pencil, Plus, X } from "lucide-react";
+import { ExternalLink, Plus } from "lucide-react";
 import {
   isValidElement,
   useCallback,
@@ -28,7 +28,9 @@ import type { ModelProviderMeta } from "@/lib/model-providers";
 import type { ModelConfig } from "@/types/resume";
 
 import { ModelProviderIcon } from "@/components/model-provider-icon";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -39,6 +41,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -68,24 +78,31 @@ type ModelConfigDraft = Omit<
 
 type ModelConfigErrors = Partial<Record<keyof ModelConfigDraft | "discovery", string>>;
 
-const PROVIDER_KIND_TAG_CLASS_NAME =
-  "inline-flex h-4 shrink-0 items-center rounded-full border border-border/60 bg-muted/50 px-1 text-[9px] leading-none text-muted-foreground";
-
-const CAPABILITY_CHECKBOX_CLASS_NAME =
-  "size-5 shrink-0 rounded-md border border-border/70 accent-foreground";
-
-function FieldLabel({
+function FormFieldLabel({
   label,
   required = false,
+  htmlFor,
 }: {
   label: string;
   required?: boolean;
+  htmlFor?: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 font-medium">
+    <FieldLabel htmlFor={htmlFor}>
       <span>{label}</span>
       {required ? <span className="text-destructive">*</span> : null}
-    </span>
+    </FieldLabel>
+  );
+}
+
+function ProviderKindBadge({ children }: { children: ReactNode }) {
+  return (
+    <Badge
+      variant="outline"
+      className="h-4 px-1 py-0 text-[9px] font-normal text-muted-foreground"
+    >
+      {children}
+    </Badge>
   );
 }
 
@@ -598,20 +615,18 @@ export function ModelConfigFormPopover({
 
   function renderManualModelField(label: string): ReactElement {
     return (
-      <label className="grid gap-2 text-sm">
-        <FieldLabel label={label} required />
+      <Field data-invalid={Boolean(errors.model)}>
+        <FormFieldLabel htmlFor="model-name" label={label} required />
         <Input
-          className="h-12 rounded-[1.25rem] border-border/60 bg-background/80"
+          id="model-name"
           name="model-name"
           autoComplete="off"
           value={draft.model}
           aria-invalid={Boolean(errors.model)}
           onChange={(event) => updateField("model", event.target.value)}
         />
-        {errors.model ? (
-          <p className="text-xs text-destructive">{errors.model}</p>
-        ) : null}
-      </label>
+        <FieldError>{errors.model}</FieldError>
+      </Field>
     );
   }
 
@@ -688,57 +703,44 @@ export function ModelConfigFormPopover({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>{renderTrigger()}</DialogTrigger>
-      <DialogContent
-        showCloseButton={false}
-        className="max-h-[min(680px,calc(100dvh-2rem))] w-[min(600px,calc(100vw-2rem))] overflow-hidden border-border/70 bg-background p-0 shadow-[0_30px_100px_rgba(0,0,0,0.24)]"
-      >
+      <DialogContent className="max-h-[min(680px,calc(100dvh-2rem))] overflow-hidden sm:max-w-xl">
         <form
-          className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
+          className="flex min-h-0 flex-col gap-6"
           onSubmit={handleSubmit}
         >
-          <DialogHeader className="relative shrink-0 overflow-hidden border-b border-border/70 px-6 py-4 pr-14">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_10%,rgba(0,0,0,0.10),transparent_28%),linear-gradient(135deg,rgba(0,0,0,0.045),transparent_48%)]" />
-            <div className="pointer-events-none absolute inset-0 opacity-45 [background-image:linear-gradient(rgba(0,0,0,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.035)_1px,transparent_1px)] [background-size:28px_28px]" />
-            <div className="relative flex items-center gap-4">
-              <div className="relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-foreground text-background shadow-[0_14px_30px_rgba(0,0,0,0.18)]">
-                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),transparent_45%)]" />
-                {mode === "create" ? (
-                  <Plus className="relative size-5" aria-hidden="true" />
-                ) : (
-                  <Pencil className="relative size-5" aria-hidden="true" />
-                )}
-              </div>
-              <div className="min-w-0">
-                <DialogTitle className="text-lg font-semibold tracking-tight">
-                  {mode === "create" ? t.addModelConfig : t.editModelConfig}
-                </DialogTitle>
-                <DialogDescription className="sr-only">
-                  {mode === "create" ? t.addModelConfig : t.editModelConfig}
-                </DialogDescription>
-              </div>
-            </div>
-            <DialogClose
-              className="absolute right-4 top-1/2 z-10 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-xl bg-background/55 text-muted-foreground transition-colors duration-200 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-              aria-label="Close"
-            >
-              <X className="size-[18px]" aria-hidden="true" />
-            </DialogClose>
+          <DialogHeader>
+            <DialogTitle>
+              {mode === "create" ? t.addModelConfig : t.editModelConfig}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              {mode === "create" ? t.addModelConfig : t.editModelConfig}
+            </DialogDescription>
           </DialogHeader>
 
-          <div className="min-h-0 max-h-[500px] space-y-4 overflow-y-auto overscroll-contain bg-[radial-gradient(circle_at_top_right,rgba(0,0,0,0.055),transparent_34%),linear-gradient(180deg,rgba(0,0,0,0.025),transparent_24%)] px-6 py-4">
-            <div className="grid gap-2 text-sm">
+          <FieldGroup className="min-h-0 max-h-[min(500px,calc(100dvh-14rem))] gap-5 overflow-y-auto px-1">
+            <Field data-invalid={Boolean(errors.provider)}>
               <div className="flex items-center justify-between gap-3">
-                <FieldLabel label={t.provider} required />
+                <FormFieldLabel
+                  htmlFor="model-provider"
+                  label={t.provider}
+                  required
+                />
                 {selectedProvider?.officialUrl ? (
-                  <a
-                    href={selectedProvider.officialUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+                  <Button
+                    asChild
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0 text-muted-foreground"
                   >
-                    <ExternalLink className="size-3" aria-hidden="true" />
-                    {t.officialApiUrl}
-                  </a>
+                    <a
+                      href={selectedProvider.officialUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink className="size-3" aria-hidden="true" />
+                      {t.officialApiUrl}
+                    </a>
+                  </Button>
                 ) : null}
               </div>
               {selectedProvider ? (
@@ -746,18 +748,18 @@ export function ModelConfigFormPopover({
                   value={selectedProvider.id}
                   onValueChange={handleProviderChange}
                 >
-                  <SelectTrigger className="h-[52px] w-full rounded-[1.35rem] border-border/70 bg-background/85 px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_12px_34px_rgba(0,0,0,0.055)]">
+                  <SelectTrigger id="model-provider" className="w-full">
                     <div className="flex min-w-0 flex-1 items-center gap-2 pr-2">
                       <ModelProviderIcon
                         provider={selectedProvider.iconProvider}
-                        size={22}
+                        size={18}
                       />
                       <span className="min-w-0 flex-1 truncate text-left">
                         {providerDisplayLabel(selectedProvider, t)}
                       </span>
-                      <span className={PROVIDER_KIND_TAG_CLASS_NAME}>
+                      <ProviderKindBadge>
                         {providerKindLabel(selectedProvider, t)}
-                      </span>
+                      </ProviderKindBadge>
                     </div>
                   </SelectTrigger>
                   <SelectContent
@@ -775,8 +777,10 @@ export function ModelConfigFormPopover({
                             <span className="min-w-0 flex-1 truncate">
                               {providerDisplayLabel(provider, t)}
                             </span>
-                            <span className={`ml-auto ${PROVIDER_KIND_TAG_CLASS_NAME}`}>
-                              {providerKindLabel(provider, t)}
+                            <span className="ml-auto">
+                              <ProviderKindBadge>
+                                {providerKindLabel(provider, t)}
+                              </ProviderKindBadge>
                             </span>
                           </span>
                         </SelectItem>
@@ -793,8 +797,10 @@ export function ModelConfigFormPopover({
                               <span className="min-w-0 flex-1 truncate">
                                 {providerDisplayLabel(provider, t)}
                               </span>
-                              <span className={`ml-auto ${PROVIDER_KIND_TAG_CLASS_NAME}`}>
-                                {providerKindLabel(provider, t)}
+                              <span className="ml-auto">
+                                <ProviderKindBadge>
+                                  {providerKindLabel(provider, t)}
+                                </ProviderKindBadge>
                               </span>
                             </span>
                           </SelectItem>
@@ -803,27 +809,27 @@ export function ModelConfigFormPopover({
                   </SelectContent>
                 </Select>
               ) : (
-                <button
+                <Button
                   type="button"
-                  className="flex h-[52px] w-full items-center rounded-[1.35rem] border border-border/70 bg-background/85 px-3 text-left text-sm text-muted-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_12px_34px_rgba(0,0,0,0.055)]"
+                  variant="outline"
+                  className="w-full justify-start text-muted-foreground"
                   disabled
                 >
                   {providersLoaded ? t.loadError : t.loading}
-                </button>
+                </Button>
               )}
-              {errors.provider ? (
-                <p className="text-xs text-destructive">{errors.provider}</p>
-              ) : null}
-            </div>
+              <FieldError>{errors.provider}</FieldError>
+            </Field>
 
             {usesManualModelSettings ? renderManualModelField(t.model) : null}
 
-            <label className="grid gap-2 text-sm">
-              <FieldLabel
+            <Field>
+              <FormFieldLabel
+                htmlFor="model-nickname"
                 label={usesManualModelSettings ? t.displayName : t.nickname}
               />
               <Input
-                className="h-12 rounded-[1.25rem] border-border/60 bg-background/80"
+                id="model-nickname"
                 name="model-nickname"
                 autoComplete="off"
                 value={draft.nickname}
@@ -834,15 +840,16 @@ export function ModelConfigFormPopover({
                 }
                 onChange={(event) => updateField("nickname", event.target.value)}
               />
-            </label>
+            </Field>
 
-            <label className="grid gap-2 text-sm">
-              <FieldLabel
+            <Field data-invalid={Boolean(errors.apiKey)}>
+              <FormFieldLabel
+                htmlFor="model-api-key"
                 label={t.apiKey}
                 required={Boolean(selectedProvider?.authRequired)}
               />
               <Input
-                className="h-12 rounded-[1.25rem] border-border/60 bg-background/80"
+                id="model-api-key"
                 name="model-api-key"
                 type="password"
                 autoComplete="off"
@@ -851,16 +858,18 @@ export function ModelConfigFormPopover({
                 aria-invalid={Boolean(errors.apiKey)}
                 onChange={(event) => handleApiKeyChange(event.target.value)}
               />
-              {errors.apiKey ? (
-                <p className="text-xs text-destructive">{errors.apiKey}</p>
-              ) : null}
-            </label>
+              <FieldError>{errors.apiKey}</FieldError>
+            </Field>
 
             {draft.providerKind !== "cloud" ? (
-              <label className="grid gap-2 text-sm">
-                <FieldLabel label={t.apiUrl} required />
+              <Field data-invalid={Boolean(errors.apiUrl)}>
+                <FormFieldLabel
+                  htmlFor="model-api-url"
+                  label={t.apiUrl}
+                  required
+                />
                 <Input
-                  className="h-12 rounded-[1.25rem] border-border/60 bg-background/80"
+                  id="model-api-url"
                   name="model-api-url"
                   type="url"
                   inputMode="url"
@@ -871,17 +880,21 @@ export function ModelConfigFormPopover({
                   aria-invalid={Boolean(errors.apiUrl)}
                   onChange={(event) => handleApiUrlChange(event.target.value)}
                 />
-                {errors.apiUrl ? (
-                  <p className="text-xs text-destructive">{errors.apiUrl}</p>
-                ) : null}
-              </label>
+                <FieldError>{errors.apiUrl}</FieldError>
+              </Field>
             ) : null}
 
             {usesDiscoveredModelSelect ? (
-              <div className="grid gap-3 text-sm">
+              <Field
+                data-invalid={Boolean(errors.model || errors.discovery)}
+              >
                 <div className="flex items-end gap-3">
-                  <div className="grid min-w-0 flex-1 gap-2">
-                    <FieldLabel label={t.model} required />
+                  <div className="flex min-w-0 flex-1 flex-col gap-3">
+                    <FormFieldLabel
+                      htmlFor="model-select"
+                      label={t.model}
+                      required
+                    />
                     <Select
                       value={draft.model}
                       onValueChange={handleModelSelect}
@@ -890,7 +903,7 @@ export function ModelConfigFormPopover({
                         discoveredModels.length === 0
                       }
                     >
-                      <SelectTrigger className="h-12 w-full rounded-[1.25rem] border-border/60 bg-background/80">
+                      <SelectTrigger id="model-select" className="w-full">
                         <SelectValue placeholder={modelSelectPlaceholder}>
                           <span className="min-w-0 truncate">
                             {modelSelectPlaceholder}
@@ -920,7 +933,7 @@ export function ModelConfigFormPopover({
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-12 shrink-0 rounded-[1.25rem]"
+                      className="shrink-0"
                       disabled={discovering}
                       onClick={() => void handleDiscoverModels()}
                     >
@@ -928,74 +941,83 @@ export function ModelConfigFormPopover({
                     </Button>
                   ) : null}
                 </div>
-                {errors.model ? (
-                  <p className="text-xs text-destructive">{errors.model}</p>
-                ) : null}
-                {errors.discovery ? (
-                  <p className="text-xs text-destructive">{errors.discovery}</p>
-                ) : null}
-              </div>
+                <FieldError>{errors.model}</FieldError>
+                <FieldError>{errors.discovery}</FieldError>
+              </Field>
             ) : usesManualModelSettings ? null : (
-              <div className="grid gap-3 text-sm">
+              <FieldGroup className="gap-3">
                 {renderManualModelField(t.model)}
-                {errors.discovery ? (
-                  <p className="text-xs text-destructive">{errors.discovery}</p>
-                ) : null}
-              </div>
+                <FieldError>{errors.discovery}</FieldError>
+              </FieldGroup>
             )}
 
             {usesManualModelSettings ? (
-              <div className="grid gap-3 text-sm">
-                <div className="font-medium">{t.capabilities}</div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="flex h-11 items-center gap-3 rounded-xl border border-border/60 bg-background/80 px-3">
-                    <input
-                      className={CAPABILITY_CHECKBOX_CLASS_NAME}
-                      type="checkbox"
+              <FieldSet>
+                <FieldLegend variant="label">{t.capabilities}</FieldLegend>
+                <FieldGroup
+                  data-slot="checkbox-group"
+                  className="grid gap-3 sm:grid-cols-3"
+                >
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="model-supports-image"
                       checked={draft.supportsImage}
-                      onChange={(event) =>
-                        updateField("supportsImage", event.target.checked)
+                      onCheckedChange={(checked) =>
+                        updateField("supportsImage", checked === true)
                       }
                     />
-                    <span>{t.visionCapability}</span>
-                  </label>
-                  <label className="flex h-11 items-center gap-3 rounded-xl border border-border/60 bg-background/80 px-3">
-                    <input
-                      className={CAPABILITY_CHECKBOX_CLASS_NAME}
-                      type="checkbox"
+                    <FieldLabel htmlFor="model-supports-image" className="font-normal">
+                      {t.visionCapability}
+                    </FieldLabel>
+                  </Field>
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="model-supports-thinking"
                       checked={draft.supportsThinking}
-                      onChange={(event) => {
-                        updateField("supportsThinking", event.target.checked);
-                        updateField("thinkingEnabled", event.target.checked);
+                      onCheckedChange={(checked) => {
+                        const enabled = checked === true;
+                        updateField("supportsThinking", enabled);
+                        updateField("thinkingEnabled", enabled);
                       }}
                     />
-                    <span>{t.reasoningCapability}</span>
-                  </label>
-                  <label className="flex h-11 items-center gap-3 rounded-xl border border-border/60 bg-background/80 px-3">
-                    <input
-                      className={CAPABILITY_CHECKBOX_CLASS_NAME}
-                      type="checkbox"
+                    <FieldLabel
+                      htmlFor="model-supports-thinking"
+                      className="font-normal"
+                    >
+                      {t.reasoningCapability}
+                    </FieldLabel>
+                  </Field>
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="model-supports-tools"
                       checked={draft.supportsTools}
-                      onChange={(event) =>
-                        updateField("supportsTools", event.target.checked)
+                      onCheckedChange={(checked) =>
+                        updateField("supportsTools", checked === true)
                       }
                     />
-                    <span className="min-w-0 flex-1 truncate">
+                    <FieldLabel
+                      htmlFor="model-supports-tools"
+                      className="min-w-0 font-normal"
+                    >
                       {t.toolUseCapability}
-                    </span>
-                  </label>
-                </div>
-              </div>
+                    </FieldLabel>
+                  </Field>
+                </FieldGroup>
+              </FieldSet>
             ) : null}
 
             {usesManualModelSettings ? (
-              <div className="grid gap-3 text-sm">
-                <div className="font-medium">{t.advancedSettings}</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-2">
-                    <FieldLabel label={t.contextWindow} required />
+              <FieldSet>
+                <FieldLegend variant="label">{t.advancedSettings}</FieldLegend>
+                <FieldGroup className="grid gap-3 sm:grid-cols-2">
+                  <Field data-invalid={Boolean(errors.contextWindowTokens)}>
+                    <FormFieldLabel
+                      htmlFor="model-context-window"
+                      label={t.contextWindow}
+                      required
+                    />
                     <Input
-                      className="h-11 rounded-xl"
+                      id="model-context-window"
                       name="model-context-window"
                       inputMode="numeric"
                       value={draft.contextWindowTokens}
@@ -1005,16 +1027,15 @@ export function ModelConfigFormPopover({
                         updateField("contextWindowTokens", event.target.value)
                       }
                     />
-                    {errors.contextWindowTokens ? (
-                      <p className="text-xs text-destructive">
-                        {errors.contextWindowTokens}
-                      </p>
-                    ) : null}
-                  </label>
-                  <label className="grid gap-2">
-                    <FieldLabel label={t.maxTokens} />
+                    <FieldError>{errors.contextWindowTokens}</FieldError>
+                  </Field>
+                  <Field data-invalid={Boolean(errors.maxTokens)}>
+                    <FormFieldLabel
+                      htmlFor="model-max-tokens"
+                      label={t.maxTokens}
+                    />
                     <Input
-                      className="h-11 rounded-xl"
+                      id="model-max-tokens"
                       name="model-max-tokens"
                       inputMode="numeric"
                       value={draft.maxTokens}
@@ -1024,37 +1045,33 @@ export function ModelConfigFormPopover({
                         updateField("maxTokens", event.target.value)
                       }
                     />
-                    {errors.maxTokens ? (
-                      <p className="text-xs text-destructive">
-                        {errors.maxTokens}
-                      </p>
-                    ) : null}
-                  </label>
-                </div>
-              </div>
+                    <FieldError>{errors.maxTokens}</FieldError>
+                  </Field>
+                </FieldGroup>
+              </FieldSet>
             ) : null}
 
             {draft.supportsThinking && !usesManualModelSettings ? (
-              <div className="rounded-[1.35rem] border border-border/50 bg-background/65 p-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.thinkingEnabled}
-                    onChange={(event) =>
-                      updateField("thinkingEnabled", event.target.checked)
-                    }
-                  />
-                  <span>{t.thinkingEnabled}</span>
-                </label>
-              </div>
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="model-thinking-enabled"
+                  checked={draft.thinkingEnabled}
+                  onCheckedChange={(checked) =>
+                    updateField("thinkingEnabled", checked === true)
+                  }
+                />
+                <FieldLabel htmlFor="model-thinking-enabled" className="font-normal">
+                  {t.thinkingEnabled}
+                </FieldLabel>
+              </Field>
             ) : null}
 
             {draft.providerKind !== "cloud" && errors.discovery ? (
-              <p className="text-xs text-destructive">{errors.discovery}</p>
+              <FieldError>{errors.discovery}</FieldError>
             ) : null}
-          </div>
+          </FieldGroup>
 
-          <DialogFooter className="shrink-0 border-t border-border/70 bg-background px-6 py-4">
+          <DialogFooter>
             <DialogClose asChild>
               <Button type="button" variant="outline">
                 {t.cancel}
