@@ -241,9 +241,7 @@ export function ResumeGallery({
           <>
             <Button
               type="button"
-              size="sm"
               variant="outline"
-              className="h-8.5 rounded-lg bg-background px-4 font-semibold shadow-sm"
               onClick={() => fileInputRef.current?.click()}
             >
               <FileUp className="size-4" />
@@ -251,8 +249,6 @@ export function ResumeGallery({
             </Button>
             <Button
               type="button"
-              size="sm"
-              className="h-8.5 rounded-lg px-4 font-semibold shadow-sm"
               onClick={onCreateResume}
             >
               <PlusSquare className="size-4" />

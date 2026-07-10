@@ -3,7 +3,11 @@ import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 
 export function GalleryToolbar({
   searchPlaceholder,
@@ -32,15 +36,16 @@ export function GalleryToolbar({
 }) {
   return (
     <div className="mb-4 flex flex-wrap items-center gap-3">
-      <div className="relative w-full max-w-[250px] sm:max-w-[280px]">
-        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
+      <InputGroup className="w-full sm:w-80 lg:w-96">
+        <InputGroupAddon>
+          <Search aria-hidden="true" />
+        </InputGroupAddon>
+        <InputGroupInput
           value={searchValue}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={searchPlaceholder}
-          className="h-9 rounded-full border-border bg-card pl-9 shadow-sm"
         />
-      </div>
+      </InputGroup>
 
       {leadingActions ? (
         <div className="flex flex-wrap items-center gap-2">{leadingActions}</div>
@@ -51,14 +56,13 @@ export function GalleryToolbar({
           type="button"
           variant={isSelecting ? "secondary" : "outline"}
           size="sm"
-          className="h-9 rounded-full"
           onClick={onToggleSelecting}
         >
           {isSelecting ? cancelLabel : selectLabel}
         </Button>
 
         {isSelecting && selectedCount > 0 ? (
-          <Badge variant="outline" className="h-9 rounded-full px-3 text-sm">
+          <Badge variant="outline">
             {selectedCount}
           </Badge>
         ) : null}
@@ -66,8 +70,8 @@ export function GalleryToolbar({
         {isSelecting && selectedCount >= 2 ? (
           <Button
             type="button"
+            variant="destructive"
             size="sm"
-            className="h-9 rounded-full border border-red-600 bg-red-600 text-white hover:bg-red-600/90"
             onClick={onBulkDelete}
           >
             <Trash2 className="size-4" />

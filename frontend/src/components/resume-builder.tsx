@@ -497,9 +497,9 @@ function GalleryWorkspaceSkeleton({
   return (
     <section className="rounded-[26px] border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Skeleton className="h-9 w-full max-w-[250px] rounded-full bg-card sm:max-w-[280px]" />
+        <Skeleton className="h-9 w-full rounded-md bg-card sm:w-80 lg:w-96" />
         <div className="ml-auto flex w-full justify-end sm:w-auto">
-          <Skeleton className="h-9 w-16 rounded-full bg-background" />
+          <Skeleton className="h-9 w-16 rounded-md bg-background" />
         </div>
       </div>
 
@@ -4281,17 +4281,21 @@ export function ResumeBuilder({
       >
         <header
           ref={documentHeaderRef}
-          className="sticky top-0 z-20 flex min-h-20 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-4 py-3 print:hidden"
+          className={cn(
+            "sticky top-0 z-20 min-h-20 items-center gap-3 border-b border-border bg-background px-4 py-3 print:hidden",
+            isResumeDetailView
+              ? "grid grid-cols-1 2xl:grid-cols-[auto_1fr]"
+              : "flex flex-wrap justify-between",
+          )}
           style={{ viewTransitionName: "persistent-header" }}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <SidebarTrigger />
             {isResumeDetailView || isTemplateDetailView ? (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-9 rounded-full border-border/80 bg-card px-3 shadow-sm"
                 onClick={() => {
                   if (isResumeDetailView) {
                     requestWorkspaceLeave(() =>
@@ -4305,6 +4309,22 @@ export function ResumeBuilder({
               >
                 <ChevronLeft className="size-4" />
                 {isResumeDetailView ? t.backToResumes : t.backToTemplates}
+              </Button>
+            ) : null}
+            {isResumeDetailView ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                title={activeResumeToolbarTitle}
+                aria-label={t.editResumeTitle}
+                className="min-w-0 max-w-40 justify-start"
+                onClick={openResumeTitleDialog}
+              >
+                <span className="truncate">
+                  {formatResumeTitleForToolbar(activeResumeToolbarTitle)}
+                </span>
+                <Pencil className="size-3.5 text-muted-foreground" />
               </Button>
             ) : null}
             <div>
@@ -4321,23 +4341,15 @@ export function ResumeBuilder({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {isResumeDetailView ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title={activeResumeToolbarTitle}
-                aria-label={t.editResumeTitle}
-                className="h-10 min-w-[88px] justify-start rounded-lg border-0 bg-transparent px-2 text-sm font-semibold shadow-none hover:bg-accent/60"
-                onClick={openResumeTitleDialog}
-              >
-                <span className="max-w-[72px] overflow-hidden whitespace-nowrap">
-                  {formatResumeTitleForToolbar(activeResumeToolbarTitle)}
-                </span>
-                <Pencil className="size-3.5 text-muted-foreground" />
-              </Button>
-            ) : null}
+          <div
+            className={cn(
+              isResumeDetailView
+                ? "flex w-full flex-col items-end gap-2 xl:flex-row xl:flex-nowrap xl:justify-end"
+                : "flex flex-wrap items-center justify-end gap-2",
+            )}
+          >
+            {showEditorControls || canSaveCurrentWorkspace ? (
+              <div className="flex flex-wrap items-center justify-end gap-2">
             {showEditorControls && isResumeDetailView ? (
               <Button
                 type="button"
@@ -4356,42 +4368,6 @@ export function ResumeBuilder({
                 {t.smartOnePage}
               </Button>
             ) : null}
-            <SegmentTabs
-              icon={<Languages className="size-4" />}
-              label={t.language}
-              items={[
-                {
-                  key: "zh",
-                  label: t.languageChinese,
-                  active: locale === "zh",
-                  onClick: () => onLocaleChange("zh"),
-                },
-                {
-                  key: "en",
-                  label: t.languageEnglish,
-                  active: locale === "en",
-                  onClick: () => onLocaleChange("en"),
-                },
-              ]}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              title={t.themeToggleLabel}
-              aria-label={t.themeToggleLabel}
-              onClick={() =>
-                handleSettingsThemeChange(
-                  resolvedTheme === "dark" ? "light" : "dark",
-                )
-              }
-            >
-              {resolvedTheme === "dark" ? (
-                <Sun className="size-4" />
-              ) : (
-                <Moon className="size-4" />
-              )}
-            </Button>
 
             {showEditorControls && isResumeDetailView ? (
               <TooltipProvider>
@@ -4572,15 +4548,55 @@ export function ResumeBuilder({
                 {isExporting ? t.exporting : t.exportPdf}
               </Button>
             ) : null}
+              </div>
+            ) : null}
 
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => requestWorkspaceLeave(onLogout)}
-            >
-              <LogOut className="size-4" />
-              {t.logout}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <SegmentTabs
+                icon={<Languages className="size-4" />}
+                label={t.language}
+                items={[
+                  {
+                    key: "zh",
+                    label: t.languageChinese,
+                    active: locale === "zh",
+                    onClick: () => onLocaleChange("zh"),
+                  },
+                  {
+                    key: "en",
+                    label: t.languageEnglish,
+                    active: locale === "en",
+                    onClick: () => onLocaleChange("en"),
+                  },
+                ]}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                title={t.themeToggleLabel}
+                aria-label={t.themeToggleLabel}
+                onClick={() =>
+                  handleSettingsThemeChange(
+                    resolvedTheme === "dark" ? "light" : "dark",
+                  )
+                }
+              >
+                {resolvedTheme === "dark" ? (
+                  <Sun className="size-4" />
+                ) : (
+                  <Moon className="size-4" />
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => requestWorkspaceLeave(onLogout)}
+              >
+                <LogOut className="size-4" />
+                {t.logout}
+              </Button>
+            </div>
           </div>
         </header>
 
