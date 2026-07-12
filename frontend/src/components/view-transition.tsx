@@ -28,4 +28,3 @@ export function ViewTransitionBoundary({
 
   return <NativeViewTransition {...props}>{children}</NativeViewTransition>;
 }
-

@@ -19,8 +19,8 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
-import { useSidebar } from "@/components/ui/sidebar-context";
 
 const navigationIcons: Record<WorkspaceView, typeof FolderOpen> = {
   resume: FolderOpen,
@@ -41,7 +41,7 @@ export function AppSidebar({
   onViewChange: (view: WorkspaceView) => void;
   onViewPreload?: (view: WorkspaceView) => void;
 }) {
-  const { open, setOpenMobile } = useSidebar();
+  const { setOpenMobile } = useSidebar();
 
   const items: Array<{ id: WorkspaceView; label: string }> = [
     { id: "resume", label: t.myResume },
@@ -52,26 +52,28 @@ export function AppSidebar({
   ];
 
   return (
-    <Sidebar className="print:hidden" style={{ viewTransitionName: "persistent-sidebar" }}>
-      <SidebarHeader className="min-h-20 justify-center  border-sidebar-border px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl">
+    <Sidebar
+      collapsible="icon"
+      className="print:hidden"
+      style={{ viewTransitionName: "persistent-sidebar" }}
+    >
+      <SidebarHeader className="min-h-20 justify-center border-sidebar-border px-2 py-3 group-data-[collapsible=icon]:min-h-16 group-data-[collapsible=icon]:items-center">
+        <div className="flex items-center gap-3 group-data-[collapsible=icon]:justify-center">
+          <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl group-data-[collapsible=icon]:size-8">
             <img
               src="/logo.svg"
               alt="ResuMate"
-              className="size-[170%] max-w-none object-cover"
+              className="size-[170%] max-w-none object-cover group-data-[collapsible=icon]:size-[150%]"
             />
           </div>
-          {open ? (
-            <div className="min-w-0">
-              <p className="truncate text-base font-semibold tracking-tight">
-                {t.brandTitle}
-              </p>
-              <p className="truncate text-sm text-sidebar-foreground/65">
-                {t.brandSubtitle}
-              </p>
-            </div>
-          ) : null}
+          <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+            <p className="truncate text-base font-semibold tracking-tight">
+              {t.brandTitle}
+            </p>
+            <p className="truncate text-sm text-sidebar-foreground/65">
+              {t.brandSubtitle}
+            </p>
+          </div>
         </div>
       </SidebarHeader>
 
@@ -93,10 +95,10 @@ export function AppSidebar({
                         onViewChange(item.id);
                         setOpenMobile(false);
                       }}
-                      title={item.label}
+                      tooltip={item.label}
                     >
                       <Icon className="size-4 shrink-0" />
-                      {open ? <span>{item.label}</span> : null}
+                      <span>{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );

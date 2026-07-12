@@ -20,4 +20,18 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Registry components intentionally co-locate variants with components.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
+    // Keep the official randomized SidebarSkeleton implementation unchanged.
+    files: ['src/components/ui/sidebar.tsx'],
+    rules: {
+      'react-hooks/purity': 'off',
+    },
+  },
 ])

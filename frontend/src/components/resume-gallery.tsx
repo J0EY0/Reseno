@@ -21,7 +21,8 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { Button } from "@/components/ui/button";
-import { ViewTransitionBoundary } from "@/components/ui/view-transition";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { ViewTransitionBoundary } from "@/components/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 
 function matchesResumeQuery(
@@ -263,9 +264,11 @@ export function ResumeGallery({
         className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
       >
         {paginatedResumes.length === 0 ? (
-          <div className="col-span-full flex min-h-[390px] items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-card/55 text-sm font-medium text-muted-foreground">
-            {resumes.length === 0 ? t.emptyResumes : t.emptyResumeSearch}
-          </div>
+          <Empty className="col-span-full min-h-[390px] border border-border/70 bg-card/55">
+            <EmptyDescription className="font-medium">
+              {resumes.length === 0 ? t.emptyResumes : t.emptyResumeSearch}
+            </EmptyDescription>
+          </Empty>
         ) : null}
 
         {paginatedResumes.map((item) => {
@@ -304,13 +307,14 @@ export function ResumeGallery({
                   >
                     <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
                     {isSelecting ? (
-                      <button
+                      <Button
                         type="button"
+                        variant={isSelected ? "default" : "outline"}
+                        size="icon-sm"
+                        aria-label={t.selectItems}
                         className={cn(
-                          "absolute left-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border bg-background/92 backdrop-blur transition-colors",
-                          isSelected
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "border-border/80 text-muted-foreground hover:text-foreground",
+                          "absolute left-3 top-3 z-10 size-7 rounded-full backdrop-blur",
+                          !isSelected && "bg-background/92 text-muted-foreground",
                         )}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -318,23 +322,23 @@ export function ResumeGallery({
                         }}
                       >
                         <Check className="size-3.5" />
-                      </button>
+                      </Button>
                     ) : null}
 
                     {isSelecting && isSelected ? (
-                      <button
+                      <Button
                         type="button"
-                        className={cn(
-                          "absolute right-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur transition-colors",
-                          "border-red-600 bg-red-600 text-white hover:bg-red-600/90",
-                        )}
+                        variant="destructive"
+                        size="icon-sm"
+                        aria-label={t.confirmDeleteAction}
+                        className="absolute right-3 top-3 z-10 size-7 rounded-full backdrop-blur"
                         onClick={(event) => {
                           event.stopPropagation();
                           requestDelete([item.id]);
                         }}
                       >
                         <Trash2 className="size-3.5" />
-                      </button>
+                      </Button>
                     ) : null}
 
                     <div

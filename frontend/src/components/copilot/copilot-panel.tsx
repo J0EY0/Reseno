@@ -58,6 +58,11 @@ import {
   InlineCitationText,
 } from "@/components/ai-elements/inline-citation";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Check,
@@ -984,45 +989,33 @@ function AgentToolDetailsDisclosure({
   }
 
   return (
-    <div className="text-xs">
-      <button
-        aria-expanded={isOpen}
-        className="group/details flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 font-medium leading-5 text-muted-foreground transition-colors duration-200 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-        type="button"
-        onClick={() => {
-          setIsOpen((open) => !open);
-        }}
-      >
-        <SquareTerminal className="size-3.5 transition-colors duration-200" />
-        <span>
-          {formatCountMessage(t.agentToolDetailsComplete, completedTools.length)}
-        </span>
-        <ChevronRight
-          className={cn(
-            "size-3.5 opacity-0 transition-[opacity,transform] duration-200 group-hover/details:opacity-100 group-focus-visible/details:opacity-100",
-            isOpen && "rotate-90 opacity-100",
-          )}
-        />
-      </button>
-      <div
-        className={cn(
-          "grid transition-[grid-template-rows,opacity,transform] duration-200 ease-out",
-          isOpen
-            ? "grid-rows-[1fr] translate-y-0 opacity-100"
-            : "pointer-events-none grid-rows-[0fr] -translate-y-1 opacity-0",
-        )}
-      >
-        <div className="overflow-hidden">
-          <div className="mt-1 space-y-1 pl-6 text-xs leading-5 text-muted-foreground">
-            {completedTools.map((tool) => (
-              <p key={`${tool.id}-${tool.state}`} className="break-words">
-                {getToolTimelineLabel(tool, t)}
-              </p>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
+    <Collapsible open={isOpen} onOpenChange={setIsOpen} className="text-xs">
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="group/details h-auto max-w-full gap-1.5 px-1 py-0.5 text-xs font-medium leading-5 text-muted-foreground"
+        >
+          <SquareTerminal className="size-3.5" />
+          <span>
+            {formatCountMessage(t.agentToolDetailsComplete, completedTools.length)}
+          </span>
+          <ChevronRight
+            className={cn(
+              "size-3.5 transition-transform duration-200",
+              isOpen && "rotate-90",
+            )}
+          />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-1 space-y-1 pl-6 text-xs leading-5 text-muted-foreground">
+        {completedTools.map((tool) => (
+          <p key={`${tool.id}-${tool.state}`} className="break-words">
+            {getToolTimelineLabel(tool, t)}
+          </p>
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

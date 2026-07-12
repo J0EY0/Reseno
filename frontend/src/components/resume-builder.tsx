@@ -24,18 +24,17 @@ import {
   useState,
   type CSSProperties,
   type ChangeEvent,
-  type ReactNode,
 } from "react";
 import { matchPath, useLocation, useNavigate } from "react-router-dom";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { AppToaster } from "@/components/app-toaster";
 import { AvatarCropDialog } from "@/components/editor/avatar-crop-dialog";
 import { BasicInfoCard } from "@/components/editor/basic-info-card";
 import { ResumeSectionCard } from "@/components/editor/resume-section-card";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { SaveStatusButton } from "@/components/save-status-button";
-import { Button } from "@/components/ui/button";
-import { buttonVariants } from "@/components/ui/button-variants";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -60,7 +59,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Toaster } from "@/components/ui/sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -74,7 +72,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ViewTransitionBoundary } from "@/components/ui/view-transition";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
+import { ViewTransitionBoundary } from "@/components/view-transition";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
 import {
   createDefaultAgentSettings,
@@ -1415,20 +1417,6 @@ export function ResumeBuilder({
     () => getKeywordMatch(previewResume, deferredJobBrief, 0, t),
     [deferredJobBrief, previewResume, t],
   );
-  const pageHint =
-    activeView === "resume"
-      ? showResumeGallery
-        ? t.resumeGalleryHint
-        : t.resumeEditorHint
-      : activeView === "templates"
-        ? showTemplateGallery
-          ? t.templateGalleryHint
-          : t.templateEditorHint
-        : activeView === "trash"
-          ? t.trashHint
-          : activeView === "models"
-          ? t.modelsHint
-          : t.settingsHint;
   const pageEyebrow =
     activeView === "resume"
       ? t.myResume
@@ -3790,8 +3778,10 @@ export function ResumeBuilder({
         <TooltipProvider delayDuration={180}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 aria-label={tooltip}
                 className="agent-seam-rail-button"
                 onClick={() =>
@@ -3801,7 +3791,7 @@ export function ResumeBuilder({
                 <span className="agent-seam-rail-track" aria-hidden="true">
                   <RailIcon className="agent-seam-rail-icon" />
                 </span>
-              </button>
+              </Button>
             </TooltipTrigger>
             <TooltipContent side="left">{tooltip}</TooltipContent>
           </Tooltip>
@@ -4131,7 +4121,7 @@ export function ResumeBuilder({
 
   return (
     <SidebarProvider>
-      <Toaster theme={theme} position="bottom-right" closeButton />
+      <AppToaster theme={theme} position="bottom-right" />
       <AvatarCropDialog
         t={t}
         open={Boolean(avatarCropSource)}
@@ -4282,15 +4272,23 @@ export function ResumeBuilder({
         <header
           ref={documentHeaderRef}
           className={cn(
-            "sticky top-0 z-20 min-h-20 items-center gap-3 border-b border-border bg-background px-4 py-3 print:hidden",
+            "sticky top-0 z-20 items-center gap-3 border-b border-border bg-background px-4 print:hidden",
             isResumeDetailView
-              ? "grid grid-cols-1 2xl:grid-cols-[auto_1fr]"
-              : "flex flex-wrap justify-between",
+              ? "grid min-h-20 grid-cols-1 py-3 2xl:grid-cols-[auto_1fr]"
+              : isTemplateDetailView
+                ? "flex min-h-20 flex-wrap justify-between py-3"
+                : "flex h-16 shrink-0 justify-between",
           )}
           style={{ viewTransitionName: "persistent-header" }}
         >
-          <div className="flex min-w-0 items-center gap-3">
-            <SidebarTrigger />
+          <div className="flex min-w-0 items-center gap-2">
+            <SidebarTrigger className="-ml-1" />
+            {!isResumeDetailView && !isTemplateDetailView ? (
+              <Separator
+                orientation="vertical"
+                className="mr-2 data-[orientation=vertical]:h-4"
+              />
+            ) : null}
             {isResumeDetailView || isTemplateDetailView ? (
               <Button
                 type="button"
@@ -4327,18 +4325,11 @@ export function ResumeBuilder({
                 <Pencil className="size-3.5 text-muted-foreground" />
               </Button>
             ) : null}
-            <div>
-              {!isResumeDetailView && !isTemplateDetailView ? (
-                <p className="text-sm font-semibold text-foreground">
-                  {pageEyebrow}
-                </p>
-              ) : null}
-              {!isResumeDetailView && !isTemplateDetailView ? (
-                <p className="mt-0.5 hidden text-[11px] text-muted-foreground xl:block">
-                  {pageHint}
-                </p>
-              ) : null}
-            </div>
+            {!isResumeDetailView && !isTemplateDetailView ? (
+              <h1 className="text-sm font-medium text-foreground">
+                {pageEyebrow}
+              </h1>
+            ) : null}
           </div>
 
           <div
@@ -4645,7 +4636,7 @@ function SegmentTabs({
   label,
   items,
 }: {
-  icon: ReactNode;
+  icon: React.ReactNode;
   label: string;
   items: Array<{
     key: string;
@@ -4654,25 +4645,31 @@ function SegmentTabs({
     onClick: () => void;
   }>;
 }) {
+  const activeItem = items.find((item) => item.active);
+
   return (
-    <div className="flex h-10 items-center gap-1 rounded-lg border border-border bg-card p-1">
-      <span className="pl-2 text-muted-foreground">{icon}</span>
-      <span className="sr-only">{label}</span>
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          onClick={item.onClick}
-          className={cn(
-            "rounded-md px-2.5 py-1.5 text-sm transition-colors",
-            item.active
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          )}
-        >
-          {item.label}
-        </button>
-      ))}
+    <div className="flex items-center gap-1.5">
+      <span className="text-muted-foreground" aria-hidden="true">
+        {icon}
+      </span>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        value={activeItem?.key}
+        aria-label={label}
+        onValueChange={(key) => {
+          if (key) {
+            items.find((item) => item.key === key)?.onClick();
+          }
+        }}
+      >
+        {items.map((item) => (
+          <ToggleGroupItem key={item.key} value={item.key}>
+            {item.label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
     </div>
   );
 }

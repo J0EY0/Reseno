@@ -1,8 +1,13 @@
 import { Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 
 export function PasswordField({
   id,
@@ -29,13 +34,13 @@ export function PasswordField({
   const errorId = `${id}-error`;
 
   return (
-    <div className="grid gap-2">
-      <label htmlFor={id} className="text-sm font-medium text-foreground">
-        {label}
-      </label>
-      <div className="relative">
-        <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
+    <Field data-invalid={Boolean(error)} className="gap-2">
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <InputGroup>
+        <InputGroupAddon>
+          <LockKeyhole />
+        </InputGroupAddon>
+        <InputGroupInput
           id={id}
           autoComplete={autoComplete}
           type={showPassword ? "text" : "password"}
@@ -44,29 +49,19 @@ export function PasswordField({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
-          className="h-11 rounded-xl border-border bg-background pl-10 pr-11"
         />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute right-1 top-1/2 size-9 -translate-y-1/2 rounded-lg text-muted-foreground"
-          aria-label={showPassword ? hidePasswordLabel : showPasswordLabel}
-          title={showPassword ? hidePasswordLabel : showPasswordLabel}
-          onClick={() => setShowPassword((current) => !current)}
-        >
-          {showPassword ? (
-            <EyeOff className="size-4" />
-          ) : (
-            <Eye className="size-4" />
-          )}
-        </Button>
-      </div>
-      {error ? (
-        <p id={errorId} className="text-xs text-red-600">
-          {error}
-        </p>
-      ) : null}
-    </div>
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton
+            size="icon-xs"
+            aria-label={showPassword ? hidePasswordLabel : showPasswordLabel}
+            title={showPassword ? hidePasswordLabel : showPasswordLabel}
+            onClick={() => setShowPassword((current) => !current)}
+          >
+            {showPassword ? <EyeOff /> : <Eye />}
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
+      <FieldError id={errorId}>{error}</FieldError>
+    </Field>
   );
 }

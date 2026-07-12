@@ -11,6 +11,14 @@ import { cropAvatarDataUrl } from '@/lib/avatar'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 const maxStageWidth = 520
 const maxStageHeight = 420
@@ -136,22 +144,7 @@ export function AvatarCropDialog({
     dragStateRef.current = null
   }, [open, source])
 
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !isSaving) {
-        onCancel()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isSaving, onCancel, open])
-
-  if (!open || !source) {
+  if (!source) {
     return null
   }
 
@@ -308,12 +301,28 @@ export function AvatarCropDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-4xl rounded-[28px] border border-border bg-background shadow-2xl">
-        <div className="border-b border-border px-6 py-5">
-          <h2 className="text-lg font-semibold tracking-tight">{t.cropAvatar}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t.cropAvatarHint}</p>
-        </div>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !isSaving) {
+          onCancel()
+        }
+      }}
+    >
+      <DialogContent
+        showCloseButton={!isSaving}
+        className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-4xl"
+        onEscapeKeyDown={(event) => {
+          if (isSaving) {
+            event.preventDefault()
+          }
+        }}
+        onPointerDownOutside={(event) => event.preventDefault()}
+      >
+        <DialogHeader className="border-b border-border px-6 py-5 text-left">
+          <DialogTitle>{t.cropAvatar}</DialogTitle>
+          <DialogDescription>{t.cropAvatarHint}</DialogDescription>
+        </DialogHeader>
 
         <div className="grid gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_240px]">
           <div className="flex items-center justify-center">
@@ -440,7 +449,7 @@ export function AvatarCropDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-5">
+        <DialogFooter className="border-t border-border px-6 py-5">
           <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>
             {t.cancel}
           </Button>
@@ -451,8 +460,8 @@ export function AvatarCropDialog({
           >
             {isSaving ? t.saving : t.applyCrop}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

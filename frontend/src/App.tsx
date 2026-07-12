@@ -23,7 +23,7 @@ import {
 } from "@/lib/preference-api";
 import { runViewTransition } from "@/lib/view-transition";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ViewTransitionBoundary } from "@/components/ui/view-transition";
+import { ViewTransitionBoundary } from "@/components/view-transition";
 
 const LoginPage = lazy(() =>
   import("@/components/auth/login-page").then((module) => ({

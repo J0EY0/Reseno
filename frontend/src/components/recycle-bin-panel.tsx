@@ -14,6 +14,7 @@ import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
@@ -47,7 +48,7 @@ function CountBadge({ count }: { count: number }) {
   return (
     <Badge
       variant="secondary"
-      className="h-5 min-w-5 rounded-full px-1.5 text-[11px] text-muted-foreground"
+      className="h-[18px] min-w-[18px] rounded-full px-1 text-[10px] leading-none text-muted-foreground"
     >
       {count}
     </Badge>
@@ -88,9 +89,9 @@ function PreviewThumbnail({
 
 function EmptyTrashState({ children }: { children: string }) {
   return (
-    <div className="flex min-h-[128px] items-center justify-center text-sm font-medium text-muted-foreground">
-      {children}
-    </div>
+    <Empty className="min-h-[128px] p-4 md:p-4">
+      <EmptyDescription className="font-medium">{children}</EmptyDescription>
+    </Empty>
   );
 }
 
@@ -288,24 +289,27 @@ export function RecycleBinPanel({
         }}
       />
 
-      <section className="rounded-[26px] border border-border bg-background p-4 text-foreground sm:p-6">
+      <section className="rounded-[26px] border border-border bg-background p-4 text-foreground">
         <Tabs
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as RecycleBinTab)}
           className="gap-0"
         >
-          <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border/70">
-            <TabsList className="h-auto gap-8 rounded-none border-0 bg-transparent p-0">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70">
+            <TabsList
+              variant="line"
+              className="w-fit justify-start gap-8 p-0 group-data-[orientation=horizontal]/tabs:h-9"
+            >
               <TabsTrigger
                 value="resumes"
-                className="min-w-0 rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base font-semibold text-muted-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
               >
                 {t.resumeRecycleBin}
                 <CountBadge count={deletedResumes.length} />
               </TabsTrigger>
               <TabsTrigger
                 value="templates"
-                className="min-w-0 rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base font-semibold text-muted-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
               >
                 {t.templateRecycleBin}
                 <CountBadge count={deletedTemplates.length} />
@@ -315,13 +319,14 @@ export function RecycleBinPanel({
             <Button
               type="button"
               variant="destructive"
-              className="mb-3 h-10 rounded-lg px-4 font-semibold data-[hidden=true]:pointer-events-none data-[hidden=true]:opacity-0"
+              size="xs"
+              className="h-7 self-start px-2.5 data-[hidden=true]:pointer-events-none data-[hidden=true]:opacity-0"
               data-hidden={activeItemCount === 0}
               aria-hidden={activeItemCount === 0}
               tabIndex={activeItemCount === 0 ? -1 : undefined}
               onClick={requestEmptyActiveTab}
             >
-              <Trash2 className="size-4" />
+              <Trash2 className="size-3" />
               {t.emptyTrash}
             </Button>
           </div>

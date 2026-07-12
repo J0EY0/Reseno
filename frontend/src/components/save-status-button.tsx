@@ -1,7 +1,13 @@
 import { CheckCheck, LoaderCircle, Save } from 'lucide-react'
 
 import type { Locale } from '@/i18n'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card'
 import type { WorkspaceVersionSummary } from '@/types/api'
 
 type SaveState = 'idle' | 'saving' | 'saved'
@@ -67,68 +73,70 @@ export function SaveStatusButton({
           ? `${lastSavedLabel}: ${formattedTime}`
           : unsavedText
 
-  return (
-    <div className="group relative">
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        aria-label={label}
-        title={tooltipText}
-        className="relative"
-        disabled={state === 'saving'}
-        onClick={onSave}
-      >
-        {state === 'saving' ? (
-          <LoaderCircle className="size-4 animate-spin" />
-        ) : state === 'saved' ? (
-          <CheckCheck className="size-4" />
-        ) : (
-          <Save className="size-4 transition-transform group-hover:scale-110" />
-        )}
-      </Button>
-      {showVersions ? (
-        <div className="absolute right-0 top-full z-30 hidden w-64 pt-2 group-hover:block">
-          <div className="rounded-xl border border-border bg-popover p-2 text-xs text-popover-foreground shadow-lg">
-            <p className="px-2 py-1 text-muted-foreground">{tooltipText}</p>
-            <div className="mt-1 border-t border-border/70 pt-1">
-              <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                {versionsLabel}
-              </p>
-              {versions.length > 0 ? (
-                <div className="max-h-56 overflow-y-auto">
-                  {versions.map((version) => {
-                    const isActive = version.versionId === activeVersionId
-                    const savedTime = formatSavedTime(locale, version.savedAt)
+  const saveButton = (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      aria-label={label}
+      title={tooltipText}
+      disabled={state === 'saving'}
+      onClick={onSave}
+    >
+      {state === 'saving' ? (
+        <LoaderCircle className="size-4 animate-spin" />
+      ) : state === 'saved' ? (
+        <CheckCheck className="size-4" />
+      ) : (
+        <Save className="size-4" />
+      )}
+    </Button>
+  )
 
-                    return (
-                      <button
-                        key={version.versionId}
-                        type="button"
-                        className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
-                        onClick={() => onSelectVersion(version.versionId)}
-                      >
-                        <span className="min-w-0 truncate">
-                          {savedTime ?? version.versionId}
-                        </span>
-                        {isActive ? (
-                          <span className="shrink-0 rounded-full bg-primary px-2 py-0.5 text-[10px] text-primary-foreground">
-                            {currentVersionLabel}
-                          </span>
-                        ) : null}
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="px-2 py-2 text-muted-foreground">
-                  {noVersionsText}
-                </p>
-              )}
+  if (!showVersions) {
+    return saveButton
+  }
+
+  return (
+    <HoverCard openDelay={250} closeDelay={150}>
+      <HoverCardTrigger asChild>{saveButton}</HoverCardTrigger>
+      <HoverCardContent align="end" className="w-64 p-2 text-xs">
+        <p className="px-2 py-1 text-muted-foreground">{tooltipText}</p>
+        <div className="mt-1 border-t border-border/70 pt-1">
+          <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            {versionsLabel}
+          </p>
+          {versions.length > 0 ? (
+            <div className="max-h-56 overflow-y-auto">
+              {versions.map((version) => {
+                const isActive = version.versionId === activeVersionId
+                const savedTime = formatSavedTime(locale, version.savedAt)
+
+                return (
+                  <Button
+                    key={version.versionId}
+                    type="button"
+                    variant="ghost"
+                    className="h-auto w-full justify-between gap-3 px-2 py-2 text-left font-normal"
+                    onClick={() => onSelectVersion(version.versionId)}
+                  >
+                    <span className="min-w-0 truncate">
+                      {savedTime ?? version.versionId}
+                    </span>
+                    {isActive ? (
+                      <Badge className="shrink-0 text-[10px]">
+                        {currentVersionLabel}
+                      </Badge>
+                    ) : null}
+                  </Button>
+                )
+              })}
             </div>
-          </div>
+          ) : (
+            <p className="px-2 py-2 text-muted-foreground">{noVersionsText}</p>
+          )}
         </div>
-      ) : null}
-    </div>
+      </HoverCardContent>
+    </HoverCard>
   )
 }

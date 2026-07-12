@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { cloneElement, useId, type ReactElement } from 'react'
 
+import { Field, FieldLabel } from '@/components/ui/field'
 import { cn } from '@/lib/utils'
 
 export function FormField({
@@ -9,14 +10,20 @@ export function FormField({
 }: {
   label: string
   className?: string
-  children: ReactNode
+  children: ReactElement<{ id?: string }>
 }) {
+  const generatedId = useId()
+  const controlId = children.props.id ?? generatedId
+
   return (
-    <label className={cn('grid min-w-0 gap-2', className)}>
-      <span className="break-words text-[11px] font-medium uppercase leading-tight tracking-[0.2em] text-muted-foreground">
+    <Field className={cn('min-w-0 gap-2', className)}>
+      <FieldLabel
+        htmlFor={controlId}
+        className="break-words text-[11px] font-medium uppercase leading-tight tracking-[0.2em] text-muted-foreground"
+      >
         {label}
-      </span>
-      {children}
-    </label>
+      </FieldLabel>
+      {cloneElement(children, { id: controlId })}
+    </Field>
   )
 }

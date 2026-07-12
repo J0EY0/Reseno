@@ -49,6 +49,7 @@ import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
@@ -66,7 +67,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { ViewTransitionBoundary } from "@/components/ui/view-transition";
+import { ViewTransitionBoundary } from "@/components/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
@@ -659,9 +660,11 @@ export function TemplateLibrary({
           className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
         >
           {paginatedTemplates.length === 0 ? (
-            <div className="col-span-full flex min-h-[390px] items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-card/55 text-sm font-medium text-muted-foreground">
-              {templates.length === 0 ? t.emptyTemplates : t.emptyTemplateSearch}
-            </div>
+            <Empty className="col-span-full min-h-[390px] border border-border/70 bg-card/55">
+              <EmptyDescription className="font-medium">
+                {templates.length === 0 ? t.emptyTemplates : t.emptyTemplateSearch}
+              </EmptyDescription>
+            </Empty>
           ) : null}
 
           {paginatedTemplates.map((item) => {
@@ -725,12 +728,11 @@ export function TemplateLibrary({
                           ) : null}
 
                           {isSelecting && isSelected && !item.isBuiltIn ? (
-                            <button
+                            <Button
                               type="button"
-                              className={cn(
-                                "absolute right-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur transition-colors",
-                                "border-red-600 bg-red-600 text-white hover:bg-red-600/90",
-                              )}
+                              variant="destructive"
+                              size="icon-sm"
+                              className="absolute right-3 top-3 z-10 size-7 rounded-full backdrop-blur"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 requestDelete([item.id]);
@@ -739,7 +741,7 @@ export function TemplateLibrary({
                               aria-label={t.confirmDeleteAction}
                             >
                               <Trash2 className="size-3.5" />
-                            </button>
+                            </Button>
                           ) : null}
                         </div>
                       </ViewTransitionBoundary>
@@ -747,9 +749,10 @@ export function TemplateLibrary({
                   </div>
 
                   <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
-                    <button
+                    <Button
                       type="button"
-                      className="cursor-pointer select-none text-left outline-none"
+                      variant="ghost"
+                      className="h-auto w-full flex-col items-start gap-0 whitespace-normal p-0 text-left hover:bg-transparent"
                       onClick={() => handleTemplateCardAction(item)}
                     >
                       <p className="truncate text-[15px] font-semibold">
@@ -758,7 +761,7 @@ export function TemplateLibrary({
                       <p className="mt-1 truncate text-xs text-muted-foreground">
                         {item.description || t.templateDescriptionFallback}
                       </p>
-                    </button>
+                    </Button>
 
                     <div className="mt-2 flex items-center justify-between gap-2">
                       {item.isBuiltIn ? (
@@ -934,7 +937,7 @@ export function TemplateLibrary({
                   <TabsList className="grid h-12 w-full grid-cols-[1fr_0.82fr_0.9fr_1.28fr] gap-0 rounded-none border-0 border-b border-border/70 bg-transparent p-0 text-muted-foreground">
                     <TabsTrigger
                       value="layout"
-                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
                     >
                       <TemplateTabLabel icon={LayoutTemplate}>
                         {t.templateLayoutTab}
@@ -942,7 +945,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="typography"
-                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
                     >
                       <TemplateTabLabel icon={Type}>
                         {t.templateTypographyTab}
@@ -950,7 +953,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="visual"
-                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
                     >
                       <TemplateTabLabel icon={Palette}>
                         {t.templateVisualTab}
@@ -958,7 +961,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="images"
-                      className="relative h-12 min-w-0 items-center rounded-none border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
                     >
                       <TemplateTabLabel icon={Sparkles}>
                         {t.templateImagesTab}

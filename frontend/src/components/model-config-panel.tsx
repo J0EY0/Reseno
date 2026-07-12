@@ -15,7 +15,7 @@ import { ModelProviderIcon } from '@/components/model-provider-icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { DataTable } from '@/components/ui/data-table'
+import { DataTable } from '@/components/data-table'
 
 export function ModelConfigPanel({
   locale,
@@ -150,7 +150,7 @@ export function ModelConfigPanel({
 
   return (
     <div className="grid h-[calc(100vh-12rem)] min-h-[420px] gap-4 overflow-hidden">
-      <Card className="flex min-h-0 flex-col rounded-2xl border-border/80">
+      <Card className="flex min-h-0 flex-col rounded-[26px] border-border/80">
         <CardContent className="flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden p-6">
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
             <Badge variant="outline">{`${configs.length} ${t.configuredModels}`}</Badge>

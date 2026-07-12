@@ -19,8 +19,13 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Toaster } from '@/components/ui/sonner'
+import { Field, FieldError, FieldLabel } from '@/components/ui/field'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '@/components/ui/input-group'
+import { AppToaster } from '@/components/app-toaster'
 import { toast } from 'sonner'
 
 type LoginResult = {
@@ -75,7 +80,7 @@ export function LoginPage({
 
   return (
     <main className="relative min-h-svh overflow-hidden bg-background text-foreground">
-      <Toaster position="bottom-right" closeButton />
+      <AppToaster position="bottom-right" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(24,24,27,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(24,24,27,0.06),transparent_24%)]" />
       <div className="relative flex min-h-svh items-center justify-center p-5 sm:p-8">
         <Card className="w-full max-w-5xl overflow-hidden rounded-[32px] border-border/80 shadow-xl">
@@ -109,16 +114,18 @@ export function LoginPage({
 
                 <CardContent className="p-0 pt-8">
                   <form className="grid gap-5" onSubmit={handleSubmit} noValidate>
-                    <div className="grid gap-2">
-                      <label
-                        htmlFor="username"
-                        className="text-sm font-medium text-foreground"
-                      >
+                    <Field
+                      data-invalid={Boolean(formErrors.username)}
+                      className="gap-2"
+                    >
+                      <FieldLabel htmlFor="username">
                         {t.loginUsernameLabel}
-                      </label>
-                      <div className="relative">
-                        <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                        <Input
+                      </FieldLabel>
+                      <InputGroup>
+                        <InputGroupAddon>
+                          <UserRound />
+                        </InputGroupAddon>
+                        <InputGroupInput
                           id="username"
                           autoComplete="username"
                           aria-describedby={
@@ -134,15 +141,12 @@ export function LoginPage({
                             }))
                           }}
                           placeholder={t.loginUsernamePlaceholder}
-                          className="h-11 rounded-xl border-border bg-background pl-10"
                         />
-                      </div>
-                      {formErrors.username ? (
-                        <p id="username-error" className="text-xs text-red-600">
-                          {formErrors.username}
-                        </p>
-                      ) : null}
-                    </div>
+                      </InputGroup>
+                      <FieldError id="username-error">
+                        {formErrors.username}
+                      </FieldError>
+                    </Field>
 
                     <PasswordField
                       id="password"

@@ -1,4 +1,5 @@
 import type { AppMessages } from "@/i18n";
+import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import {
@@ -7,8 +8,6 @@ import {
   PaginationEllipsis,
   PaginationItem,
   PaginationLink,
-  PaginationNext,
-  PaginationPrevious,
 } from "@/components/ui/pagination";
 import { cn } from "@/lib/utils";
 import { runViewTransition } from "@/lib/view-transition";
@@ -84,19 +83,22 @@ export function GalleryPagination({
     <Pagination className="pt-4">
       <PaginationContent className="rounded-full border border-border/70 bg-background/80 px-2 py-1 shadow-sm backdrop-blur">
         <PaginationItem>
-          <PaginationPrevious
+          <PaginationLink
             href="#"
-            label={t.paginationPrevious}
+            aria-label={t.paginationPrevious}
             aria-disabled={currentPage === 1}
             className={cn(
-              "h-8 rounded-full text-xs",
+              "h-8 gap-1 rounded-full px-2.5 text-xs",
               currentPage === 1 && "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
               event.preventDefault();
               goToPage(currentPage - 1);
             }}
-          />
+          >
+            <ChevronLeftIcon />
+            <span className="hidden sm:block">{t.paginationPrevious}</span>
+          </PaginationLink>
         </PaginationItem>
 
         {pageItems.map((item, index) =>
@@ -122,19 +124,22 @@ export function GalleryPagination({
         )}
 
         <PaginationItem>
-          <PaginationNext
+          <PaginationLink
             href="#"
-            label={t.paginationNext}
+            aria-label={t.paginationNext}
             aria-disabled={currentPage === totalPages}
             className={cn(
-              "h-8 rounded-full text-xs",
+              "h-8 gap-1 rounded-full px-2.5 text-xs",
               currentPage === totalPages && "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
               event.preventDefault();
               goToPage(currentPage + 1);
             }}
-          />
+          >
+            <span className="hidden sm:block">{t.paginationNext}</span>
+            <ChevronRightIcon />
+          </PaginationLink>
         </PaginationItem>
       </PaginationContent>
     </Pagination>
