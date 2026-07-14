@@ -823,7 +823,7 @@ function AgentUserMessage({
                 type="button"
                 variant="ghost"
                 size="xs"
-                className="h-6 rounded-md px-2 text-xs text-muted-foreground hover:bg-[#f5f5f6] hover:text-foreground"
+                className="h-6 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
                 onClick={onCancelEdit}
               >
                 <X className="size-3" />
@@ -856,7 +856,7 @@ function AgentUserMessage({
               >
                 <FileText className="size-3" />
                 <span className="truncate">
-                  {file.filename || "Attachment"}
+                  {file.filename || t.agentAttachmentFallback}
                 </span>
               </span>
             ))}
@@ -871,7 +871,7 @@ function AgentUserMessage({
             label={copied ? t.agentCopiedMessage : t.agentCopyMessage}
             variant="ghost"
             size="icon-xs"
-            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-[#f5f5f6] hover:text-foreground hover:shadow-[0_2px_8px_rgba(15,23,42,0.10)] focus-visible:bg-[#f5f5f6] focus-visible:text-foreground focus-visible:shadow-[0_2px_8px_rgba(15,23,42,0.10)]"
+            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
             onClick={onCopy}
           >
             {copied ? (
@@ -885,7 +885,7 @@ function AgentUserMessage({
             label={t.agentEditMessage}
             variant="ghost"
             size="icon-xs"
-            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-[#f5f5f6] hover:text-foreground hover:shadow-[0_2px_8px_rgba(15,23,42,0.10)] focus-visible:bg-[#f5f5f6] focus-visible:text-foreground focus-visible:shadow-[0_2px_8px_rgba(15,23,42,0.10)]"
+            className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
             disabled={disabled}
             onClick={onStartEdit}
           >
@@ -1515,7 +1515,7 @@ export function CopilotPanel({
   ) {
     const prompt = text.trim();
     const attachmentSummary = files
-      .map((file) => file.filename || file.url || "Attachment")
+      .map((file) => file.filename || file.url || t.agentAttachmentFallback)
       .filter(Boolean)
       .join(", ");
     const visiblePrompt = prompt || attachmentSummary;
@@ -1650,7 +1650,7 @@ export function CopilotPanel({
       <aside
         data-mode={mode}
         className={cn(
-          "agent-panel-card flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm transition-all duration-300 print:hidden",
+          "agent-panel-card flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm print:hidden",
           mode === "docked"
             ? "h-full xl:self-start"
             : "h-full",

@@ -5,8 +5,10 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react";
+import { NavLink } from "react-router-dom";
 
 import type { AppMessages } from "@/i18n";
+import { getWorkspacePath } from "@/lib/workspace-route";
 import type { WorkspaceView } from "@/types/resume";
 
 import {
@@ -88,17 +90,37 @@ export function AppSidebar({
                 return (
                   <SidebarMenuItem key={item.id}>
                     <SidebarMenuButton
+                      asChild
                       isActive={activeView === item.id}
                       onFocus={() => onViewPreload?.(item.id)}
                       onPointerEnter={() => onViewPreload?.(item.id)}
-                      onClick={() => {
-                        onViewChange(item.id);
-                        setOpenMobile(false);
-                      }}
                       tooltip={item.label}
                     >
-                      <Icon className="size-4 shrink-0" />
-                      <span>{item.label}</span>
+                      <NavLink
+                        to={getWorkspacePath(item.id)}
+                        aria-current={activeView === item.id ? "page" : undefined}
+                        onClick={(event) => {
+                          setOpenMobile(false);
+
+                          // Preserve native modified-click behavior while routing
+                          // same-tab navigation through the unsaved-change guard.
+                          if (
+                            event.button !== 0 ||
+                            event.metaKey ||
+                            event.ctrlKey ||
+                            event.shiftKey ||
+                            event.altKey
+                          ) {
+                            return;
+                          }
+
+                          event.preventDefault();
+                          onViewChange(item.id);
+                        }}
+                      >
+                        <Icon />
+                        <span>{item.label}</span>
+                      </NavLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );

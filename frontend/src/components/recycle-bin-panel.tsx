@@ -1,5 +1,6 @@
 import { RotateCcw, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import type { AppMessages, Locale } from "@/i18n";
 import { getTemplateById } from "@/lib/templates";
@@ -15,6 +16,7 @@ import { ResumePreview } from "@/components/preview/resume-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
@@ -22,6 +24,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ViewTransitionBoundary } from "@/components/view-transition";
 
 const trashTableGridClassName =
   "md:grid-cols-[minmax(360px,1fr)_160px_84px]";
@@ -43,6 +46,14 @@ type PendingTrashAction =
   | { type: "resume-empty" }
   | { type: "template-empty" }
   | null;
+
+type TrashActionKey =
+  | `resume-restore:${string}`
+  | `template-restore:${string}`
+  | "resume-delete"
+  | "template-delete"
+  | "resume-empty"
+  | "template-empty";
 
 function CountBadge({ count }: { count: number }) {
   return (
@@ -69,7 +80,10 @@ function PreviewThumbnail({
   fontSize: number;
 }) {
   return (
-    <div className="relative h-[96px] w-[68px] shrink-0 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
+    <div
+      aria-hidden="true"
+      className="relative h-[96px] w-[68px] shrink-0 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm"
+    >
       <div
         className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.084]"
         style={{ width: "210mm", height: "297mm" }}
@@ -105,6 +119,8 @@ function TrashItemRow({
   deleteLabel,
   onRestore,
   onDelete,
+  isRestoring,
+  disabled,
 }: {
   thumbnail: ReactNode;
   title: string;
@@ -115,6 +131,8 @@ function TrashItemRow({
   deleteLabel: string;
   onRestore: () => void;
   onDelete: () => void;
+  isRestoring: boolean;
+  disabled: boolean;
 }) {
   return (
     <div
@@ -151,9 +169,14 @@ function TrashItemRow({
                 size="icon"
                 className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                 aria-label={restoreLabel}
+                disabled={disabled}
                 onClick={onRestore}
               >
-                <RotateCcw className="size-3.5" />
+                {isRestoring ? (
+                  <Spinner aria-label={restoreLabel} />
+                ) : (
+                  <RotateCcw />
+                )}
               </Button>
             </TooltipTrigger>
             <TooltipContent>{restoreLabel}</TooltipContent>
@@ -166,9 +189,10 @@ function TrashItemRow({
                 size="icon"
                 className="size-8 rounded-md text-red-500 hover:bg-muted hover:text-red-600"
                 aria-label={deleteLabel}
+                disabled={disabled}
                 onClick={onDelete}
               >
-                <Trash2 className="size-3.5" />
+                <Trash2 />
               </Button>
             </TooltipTrigger>
             <TooltipContent>{deleteLabel}</TooltipContent>
@@ -201,41 +225,76 @@ export function RecycleBinPanel({
   templates: ResumeTemplateDefinition[];
   defaultTemplateId: string;
   templatePreviewResume: ResumeData;
-  onRestoreResume: (resumeIds: string[]) => void;
-  onDeleteResumeForever: (resumeIds: string[]) => void;
-  onEmptyResumeTrash: () => void;
-  onRestoreTemplate: (templateIds: string[]) => void;
-  onDeleteTemplateForever: (templateIds: string[]) => void;
-  onEmptyTemplateTrash: () => void;
+  onRestoreResume: (resumeIds: string[]) => Promise<boolean>;
+  onDeleteResumeForever: (resumeIds: string[]) => Promise<boolean>;
+  onEmptyResumeTrash: () => Promise<boolean>;
+  onRestoreTemplate: (templateIds: string[]) => Promise<boolean>;
+  onDeleteTemplateForever: (templateIds: string[]) => Promise<boolean>;
+  onEmptyTemplateTrash: () => Promise<boolean>;
 }) {
-  const [activeTab, setActiveTab] = useState<RecycleBinTab>("resumes");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab: RecycleBinTab =
+    searchParams.get("tab") === "templates" ? "templates" : "resumes";
   const [pendingAction, setPendingAction] = useState<PendingTrashAction>(null);
+  const [runningActionKey, setRunningActionKey] =
+    useState<TrashActionKey | null>(null);
+  // State drives feedback; the ref closes the same-render double-click gap.
+  const runningActionRef = useRef<TrashActionKey | null>(null);
 
   const isDialogOpen = Boolean(pendingAction);
   const previewTemplates = [...templates, ...deletedTemplates];
   const activeItemCount =
     activeTab === "resumes" ? deletedResumes.length : deletedTemplates.length;
+  const activeEmptyActionKey: TrashActionKey =
+    activeTab === "resumes" ? "resume-empty" : "template-empty";
 
   function closeDialog() {
     setPendingAction(null);
   }
 
-  function confirmAction() {
+  async function runTrashAction(
+    key: TrashActionKey,
+    action: () => Promise<boolean>,
+  ) {
+    if (runningActionRef.current) {
+      return false;
+    }
+
+    runningActionRef.current = key;
+    setRunningActionKey(key);
+
+    try {
+      return await action();
+    } finally {
+      runningActionRef.current = null;
+      setRunningActionKey(null);
+    }
+  }
+
+  async function confirmAction() {
     if (!pendingAction) {
       return;
     }
 
+    let succeeded = false;
+
     if (pendingAction.type === "resume-item") {
-      onDeleteResumeForever(pendingAction.ids);
+      succeeded = await runTrashAction("resume-delete", () =>
+        onDeleteResumeForever(pendingAction.ids),
+      );
     } else if (pendingAction.type === "template-item") {
-      onDeleteTemplateForever(pendingAction.ids);
+      succeeded = await runTrashAction("template-delete", () =>
+        onDeleteTemplateForever(pendingAction.ids),
+      );
     } else if (pendingAction.type === "resume-empty") {
-      onEmptyResumeTrash();
+      succeeded = await runTrashAction("resume-empty", onEmptyResumeTrash);
     } else if (pendingAction.type === "template-empty") {
-      onEmptyTemplateTrash();
+      succeeded = await runTrashAction("template-empty", onEmptyTemplateTrash);
     }
 
-    closeDialog();
+    if (succeeded) {
+      closeDialog();
+    }
   }
 
   function requestEmptyActiveTab() {
@@ -282,17 +341,31 @@ export function RecycleBinPanel({
         confirmLabel={dialogActionLabel}
         cancelLabel={t.cancel}
         onConfirm={confirmAction}
+        isPending={runningActionKey !== null}
+        deferClose
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !runningActionRef.current) {
             closeDialog();
           }
         }}
       />
 
-      <section className="rounded-[26px] border border-border bg-background p-4 text-foreground">
+      <section className="rounded-(--radius-workspace) border border-border bg-background p-4 text-foreground">
         <Tabs
           value={activeTab}
-          onValueChange={(value) => setActiveTab(value as RecycleBinTab)}
+          onValueChange={(value) => {
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current);
+
+              if (value === "templates") {
+                next.set("tab", "templates");
+              } else {
+                next.delete("tab");
+              }
+
+              return next;
+            });
+          }}
           className="gap-0"
         >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70">
@@ -302,14 +375,14 @@ export function RecycleBinPanel({
             >
               <TabsTrigger
                 value="resumes"
-                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
+                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]!"
               >
                 {t.resumeRecycleBin}
                 <CountBadge count={deletedResumes.length} />
               </TabsTrigger>
               <TabsTrigger
                 value="templates"
-                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
+                className="h-9 min-w-0 flex-none rounded-none border-transparent px-0 py-0 text-sm font-semibold after:bottom-[-1px]!"
               >
                 {t.templateRecycleBin}
                 <CountBadge count={deletedTemplates.length} />
@@ -324,9 +397,14 @@ export function RecycleBinPanel({
               data-hidden={activeItemCount === 0}
               aria-hidden={activeItemCount === 0}
               tabIndex={activeItemCount === 0 ? -1 : undefined}
+              disabled={activeItemCount === 0 || runningActionKey !== null}
               onClick={requestEmptyActiveTab}
             >
-              <Trash2 className="size-3" />
+              {runningActionKey === activeEmptyActionKey ? (
+                <Spinner data-icon="inline-start" aria-label={t.emptyTrash} />
+              ) : (
+                <Trash2 data-icon="inline-start" />
+              )}
               {t.emptyTrash}
             </Button>
           </div>
@@ -344,36 +422,50 @@ export function RecycleBinPanel({
                     defaultTemplateId,
                   );
 
+                  const restoreActionKey = `resume-restore:${item.id}` as const;
+
                   return (
-                    <TrashItemRow
+                    <ViewTransitionBoundary
                       key={item.id}
-                      thumbnail={
-                        <PreviewThumbnail
-                          t={t}
-                          resume={item.resume}
-                          template={template}
-                          fontFamily={item.typography?.fontFamily ?? "inter"}
-                          fontSize={item.typography?.fontSize ?? 15}
-                        />
-                      }
-                      title={title}
-                      subtitle={
-                        item.resume.basic.headline ||
-                        item.resume.basic.email ||
-                        item.resume.basic.phone
-                      }
-                      deletedAt={deletedAt}
-                      deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
-                      restoreLabel={t.restore}
-                      deleteLabel={t.deleteForever}
-                      onRestore={() => onRestoreResume([item.id])}
-                      onDelete={() =>
-                        setPendingAction({
-                          type: "resume-item",
-                          ids: [item.id],
-                        })
-                      }
-                    />
+                      enter="fade-in"
+                      exit="fade-out"
+                      default="none"
+                    >
+                      <TrashItemRow
+                        thumbnail={
+                          <PreviewThumbnail
+                            t={t}
+                            resume={item.resume}
+                            template={template}
+                            fontFamily={item.typography?.fontFamily ?? "inter"}
+                            fontSize={item.typography?.fontSize ?? 15}
+                          />
+                        }
+                        title={title}
+                        subtitle={
+                          item.resume.basic.headline ||
+                          item.resume.basic.email ||
+                          item.resume.basic.phone
+                        }
+                        deletedAt={deletedAt}
+                        deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
+                        restoreLabel={t.restore}
+                        deleteLabel={t.deleteForever}
+                        isRestoring={runningActionKey === restoreActionKey}
+                        disabled={runningActionKey !== null}
+                        onRestore={() => {
+                          void runTrashAction(restoreActionKey, () =>
+                            onRestoreResume([item.id]),
+                          );
+                        }}
+                        onDelete={() =>
+                          setPendingAction({
+                            type: "resume-item",
+                            ids: [item.id],
+                          })
+                        }
+                      />
+                    </ViewTransitionBoundary>
                   );
                 })
               ) : (
@@ -388,32 +480,48 @@ export function RecycleBinPanel({
                 deletedTemplates.map((item) => {
                   const deletedAt = formatAt(locale, item.deletedAt);
 
+                  const restoreActionKey = `template-restore:${item.id}` as const;
+
                   return (
-                    <TrashItemRow
+                    <ViewTransitionBoundary
                       key={item.id}
-                      thumbnail={
-                        <PreviewThumbnail
-                          t={t}
-                          resume={templatePreviewResume}
-                          template={item}
-                          fontFamily={item.typography.fontFamily}
-                          fontSize={item.typography.fontSize}
-                        />
-                      }
-                      title={item.name}
-                      subtitle={item.description || t.templateDescriptionFallback}
-                      deletedAt={deletedAt}
-                      deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
-                      restoreLabel={t.restore}
-                      deleteLabel={t.deleteForever}
-                      onRestore={() => onRestoreTemplate([item.id])}
-                      onDelete={() =>
-                        setPendingAction({
-                          type: "template-item",
-                          ids: [item.id],
-                        })
-                      }
-                    />
+                      enter="fade-in"
+                      exit="fade-out"
+                      default="none"
+                    >
+                      <TrashItemRow
+                        thumbnail={
+                          <PreviewThumbnail
+                            t={t}
+                            resume={templatePreviewResume}
+                            template={item}
+                            fontFamily={item.typography.fontFamily}
+                            fontSize={item.typography.fontSize}
+                          />
+                        }
+                        title={item.name}
+                        subtitle={
+                          item.description || t.templateDescriptionFallback
+                        }
+                        deletedAt={deletedAt}
+                        deletedAtText={`${t.recycleBinDeletedAtPrefix} ${deletedAt}`}
+                        restoreLabel={t.restore}
+                        deleteLabel={t.deleteForever}
+                        isRestoring={runningActionKey === restoreActionKey}
+                        disabled={runningActionKey !== null}
+                        onRestore={() => {
+                          void runTrashAction(restoreActionKey, () =>
+                            onRestoreTemplate([item.id]),
+                          );
+                        }}
+                        onDelete={() =>
+                          setPendingAction({
+                            type: "template-item",
+                            ids: [item.id],
+                          })
+                        }
+                      />
+                    </ViewTransitionBoundary>
                   );
                 })
               ) : (

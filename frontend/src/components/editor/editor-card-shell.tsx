@@ -31,6 +31,7 @@ export function EditorCardShell({
   icon: Icon,
   title,
   summary,
+  toggleLabel,
   collapsed,
   onToggle,
   headerAction,
@@ -39,6 +40,7 @@ export function EditorCardShell({
   icon: LucideIcon
   title: string
   summary: string
+  toggleLabel: string
   collapsed: boolean
   onToggle: () => void
   headerAction?: ReactNode
@@ -248,11 +250,16 @@ export function EditorCardShell({
           <div className="flex items-center gap-2">
             {headerAction}
             <CollapsibleTrigger asChild>
-              <Button type="button" variant="outline" size="icon">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label={toggleLabel}
+              >
                 <ChevronDown
                   className={cn('size-4 transition-transform', collapsed && '-rotate-90')}
                 />
-                <span className="sr-only">Toggle section</span>
+                <span className="sr-only">{toggleLabel}</span>
               </Button>
             </CollapsibleTrigger>
           </div>

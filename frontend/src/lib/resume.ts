@@ -81,7 +81,9 @@ export function getSectionTitle(section: ResumeSection, t: AppMessages) {
 }
 
 export function getSectionSummary(section: ResumeSection, t: AppMessages) {
-  return `${section.items.length} ${t.itemCount}`
+  const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
+
+  return `${section.items.length} ${itemLabel}`
 }
 
 export function hasItemContent(item: ResumeSectionItem) {

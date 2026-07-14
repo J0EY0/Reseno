@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Bot, Pencil, Trash2 } from 'lucide-react'
 import type { ColumnDef } from '@tanstack/react-table'
+import { toast } from 'sonner'
 
 import type { AppMessages, Locale } from '@/i18n'
 import {
@@ -10,12 +11,21 @@ import {
 import { deleteModelConfig } from '@/lib/model-config-api'
 import type { ModelConfig } from '@/types/resume'
 
+import { ConfirmActionDialog } from '@/components/confirm-action-dialog'
 import { ModelConfigFormPopover } from '@/components/model-config-form-popover'
 import { ModelProviderIcon } from '@/components/model-provider-icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { DataTable } from '@/components/data-table'
+import {
+  Empty,
+  EmptyContent,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Spinner } from '@/components/ui/spinner'
 
 export function ModelConfigPanel({
   locale,
@@ -28,6 +38,34 @@ export function ModelConfigPanel({
   configs: ModelConfig[]
   onChange: (configs: ModelConfig[]) => void
 }) {
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null)
+  const contextWindowFormatter = useMemo(
+    () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US'),
+    [locale],
+  )
+
+  async function confirmDeleteModel() {
+    const modelId = pendingDeleteId
+
+    if (!modelId || deletingModelId) {
+      return
+    }
+
+    setDeletingModelId(modelId)
+
+    try {
+      await deleteModelConfig(modelId)
+      onChange(configs.filter((item) => item.id !== modelId))
+      toast.success(t.modelConfigDeleted, { closeButton: true })
+    } catch (error) {
+      console.error('Failed to delete model config.', error)
+      toast.error(t.modelConfigDeleteFailed, { closeButton: true })
+    } finally {
+      setDeletingModelId(null)
+    }
+  }
+
   const columns = useMemo<ColumnDef<ModelConfig>[]>(
     () => [
       {
@@ -75,7 +113,7 @@ export function ModelConfigPanel({
         cell: ({ row }) => (
           <div className="flex justify-center">
             <span className="font-medium tabular-nums">
-              {row.original.contextWindowTokens}
+              {contextWindowFormatter.format(row.original.contextWindowTokens)}
             </span>
           </div>
         ),
@@ -115,7 +153,13 @@ export function ModelConfigPanel({
                 )
               }
               trigger={
-                <Button type="button" variant="ghost" size="icon" className="size-8 rounded-md">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-md"
+                  disabled={deletingModelId !== null}
+                >
                   <Pencil className="size-3.5" />
                   <span className="sr-only">{t.editModelConfig}</span>
                 </Button>
@@ -126,54 +170,75 @@ export function ModelConfigPanel({
               variant="ghost"
               size="icon"
               className="size-8 rounded-md"
-              onClick={() => {
-                void deleteModelConfig(row.original.id)
-                  .then(() =>
-                    onChange(
-                      configs.filter((item) => item.id !== row.original.id),
-                    ),
-                  )
-                  .catch((error) => {
-                    console.error('Failed to delete model config.', error)
-                  })
-              }}
+              disabled={deletingModelId !== null}
+              onClick={() => setPendingDeleteId(row.original.id)}
             >
-              <Trash2 className="size-3.5" />
+              {deletingModelId === row.original.id ? (
+                <Spinner aria-label={t.deleteModelConfig} />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )}
               <span className="sr-only">{t.deleteModelConfig}</span>
             </Button>
           </div>
         ),
       },
     ],
-    [configs, locale, onChange, t],
+    [configs, contextWindowFormatter, deletingModelId, locale, onChange, t],
+  )
+
+  const addModelAction = (
+    <ModelConfigFormPopover
+      t={t}
+      locale={locale}
+      mode="create"
+      onSubmit={(nextConfig) => onChange([...configs, nextConfig])}
+    />
   )
 
   return (
     <div className="grid h-[calc(100vh-12rem)] min-h-[420px] gap-4 overflow-hidden">
-      <Card className="flex min-h-0 flex-col rounded-[26px] border-border/80">
-        <CardContent className="flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden p-6">
-          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-            <Badge variant="outline">{`${configs.length} ${t.configuredModels}`}</Badge>
-            <ModelConfigFormPopover
-              t={t}
-              locale={locale}
-              mode="create"
-              onSubmit={(nextConfig) => onChange([...configs, nextConfig])}
-              trigger={
-                <Button type="button" className="gap-2">
-                  <Plus className="size-4" />
-                  {t.addModelConfig}
-                </Button>
-              }
-            />
-          </div>
-          <div className="min-h-0 overflow-auto">
-            <DataTable
-              columns={columns}
-              data={configs}
-              emptyMessage={t.emptyModelConfigs}
-            />
-          </div>
+      <ConfirmActionDialog
+        open={pendingDeleteId !== null}
+        title={t.deleteModelConfigConfirmTitle}
+        description={t.deleteModelConfigConfirmDescription}
+        confirmLabel={t.deleteModelConfig}
+        cancelLabel={t.cancel}
+        onConfirm={() => void confirmDeleteModel()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeleteId(null)
+          }
+        }}
+      />
+
+      <Card className="flex min-h-0 flex-col rounded-(--radius-workspace) border-border/80">
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-6">
+          {configs.length === 0 ? (
+            <Empty className="min-h-0 rounded-none p-6 md:p-8">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Bot />
+                </EmptyMedia>
+                <EmptyTitle>{t.emptyModelConfigs}</EmptyTitle>
+              </EmptyHeader>
+              <EmptyContent>{addModelAction}</EmptyContent>
+            </Empty>
+          ) : (
+            <>
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+                <Badge variant="outline">{`${configs.length} ${t.configuredModels}`}</Badge>
+                {addModelAction}
+              </div>
+              <div className="min-h-0 overflow-auto">
+                <DataTable
+                  columns={columns}
+                  data={configs}
+                  emptyMessage={t.emptyModelConfigs}
+                />
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>

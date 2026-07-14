@@ -8,6 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 
 export function ConfirmActionDialog({
   open,
@@ -17,14 +18,18 @@ export function ConfirmActionDialog({
   cancelLabel,
   onConfirm,
   onOpenChange,
+  isPending = false,
+  deferClose = false,
 }: {
   open: boolean;
   title: string;
   description: string;
   confirmLabel: string;
   cancelLabel: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   onOpenChange: (open: boolean) => void;
+  isPending?: boolean;
+  deferClose?: boolean;
 }) {
   const resolvedTitle = title || confirmLabel;
   const resolvedDescription = description || "";
@@ -39,14 +44,26 @@ export function ConfirmActionDialog({
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel type="button">
+          <AlertDialogCancel type="button" disabled={isPending}>
             {cancelLabel}
           </AlertDialogCancel>
           <AlertDialogAction
             type="button"
             variant="destructive"
-            onClick={onConfirm}
+            disabled={isPending}
+            onClick={(event) => {
+              // Radix closes actions immediately by default. Async callers can
+              // defer that close until their operation has actually succeeded.
+              if (deferClose) {
+                event.preventDefault();
+              }
+
+              void onConfirm();
+            }}
           >
+            {isPending ? (
+              <Spinner data-icon="inline-start" aria-label={confirmLabel} />
+            ) : null}
             {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>

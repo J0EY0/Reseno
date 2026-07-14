@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
+import { Spinner } from '@/components/ui/spinner'
 import {
   InputGroup,
   InputGroupAddon,
@@ -172,8 +173,14 @@ export function LoginPage({
                       className="mt-1 h-11 rounded-xl"
                       disabled={isSubmitting}
                     >
+                      {isSubmitting ? (
+                        <Spinner
+                          data-icon="inline-start"
+                          aria-label={t.loginSubmitting}
+                        />
+                      ) : null}
                       {isSubmitting ? t.loginSubmitting : t.loginSubmit}
-                      <ArrowRight className="size-4" />
+                      {!isSubmitting ? <ArrowRight data-icon="inline-end" /> : null}
                     </Button>
                   </form>
                 </CardContent>

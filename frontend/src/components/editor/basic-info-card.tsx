@@ -49,6 +49,7 @@ export function BasicInfoCard({
       icon={UserRound}
       title={t.basicInfo}
       summary={t.basicSummary}
+      toggleLabel={`${t.basicInfo}: ${t.toggleSection}`}
       collapsed={collapsed}
       onToggle={onToggle}
     >
@@ -94,30 +95,42 @@ export function BasicInfoCard({
         <div className="grid min-w-0 gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
           <FormField label={t.fieldLabels.name}>
             <Input
+              name="name"
+              autoComplete="name"
               value={basic.name}
               onChange={(event) => onUpdateBasic('name', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.headline}>
             <Input
+              name="headline"
+              autoComplete="organization-title"
               value={basic.headline}
               onChange={(event) => onUpdateBasic('headline', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.phone}>
             <Input
+              name="phone"
+              type="tel"
+              autoComplete="tel"
               value={basic.phone}
               onChange={(event) => onUpdateBasic('phone', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.email}>
             <Input
+              name="email"
+              type="email"
+              autoComplete="email"
               value={basic.email}
               onChange={(event) => onUpdateBasic('email', event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.location}>
             <Input
+              name="location"
+              autoComplete="address-level2"
               value={basic.location}
               onChange={(event) => onUpdateBasic('location', event.target.value)}
             />
@@ -134,7 +147,7 @@ export function BasicInfoCard({
       </div>
 
       <div className="flex items-center justify-between gap-4">
-        <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+        <p className="text-xs font-medium text-muted-foreground">
           {t.customFields}
         </p>
         <Button type="button" variant="outline" size="sm" onClick={onAddCustomField}>

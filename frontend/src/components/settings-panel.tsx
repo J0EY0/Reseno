@@ -7,6 +7,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import type { AppMessages, Locale } from "@/i18n";
 import {
@@ -49,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Field,
   FieldContent,
@@ -148,7 +150,8 @@ export function SettingsPanel({
   modelConfigs: ModelConfig[];
   onPasswordChanged: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"site" | "agent">("site");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get("tab") === "agent" ? "agent" : "site";
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -268,10 +271,22 @@ export function SettingsPanel({
     <main className="flex flex-1 items-start p-4">
       <Tabs
         value={activeTab}
-        onValueChange={(value) => setActiveTab(value as "site" | "agent")}
+        onValueChange={(value) => {
+          setSearchParams((current) => {
+            const next = new URLSearchParams(current);
+
+            if (value === "agent") {
+              next.set("tab", "agent");
+            } else {
+              next.delete("tab");
+            }
+
+            return next;
+          });
+        }}
         className="w-full gap-0"
       >
-        <Card className="w-full gap-0 overflow-hidden rounded-[26px] border-border py-4 shadow-none">
+        <Card className="w-full gap-0 overflow-hidden rounded-(--radius-workspace) border-border py-4 shadow-none">
           <CardHeader className="mx-4 gap-0 border-b border-border/70 px-0 py-0 pb-0!">
             <TabsList
               variant="line"
@@ -279,14 +294,14 @@ export function SettingsPanel({
             >
               <TabsTrigger
                 value="site"
-                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
+                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]!"
               >
                 <Globe />
                 {t.siteSettingsTitle}
               </TabsTrigger>
               <TabsTrigger
                 value="agent"
-                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]! focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-0"
+                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]!"
               >
                 <Bot />
                 {t.agentSettingsTitle}
@@ -328,6 +343,7 @@ export function SettingsPanel({
                       </DialogTrigger>
                       <DialogContent
                         showCloseButton
+                        closeLabel={t.close}
                         aria-describedby={undefined}
                         className="w-[min(420px,calc(100vw-2rem))]"
                       >
@@ -411,6 +427,12 @@ export function SettingsPanel({
                               type="submit"
                               disabled={isPasswordSubmitting}
                             >
+                              {isPasswordSubmitting ? (
+                                <Spinner
+                                  data-icon="inline-start"
+                                  aria-label={t.passwordUpdating}
+                                />
+                              ) : null}
                               {isPasswordSubmitting
                                 ? t.passwordUpdating
                                 : t.updatePassword}

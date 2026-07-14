@@ -1,12 +1,16 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: 'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC',
-    'Microsoft YaHei', sans-serif;
+  --font-sans: 'Inter Variable', 'Inter', 'PingFang SC', 'Hiragino Sans GB',
+    'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
+
+  /* Product surfaces use a small semantic scale; shadcn controls keep their own radius scale. */
+  --radius-card: 1.5rem;
+  --radius-workspace: 1.625rem;
+  --radius-preview: 1.75rem;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -53,9 +57,10 @@
   --destructive: #dc2626;
   --border: #e4e4e7;
   --ring: #a1a1aa;
+  --radius: 0.625rem;
   --duration-exit: 150ms;
   --duration-enter: 210ms;
-  --duration-move: 400ms;
+  --duration-move: 240ms;
 
   --sidebar: #ffffff;
   --sidebar-foreground: #18181b;
@@ -275,28 +280,28 @@
 }
 
 ::view-transition-old(.nav-forward) {
-  --slide-offset: -60px;
+  --slide-offset: -24px;
   animation:
     var(--duration-exit) ease-in both fade reverse,
     var(--duration-move) ease-in-out both slide reverse;
 }
 
 ::view-transition-new(.nav-forward) {
-  --slide-offset: 60px;
+  --slide-offset: 24px;
   animation:
     var(--duration-enter) ease-out var(--duration-exit) both fade,
     var(--duration-move) ease-in-out both slide;
 }
 
 ::view-transition-old(.nav-back) {
-  --slide-offset: 60px;
+  --slide-offset: 24px;
   animation:
     var(--duration-exit) ease-in both fade reverse,
     var(--duration-move) ease-in-out both slide reverse;
 }
 
 ::view-transition-new(.nav-back) {
-  --slide-offset: -60px;
+  --slide-offset: -24px;
   animation:
     var(--duration-enter) ease-out var(--duration-exit) both fade,
     var(--duration-move) ease-in-out both slide;
@@ -789,12 +794,34 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     );
     overflow-y: auto;
     overscroll-behavior-y: contain;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+    scrollbar-color: var(--border) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
   }
 
   .app-shell--document .resume-editor-panel::-webkit-scrollbar {
-    display: none;
+    width: 8px;
+  }
+
+  .app-shell--document .resume-editor-panel::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .app-shell--document .resume-editor-panel::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: var(--border);
+    background-clip: padding-box;
+  }
+
+  .app-shell--document .resume-editor-panel:hover,
+  .app-shell--document .resume-editor-panel:focus-within {
+    scrollbar-color: var(--muted-foreground) transparent;
+  }
+
+  .app-shell--document .resume-editor-panel:hover::-webkit-scrollbar-thumb,
+  .app-shell--document .resume-editor-panel:focus-within::-webkit-scrollbar-thumb {
+    background-color: var(--muted-foreground);
   }
 
   .app-shell--document .resume-preview-card,

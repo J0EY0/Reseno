@@ -118,12 +118,14 @@ export function ResumeSectionCard({
   canMoveDown: boolean
 }) {
   const Icon = sectionIcons[section.kind]
+  const sectionTitle = getSectionTitle(section, t)
 
   return (
     <EditorCardShell
       icon={Icon}
-      title={getSectionTitle(section, t)}
+      title={sectionTitle}
       summary={getSectionSummary(section, t)}
+      toggleLabel={`${sectionTitle}: ${t.toggleSection}`}
       collapsed={collapsed}
       onToggle={onToggle}
       headerAction={
@@ -136,7 +138,7 @@ export function ResumeSectionCard({
             onClick={() => onMoveSectionUp(section.id)}
           >
             <ArrowUp className="size-4" />
-            <span className="sr-only">{t.moveSectionUp}</span>
+            <span className="sr-only">{`${sectionTitle}: ${t.moveSectionUp}`}</span>
           </Button>
           <Button
             type="button"
@@ -146,7 +148,7 @@ export function ResumeSectionCard({
             onClick={() => onMoveSectionDown(section.id)}
           >
             <ArrowDown className="size-4" />
-            <span className="sr-only">{t.moveSectionDown}</span>
+            <span className="sr-only">{`${sectionTitle}: ${t.moveSectionDown}`}</span>
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
@@ -157,7 +159,7 @@ export function ResumeSectionCard({
                 onClick={(event) => event.stopPropagation()}
               >
                 <Trash2 className="size-4" />
-                <span className="sr-only">{t.deleteSection}</span>
+                <span className="sr-only">{`${sectionTitle}: ${t.deleteSection}`}</span>
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent size="sm">
@@ -217,7 +219,7 @@ export function ResumeSectionCard({
                 onClick={() => onRemoveItem(section.id, item.id)}
               >
                 <Trash2 className="size-4" />
-                <span className="sr-only">{t.removeItem}</span>
+                <span className="sr-only">{`${sectionTitle}: ${t.removeItem} ${index + 1}`}</span>
               </Button>
             </div>
 
@@ -282,7 +284,7 @@ export function ResumeSectionCard({
 
               {section.layout === 'timeline' ? (
                 <div className="grid min-w-0 gap-2 md:col-span-2">
-                  <span className="break-words text-[11px] font-medium uppercase leading-tight tracking-[0.2em] text-muted-foreground">
+                  <span className="break-words text-xs font-medium leading-tight text-muted-foreground">
                     {t.fieldLabels.highlights}
                   </span>
                   <Suspense fallback={<RichHighlightsEditorSkeleton />}>

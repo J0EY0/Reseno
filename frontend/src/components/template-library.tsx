@@ -22,9 +22,9 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { Link } from "react-router-dom";
 
 import type { AppMessages } from "@/i18n";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
@@ -65,10 +65,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
+import { useGalleryUrlState } from "@/components/use-gallery-url-state";
 
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 
@@ -196,7 +198,7 @@ function TemplateEditorPanel({
   return (
     <Collapsible
       defaultOpen={defaultOpen}
-      className="rounded-[24px] bg-muted/20 ring-1 ring-border/25"
+      className="rounded-(--radius-card) bg-muted/20 ring-1 ring-border/25"
     >
       <CollapsibleTrigger className="group flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left">
         <div className="min-w-0">
@@ -356,6 +358,9 @@ export function TemplateLibrary({
   templates,
   defaultTemplateId,
   activeTemplateId,
+  isImporting,
+  isCreating,
+  settingDefaultTemplateId,
   onOpenTemplate,
   onSetDefaultTemplate,
   onCreateCustomTemplate,
@@ -370,6 +375,9 @@ export function TemplateLibrary({
   templates: ResumeTemplateDefinition[];
   defaultTemplateId: string;
   activeTemplateId: string;
+  isImporting: boolean;
+  isCreating: boolean;
+  settingDefaultTemplateId: string | null;
   onOpenTemplate: (templateId: string) => void;
   onSetDefaultTemplate: (templateId: string) => void;
   onCreateCustomTemplate: () => void;
@@ -383,12 +391,12 @@ export function TemplateLibrary({
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
   const [isSelecting, setIsSelecting] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [editorTab, setEditorTab] = useState<TemplateEditorTab>("layout");
-  const [currentPage, setCurrentPage] = useState(1);
+  const { currentPage, searchQuery, setCurrentPage, setSearchQuery } =
+    useGalleryUrlState();
   const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 0 });
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const activeTemplate = useMemo(
@@ -565,30 +573,9 @@ export function TemplateLibrary({
     }
   }
 
-  function handleTemplateCardAction(item: ResumeTemplateDefinition) {
-    if (isSelecting) {
-      toggleSelected(item.id);
-      return;
-    }
-
-    onOpenTemplate(item.id);
-  }
-
-  function handleTemplateCardKeyDown(
-    event: KeyboardEvent<HTMLDivElement>,
-    item: ResumeTemplateDefinition,
-  ) {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    handleTemplateCardAction(item);
-  }
-
   if (mode === "gallery") {
     return (
-      <section className="rounded-[26px] border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
+      <section className="rounded-(--radius-workspace) border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
         <ConfirmActionDialog
           open={isDeleteDialogOpen}
           title={
@@ -617,15 +604,17 @@ export function TemplateLibrary({
           type="file"
           accept=".json,application/json"
           className="hidden"
+          disabled={isImporting}
           onChange={handleImportChange}
         />
 
         <GalleryToolbar
+          searchLabel={t.searchTemplatesLabel}
+          searchName="template-search"
           searchPlaceholder={t.searchTemplatesPlaceholder}
           searchValue={searchQuery}
           onSearchChange={(value) => {
             setSearchQuery(value);
-            setCurrentPage(1);
           }}
           isSelecting={isSelecting}
           onToggleSelecting={toggleSelecting}
@@ -639,16 +628,26 @@ export function TemplateLibrary({
               <Button
                 type="button"
                 variant="outline"
+                disabled={isImporting}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <FileUp className="size-4" />
-                {t.importTemplate}
+                {isImporting ? (
+                  <Spinner data-icon="inline-start" aria-label={t.importing} />
+                ) : (
+                  <FileUp data-icon="inline-start" />
+                )}
+                {isImporting ? t.importing : t.importTemplate}
               </Button>
               <Button
                 type="button"
+                disabled={isImporting || isCreating}
                 onClick={onCreateCustomTemplate}
               >
-                <CopyPlus className="size-4" />
+                {isCreating ? (
+                  <Spinner data-icon="inline-start" aria-label={t.newTemplate} />
+                ) : (
+                  <CopyPlus data-icon="inline-start" />
+                )}
                 {t.newTemplate}
               </Button>
             </>
@@ -678,121 +677,151 @@ export function TemplateLibrary({
                 exit="fade-out"
                 default="none"
               >
-                <div className="group h-full select-none">
-                <div
-                  className={cn(
-                    "flex h-full flex-col rounded-[24px] border border-border/80 bg-card p-2.5 shadow-none transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
-                    isSelected && "border-primary bg-accent/20",
-                  )}
-                >
+                <div className="group relative h-full select-none">
                   <div
-                    role="button"
-                    tabIndex={0}
-                    className="cursor-pointer select-none rounded-[18px] text-left outline-none"
-                    aria-pressed={isSelecting ? isSelected : undefined}
-                    onClick={() => handleTemplateCardAction(item)}
-                    onKeyDown={(event) => handleTemplateCardKeyDown(event, item)}
+                    className={cn(
+                      "flex h-full flex-col rounded-(--radius-card) border border-border/80 bg-card p-2.5 shadow-none transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
+                      isSelected && "border-primary bg-accent/20",
+                    )}
                   >
-                    <div className="rounded-[18px] bg-muted/55 p-2">
-                      <ViewTransitionBoundary
-                        name={`template-preview-${item.id}`}
-                        share="morph"
-                        default="none"
-                      >
-                        <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
-                          <div
-                            className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
-                            style={{ width: "210mm", height: "297mm" }}
-                          >
-                            <ResumePreview
-                              t={t}
-                              resume={resume}
-                              fontFamily={item.typography.fontFamily}
-                              fontSize={item.typography.fontSize}
-                              template={item}
-                              variant="thumbnail"
-                            />
+                    <Link
+                      to={`/template/${item.id}`}
+                      role={isSelecting ? "button" : undefined}
+                      aria-label={item.name}
+                      className="block cursor-pointer select-none rounded-[18px] text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      aria-pressed={isSelecting ? isSelected : undefined}
+                      onClick={(event) => {
+                        if (isSelecting) {
+                          event.preventDefault();
+                          toggleSelected(item.id);
+                          return;
+                        }
+
+                        if (
+                          event.button === 0 &&
+                          !event.metaKey &&
+                          !event.ctrlKey &&
+                          !event.shiftKey &&
+                          !event.altKey
+                        ) {
+                          event.preventDefault();
+                          onOpenTemplate(item.id);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (isSelecting && event.key === " ") {
+                          event.preventDefault();
+                          toggleSelected(item.id);
+                        }
+                      }}
+                    >
+                      <div className="rounded-[18px] bg-muted/55 p-2">
+                        <ViewTransitionBoundary
+                          name={`template-preview-${item.id}`}
+                          share="morph"
+                          default="none"
+                        >
+                          <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
+                            <div
+                              aria-hidden="true"
+                              className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
+                              style={{ width: "210mm", height: "297mm" }}
+                            >
+                              <ResumePreview
+                                t={t}
+                                resume={resume}
+                                fontFamily={item.typography.fontFamily}
+                                fontSize={item.typography.fontSize}
+                                template={item}
+                                variant="thumbnail"
+                              />
+                            </div>
+
+                            {isSelecting ? (
+                              <span
+                                aria-hidden="true"
+                                className={cn(
+                                  "absolute left-3 top-3 flex size-7 items-center justify-center rounded-full border bg-background/92 backdrop-blur transition-colors",
+                                  isSelected
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border/80 text-muted-foreground",
+                                )}
+                              >
+                                <Check className="size-3.5" />
+                              </span>
+                            ) : null}
                           </div>
+                        </ViewTransitionBoundary>
+                      </div>
+                    </Link>
 
-                          {isSelecting ? (
-                            <span
-                              className={cn(
-                                "absolute left-3 top-3 flex size-7 items-center justify-center rounded-full border bg-background/92 backdrop-blur transition-colors",
-                                isSelected
-                                  ? "border-primary bg-primary text-primary-foreground"
-                                  : "border-border/80 text-muted-foreground",
-                              )}
-                            >
-                              <Check className="size-3.5" />
-                            </span>
-                          ) : null}
+                    <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
+                      <div className="min-w-0">
+                        <p
+                          className="truncate text-[15px] font-semibold"
+                          title={item.name}
+                        >
+                          {item.name}
+                        </p>
+                        <p
+                          className="mt-1 line-clamp-2 min-h-8 text-xs text-muted-foreground"
+                          title={
+                            item.description || t.templateDescriptionFallback
+                          }
+                        >
+                          {item.description || t.templateDescriptionFallback}
+                        </p>
+                      </div>
 
-                          {isSelecting && isSelected && !item.isBuiltIn ? (
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="icon-sm"
-                              className="absolute right-3 top-3 z-10 size-7 rounded-full backdrop-blur"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                requestDelete([item.id]);
-                              }}
-                              onKeyDown={(event) => event.stopPropagation()}
-                              aria-label={t.confirmDeleteAction}
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          ) : null}
-                        </div>
-                      </ViewTransitionBoundary>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        {item.isBuiltIn ? (
+                          <Badge className="h-7 bg-transparent px-2.5 text-[11px] font-medium text-muted-foreground shadow-none">
+                            <Sparkles className="mr-1 size-3.5" />
+                            {t.builtInTemplate}
+                          </Badge>
+                        ) : (
+                          <span />
+                        )}
+
+                        {isSelecting ? null : isDefaultTemplate ? (
+                          <Badge
+                            variant="outline"
+                            className="h-7 rounded-full border-border/80 bg-muted px-2.5 text-[11px] font-medium text-muted-foreground"
+                          >
+                            {t.defaultTemplateLabel}
+                          </Badge>
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 rounded-full px-2.5 text-[11px]"
+                            disabled={settingDefaultTemplateId !== null}
+                            onClick={() => onSetDefaultTemplate(item.id)}
+                          >
+                            {settingDefaultTemplateId === item.id ? (
+                              <Spinner
+                                data-icon="inline-start"
+                                aria-label={t.setDefaultTemplate}
+                              />
+                            ) : null}
+                            {t.setDefaultTemplate}
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
-
-                  <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
+                  {isSelecting && isSelected && !item.isBuiltIn ? (
                     <Button
                       type="button"
-                      variant="ghost"
-                      className="h-auto w-full flex-col items-start gap-0 whitespace-normal p-0 text-left hover:bg-transparent"
-                      onClick={() => handleTemplateCardAction(item)}
+                      variant="destructive"
+                      size="icon-sm"
+                      className="absolute right-8 top-8 z-10 size-7 rounded-full backdrop-blur"
+                      onClick={() => requestDelete([item.id])}
+                      aria-label={t.confirmDeleteAction}
                     >
-                      <p className="truncate text-[15px] font-semibold">
-                        {item.name}
-                      </p>
-                      <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {item.description || t.templateDescriptionFallback}
-                      </p>
+                      <Trash2 className="size-3.5" />
                     </Button>
-
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      {item.isBuiltIn ? (
-                        <Badge className="h-7 bg-transparent px-2.5 text-[11px] font-medium text-muted-foreground shadow-none">
-                          <Sparkles className="mr-1 size-3.5" />
-                          {t.builtInTemplate}
-                        </Badge>
-                      ) : (
-                        <span />
-                      )}
-
-                      {isSelecting ? null : isDefaultTemplate ? (
-                        <Badge
-                          variant="outline"
-                          className="h-7 rounded-full border-border/80 bg-muted px-2.5 text-[11px] font-medium text-muted-foreground"
-                        >
-                          {t.defaultTemplateLabel}
-                        </Badge>
-                      ) : (
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="h-7 rounded-full px-2.5 text-[11px]"
-                          onClick={() => onSetDefaultTemplate(item.id)}
-                        >
-                          {t.setDefaultTemplate}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                  ) : null}
                 </div>
               </ViewTransitionBoundary>
             );
@@ -816,6 +845,7 @@ export function TemplateLibrary({
         type="file"
         accept=".json,application/json"
         className="hidden"
+        disabled={isImporting}
         onChange={handleImportChange}
       />
 
@@ -850,9 +880,17 @@ export function TemplateLibrary({
                       type="button"
                       size="sm"
                       className="h-9 rounded-lg px-3 shadow-none"
+                      disabled={isImporting || isCreating}
                       onClick={onCreateCustomTemplate}
                     >
-                      <CopyPlus className="size-4" />
+                      {isCreating ? (
+                        <Spinner
+                          data-icon="inline-start"
+                          aria-label={t.createEditableCopy}
+                        />
+                      ) : (
+                        <CopyPlus data-icon="inline-start" />
+                      )}
                       {t.createEditableCopy}
                     </Button>
                   ) : null}
@@ -867,8 +905,17 @@ export function TemplateLibrary({
                         : "bg-background/80 ring-1 ring-border/35 hover:bg-muted",
                     )}
                     onClick={() => onSetDefaultTemplate(activeTemplate.id)}
-                    disabled={activeTemplate.id === defaultTemplateId}
+                    disabled={
+                      activeTemplate.id === defaultTemplateId ||
+                      settingDefaultTemplateId !== null
+                    }
                   >
+                    {settingDefaultTemplateId === activeTemplate.id ? (
+                      <Spinner
+                        data-icon="inline-start"
+                        aria-label={t.setDefaultTemplate}
+                      />
+                    ) : null}
                     {activeTemplate.id === defaultTemplateId
                       ? t.defaultTemplateLabel
                       : t.setDefaultTemplate}

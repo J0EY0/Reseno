@@ -148,7 +148,7 @@ assert(
   "Provider kind tags must use the shared outlined Badge in both trigger and options.",
 );
 assert(
-  /\{draft\.providerKind !== "cloud" \? \([\s\S]*?name="model-api-url"[\s\S]*?\) : null\}/.test(
+  /\{providersLoaded && draft\.providerKind !== "cloud" \? \([\s\S]*?name="model-api-url"[\s\S]*?\) : null\}/.test(
     modelConfigForm,
   ),
   "Cloud provider configs must not expose a manual API URL input.",

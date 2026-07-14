@@ -14,8 +14,25 @@ export interface DiscoveredModel {
   metadataSource: string
 }
 
-export async function getModelProviders() {
-  return requestApi<{ providers: ModelProviderMeta[] }>(apiRoutes.modelProviders)
+interface ModelProvidersResponse {
+  providers: ModelProviderMeta[]
+}
+
+let modelProvidersRequest: Promise<ModelProvidersResponse> | null = null
+
+export function getModelProviders() {
+  if (!modelProvidersRequest) {
+    // Provider metadata is shared by every create/edit dialog. Reusing the
+    // request prevents eagerly mounted forms from issuing the same call.
+    modelProvidersRequest = requestApi<ModelProvidersResponse>(
+      apiRoutes.modelProviders,
+    ).catch((error) => {
+      modelProvidersRequest = null
+      throw error
+    })
+  }
+
+  return modelProvidersRequest
 }
 
 export async function discoverModels(input: {

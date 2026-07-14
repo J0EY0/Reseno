@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Spinner } from '@/components/ui/spinner'
 
 const maxStageWidth = 520
 const maxStageHeight = 420
@@ -311,6 +312,7 @@ export function AvatarCropDialog({
     >
       <DialogContent
         showCloseButton={!isSaving}
+        closeLabel={t.close}
         className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-4xl"
         onEscapeKeyDown={(event) => {
           if (isSaving) {
@@ -326,7 +328,7 @@ export function AvatarCropDialog({
 
         <div className="grid gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_240px]">
           <div className="flex items-center justify-center">
-            <div className="relative flex min-h-[420px] w-full items-center justify-center overflow-hidden rounded-[28px] border border-border bg-muted/30 p-4">
+            <div className="relative flex min-h-[420px] w-full items-center justify-center overflow-hidden rounded-(--radius-preview) border border-border bg-muted/30 p-4">
               <div
                 ref={stageRef}
                 className={cn(
@@ -458,6 +460,9 @@ export function AvatarCropDialog({
             onClick={() => void handleConfirm()}
             disabled={isSaving || !hasCrop}
           >
+            {isSaving ? (
+              <Spinner data-icon="inline-start" aria-label={t.saving} />
+            ) : null}
             {isSaving ? t.saving : t.applyCrop}
           </Button>
         </DialogFooter>

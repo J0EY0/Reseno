@@ -1,4 +1,5 @@
 import {
+  Bot,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -61,6 +62,14 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   SidebarInset,
   SidebarProvider,
@@ -135,6 +144,7 @@ import {
   saveTemplateApi,
 } from "@/lib/workspace-api";
 import { runViewTransition } from "@/lib/view-transition";
+import { getWorkspacePath } from "@/lib/workspace-route";
 import type {
   AgentDraftState,
   AgentResumeEditSuggestion,
@@ -279,6 +289,9 @@ const A4_WIDTH_PX = (210 / 25.4) * 96;
 const A4_HEIGHT_PX = (297 / 25.4) * 96;
 const PREVIEW_FRAME_GUTTER_PX = 48;
 const MAX_RESUME_TITLE_LENGTH = 20;
+// Keep this aligned with the 2xl workspace breakpoint in index.css. Below it,
+// the Agent uses a Sheet so the editor and preview retain usable widths.
+const AGENT_DOCK_MEDIA_QUERY = "(min-width: 1536px)";
 const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 const SMART_ONE_PAGE_MAX_PAGE_COUNT = 1;
 const SMART_ONE_PAGE_MIN_FONT_SIZE = 12;
@@ -369,12 +382,12 @@ function WorkspacePanelSkeleton() {
 
 function WorkspacePreviewSkeleton() {
   return (
-    <section className="resume-preview-card relative flex min-w-0 flex-col overflow-hidden rounded-[28px] border border-border bg-card p-4 xl:self-start">
+    <section className="resume-preview-card relative flex min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border border-border bg-card p-4 xl:self-start">
       <div className="mb-4">
         <Skeleton className="h-3 w-24" />
       </div>
       <div className="flex justify-center">
-        <div className="w-[min(100%,640px)] rounded-[24px] border border-border bg-background p-10 shadow-[0_18px_60px_rgba(15,23,42,0.10)]">
+        <div className="w-[min(100%,640px)] rounded-(--radius-card) border border-border bg-background p-10 shadow-[0_18px_60px_rgba(15,23,42,0.10)]">
           <div className="mx-auto grid max-w-[520px] gap-5">
             <Skeleton className="mx-auto h-8 w-32" />
             <Skeleton className="mx-auto h-4 w-72" />
@@ -421,7 +434,7 @@ function WorkspaceContentSkeleton() {
 
 function GalleryCardSkeleton({ isCreate = false }: { isCreate?: boolean }) {
   return (
-    <Card className="h-full rounded-[24px] border-border/80 bg-card text-card-foreground shadow-none">
+    <Card className="h-full rounded-(--radius-card) border-border/80 bg-card text-card-foreground shadow-none">
       <CardContent className="flex h-full flex-col p-2.5">
         <div className="rounded-[18px] bg-muted/55 p-2">
           {isCreate ? (
@@ -497,7 +510,7 @@ function GalleryWorkspaceSkeleton({
   const visibleItemCount = Math.max(1, itemCount);
 
   return (
-    <section className="rounded-[26px] border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
+    <section className="rounded-(--radius-workspace) border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <Skeleton className="h-9 w-full rounded-md bg-card sm:w-80 lg:w-96" />
         <div className="ml-auto flex w-full justify-end sm:w-auto">
@@ -633,20 +646,22 @@ function getWorkspaceRoute(pathname: string): WorkspaceRoute {
   return { kind: "unknown" };
 }
 
-function getWorkspacePath(view: WorkspaceView) {
-  switch (view) {
-    case "resume":
-      return "/resume";
-    case "templates":
-      return "/templates";
+function getWorkspaceViewFromRoute(route: WorkspaceRoute): WorkspaceView {
+  switch (route.kind) {
+    case "template-gallery":
+    case "template-detail":
+      return "templates";
     case "trash":
-      return "/trash";
+      return "trash";
     case "models":
-      return "/models";
+      return "models";
     case "settings":
-      return "/settings";
+      return "settings";
+    case "resume-gallery":
+    case "resume-detail":
+    case "unknown":
     default:
-      return "/resume";
+      return "resume";
   }
 }
 
@@ -1291,7 +1306,10 @@ export function ResumeBuilder({
 
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
-  const [activeView, setActiveView] = useState<WorkspaceView>("resume");
+  // Initialize from the URL so direct visits never paint the resume shell first.
+  const [activeView, setActiveView] = useState<WorkspaceView>(() =>
+    getWorkspaceViewFromRoute(getWorkspaceRoute(location.pathname)),
+  );
   const [resumeDocuments, setResumeDocuments] = useState<ResumeWorkspaceItem[]>(
     [],
   );
@@ -1326,6 +1344,12 @@ export function ResumeBuilder({
   const [isLoading, setIsLoading] = useState(true);
   const [hasLoadError, setHasLoadError] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isCreatingResume, setIsCreatingResume] = useState(false);
+  const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
+  const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
+    string | null
+  >(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
     "idle",
   );
@@ -1345,6 +1369,12 @@ export function ResumeBuilder({
   >(null);
   const [avatarCropSource, setAvatarCropSource] = useState<string | null>(null);
   const [isAgentPanelCollapsed, setIsAgentPanelCollapsed] = useState(false);
+  const [isAgentSheetOpen, setIsAgentSheetOpen] = useState(false);
+  const [isAgentDockLayout, setIsAgentDockLayout] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia(AGENT_DOCK_MEDIA_QUERY).matches
+      : false,
+  );
   const [agentDraft, setAgentDraft] = useState<AgentDraftState | null>(null);
   const [lastAgentDraft, setLastAgentDraft] = useState<AgentDraftState | null>(
     null,
@@ -1356,6 +1386,11 @@ export function ResumeBuilder({
   const documentHeaderRef = useRef<HTMLElement | null>(null);
   const previewScaleFrameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLElement | null>(null);
+  const importInFlightRef = useRef(false);
+  // Refs close the same-render double-click gap before disabled states commit.
+  const createResumeInFlightRef = useRef(false);
+  const createTemplateInFlightRef = useRef(false);
+  const setDefaultTemplateInFlightRef = useRef(false);
   const saveRequestRef = useRef<Promise<SaveResponse> | null>(null);
   const pendingSaveAfterCurrentRef = useRef(false);
   const versionLoadRequestRef = useRef<string | null>(null);
@@ -1448,6 +1483,26 @@ export function ResumeBuilder({
   const canSaveCurrentWorkspace =
     isResumeDetailView ||
     (isTemplateDetailView && !activeTemplateDefinition.isBuiltIn);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(AGENT_DOCK_MEDIA_QUERY);
+    const syncAgentLayout = () => {
+      setIsAgentDockLayout(mediaQuery.matches);
+      if (mediaQuery.matches) {
+        setIsAgentSheetOpen(false);
+      }
+    };
+
+    syncAgentLayout();
+    mediaQuery.addEventListener("change", syncAgentLayout);
+    return () => mediaQuery.removeEventListener("change", syncAgentLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!isResumeDetailView) {
+      setIsAgentSheetOpen(false);
+    }
+  }, [isResumeDetailView]);
 
   useEffect(() => {
     if (!isResumeDetailView && !isTemplateDetailView) {
@@ -2522,9 +2577,16 @@ export function ResumeBuilder({
   }
 
   async function createResume() {
-    if (isLoading || saveState === "saving") {
+    if (
+      isLoading ||
+      saveState === "saving" ||
+      createResumeInFlightRef.current
+    ) {
       return;
     }
+
+    createResumeInFlightRef.current = true;
+    setIsCreatingResume(true);
 
     try {
       await saveCurrentWorkspace();
@@ -2559,10 +2621,22 @@ export function ResumeBuilder({
         });
       }
       return;
+    } finally {
+      createResumeInFlightRef.current = false;
+      setIsCreatingResume(false);
     }
   }
 
   async function importResume(file: File) {
+    // The ref closes the same-render re-entry gap before React commits the
+    // disabled button state. Resume and template imports share one lock.
+    if (importInFlightRef.current) {
+      return;
+    }
+
+    importInFlightRef.current = true;
+    setIsImporting(true);
+
     try {
       const isPdfImport =
         file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -2656,6 +2730,9 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
+    } finally {
+      importInFlightRef.current = false;
+      setIsImporting(false);
     }
   }
 
@@ -2803,11 +2880,11 @@ export function ResumeBuilder({
 
   async function restoreResumes(resumeIds: string[]) {
     if (resumeIds.length === 0) {
-      return;
+      return false;
     }
 
     if (!deletedResumeDocuments.some((item) => resumeIds.includes(item.id))) {
-      return;
+      return false;
     }
 
     let restoredItems: ResumeWorkspaceItem[];
@@ -2824,25 +2901,25 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedResumeDocuments((current) =>
-      current.filter((item) => !resumeIds.includes(item.id)),
-    );
-    setResumeDocuments((current) => [
-      ...restoredItems,
-      ...current,
-    ]);
+    startTransition(() => {
+      setDeletedResumeDocuments((current) =>
+        current.filter((item) => !resumeIds.includes(item.id)),
+      );
+      setResumeDocuments((current) => [...restoredItems, ...current]);
+    });
 
     toast.success(resumeIds.length > 1 ? t.resumesRestored : t.resumeRestored, {
       closeButton: true,
     });
+    return true;
   }
 
   async function permanentlyDeleteResumes(resumeIds: string[]) {
     if (resumeIds.length === 0) {
-      return;
+      return false;
     }
 
     try {
@@ -2856,23 +2933,26 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedResumeDocuments((current) =>
-      current.filter((item) => !resumeIds.includes(item.id)),
-    );
+    startTransition(() => {
+      setDeletedResumeDocuments((current) =>
+        current.filter((item) => !resumeIds.includes(item.id)),
+      );
+    });
     toast.success(
       resumeIds.length > 1 ? t.resumesDeletedForever : t.resumeDeletedForever,
       {
         closeButton: true,
       },
     );
+    return true;
   }
 
   async function emptyResumeTrash() {
     if (deletedResumeDocuments.length === 0) {
-      return;
+      return false;
     }
 
     try {
@@ -2884,19 +2964,27 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedResumeDocuments([]);
+    startTransition(() => setDeletedResumeDocuments([]));
     toast.success(t.resumeTrashEmptied, {
       closeButton: true,
     });
+    return true;
   }
 
   async function createCustomTemplate() {
-    if (isLoading || saveState === "saving") {
+    if (
+      isLoading ||
+      saveState === "saving" ||
+      createTemplateInFlightRef.current
+    ) {
       return;
     }
+
+    createTemplateInFlightRef.current = true;
+    setIsCreatingTemplate(true);
 
     const draftTemplate = createCustomTemplateFromBase(
       activeTemplateDefinition,
@@ -2933,10 +3021,20 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
+    } finally {
+      createTemplateInFlightRef.current = false;
+      setIsCreatingTemplate(false);
     }
   }
 
   async function importTemplates(file: File) {
+    if (importInFlightRef.current) {
+      return;
+    }
+
+    importInFlightRef.current = true;
+    setIsImporting(true);
+
     try {
       const payload = await importTemplatePayload(file);
       const importedTemplates = normalizeCustomTemplates(payload).map(
@@ -2992,6 +3090,9 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
+    } finally {
+      importInFlightRef.current = false;
+      setIsImporting(false);
     }
   }
 
@@ -3103,7 +3204,7 @@ export function ResumeBuilder({
 
   async function restoreTemplates(templateIds: string[]) {
     if (templateIds.length === 0) {
-      return;
+      return false;
     }
 
     const restoring = deletedTemplates.filter((item) =>
@@ -3111,7 +3212,7 @@ export function ResumeBuilder({
     );
 
     if (restoring.length === 0) {
-      return;
+      return false;
     }
 
     let restoredItems: ResumeTemplateDefinition[];
@@ -3128,13 +3229,15 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedTemplates((current) =>
-      current.filter((item) => !templateIds.includes(item.id)),
-    );
-    setCustomTemplates((current) => [...restoredItems, ...current]);
+    startTransition(() => {
+      setDeletedTemplates((current) =>
+        current.filter((item) => !templateIds.includes(item.id)),
+      );
+      setCustomTemplates((current) => [...restoredItems, ...current]);
+    });
 
     toast.success(
       templateIds.length > 1 ? t.templatesRestored : t.templateRestored,
@@ -3142,11 +3245,12 @@ export function ResumeBuilder({
         closeButton: true,
       },
     );
+    return true;
   }
 
   async function permanentlyDeleteTemplates(templateIds: string[]) {
     if (templateIds.length === 0) {
-      return;
+      return false;
     }
 
     try {
@@ -3160,12 +3264,14 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedTemplates((current) =>
-      current.filter((item) => !templateIds.includes(item.id)),
-    );
+    startTransition(() => {
+      setDeletedTemplates((current) =>
+        current.filter((item) => !templateIds.includes(item.id)),
+      );
+    });
     toast.success(
       templateIds.length > 1
         ? t.templatesDeletedForever
@@ -3174,11 +3280,12 @@ export function ResumeBuilder({
         closeButton: true,
       },
     );
+    return true;
   }
 
   async function emptyTemplateTrash() {
     if (deletedTemplates.length === 0) {
-      return;
+      return false;
     }
 
     try {
@@ -3190,19 +3297,27 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
-      return;
+      return false;
     }
 
-    setDeletedTemplates([]);
+    startTransition(() => setDeletedTemplates([]));
     toast.success(t.templateTrashEmptied, {
       closeButton: true,
     });
+    return true;
   }
 
   async function handleSetDefaultTemplate(templateId: string) {
-    if (!templateCatalog.some((item) => item.id === templateId)) {
+    if (
+      templateId === defaultTemplateId ||
+      setDefaultTemplateInFlightRef.current ||
+      !templateCatalog.some((item) => item.id === templateId)
+    ) {
       return;
     }
+
+    setDefaultTemplateInFlightRef.current = true;
+    setSettingDefaultTemplateId(templateId);
 
     try {
       const result = await saveDefaultTemplateApi(templateId);
@@ -3217,6 +3332,9 @@ export function ResumeBuilder({
           closeButton: true,
         });
       }
+    } finally {
+      setDefaultTemplateInFlightRef.current = false;
+      setSettingDefaultTemplateId(null);
     }
   }
 
@@ -3695,10 +3813,10 @@ export function ResumeBuilder({
 
     return (
       <section
-        className="resume-preview-card relative flex min-w-0 flex-col overflow-x-hidden rounded-[28px] border border-border bg-card p-4 print:overflow-visible print:border-0 print:bg-white print:p-0 xl:self-start"
+        className="resume-preview-card relative flex min-w-0 flex-col overflow-x-hidden rounded-(--radius-preview) border border-border bg-card p-4 print:overflow-visible print:border-0 print:bg-white print:p-0 xl:self-start"
       >
         <div className="mb-4 print:hidden">
-          <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+          <p className="text-xs font-medium text-muted-foreground">
             {t.previewTitle}
           </p>
         </div>
@@ -3761,6 +3879,10 @@ export function ResumeBuilder({
   }
 
   function renderAgentSeamRail() {
+    if (!isAgentDockLayout) {
+      return null;
+    }
+
     const tooltip = isAgentPanelCollapsed
       ? t.agentExpandPanel
       : t.agentCollapsePanel;
@@ -3820,6 +3942,8 @@ export function ResumeBuilder({
             resumes={resumeDocuments}
             templates={templateCatalog}
             defaultTemplateId={defaultTemplateId}
+            isImporting={isImporting}
+            isCreating={isCreatingResume}
             onOpenResume={openResumeEditor}
             onCreateResume={createResume}
             onImportResume={(file) => {
@@ -3852,6 +3976,9 @@ export function ResumeBuilder({
             templates={templateCatalog}
             defaultTemplateId={defaultTemplateId}
             activeTemplateId={template}
+            isImporting={isImporting}
+            isCreating={isCreatingTemplate}
+            settingDefaultTemplateId={settingDefaultTemplateId}
             onOpenTemplate={openTemplateEditor}
             onSetDefaultTemplate={handleSetDefaultTemplate}
             onCreateCustomTemplate={createCustomTemplate}
@@ -3894,7 +4021,7 @@ export function ResumeBuilder({
   }
 
   function renderResumeWorkspace() {
-    const shouldDockAgent = !isAgentPanelCollapsed;
+    const shouldDockAgent = isAgentDockLayout && !isAgentPanelCollapsed;
     const resumeWorkspaceStyle = {
       "--resume-workspace-columns": shouldDockAgent
         ? "440px minmax(0,1fr) 18px 360px"
@@ -4020,16 +4147,34 @@ export function ResumeBuilder({
 
         {renderAgentSeamRail()}
 
-        <aside
-          aria-hidden={!shouldDockAgent}
-          className={cn(
-            "agent-panel-dock relative hidden min-w-0 overflow-hidden print:hidden 2xl:block 2xl:self-start",
-            "transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            !shouldDockAgent && "pointer-events-none opacity-0",
-          )}
-        >
-          {renderCopilotPanel("docked")}
-        </aside>
+        {isAgentDockLayout ? (
+          <aside
+            aria-hidden={!shouldDockAgent}
+            className={cn(
+              "agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden",
+              "transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+              !shouldDockAgent && "pointer-events-none opacity-0",
+            )}
+          >
+            {renderCopilotPanel("docked")}
+          </aside>
+        ) : null}
+
+        {!isAgentDockLayout ? (
+          <Sheet open={isAgentSheetOpen} onOpenChange={setIsAgentSheetOpen}>
+            <SheetContent
+              closeLabel={t.close}
+              side="right"
+              className="w-[420px] max-w-[calc(100vw-1rem)] p-2 sm:max-w-[420px]"
+            >
+              <SheetHeader className="sr-only">
+                <SheetTitle>{t.aiTitle}</SheetTitle>
+                <SheetDescription>{t.agentEmptyPrompt}</SheetDescription>
+              </SheetHeader>
+              {renderCopilotPanel("sheet")}
+            </SheetContent>
+          </Sheet>
+        ) : null}
       </main>
     );
   }
@@ -4060,6 +4205,9 @@ export function ResumeBuilder({
               templates={templateCatalog}
               defaultTemplateId={defaultTemplateId}
               activeTemplateId={template}
+              isImporting={isImporting}
+              isCreating={isCreatingTemplate}
+              settingDefaultTemplateId={settingDefaultTemplateId}
               onOpenTemplate={openTemplateEditor}
               onSetDefaultTemplate={handleSetDefaultTemplate}
               onCreateCustomTemplate={createCustomTemplate}
@@ -4121,6 +4269,12 @@ export function ResumeBuilder({
 
   return (
     <SidebarProvider>
+      <a
+        href="#main-content"
+        className="fixed left-4 top-4 z-50 -translate-y-20 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-md transition-transform focus-visible:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 print:hidden"
+      >
+        {t.skipToContent}
+      </a>
       <AppToaster theme={theme} position="bottom-right" />
       <AvatarCropDialog
         t={t}
@@ -4142,7 +4296,11 @@ export function ResumeBuilder({
           }
         }}
       >
-        <DialogContent showCloseButton className="w-[min(420px,calc(100vw-2rem))]">
+        <DialogContent
+          showCloseButton
+          closeLabel={t.close}
+          className="w-[min(420px,calc(100vw-2rem))]"
+        >
           <DialogHeader>
             <DialogTitle>{t.editResumeTitle}</DialogTitle>
           </DialogHeader>
@@ -4199,6 +4357,7 @@ export function ResumeBuilder({
       >
         <DialogContent
           showCloseButton
+          closeLabel={t.close}
           className="w-[min(460px,calc(100vw-2rem))]"
           onKeyDown={(event) => {
             if (event.key !== "Enter" || isResolvingWorkspaceLeave) {
@@ -4256,6 +4415,8 @@ export function ResumeBuilder({
       />
 
       <SidebarInset
+        id="main-content"
+        tabIndex={-1}
         className={cn(
           "app-shell",
           (isResumeDetailView || isTemplateDetailView) &&
@@ -4274,15 +4435,19 @@ export function ResumeBuilder({
           className={cn(
             "sticky top-0 z-20 items-center gap-3 border-b border-border bg-background px-4 print:hidden",
             isResumeDetailView
-              ? "grid min-h-20 grid-cols-1 py-3 2xl:grid-cols-[auto_1fr]"
+              ? "grid min-h-16 grid-cols-[auto_minmax(0,1fr)] py-2"
               : isTemplateDetailView
-                ? "flex min-h-20 flex-wrap justify-between py-3"
+                ? "flex min-h-16 flex-wrap justify-between py-2"
                 : "flex h-16 shrink-0 justify-between",
           )}
           style={{ viewTransitionName: "persistent-header" }}
         >
           <div className="flex min-w-0 items-center gap-2">
-            <SidebarTrigger className="-ml-1" />
+            <SidebarTrigger
+              className="-ml-1"
+              aria-label={t.toggleSidebar}
+              title={t.toggleSidebar}
+            />
             {!isResumeDetailView && !isTemplateDetailView ? (
               <Separator
                 orientation="vertical"
@@ -4310,20 +4475,28 @@ export function ResumeBuilder({
               </Button>
             ) : null}
             {isResumeDetailView ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title={activeResumeToolbarTitle}
-                aria-label={t.editResumeTitle}
-                className="min-w-0 max-w-40 justify-start"
-                onClick={openResumeTitleDialog}
-              >
-                <span className="truncate">
+              <div className="flex min-w-0 items-center gap-1">
+                <h1
+                  className="max-w-36 truncate text-sm font-medium text-foreground"
+                  title={activeResumeToolbarTitle}
+                >
                   {formatResumeTitleForToolbar(activeResumeToolbarTitle)}
-                </span>
-                <Pencil className="size-3.5 text-muted-foreground" />
-              </Button>
+                </h1>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t.editResumeTitle}
+                  onClick={openResumeTitleDialog}
+                >
+                  <Pencil className="size-3.5 text-muted-foreground" />
+                </Button>
+              </div>
+            ) : null}
+            {isTemplateDetailView ? (
+              <h1 className="max-w-48 truncate text-sm font-medium text-foreground">
+                {activeTemplateDefinition.name}
+              </h1>
             ) : null}
             {!isResumeDetailView && !isTemplateDetailView ? (
               <h1 className="text-sm font-medium text-foreground">
@@ -4335,12 +4508,26 @@ export function ResumeBuilder({
           <div
             className={cn(
               isResumeDetailView
-                ? "flex w-full flex-col items-end gap-2 xl:flex-row xl:flex-nowrap xl:justify-end"
+                ? "flex min-w-0 flex-wrap items-center justify-end gap-2"
                 : "flex flex-wrap items-center justify-end gap-2",
             )}
           >
             {showEditorControls || canSaveCurrentWorkspace ? (
               <div className="flex flex-wrap items-center justify-end gap-2">
+            {showEditorControls && isResumeDetailView && !isAgentDockLayout ? (
+              <Button
+                type="button"
+                variant="outline"
+                aria-label={t.agentExpandPanel}
+                onFocus={() => void loadCopilotPanelModule()}
+                onPointerEnter={() => void loadCopilotPanelModule()}
+                onClick={() => setIsAgentSheetOpen(true)}
+              >
+                <Bot data-icon="inline-start" />
+                {t.aiTitle}
+              </Button>
+            ) : null}
+
             {showEditorControls && isResumeDetailView ? (
               <Button
                 type="button"
@@ -4350,12 +4537,11 @@ export function ResumeBuilder({
                 title={t.smartOnePage}
                 aria-label={t.smartOnePage}
               >
-                <Minimize2
-                  className={cn(
-                    "size-4",
-                    isSmartFittingOnePage && "animate-pulse",
-                  )}
-                />
+                {isSmartFittingOnePage ? (
+                  <Spinner data-icon="inline-start" aria-label={t.smartOnePage} />
+                ) : (
+                  <Minimize2 data-icon="inline-start" />
+                )}
                 {t.smartOnePage}
               </Button>
             ) : null}
@@ -4483,7 +4669,7 @@ export function ResumeBuilder({
                       value={template}
                       onValueChange={applyTemplateToActiveResume}
                     >
-                      <SelectTrigger className="h-8 w-[106px] min-w-[106px] border-0 bg-transparent px-1 shadow-none focus-visible:ring-0">
+                      <SelectTrigger className="h-8 w-[106px] min-w-[106px] border-0 bg-transparent px-1 shadow-none">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent
@@ -4533,9 +4719,11 @@ export function ResumeBuilder({
                 onClick={() => void exportPdf()}
                 disabled={isExporting || isLoading}
               >
-                <Download
-                  className={cn("size-4", isExporting && "animate-pulse")}
-                />
+                {isExporting ? (
+                  <Spinner data-icon="inline-start" aria-label={t.exporting} />
+                ) : (
+                  <Download data-icon="inline-start" />
+                )}
                 {isExporting ? t.exporting : t.exportPdf}
               </Button>
             ) : null}

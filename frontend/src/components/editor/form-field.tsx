@@ -19,7 +19,7 @@ export function FormField({
     <Field className={cn('min-w-0 gap-2', className)}>
       <FieldLabel
         htmlFor={controlId}
-        className="break-words text-[11px] font-medium uppercase leading-tight tracking-[0.2em] text-muted-foreground"
+        className="break-words text-xs font-medium leading-tight text-muted-foreground"
       >
         {label}
       </FieldLabel>

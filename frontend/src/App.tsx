@@ -1,5 +1,11 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 
 import {
   clearAuthSession,
@@ -84,6 +90,40 @@ function AppRouteSuspense({ children }: { children: ReactNode }) {
       </ViewTransitionBoundary>
     </Suspense>
   );
+}
+
+function DocumentMetadata({
+  locale,
+  messages,
+}: {
+  locale: Locale;
+  messages: AppMessages;
+}) {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+
+    const pageLabel = pathname.startsWith("/resume")
+      ? messages.myResume
+      : pathname.startsWith("/template")
+        ? messages.resumeTemplates
+        : pathname === "/trash"
+          ? messages.recycleBin
+          : pathname === "/models"
+            ? messages.modelSettings
+            : pathname === "/settings"
+              ? messages.settings
+              : null;
+
+    document.title = pageLabel
+      ? `${pageLabel} · ${messages.brandTitle}`
+      : pathname === "/login"
+        ? messages.loginTitle
+        : messages.brandTitle;
+  }, [locale, messages, pathname]);
+
+  return null;
 }
 
 function App() {
@@ -201,6 +241,7 @@ function App() {
   if (authRequired && !isAuthenticated) {
     return (
       <BrowserRouter>
+        <DocumentMetadata locale={locale} messages={messages} />
         <Routes>
           <Route path="/pdf-export" element={renderPdfExport()} />
           <Route path="/login" element={renderLoginPage()} />
@@ -212,6 +253,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <DocumentMetadata locale={locale} messages={messages} />
       <Routes>
         <Route path="/pdf-export" element={renderPdfExport()} />
         <Route path="/resume" element={renderResumeBuilder()} />

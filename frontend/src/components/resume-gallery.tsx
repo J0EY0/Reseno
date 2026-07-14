@@ -5,8 +5,8 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type KeyboardEvent,
 } from "react";
+import { Link } from "react-router-dom";
 
 import type { AppMessages, Locale } from "@/i18n";
 import { getTemplateById } from "@/lib/templates";
@@ -22,8 +22,10 @@ import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
+import { useGalleryUrlState } from "@/components/use-gallery-url-state";
 
 function matchesResumeQuery(
   query: string,
@@ -60,6 +62,8 @@ export function ResumeGallery({
   resumes,
   templates,
   defaultTemplateId,
+  isImporting,
+  isCreating,
   onOpenResume,
   onCreateResume,
   onImportResume,
@@ -71,6 +75,8 @@ export function ResumeGallery({
   resumes: ResumeWorkspaceItem[];
   templates: ResumeTemplateDefinition[];
   defaultTemplateId: string;
+  isImporting: boolean;
+  isCreating: boolean;
   onOpenResume: (resumeId: string) => void;
   onCreateResume: () => void;
   onImportResume: (file: File) => void;
@@ -78,12 +84,12 @@ export function ResumeGallery({
   onBulkDeleteResumes: (resumeIds: string[]) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isSelecting, setIsSelecting] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+  const { currentPage, searchQuery, setCurrentPage, setSearchQuery } =
+    useGalleryUrlState();
   const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 0 });
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
@@ -141,27 +147,6 @@ export function ResumeGallery({
     setIsDeleteDialogOpen(false);
   }
 
-  function handleResumeCardAction(resumeId: string) {
-    if (isSelecting) {
-      toggleSelected(resumeId);
-      return;
-    }
-
-    onOpenResume(resumeId);
-  }
-
-  function handleResumeCardKeyDown(
-    event: KeyboardEvent<HTMLDivElement>,
-    resumeId: string,
-  ) {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    handleResumeCardAction(resumeId);
-  }
-
   const normalizedQuery = deferredSearchQuery.trim().toLowerCase();
   const resumeIdSet = useMemo(
     () => new Set(resumes.map((item) => item.id)),
@@ -192,7 +177,7 @@ export function ResumeGallery({
   );
 
   return (
-    <section className="rounded-[26px] border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
+    <section className="rounded-(--radius-workspace) border border-border bg-muted/35 p-3.5 text-foreground sm:p-4">
       <ConfirmActionDialog
         open={isDeleteDialogOpen}
         title={
@@ -221,15 +206,17 @@ export function ResumeGallery({
         type="file"
         accept=".pdf,application/pdf,.json,application/json"
         className="hidden"
+        disabled={isImporting}
         onChange={handleImportChange}
       />
 
       <GalleryToolbar
+        searchLabel={t.searchResumesLabel}
+        searchName="resume-search"
         searchPlaceholder={t.searchResumesPlaceholder}
         searchValue={searchQuery}
         onSearchChange={(value) => {
           setSearchQuery(value);
-          setCurrentPage(1);
         }}
         isSelecting={isSelecting}
         onToggleSelecting={toggleSelecting}
@@ -243,16 +230,26 @@ export function ResumeGallery({
             <Button
               type="button"
               variant="outline"
+              disabled={isImporting}
               onClick={() => fileInputRef.current?.click()}
             >
-              <FileUp className="size-4" />
-              {t.importResume}
+              {isImporting ? (
+                <Spinner data-icon="inline-start" aria-label={t.importing} />
+              ) : (
+                <FileUp data-icon="inline-start" />
+              )}
+              {isImporting ? t.importing : t.importResume}
             </Button>
             <Button
               type="button"
+              disabled={isImporting || isCreating}
               onClick={onCreateResume}
             >
-              <PlusSquare className="size-4" />
+              {isCreating ? (
+                <Spinner data-icon="inline-start" aria-label={t.newResume} />
+              ) : (
+                <PlusSquare data-icon="inline-start" />
+              )}
               {t.newResume}
             </Button>
           </>
@@ -278,6 +275,8 @@ export function ResumeGallery({
             defaultTemplateId,
           );
           const isSelected = selectedIdSet.has(item.id);
+          const resumeLabel =
+            item.title || item.resume.basic.name || t.untitledResume;
 
           return (
             <ViewTransitionBoundary
@@ -286,96 +285,117 @@ export function ResumeGallery({
               exit="fade-out"
               default="none"
             >
-              <div
-                role="button"
-                tabIndex={0}
-                className="group h-full text-left outline-none"
-                onClick={() => handleResumeCardAction(item.id)}
-                onKeyDown={(event) => handleResumeCardKeyDown(event, item.id)}
-              >
-              <div
-                className={cn(
-                  "flex h-full flex-col rounded-[24px] border border-border/80 bg-card p-2.5 shadow-none transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
-                  isSelected && "border-primary bg-accent/20",
-                )}
-              >
-                <div className="rounded-[18px] bg-muted/55 p-2">
-                  <ViewTransitionBoundary
-                    name={`resume-preview-${item.id}`}
-                    share="morph"
-                    default="none"
+              <div className="group relative h-full">
+                <Link
+                  to={`/resume/${item.id}`}
+                  role={isSelecting ? "button" : undefined}
+                  aria-label={resumeLabel}
+                  aria-pressed={isSelecting ? isSelected : undefined}
+                  className="block h-full rounded-(--radius-card) text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  onClick={(event) => {
+                    if (isSelecting) {
+                      event.preventDefault();
+                      toggleSelected(item.id);
+                      return;
+                    }
+
+                    if (
+                      event.button === 0 &&
+                      !event.metaKey &&
+                      !event.ctrlKey &&
+                      !event.shiftKey &&
+                      !event.altKey
+                    ) {
+                      event.preventDefault();
+                      onOpenResume(item.id);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (isSelecting && event.key === " ") {
+                      event.preventDefault();
+                      toggleSelected(item.id);
+                    }
+                  }}
+                >
+                  <div
+                    className={cn(
+                      "flex h-full flex-col rounded-(--radius-card) border border-border/80 bg-card p-2.5 shadow-none transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
+                      isSelected && "border-primary bg-accent/20",
+                    )}
                   >
-                    <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
-                    {isSelecting ? (
-                      <Button
-                        type="button"
-                        variant={isSelected ? "default" : "outline"}
-                        size="icon-sm"
-                        aria-label={t.selectItems}
-                        className={cn(
-                          "absolute left-3 top-3 z-10 size-7 rounded-full backdrop-blur",
-                          !isSelected && "bg-background/92 text-muted-foreground",
-                        )}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleSelected(item.id);
-                        }}
+                    <div className="rounded-[18px] bg-muted/55 p-2">
+                      <ViewTransitionBoundary
+                        name={`resume-preview-${item.id}`}
+                        share="morph"
+                        default="none"
                       >
-                        <Check className="size-3.5" />
-                      </Button>
-                    ) : null}
+                        <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
+                          {isSelecting ? (
+                            <span
+                              aria-hidden="true"
+                              className={cn(
+                                "absolute left-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur",
+                                isSelected
+                                  ? "border-primary bg-primary text-primary-foreground"
+                                  : "border-border/80 bg-background/92 text-muted-foreground",
+                              )}
+                            >
+                              <Check className="size-3.5" />
+                            </span>
+                          ) : null}
 
-                    {isSelecting && isSelected ? (
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="icon-sm"
-                        aria-label={t.confirmDeleteAction}
-                        className="absolute right-3 top-3 z-10 size-7 rounded-full backdrop-blur"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          requestDelete([item.id]);
-                        }}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    ) : null}
-
-                    <div
-                      className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
-                      style={{ width: "210mm", height: "297mm" }}
-                    >
-                      <ResumePreview
-                        t={t}
-                        resume={item.resume}
-                        fontFamily={item.typography?.fontFamily ?? "inter"}
-                        fontSize={item.typography?.fontSize ?? 15}
-                        template={template}
-                        variant="thumbnail"
-                      />
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
+                            style={{ width: "210mm", height: "297mm" }}
+                          >
+                            <ResumePreview
+                              t={t}
+                              resume={item.resume}
+                              fontFamily={item.typography?.fontFamily ?? "inter"}
+                              fontSize={item.typography?.fontSize ?? 15}
+                              template={template}
+                              variant="thumbnail"
+                            />
+                          </div>
+                        </div>
+                      </ViewTransitionBoundary>
                     </div>
-                    </div>
-                  </ViewTransitionBoundary>
-                </div>
 
-                <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
-                  <div>
-                    <p className="truncate text-[15px] font-semibold">
-                      {item.title || item.resume.basic.name || t.untitledResume}
-                    </p>
-                    <p className="mt-1 truncate text-xs text-muted-foreground">
-                      {item.resume.basic.headline ||
-                        item.resume.basic.email ||
-                        item.resume.basic.phone}
-                    </p>
+                    <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
+                      <div>
+                        <p
+                          className="truncate text-[15px] font-semibold"
+                          title={resumeLabel}
+                        >
+                          {resumeLabel}
+                        </p>
+                        <p className="mt-1 truncate text-xs text-muted-foreground">
+                          {item.resume.basic.headline ||
+                            item.resume.basic.email ||
+                            item.resume.basic.phone}
+                        </p>
+                      </div>
+
+                      <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <Clock3 className="size-3" />
+                        {updatedAtFormatter.format(new Date(item.updatedAt))}
+                      </p>
+                    </div>
                   </div>
-
-                  <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <Clock3 className="size-3" />
-                    {updatedAtFormatter.format(new Date(item.updatedAt))}
-                  </p>
-                </div>
-              </div>
+                </Link>
+                {isSelecting && isSelected ? (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="icon-sm"
+                    aria-label={t.confirmDeleteAction}
+                    className="absolute right-8 top-8 z-10 size-7 rounded-full backdrop-blur"
+                    onClick={() => requestDelete([item.id])}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                ) : null}
               </div>
             </ViewTransitionBoundary>
           );

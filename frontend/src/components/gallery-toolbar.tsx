@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/input-group";
 
 export function GalleryToolbar({
+  searchLabel,
+  searchName,
   searchPlaceholder,
   searchValue,
   onSearchChange,
@@ -22,6 +24,8 @@ export function GalleryToolbar({
   onBulkDelete,
   leadingActions,
 }: {
+  searchLabel: string;
+  searchName: string;
   searchPlaceholder: string;
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -41,6 +45,10 @@ export function GalleryToolbar({
           <Search aria-hidden="true" />
         </InputGroupAddon>
         <InputGroupInput
+          aria-label={searchLabel}
+          name={searchName}
+          autoComplete="off"
+          spellCheck={false}
           value={searchValue}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={searchPlaceholder}

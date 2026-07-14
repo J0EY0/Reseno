@@ -76,11 +76,11 @@ interface ResumePaginationState {
 
 const fontFamilyMap: Record<ResumeFontFamily, string> = {
   inter:
-    '"Inter","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Microsoft YaHei",sans-serif',
+    '"Inter Variable","Inter","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Microsoft YaHei",sans-serif',
   serif:
-    '"Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif',
+    '"Noto Serif SC Variable","Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif',
   plex:
-    '"IBM Plex Sans","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Microsoft YaHei",sans-serif',
+    '"IBM Plex Sans Variable","IBM Plex Sans","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Microsoft YaHei",sans-serif',
 }
 
 const A4_WIDTH_MM = 210

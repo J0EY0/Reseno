@@ -58,6 +58,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 
 type ModelConfigDraft = Omit<
   ModelConfig,
@@ -343,53 +345,28 @@ export function ModelConfigFormPopover({
   );
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
+    let cancelled = false;
 
     void getModelProviders()
       .then((response) => {
-        const nextProviders = response.providers;
-        setProviders(nextProviders);
-        setProvidersLoaded(true);
-        setDraft((current) => {
-          const nextProvider =
-            providerById(nextProviders, current.provider) ??
-            (initialConfig ? null : nextProviders[0]);
-
-          if (!nextProvider) {
-            return current;
-          }
-
-          if (initialConfig) {
-            return {
-              ...current,
-              provider: nextProvider.id,
-              providerKind: nextProvider.kind,
-              apiFamily: nextProvider.apiFamily ?? current.apiFamily,
-              apiUrl:
-                nextProvider.kind === "cloud"
-                  ? nextProvider.defaultBaseUrl
-                  : current.apiUrl,
-            };
-          }
-
-          return {
-            ...current,
-            provider: nextProvider.id,
-            providerKind: nextProvider.kind,
-            apiFamily: nextProvider.apiFamily ?? DEFAULT_MODEL_API_FAMILY,
-            apiUrl: nextProvider.defaultBaseUrl,
-            supportsTools: nextProvider.supportsTools,
-            supportsStreaming: nextProvider.supportsStreaming,
-          };
-        });
+        if (!cancelled) {
+          setProviders(response.providers);
+          setProvidersLoaded(true);
+        }
       })
       .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
         console.error("Failed to load model providers.", error);
         setProvidersLoaded(true);
       });
-  }, [initialConfig, open]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open || !canDiscoverModels || !modelDiscoveryApiUrl) {
@@ -580,13 +557,45 @@ export function ModelConfigFormPopover({
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
-      setDraft(toDraft(locale, initialConfig));
+      if (!providersLoaded) {
+        return;
+      }
+
+      const baseDraft = toDraft(locale, initialConfig);
+      const nextProvider =
+        providerById(providers, baseDraft.provider) ??
+        (initialConfig ? null : providers[0]);
+      let nextDraft = baseDraft;
+
+      if (nextProvider) {
+        nextDraft = initialConfig
+          ? {
+              ...baseDraft,
+              provider: nextProvider.id,
+              providerKind: nextProvider.kind,
+              apiFamily: nextProvider.apiFamily ?? baseDraft.apiFamily,
+              apiUrl:
+                nextProvider.kind === "cloud"
+                  ? nextProvider.defaultBaseUrl
+                  : baseDraft.apiUrl,
+            }
+          : {
+              ...baseDraft,
+              provider: nextProvider.id,
+              providerKind: nextProvider.kind,
+              apiFamily:
+                nextProvider.apiFamily ?? DEFAULT_MODEL_API_FAMILY,
+              apiUrl: nextProvider.defaultBaseUrl,
+              supportsTools: nextProvider.supportsTools,
+              supportsStreaming: nextProvider.supportsStreaming,
+            };
+      }
+
+      setDraft(nextDraft);
       setDiscoveredModels(discoveredFromConfig(initialConfig));
       setErrors({});
       setSubmitting(false);
       setDiscovering(false);
-      setProviders([]);
-      setProvidersLoaded(false);
     }
 
     setOpen(nextOpen);
@@ -595,8 +604,16 @@ export function ModelConfigFormPopover({
   function renderTrigger(): ReactElement {
     if (!trigger) {
       return (
-        <Button type="button" className="gap-2">
-          <Plus className="size-4" />
+        <Button
+          type="button"
+          disabled={!providersLoaded}
+          aria-busy={!providersLoaded}
+        >
+          {providersLoaded ? (
+            <Plus data-icon="inline-start" />
+          ) : (
+            <Spinner data-icon="inline-start" aria-hidden="true" />
+          )}
           {t.addModelConfig}
         </Button>
       );
@@ -702,13 +719,22 @@ export function ModelConfigFormPopover({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>{renderTrigger()}</DialogTrigger>
-      <DialogContent className="max-h-[min(680px,calc(100dvh-2rem))] overflow-hidden sm:max-w-xl">
+      <DialogTrigger
+        asChild
+        disabled={!providersLoaded}
+        aria-busy={!providersLoaded}
+      >
+        {renderTrigger()}
+      </DialogTrigger>
+      <DialogContent
+        closeLabel={t.close}
+        className="overflow-hidden p-0 sm:max-w-xl"
+      >
         <form
-          className="flex min-h-0 flex-col gap-6"
+          className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
           onSubmit={handleSubmit}
         >
-          <DialogHeader>
+          <DialogHeader className="shrink-0 px-6 pt-6">
             <DialogTitle>
               {mode === "create" ? t.addModelConfig : t.editModelConfig}
             </DialogTitle>
@@ -717,7 +743,15 @@ export function ModelConfigFormPopover({
             </DialogDescription>
           </DialogHeader>
 
-          <FieldGroup className="min-h-0 max-h-[min(500px,calc(100dvh-14rem))] gap-5 overflow-y-auto px-1">
+          <FieldGroup
+            aria-busy={!providersLoaded}
+            className="min-h-0 flex-1 gap-5 overflow-y-auto overscroll-contain px-6 py-6"
+          >
+            {!providersLoaded ? (
+              <span className="sr-only" role="status">
+                {t.modelProvidersLoading}
+              </span>
+            ) : null}
             <Field data-invalid={Boolean(errors.provider)}>
               <div className="flex items-center justify-between gap-3">
                 <FormFieldLabel
@@ -725,7 +759,9 @@ export function ModelConfigFormPopover({
                   label={t.provider}
                   required
                 />
-                {selectedProvider?.officialUrl ? (
+                {!providersLoaded ? (
+                  <Skeleton className="h-5 w-16" />
+                ) : selectedProvider?.officialUrl ? (
                   <Button
                     asChild
                     variant="link"
@@ -743,7 +779,9 @@ export function ModelConfigFormPopover({
                   </Button>
                 ) : null}
               </div>
-              {selectedProvider ? (
+              {!providersLoaded ? (
+                <Skeleton className="h-9 w-full" />
+              ) : selectedProvider ? (
                 <Select
                   value={selectedProvider.id}
                   onValueChange={handleProviderChange}
@@ -815,7 +853,7 @@ export function ModelConfigFormPopover({
                   className="w-full justify-start text-muted-foreground"
                   disabled
                 >
-                  {providersLoaded ? t.loadError : t.loading}
+                  {t.modelProvidersLoadError}
                 </Button>
               )}
               <FieldError>{errors.provider}</FieldError>
@@ -861,7 +899,7 @@ export function ModelConfigFormPopover({
               <FieldError>{errors.apiKey}</FieldError>
             </Field>
 
-            {draft.providerKind !== "cloud" ? (
+            {providersLoaded && draft.providerKind !== "cloud" ? (
               <Field data-invalid={Boolean(errors.apiUrl)}>
                 <FormFieldLabel
                   htmlFor="model-api-url"
@@ -884,7 +922,19 @@ export function ModelConfigFormPopover({
               </Field>
             ) : null}
 
-            {usesDiscoveredModelSelect ? (
+            {!providersLoaded ? (
+              <Field>
+                <FormFieldLabel
+                  htmlFor="model-select"
+                  label={t.model}
+                  required
+                />
+                <div className="flex gap-3">
+                  <Skeleton className="h-9 min-w-0 flex-1" />
+                  <Skeleton className="h-9 w-24 shrink-0" />
+                </div>
+              </Field>
+            ) : usesDiscoveredModelSelect ? (
               <Field
                 data-invalid={Boolean(errors.model || errors.discovery)}
               >
@@ -937,6 +987,9 @@ export function ModelConfigFormPopover({
                       disabled={discovering}
                       onClick={() => void handleDiscoverModels()}
                     >
+                      {discovering ? (
+                        <Spinner data-icon="inline-start" aria-label={t.fetchingModels} />
+                      ) : null}
                       {discoveryButtonLabel}
                     </Button>
                   ) : null}
@@ -1071,13 +1124,16 @@ export function ModelConfigFormPopover({
             ) : null}
           </FieldGroup>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0 px-6 pb-6">
             <DialogClose asChild>
               <Button type="button" variant="outline">
                 {t.cancel}
               </Button>
             </DialogClose>
             <Button type="submit" disabled={submitting || discovering || !selectedProvider}>
+              {submitting ? (
+                <Spinner data-icon="inline-start" aria-label={t.saving} />
+              ) : null}
               {mode === "create" ? t.createModelConfig : t.saveModelConfig}
             </Button>
           </DialogFooter>
