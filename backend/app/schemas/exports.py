@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from app.agent_locales import AgentLocale
 
 
-class ExportResumePdfRequest(BaseModel):
-    """Request body for exporting a saved resume as PDF."""
+class ExportResumeRenderRequest(BaseModel):
+    """Shared request fields for exports rendered by the frontend preview."""
 
     resume_id: str = Field(alias="resumeId")
     locale: AgentLocale
@@ -14,6 +14,14 @@ class ExportResumePdfRequest(BaseModel):
     render_base_url: str | None = Field(default=None, alias="renderBaseUrl")
 
 
+class ExportResumePdfRequest(ExportResumeRenderRequest):
+    """Request body for exporting a saved resume as PDF."""
+
+
+class ExportResumeImagesRequest(ExportResumeRenderRequest):
+    """Request body for exporting each saved resume page as a PNG image."""
+
+
 class ExportResumePdfResponse(BaseModel):
     """PDF export metadata returned to the frontend."""
 
@@ -21,3 +29,10 @@ class ExportResumePdfResponse(BaseModel):
     download_url: str = Field(alias="downloadUrl")
     file_name: str = Field(alias="fileName")
     expires_at: str | None = Field(default=None, alias="expiresAt")
+
+
+class ExportResumeImagesResponse(ExportResumePdfResponse):
+    """Image export metadata returned to the frontend."""
+
+    page_count: int = Field(alias="pageCount")
+    is_archive: bool = Field(alias="isArchive")

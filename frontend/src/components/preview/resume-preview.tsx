@@ -11,6 +11,10 @@ import {
 } from 'react'
 
 import type { AppMessages } from '@/i18n'
+import {
+  createContactHref,
+  normalizeContactFieldType,
+} from '@/lib/contact-links'
 import { getInitials, getSectionTitle, hasItemContent } from '@/lib/resume'
 import {
   isRichTextEmpty,
@@ -87,6 +91,12 @@ const A4_WIDTH_MM = 210
 const A4_HEIGHT_MM = 297
 const PAGINATION_TOLERANCE_PX = 8
 
+interface ContactItem {
+  id: string
+  text: string
+  href?: string
+}
+
 function getRenderableItems(section: ResumeSection) {
   return section.items.filter(hasItemContent)
 }
@@ -130,18 +140,34 @@ function getFallbackName(t: AppMessages) {
 }
 
 function getContactItems(basic: ResumeBasicInfo) {
-  return [
-    basic.phone,
-    basic.email,
-    basic.location,
-    ...basic.customFields
-      .filter((field) => field.label.trim() || field.value.trim())
-      .map((field) =>
-        field.label && field.value
-          ? `${field.label}: ${field.value}`
-          : field.value || field.label,
-      ),
-  ].filter(Boolean)
+  const items: ContactItem[] = [
+    {
+      id: 'phone',
+      text: basic.phone.trim(),
+      href: createContactHref('phone', basic.phone) ?? undefined,
+    },
+    {
+      id: 'email',
+      text: basic.email.trim(),
+      href: createContactHref('email', basic.email) ?? undefined,
+    },
+    { id: 'location', text: basic.location.trim() },
+    ...basic.customFields.map((field) => {
+      const label = field.label.trim()
+      const value = field.value.trim()
+
+      return {
+        id: `custom-${field.id}`,
+        text: label && value ? `${label}: ${value}` : value || label,
+        href: value
+          ? createContactHref(normalizeContactFieldType(field.type), value) ??
+            undefined
+          : undefined,
+      }
+    }),
+  ]
+
+  return items.filter((item) => item.text)
 }
 
 function getAvatarBorderRadius(layout: ResumeTemplateLayout) {
@@ -500,7 +526,7 @@ function ContactLine({
   items,
   className,
 }: {
-  items: string[]
+  items: ContactItem[]
   className?: string
 }) {
   if (items.length === 0) {
@@ -510,14 +536,34 @@ function ContactLine({
   return (
     <div className={cn('flex flex-wrap justify-center gap-x-3 gap-y-1', className)}>
       {items.map((item, index) => (
-        <span key={`${item}-${index}`}>
-          {item}
+        <span key={item.id}>
+          <ContactItemText item={item} />
           {index < items.length - 1 ? (
             <span className="resume-tone-subtle ml-3">|</span>
           ) : null}
         </span>
       ))}
     </div>
+  )
+}
+
+function ContactItemText({ item }: { item: ContactItem }) {
+  if (!item.href) {
+    return <span>{item.text}</span>
+  }
+
+  const opensNewTab =
+    item.href.startsWith('http://') || item.href.startsWith('https://')
+
+  return (
+    <a
+      href={item.href}
+      className="text-inherit no-underline hover:underline"
+      target={opensNewTab ? '_blank' : undefined}
+      rel={opensNewTab ? 'noreferrer noopener' : undefined}
+    >
+      {item.text}
+    </a>
   )
 }
 
@@ -710,8 +756,8 @@ function SidebarBasicInfo({
               lineHeight: settings.bodyLineHeight,
             }}
           >
-            {contactItems.map((item, index) => (
-              <span key={`${item}-${index}`}>{item}</span>
+            {contactItems.map((item) => (
+              <ContactItemText key={item.id} item={item} />
             ))}
           </div>
         </div>

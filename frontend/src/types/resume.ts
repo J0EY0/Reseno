@@ -28,9 +28,11 @@ export type WorkspaceView = 'resume' | 'templates' | 'trash' | 'models' | 'setti
 export type AgentResponseLanguage = 'follow' | 'zh' | 'en'
 export type AgentBehaviorMode = 'balanced' | 'strict' | 'aggressive'
 export type AgentConfirmationMode = 'always' | 'suggestOnly'
+export type ContactFieldType = 'email' | 'phone' | 'url' | 'text'
 
 export interface CustomField {
   id: string
+  type: ContactFieldType
   label: string
   value: string
 }

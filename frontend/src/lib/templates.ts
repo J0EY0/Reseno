@@ -151,7 +151,18 @@ const templateLayoutByPreset: Record<
 }
 
 const supportedFontFamilies: ResumeFontFamily[] = ['inter', 'serif', 'plex']
-const fontSizeOptions = [12, 14, 16, 18, 20] as const
+export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const
+
+const CSS_POINTS_PER_PIXEL = 72 / 96
+
+/**
+ * Typography is persisted in CSS pixels for compatibility with existing
+ * resumes. Document controls expose the equivalent point size expected by
+ * users of print-oriented software without changing the rendered layout.
+ */
+export function getResumeFontSizeInPoints(fontSize: number) {
+  return Number((fontSize * CSS_POINTS_PER_PIXEL).toFixed(2))
+}
 
 function clampNumber(
   value: number,
@@ -193,7 +204,7 @@ function normalizeFontSize(value: unknown, fallback: number) {
     return fallback
   }
 
-  return fontSizeOptions.reduce((closest, current) =>
+  return resumeFontSizeOptions.reduce((closest, current) =>
     Math.abs(current - value) < Math.abs(closest - value) ? current : closest,
   )
 }

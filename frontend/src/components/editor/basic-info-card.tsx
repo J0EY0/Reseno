@@ -2,11 +2,23 @@ import { Trash2, Upload, UserRound } from 'lucide-react'
 import type { ChangeEvent } from 'react'
 
 import type { AppMessages } from '@/i18n'
+import { normalizeContactFieldType } from '@/lib/contact-links'
 import { getInitials } from '@/lib/resume'
-import type { CustomField, ResumeBasicInfo } from '@/types/resume'
+import type {
+  ContactFieldType,
+  CustomField,
+  ResumeBasicInfo,
+} from '@/types/resume'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import { EditorCardShell } from './editor-card-shell'
@@ -32,10 +44,10 @@ export function BasicInfoCard({
     field: K,
     value: ResumeBasicInfo[K],
   ) => void
-  onUpdateCustomField: (
+  onUpdateCustomField: <K extends keyof Omit<CustomField, 'id'>>(
     id: string,
-    field: keyof Omit<CustomField, 'id'>,
-    value: string,
+    field: K,
+    value: CustomField[K],
   ) => void
   onAddCustomField: () => void
   onRemoveCustomField: (id: string) => void
@@ -159,8 +171,35 @@ export function BasicInfoCard({
         {basic.customFields.map((field) => (
           <div
             key={field.id}
-            className="grid gap-3 rounded-xl border border-border/70 bg-muted/40 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+            className="grid gap-3 rounded-xl border border-border/70 bg-muted/40 p-3 md:grid-cols-[minmax(110px,0.65fr)_minmax(0,1fr)_minmax(0,1.35fr)_auto]"
           >
+            <FormField label={t.fieldLabels.fieldType}>
+              <Select
+                value={normalizeContactFieldType(field.type)}
+                onValueChange={(value) =>
+                  onUpdateCustomField(
+                    field.id,
+                    'type',
+                    normalizeContactFieldType(value),
+                  )
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(
+                    Object.entries(t.contactFieldTypes) as Array<
+                      [ContactFieldType, string]
+                    >
+                  ).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
             <FormField label={t.fieldLabels.fieldName}>
               <Input
                 value={field.label}
@@ -171,6 +210,15 @@ export function BasicInfoCard({
             </FormField>
             <FormField label={t.fieldLabels.fieldValue}>
               <Input
+                type={
+                  field.type === 'email'
+                    ? 'email'
+                    : field.type === 'phone'
+                      ? 'tel'
+                      : field.type === 'url'
+                        ? 'url'
+                        : 'text'
+                }
                 value={field.value}
                 onChange={(event) =>
                   onUpdateCustomField(field.id, 'value', event.target.value)

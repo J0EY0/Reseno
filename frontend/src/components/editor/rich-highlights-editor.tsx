@@ -47,6 +47,7 @@ export function RichHighlightsEditor({
           codeBlock: false,
           horizontalRule: false,
           strike: false,
+          underline: false,
           bulletList: {
             keepMarks: true,
             keepAttributes: false,

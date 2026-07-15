@@ -1,10 +1,14 @@
 import {
   Bot,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CopyPlus,
   Download,
+  FileJson,
+  FileText,
+  Images,
   Languages,
-  LayoutTemplate,
   LogOut,
   Minimize2,
   Moon,
@@ -46,6 +50,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -55,6 +66,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -81,17 +93,19 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
+import { normalizeContactFieldType } from "@/lib/contact-links";
 import {
   createDefaultAgentSettings,
   normalizeAgentSettings,
 } from "@/lib/agent-settings";
 import { isApiErrorToastShown } from "@/lib/api-client";
+import {
+  downloadExportedFile,
+  downloadResumeJson,
+  requestResumeImagesExport,
+} from "@/lib/export-api";
 import { applyAgentEditsToDraft } from "@/lib/resume-agent-edits";
 import {
   importResumePayload,
@@ -104,10 +118,12 @@ import {
   createTemplateSettings,
   createTemplateLayout,
   createCustomTemplateFromBase,
+  getResumeFontSizeInPoints,
   getTemplateById,
   getTemplateCatalog,
   normalizeCustomTemplates,
   normalizeDeletedTemplates,
+  resumeFontSizeOptions,
 } from "@/lib/templates";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
@@ -124,6 +140,7 @@ import {
   createResumeApi,
   deleteResumeForeverApi,
   deleteTemplateForeverApi,
+  duplicateResumeApi,
   emptyResumeTrashApi,
   emptyTemplateTrashApi,
   fetchDeletedTemplatesApi,
@@ -292,7 +309,6 @@ const MAX_RESUME_TITLE_LENGTH = 20;
 // Keep this aligned with the 2xl workspace breakpoint in index.css. Below it,
 // the Agent uses a Sheet so the editor and preview retain usable widths.
 const AGENT_DOCK_MEDIA_QUERY = "(min-width: 1536px)";
-const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 const SMART_ONE_PAGE_MAX_PAGE_COUNT = 1;
 const SMART_ONE_PAGE_MIN_FONT_SIZE = 12;
 const SMART_ONE_PAGE_LAYOUT_LEVELS = [
@@ -676,7 +692,7 @@ function getTemplatePath(templateId: string) {
 const supportedFontFamilies: ResumeFontFamily[] = ["inter", "serif", "plex"];
 
 function normalizeFontSize(value: number) {
-  return fontSizeOptions.reduce((closest, current) =>
+  return resumeFontSizeOptions.reduce((closest, current) =>
     Math.abs(current - value) < Math.abs(closest - value) ? current : closest,
   );
 }
@@ -772,7 +788,9 @@ function waitForPreviewPagination() {
 }
 
 function getNextSmallerFontSize(fontSize: number) {
-  const smallerSizes = fontSizeOptions.filter((size) => size < fontSize);
+  const smallerSizes = resumeFontSizeOptions.filter(
+    (size) => size < fontSize,
+  );
 
   return smallerSizes.at(-1) ?? fontSize;
 }
@@ -1043,11 +1061,26 @@ function normalizeStoredResumeDocument(
       typeof value.updatedAt === "string" && value.updatedAt.trim()
         ? value.updatedAt
         : new Date().toISOString(),
-    resume: value.resume,
+    resume: normalizeResumeContactFields(value.resume),
     jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
     typography: normalizeResumeTypography(value.typography),
     template: normalizeResumeTemplateId(value.template, fallbackTemplateId),
     templateSettings: normalizeResumeTemplateSettings(value.templateSettings),
+  };
+}
+
+function normalizeResumeContactFields(resume: ResumeData): ResumeData {
+  // Legacy resume JSON has no contact type. Keep those fields as plain text
+  // instead of guessing from labels such as "GitHub" or "Portfolio".
+  return {
+    ...resume,
+    basic: {
+      ...resume.basic,
+      customFields: resume.basic.customFields.map((field) => ({
+        ...field,
+        type: normalizeContactFieldType(field.type),
+      })),
+    },
   };
 }
 
@@ -1127,7 +1160,7 @@ function normalizeImportedResumeDocuments(
       ),
       updatedAt:
         typeof value.updatedAt === "string" ? value.updatedAt : importedAt,
-      resume: rawResume,
+      resume: normalizeResumeContactFields(rawResume),
       jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
       typography,
       template,
@@ -1346,6 +1379,7 @@ export function ResumeBuilder({
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isCreatingResume, setIsCreatingResume] = useState(false);
+  const [isDuplicatingResume, setIsDuplicatingResume] = useState(false);
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
@@ -1386,9 +1420,11 @@ export function ResumeBuilder({
   const documentHeaderRef = useRef<HTMLElement | null>(null);
   const previewScaleFrameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLElement | null>(null);
+  const exportInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
   // Refs close the same-render double-click gap before disabled states commit.
   const createResumeInFlightRef = useRef(false);
+  const duplicateResumeInFlightRef = useRef(false);
   const createTemplateInFlightRef = useRef(false);
   const setDefaultTemplateInFlightRef = useRef(false);
   const saveRequestRef = useRef<Promise<SaveResponse> | null>(null);
@@ -2627,6 +2663,59 @@ export function ResumeBuilder({
     }
   }
 
+  async function duplicateActiveResume() {
+    if (
+      !activeResumeId ||
+      isLoading ||
+      saveState === "saving" ||
+      duplicateResumeInFlightRef.current
+    ) {
+      return;
+    }
+
+    const sourceResumeId = activeResumeId;
+    duplicateResumeInFlightRef.current = true;
+    setIsDuplicatingResume(true);
+
+    try {
+      await saveCurrentWorkspace();
+      const result = await duplicateResumeApi(sourceResumeId, locale);
+      const nextItem = result.resume;
+
+      setResumeDocuments((current) => [...current, nextItem]);
+      setActiveResumeId(nextItem.id);
+      hydrateResumeWorkspace(nextItem);
+      lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
+      lastPersistedResumeItemRef.current = nextItem;
+      lastLoadedResumeDetailIdRef.current = nextItem.id;
+      setLastSavedAt(result.savedAt);
+      setActiveWorkspaceVersionId(result.versionId);
+      setWorkspaceVersions([
+        { versionId: result.versionId, savedAt: result.savedAt },
+      ]);
+      setSaveState("saved");
+      setActiveView("resume");
+      setShowResumeGallery(false);
+      runViewTransition(
+        () => navigate(getResumePath(nextItem.id)),
+        "nav-forward",
+      );
+      toast.success(t.resumeDuplicated, {
+        closeButton: true,
+      });
+    } catch (error) {
+      console.error("Failed to duplicate resume.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.duplicateResumeFailed, {
+          closeButton: true,
+        });
+      }
+    } finally {
+      duplicateResumeInFlightRef.current = false;
+      setIsDuplicatingResume(false);
+    }
+  }
+
   async function importResume(file: File) {
     // The ref closes the same-render re-entry gap before React commits the
     // disabled button state. Resume and template imports share one lock.
@@ -3486,10 +3575,10 @@ export function ResumeBuilder({
     }));
   }
 
-  function updateCustomField(
+  function updateCustomField<K extends keyof Omit<CustomField, "id">>(
     id: string,
-    field: keyof Omit<CustomField, "id">,
-    value: string,
+    field: K,
+    value: CustomField[K],
   ) {
     setResume((current) => ({
       ...current,
@@ -3510,7 +3599,7 @@ export function ResumeBuilder({
           ...current.basic,
           customFields: [
             ...current.basic.customFields,
-            { id: createId("field"), label: "", value: "" },
+            { id: createId("field"), type: "text", label: "", value: "" },
           ],
         },
       }));
@@ -3768,10 +3857,11 @@ export function ResumeBuilder({
   }
 
   async function exportPdf() {
-    if (isExporting || !activeResumeId) {
+    if (exportInFlightRef.current || !activeResumeId) {
       return;
     }
 
+    exportInFlightRef.current = true;
     setIsExporting(true);
     const exportFrame = createPdfExportFrame(t.exportPdf);
 
@@ -3797,6 +3887,78 @@ export function ResumeBuilder({
         });
       }
     } finally {
+      exportInFlightRef.current = false;
+      setIsExporting(false);
+    }
+  }
+
+  async function exportImages() {
+    if (exportInFlightRef.current || !activeResumeId) {
+      return;
+    }
+
+    exportInFlightRef.current = true;
+    setIsExporting(true);
+
+    try {
+      const savedVersion = await saveCurrentWorkspace();
+      const activeResume = buildActiveResumeItem(savedVersion.savedAt);
+      if (!activeResume) {
+        throw new Error("No active resume is available for image export.");
+      }
+
+      const result = await requestResumeImagesExport({
+        resumeId: activeResume.id,
+        locale,
+        fileNameSeed: activeResume.title,
+        savedAt: savedVersion.savedAt,
+        versionId: savedVersion.versionId,
+      });
+      await downloadExportedFile(result);
+      toast.success(t.exportImagesSuccess, {
+        closeButton: true,
+      });
+    } catch (error) {
+      console.error("Failed to export resume images.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.exportImagesFailed, {
+          closeButton: true,
+        });
+      }
+    } finally {
+      exportInFlightRef.current = false;
+      setIsExporting(false);
+    }
+  }
+
+  async function exportJson() {
+    if (exportInFlightRef.current || !activeResumeId) {
+      return;
+    }
+
+    exportInFlightRef.current = true;
+    setIsExporting(true);
+
+    try {
+      const savedVersion = await saveCurrentWorkspace();
+      const activeResume = buildActiveResumeItem(savedVersion.savedAt);
+      if (!activeResume) {
+        throw new Error("No active resume is available for JSON export.");
+      }
+
+      downloadResumeJson(activeResume);
+      toast.success(t.exportJsonSuccess, {
+        closeButton: true,
+      });
+    } catch (error) {
+      console.error("Failed to export resume JSON.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.exportJsonFailed, {
+          closeButton: true,
+        });
+      }
+    } finally {
+      exportInFlightRef.current = false;
       setIsExporting(false);
     }
   }
@@ -4547,146 +4709,162 @@ export function ResumeBuilder({
             ) : null}
 
             {showEditorControls && isResumeDetailView ? (
-              <TooltipProvider>
-                <>
-                  <Popover>
-                    <PopoverTrigger
-                      type="button"
-                      className={cn(buttonVariants({ variant: "outline" }))}
-                    >
-                      <SlidersHorizontal className="size-4" />
-                      {t.format}
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-[340px] p-3">
-                      <div className="grid gap-2.5">
-                        <div className="px-0.5 text-sm font-semibold">
-                          {t.formatTypography}
-                        </div>
-
-                        <div className="grid gap-1">
-                          <div className="flex min-h-8 items-center justify-between gap-3">
-                            <span className="text-sm font-medium text-foreground">
-                              {t.fontFamily}
-                            </span>
-                            <Select
-                              value={typography.fontFamily}
-                              onValueChange={(value) =>
-                                setTypography((current) => ({
-                                  ...current,
-                                  fontFamily: value as ResumeFontFamily,
-                                }))
-                              }
-                            >
-                              <SelectTrigger
-                                aria-label={t.fontFamily}
-                                className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Object.entries(fontLabels).map(
-                                  ([value, labelKey]) => (
-                                    <SelectItem key={value} value={value}>
-                                      {t[labelKey]}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div className="flex min-h-8 items-center justify-between gap-3">
-                            <span className="text-sm font-medium text-foreground">
-                              {t.fontSize}
-                            </span>
-                            <Select
-                              value={String(typography.fontSize)}
-                              onValueChange={(value) =>
-                                setTypography((current) => ({
-                                  ...current,
-                                  fontSize: Number(value),
-                                }))
-                              }
-                            >
-                              <SelectTrigger
-                                aria-label={t.fontSize}
-                                className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {fontSizeOptions.map((size) => (
-                                  <SelectItem key={size} value={String(size)}>
-                                    {size} pt
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-
-                        <Separator />
-
-                        <FormatSliderField
-                          label={t.pageMargin}
-                          value={
-                            activeResumeTemplateDefinition.settings.pagePaddingX
-                          }
-                          min={8}
-                          max={18}
-                          step={1}
-                          suffix="mm"
-                          onChange={updateActiveResumePageMargin}
-                        />
-                        <FormatSliderField
-                          label={t.lineSpacing}
-                          value={
-                            activeResumeTemplateDefinition.settings.bodyLineHeight
-                          }
-                          min={1.4}
-                          max={2.2}
-                          step={0.05}
-                          onChange={(value) =>
-                            updateActiveResumeTemplateSettings({
-                              bodyLineHeight: value,
-                            })
-                          }
-                        />
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-
-                  <div className="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-lg border border-border bg-card pl-2 pr-0.5 text-sm">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div className="flex size-7 items-center justify-center rounded-md text-muted-foreground">
-                          <LayoutTemplate className="size-3.5" />
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>{t.applyTemplate}</TooltipContent>
-                    </Tooltip>
-                    <Select
-                      value={template}
-                      onValueChange={applyTemplateToActiveResume}
-                    >
-                      <SelectTrigger className="h-8 w-[106px] min-w-[106px] border-0 bg-transparent px-1 shadow-none">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent
-                        align="start"
-                        position="popper"
-                        sideOffset={6}
+              <Popover>
+                <PopoverTrigger
+                  type="button"
+                  className={cn(buttonVariants({ variant: "outline" }))}
+                >
+                  <SlidersHorizontal className="size-4" />
+                  {t.format}
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[340px] p-3">
+                  <div className="grid gap-2.5">
+                    <div className="flex min-h-8 items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-foreground">
+                        {t.template}
+                      </span>
+                      <Select
+                        value={template}
+                        onValueChange={applyTemplateToActiveResume}
                       >
-                        {templateCatalog.map((item) => (
-                          <SelectItem key={item.id} value={item.id}>
-                            {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                        <SelectTrigger
+                          aria-label={t.applyTemplate}
+                          className="h-8 w-[148px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent
+                          align="end"
+                          position="popper"
+                          sideOffset={6}
+                        >
+                          <SelectGroup>
+                            {templateCatalog.map((item) => (
+                              <SelectItem key={item.id} value={item.id}>
+                                {item.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <Separator />
+
+                    <div className="px-0.5 text-sm font-semibold">
+                      {t.formatTypography}
+                    </div>
+
+                    <div className="grid gap-1">
+                      <div className="flex min-h-8 items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-foreground">
+                          {t.fontFamily}
+                        </span>
+                        <Select
+                          value={typography.fontFamily}
+                          onValueChange={(value) =>
+                            setTypography((current) => ({
+                              ...current,
+                              fontFamily: value as ResumeFontFamily,
+                            }))
+                          }
+                        >
+                          <SelectTrigger
+                            aria-label={t.fontFamily}
+                            className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.entries(fontLabels).map(
+                              ([value, labelKey]) => (
+                                <SelectItem key={value} value={value}>
+                                  {t[labelKey]}
+                                </SelectItem>
+                              ),
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex min-h-8 items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-foreground">
+                          {t.fontSize}
+                        </span>
+                        <Select
+                          value={String(typography.fontSize)}
+                          onValueChange={(value) =>
+                            setTypography((current) => ({
+                              ...current,
+                              fontSize: Number(value),
+                            }))
+                          }
+                        >
+                          <SelectTrigger
+                            aria-label={t.fontSize}
+                            className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {resumeFontSizeOptions.map((size) => (
+                              <SelectItem key={size} value={String(size)}>
+                                {getResumeFontSizeInPoints(size)} pt
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <FormatSliderField
+                      label={t.pageMargin}
+                      value={
+                        activeResumeTemplateDefinition.settings.pagePaddingX
+                      }
+                      min={8}
+                      max={18}
+                      step={1}
+                      suffix="mm"
+                      onChange={updateActiveResumePageMargin}
+                    />
+                    <FormatSliderField
+                      label={t.lineSpacing}
+                      value={
+                        activeResumeTemplateDefinition.settings.bodyLineHeight
+                      }
+                      min={1.4}
+                      max={2.2}
+                      step={0.05}
+                      onChange={(value) =>
+                        updateActiveResumeTemplateSettings({
+                          bodyLineHeight: value,
+                        })
+                      }
+                    />
                   </div>
-                </>
-              </TooltipProvider>
+                </PopoverContent>
+              </Popover>
+            ) : null}
+
+            {isResumeDetailView ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void duplicateActiveResume()}
+                disabled={
+                  isDuplicatingResume || isLoading || saveState === "saving"
+                }
+              >
+                {isDuplicatingResume ? (
+                  <Spinner data-icon="inline-start" />
+                ) : (
+                  <CopyPlus data-icon="inline-start" />
+                )}
+                {t.duplicateResume}
+              </Button>
             ) : null}
 
             {canSaveCurrentWorkspace ? (
@@ -4698,6 +4876,7 @@ export function ResumeBuilder({
                 unsavedText={t.unsaved}
                 lastSavedLabel={t.lastSavedAt}
                 state={saveState}
+                hasUnsavedChanges={unsavedWorkspaceChangeCount > 0}
                 lastSavedAt={lastSavedAt}
                 versions={workspaceVersions}
                 activeVersionId={activeWorkspaceVersionId}
@@ -4713,42 +4892,74 @@ export function ResumeBuilder({
             ) : null}
 
             {showEditorControls ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void exportPdf()}
-                disabled={isExporting || isLoading}
-              >
-                {isExporting ? (
-                  <Spinner data-icon="inline-start" aria-label={t.exporting} />
-                ) : (
-                  <Download data-icon="inline-start" />
-                )}
-                {isExporting ? t.exporting : t.exportPdf}
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isExporting || isLoading}
+                  >
+                    {isExporting ? (
+                      <Spinner
+                        data-icon="inline-start"
+                        aria-label={t.exporting}
+                      />
+                    ) : (
+                      <Download data-icon="inline-start" />
+                    )}
+                    {isExporting ? t.exporting : t.export}
+                    {!isExporting ? (
+                      <ChevronDown
+                        data-icon="inline-end"
+                        className="opacity-50"
+                      />
+                    ) : null}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem onSelect={() => void exportPdf()}>
+                      <FileText />
+                      {t.exportPdf}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void exportImages()}>
+                      <Images />
+                      {t.exportImages}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void exportJson()}>
+                      <FileJson />
+                      {t.exportJson}
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
               </div>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <SegmentTabs
-                icon={<Languages className="size-4" />}
-                label={t.language}
-                items={[
-                  {
-                    key: "zh",
-                    label: t.languageChinese,
-                    active: locale === "zh",
-                    onClick: () => onLocaleChange("zh"),
-                  },
-                  {
-                    key: "en",
-                    label: t.languageEnglish,
-                    active: locale === "en",
-                    onClick: () => onLocaleChange("en"),
-                  },
-                ]}
-              />
+              <Select
+                value={locale}
+                onValueChange={(value) => {
+                  if (value === "zh" || value === "en") {
+                    onLocaleChange(value);
+                  }
+                }}
+              >
+                <SelectTrigger
+                  className="w-28 bg-background font-medium transition-all hover:bg-accent hover:text-accent-foreground"
+                  aria-label={t.language}
+                >
+                  <Languages className="text-foreground" aria-hidden="true" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" position="popper" sideOffset={4}>
+                  <SelectGroup>
+                    <SelectItem value="zh">{t.languageChinese}</SelectItem>
+                    <SelectItem value="en">{t.languageEnglish}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
               <Button
                 type="button"
                 variant="outline"
@@ -4816,48 +5027,5 @@ export function ResumeBuilder({
         </ViewTransitionBoundary>
       </SidebarInset>
     </SidebarProvider>
-  );
-}
-
-function SegmentTabs({
-  icon,
-  label,
-  items,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  items: Array<{
-    key: string;
-    label: string;
-    active: boolean;
-    onClick: () => void;
-  }>;
-}) {
-  const activeItem = items.find((item) => item.active);
-
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-muted-foreground" aria-hidden="true">
-        {icon}
-      </span>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={activeItem?.key}
-        aria-label={label}
-        onValueChange={(key) => {
-          if (key) {
-            items.find((item) => item.key === key)?.onClick();
-          }
-        }}
-      >
-        {items.map((item) => (
-          <ToggleGroupItem key={item.key} value={item.key}>
-            {item.label}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-    </div>
   );
 }

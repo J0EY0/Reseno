@@ -29,6 +29,10 @@ import { Link } from "react-router-dom";
 import type { AppMessages } from "@/i18n";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
 import { createId } from "@/lib/resume";
+import {
+  getResumeFontSizeInPoints,
+  resumeFontSizeOptions,
+} from "@/lib/templates";
 import { cn } from "@/lib/utils";
 import type {
   ResumeAvatarPosition,
@@ -71,8 +75,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 import { useGalleryUrlState } from "@/components/use-gallery-url-state";
-
-const fontSizeOptions = [12, 14, 16, 18, 20] as const;
 
 type TemplateEditorTab = "layout" | "typography" | "visual" | "images";
 type TemplatePageMarginPreset = "compact" | "standard" | "relaxed";
@@ -1240,9 +1242,9 @@ export function TemplateLibrary({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {fontSizeOptions.map((size) => (
+                              {resumeFontSizeOptions.map((size) => (
                                 <SelectItem key={size} value={String(size)}>
-                                  {size}pt
+                                  {getResumeFontSizeInPoints(size)} pt
                                 </SelectItem>
                               ))}
                             </SelectContent>

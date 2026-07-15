@@ -17,6 +17,7 @@ from app.services.model_configs import list_llm_configs
 SUPPORTED_LOCALES = {"zh", "en"}
 THEME_MODES = {"light", "dark", "system"}
 WORKSPACE_DATA_LOCALE = "__workspace__"
+RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
@@ -518,6 +519,37 @@ def _resume_title(resume_item: dict[str, Any]) -> str:
 
     resume_id = resume_item.get("id")
     return resume_id if isinstance(resume_id, str) else "Untitled"
+
+
+def _duplicate_resume_title(
+    conn: Connection,
+    *,
+    source_title: str,
+    locale: str,
+) -> str:
+    """Return the first available localized copy title."""
+
+    copy_label = RESUME_COPY_LABELS[normalize_locale(locale)]
+    base_title = source_title.strip() or "Untitled"
+    first_title = f"{base_title} - {copy_label}"
+    existing_titles = {
+        str(row["title"])
+        for row in conn.execute(
+            """
+            SELECT title
+            FROM resumes
+            WHERE locale = ? AND purged = 0
+            """,
+            (workspace_data_locale(),),
+        ).fetchall()
+    }
+    if first_title not in existing_titles:
+        return first_title
+
+    copy_index = 2
+    while f"{first_title} {copy_index}" in existing_titles:
+        copy_index += 1
+    return f"{first_title} {copy_index}"
 
 
 def _current_resume_version_row(
@@ -1127,6 +1159,65 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "resume": resume_item,
+        "savedAt": saved_at,
+        "versionId": str(version_id),
+    }
+
+
+def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
+    """Create an independent resume from the source's current content."""
+
+    saved_at = utc_now()
+    with connect() as conn:
+        row = _require_resume_row(conn, resume_id)
+        if row["deleted"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Deleted resumes cannot be duplicated.",
+            )
+
+        current_version_id = int(row["current_version_id"])
+        if current_version_id < 1:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Resume version not found.",
+            )
+
+        source_item = _read_resume_json(row["id"], current_version_id)
+        conn.execute("BEGIN")
+        duplicate_id = _allocate_resume_id(conn)
+        duplicate_title = _duplicate_resume_title(
+            conn,
+            source_title=_resume_title(source_item),
+            locale=locale,
+        )
+
+        # Keep this whitelist explicit: job context, Agent sessions, drafts, and
+        # version history belong to the source resume and must not cross IDs.
+        duplicate_item = _normalize_resume_item_payload(
+            resume_id=duplicate_id,
+            payload={
+                "title": duplicate_title,
+                "resume": source_item.get("resume"),
+                "jobBrief": "",
+                "typography": source_item.get("typography"),
+                "template": source_item.get("template"),
+                "templateSettings": source_item.get("templateSettings"),
+            },
+            saved_at=saved_at,
+        )
+        _, version_id = _save_resume_item(
+            conn,
+            locale=workspace_data_locale(),
+            resume_item=duplicate_item,
+            saved_at=saved_at,
+            deleted=False,
+            deleted_at=None,
+        )
+        conn.execute("COMMIT")
+
+    return {
+        "resume": duplicate_item,
         "savedAt": saved_at,
         "versionId": str(version_id),
     }

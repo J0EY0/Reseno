@@ -234,7 +234,7 @@ export function EditorCardShell({
   return (
     <Card
       ref={cardRef}
-      className="overflow-hidden rounded-2xl border-border/80 shadow-sm transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]"
+      className="gap-0 overflow-hidden rounded-2xl border-border/80 py-0 shadow-sm transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]"
     >
       <Collapsible open={!collapsed} onOpenChange={onToggle}>
         <div className="flex items-start justify-between gap-4 p-5">

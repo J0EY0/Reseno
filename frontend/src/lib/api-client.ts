@@ -51,6 +51,8 @@ export const apiRoutes = {
   workspaceUserSettings: "/api/workspace/user-settings",
   resumes: "/api/resumes",
   resume: (resumeId: string) => `/api/resumes/${resumeId}`,
+  resumeDuplicate: (resumeId: string) =>
+    `/api/resumes/${resumeId}/duplicate`,
   resumeTrash: (resumeId: string) => `/api/resumes/${resumeId}/trash`,
   resumeRestore: (resumeId: string) => `/api/resumes/${resumeId}/restore`,
   resumeVersions: (resumeId: string) => `/api/resumes/${resumeId}/versions`,
@@ -71,6 +73,7 @@ export const apiRoutes = {
     `/api/agent/resumes/${encodeURIComponent(resumeId)}/session`,
   agentChat: "/api/agent/chat",
   resumePdfExport: "/api/exports/resume-pdf",
+  resumeImagesExport: "/api/exports/resume-images",
   resumeImport: "/api/import/resume",
   templateImport: "/api/import/templates",
   sectionRegistry: "/api/section-registry",

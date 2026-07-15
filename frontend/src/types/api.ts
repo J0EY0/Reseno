@@ -151,6 +151,13 @@ export interface ExportResumePdfResponse {
   expiresAt?: string;
 }
 
+export type ExportResumeImagesRequest = ExportResumePdfRequest;
+
+export interface ExportResumeImagesResponse extends ExportResumePdfResponse {
+  pageCount: number;
+  isArchive: boolean;
+}
+
 export interface AgentChatAttachment {
   id?: string;
   filename?: string;

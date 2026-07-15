@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test:contact-links": "node scripts/verify-contact-links.mjs",
     "test:contract": "node scripts/verify-frontend-contract.mjs",
     "test:pdf-import": "node scripts/verify-pdf-resume-import.mjs"
   },

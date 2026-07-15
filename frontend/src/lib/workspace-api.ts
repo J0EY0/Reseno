@@ -92,6 +92,13 @@ export function createResumeApi(request: ResumeCreateRequest = {}) {
   });
 }
 
+export function duplicateResumeApi(resumeId: string, locale: Locale) {
+  return requestApi<ResumeDetailResponse>(apiRoutes.resumeDuplicate(resumeId), {
+    method: "POST",
+    searchParams: { locale },
+  });
+}
+
 export function fetchResumeApi(resumeId: string) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
     cacheTtlMs: 3000,

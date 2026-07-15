@@ -12,7 +12,7 @@ from app.agent_locales import DEFAULT_AGENT_LOCALE, SUPPORTED_AGENT_LOCALES
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
-from app.schemas.exports import ExportResumePdfRequest
+from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
 from app.services.agent.editing.operations import (
     _model_edit_suggestions,
@@ -68,6 +68,7 @@ from app.services.model_discovery_cache import (
     write_cached_provider_models,
 )
 from app.services.model_providers import DiscoveredModel
+from app.services.pdf import ResumeImageExportResult
 
 ASYNC_COMPLETE_TOOL_CALL_PATH = (
     "app.services.agent.runtime.loop.async_complete_tool_call"
@@ -740,6 +741,72 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert delete_response.json()["data"]["id"] == resume_id
     assert detail_after_delete_response.json()["code"] != 0
     assert not resume_dir.exists()
+
+
+def test_duplicate_resume_copies_content_without_history_or_agent_context(
+    client: TestClient,
+) -> None:
+    source_payload = minimal_resume_item(title="Platform Resume")
+    source_payload["jobBrief"] = "Private role context"
+    source_payload["templateSettings"] = {"pagePaddingX": 9}
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            key: value
+            for key, value in source_payload.items()
+            if key not in {"id", "updatedAt"}
+        },
+    )
+    source = create_response.json()["data"]["resume"]
+    source_id = source["id"]
+    source["resume"]["basic"]["headline"] = "Current source content"
+    saved_source = client.put(
+        f"/api/resumes/{source_id}",
+        json=source,
+    ).json()["data"]["resume"]
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_sessions (id, resume_id, locale, title)
+            VALUES (?, ?, 'en', 'Source Session')
+            """,
+            (source_id, source_id),
+        )
+
+    first_response = client.post(f"/api/resumes/{source_id}/duplicate?locale=en")
+    second_response = client.post(f"/api/resumes/{source_id}/duplicate?locale=en")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first = first_response.json()["data"]
+    second = second_response.json()["data"]
+    assert re.fullmatch(r"[A-Za-z0-9]{16}", first["resume"]["id"])
+    assert first["resume"]["id"] not in {source_id, second["resume"]["id"]}
+    assert first["resume"]["title"] == "Platform Resume - Copy"
+    assert second["resume"]["title"] == "Platform Resume - Copy 2"
+    assert first["resume"]["resume"] == saved_source["resume"]
+    assert first["resume"]["typography"] == saved_source["typography"]
+    assert first["resume"]["template"] == saved_source["template"]
+    assert first["resume"]["templateSettings"] == saved_source["templateSettings"]
+    assert first["resume"]["jobBrief"] == ""
+    assert first["versionId"] == "1"
+
+    source_versions = client.get(f"/api/resumes/{source_id}/versions").json()["data"][
+        "versions"
+    ]
+    duplicate_versions = client.get(
+        f"/api/resumes/{first['resume']['id']}/versions"
+    ).json()["data"]["versions"]
+    assert [item["versionId"] for item in source_versions] == ["2", "1"]
+    assert [item["versionId"] for item in duplicate_versions] == ["1"]
+    with connect() as conn:
+        session_resume_ids = [
+            row["resume_id"]
+            for row in conn.execute(
+                "SELECT resume_id FROM agent_sessions ORDER BY resume_id"
+            ).fetchall()
+        ]
+    assert session_resume_ids == [source_id]
 
 
 def test_empty_resume_trash_physically_deletes_resumes_and_agent_sessions(
@@ -5465,3 +5532,116 @@ def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:
     assert download_response.status_code == 200
     assert download_response.headers["content-type"] == "application/pdf"
     assert download_response.content.startswith(b"%PDF")
+
+
+def test_export_images_creates_png_download(client: TestClient, monkeypatch) -> None:
+    def write_test_image(
+        export_id: str,
+        request: ExportResumeImagesRequest,
+        **_: object,
+    ) -> ResumeImageExportResult:
+        from app.services.pdf import get_image_export_path
+
+        export_path = get_image_export_path(export_id, is_archive=False)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        assert request.render_base_url == "http://frontend.test"
+        return ResumeImageExportResult(
+            path=export_path,
+            page_count=1,
+            is_archive=False,
+        )
+
+    monkeypatch.setattr(
+        "app.routers.exports.write_resume_images",
+        write_test_image,
+    )
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Image Resume",
+            "resume": minimal_resume_item(title="Image Resume")["resume"],
+            "template": "minimal",
+        },
+    )
+    resume_id = create_response.json()["data"]["resume"]["id"]
+
+    response = client.post(
+        "/api/exports/resume-images",
+        json={
+            "resumeId": resume_id,
+            "locale": "en",
+            "fileNameSeed": "resume-images",
+            "savedAt": "2026-05-16T00:00:00.000Z",
+            "renderBaseUrl": "http://frontend.test",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fileName"] == "resume-images.png"
+    assert data["pageCount"] == 1
+    assert data["isArchive"] is False
+
+    download_response = client.get(data["downloadUrl"])
+
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"] == "image/png"
+    assert download_response.content.startswith(b"\x89PNG")
+
+
+def test_export_images_archives_multiple_pages(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def write_test_archive(
+        export_id: str,
+        _request: ExportResumeImagesRequest,
+        **_: object,
+    ) -> ResumeImageExportResult:
+        from app.services.pdf import get_image_export_path
+
+        export_path = get_image_export_path(export_id, is_archive=True)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_bytes(b"PK\x03\x04")
+        return ResumeImageExportResult(
+            path=export_path,
+            page_count=2,
+            is_archive=True,
+        )
+
+    monkeypatch.setattr(
+        "app.routers.exports.write_resume_images",
+        write_test_archive,
+    )
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Multi Page Resume",
+            "resume": minimal_resume_item(title="Multi Page Resume")["resume"],
+            "template": "minimal",
+        },
+    )
+    resume_id = create_response.json()["data"]["resume"]["id"]
+
+    response = client.post(
+        "/api/exports/resume-images",
+        json={
+            "resumeId": resume_id,
+            "locale": "en",
+            "fileNameSeed": "multi-page",
+            "savedAt": "2026-05-16T00:00:00.000Z",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fileName"] == "multi-page.zip"
+    assert data["pageCount"] == 2
+    assert data["isArchive"] is True
+
+    download_response = client.get(data["downloadUrl"])
+
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"] == "application/zip"
+    assert download_response.content.startswith(b"PK")

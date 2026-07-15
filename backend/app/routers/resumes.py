@@ -15,6 +15,7 @@ from app.schemas.resumes import (
 from app.services.workspace import (
     create_resume,
     delete_resume_forever,
+    duplicate_resume,
     empty_resume_trash,
     list_resume_versions,
     list_resumes,
@@ -85,6 +86,18 @@ def put_resume(
                 request.model_dump(by_alias=True, exclude_unset=True),
             )
         )
+    )
+
+
+@router.post("/{resume_id}/duplicate", response_model=ApiResponse[ResumeDetailResponse])
+def post_resume_duplicate(
+    resume_id: str,
+    locale: Literal["zh", "en"] = Query(default="en"),
+) -> ApiResponse[ResumeDetailResponse]:
+    """Create an independent copy of one active resume."""
+
+    return ok_response(
+        ResumeDetailResponse.model_validate(duplicate_resume(resume_id, locale))
     )
 
 

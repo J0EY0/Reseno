@@ -824,6 +824,17 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     background-color: var(--muted-foreground);
   }
 
+  /* Keep the resume editor scrollable without reserving visible scrollbar chrome. */
+  .app-shell--document .resume-workspace .resume-editor-panel {
+    scrollbar-gutter: auto;
+    scrollbar-width: none;
+  }
+
+  .app-shell--document .resume-workspace .resume-editor-panel::-webkit-scrollbar {
+    display: none;
+    width: 0;
+  }
+
   .app-shell--document .resume-preview-card,
   .app-shell--document .agent-seam-rail,
   .app-shell--document .agent-panel-dock {
