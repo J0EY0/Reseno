@@ -13,6 +13,22 @@ from .types import (
 from .validation import validate_tool_calls
 
 
+def supports_native_attachment(
+    config: AgentLlmConfig,
+    media_type: str,
+) -> bool:
+    """Return adapter-owned support for one current-request original file."""
+
+    if config.api_family == "openai_responses":
+        return openai_responses.supports_native_attachment(media_type)
+    if config.api_family == "anthropic_messages":
+        return anthropic_messages.supports_native_attachment(media_type)
+    if config.api_family == "google_gemini":
+        return google_gemini.supports_native_attachment(media_type)
+
+    return openai_chat.supports_native_attachment(media_type)
+
+
 async def async_complete_chat(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],

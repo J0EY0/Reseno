@@ -26,7 +26,11 @@ from ..localization import agent_text
 from ..parsing_patterns import agent_patterns
 from .context import AgentRunAborted, AgentRuntimeContext
 from .loop import async_iter_agent_tool_call_loop
-from .messages import build_agent_messages
+from .messages import (
+    build_agent_messages,
+    has_native_current_request_attachments,
+    is_native_attachment_unsupported,
+)
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -104,6 +108,8 @@ def _merge_llm_response(
         tools=draft.tools,
         sources=draft.sources,
         edits=draft.edits,
+        transactionState=draft.transaction_state,
+        finishMissing=draft.finish_missing,
         quickReplies=quick_replies,
         actions=draft.actions,
     )
@@ -224,6 +230,7 @@ def _message_delta_payload(message: AgentChatMessage) -> dict[str, object]:
         "tools": message_payload["tools"],
         "sources": message_payload["sources"],
         "edits": message_payload["edits"],
+        "transactionState": message_payload["transactionState"],
         "quickReplies": message_payload["quickReplies"],
         "actions": message_payload["actions"],
     }
@@ -396,8 +403,11 @@ def _append_timeline_tools(
     return part_id
 
 
-def stream_agent_message(message: AgentChatMessage) -> Iterator[str]:
-    """Yield a chat message as incremental SSE events."""
+def stream_agent_message(
+    message: AgentChatMessage,
+    on_complete: Callable[[AgentChatMessage], None] | None = None,
+) -> Iterator[str]:
+    """Yield a chat message and persist it before the terminal SSE event."""
 
     message_payload = message.model_dump(mode="json", by_alias=True)
     text = message.text
@@ -432,6 +442,7 @@ def stream_agent_message(message: AgentChatMessage) -> Iterator[str]:
             "message": _message_delta_payload(message),
         },
     )
+    on_complete_message(on_complete, message)
     yield _sse_event(
         "message_done",
         {"type": "message_done", "message": message_payload},
@@ -450,21 +461,9 @@ async def async_stream_agent_response(
     config = resolve_agent_llm_config(conn, request.model_config_data)
     if config is None:
         message = _model_setup_message(request)
-        for chunk in stream_agent_message(message):
+        for chunk in stream_agent_message(message, on_complete):
             yield chunk
-        on_complete_message(on_complete, message)
         return
-    if _request_has_image_files(request) and not config.supports_image:
-        message = _model_error_message(
-            request,
-            config,
-            LlmRequestError("Selected model does not support image input."),
-        )
-        for chunk in stream_agent_message(message):
-            yield chunk
-        on_complete_message(on_complete, message)
-        return
-
     draft: AgentChatMessage | None = None
     message_id = f"agent-msg-{uuid4().hex[:12]}"
 
@@ -560,6 +559,7 @@ async def async_stream_agent_response(
                         edit.model_dump(mode="json", by_alias=True)
                         for edit in event.edits or []
                     ],
+                    transactionState=event.transaction_state,
                 )
                 continue
             if event.kind == "done":
@@ -567,6 +567,24 @@ async def async_stream_agent_response(
 
         if runner and (runner.tools or runner.finish_status):
             draft = runner.build_message(message_id=message_id)
+
+        if draft and runner and runner.transaction_failed:
+            yield _sse_event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "message": _message_delta_payload(draft),
+                },
+            )
+            on_complete_message(on_complete, draft)
+            yield _sse_event(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": draft.model_dump(mode="json", by_alias=True),
+                },
+            )
+            return
 
         if draft and runner and runner.finish_status and not runner.tools:
             yield _sse_event(
@@ -576,6 +594,7 @@ async def async_stream_agent_response(
                     "message": _message_delta_payload(draft),
                 },
             )
+            on_complete_message(on_complete, draft)
             yield _sse_event(
                 "message_done",
                 {
@@ -583,7 +602,6 @@ async def async_stream_agent_response(
                     "message": draft.model_dump(mode="json", by_alias=True),
                 },
             )
-            on_complete_message(on_complete, draft)
             return
 
         if terminal_loop_text and (draft or (runner and runner.tools)):
@@ -607,6 +625,7 @@ async def async_stream_agent_response(
                     "message": _message_delta_payload(message),
                 },
             )
+            on_complete_message(on_complete, message)
             yield _sse_event(
                 "message_done",
                 {
@@ -614,55 +633,89 @@ async def async_stream_agent_response(
                     "message": message.model_dump(mode="json", by_alias=True),
                 },
             )
-            on_complete_message(on_complete, message)
             return
 
-        messages = build_agent_messages(
-            request,
-            config,
-            mode="streaming_final",
-            draft=draft,
-        )
         if raw_parts:
             raw_parts.append("\n\n")
         final_part_id = ""
         stream_message: LlmAssistantMessage | None = None
-        async for stream_event in _complete_chat_stream_events(
-            config,
-            messages,
-            runtime,
-        ):
-            if stream_event.type == "done":
-                stream_message = stream_event.message
-                continue
-            if stream_event.type == "reasoning_delta":
-                # Reasoning is transient backend metadata; it is intentionally
-                # not streamed or persisted into user-visible agent messages.
-                continue
+        force_attachment_text = bool(
+            runner and runner.native_attachment_text_fallback_used
+        )
+        native_fallback_available = (
+            not force_attachment_text
+            and has_native_current_request_attachments(request, config)
+        )
 
-            if stream_event.delta:
-                raw_parts.append(stream_event.delta)
-                if timeline_parts:
-                    if not final_part_id:
-                        final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
-                        timeline_parts.append(_timeline_text_part(final_part_id, ""))
-                    timeline_parts[-1].text = (
-                        timeline_parts[-1].text + stream_event.delta
-                    )
-                    yield _message_delta_event(
-                        "timeline",
-                        text="".join(raw_parts),
-                        timeline=_timeline_payload(timeline_parts),
-                    )
-                    continue
+        while True:
+            messages = build_agent_messages(
+                request,
+                config,
+                mode="streaming_final",
+                draft=draft,
+                force_attachment_text=force_attachment_text,
+            )
+            final_output_started = False
+            try:
+                async for stream_event in _complete_chat_stream_events(
+                    config,
+                    messages,
+                    runtime,
+                ):
+                    if stream_event.type == "done":
+                        stream_message = stream_event.message
+                        continue
+                    if stream_event.type == "reasoning_delta":
+                        # Reasoning is transient backend metadata; it is
+                        # intentionally not persisted or shown to users.
+                        continue
 
-                yield _sse_event(
-                    "text_delta",
-                    {
-                        "type": "text_delta",
-                        "delta": stream_event.delta,
-                    },
-                )
+                    if not stream_event.delta:
+                        continue
+
+                    final_output_started = True
+                    raw_parts.append(stream_event.delta)
+                    if timeline_parts:
+                        if not final_part_id:
+                            final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
+                            timeline_parts.append(
+                                _timeline_text_part(final_part_id, ""),
+                            )
+                        timeline_parts[-1].text = (
+                            timeline_parts[-1].text + stream_event.delta
+                        )
+                        yield _message_delta_event(
+                            "timeline",
+                            text="".join(raw_parts),
+                            timeline=_timeline_payload(timeline_parts),
+                        )
+                        continue
+
+                    yield _sse_event(
+                        "text_delta",
+                        {
+                            "type": "text_delta",
+                            "delta": stream_event.delta,
+                        },
+                    )
+                break
+            except LlmRequestError as exc:
+                if (
+                    final_output_started
+                    or not native_fallback_available
+                    or not is_native_attachment_unsupported(exc)
+                ):
+                    raise
+
+                # A provider may advertise a compatible API family while
+                # rejecting native files for one endpoint/model. Retry once
+                # with the cached complete extraction before any visible text.
+                force_attachment_text = True
+                native_fallback_available = False
+                if runner:
+                    runner.native_attachment_text_fallback_used = True
+                stream_message = None
+                continue
 
         if stream_message and stream_message.stop_reason == "length":
             raise LlmRequestError(
@@ -698,7 +751,10 @@ async def async_stream_agent_response(
                 "message": message.model_dump(mode="json", by_alias=True),
             },
         )
-        on_complete_message(on_complete, message)
+        # Provider and attachment failures are terminal for this request, but
+        # they are not a completed conversation turn. Keeping the completion
+        # hook untouched here would persist both the optimistic user message
+        # and this transient error, making a retry duplicate the prompt.
         return
 
     if draft:
@@ -719,6 +775,9 @@ async def async_stream_agent_response(
             "message": _message_delta_payload(message),
         },
     )
+    # `message_done` tells clients the turn is authoritative. Run persistence
+    # first so a failed SQLite/filesystem commit cannot look completed in UI.
+    on_complete_message(on_complete, message)
     yield _sse_event(
         "message_done",
         {
@@ -726,7 +785,6 @@ async def async_stream_agent_response(
             "message": message.model_dump(mode="json", by_alias=True),
         },
     )
-    on_complete_message(on_complete, message)
 
 
 def on_complete_message(
@@ -737,16 +795,3 @@ def on_complete_message(
 
     if callback:
         callback(message)
-
-
-def _request_has_image_files(request: AgentChatRequest) -> bool:
-    return any(_is_image_file(file) for file in request.files)
-
-
-def _is_image_file(file: dict[str, Any]) -> bool:
-    media_type = file.get("mediaType") or file.get("mimeType") or ""
-    if isinstance(media_type, str) and media_type.lower().startswith("image/"):
-        return True
-
-    filename = str(file.get("filename") or "").lower()
-    return filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))

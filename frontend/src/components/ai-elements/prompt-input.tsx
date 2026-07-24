@@ -532,6 +532,7 @@ export const PromptInput = ({
   // Refs
   const inputRef = useRef<HTMLInputElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const submissionInFlightRef = useRef(false);
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
@@ -846,6 +847,13 @@ export const PromptInput = ({
     async (event) => {
       event.preventDefault();
 
+      // Keyboard and pointer submission can arrive in the same render frame.
+      // Keep one snapshot owner until its async upload handoff completes.
+      if (submissionInFlightRef.current) {
+        return;
+      }
+      submissionInFlightRef.current = true;
+
       const form = event.currentTarget;
       const text = usingProvider
         ? controller.textInput.value
@@ -898,6 +906,8 @@ export const PromptInput = ({
         }
       } catch {
         // Don't clear on error - user may want to retry
+      } finally {
+        submissionInFlightRef.current = false;
       }
     },
     [usingProvider, controller, files, onSubmit, clear]

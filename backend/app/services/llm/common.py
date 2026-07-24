@@ -69,7 +69,10 @@ def raise_openai_error(error: Exception) -> None:
     """Normalize SDK exceptions to the runtime's public error type."""
 
     if isinstance(error, APIStatusError):
-        raise LlmRequestError(provider_error_excerpt(error)) from error
+        raise LlmRequestError(
+            provider_error_excerpt(error),
+            status_code=error.status_code,
+        ) from error
     if isinstance(error, APITimeoutError):
         raise LlmRequestError("Model provider request timed out.") from error
     if isinstance(error, APIConnectionError):
@@ -109,7 +112,7 @@ def chat_completion_params(
 
     params: dict[str, Any] = {
         "model": config.model,
-        "messages": messages,
+        "messages": openai_chat_messages(messages),
         "stream": stream,
     }
     if config.temperature is not None:
@@ -239,7 +242,10 @@ async def async_post_json(
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPStatusError as exc:
-        raise LlmRequestError(http_error_message(exc)) from exc
+        raise LlmRequestError(
+            http_error_message(exc),
+            status_code=exc.response.status_code,
+        ) from exc
     except httpx.TimeoutException as exc:
         raise LlmRequestError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
@@ -274,7 +280,10 @@ async def async_stream_json(
                 async for event in _aiter_sse_json(response):
                     yield event
     except httpx.HTTPStatusError as exc:
-        raise LlmRequestError(http_error_message(exc)) from exc
+        raise LlmRequestError(
+            http_error_message(exc),
+            status_code=exc.response.status_code,
+        ) from exc
     except httpx.TimeoutException as exc:
         raise LlmRequestError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
@@ -484,12 +493,111 @@ def tool_function(tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def message_content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
+    """Return only textual content from the runtime's neutral message shape."""
 
-    return str(content)
+    return "".join(
+        part["text"]
+        for part in message_content_parts(content)
+        if part["type"] == "text"
+    )
+
+
+def message_content_parts(content: Any) -> list[dict[str, str]]:
+    """Normalize text, image, and file blocks without provider wire shapes."""
+
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return []
+
+    parts: list[dict[str, str]] = []
+    for value in content:
+        if not isinstance(value, dict):
+            continue
+
+        part_type = value.get("type")
+        if part_type == "text" and isinstance(value.get("text"), str):
+            parts.append({"type": "text", "text": value["text"]})
+            continue
+
+        media_type = value.get("media_type")
+        data = value.get("data")
+        if (
+            part_type == "image"
+            and isinstance(media_type, str)
+            and media_type.startswith("image/")
+            and isinstance(data, str)
+            and data
+        ):
+            parts.append(
+                {
+                    "type": "image",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            )
+            continue
+
+        filename = value.get("filename")
+        if (
+            part_type == "file"
+            and isinstance(filename, str)
+            and filename
+            and isinstance(media_type, str)
+            and media_type
+            and isinstance(data, str)
+            and data
+        ):
+            parts.append(
+                {
+                    "type": "file",
+                    "filename": filename,
+                    "media_type": media_type,
+                    "data": data,
+                },
+            )
+
+    return parts
+
+
+def image_data_url(part: dict[str, str]) -> str:
+    """Build a data URL from one validated provider-neutral image part."""
+
+    return f"data:{part['media_type']};base64,{part['data']}"
+
+
+def openai_chat_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Map neutral image blocks to OpenAI-compatible Chat Completions parts."""
+
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        parts = message_content_parts(content)
+        if any(part["type"] == "file" for part in parts):
+            raise LlmRequestError(
+                "OpenAI-compatible Chat Completions does not support native files.",
+            )
+        if not any(part["type"] == "image" for part in parts):
+            converted.append(message)
+            continue
+
+        provider_content: list[dict[str, Any]] = []
+        for part in parts:
+            if part["type"] == "text":
+                provider_content.append({"type": "text", "text": part["text"]})
+            else:
+                provider_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data_url(part)},
+                    },
+                )
+
+        converted.append({**message, "content": provider_content})
+
+    return converted
 
 
 def system_and_messages(

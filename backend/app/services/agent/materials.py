@@ -1,6 +1,7 @@
 import re
 from typing import Any
 
+from .attachments import attachment_text
 from .parsing_patterns import compiled_agent_pattern, matches_agent_pattern
 from .privacy import sanitize_agent_text
 
@@ -39,6 +40,7 @@ FOCUS_SECTIONS = {
 
 def extract_resume_materials(
     *,
+    session_id: str,
     prompt: str,
     job_brief: str,
     files: list[dict[str, Any]],
@@ -51,6 +53,7 @@ def extract_resume_materials(
     resolved_focus = focus if focus in MATERIAL_FOCI else "all"
     limit = _bounded_max_items(max_items)
     sources = _material_sources(
+        session_id=session_id,
         prompt=prompt,
         job_brief=job_brief,
         files=files,
@@ -84,6 +87,7 @@ def extract_resume_materials(
 
 def _material_sources(
     *,
+    session_id: str,
     prompt: str,
     job_brief: str,
     files: list[dict[str, Any]],
@@ -91,7 +95,7 @@ def _material_sources(
 ) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     has_reference_sources = bool(job_brief.strip()) or any(
-        isinstance(file.get("content"), str) and file["content"].strip()
+        attachment_text(session_id, file)
         for file in files[:5]
     )
     if prompt.strip() and _is_substantive_prompt_material(
@@ -121,8 +125,8 @@ def _material_sources(
         )
 
     for index, file in enumerate(files[:5], start=1):
-        content = file.get("content")
-        if not isinstance(content, str) or not content.strip():
+        content = attachment_text(session_id, file)
+        if not content:
             continue
 
         filename = str(file.get("filename") or f"Attachment {index}")

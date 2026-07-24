@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
+from app.services.agent.attachments import delete_agent_session_attachments
 from app.services.model_configs import list_llm_configs
 
 SUPPORTED_LOCALES = {"zh", "en"}
@@ -1403,6 +1404,7 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
         conn.execute("COMMIT")
 
     shutil.rmtree(_resume_storage_dir(row["id"]), ignore_errors=True)
+    delete_agent_session_attachments(row["id"])
     return {"id": row["id"]}
 
 
@@ -1427,6 +1429,7 @@ def empty_resume_trash() -> dict[str, Any]:
 
     for deleted_resume_id in resume_ids:
         shutil.rmtree(_resume_storage_dir(deleted_resume_id), ignore_errors=True)
+        delete_agent_session_attachments(deleted_resume_id)
 
     return {"deletedCount": len(resume_ids)}
 

@@ -71,6 +71,15 @@ export const apiRoutes = {
   agentSettings: "/api/agent/settings",
   agentResumeSession: (resumeId: string) =>
     `/api/agent/resumes/${encodeURIComponent(resumeId)}/session`,
+  agentResumeRun: (resumeId: string) =>
+    `/api/agent/resumes/${encodeURIComponent(resumeId)}/run`,
+  agentRun: (runId: string) =>
+    `/api/agent/runs/${encodeURIComponent(runId)}`,
+  agentRunEvents: (runId: string) =>
+    `/api/agent/runs/${encodeURIComponent(runId)}/events`,
+  agentAttachments: "/api/agent/attachments",
+  agentAttachment: (resumeId: string, attachmentId: string) =>
+    `/api/agent/resumes/${encodeURIComponent(resumeId)}/attachments/${encodeURIComponent(attachmentId)}`,
   agentChat: "/api/agent/chat",
   resumePdfExport: "/api/exports/resume-pdf",
   resumeImagesExport: "/api/exports/resume-images",
@@ -365,9 +374,14 @@ export async function requestApi<T>(
 export async function uploadApi<T>(
   route: string,
   body: FormData,
-  options: Pick<ApiRequestOptions, "auth" | "searchParams"> = {},
+  options: Pick<ApiRequestOptions, "auth" | "searchParams"> & {
+    onProgress?: (progress: { loaded: number; total?: number }) => void;
+  } = {},
 ) {
   const requestConfig: ResuMateAxiosRequestConfig = {
+    onUploadProgress: options.onProgress
+      ? ({ loaded, total }) => options.onProgress?.({ loaded, total })
+      : undefined,
     skipAuth: options.auth === false,
   };
   const response = await apiClient.post<unknown>(

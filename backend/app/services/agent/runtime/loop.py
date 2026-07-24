@@ -7,6 +7,7 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentResumeEditSuggestion,
     AgentToolInvocation,
+    AgentTransactionState,
 )
 from app.services.llm import (
     AgentLlmConfig,
@@ -23,7 +24,11 @@ from ..policy import capability_policy_for_request
 from ..tools.registry import agent_tool_schemas_for_names
 from ..tools.runner import AgentToolRunner, running_model_tool
 from .context import AgentRuntimeContext
-from .messages import build_agent_messages
+from .messages import (
+    build_agent_messages,
+    has_native_current_request_attachments,
+    is_native_attachment_unsupported,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,7 @@ class AgentToolLoopEvent:
     text: str | None = None
     tools: list[AgentToolInvocation] | None = None
     edits: list[AgentResumeEditSuggestion] | None = None
+    transaction_state: AgentTransactionState = "none"
     runner: "AgentToolRunner | None" = None
     terminal: bool = False
 
@@ -106,15 +112,48 @@ async def async_iter_agent_tool_call_loop(
     policy = capability_policy_for_request(request)
     tool_schemas = agent_tool_schemas_for_names(policy.allowed_tools)
     schema_retry_used = False
+    rollback_emitted = False
+    provider_response_received = False
+    native_fallback_available = has_native_current_request_attachments(
+        request,
+        config,
+    )
 
     for _ in range(max_iterations):
         await runtime.checkpoint()
-        response = await _async_tool_call_response(
-            config,
-            messages,
-            runtime,
-            tool_schemas,
-        )
+        try:
+            response = await _async_tool_call_response(
+                config,
+                messages,
+                runtime,
+                tool_schemas,
+            )
+        except LlmRequestError as exc:
+            if (
+                provider_response_received
+                or not native_fallback_available
+                or runner.native_attachment_text_fallback_used
+                or not is_native_attachment_unsupported(exc)
+            ):
+                raise
+
+            # Retry exactly once and only before the provider has accepted any
+            # part of this turn. This avoids replaying completed tools.
+            runner.native_attachment_text_fallback_used = True
+            messages = build_agent_messages(
+                request,
+                config,
+                mode="tools",
+                force_attachment_text=True,
+            )
+            response = await _async_tool_call_response(
+                config,
+                messages,
+                runtime,
+                tool_schemas,
+            )
+
+        provider_response_received = True
         if response.stop_reason == "length":
             raise LlmRequestError(
                 "Model output was truncated. Increase max output tokens or use "
@@ -176,7 +215,7 @@ async def async_iter_agent_tool_call_loop(
             ),
         )
         tool_messages: list[dict[str, Any]] = []
-        has_executed_edits = False
+        revision_before_tools = runner.edit_revision
         for tool_call in tool_calls:
             await runtime.checkpoint()
             if tool_call.name != "finish":
@@ -190,8 +229,6 @@ async def async_iter_agent_tool_call_loop(
             tool, result = await runner.run(tool_call, runtime)
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(kind="tools", tools=runner.tools)
-            if tool_call.name == "edit_execute" and runner.edits:
-                has_executed_edits = True
             tool_messages.append(
                 {
                     "role": "tool",
@@ -199,10 +236,35 @@ async def async_iter_agent_tool_call_loop(
                     "content": json.dumps(result, ensure_ascii=False),
                 },
             )
-        if has_executed_edits:
-            yield AgentToolLoopEvent(kind="edits", edits=runner.edits)
+            if runner.transaction_failed:
+                break
+        if runner.transaction_failed:
+            rollback_emitted = True
+            yield AgentToolLoopEvent(
+                kind="edits",
+                edits=[],
+                transaction_state="rolled_back",
+            )
+        elif runner.edit_revision != revision_before_tools and runner.edits:
+            yield AgentToolLoopEvent(
+                kind="edits",
+                edits=runner.edits,
+                transaction_state="provisional",
+            )
         messages.extend(tool_messages)
         if runner.finished:
             break
 
+    revision_before_finalize = runner.edit_revision
+    runner.finalize_turn()
+    if (
+        runner.transaction_failed
+        and not rollback_emitted
+        and runner.edit_revision != revision_before_finalize
+    ):
+        yield AgentToolLoopEvent(
+            kind="edits",
+            edits=[],
+            transaction_state="rolled_back",
+        )
     yield AgentToolLoopEvent(kind="done", runner=runner)

@@ -24,6 +24,10 @@ TEXT: dict[str, dict[str, str]] = {
             "No executable edits were accepted. Check required fields such as "
             "sectionId, itemId, path, patch, and operation type."
         ),
+        "error.edit_repair_required": (
+            "The rejected edit batch must be corrected and resent in full "
+            "before finish."
+        ),
         "error.edit_entry_must_object": "Edit entry must be an object.",
         "error.edit_plan_missing_inputs": (
             "Call resume_analysis first or provide explicit plan steps."
@@ -155,6 +159,9 @@ TEXT: dict[str, dict[str, str]] = {
             "I inspected the pending draft changes and summarized what changed. "
             "No new resume edits were created in this explanation turn."
         ),
+        "response.edit_transaction_failed": (
+            "I couldn't produce a valid draft, so no changes were applied."
+        ),
         "response.no_edits": (
             "I completed the tool checks needed for this turn, but did not "
             "produce a safe previewable draft. Tell me which field, section, or "
@@ -247,6 +254,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.edit_execute_rejected_detailed": (
             "没有可执行的修改被接受。请检查 sectionId、itemId、path、patch "
             "和 operation type 等必填字段。"
+        ),
+        "error.edit_repair_required": (
+            "需要修正失败的修改，并完整重发整批操作后再结束。"
         ),
         "error.edit_entry_must_object": "修改条目必须是对象。",
         "error.edit_plan_missing_inputs": (
@@ -349,6 +359,7 @@ TEXT: dict[str, dict[str, str]] = {
             "我已读取当前待确认草稿的修改差异，并会围绕这些差异进行解释；"
             "本轮不会生成新的简历修改。"
         ),
+        "response.edit_transaction_failed": "未能生成有效草稿，本轮未应用任何修改。",
         "response.no_edits": (
             "我已完成本轮需要的工具检查，但没有生成可安全预览的修改草稿。"
             "如果你希望我直接改某个模块，请说明目标字段、模块或条目；如果"

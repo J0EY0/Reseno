@@ -14,6 +14,7 @@ from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
+from app.services.agent.attachments import store_agent_attachment
 from app.services.agent.editing.operations import (
     _model_edit_suggestions,
     _model_edit_suggestions_with_diagnostics,
@@ -1167,7 +1168,9 @@ def test_template_save_does_not_create_resume_versions(
         == "Versionless Template Updated"
     )
 
-    template_path = get_settings().storage_dir / "templates" / template_id / "current.json"
+    template_path = (
+        get_settings().storage_dir / "templates" / template_id / "current.json"
+    )
     stored_template = json.loads(template_path.read_text(encoding="utf-8"))
 
     assert stored_template["name"] == "Versionless Template Updated"
@@ -2213,6 +2216,15 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
 
 
 def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
+    session_id = "agent-message-privacy"
+    attachment = store_agent_attachment(
+        session_id=session_id,
+        filename="note.txt",
+        media_type="text/plain",
+        payload=(
+            "联系人 王小明，邮箱 xiaoming@example.com，电话 13800138000"
+        ).encode(),
+    ).model_dump(mode="json", by_alias=True)
     config = AgentLlmConfig(
         client_id="llm-test",
         name="Test Model",
@@ -2236,13 +2248,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
             },
         ],
         conversation=[],
-        files=[
-            {
-                "filename": "note.txt",
-                "mediaType": "text/plain",
-                "content": "联系人 王小明，邮箱 xiaoming@example.com，电话 13800138000",
-            },
-        ],
+        files=[attachment],
         locale="zh",
         resume={
             "basic": {
@@ -2263,6 +2269,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         appliedActions=[],
         modelConfig=None,
         settings={},
+        resume_id=session_id,
     )
 
     messages = build_agent_messages(request, config, mode="tools")
@@ -2737,6 +2744,21 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
 
 
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
+    session_id = "agent-chat-json"
+    attachment_response = client.post(
+        "/api/agent/attachments",
+        data={"resumeId": session_id},
+        files={
+            "file": (
+                "jd.txt",
+                b"TypeScript JD attachment text",
+                "text/plain",
+            ),
+        },
+    )
+    assert attachment_response.status_code == 200
+    attachment = attachment_response.json()["data"]
+
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
@@ -2802,15 +2824,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 "id": "agent-user-1",
                 "role": "user",
                 "text": "Find missing keywords and edit my summary",
-                "files": [
-                    {
-                        "id": "file-1",
-                        "filename": "jd.txt",
-                        "mediaType": "text/plain",
-                        "content": "TypeScript JD attachment text",
-                        "url": "https://example.test/jd.txt",
-                    }
-                ],
+                "files": [attachment],
             },
             "messages": [
                 {
@@ -2824,15 +2838,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                     "text": "Find missing keywords and edit my summary",
                 },
             ],
-            "files": [
-                {
-                    "id": "file-1",
-                    "filename": "jd.txt",
-                    "mediaType": "text/plain",
-                    "content": "TypeScript JD attachment text",
-                    "url": "https://example.test/jd.txt",
-                }
-            ],
+            "files": [attachment],
             "locale": "en",
             "resume": {
                 "basic": {
@@ -2850,6 +2856,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
+            "resumeId": session_id,
         },
     )
 
@@ -2865,7 +2872,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     )
     assert any(
         source["sourceType"] == "attachment"
-        and source["excerpt"] == "TypeScript JD attachment text"
+        and source["title"] == "jd.txt"
         for source in message["sources"]
     )
     assert not any(

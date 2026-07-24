@@ -9,6 +9,7 @@ from ..common import (
     async_stream_json,
     gemini_usage,
     map_stop_reason,
+    message_content_parts,
     message_content_text,
     openai_style_function_tools,
     parsed_tool_call,
@@ -24,6 +25,12 @@ from ..types import (
     LlmStreamEvent,
     LlmToolCall,
 )
+
+
+def supports_native_attachment(media_type: str) -> bool:
+    """The current Gemini Interactions adapter exposes image input only."""
+
+    return False
 
 
 async def complete(
@@ -217,15 +224,34 @@ def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
 
         if role == "user":
-            text = message_content_text(message.get("content"))
             input_items.append(
                 {
                     "type": "user_input",
-                    "content": [{"type": "text", "text": text}],
+                    "content": _gemini_content(message.get("content")),
                 },
             )
 
     return input_items
+
+
+def _gemini_content(content: Any) -> list[dict[str, str]]:
+    converted: list[dict[str, str]] = []
+    for part in message_content_parts(content):
+        if part["type"] == "text":
+            converted.append({"type": "text", "text": part["text"]})
+        elif part["type"] == "image":
+            converted.append(
+                {
+                    "type": "image",
+                    "data": part["data"],
+                    "mime_type": part["media_type"],
+                },
+            )
+        else:
+            raise LlmRequestError(
+                "Gemini Interactions does not support native file input.",
+            )
+    return converted
 
 
 def _headers(config: AgentLlmConfig) -> dict[str, str]:

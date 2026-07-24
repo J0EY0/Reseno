@@ -7,8 +7,18 @@ from app.schemas.agent import (
     AgentConversationItem,
     AgentResumeEditSuggestion,
 )
-from app.services.llm import AgentLlmConfig
+from app.services.llm import (
+    AgentLlmConfig,
+    LlmRequestError,
+    supports_native_attachment,
+)
 
+from ..attachments import (
+    AgentAttachmentError,
+    attachment_content_part,
+    current_request_attachments,
+    load_agent_attachment,
+)
 from ..executor import (
     _active_resume,
     _agent_file_context,
@@ -26,6 +36,7 @@ from ..prompts import (
 
 AgentMessageMode = Literal["tools", "final", "streaming_final"]
 CONTEXT_COMPRESSION_RATIO = 0.85
+DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
 
 
 def build_agent_messages(
@@ -34,8 +45,14 @@ def build_agent_messages(
     *,
     mode: AgentMessageMode,
     draft: AgentChatMessage | None = None,
+    force_attachment_text: bool = False,
 ) -> list[dict[str, Any]]:
-    """Build model messages for tool selection or final responses."""
+    """Build model messages with current-request attachments only.
+
+    Original bytes are included only when the selected adapter explicitly
+    supports their media type. Otherwise the same original is lazily extracted
+    into complete text; extraction never truncates silently.
+    """
 
     system_content = "\n\n".join(_system_parts(request, config, mode))
     messages: list[dict[str, Any]] = [
@@ -45,21 +62,160 @@ def build_agent_messages(
         },
     ]
 
-    messages.append(
-        {
-            "role": "user",
-            "content": json.dumps(
-                _agent_payload(
-                    request,
-                    config=config,
-                    draft=draft,
-                    system_content=system_content,
-                ),
-                ensure_ascii=False,
-            ),
-        },
+    context_files, binary_parts = _current_attachment_payload(
+        request,
+        config,
+        force_attachment_text=force_attachment_text,
     )
+    payload_text = json.dumps(
+        _agent_payload(
+            request,
+            config=config,
+            draft=draft,
+            system_content=system_content,
+            context_files=context_files,
+        ),
+        ensure_ascii=False,
+    )
+    # Keep one provider-neutral binary shape inside the Agent runtime. Adapters
+    # own the final wire format and never infer support from provider aliases.
+    user_content: str | list[dict[str, str]] = payload_text
+    if binary_parts:
+        user_content = [{"type": "text", "text": payload_text}, *binary_parts]
+
+    messages.append({"role": "user", "content": user_content})
     return messages
+
+
+def has_native_current_request_attachments(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+) -> bool:
+    """Return whether this request would send at least one original file."""
+
+    files = _safe_current_request_attachments(request)
+    if not files:
+        return False
+    session_id = _attachment_session_id(request)
+    for file in files:
+        attachment = load_agent_attachment(session_id, file)
+        if (
+            attachment is not None
+            and attachment.kind != "image"
+            and supports_native_attachment(config, attachment.media_type)
+        ):
+            return True
+    return False
+
+
+def is_native_attachment_unsupported(error: LlmRequestError) -> bool:
+    """Classify only explicit client-side native attachment rejection.
+
+    A fallback is intentionally excluded for auth, throttling, timeouts, and
+    provider/server failures. Those errors need to remain visible as-is.
+    """
+
+    if error.status_code not in {400, 415}:
+        return False
+
+    message = str(error).lower()
+    subject_markers = (
+        "attachment",
+        "document",
+        "file_data",
+        "input_file",
+        "application/pdf",
+        "media type",
+        "mime",
+        "pdf",
+    )
+    rejection_markers = (
+        "unsupported",
+        "not supported",
+        "not allowed",
+        "invalid content",
+        "invalid media",
+        "invalid type",
+        "unknown type",
+        "unrecognized",
+    )
+    return any(marker in message for marker in subject_markers) and any(
+        marker in message for marker in rejection_markers
+    )
+
+
+def _current_attachment_payload(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    *,
+    force_attachment_text: bool,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    files = _safe_current_request_attachments(request)
+    if not files:
+        return [], []
+
+    session_id = _attachment_session_id(request)
+    hidden_terms = resume_hidden_terms(_active_resume(request))
+    text_files: list[dict[str, Any]] = []
+    binary_parts: list[dict[str, str]] = []
+
+    try:
+        for file in files:
+            attachment = load_agent_attachment(session_id, file)
+            if attachment is None:
+                raise AgentAttachmentError(
+                    "The attachment is no longer available.",
+                )
+
+            if attachment.kind == "image":
+                if not config.supports_image:
+                    raise AgentAttachmentError(
+                        "The selected model does not support image input.",
+                    )
+                binary_parts.append(attachment_content_part(session_id, file))
+                continue
+
+            if (
+                not force_attachment_text
+                and supports_native_attachment(config, attachment.media_type)
+            ):
+                binary_parts.append(attachment_content_part(session_id, file))
+                continue
+
+            text_files.append(file)
+
+        text_context = _agent_file_context(
+            session_id,
+            text_files,
+            hidden_terms=hidden_terms,
+        )
+        return (
+            _fit_attachment_context(
+                text_context,
+                token_budget=_attachment_context_token_budget(request, config),
+            ),
+            binary_parts,
+        )
+    except AgentAttachmentError as exc:
+        raise LlmRequestError(str(exc)) from exc
+
+
+def _safe_current_request_attachments(
+    request: AgentChatRequest,
+) -> list[dict[str, Any]]:
+    try:
+        return current_request_attachments(request)
+    except AgentAttachmentError as exc:
+        raise LlmRequestError(str(exc)) from exc
+
+
+def _attachment_session_id(request: AgentChatRequest) -> str:
+    session_id = (request.resume_id or "").strip()
+    if not session_id:
+        raise LlmRequestError(
+            "Attachments require an active Agent resume session.",
+        )
+    return session_id
 
 
 def _system_parts(
@@ -85,6 +241,7 @@ def _agent_payload(
     config: AgentLlmConfig,
     draft: AgentChatMessage | None = None,
     system_content: str,
+    context_files: list[dict[str, Any]],
 ) -> dict[str, Any]:
     active_resume = _active_resume(request)
     hidden_terms = resume_hidden_terms(active_resume)
@@ -92,7 +249,7 @@ def _agent_payload(
         "responseLanguage": _locale_name(request),
         "userPrompt": _current_prompt(request),
         "jobBrief": request.job_brief,
-        "files": _agent_file_context(request.files, hidden_terms=hidden_terms),
+        "files": context_files,
         "keywordMatch": request.keyword_match,
         "resume": sanitize_agent_resume(active_resume, hidden_terms=hidden_terms),
         "agentSettings": _visible_agent_settings(request),
@@ -684,6 +841,37 @@ def _context_input_budget_tokens(
         return None
 
     return max(1, int(window_tokens * CONTEXT_COMPRESSION_RATIO))
+
+
+def _attachment_context_token_budget(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+) -> int:
+    """Reserve at most half of model input context for uploaded material.
+
+    Resume state, instructions, and conversation still need room. When model
+    metadata has no context window, the fallback is large enough for a typical
+    paper while remaining bounded for compatible endpoints with unknown limits.
+    """
+
+    input_budget = _context_input_budget_tokens(request, config)
+    if input_budget is None:
+        return DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET
+    return max(1_024, input_budget // 2)
+
+
+def _fit_attachment_context(
+    files: list[dict[str, str]],
+    *,
+    token_budget: int,
+) -> list[dict[str, str]]:
+    """Require complete extracted text to fit; never send a partial document."""
+
+    if _estimated_json_tokens(files) > token_budget:
+        raise LlmRequestError(
+            "The attached document is too large for the selected model context.",
+        )
+    return files
 
 
 def _context_window_tokens(

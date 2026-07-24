@@ -28,18 +28,23 @@ from app.routers import (
     templates,
     workspace,
 )
+from app.services.agent_runs import AgentRunManager
 from app.services.model_metadata import ensure_model_metadata_cache
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup database migrations before serving requests."""
 
     migrate_db()
     ensure_model_metadata_cache()
-    yield
+    app.state.agent_runs = AgentRunManager()
+    try:
+        yield
+    finally:
+        await app.state.agent_runs.shutdown()
 
 
 def create_app() -> FastAPI:

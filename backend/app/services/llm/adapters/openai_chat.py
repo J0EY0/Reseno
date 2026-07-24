@@ -26,6 +26,12 @@ from ..types import (
 )
 
 
+def supports_native_attachment(media_type: str) -> bool:
+    """OpenAI-compatible Chat Completions exposes no generic file contract."""
+
+    return False
+
+
 async def complete(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],

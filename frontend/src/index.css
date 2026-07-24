@@ -144,6 +144,24 @@
   scrollbar-color: transparent transparent;
   scrollbar-width: thin;
   -ms-overflow-style: auto;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - var(--agent-composer-midpoint)),
+    transparent calc(100% - var(--agent-composer-midpoint)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - var(--agent-composer-midpoint)),
+    transparent calc(100% - var(--agent-composer-midpoint)),
+    transparent 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 
 .agent-thread-scroll::-webkit-scrollbar {
@@ -181,25 +199,20 @@
   );
 }
 
-.agent-thread-content-mask {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 20px,
-    #000 calc(100% - 132px),
-    transparent calc(100% - 92px),
-    transparent 100%
+.agent-thread-layout {
+  --agent-composer-height: 0px;
+  --agent-composer-midpoint: 0px;
+  --agent-thread-safe-gap: 12px;
+}
+
+.agent-thread-safe-area {
+  padding-bottom: calc(
+    var(--agent-composer-height) + var(--agent-thread-safe-gap)
   );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 20px,
-    #000 calc(100% - 132px),
-    transparent calc(100% - 92px),
-    transparent 100%
-  );
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
+}
+
+.agent-thread-scroll-button {
+  bottom: calc(var(--agent-composer-height) + 0.5rem);
 }
 
 @keyframes fade {

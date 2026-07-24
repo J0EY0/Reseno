@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent_locales import AgentLocale
 
 AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
+AgentTransactionState = Literal["none", "provisional", "committed", "rolled_back"]
+AgentRunStatus = Literal["active", "completed", "cancelled", "failed"]
 AgentFinishMissing = Literal[
     "pending_draft",
     "url_purpose",
@@ -26,6 +28,17 @@ AgentToolState = Literal[
     "approval-responded",
     "output-denied",
 ]
+
+
+class AgentAttachmentResponse(BaseModel):
+    """Backend-owned attachment reference safe to persist in chat history."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    filename: str
+    media_type: str = Field(alias="mediaType")
+    kind: Literal["text", "image"]
 
 
 class AgentConversationItem(BaseModel):
@@ -77,6 +90,18 @@ class AgentChatRequest(BaseModel):
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
     settings: dict[str, Any] = Field(default_factory=dict)
     stream: bool = True
+
+
+class AgentRunResponse(BaseModel):
+    """Public state for one in-process Agent run."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    resume_id: str | None = Field(default=None, alias="resumeId")
+    base_resume: dict[str, Any] = Field(default_factory=dict, alias="baseResume")
+    status: AgentRunStatus
+    last_event_id: int = Field(default=0, alias="lastEventId")
 
 
 class AgentKnowledgeItem(BaseModel):
@@ -161,6 +186,10 @@ class AgentChatMessage(BaseModel):
     tools: list[AgentToolInvocation] = Field(default_factory=list)
     sources: list[AgentSource] = Field(default_factory=list)
     edits: list[AgentResumeEditSuggestion] = Field(default_factory=list)
+    transaction_state: AgentTransactionState = Field(
+        default="none",
+        alias="transactionState",
+    )
     finish_missing: list[AgentFinishMissing] = Field(
         default_factory=list,
         alias="finishMissing",

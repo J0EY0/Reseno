@@ -4,25 +4,41 @@ import {
   fetchApiResource,
   requestApi,
   resolveApiUrl,
+  uploadApi,
 } from "@/lib/api-client";
 import type {
+  AgentChatAttachment,
   AgentChatActionId,
   AgentFinishMissing,
   AgentChatMessage,
   AgentChatRequest,
   AgentChatResponse,
   AgentResumeEditSuggestion,
+  AgentRunResponse,
+  AgentRunStatus,
   AgentSessionReplaceRequest,
   AgentSessionResponse,
   AgentSource,
   AgentTimelinePart,
   AgentToolInvocation,
+  AgentTransactionState,
 } from "@/types/api";
 
-interface AgentChatStreamOptions {
+export interface AgentChatStreamOptions {
   onMessage?: (message: AgentChatMessage) => void;
+  onRun?: (run: AgentRunResponse) => void;
   signal?: AbortSignal;
 }
+
+interface AgentStreamAccumulator {
+  lastEventId: number;
+  message: AgentChatMessage;
+  messageDone: boolean;
+  receivedEvent: boolean;
+  status: AgentRunStatus;
+}
+
+class AgentRunStreamHttpError extends Error {}
 
 const agentActionIds = new Set<AgentChatActionId>([
   "summary",
@@ -104,6 +120,32 @@ function toFinishMissing(value: unknown): AgentChatMessage["finishMissing"] {
   );
 
   return missing.length > 0 ? missing : undefined;
+}
+
+function toTransactionState(value: unknown): AgentTransactionState | undefined {
+  if (
+    value === "none" ||
+    value === "provisional" ||
+    value === "committed" ||
+    value === "rolled_back"
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function toRunStatus(value: unknown): AgentRunStatus | undefined {
+  if (
+    value === "active" ||
+    value === "completed" ||
+    value === "cancelled" ||
+    value === "failed"
+  ) {
+    return value;
+  }
+
+  return undefined;
 }
 
 function toSourceType(value: unknown): AgentSource["sourceType"] | undefined {
@@ -278,6 +320,7 @@ function mergeAgentMessage(
   const sources = toSources(patch.sources);
   const edits = toEditSuggestions(patch.edits);
   const finishMissing = toFinishMissing(patch.finishMissing);
+  const transactionState = toTransactionState(patch.transactionState);
   const quickReplies = toStringArray(patch.quickReplies);
 
   return {
@@ -299,6 +342,7 @@ function mergeAgentMessage(
     tools: tools ?? current.tools,
     sources: sources ?? current.sources,
     edits: edits ?? current.edits,
+    transactionState: transactionState ?? current.transactionState,
     finishMissing: finishMissing ?? current.finishMissing,
     quickReplies: quickReplies ?? current.quickReplies,
     actions: actions ?? current.actions,
@@ -307,6 +351,7 @@ function mergeAgentMessage(
 
 function parseServerSentEventBlock(block: string) {
   let eventName = "message";
+  let eventId: number | undefined;
   const dataLines: string[] = [];
 
   block.split(/\r?\n/).forEach((rawLine) => {
@@ -318,6 +363,12 @@ function parseServerSentEventBlock(block: string) {
 
     if (line.startsWith("event:")) {
       eventName = line.slice("event:".length).trim();
+      return;
+    }
+
+    if (line.startsWith("id:")) {
+      const parsed = Number.parseInt(line.slice("id:".length).trim(), 10);
+      eventId = Number.isFinite(parsed) ? parsed : eventId;
       return;
     }
 
@@ -338,7 +389,7 @@ function parseServerSentEventBlock(block: string) {
       ? payload.type
       : eventName;
 
-  return { payload, type };
+  return { eventId, payload, type };
 }
 
 function getPayloadPatch(payload: unknown, key: string) {
@@ -358,6 +409,7 @@ function yieldToRenderer() {
 async function readAgentChatStream(
   response: Response,
   options: AgentChatStreamOptions,
+  accumulator: AgentStreamAccumulator,
 ) {
   if (!response.body) {
     throw new Error("Agent stream response has no body.");
@@ -366,16 +418,17 @@ async function readAgentChatStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let message = createEmptyAssistantMessage();
-  let receivedEvent = false;
 
   const publishMessage = () => {
-    options.onMessage?.(message);
+    options.onMessage?.(accumulator.message);
   };
 
   const applyEvent = (type: string, payload: unknown) => {
     if (type === "message_start") {
-      message = mergeAgentMessage(message, getPayloadPatch(payload, "message"));
+      accumulator.message = mergeAgentMessage(
+        accumulator.message,
+        getPayloadPatch(payload, "message"),
+      );
       publishMessage();
       return;
     }
@@ -390,9 +443,9 @@ async function readAgentChatStream(
         : "";
 
       if (delta) {
-        message = {
-          ...message,
-          text: `${message.text}${delta}`,
+        accumulator.message = {
+          ...accumulator.message,
+          text: `${accumulator.message.text}${delta}`,
         };
         publishMessage();
       }
@@ -407,9 +460,9 @@ async function readAgentChatStream(
         : "";
 
       if (delta) {
-        message = {
-          ...message,
-          reasoning: `${message.reasoning ?? ""}${delta}`,
+        accumulator.message = {
+          ...accumulator.message,
+          reasoning: `${accumulator.message.reasoning ?? ""}${delta}`,
         };
         publishMessage();
       }
@@ -429,14 +482,29 @@ async function readAgentChatStream(
       type === "quickReplies" ||
       type === "actions"
     ) {
-      message = mergeAgentMessage(message, getPayloadPatch(payload, "message"));
+      accumulator.message = mergeAgentMessage(
+        accumulator.message,
+        getPayloadPatch(payload, "message"),
+      );
       publishMessage();
       return;
     }
 
     if (type === "message_done") {
-      message = mergeAgentMessage(message, getPayloadPatch(payload, "message"));
-      options.onMessage?.(message);
+      accumulator.message = mergeAgentMessage(
+        accumulator.message,
+        getPayloadPatch(payload, "message"),
+      );
+      accumulator.messageDone = true;
+      options.onMessage?.(accumulator.message);
+      return;
+    }
+
+    if (type === "run_done") {
+      const status = isRecord(payload) ? toRunStatus(payload.status) : undefined;
+      if (status) {
+        accumulator.status = status;
+      }
       return;
     }
 
@@ -449,9 +517,9 @@ async function readAgentChatStream(
             : "";
 
       if (errorMessage) {
-        message = {
-          ...message,
-          text: message.text || errorMessage,
+        accumulator.message = {
+          ...accumulator.message,
+          text: accumulator.message.text || errorMessage,
         };
         publishMessage();
       }
@@ -467,7 +535,13 @@ async function readAgentChatStream(
         continue;
       }
 
-      receivedEvent = true;
+      accumulator.receivedEvent = true;
+      if (event.eventId !== undefined) {
+        accumulator.lastEventId = Math.max(
+          accumulator.lastEventId,
+          event.eventId,
+        );
+      }
       applyEvent(event.type, event.payload);
 
       if (index < blocks.length - 1) {
@@ -496,11 +570,135 @@ async function readAgentChatStream(
     await flushBlocks([buffer]);
   }
 
-  if (!receivedEvent) {
+  return accumulator;
+}
+
+function createStreamAccumulator(
+  status: AgentRunStatus = "active",
+): AgentStreamAccumulator {
+  return {
+    lastEventId: 0,
+    message: createEmptyAssistantMessage(),
+    messageDone: false,
+    receivedEvent: false,
+    status,
+  };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (signal?.aborted) {
+    throw new DOMException("Agent stream subscription aborted.", "AbortError");
+  }
+}
+
+function waitBeforeReconnect(signal: AbortSignal | undefined, delayMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    throwIfAborted(signal);
+
+    function handleAbort() {
+      window.clearTimeout(timeoutId);
+      reject(new DOMException("Agent stream subscription aborted.", "AbortError"));
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, delayMs);
+
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+function assertEventStreamResponse(response: Response, route: string) {
+  if (!response.ok) {
+    throw new AgentRunStreamHttpError(
+      `API request failed: ${route} (${response.status})`,
+    );
+  }
+
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
+    throw new AgentRunStreamHttpError(
+      "Agent chat endpoint did not return an event stream.",
+    );
+  }
+}
+
+async function fetchAgentRunEvents(
+  runId: string,
+  after: number,
+  signal: AbortSignal | undefined,
+) {
+  const route = apiRoutes.agentRunEvents(runId);
+  const response = await fetchApiResource(
+    resolveApiUrl(route, { searchParams: { after } }),
+    {
+      cache: "no-store",
+      headers: { Accept: "text/event-stream" },
+      method: "GET",
+      signal,
+    },
+  );
+  assertEventStreamResponse(response, route);
+  return response;
+}
+
+async function consumeAgentRun(
+  run: AgentRunResponse,
+  options: AgentChatStreamOptions,
+  initialResponse?: Response,
+) {
+  const accumulator = createStreamAccumulator(run.status);
+  let response = initialResponse;
+  let reconnectDelayMs = 250;
+
+  options.onRun?.(run);
+
+  while (accumulator.status === "active") {
+    throwIfAborted(options.signal);
+
+    try {
+      response ??= await fetchAgentRunEvents(
+        run.id,
+        accumulator.lastEventId,
+        options.signal,
+      );
+      await readAgentChatStream(response, options, accumulator);
+      reconnectDelayMs = 250;
+      response = undefined;
+    } catch (error) {
+      throwIfAborted(options.signal);
+      if (error instanceof AgentRunStreamHttpError) {
+        throw error;
+      }
+
+      // A subscriber can disappear while the process-local Agent run keeps
+      // working. Reconnect from the last acknowledged SSE id instead of
+      // turning a browser/network interruption into an Agent cancellation.
+      await waitBeforeReconnect(options.signal, reconnectDelayMs);
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 2000);
+      response = undefined;
+    }
+  }
+
+  if (!accumulator.receivedEvent) {
     throw new Error("Agent stream completed without events.");
   }
 
-  return message;
+  const completedRun: AgentRunResponse = {
+    ...run,
+    lastEventId: accumulator.lastEventId,
+    status: accumulator.status,
+  };
+  options.onRun?.(completedRun);
+
+  return {
+    lastEventId: accumulator.lastEventId,
+    message: accumulator.message,
+    messageDone: accumulator.messageDone,
+    runId: run.id,
+    status: accumulator.status,
+  } satisfies AgentChatResponse;
 }
 
 export async function sendAgentChatMessage(
@@ -521,24 +719,82 @@ export async function sendAgentChatMessage(
     },
   );
 
-  if (!response.ok) {
-    throw new Error(
-      `API request failed: ${apiRoutes.agentChat} (${response.status})`,
-    );
+  assertEventStreamResponse(response, apiRoutes.agentChat);
+  const runId = response.headers.get("X-Agent-Run-Id")?.trim();
+  if (!runId) {
+    throw new Error("Agent chat endpoint did not return a run id.");
   }
 
-  const contentType = response.headers.get("Content-Type") ?? "";
-
-  if (!contentType.toLowerCase().includes("text/event-stream")) {
-    throw new Error("Agent chat endpoint did not return an event stream.");
-  }
-
-  const message = await readAgentChatStream(response, options);
+  const result = await consumeAgentRun(
+    {
+      baseResume: request.resume,
+      id: runId,
+      lastEventId: 0,
+      resumeId: request.resumeId,
+      status: "active",
+    },
+    options,
+    response,
+  );
   if (request.resumeId) {
     clearApiCache(apiRoutes.agentResumeSession(request.resumeId));
   }
 
-  return { message } satisfies AgentChatResponse;
+  return result;
+}
+
+export async function connectAgentRun(
+  run: AgentRunResponse,
+  options: AgentChatStreamOptions = {},
+) {
+  // Reconnecting clients replay from the beginning of the short in-memory
+  // buffer so the partial assistant message can be rebuilt deterministically.
+  return consumeAgentRun({ ...run, lastEventId: 0, status: "active" }, options);
+}
+
+export function loadActiveAgentRun(resumeId: string) {
+  return requestApi<AgentRunResponse | null>(apiRoutes.agentResumeRun(resumeId));
+}
+
+export function stopAgentRun(runId: string) {
+  return requestApi<AgentRunResponse>(apiRoutes.agentRun(runId), {
+    method: "DELETE",
+  });
+}
+
+export function uploadAgentAttachment(
+  file: FormData,
+  resumeId: string,
+  onProgress?: (progress: { loaded: number; total?: number }) => void,
+) {
+  file.set("resumeId", resumeId);
+  return uploadApi<AgentChatAttachment>(apiRoutes.agentAttachments, file, {
+    onProgress,
+  });
+}
+
+export function downloadAgentAttachment(
+  resumeId: string,
+  attachmentId: string,
+) {
+  return fetchApiResource(
+    resolveApiUrl(apiRoutes.agentAttachment(resumeId, attachmentId)),
+    {
+      cache: "no-store",
+    },
+  );
+}
+
+export function deletePendingAgentAttachment(
+  resumeId: string,
+  attachmentId: string,
+) {
+  return requestApi<{ id: string }>(
+    apiRoutes.agentAttachment(resumeId, attachmentId),
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function loadAgentSession(resumeId: string) {

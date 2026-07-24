@@ -2,6 +2,7 @@ import json
 
 from app.schemas.agent import AgentChatRequest
 from app.services.agent import WebReference
+from app.services.agent.attachments import store_agent_attachment
 from app.services.agent.policy import capability_policy_for_request
 from app.services.agent.runtime.events import AgentRunEvent
 from app.services.agent.tools import registry as tool_registry
@@ -528,25 +529,28 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
 
 
 def test_replay_material_extract_sanitizes_attachment_candidates() -> None:
+    session_id = "material-extract-attachment"
+    attachment = store_agent_attachment(
+        session_id=session_id,
+        filename="王小明-project.txt",
+        media_type="text/plain",
+        payload=(
+            "项目名称: ResuMate\n"
+            "王小明 邮箱 xiaoming@example.com 电话 13800138000\n"
+            "技术栈: React TypeScript Python\n"
+            "成果: 构建 AI 简历编辑流程"
+        ).encode(),
+    ).model_dump(mode="json", by_alias=True)
+
     result = run_agent_replay(
         AgentReplayScenario(
             name="material_extract_attachment",
             request=AgentChatRequest(
                 prompt="根据附件补充项目经历",
                 locale="zh",
-                files=[
-                    {
-                        "filename": "王小明-project.txt",
-                        "mediaType": "text/plain",
-                        "content": (
-                            "项目名称: ResuMate\n"
-                            "王小明 邮箱 xiaoming@example.com 电话 13800138000\n"
-                            "技术栈: React TypeScript Python\n"
-                            "成果: 构建 AI 简历编辑流程"
-                        ),
-                    },
-                ],
+                files=[attachment],
                 resume={"basic": {"name": "王小明"}, "sections": []},
+                resume_id=session_id,
             ),
             tool_calls=[
                 ReplayToolCall(

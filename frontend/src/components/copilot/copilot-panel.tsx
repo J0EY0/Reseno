@@ -1,8 +1,15 @@
 import {
   Attachment,
+  AttachmentHoverCard,
+  AttachmentHoverCardContent,
+  AttachmentHoverCardTrigger,
+  AttachmentInfo,
   AttachmentPreview,
   AttachmentRemove,
   Attachments,
+  type AttachmentData,
+  getAttachmentLabel,
+  getMediaCategory,
 } from "@/components/ai-elements/attachments";
 import {
   Conversation,
@@ -39,6 +46,7 @@ import {
   PromptInputTextarea,
   PromptInputTools,
   usePromptInputAttachments,
+  usePromptInputController,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -65,12 +73,13 @@ import {
 } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
   ClipboardList,
   Copy,
-  FileText,
+  Download,
   Pencil,
   Plus,
   RotateCcw,
@@ -80,11 +89,13 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { toast } from "sonner";
+import type { StickToBottomContext } from "use-stick-to-bottom";
 
 import { getMessagesSync, locales, type AppMessages, type Locale } from "@/i18n";
 import {
@@ -94,9 +105,16 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  connectAgentRun,
+  deletePendingAgentAttachment,
+  downloadAgentAttachment,
+  loadActiveAgentRun,
   loadAgentSession,
   replaceAgentSession,
   sendAgentChatMessage,
+  stopAgentRun,
+  type AgentChatStreamOptions,
+  uploadAgentAttachment,
 } from "@/lib/agent-api";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
@@ -111,13 +129,17 @@ import { cn } from "@/lib/utils";
 import type {
   AgentChatAttachment,
   AgentChatMessage,
+  AgentChatResponse,
   AgentConversationMessage,
   AgentDraftState,
   AgentResumeEditSuggestion,
+  AgentRunResponse,
+  AgentRunStatus,
   AgentSource,
   AgentStoredMessage,
   AgentTimelinePart,
   AgentToolInvocation,
+  AgentTransactionState,
 } from "@/types/api";
 import type {
   AgentSettings,
@@ -127,12 +149,28 @@ import type {
 } from "@/types/resume";
 
 const AGENT_REQUEST_DEBOUNCE_MS = 420;
-const MAX_ATTACHMENT_TEXT_LENGTH = 16_000;
-const TEXT_ATTACHMENT_ACCEPT =
-  "application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const IMAGE_ATTACHMENT_ACCEPT = `image/*,${TEXT_ATTACHMENT_ACCEPT}`;
-const TEXT_ATTACHMENT_PATTERN =
-  /^(text\/|application\/json|application\/xml|application\/.*\+json)/i;
+const MAX_AGENT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_AGENT_ATTACHMENTS = 5;
+const TEXT_ATTACHMENT_ACCEPT = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/json",
+  "application/xml",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  ".md",
+  ".markdown",
+  ".yaml",
+  ".yml",
+].join(",");
+const IMAGE_ATTACHMENT_ACCEPT = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  TEXT_ATTACHMENT_ACCEPT,
+].join(",");
 const JOB_BRIEF_PROMPT_PATTERN = new RegExp(
   languagePatterns.jobBriefPrompt.map(escapeRegExp).join("|"),
   "i",
@@ -149,6 +187,130 @@ interface AgentPanelMessage {
   text: string;
   files?: AgentChatAttachment[];
   response?: AgentChatMessage;
+}
+
+interface PendingAgentSend {
+  resolve: (status: AgentRunStatus) => void;
+  resumeId?: string;
+  rollbackMessages: AgentPanelMessage[];
+}
+
+function toAttachmentData(
+  file: AgentChatAttachment,
+  index: number,
+  fallbackLabel: string,
+): AttachmentData {
+  // Persisted messages intentionally contain only an opaque attachment id and
+  // metadata. Keeping the URL empty makes AI Elements render a safe file icon
+  // instead of relying on an expired browser-local Blob URL.
+  return {
+    filename: file.filename || fallbackLabel,
+    id:
+      file.id ||
+      `agent-attachment-${index}-${file.filename || fallbackLabel}`,
+    mediaType:
+      file.mediaType ||
+      (file.kind === "image" ? "image/*" : "application/octet-stream"),
+    type: "file",
+    url: "",
+  };
+}
+
+function AgentMessageAttachments({
+  className,
+  downloadLabel,
+  fallbackLabel,
+  files,
+  onDownload,
+  onReference,
+  referenceLabel,
+}: {
+  className?: string;
+  downloadLabel: string;
+  fallbackLabel: string;
+  files: AgentChatAttachment[];
+  onDownload: (file: AgentChatAttachment) => void;
+  onReference: (file: AgentChatAttachment) => void;
+  referenceLabel: string;
+}) {
+  return (
+    <Attachments
+      className={cn("max-w-full justify-end", className)}
+      variant="grid"
+    >
+      {files.map((file, index) => {
+        const attachment = toAttachmentData(file, index, fallbackLabel);
+        const canOpen = Boolean(file.id);
+
+        return (
+          <AttachmentHoverCard closeDelay={100} key={attachment.id} openDelay={300}>
+            <AttachmentHoverCardTrigger asChild>
+              <Attachment
+                aria-label={attachment.filename || fallbackLabel}
+                className={cn(
+                  "max-w-full border border-border/70 bg-background hover:bg-background",
+                  canOpen ? "cursor-pointer" : "cursor-default",
+                )}
+                data={attachment}
+                onClick={() => {
+                  if (canOpen) {
+                    onDownload(file);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    canOpen &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    onDownload(file);
+                  }
+                }}
+                role={canOpen ? "button" : undefined}
+                tabIndex={canOpen ? 0 : undefined}
+              >
+                <AttachmentPreview className="pb-7 [&_svg]:size-5" />
+                <span className="absolute inset-x-0 bottom-0 block truncate border-t border-border/60 bg-background/95 px-2 py-1.5 text-[11px] leading-4 text-foreground">
+                  {attachment.filename || fallbackLabel}
+                </span>
+              </Attachment>
+            </AttachmentHoverCardTrigger>
+            <AttachmentHoverCardContent side="top" sideOffset={8}>
+              <div className="grid max-w-72 gap-2">
+                <p className="break-words px-1 text-sm font-medium leading-5">
+                  {attachment.filename || fallbackLabel}
+                </p>
+                {canOpen ? (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      className="h-7 px-2 text-xs"
+                      onClick={() => onDownload(file)}
+                      size="xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Download className="size-3.5" />
+                      {downloadLabel}
+                    </Button>
+                    <Button
+                      className="h-7 px-2 text-xs"
+                      onClick={() => onReference(file)}
+                      size="xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Plus className="size-3.5" />
+                      {referenceLabel}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </AttachmentHoverCardContent>
+          </AttachmentHoverCard>
+        );
+      })}
+    </Attachments>
+  );
 }
 
 function getModelProvider(config: ModelConfig) {
@@ -190,25 +352,105 @@ function getModelSecondaryName(config: ModelConfig) {
   return config.model;
 }
 
-function AgentPromptAttachmentsDisplay() {
+function AgentPromptAttachment({
+  attachment,
+  onRemove,
+}: {
+  attachment: AttachmentData;
+  onRemove: () => void;
+}) {
+  const label = getAttachmentLabel(attachment);
+  const mediaCategory = getMediaCategory(attachment);
+
+  return (
+    <AttachmentHoverCard closeDelay={100} openDelay={300}>
+      <AttachmentHoverCardTrigger asChild>
+        <Attachment
+          className="w-fit min-w-0 max-w-[13rem] overflow-hidden"
+          data={attachment}
+          onRemove={onRemove}
+        >
+          <div className="relative size-5 shrink-0">
+            <div className="absolute inset-0 transition-opacity group-hover:opacity-0">
+              <AttachmentPreview />
+            </div>
+            <AttachmentRemove className="absolute inset-0" />
+          </div>
+          <AttachmentInfo />
+        </Attachment>
+      </AttachmentHoverCardTrigger>
+      <AttachmentHoverCardContent side="top" sideOffset={8}>
+        <div className="space-y-3">
+          {mediaCategory === "image" &&
+            attachment.type === "file" &&
+            attachment.url && (
+              <div className="flex max-h-64 w-64 items-center justify-center overflow-hidden rounded-md border">
+                <img
+                  alt={label}
+                  className="max-h-full max-w-full object-contain"
+                  height={256}
+                  src={attachment.url}
+                  width={256}
+                />
+              </div>
+            )}
+          <div className="max-w-72 px-0.5">
+            <p className="break-words font-medium text-sm leading-5">{label}</p>
+          </div>
+        </div>
+      </AttachmentHoverCardContent>
+    </AttachmentHoverCard>
+  );
+}
+
+function AgentPromptAttachmentsDisplay({
+  fallbackLabel,
+  onLocalCountChange,
+  onRemoveReferenced,
+  referencedFiles,
+}: {
+  fallbackLabel: string;
+  onLocalCountChange: (count: number) => void;
+  onRemoveReferenced: (id: string) => void;
+  referencedFiles: AgentChatAttachment[];
+}) {
   const attachments = usePromptInputAttachments();
 
-  if (attachments.files.length === 0) {
+  useEffect(() => {
+    onLocalCountChange(attachments.files.length);
+  }, [attachments.files.length, onLocalCountChange]);
+
+  if (attachments.files.length === 0 && referencedFiles.length === 0) {
     return null;
   }
 
   return (
-    <Attachments className="px-4 pt-4" variant="inline">
+    <Attachments
+      className="w-full min-w-0 justify-start self-start px-4 pt-3"
+      variant="inline"
+    >
       {attachments.files.map((attachment) => (
-        <Attachment
-          data={attachment}
-          key={attachment.id}
+        <AgentPromptAttachment
+          attachment={attachment}
+          key={`local-${attachment.id}`}
           onRemove={() => attachments.remove(attachment.id)}
-        >
-          <AttachmentPreview />
-          <AttachmentRemove />
-        </Attachment>
+        />
       ))}
+      {referencedFiles.map((file, index) => {
+        const attachment = toAttachmentData(file, index, fallbackLabel);
+
+        return (
+          <AgentPromptAttachment
+            attachment={attachment}
+            key={`referenced-${attachment.id}`}
+            onRemove={() => {
+              if (file.id) {
+                onRemoveReferenced(file.id);
+              }
+            }}
+          />
+        );
+      })}
     </Attachments>
   );
 }
@@ -235,6 +477,76 @@ function AgentPromptAttachmentButton({
   );
 }
 
+function AgentPromptSubmitButton({
+  attachmentUploadProgress,
+  hasConfiguredModel,
+  hasReferencedAttachments,
+  isResponding,
+  isSubmittingPrompt,
+  onStop,
+  t,
+}: {
+  attachmentUploadProgress: number | null;
+  hasConfiguredModel: boolean;
+  hasReferencedAttachments: boolean;
+  isResponding: boolean;
+  isSubmittingPrompt: boolean;
+  onStop: () => void;
+  t: AppMessages;
+}) {
+  const controller = usePromptInputController();
+  const attachments = usePromptInputAttachments();
+  const hasPromptContent =
+    controller.textInput.value.trim().length > 0 ||
+    attachments.files.length > 0 ||
+    hasReferencedAttachments;
+  const isDisabled =
+    !hasConfiguredModel ||
+    isSubmittingPrompt ||
+    (!isResponding && !hasPromptContent);
+
+  return (
+    <PromptInputSubmit
+      aria-label={
+        attachmentUploadProgress !== null
+          ? t.agentAttachmentUploading.replace(
+              "{progress}",
+              String(attachmentUploadProgress),
+            )
+          : isResponding
+            ? t.agentStopResponse
+            : t.agentSendPrompt
+      }
+      status={
+        isSubmittingPrompt
+          ? "submitted"
+          : isResponding
+            ? "streaming"
+            : "ready"
+      }
+      disabled={isDisabled}
+      onStop={onStop}
+      className="ml-3 size-8 min-w-8 shrink-0 rounded-full bg-foreground p-0 text-background shadow-none transition-none hover:!bg-foreground hover:!text-background disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:cursor-not-allowed"
+    >
+      {attachmentUploadProgress !== null ? (
+        <span
+          aria-hidden="true"
+          className="text-[10px] font-semibold tabular-nums"
+        >
+          {attachmentUploadProgress}%
+        </span>
+      ) : isResponding ? (
+        <span
+          aria-hidden="true"
+          className="size-2.5 rounded-[3px] bg-current"
+        />
+      ) : isSubmittingPrompt ? null : (
+        <ArrowUp aria-hidden="true" className="size-4" />
+      )}
+    </PromptInputSubmit>
+  );
+}
+
 function isLikelyJobBriefPrompt(prompt: string) {
   const trimmed = prompt.trim();
 
@@ -245,41 +557,51 @@ function isLikelyJobBriefPrompt(prompt: string) {
   );
 }
 
-function isReadableTextAttachment(file: PromptInputMessage["files"][number]) {
-  const mediaType = file.mediaType ?? "";
-  const filename = file.filename ?? "";
-
-  return (
-    TEXT_ATTACHMENT_PATTERN.test(mediaType) ||
-    /\.(txt|md|markdown|json|csv|xml|yaml|yml)$/i.test(filename)
-  );
+interface PreparedAgentAttachment {
+  body: FormData;
+  byteLength: number;
 }
 
-async function readAttachmentContent(file: PromptInputMessage["files"][number]) {
-  if (!file.url || !file.url.startsWith("blob:") || !isReadableTextAttachment(file)) {
-    return undefined;
+async function prepareAgentAttachment(
+  file: PromptInputMessage["files"][number],
+): Promise<PreparedAgentAttachment> {
+  if (!file.url) {
+    throw new Error("Attachment URL is unavailable.");
   }
 
-  try {
-    const response = await fetch(file.url);
-    const text = await response.text();
-    return text.slice(0, MAX_ATTACHMENT_TEXT_LENGTH);
-  } catch {
-    return undefined;
+  const response = await fetch(file.url);
+  if (!response.ok) {
+    throw new Error("Attachment data could not be read.");
   }
-}
 
-async function toAgentAttachment(file: PromptInputMessage["files"][number]) {
-  const maybeFileId = (file as unknown as { id?: unknown }).id;
-  const content = await readAttachmentContent(file);
+  const blob = await response.blob();
+  const body = new FormData();
+  body.append("file", blob, file.filename || "attachment");
 
   return {
-    content,
-    id: typeof maybeFileId === "string" ? maybeFileId : createId("agent-file"),
-    filename: file.filename,
-    mediaType: file.mediaType,
-    url: file.url,
-  } satisfies AgentChatAttachment;
+    body,
+    // Empty files still receive one unit of progress weight so a batch cannot
+    // produce an invalid zero-byte denominator.
+    byteLength: Math.max(blob.size, 1),
+  };
+}
+
+async function deletePendingUploads(
+  resumeId: string,
+  files: AgentChatAttachment[],
+) {
+  const attachmentIds = files
+    .map((file) => file.id)
+    .filter((id): id is string => Boolean(id));
+  const results = await Promise.allSettled(
+    attachmentIds.map((id) => deletePendingAgentAttachment(resumeId, id)),
+  );
+
+  // Cleanup is best-effort: the server may already have protected a file after
+  // persisting a completed turn, in which case the pending-only delete rejects.
+  if (results.some((result) => result.status === "rejected")) {
+    console.warn("Some pending Agent attachments could not be removed.");
+  }
 }
 
 function toConversationMessage(
@@ -322,6 +644,7 @@ function toConversationResponse(
     })),
     text: response.text,
     timeline: response.timeline,
+    transactionState: response.transactionState,
     tools: response.tools?.map((tool) => ({
       id: tool.id,
       state: tool.state,
@@ -763,7 +1086,9 @@ function AgentUserMessage({
   message,
   onCancelEdit,
   onCopy,
+  onDownloadAttachment,
   onEditTextChange,
+  onReferenceAttachment,
   onStartEdit,
   onSubmitEdit,
   t,
@@ -775,12 +1100,15 @@ function AgentUserMessage({
   message: AgentPanelMessage;
   onCancelEdit: () => void;
   onCopy: () => void;
+  onDownloadAttachment: (file: AgentChatAttachment) => void;
   onEditTextChange: (value: string) => void;
+  onReferenceAttachment: (file: AgentChatAttachment) => void;
   onStartEdit: () => void;
   onSubmitEdit: () => void;
   t: AppMessages;
 }) {
   const submitDisabled = disabled || !editedText.trim();
+  const hasText = Boolean(message.text.trim());
 
   return (
     <div
@@ -789,80 +1117,81 @@ function AgentUserMessage({
         isEditing && "w-full",
       )}
     >
-      <MessageContent
-        className={cn(
-          "ml-auto min-w-8 max-w-full self-end overflow-visible text-foreground",
-          isEditing
-            ? "!w-full !rounded-2xl border border-border/70 !bg-background !px-2.5 !py-1.5 shadow-[0_4px_18px_rgba(15,23,42,0.08)] transition-[border-color,box-shadow] focus-within:border-ring/35 focus-within:shadow-[0_8px_26px_rgba(15,23,42,0.10)]"
-            : "w-fit !rounded-xl bg-secondary !px-3 !py-1 text-[15px] leading-5",
-        )}
-      >
-        {isEditing ? (
-          <div className="grid gap-1.5">
-            <Textarea
-              autoFocus
-              value={editedText}
-              rows={1}
-              className="max-h-36 min-h-7 resize-none border-0 bg-transparent px-1 py-0 text-[15px] leading-6 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0"
-              onChange={(event) => onEditTextChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  onCancelEdit();
-                  return;
-                }
+      {message.files?.length ? (
+        <AgentMessageAttachments
+          className={cn((isEditing || hasText) && "mb-1.5")}
+          downloadLabel={t.agentAttachmentDownload}
+          fallbackLabel={t.agentAttachmentFallback}
+          files={message.files}
+          onDownload={onDownloadAttachment}
+          onReference={onReferenceAttachment}
+          referenceLabel={t.agentAttachmentReference}
+        />
+      ) : null}
 
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  onSubmitEdit();
-                }
-              }}
-            />
-            <div className="flex items-center justify-end gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                className="h-6 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                onClick={onCancelEdit}
-              >
-                <X className="size-3" />
-                {t.agentCancelEdit}
-              </Button>
-              <Button
-                type="button"
-                size="xs"
-                className="h-6 rounded-md bg-foreground px-2.5 text-xs text-background shadow-none hover:bg-foreground/90"
-                disabled={submitDisabled}
-                onClick={onSubmitEdit}
-              >
-                <Check className="size-3" />
-                {t.agentSubmitEdit}
-              </Button>
+      {isEditing || hasText ? (
+        <MessageContent
+          className={cn(
+            "ml-auto min-w-8 max-w-full self-end overflow-visible text-foreground",
+            isEditing
+              ? "!w-full !rounded-2xl border border-border/70 !bg-background !px-2.5 !py-1.5 shadow-[0_4px_18px_rgba(15,23,42,0.08)] transition-[border-color,box-shadow] focus-within:border-ring/35 focus-within:shadow-[0_8px_26px_rgba(15,23,42,0.10)]"
+              : "w-fit !rounded-xl bg-secondary !px-3 !py-1 text-[15px] leading-5",
+          )}
+        >
+          {isEditing ? (
+            <div className="grid gap-1.5">
+              <Textarea
+                autoFocus
+                value={editedText}
+                rows={1}
+                className="max-h-36 min-h-7 resize-none border-0 bg-transparent px-1 py-0 text-[15px] leading-6 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0"
+                onChange={(event) => onEditTextChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancelEdit();
+                    return;
+                  }
+
+                  if (
+                    event.key === "Enter" &&
+                    (event.metaKey || event.ctrlKey)
+                  ) {
+                    event.preventDefault();
+                    onSubmitEdit();
+                  }
+                }}
+              />
+              <div className="flex items-center justify-end gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={onCancelEdit}
+                >
+                  <X className="size-3" />
+                  {t.agentCancelEdit}
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  className="h-6 rounded-md bg-foreground px-2.5 text-xs text-background shadow-none hover:bg-foreground/90"
+                  disabled={submitDisabled}
+                  onClick={onSubmitEdit}
+                >
+                  <Check className="size-3" />
+                  {t.agentSubmitEdit}
+                </Button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">
-            {message.text}
-          </span>
-        )}
-
-        {message.files?.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {message.files.map((file) => (
-              <span
-                key={file.id ?? file.url ?? file.filename}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-primary-foreground/20 bg-primary-foreground/10 px-2.5 py-1 text-xs"
-              >
-                <FileText className="size-3" />
-                <span className="truncate">
-                  {file.filename || t.agentAttachmentFallback}
-                </span>
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </MessageContent>
+          ) : (
+            <span className="block whitespace-pre-wrap break-words leading-5 [overflow-wrap:anywhere]">
+              {message.text}
+            </span>
+          )}
+        </MessageContent>
+      ) : null}
 
       {!isEditing ? (
         <MessageActions className="pointer-events-none mr-1 mt-0.5 h-5 justify-end gap-1 opacity-0 transition-opacity duration-150 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 group-focus-within/user-message:pointer-events-auto group-focus-within/user-message:opacity-100">
@@ -1109,6 +1438,7 @@ function AgentMessageTimeline({
 function AgentChangeSummary({
   edits,
   observations,
+  transactionState,
   hasAgentDraft,
   onApplyAgentDraft,
   onDiscardAgentDraft,
@@ -1117,6 +1447,7 @@ function AgentChangeSummary({
 }: {
   edits: AgentResumeEditSuggestion[];
   observations: Map<string, { before?: string; after?: string }>;
+  transactionState: AgentTransactionState | undefined;
   hasAgentDraft: boolean;
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
@@ -1127,16 +1458,20 @@ function AgentChangeSummary({
     return null;
   }
 
+  const isCommitted = transactionState === "committed";
+
   return (
     <div className="mt-4 rounded-2xl border border-border/70 bg-muted/25 p-3">
       <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
         <ClipboardList className="size-3.5" />
         {t.agentChangeSummaryTitle}
       </div>
-      <p className="mt-2 text-sm font-medium text-foreground">
-        {formatCountMessage(t.agentReviewReady, edits.length)}
-      </p>
-      {hasAgentDraft ? (
+      {isCommitted ? (
+        <p className="mt-2 text-sm font-medium text-foreground">
+          {formatCountMessage(t.agentReviewReady, edits.length)}
+        </p>
+      ) : null}
+      {hasAgentDraft && isCommitted ? (
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           {t.agentDraftSynced}
         </p>
@@ -1235,6 +1570,7 @@ export function CopilotPanel({
   hasAgentDraft,
   agentDraftState,
   onPreviewAgentEdits,
+  onRollbackAgentDraft,
   onApplyAgentDraft,
   onDiscardAgentDraft,
   onOpenModelSettings,
@@ -1257,7 +1593,9 @@ export function CopilotPanel({
     edits: AgentResumeEditSuggestion[],
     baseResume: ResumeData,
     sourceMessageId?: string,
+    transactionState?: AgentTransactionState,
   ) => void;
+  onRollbackAgentDraft: (sourceMessageId?: string) => void;
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
   onOpenModelSettings: () => void;
@@ -1266,16 +1604,43 @@ export function CopilotPanel({
   const [streamingMessage, setStreamingMessage] =
     useState<AgentPanelMessage | null>(null);
   const [isResponding, setIsResponding] = useState(false);
+  const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
+  const [attachmentUploadProgress, setAttachmentUploadProgress] = useState<
+    number | null
+  >(null);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
+  const [promptLocalAttachmentCount, setPromptLocalAttachmentCount] =
+    useState(0);
+  const [referencedAttachments, setReferencedAttachments] = useState<
+    AgentChatAttachment[]
+  >([]);
   const replyTimerRef = useRef<number | null>(null);
+  const pendingSendRef = useRef<PendingAgentSend | null>(null);
+  const promptSubmissionRef = useRef(false);
+  const referencedAttachmentsRef = useRef<AgentChatAttachment[]>([]);
   const copyTimerRef = useRef<number | null>(null);
   const activeRequestAbortRef = useRef<AbortController | null>(null);
-  const streamingMessageRef = useRef<AgentPanelMessage | null>(null);
+  const activeRunRef = useRef<AgentRunResponse | null>(null);
+  const composerRef = useRef<HTMLElement | null>(null);
+  const conversationLayoutRef = useRef<HTMLDivElement | null>(null);
+  const conversationContextRef = useRef<StickToBottomContext | null>(null);
+  const stopRequestedRef = useRef(false);
   const previewedEditsKeyRef = useRef<string | null>(null);
   const requestResumeRef = useRef<ResumeData>(resume);
+  const currentResumeIdRef = useRef(resumeId);
+  const onPreviewAgentEditsRef = useRef(onPreviewAgentEdits);
+  const onRollbackAgentDraftRef = useRef(onRollbackAgentDraft);
+  const transientStatusTextsRef = useRef(t.agentTransientModelStatusTexts);
+  const requestFailedTextRef = useRef(t.agentRequestFailed);
+  onPreviewAgentEditsRef.current = onPreviewAgentEdits;
+  onRollbackAgentDraftRef.current = onRollbackAgentDraft;
+  transientStatusTextsRef.current = t.agentTransientModelStatusTexts;
+  requestFailedTextRef.current = t.agentRequestFailed;
+  currentResumeIdRef.current = resumeId;
+  referencedAttachmentsRef.current = referencedAttachments;
   const selectedModel = useMemo(
     () =>
       modelConfigs.find((config) => config.id === selectedModelId) ??
@@ -1310,7 +1675,10 @@ export function CopilotPanel({
     for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
       const message = visibleMessages[index];
 
-      if (message.response?.edits?.length) {
+      if (
+        message.response?.edits?.length &&
+        message.response.transactionState !== "rolled_back"
+      ) {
         return message.id;
       }
     }
@@ -1318,17 +1686,247 @@ export function CopilotPanel({
     return null;
   }, [visibleMessages]);
   const hasConfiguredModel = Boolean(selectedModel);
+  const promptAttachmentCapacity = Math.max(
+    0,
+    MAX_AGENT_ATTACHMENTS - referencedAttachments.length,
+  );
+
+  const cancelScheduledSend = useCallback((rollback: boolean) => {
+    if (replyTimerRef.current === null) {
+      return false;
+    }
+
+    window.clearTimeout(replyTimerRef.current);
+    replyTimerRef.current = null;
+    const pending = pendingSendRef.current;
+    pendingSendRef.current = null;
+
+    if (
+      rollback &&
+      pending &&
+      pending.resumeId === currentResumeIdRef.current
+    ) {
+      setMessages(pending.rollbackMessages);
+    }
+    pending?.resolve("cancelled");
+    setIsResponding(false);
+    return true;
+  }, []);
+
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    const conversationLayout = conversationLayoutRef.current;
+
+    if (!composer || !conversationLayout) {
+      return;
+    }
+
+    let previousHeight = -1;
+    const syncComposerHeight = () => {
+      const nextHeight = composer.getBoundingClientRect().height;
+
+      if (nextHeight === previousHeight) {
+        return;
+      }
+
+      const conversation = conversationContextRef.current;
+      const shouldFollowBottom = Boolean(
+        conversation?.state.isAtBottom &&
+          !conversation.state.escapedFromLock,
+      );
+
+      previousHeight = nextHeight;
+      conversationLayout.style.setProperty(
+        "--agent-composer-height",
+        `${nextHeight}px`,
+      );
+      conversationLayout.style.setProperty(
+        "--agent-composer-midpoint",
+        `${nextHeight / 2}px`,
+      );
+
+      // Read the lock before changing the safe area: the layout mutation can
+      // temporarily make an attached conversation appear away from the bottom.
+      if (shouldFollowBottom) {
+        void conversation?.scrollToBottom({ animation: "instant" });
+      }
+    };
+
+    // The composer overlays the scroll viewport. Measure its real height so
+    // attachments and multiline input never depend on a fixed bottom offset.
+    syncComposerHeight();
+    const resizeObserver = new ResizeObserver(syncComposerHeight);
+    resizeObserver.observe(composer);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  const syncPreviewEdits = useCallback(
+    (
+      edits: AgentResumeEditSuggestion[] | undefined,
+      baseResume: ResumeData,
+      sourceMessageId: string | undefined,
+      transactionState: AgentTransactionState | undefined,
+    ) => {
+      if (
+        !edits?.length ||
+        (transactionState !== "provisional" &&
+          transactionState !== "committed")
+      ) {
+        return;
+      }
+
+      const key = `${transactionState}:${getEditsPreviewKey(edits)}`;
+      if (previewedEditsKeyRef.current === key) {
+        return;
+      }
+
+      previewedEditsKeyRef.current = key;
+      onPreviewAgentEditsRef.current(
+        edits,
+        baseResume,
+        sourceMessageId,
+        transactionState,
+      );
+    },
+    [],
+  );
+
+  const consumeRunStream = useCallback(
+    async (
+      start: (options: AgentChatStreamOptions) => Promise<AgentChatResponse>,
+      abortController: AbortController,
+      notifyOnFailure = true,
+    ): Promise<AgentRunStatus> => {
+      let streamedMessageId: string | undefined;
+
+      try {
+        const response = await start({
+          onRun: (run) => {
+            if (abortController.signal.aborted) {
+              return;
+            }
+
+            requestResumeRef.current = run.baseResume;
+            activeRunRef.current = run.status === "active" ? run : null;
+
+            if (run.status === "active" && stopRequestedRef.current) {
+              void stopAgentRun(run.id).catch((error) => {
+                stopRequestedRef.current = false;
+                console.error("Failed to stop agent run.", error);
+                if (!isApiErrorToastShown(error)) {
+                  toast.error(requestFailedTextRef.current, {
+                    closeButton: true,
+                  });
+                }
+              });
+            }
+          },
+          onMessage: (streamedMessage) => {
+            if (abortController.signal.aborted) {
+              return;
+            }
+
+            streamedMessageId = streamedMessage.id;
+            const panelMessage = toAssistantPanelMessage(
+              streamedMessage,
+              transientStatusTextsRef.current,
+            );
+            setStreamingMessage(panelMessage);
+
+            if (streamedMessage.transactionState === "rolled_back") {
+              onRollbackAgentDraftRef.current(streamedMessage.id);
+              return;
+            }
+
+            syncPreviewEdits(
+              streamedMessage.edits,
+              requestResumeRef.current,
+              streamedMessage.id,
+              streamedMessage.transactionState,
+            );
+          },
+          signal: abortController.signal,
+        });
+
+        if (abortController.signal.aborted) {
+          return "cancelled";
+        }
+
+        const finalMessage = toAssistantPanelMessage(
+          response.message,
+          transientStatusTextsRef.current,
+        );
+        const shouldRollback =
+          response.message.transactionState === "rolled_back" ||
+          response.status === "cancelled" ||
+          response.status === "failed";
+
+        if (shouldRollback) {
+          onRollbackAgentDraftRef.current(response.message.id);
+        } else {
+          syncPreviewEdits(
+            response.message.edits,
+            requestResumeRef.current,
+            response.message.id,
+            response.message.transactionState,
+          );
+        }
+
+        if (response.messageDone) {
+          setMessages((currentMessages) => {
+            const existingIndex = currentMessages.findIndex(
+              (message) => message.id === finalMessage.id,
+            );
+
+            if (existingIndex < 0) {
+              return [...currentMessages, finalMessage];
+            }
+
+            return currentMessages.map((message, index) =>
+              index === existingIndex ? finalMessage : message,
+            );
+          });
+        }
+        return response.status;
+      } catch (error) {
+        if (isAbortError(error)) {
+          return "cancelled";
+        }
+
+        // A non-retryable subscription failure means this browser can no
+        // longer observe a commit. Never leave its provisional preview active.
+        onRollbackAgentDraftRef.current(streamedMessageId);
+        console.error("Failed to consume agent run.", error);
+        if (notifyOnFailure && !isApiErrorToastShown(error)) {
+          toast.error(requestFailedTextRef.current, {
+            closeButton: true,
+          });
+        }
+        return "failed";
+      } finally {
+        if (activeRequestAbortRef.current === abortController) {
+          activeRequestAbortRef.current = null;
+          activeRunRef.current = null;
+          stopRequestedRef.current = false;
+          setStreamingMessage(null);
+          setIsResponding(false);
+        }
+      }
+    },
+    [syncPreviewEdits],
+  );
 
   useEffect(() => {
     let cancelled = false;
+    const abortController = new AbortController();
 
     activeRequestAbortRef.current?.abort();
-    activeRequestAbortRef.current = null;
+    activeRequestAbortRef.current = abortController;
+    activeRunRef.current = null;
+    stopRequestedRef.current = false;
+    previewedEditsKeyRef.current = null;
 
-    if (replyTimerRef.current) {
-      window.clearTimeout(replyTimerRef.current);
-      replyTimerRef.current = null;
-    }
+    cancelScheduledSend(false);
 
     setMessages([]);
     setStreamingMessage(null);
@@ -1336,43 +1934,78 @@ export function CopilotPanel({
     setCopiedMessageId(null);
     setEditingMessageId(null);
     setEditingMessageText("");
+    setPromptLocalAttachmentCount(0);
+    referencedAttachmentsRef.current = [];
+    setReferencedAttachments([]);
 
     if (!resumeId) {
+      activeRequestAbortRef.current = null;
       return () => {
         cancelled = true;
+        abortController.abort();
       };
     }
 
-    void loadAgentSession(resumeId)
-      .then((session) => {
-        if (!cancelled) {
-          setMessages(
-            session.messages.map((message) =>
-              toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
-            ),
-          );
+    void (async () => {
+      try {
+        const session = await loadAgentSession(resumeId);
+        if (cancelled) {
+          return;
         }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.error("Failed to load agent session.", error);
+
+        setMessages(
+          session.messages.map((message) =>
+            toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
+          ),
+        );
+
+        const run = await loadActiveAgentRun(resumeId);
+        if (
+          cancelled ||
+          activeRequestAbortRef.current !== abortController ||
+          !run ||
+          run.status !== "active"
+        ) {
+          if (activeRequestAbortRef.current === abortController) {
+            activeRequestAbortRef.current = null;
+          }
+          return;
         }
-      });
+
+        requestResumeRef.current = run.baseResume;
+        activeRunRef.current = run;
+        setIsResponding(true);
+        await consumeRunStream(
+          (options) => connectAgentRun(run, options),
+          abortController,
+        );
+      } catch (error) {
+        if (!cancelled && !isAbortError(error)) {
+          console.error("Failed to restore agent session.", error);
+        }
+        if (activeRequestAbortRef.current === abortController) {
+          activeRequestAbortRef.current = null;
+        }
+      }
+    })();
 
     return () => {
       cancelled = true;
+      abortController.abort();
+      if (activeRequestAbortRef.current === abortController) {
+        activeRequestAbortRef.current = null;
+      }
     };
-  }, [resumeId]);
-
-  useEffect(() => {
-    streamingMessageRef.current = streamingMessage;
-  }, [streamingMessage]);
+  }, [cancelScheduledSend, consumeRunStream, resumeId]);
 
   useEffect(() => {
     return () => {
-      if (replyTimerRef.current) {
+      if (replyTimerRef.current !== null) {
         window.clearTimeout(replyTimerRef.current);
+        replyTimerRef.current = null;
       }
+      pendingSendRef.current?.resolve("cancelled");
+      pendingSendRef.current = null;
       if (copyTimerRef.current) {
         window.clearTimeout(copyTimerRef.current);
       }
@@ -1411,6 +2044,70 @@ export function CopilotPanel({
     [],
   );
 
+  const downloadHistoryAttachment = useCallback(
+    async (file: AgentChatAttachment) => {
+      if (!resumeId || !file.id) {
+        return;
+      }
+
+      try {
+        const response = await downloadAgentAttachment(resumeId, file.id);
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = file.filename || t.agentAttachmentFallback;
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      } catch (error) {
+        console.error("Failed to download Agent attachment.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(t.agentAttachmentDownloadFailed, {
+            closeButton: true,
+          });
+        }
+      }
+    },
+    [resumeId, t.agentAttachmentDownloadFailed, t.agentAttachmentFallback],
+  );
+
+  const referenceHistoryAttachment = useCallback(
+    (file: AgentChatAttachment) => {
+      if (!file.id) {
+        return;
+      }
+
+      const current = referencedAttachmentsRef.current;
+      if (current.some((attachment) => attachment.id === file.id)) {
+        return;
+      }
+      if (
+        current.length + promptLocalAttachmentCount >=
+        MAX_AGENT_ATTACHMENTS
+      ) {
+        toast.info(t.agentAttachmentLimitReached, {
+          closeButton: true,
+        });
+        return;
+      }
+
+      const next = [...current, file];
+      referencedAttachmentsRef.current = next;
+      setReferencedAttachments(next);
+    },
+    [promptLocalAttachmentCount, t.agentAttachmentLimitReached],
+  );
+
+  const removeReferencedAttachment = useCallback((attachmentId: string) => {
+    const next = referencedAttachmentsRef.current.filter(
+      (attachment) => attachment.id !== attachmentId,
+    );
+    referencedAttachmentsRef.current = next;
+    setReferencedAttachments(next);
+  }, []);
+
   function startEditingUserMessage(message: AgentPanelMessage) {
     if (isResponding) {
       return;
@@ -1425,61 +2122,175 @@ export function CopilotPanel({
     setEditingMessageText("");
   }
 
-  function submitPrompt(message: PromptInputMessage) {
+  async function submitPrompt(message: PromptInputMessage) {
+    if (
+      isSubmittingPrompt ||
+      promptSubmissionRef.current ||
+      isResponding
+    ) {
+      throw new Error("An Agent prompt submission is already in progress.");
+    }
+
     if (!hasConfiguredModel) {
       toast.info(t.agentModelRequiredHint, {
         closeButton: true,
       });
-      return;
+      throw new Error("An Agent model must be configured before sending.");
     }
 
-    void (async () => {
-      const files = await Promise.all(message.files.map(toAgentAttachment));
-      await sendPrompt(message.text, files);
-    })();
-  }
-
-  function syncPreviewEdits(
-    edits: AgentResumeEditSuggestion[] | undefined,
-    sourceMessageId?: string,
-  ) {
-    if (!edits?.length) {
-      return;
+    if (
+      message.files.length + referencedAttachments.length >
+      MAX_AGENT_ATTACHMENTS
+    ) {
+      toast.info(t.agentAttachmentLimitReached, {
+        closeButton: true,
+      });
+      throw new Error("The Agent attachment limit was exceeded.");
     }
 
-    const key = getEditsPreviewKey(edits);
-
-    if (previewedEditsKeyRef.current === key) {
-      return;
+    if (message.files.length > 0 && !resumeId) {
+      toast.error(t.agentAttachmentUploadFailed, {
+        closeButton: true,
+      });
+      throw new Error("A resume session is required to upload attachments.");
     }
 
-    previewedEditsKeyRef.current = key;
-    onPreviewAgentEdits(edits, requestResumeRef.current, sourceMessageId);
+    promptSubmissionRef.current = true;
+    setIsSubmittingPrompt(true);
+    const uploadedFiles: AgentChatAttachment[] = [];
+    let requestAccepted = false;
+
+    try {
+      if (resumeId) {
+        const preparedFiles = await Promise.all(
+          message.files.map(prepareAgentAttachment),
+        );
+        const totalBytes = preparedFiles.reduce(
+          (sum, file) => sum + file.byteLength,
+          0,
+        );
+        let completedBytes = 0;
+
+        if (preparedFiles.length > 0) {
+          setAttachmentUploadProgress(0);
+        }
+
+        // Upload sequentially so a later failure can remove every earlier
+        // pending upload instead of leaving an orphaned partial batch.
+        for (const file of preparedFiles) {
+          const uploadedFile = await uploadAgentAttachment(
+            file.body,
+            resumeId,
+            ({ loaded, total }) => {
+              const fileRatio =
+                total && total > 0
+                  ? Math.min(loaded / total, 1)
+                  : Math.min(loaded / file.byteLength, 1);
+              const uploadedBytes =
+                completedBytes + file.byteLength * fileRatio;
+
+              // Keep 100% for the point where the server has accepted the full
+              // batch, rather than showing completion during response latency.
+              setAttachmentUploadProgress(
+                Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)),
+              );
+            },
+          );
+          uploadedFiles.push(uploadedFile);
+          completedBytes += file.byteLength;
+          setAttachmentUploadProgress(
+            Math.round((completedBytes / totalBytes) * 100),
+          );
+        }
+      }
+
+      if (resumeId !== currentResumeIdRef.current) {
+        throw new Error("The active resume changed while uploading attachments.");
+      }
+
+      const completion = sendPrompt(message.text, [
+        ...referencedAttachments,
+        ...uploadedFiles,
+      ]);
+      requestAccepted = true;
+      referencedAttachmentsRef.current = [];
+      setReferencedAttachments([]);
+
+      // PromptInput clears its draft as soon as the uploaded snapshot has been
+      // accepted. The Agent run continues independently; failed or cancelled
+      // runs remove only uploads that never became protected chat history.
+      void completion
+        .then(async (status) => {
+          if (
+            status !== "completed" &&
+            resumeId &&
+            uploadedFiles.length > 0
+          ) {
+            await deletePendingUploads(resumeId, uploadedFiles);
+          }
+        })
+        .catch(async (error) => {
+          if (resumeId && uploadedFiles.length > 0) {
+            await deletePendingUploads(resumeId, uploadedFiles);
+          }
+          console.error("Failed to finish the Agent prompt submission.", error);
+        })
+        .finally(() => {
+          promptSubmissionRef.current = false;
+        });
+    } catch (error) {
+      if (resumeId && uploadedFiles.length > 0) {
+        await deletePendingUploads(resumeId, uploadedFiles);
+      }
+
+      console.error("Failed to upload agent attachment.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.agentAttachmentUploadFailed, {
+          closeButton: true,
+        });
+      }
+      throw error;
+    } finally {
+      setIsSubmittingPrompt(false);
+      setAttachmentUploadProgress(null);
+      if (!requestAccepted) {
+        promptSubmissionRef.current = false;
+      }
+    }
   }
 
   const stopResponding = useCallback(() => {
-    if (replyTimerRef.current) {
-      window.clearTimeout(replyTimerRef.current);
-      replyTimerRef.current = null;
+    if (cancelScheduledSend(true)) {
+      return;
     }
 
-    activeRequestAbortRef.current?.abort();
-    activeRequestAbortRef.current = null;
+    if (stopRequestedRef.current) {
+      return;
+    }
 
-    const partialMessage = streamingMessageRef.current;
-    if (partialMessage && hasAssistantRenderableContent(partialMessage)) {
-      setMessages((currentMessages) => {
-        if (currentMessages.some((message) => message.id === partialMessage.id)) {
-          return currentMessages;
+    stopRequestedRef.current = true;
+    const activeRun = activeRunRef.current;
+
+    // Keep the subscriber connected so the rollback event can clear any
+    // provisional preview before the run reports its terminal state.
+    if (activeRun) {
+      void stopAgentRun(activeRun.id).catch((error) => {
+        stopRequestedRef.current = false;
+        console.error("Failed to stop agent run.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(requestFailedTextRef.current, {
+            closeButton: true,
+          });
         }
-
-        return [...currentMessages, partialMessage];
       });
+      return;
     }
 
-    setStreamingMessage(null);
-    setIsResponding(false);
-  }, []);
+    if (!activeRequestAbortRef.current) {
+      stopRequestedRef.current = false;
+      setIsResponding(false);
+    }
+  }, [cancelScheduledSend]);
 
   async function submitEditedUserMessage(message: AgentPanelMessage) {
     const nextText = editingMessageText.trim();
@@ -1512,19 +2323,15 @@ export function CopilotPanel({
       messageId?: string;
       replaceSessionBeforeSend?: boolean;
     } = {},
-  ) {
+  ): Promise<AgentRunStatus> {
     const prompt = text.trim();
-    const attachmentSummary = files
-      .map((file) => file.filename || file.url || t.agentAttachmentFallback)
-      .filter(Boolean)
-      .join(", ");
-    const visiblePrompt = prompt || attachmentSummary;
 
     if ((!prompt && files.length === 0) || isResponding) {
-      return;
+      return "cancelled";
     }
 
     const baseMessages = options.baseMessages ?? messages;
+    const rollbackMessages = messages;
     const looksLikeJobBrief = isLikelyJobBriefPrompt(prompt);
     const nextJobBrief = looksLikeJobBrief ? prompt : jobBrief;
     const nextKeywordMatch = looksLikeJobBrief
@@ -1534,11 +2341,12 @@ export function CopilotPanel({
       files,
       id: options.messageId ?? createId("agent-user"),
       role: "user",
-      text: visiblePrompt,
+      text: prompt,
     };
     const nextMessages = [...baseMessages, userMessage];
     const apiMessages = nextMessages.map(toConversationMessage);
 
+    cancelScheduledSend(true);
     setIsResponding(true);
     setMessages(nextMessages);
     setStreamingMessage(null);
@@ -1549,100 +2357,101 @@ export function CopilotPanel({
       onJobBriefChange(prompt);
     }
 
-    if (replyTimerRef.current) {
-      window.clearTimeout(replyTimerRef.current);
-    }
-
-    if (options.replaceSessionBeforeSend && resumeId) {
-      try {
-        await replaceAgentSession(resumeId, {
-          locale,
-          messages: apiMessages,
-        });
-      } catch (error) {
-        console.warn(
-          "Failed to replace agent session before editing; continuing with chat request.",
-          error,
-        );
-      }
-    }
-
-    replyTimerRef.current = window.setTimeout(() => {
-      void (async () => {
+    return new Promise<AgentRunStatus>((resolve) => {
+      pendingSendRef.current = {
+        resolve,
+        resumeId,
+        rollbackMessages,
+      };
+      replyTimerRef.current = window.setTimeout(() => {
+        const pending = pendingSendRef.current;
+        pendingSendRef.current = null;
         replyTimerRef.current = null;
-        const abortController = new AbortController();
-        activeRequestAbortRef.current = abortController;
 
-        try {
-          const response = await sendAgentChatMessage(
-            {
-              appliedActions: [],
-              conversation: apiMessages,
-              files,
-              jobBrief: nextJobBrief,
-              keywordMatch: nextKeywordMatch,
-              locale,
-              message: toConversationMessage(userMessage),
-              messages: apiMessages,
-              modelConfig: selectedModel,
-              prompt,
-              resume,
-              resumeId,
-              draftState: agentDraftState,
-              settings: agentSettings,
-              stream: true,
-            },
-            {
-              onMessage: (streamedMessage) => {
-                if (abortController.signal.aborted) {
-                  return;
-                }
+        void (async () => {
+          const abortController = new AbortController();
+          let failure: unknown;
+          let status: AgentRunStatus = "failed";
 
-                const panelMessage = toAssistantPanelMessage(
-                  streamedMessage,
-                  t.agentTransientModelStatusTexts,
-                );
+          activeRequestAbortRef.current?.abort();
+          activeRequestAbortRef.current = abortController;
 
-                syncPreviewEdits(panelMessage.response?.edits, panelMessage.id);
-                setStreamingMessage(panelMessage);
-              },
-              signal: abortController.signal,
-            },
-          );
+          try {
+            if (options.replaceSessionBeforeSend && resumeId) {
+              await replaceAgentSession(resumeId, {
+                locale,
+                messages: apiMessages,
+              });
+            }
 
-          if (abortController.signal.aborted) {
-            return;
+            if (abortController.signal.aborted) {
+              status = "cancelled";
+            } else {
+              status = await consumeRunStream(
+                (streamOptions) =>
+                  sendAgentChatMessage(
+                    {
+                      appliedActions: [],
+                      conversation: apiMessages,
+                      files,
+                      jobBrief: nextJobBrief,
+                      keywordMatch: nextKeywordMatch,
+                      locale,
+                      message: toConversationMessage(userMessage),
+                      messages: apiMessages,
+                      modelConfig: selectedModel,
+                      prompt,
+                      resume,
+                      resumeId,
+                      draftState: agentDraftState,
+                      settings: agentSettings,
+                      stream: true,
+                    },
+                    streamOptions,
+                  ),
+                abortController,
+                false,
+              );
+            }
+          } catch (error) {
+            failure = error;
+            status = isAbortError(error) ? "cancelled" : "failed";
+            if (status === "failed") {
+              console.error(
+                "Failed to replace the agent session before editing.",
+                error,
+              );
+            }
+          } finally {
+            // A prompt is optimistic in the panel but only authoritative after
+            // the backend reports completion. Failed replacements, provider
+            // errors, and cancellations all restore the exact prior history.
+            if (
+              status !== "completed" &&
+              pending &&
+              pending.resumeId === currentResumeIdRef.current
+            ) {
+              setMessages(pending.rollbackMessages);
+            }
+
+            if (status === "failed" && !isApiErrorToastShown(failure)) {
+              toast.error(requestFailedTextRef.current, {
+                closeButton: true,
+              });
+            }
+
+            if (activeRequestAbortRef.current === abortController) {
+              activeRequestAbortRef.current = null;
+              activeRunRef.current = null;
+              stopRequestedRef.current = false;
+              setStreamingMessage(null);
+              setIsResponding(false);
+            }
+            pending?.resolve(status);
           }
-
-          syncPreviewEdits(response.message.edits, response.message.id);
-          setMessages([
-            ...nextMessages,
-            toAssistantPanelMessage(
-              response.message,
-              t.agentTransientModelStatusTexts,
-            ),
-          ]);
-        } catch (error) {
-          if (isAbortError(error)) {
-            return;
-          }
-
-          console.error("Failed to send agent chat message.", error);
-          if (!isApiErrorToastShown(error)) {
-            toast.error(t.agentRequestFailed, {
-              closeButton: true,
-            });
-          }
-        } finally {
-          if (activeRequestAbortRef.current === abortController) {
-            activeRequestAbortRef.current = null;
-          }
-          setIsResponding(false);
-          setStreamingMessage(null);
-          replyTimerRef.current = null;
-        }
-      })();
-    }, AGENT_REQUEST_DEBOUNCE_MS);
+        })();
+      }, AGENT_REQUEST_DEBOUNCE_MS);
+    });
   }
 
   return (
@@ -1663,14 +2472,20 @@ export function CopilotPanel({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              className="agent-thread-layout relative flex min-h-0 flex-1 flex-col"
+              ref={conversationLayoutRef}
+            >
               <Conversation
                 className="min-h-0 min-w-0 flex-1 overflow-x-hidden"
+                contextRef={conversationContextRef}
+                initial="instant"
+                resize="instant"
               >
                 <ConversationContent
                   scrollClassName="agent-thread-scroll"
                   className={cn(
-                    "agent-thread-content-mask min-w-0 overflow-x-hidden px-3 pb-[132px]",
+                    "agent-thread-safe-area min-w-0 overflow-x-hidden px-3",
                     visibleMessages.length === 0 &&
                       "h-full min-h-full flex-1 justify-center",
                   )}
@@ -1719,11 +2534,12 @@ export function CopilotPanel({
                       const shouldShowDraftActions =
                         message.id === latestDraftMessageId &&
                         Boolean(response?.edits?.length) &&
+                        response?.transactionState === "committed" &&
                         hasAgentDraft &&
                         !isResponding;
                       const shouldShowChangeSummary =
                         Boolean(response?.edits?.length) &&
-                        !isStreamingAssistant;
+                        response?.transactionState !== "rolled_back";
                       const hasRenderableAssistantContent =
                         hasAssistantRenderableContent(message);
                       const isEditingUserMessage =
@@ -1754,7 +2570,13 @@ export function CopilotPanel({
                               onCopy={() => {
                                 void copyUserMessage(message);
                               }}
+                              onDownloadAttachment={(file) => {
+                                void downloadHistoryAttachment(file);
+                              }}
                               onEditTextChange={setEditingMessageText}
+                              onReferenceAttachment={
+                                referenceHistoryAttachment
+                              }
                               onStartEdit={() => startEditingUserMessage(message)}
                               onSubmitEdit={() => {
                                 void submitEditedUserMessage(message);
@@ -1814,6 +2636,7 @@ export function CopilotPanel({
                                   <AgentChangeSummary
                                     edits={response?.edits ?? []}
                                     observations={editObservations}
+                                    transactionState={response?.transactionState}
                                     hasAgentDraft={hasAgentDraft}
                                     onApplyAgentDraft={onApplyAgentDraft}
                                     onDiscardAgentDraft={onDiscardAgentDraft}
@@ -1842,10 +2665,12 @@ export function CopilotPanel({
                     </div>
                   )}
                 </ConversationContent>
-                <ConversationScrollButton className="bottom-[132px] z-20" />
+                <ConversationScrollButton className="agent-thread-scroll-button z-20" />
               </Conversation>
-              <section className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3">
-                <div aria-hidden="true" className="absolute bottom-0 left-0 right-3 h-8 bg-card" />
+              <section
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3"
+                ref={composerRef}
+              >
                 <div className="pointer-events-auto relative">
               <PromptInputProvider>
                 <Tooltip>
@@ -1863,7 +2688,14 @@ export function CopilotPanel({
                             : TEXT_ATTACHMENT_ACCEPT
                         }
                         globalDrop
+                        maxFiles={promptAttachmentCapacity}
+                        maxFileSize={MAX_AGENT_ATTACHMENT_BYTES}
                         multiple
+                        onError={() => {
+                          toast.error(t.agentAttachmentRejected, {
+                            closeButton: true,
+                          });
+                        }}
                         onSubmit={submitPrompt}
                         className={cn(
                           "p-0 text-foreground [&_[data-slot=input-group]]:overflow-hidden [&_[data-slot=input-group]]:rounded-[26px] [&_[data-slot=input-group]]:border-border/70 [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-sm",
@@ -1871,11 +2703,18 @@ export function CopilotPanel({
                             "[&_[data-slot=input-group]]:cursor-not-allowed",
                         )}
                       >
-                        <AgentPromptAttachmentsDisplay />
+                        <AgentPromptAttachmentsDisplay
+                          fallbackLabel={t.agentAttachmentFallback}
+                          onLocalCountChange={setPromptLocalAttachmentCount}
+                          onRemoveReferenced={removeReferencedAttachment}
+                          referencedFiles={referencedAttachments}
+                        />
                         <PromptInputBody className="px-4 pt-3">
                           <PromptInputTextarea
                             rows={1}
-                            disabled={!hasConfiguredModel}
+                            disabled={
+                              !hasConfiguredModel || isSubmittingPrompt
+                            }
                             placeholder={
                               hasConfiguredModel
                                 ? t.agentPromptPlaceholderShort
@@ -1888,7 +2727,11 @@ export function CopilotPanel({
                         <PromptInputFooter className="justify-between gap-2.5 px-4 pb-3.5 pt-1">
                           <PromptInputTools className="min-w-0 gap-1.5">
                             <AgentPromptAttachmentButton
-                              disabled={!hasConfiguredModel}
+                              disabled={
+                                !hasConfiguredModel ||
+                                isSubmittingPrompt ||
+                                promptAttachmentCapacity === 0
+                              }
                               label={t.agentAddAttachments}
                             />
 
@@ -1899,6 +2742,7 @@ export function CopilotPanel({
                               <ModelSelectorTrigger asChild>
                                 <PromptInputButton
                                   size="sm"
+                                  disabled={isSubmittingPrompt}
                                   title={
                                     selectedModel ? undefined : t.agentModelConfigureHover
                                   }
@@ -1996,11 +2840,18 @@ export function CopilotPanel({
                             </ModelSelector>
                           </PromptInputTools>
 
-                          <PromptInputSubmit
-                            status={isResponding ? "streaming" : "ready"}
-                            disabled={!hasConfiguredModel}
+                          <AgentPromptSubmitButton
+                            attachmentUploadProgress={
+                              attachmentUploadProgress
+                            }
+                            hasConfiguredModel={hasConfiguredModel}
+                            hasReferencedAttachments={
+                              referencedAttachments.length > 0
+                            }
+                            isResponding={isResponding}
+                            isSubmittingPrompt={isSubmittingPrompt}
                             onStop={stopResponding}
-                            className="ml-3 h-8 min-w-10 shrink-0 rounded-[14px] bg-foreground px-3 text-background shadow-none transition-none hover:!bg-foreground hover:!text-background disabled:cursor-not-allowed"
+                            t={t}
                           />
                         </PromptInputFooter>
                       </PromptInput>

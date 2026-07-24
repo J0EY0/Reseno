@@ -13,6 +13,7 @@ from app.schemas.agent import (
     AgentToolInvocation,
 )
 
+from .attachments import attachment_text, current_request_attachments
 from .editing import _string_list
 from .integrations import URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .localization import agent_text, section_label
@@ -66,20 +67,22 @@ def _active_resume(request: AgentChatRequest) -> dict[str, Any]:
     return request.resume
 
 
-def _file_content_excerpt(
+def _file_content_text(
+    session_id: str,
     file: dict[str, Any],
     *,
     hidden_terms: tuple[str, ...] = (),
 ) -> str:
-    """Return text content supplied with a user attachment."""
+    """Return bounded attachment text suitable for model context."""
 
-    content = file.get("content")
-    if not isinstance(content, str):
+    content = attachment_text(session_id, file)
+    if not content:
         return ""
-    return _compact_text(sanitize_agent_text(content, hidden_terms=hidden_terms))
+    return sanitize_agent_text(content, hidden_terms=hidden_terms).strip()
 
 
 def _agent_file_context(
+    session_id: str,
     files: list[dict[str, Any]],
     *,
     hidden_terms: tuple[str, ...] = (),
@@ -88,7 +91,11 @@ def _agent_file_context(
 
     file_context: list[dict[str, str]] = []
     for file in files:
-        excerpt = _file_content_excerpt(file, hidden_terms=hidden_terms)
+        excerpt = _file_content_text(
+            session_id,
+            file,
+            hidden_terms=hidden_terms,
+        )
         if not excerpt:
             continue
 
@@ -1116,11 +1123,10 @@ class AgentPlanExecutor:
                 ),
             )
 
-        for index, file in enumerate(self.request.files[:3], start=1):
-            excerpt = _file_content_excerpt(file)
-            if not excerpt:
-                continue
-
+        for index, file in enumerate(
+            current_request_attachments(self.request),
+            start=1,
+        ):
             filename = file.get("filename")
             sources.append(
                 AgentSource(
@@ -1128,7 +1134,6 @@ class AgentPlanExecutor:
                     title=str(filename or f"Attachment {index}"),
                     sourceType="attachment",
                     url=file.get("url") if isinstance(file.get("url"), str) else None,
-                    excerpt=excerpt,
                 ),
             )
 

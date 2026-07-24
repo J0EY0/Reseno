@@ -162,6 +162,7 @@ export interface AgentChatAttachment {
   id?: string;
   filename?: string;
   mediaType?: string;
+  kind?: "text" | "image";
   url?: string;
   content?: string;
 }
@@ -176,6 +177,12 @@ export interface AgentConversationMessage {
 }
 
 export type AgentDraftStatus = "pending" | "applied" | "discarded";
+export type AgentTransactionState =
+  | "none"
+  | "provisional"
+  | "committed"
+  | "rolled_back";
+export type AgentRunStatus = "active" | "completed" | "cancelled" | "failed";
 
 export interface AgentDraftState {
   id: string;
@@ -187,6 +194,7 @@ export interface AgentDraftState {
   editCount: number;
   edits: AgentResumeEditSuggestion[];
   diffs: ResumeDraftDiff[];
+  transactionState?: AgentTransactionState;
 }
 
 export interface AgentChatRequest {
@@ -288,6 +296,7 @@ export interface AgentChatMessage {
   tools?: AgentToolInvocation[];
   sources?: AgentSource[];
   edits?: AgentResumeEditSuggestion[];
+  transactionState?: AgentTransactionState;
   finishMissing?: AgentFinishMissing[];
   quickReplies?: string[];
   actions?: AgentChatActionId[];
@@ -295,6 +304,18 @@ export interface AgentChatMessage {
 
 export interface AgentChatResponse {
   message: AgentChatMessage;
+  runId: string;
+  status: AgentRunStatus;
+  lastEventId: number;
+  messageDone: boolean;
+}
+
+export interface AgentRunResponse {
+  id: string;
+  resumeId?: string;
+  baseResume: ResumeData;
+  status: AgentRunStatus;
+  lastEventId: number;
 }
 
 export interface AgentStoredMessage extends AgentConversationMessage {
@@ -373,6 +394,11 @@ export type AgentChatStreamEvent =
   | {
       type: "message_done";
       message: AgentChatMessage;
+    }
+  | {
+      type: "run_done";
+      runId: string;
+      status: AgentRunStatus;
     }
   | {
       type: "error";

@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from typing import Any, cast
 
@@ -6,9 +7,11 @@ from app.schemas.agent import (
     AgentFinishMissing,
     AgentResumeEditSuggestion,
     AgentToolInvocation,
+    AgentTransactionState,
 )
-from app.services.llm import LlmToolCall
+from app.services.llm import LlmRequestError, LlmToolCall
 
+from ..attachments import AgentAttachmentError, current_request_attachments
 from ..compat import get_agent_api
 from ..editing import (
     _apply_edit_operations,
@@ -42,7 +45,7 @@ from ..policy import (
     has_explicit_reorder_intent,
     tool_block_reason,
 )
-from ..privacy import sanitize_agent_resume, sanitize_agent_value
+from ..privacy import sanitize_agent_resume, sanitize_agent_text, sanitize_agent_value
 from ..quality import draft_quality_issues
 from ..runtime.context import AgentRuntimeContext
 from .registry import ALL_KNOWN_TOOL_NAMES
@@ -72,7 +75,8 @@ class AgentToolRunner:
     def __init__(self, executor: AgentPlanExecutor) -> None:
         self.executor = executor
         self.policy = capability_policy_for_request(executor.request)
-        self.draft_resume = deepcopy(executor.resume)
+        self.base_resume = deepcopy(executor.resume)
+        self.draft_resume = deepcopy(self.base_resume)
         self.job_reference: JobReference | None = None
         self.analysis: ResumeAnalysis | None = None
         self.plan: list[EditPlanStep] = []
@@ -84,6 +88,14 @@ class AgentToolRunner:
         self.finish_status = ""
         self.finish_missing: list[AgentFinishMissing] = []
         self.terminal_text = ""
+        self.edit_revision = 0
+        self.semantic_retry_pending = False
+        self.failed_batch_fingerprint = ""
+        self.transaction_failed = False
+        self.transaction_committed = False
+        # Set only after an explicit provider rejection causes the single
+        # current-request original-file fallback to extracted text.
+        self.native_attachment_text_fallback_used = False
 
     async def run(
         self,
@@ -579,14 +591,18 @@ class AgentToolRunner:
         if not isinstance(max_items, int) or isinstance(max_items, bool):
             max_items = DEFAULT_MATERIAL_CANDIDATES
 
-        output = extract_resume_materials(
-            prompt=self.executor.prompt,
-            job_brief=self.executor.request.job_brief,
-            files=self.executor.request.files,
-            focus=str(tool_call.arguments.get("focus") or "all").strip(),
-            max_items=max_items,
-            hidden_terms=self.executor.hidden_terms,
-        )
+        try:
+            output = extract_resume_materials(
+                session_id=(self.executor.request.resume_id or "").strip(),
+                prompt=self.executor.prompt,
+                job_brief=self.executor.request.job_brief,
+                files=current_request_attachments(self.executor.request),
+                focus=str(tool_call.arguments.get("focus") or "all").strip(),
+                max_items=max_items,
+                hidden_terms=self.executor.hidden_terms,
+            )
+        except AgentAttachmentError as exc:
+            raise LlmRequestError(str(exc)) from exc
         return AgentToolInvocation(
             id=tool_call.id,
             type="tool-material_extract",
@@ -683,10 +699,19 @@ class AgentToolRunner:
             explicit_edits_value,
             locale=self.executor.request.locale,
         )
+        if isinstance(explicit_edits_value, list) and rejected_edits:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=explicit_edits_value,
+                rejected_edits=rejected_edits,
+                message_key="error.edit_execute_rejected_detailed",
+            )
+
         if model_edits:
             before_resume = deepcopy(self.draft_resume)
             _apply_edit_operations(self.draft_resume, model_edits)
             self.edits = _merge_edits(self.edits, model_edits)
+            self.mark_edit_batch_succeeded()
             observations = _edit_observations(
                 before_resume,
                 self.draft_resume,
@@ -703,31 +728,29 @@ class AgentToolRunner:
                 tool_call.id,
                 observations=observations,
                 quality_issues=quality_issues,
-                rejected_edits=rejected_edits,
             )
 
-        if isinstance(explicit_edits_value, list) and rejected_edits:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type="tool-edit_execute",
-                title="edit_execute",
-                state="output-error",
-                input=tool_call.arguments,
-                output={
-                    "editCount": 0,
-                    "rejectedEditCount": len(rejected_edits),
-                    "rejectedEdits": rejected_edits,
-                },
-                errorText=agent_text(
-                    self.executor.request.locale,
-                    "error.edit_execute_rejected_detailed",
-                ),
+        if isinstance(explicit_edits_value, list):
+            return self.semantic_edit_error(
+                tool_call,
+                entries=explicit_edits_value,
+                rejected_edits=[
+                    {
+                        "index": 1,
+                        "reason": agent_text(
+                            self.executor.request.locale,
+                            "error.edit_execute_rejected",
+                        ),
+                    },
+                ],
+                message_key="error.edit_execute_rejected",
             )
 
         if self.planned_edits:
             before_resume = deepcopy(self.draft_resume)
             _apply_edit_operations(self.draft_resume, self.planned_edits)
             self.edits = _merge_edits(self.edits, self.planned_edits)
+            self.mark_edit_batch_succeeded()
             observations = _edit_observations(
                 before_resume,
                 self.draft_resume,
@@ -767,6 +790,7 @@ class AgentToolRunner:
         before_resume = deepcopy(self.draft_resume)
         _apply_edit_operations(self.draft_resume, fallback_edits)
         self.edits = _merge_edits(self.edits, fallback_edits)
+        self.mark_edit_batch_succeeded()
         observations = _edit_observations(
             before_resume,
             self.draft_resume,
@@ -849,14 +873,11 @@ class AgentToolRunner:
         """Apply tool-specific edit entries through the shared validator."""
 
         if error:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type=f"tool-{tool_call.name}",
-                title=tool_call.name,
-                state="output-error",
-                input=tool_call.arguments,
-                output={"editCount": 0},
-                errorText=error,
+            return self.semantic_edit_error(
+                tool_call,
+                entries=entries or tool_call.arguments,
+                rejected_edits=[{"index": 1, "reason": error}],
+                error_text=error,
             )
 
         guard_error = self.edit_entries_policy_error(entries, tool_call.name)
@@ -868,27 +889,18 @@ class AgentToolRunner:
             entries,
             locale=self.executor.request.locale,
         )
-        if not model_edits:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type=f"tool-{tool_call.name}",
-                title=tool_call.name,
-                state="output-error",
-                input=tool_call.arguments,
-                output={
-                    "editCount": 0,
-                    "rejectedEditCount": len(rejected_edits),
-                    "rejectedEdits": rejected_edits,
-                },
-                errorText=agent_text(
-                    self.executor.request.locale,
-                    "error.edit_execute_rejected",
-                ),
+        if rejected_edits or not model_edits:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=entries,
+                rejected_edits=rejected_edits,
+                message_key="error.edit_execute_rejected",
             )
 
         before_resume = deepcopy(self.draft_resume)
         _apply_edit_operations(self.draft_resume, model_edits)
         self.edits = _merge_edits(self.edits, model_edits)
+        self.mark_edit_batch_succeeded()
         observations = _edit_observations(
             before_resume,
             self.draft_resume,
@@ -908,10 +920,6 @@ class AgentToolRunner:
             "qualityIssueCount": len(quality_issues),
             "qualityIssues": quality_issues,
         }
-        if rejected_edits:
-            output["rejectedEditCount"] = len(rejected_edits)
-            output["rejectedEdits"] = rejected_edits
-
         return AgentToolInvocation(
             id=tool_call.id,
             type=f"tool-{tool_call.name}",
@@ -920,6 +928,95 @@ class AgentToolRunner:
             input=tool_call.arguments,
             output=output,
         )
+
+    def semantic_edit_error(
+        self,
+        tool_call: LlmToolCall,
+        *,
+        entries: object,
+        rejected_edits: list[dict[str, Any]],
+        message_key: str | None = None,
+        error_text: str | None = None,
+    ) -> AgentToolInvocation:
+        """Reject one whole edit batch and allow one model repair attempt."""
+
+        fingerprint = json.dumps(
+            {"tool": tool_call.name, "entries": entries},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        retry_exhausted = self.semantic_retry_pending
+        same_batch = retry_exhausted and fingerprint == self.failed_batch_fingerprint
+        if retry_exhausted:
+            self.fail_transaction()
+        else:
+            self.semantic_retry_pending = True
+            self.failed_batch_fingerprint = fingerprint
+
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type=f"tool-{tool_call.name}",
+            title=tool_call.name,
+            state="output-error",
+            input=tool_call.arguments,
+            output={
+                "editCount": 0,
+                "rejectedEditCount": len(rejected_edits),
+                "rejectedEdits": rejected_edits,
+                "retryable": not retry_exhausted,
+                "retryExhausted": retry_exhausted,
+                "sameBatch": same_batch,
+                "fullBatchRequired": True,
+            },
+            errorText=error_text
+            or agent_text(
+                self.executor.request.locale,
+                message_key or "error.edit_execute_rejected",
+            ),
+        )
+
+    def mark_edit_batch_succeeded(self) -> None:
+        """Publish a new provisional revision after an atomic batch succeeds."""
+
+        self.semantic_retry_pending = False
+        self.failed_batch_fingerprint = ""
+        self.edit_revision += 1
+
+    def fail_transaction(self) -> None:
+        """Roll back every edit staged during the current Agent turn."""
+
+        had_edits = bool(self.edits)
+        self.draft_resume = deepcopy(self.base_resume)
+        self.edits = []
+        self.planned_edits = []
+        self.semantic_retry_pending = False
+        self.failed_batch_fingerprint = ""
+        self.transaction_failed = True
+        self.transaction_committed = False
+        self.finished = True
+        if had_edits:
+            self.edit_revision += 1
+
+    def finalize_turn(self) -> None:
+        """Commit staged edits only after the complete tool loop succeeds."""
+
+        if self.transaction_failed:
+            return
+        if self.semantic_retry_pending:
+            self.fail_transaction()
+            return
+        self.transaction_committed = bool(self.edits)
+
+    @property
+    def transaction_state(self) -> AgentTransactionState:
+        if self.transaction_failed:
+            return "rolled_back"
+        if self.transaction_committed:
+            return "committed"
+        if self.edits:
+            return "provisional"
+        return "none"
 
     def edit_entries_policy_error(
         self,
@@ -964,6 +1061,10 @@ class AgentToolRunner:
         tool_call: LlmToolCall,
         message_key: str,
     ) -> AgentToolInvocation:
+        # A policy failure cannot be repaired by changing edit JSON. If it occurs
+        # during the one allowed repair attempt, the turn must roll back.
+        if self.semantic_retry_pending:
+            self.fail_transaction()
         return AgentToolInvocation(
             id=tool_call.id,
             type=f"tool-{tool_call.name}",
@@ -976,6 +1077,21 @@ class AgentToolRunner:
 
     def run_finish(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Record the model's explicit ReAct finish action without showing it."""
+
+        if self.semantic_retry_pending:
+            self.fail_transaction()
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type="tool-finish",
+                title="finish",
+                state="output-error",
+                input=tool_call.arguments,
+                output={"status": "rolled_back"},
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.edit_repair_required",
+                ),
+            )
 
         status = str(tool_call.arguments.get("status") or "").strip()
         if status not in {"ready", "blocked"}:
@@ -1042,7 +1158,7 @@ class AgentToolRunner:
 
         job_reference = self.current_job_reference()
         analysis = self.analysis or self.executor.analyze_resume()
-        return self.executor.build_message_from_parts(
+        message = self.executor.build_message_from_parts(
             job_reference=job_reference,
             analysis=analysis,
             plan=self.plan,
@@ -1052,6 +1168,29 @@ class AgentToolRunner:
             finish_status=self.finish_status,
             finish_reason=self.finish_reason,
             finish_missing=self.finish_missing,
+        )
+        if self.transaction_failed:
+            # A model may explain why its repair attempt cannot continue. Keep
+            # that actionable reason while still returning a rolled-back turn.
+            rollback_text = self.terminal_text.strip() or agent_text(
+                self.executor.request.locale,
+                "response.edit_transaction_failed",
+            )
+            return message.model_copy(
+                update={
+                    "tone": "default",
+                    "text": sanitize_agent_text(
+                        rollback_text,
+                        hidden_terms=self.executor.hidden_terms,
+                    ),
+                    "edits": [],
+                    "quick_replies": [],
+                    "actions": [],
+                    "transaction_state": "rolled_back",
+                },
+            )
+        return message.model_copy(
+            update={"transaction_state": self.transaction_state},
         )
 
     def finish_missing_values(self, value: object) -> list[AgentFinishMissing]:

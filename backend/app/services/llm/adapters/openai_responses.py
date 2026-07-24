@@ -9,7 +9,9 @@ from ..common import (
     async_openai_client,
     attr_or_item,
     close_async_stream,
+    image_data_url,
     map_stop_reason,
+    message_content_parts,
     message_content_text,
     object_dict,
     openai_style_function_tools,
@@ -27,6 +29,12 @@ from ..types import (
     LlmStreamEvent,
     LlmToolCall,
 )
+
+
+def supports_native_attachment(media_type: str) -> bool:
+    """Responses accepts PDF originals as current-request input files."""
+
+    return media_type == "application/pdf"
 
 
 async def complete(
@@ -217,11 +225,42 @@ def responses_input(
             input_items.append(
                 {
                     "role": role,
-                    "content": message_content_text(message.get("content")),
+                    "content": _responses_content(message.get("content")),
                 },
             )
 
     return system, input_items
+
+
+def _responses_content(content: Any) -> str | list[dict[str, str]]:
+    parts = message_content_parts(content)
+    if not any(part["type"] in {"image", "file"} for part in parts):
+        return message_content_text(content)
+
+    converted: list[dict[str, str]] = []
+    for part in parts:
+        if part["type"] == "text":
+            converted.append({"type": "input_text", "text": part["text"]})
+        elif part["type"] == "image":
+            converted.append(
+                {
+                    "type": "input_image",
+                    "image_url": image_data_url(part),
+                },
+            )
+        elif supports_native_attachment(part["media_type"]):
+            converted.append(
+                {
+                    "type": "input_file",
+                    "filename": part["filename"],
+                    "file_data": image_data_url(part),
+                },
+            )
+        else:
+            raise LlmRequestError(
+                f"Responses does not support native {part['media_type']} files.",
+            )
+    return converted
 
 
 def _message_from_response(response: object) -> LlmAssistantMessage:

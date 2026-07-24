@@ -370,12 +370,27 @@ def _normalize_edit_operation(
             and path[6:] in AGENT_WRITABLE_BASIC_FIELDS
             and isinstance(value, str)
         ):
-            return {"type": "replace_field", "path": path, "value": value}
+            basic = resume.get("basic")
+            current = basic.get(path[6:]) if isinstance(basic, dict) else None
+            if current != value:
+                return {"type": "replace_field", "path": path, "value": value}
         return None
 
     if operation_type == "insert_section":
         section = _normalized_section(operation.get("section"))
         if not section:
+            return None
+        existing_ids = {
+            str(candidate.get("id"))
+            for candidate in _resume_sections(resume)
+            if isinstance(candidate.get("id"), str)
+        }
+        item_ids = [
+            str(item.get("id"))
+            for item in section.get("items", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        if section["id"] in existing_ids or len(item_ids) != len(set(item_ids)):
             return None
         normalized: dict[str, Any] = {"type": "insert_section", "section": section}
         index = _model_int(operation.get("index"))
@@ -385,9 +400,19 @@ def _normalize_edit_operation(
 
     if operation_type == "update_section":
         section_id = _model_string(operation.get("sectionId"))
+        section = _find_resume_section(resume, section_id)
         patch = _safe_section_patch(operation.get("patch"))
-        if section_id and patch and _find_resume_section(resume, section_id):
-            return {"type": "update_section", "sectionId": section_id, "patch": patch}
+        changed_patch = (
+            {key: value for key, value in patch.items() if section.get(key) != value}
+            if section
+            else {}
+        )
+        if section_id and changed_patch and section:
+            return {
+                "type": "update_section",
+                "sectionId": section_id,
+                "patch": changed_patch,
+            }
         return None
 
     if operation_type == "delete_section":
@@ -398,22 +423,30 @@ def _normalize_edit_operation(
 
     if operation_type == "reorder_sections":
         section_ids = _string_list(operation.get("sectionIds"))
-        valid_ids = {
+        current_ids = [
             str(section.get("id"))
             for section in _resume_sections(resume)
             if isinstance(section.get("id"), str)
-        }
-        ordered_ids = [
-            section_id for section_id in section_ids if section_id in valid_ids
         ]
-        if ordered_ids:
-            return {"type": "reorder_sections", "sectionIds": ordered_ids}
+        if (
+            len(section_ids) == len(current_ids)
+            and len(section_ids) == len(set(section_ids))
+            and set(section_ids) == set(current_ids)
+            and section_ids != current_ids
+        ):
+            return {"type": "reorder_sections", "sectionIds": section_ids}
         return None
 
     if operation_type == "insert_item":
         section_id = _model_string(operation.get("sectionId"))
         item = _normalized_item(operation.get("item"))
-        if not section_id or not item or not _find_resume_section(resume, section_id):
+        section = _find_resume_section(resume, section_id)
+        if (
+            not section_id
+            or not item
+            or not section
+            or _find_resume_item(section, item["id"])
+        ):
             return None
         normalized = {"type": "insert_item", "sectionId": section_id, "item": item}
         index = _model_int(operation.get("index"))
@@ -430,12 +463,17 @@ def _normalize_edit_operation(
             operation.get("patch"),
             base_item=item if isinstance(item, dict) else None,
         )
-        if section and item_id and patch and item:
+        changed_patch = (
+            {key: value for key, value in patch.items() if item.get(key) != value}
+            if item
+            else {}
+        )
+        if section and item_id and changed_patch and item:
             return {
                 "type": "update_item",
                 "sectionId": section_id,
                 "itemId": item_id,
-                "patch": patch,
+                "patch": changed_patch,
             }
         return None
 
@@ -453,17 +491,21 @@ def _normalize_edit_operation(
         item_ids = _string_list(operation.get("itemIds"))
         if not section or not item_ids:
             return None
-        valid_item_ids = {
+        current_item_ids = [
             str(item.get("id"))
             for item in section.get("items", [])
             if isinstance(item, dict) and isinstance(item.get("id"), str)
-        }
-        ordered_ids = [item_id for item_id in item_ids if item_id in valid_item_ids]
-        if ordered_ids:
+        ]
+        if (
+            len(item_ids) == len(current_item_ids)
+            and len(item_ids) == len(set(item_ids))
+            and set(item_ids) == set(current_item_ids)
+            and item_ids != current_item_ids
+        ):
             return {
                 "type": "reorder_items",
                 "sectionId": section_id,
-                "itemIds": ordered_ids,
+                "itemIds": item_ids,
             }
         return None
 
@@ -559,11 +601,23 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             return "replace_field can only edit basic.headline or basic.summary."
         if not isinstance(operation.get("value"), str):
             return "replace_field requires a string value."
+        basic = resume.get("basic")
+        if isinstance(basic, dict) and basic.get(path[6:]) == operation.get("value"):
+            return "replace_field must change the current value."
 
-    if operation_type == "insert_section" and not _normalized_section(
-        operation.get("section"),
-    ):
-        return "insert_section requires a valid section object."
+    if operation_type == "insert_section":
+        section = _normalized_section(operation.get("section"))
+        if not section:
+            return "insert_section requires a valid section object."
+        if _find_resume_section(resume, section["id"]):
+            return "insert_section requires a unique section id."
+        item_ids = [
+            str(item.get("id"))
+            for item in section.get("items", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        if len(item_ids) != len(set(item_ids)):
+            return "insert_section requires unique item ids."
 
     if operation_type == "update_section":
         section_id = _model_string(operation.get("sectionId"))
@@ -571,6 +625,10 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             return "update_section requires an existing sectionId."
         if not _safe_section_patch(operation.get("patch")):
             return "update_section requires at least one writable section patch field."
+        section = _find_resume_section(resume, section_id)
+        patch = _safe_section_patch(operation.get("patch"))
+        if section and all(section.get(key) == value for key, value in patch.items()):
+            return "update_section must change at least one field."
 
     if operation_type == "delete_section":
         section_id = _model_string(operation.get("sectionId"))
@@ -579,13 +637,17 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
 
     if operation_type == "reorder_sections":
         section_ids = _string_list(operation.get("sectionIds"))
-        valid_ids = {
+        current_ids = [
             str(section.get("id"))
             for section in _resume_sections(resume)
             if isinstance(section.get("id"), str)
-        }
-        if not [section_id for section_id in section_ids if section_id in valid_ids]:
-            return "reorder_sections requires existing sectionIds."
+        ]
+        if len(section_ids) != len(set(section_ids)):
+            return "reorder_sections cannot contain duplicate sectionIds."
+        if len(section_ids) != len(current_ids) or set(section_ids) != set(current_ids):
+            return "reorder_sections requires every existing sectionId exactly once."
+        if section_ids == current_ids:
+            return "reorder_sections must change the current order."
 
     if operation_type == "insert_item":
         section_id = _model_string(operation.get("sectionId"))
@@ -593,6 +655,10 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             return "insert_item requires an existing sectionId."
         if not _normalized_item(operation.get("item")):
             return "insert_item requires a valid item object."
+        item = _normalized_item(operation.get("item"))
+        section = _find_resume_section(resume, section_id)
+        if section and item and _find_resume_item(section, item["id"]):
+            return "insert_item requires a unique item id in the target section."
 
     if operation_type in {"update_item", "delete_item", "reorder_items"}:
         section_id = _model_string(operation.get("sectionId"))
@@ -602,13 +668,20 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
 
         if operation_type == "reorder_items":
             item_ids = _string_list(operation.get("itemIds"))
-            valid_item_ids = {
+            current_item_ids = [
                 str(item.get("id"))
                 for item in section.get("items", [])
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
-            }
-            if not [item_id for item_id in item_ids if item_id in valid_item_ids]:
-                return "reorder_items requires existing itemIds in the target section."
+            ]
+            if len(item_ids) != len(set(item_ids)):
+                return "reorder_items cannot contain duplicate itemIds."
+            if (
+                len(item_ids) != len(current_item_ids)
+                or set(item_ids) != set(current_item_ids)
+            ):
+                return "reorder_items requires every existing itemId exactly once."
+            if item_ids == current_item_ids:
+                return "reorder_items must change the current order."
             return "Operation was rejected by validation."
 
         item_id = _model_string(operation.get("itemId"))
@@ -620,6 +693,10 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             base_item=item if isinstance(item, dict) else None,
         ):
             return "update_item requires at least one writable item patch field."
+        if operation_type == "update_item":
+            patch = _safe_item_patch(operation.get("patch"), base_item=item)
+            if all(item.get(key) == value for key, value in patch.items()):
+                return "update_item must change at least one field."
 
     return "Operation was rejected by validation."
 
@@ -637,6 +714,9 @@ def _model_edit_suggestions_with_diagnostics(
 
     edits: list[AgentResumeEditSuggestion] = []
     rejected: list[dict[str, Any]] = []
+    # Validate against a work copy so later operations can target entities
+    # inserted earlier in the same batch without mutating the real draft.
+    working_resume = deepcopy(resume)
     for index, item in enumerate(value, start=1):
         if not isinstance(item, dict):
             rejected.append(
@@ -648,7 +728,10 @@ def _model_edit_suggestions_with_diagnostics(
             )
             continue
 
-        operation = _normalize_edit_operation(resume, item.get("operation"))
+        operation = _normalize_edit_operation(
+            working_resume,
+            item.get("operation"),
+        )
         if not operation:
             rejected.append(
                 {
@@ -656,7 +739,7 @@ def _model_edit_suggestions_with_diagnostics(
                     "title": _model_string(item.get("title"))
                     or agent_text(locale, "edit.default.title", index=index),
                     "reason": _invalid_operation_reason(
-                        resume,
+                        working_resume,
                         item.get("operation"),
                     ),
                 },
@@ -688,6 +771,7 @@ def _model_edit_suggestions_with_diagnostics(
                 status="executed",
             ),
         )
+        _apply_edit_operation(working_resume, operation)
 
     return edits, rejected
 

@@ -1,5 +1,8 @@
 import json
+import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from sqlite3 import Connection
@@ -13,9 +16,13 @@ from app.schemas.agent import (
     AgentSessionResponse,
     AgentStoredMessage,
 )
+from app.services.agent.attachments import (
+    mark_agent_attachments_sent,
+    prune_sent_agent_attachments,
+)
 
-MAX_AGENT_SESSION_MESSAGES = 80
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -79,7 +86,7 @@ def append_agent_exchange(
     now = _now_iso()
     user_message = _current_user_message(request, now)
 
-    with conn:
+    with _transaction(conn):
         _upsert_session(conn, request, resume_id, user_message, now)
         next_sequence = _next_message_sequence(conn, resume_id)
 
@@ -108,7 +115,11 @@ def append_agent_exchange(
             sequence=next_sequence,
             created_at=now,
         )
-        _trim_session_messages(conn, resume_id)
+        if user_message:
+            # Protect originals before committing their message references.
+            # A metadata write failure therefore rolls back the SQLite turn
+            # instead of leaving history that cleanup may later invalidate.
+            mark_agent_attachments_sent(resume_id, user_message.files)
 
 
 def replace_agent_session_messages(
@@ -126,8 +137,14 @@ def replace_agent_session_messages(
 
     now = _now_iso()
     normalized_messages = _normalize_replacement_messages(messages)
+    retained_files = [
+        file
+        for message in normalized_messages
+        for file in message["files"]
+        if isinstance(file, dict)
+    ]
 
-    with conn:
+    with _transaction(conn):
         _upsert_replacement_session(
             conn,
             safe_resume_id,
@@ -152,8 +169,51 @@ def replace_agent_session_messages(
                 sequence=sequence,
                 created_at=message["created_at"] or now,
             )
+        mark_agent_attachments_sent(safe_resume_id, retained_files)
 
+    # Pruning is post-commit garbage collection. It must not turn a completed
+    # replacement into an API failure after the new history is authoritative.
+    try:
+        prune_sent_agent_attachments(safe_resume_id, retained_files)
+    except OSError:
+        logger.warning(
+            "Failed to prune unreferenced Agent attachments for session %s.",
+            safe_resume_id,
+            exc_info=True,
+        )
     return load_agent_session(conn, safe_resume_id)
+
+
+@contextmanager
+def _transaction(conn: Connection) -> Iterator[None]:
+    """Make a group of writes atomic on the project's autocommit connection.
+
+    Connections intentionally use ``isolation_level=None``, so ``with conn``
+    does not start a transaction. A savepoint keeps this helper safe if a
+    caller already owns a wider transaction.
+    """
+
+    if conn.in_transaction:
+        savepoint = f"agent_session_{uuid4().hex}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield
+        except BaseException:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        else:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
 
 
 def _now_iso() -> str:
@@ -208,7 +268,7 @@ def _current_user_message(
 ) -> UserAgentMessage | None:
     """Build the persisted user message from the current chat request."""
 
-    if request.message and request.message.text.strip():
+    if request.message and (request.message.text.strip() or request.message.files):
         return UserAgentMessage(
             id=request.message.id or f"agent-user-{uuid4().hex[:12]}",
             text=request.message.text.strip(),
@@ -342,7 +402,7 @@ def _normalize_replacement_messages(
     normalized: list[dict[str, Any]] = []
     used_ids: set[str] = set()
 
-    for message in messages[:MAX_AGENT_SESSION_MESSAGES]:
+    for message in messages:
         text = message.text.strip()
         files = [file for file in message.files if isinstance(file, dict)]
 
@@ -463,23 +523,4 @@ def _insert_message(
             sequence,
             created_at,
         ),
-    )
-
-
-def _trim_session_messages(conn: Connection, session_id: str) -> None:
-    """Keep recent history bounded so Agent context queries stay quick."""
-
-    conn.execute(
-        """
-        DELETE FROM agent_messages
-        WHERE session_id = ?
-          AND id NOT IN (
-            SELECT id
-            FROM agent_messages
-            WHERE session_id = ?
-            ORDER BY sequence DESC
-            LIMIT ?
-          )
-        """,
-        (session_id, session_id, MAX_AGENT_SESSION_MESSAGES),
     )

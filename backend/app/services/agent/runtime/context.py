@@ -12,7 +12,7 @@ T = TypeVar("T")
 
 
 class AgentRunAborted(Exception):
-    """Raised when the client has cancelled the active Agent run."""
+    """Raised when the user has explicitly cancelled the active Agent run."""
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class AgentRuntimeContext:
     blocking_timeout_seconds: float = DEFAULT_BLOCKING_TIMEOUT_SECONDS
 
     async def checkpoint(self) -> None:
-        """Yield control and stop if the client has already gone away."""
+        """Yield control and stop after an explicit cancellation request."""
 
         if self.is_aborted and await self.is_aborted():
             raise AgentRunAborted

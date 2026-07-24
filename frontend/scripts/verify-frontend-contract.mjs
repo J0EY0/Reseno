@@ -79,6 +79,22 @@ const modelProviders = await readFile(
   join(srcDir, "lib", "model-providers.ts"),
   "utf8",
 );
+const copilotPanel = await readFile(
+  join(srcDir, "components", "copilot", "copilot-panel.tsx"),
+  "utf8",
+);
+const promptInput = await readFile(
+  join(srcDir, "components", "ai-elements", "prompt-input.tsx"),
+  "utf8",
+);
+const apiClient = await readFile(
+  join(srcDir, "lib", "api-client.ts"),
+  "utf8",
+);
+const agentApi = await readFile(
+  join(srcDir, "lib", "agent-api.ts"),
+  "utf8",
+);
 
 assert(
   !/interface ModelConfig[\s\S]*apiKey:\s*string/.test(resumeTypes),
@@ -238,6 +254,98 @@ assert(
 assert(
   !/glm:\s*"zhipu"|zhipuai:\s*"zhipu"/.test(modelProviderIcon),
   "Z.ai provider ids must not alias to the legacy Zhipu ProviderIcon.",
+);
+assert(
+  !/continuing with chat request/.test(copilotPanel),
+  "Editing must stop when persisted Agent history replacement fails.",
+);
+assert(
+  /status\s*!==\s*"completed"[\s\S]{0,300}setMessages\(pending\.rollbackMessages\)/.test(
+    copilotPanel,
+  ),
+  "Every non-completed Agent request must roll back its optimistic message.",
+);
+assert(
+  /function AgentUserMessage[\s\S]{0,3000}message\.files\?\.length[\s\S]{0,500}<AgentMessageAttachments[\s\S]{0,500}files=\{message\.files\}/.test(
+    copilotPanel,
+  ),
+  "User message rendering must consume message.files through the attachment renderer.",
+);
+
+const uploadStateDeclaration = copilotPanel.match(
+  /const\s*\[\s*(is\w*(?:Uploading|Submitting)\w*)\s*,\s*(set\w*(?:Uploading|Submitting)\w*)\s*\]\s*=\s*useState(?:<boolean>)?\(false\)/,
+);
+assert(
+  uploadStateDeclaration,
+  "Agent attachment uploads must expose reactive uploading/submitting state.",
+);
+
+const uploadStateName =
+  uploadStateDeclaration?.[1] ?? "__missingUploadState";
+const uploadStateSetter =
+  uploadStateDeclaration?.[2] ?? "__missingUploadStateSetter";
+const submitPromptStart = copilotPanel.indexOf(
+  "async function submitPrompt(",
+);
+const submitPromptEnd = copilotPanel.indexOf(
+  "const stopResponding",
+  submitPromptStart,
+);
+const submitPromptSource =
+  submitPromptStart >= 0 && submitPromptEnd > submitPromptStart
+    ? copilotPanel.slice(submitPromptStart, submitPromptEnd)
+    : "";
+
+assert(
+  new RegExp(
+    `if\\s*\\([\\s\\S]{0,160}\\b${uploadStateName}\\b`,
+  ).test(submitPromptSource) &&
+    new RegExp(
+      `\\b${uploadStateSetter}\\(true\\)[\\s\\S]*\\b${uploadStateSetter}\\(false\\)`,
+    ).test(submitPromptSource),
+  "Prompt submission must reject re-entry and keep reactive state active for the full attachment upload.",
+);
+const sendControlUsesUploadState =
+  new RegExp(
+    `<PromptInputSubmit[\\s\\S]{0,1800}disabled=\\{[\\s\\S]{0,180}\\b${uploadStateName}\\b`,
+  ).test(copilotPanel) ||
+  new RegExp(
+    `function AgentPromptSubmitButton[\\s\\S]{0,1800}const isDisabled\\s*=[\\s\\S]{0,300}\\b${uploadStateName}\\b[\\s\\S]{0,1800}disabled=\\{isDisabled\\}`,
+  ).test(copilotPanel);
+
+assert(
+  sendControlUsesUploadState,
+  "The Agent send control must be disabled while attachments are uploading.",
+);
+assert(
+  /onUploadProgress:[\s\S]{0,180}options\.onProgress/.test(apiClient) &&
+    /uploadAgentAttachment\([\s\S]{0,240}onProgress[\s\S]{0,180}uploadApi<AgentChatAttachment>/.test(
+      agentApi,
+    ),
+  "Agent attachment uploads must forward real transport progress from the API client.",
+);
+assert(
+  /uploadAgentAttachment\([\s\S]*?\(\{\s*loaded,\s*total\s*\}\)\s*=>[\s\S]*?setAttachmentUploadProgress/.test(
+    submitPromptSource,
+  ) &&
+    /setAttachmentUploadProgress\(\s*Math\.min\(99,/.test(
+      submitPromptSource,
+    ) &&
+    /<PromptInputSubmit[\s\S]{0,1800}\{attachmentUploadProgress\}%/.test(
+      copilotPanel,
+    ),
+  "The Agent send control must render aggregate attachment upload progress.",
+);
+assert(
+  /const\s+completion\s*=\s*sendPrompt\(/.test(submitPromptSource) &&
+    !/await\s+sendPrompt\(/.test(submitPromptSource),
+  "The composer must clear after the uploaded prompt is accepted, not after the full Agent run completes.",
+);
+assert(
+  /if \(result instanceof Promise\)[\s\S]{0,300}await result;[\s\S]{0,180}clear\(\);[\s\S]{0,180}controller\.textInput\.clear\(\)/.test(
+    promptInput,
+  ),
+  "A successful async prompt submission must clear both attachment and text input state.",
 );
 
 for (const file of files) {

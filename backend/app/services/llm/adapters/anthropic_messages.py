@@ -9,6 +9,7 @@ from ..common import (
     async_post_json,
     async_stream_json,
     map_stop_reason,
+    message_content_parts,
     message_content_text,
     parsed_tool_call,
     provider_base_url,
@@ -24,6 +25,12 @@ from ..types import (
     LlmStreamEvent,
     LlmToolCall,
 )
+
+
+def supports_native_attachment(media_type: str) -> bool:
+    """Anthropic Messages accepts PDF document blocks."""
+
+    return media_type == "application/pdf"
 
 
 async def complete(
@@ -230,11 +237,50 @@ def anthropic_messages(
             converted.append(
                 {
                     "role": "user",
-                    "content": message_content_text(message.get("content")),
+                    "content": _anthropic_content(message.get("content")),
                 },
             )
 
     return system, converted
+
+
+def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
+    parts = message_content_parts(content)
+    if not any(part["type"] in {"image", "file"} for part in parts):
+        return message_content_text(content)
+
+    converted: list[dict[str, Any]] = []
+    for part in parts:
+        if part["type"] == "text":
+            converted.append({"type": "text", "text": part["text"]})
+        elif part["type"] == "image":
+            converted.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part["media_type"],
+                        "data": part["data"],
+                    },
+                },
+            )
+        elif supports_native_attachment(part["media_type"]):
+            converted.append(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part["media_type"],
+                        "data": part["data"],
+                    },
+                },
+            )
+        else:
+            raise LlmRequestError(
+                f"Anthropic Messages does not support native "
+                f"{part['media_type']} files.",
+            )
+    return converted
 
 
 def _headers(config: AgentLlmConfig) -> dict[str, str]:

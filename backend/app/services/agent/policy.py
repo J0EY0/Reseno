@@ -5,6 +5,7 @@ from typing import Any
 
 from app.schemas.agent import AgentChatRequest
 
+from .attachments import AgentAttachmentError, current_request_attachments
 from .intent_patterns import matches_intent_pattern
 from .materials import extract_resume_materials
 from .tools.registry import (
@@ -253,13 +254,19 @@ def _needs_material_followup(request: AgentChatRequest, prompt: str) -> bool:
 
 
 def _has_user_resume_material(request: AgentChatRequest) -> bool:
-    materials = extract_resume_materials(
-        prompt=_current_prompt(request),
-        job_brief="",
-        files=request.files,
-        focus="resume_facts",
-        max_items=1,
-    )
+    try:
+        materials = extract_resume_materials(
+            session_id=(request.resume_id or "").strip(),
+            prompt=_current_prompt(request),
+            job_brief="",
+            files=current_request_attachments(request),
+            focus="resume_facts",
+            max_items=1,
+        )
+    except AgentAttachmentError:
+        # Message construction owns the user-visible attachment error. Policy
+        # inference must not turn a storage failure into an unrelated 500.
+        return False
     usage = materials.get("usage")
     return isinstance(usage, dict) and usage.get("canSupportResumeFacts") is True
 

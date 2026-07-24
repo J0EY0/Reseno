@@ -106,7 +106,10 @@ import {
   downloadResumeJson,
   requestResumeImagesExport,
 } from "@/lib/export-api";
-import { applyAgentEditsToDraft } from "@/lib/resume-agent-edits";
+import {
+  applyAgentEditsWithMerge,
+  type AgentDraftApplyError,
+} from "@/lib/resume-agent-edits";
 import {
   importResumePayload,
   importTemplatePayload,
@@ -165,6 +168,7 @@ import { getWorkspacePath } from "@/lib/workspace-route";
 import type {
   AgentDraftState,
   AgentResumeEditSuggestion,
+  AgentTransactionState,
   SaveResponse,
   WorkspaceVersionSummary,
 } from "@/types/api";
@@ -294,6 +298,35 @@ function preloadWorkspaceView(view: WorkspaceView) {
   }
 
   void loadSettingsPanelModule();
+}
+
+function getAgentDraftErrorReason(
+  error: AgentDraftApplyError,
+  t: AppMessages,
+) {
+  switch (error.reason) {
+    case "missing_operation":
+      return t.agentDraftErrorMissingOperation;
+    case "invalid_operation":
+      return t.agentDraftErrorInvalidOperation;
+    case "target_not_found":
+      return t.agentDraftErrorTargetNotFound;
+    case "duplicate_target":
+      return t.agentDraftErrorDuplicateTarget;
+    case "no_change":
+      return t.agentDraftErrorNoChange;
+    case "conflict":
+      return t.agentDraftErrorConflict;
+  }
+}
+
+function formatAgentDraftErrors(
+  errors: AgentDraftApplyError[],
+  t: AppMessages,
+) {
+  return errors
+    .map((error) => `${error.title}: ${getAgentDraftErrorReason(error, t)}`)
+    .join(" · ");
 }
 
 const defaultTypography: ResumeTypographySettings = {
@@ -1440,6 +1473,8 @@ export function ResumeBuilder({
     useRef<ResumeTemplateDefinition | null>(null);
   const lastOpenedTemplateIdRef = useRef<string | null>(null);
   const defaultTemplateIdRef = useRef<ResumeTemplateId>(defaultTemplate);
+  const currentResumeRef = useRef(resume);
+  currentResumeRef.current = resume;
 
   const effectiveResume = agentDraft?.resume ?? resume;
   const agentDraftState = agentDraft ?? lastAgentDraft;
@@ -2828,10 +2863,27 @@ export function ResumeBuilder({
   const previewAgentEdits = useCallback(
     (
       edits: AgentResumeEditSuggestion[],
-      baseResume = resume,
+      baseResume: ResumeData,
       sourceMessageId?: string,
+      transactionState: AgentTransactionState = "committed",
     ) => {
-      const result = applyAgentEditsToDraft(baseResume, edits);
+      const result = applyAgentEditsWithMerge(
+        baseResume,
+        currentResumeRef.current,
+        edits,
+      );
+
+      if (result.errors.length > 0) {
+        // Provisional batches are replaced as the tool keeps streaming. Only
+        // surface a conflict once the backend has committed its final batch.
+        if (transactionState === "committed") {
+          toast.error(t.agentDraftBatchRejected, {
+            description: formatAgentDraftErrors(result.errors, t),
+            closeButton: true,
+          });
+        }
+        return;
+      }
 
       if (result.appliedCount === 0) {
         return;
@@ -2851,16 +2903,31 @@ export function ResumeBuilder({
         editCount: result.appliedCount,
         edits,
         diffs: result.diffs,
+        transactionState,
       };
 
       setAgentDraft(nextDraft);
       setLastAgentDraft(nextDraft);
     },
-    [agentDraft?.createdAt, agentDraft?.id, resume],
+    [agentDraft?.createdAt, agentDraft?.id, t],
   );
 
+  const rollbackAgentDraft = useCallback((sourceMessageId?: string) => {
+    const shouldRollback = (draft: AgentDraftState | null) =>
+      Boolean(
+        draft &&
+          draft.status === "pending" &&
+          (sourceMessageId
+            ? draft.sourceMessageId === sourceMessageId
+            : draft.transactionState === "provisional"),
+      );
+
+    setAgentDraft((draft) => (shouldRollback(draft) ? null : draft));
+    setLastAgentDraft((draft) => (shouldRollback(draft) ? null : draft));
+  }, []);
+
   const applyAgentDraft = useCallback(() => {
-    if (!agentDraft) {
+    if (!agentDraft || agentDraft.transactionState !== "committed") {
       return;
     }
 
@@ -2878,7 +2945,7 @@ export function ResumeBuilder({
   }, [agentDraft, t]);
 
   const discardAgentDraft = useCallback(() => {
-    if (!agentDraft) {
+    if (!agentDraft || agentDraft.transactionState !== "committed") {
       return;
     }
 
@@ -4211,7 +4278,7 @@ export function ResumeBuilder({
           resumeId={activeResumeId ?? undefined}
           t={t}
           locale={locale}
-          resume={previewResume}
+          resume={resume}
           jobBrief={jobBrief}
           onJobBriefChange={setJobBrief}
           keywordMatch={keywordMatch}
@@ -4227,6 +4294,7 @@ export function ResumeBuilder({
           hasAgentDraft={Boolean(agentDraft)}
           agentDraftState={agentDraftState}
           onPreviewAgentEdits={previewAgentEdits}
+          onRollbackAgentDraft={rollbackAgentDraft}
           onApplyAgentDraft={applyAgentDraft}
           onDiscardAgentDraft={discardAgentDraft}
           onOpenModelSettings={() => handleViewChange("models")}
