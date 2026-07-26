@@ -1,14 +1,16 @@
-export type SectionKind =
-  | 'education'
-  | 'work'
-  | 'internship'
-  | 'project'
-  | 'skills'
-  | 'awards'
-  | 'certificates'
-  | 'languages'
-  | 'other'
-  | 'custom'
+export const SECTION_KINDS = [
+  'education',
+  'work',
+  'internship',
+  'project',
+  'skills',
+  'awards',
+  'certificates',
+  'languages',
+  'other',
+  'custom',
+] as const
+export type SectionKind = (typeof SECTION_KINDS)[number]
 export type SectionLayout = 'timeline' | 'list'
 export type ResumeFontFamily = 'inter' | 'serif' | 'plex'
 export type ThemeMode = 'light' | 'dark' | 'system'

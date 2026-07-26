@@ -524,9 +524,11 @@ function TemplateImages({
 
 function ContactLine({
   items,
+  enableLinks,
   className,
 }: {
   items: ContactItem[]
+  enableLinks: boolean
   className?: string
 }) {
   if (items.length === 0) {
@@ -537,7 +539,7 @@ function ContactLine({
     <div className={cn('flex flex-wrap justify-center gap-x-3 gap-y-1', className)}>
       {items.map((item, index) => (
         <span key={item.id}>
-          <ContactItemText item={item} />
+          <ContactItemText item={item} enableLink={enableLinks} />
           {index < items.length - 1 ? (
             <span className="resume-tone-subtle ml-3">|</span>
           ) : null}
@@ -547,8 +549,14 @@ function ContactLine({
   )
 }
 
-function ContactItemText({ item }: { item: ContactItem }) {
-  if (!item.href) {
+function ContactItemText({
+  item,
+  enableLink,
+}: {
+  item: ContactItem
+  enableLink: boolean
+}) {
+  if (!enableLink || !item.href) {
     return <span>{item.text}</span>
   }
 
@@ -573,12 +581,14 @@ function StandardBasicInfo({
   settings,
   layout,
   summaryDiff,
+  enableContactLinks,
 }: {
   t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
   summaryDiff?: ResumeDraftDiff
+  enableContactLinks: boolean
 }) {
   const isProfile = layout.basicInfo === 'profile'
   const avatarPosition = layout.avatarPosition
@@ -628,7 +638,11 @@ function StandardBasicInfo({
           {basic.headline}
         </p>
       ) : null}
-      <ContactLine items={contactItems} className="resume-tone-body mt-3" />
+      <ContactLine
+        items={contactItems}
+        enableLinks={enableContactLinks}
+        className="resume-tone-body mt-3"
+      />
     </>
   )
 
@@ -702,12 +716,14 @@ function SidebarBasicInfo({
   settings,
   layout,
   summaryDiff,
+  enableContactLinks,
 }: {
   t: AppMessages
   basic: ResumeBasicInfo
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
   summaryDiff?: ResumeDraftDiff
+  enableContactLinks: boolean
 }) {
   const contactItems = getContactItems(basic)
   const avatar =
@@ -757,7 +773,11 @@ function SidebarBasicInfo({
             }}
           >
             {contactItems.map((item) => (
-              <ContactItemText key={item.id} item={item} />
+              <ContactItemText
+                key={item.id}
+                item={item}
+                enableLink={enableContactLinks}
+              />
             ))}
           </div>
         </div>
@@ -1384,6 +1404,9 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
   const settings = template.settings
   const layout = template.layout
   const isSidebarLayout = layout.basicInfo === 'sidebar'
+  // Gallery thumbnails live inside a card link. Rendering contact anchors there
+  // would create invalid nested links, while full previews and exports stay interactive.
+  const enableContactLinks = variant !== 'thumbnail'
   const standardContentWidthMm = A4_WIDTH_MM - settings.pagePaddingX * 2
   const standardContentHeightMm =
     A4_HEIGHT_MM - settings.pagePaddingTop - settings.pagePaddingBottom
@@ -1523,6 +1546,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
             settings={settings}
             layout={layout}
             summaryDiff={diffLookup.summaryDiff}
+            enableContactLinks={enableContactLinks}
           />
         ) : null}
 
@@ -1566,6 +1590,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
               settings={settings}
               layout={layout}
               summaryDiff={diffLookup.summaryDiff}
+              enableContactLinks={enableContactLinks}
             />
             <main
               className="min-w-0"

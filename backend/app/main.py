@@ -23,6 +23,7 @@ from app.routers import (
     imports,
     model_configs,
     model_providers,
+    resume_import_lexicon,
     resumes,
     section_registry,
     templates,
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(imports.router)
     app.include_router(model_providers.router)
     app.include_router(model_configs.router)
+    app.include_router(resume_import_lexicon.router)
     app.include_router(section_registry.router)
     app.include_router(agent.router)
     app.include_router(exports.router)

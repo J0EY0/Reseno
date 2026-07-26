@@ -4,6 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -14,10 +15,13 @@ from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
+from app.services.agent import section_registry as section_registry_module
 from app.services.agent.attachments import store_agent_attachment
 from app.services.agent.editing.operations import (
     _model_edit_suggestions,
     _model_edit_suggestions_with_diagnostics,
+    _safe_section_patch,
+    _section_kind_from_text,
 )
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.integrations import web as agent_web
@@ -4081,6 +4085,239 @@ def test_agent_section_registry_matches_local_contract() -> None:
     assert {
         section["kind"]: section["defaultLayout"] for section in SECTION_REGISTRY
     } == SECTION_DEFAULT_LAYOUTS
+
+
+def _registry_section(kind: str, aliases: object) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "defaultLayout": "timeline",
+        "labels": {"zh": kind, "en": kind},
+        "aliases": aliases,
+    }
+
+
+def _load_test_section_registry(
+    tmp_path: Path,
+    monkeypatch,
+    sections: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    registry_path = tmp_path / "section_registry.json"
+    registry_path.write_text(
+        json.dumps({"sections": sections}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(section_registry_module, "REGISTRY_PATH", registry_path)
+    return section_registry_module._load_section_registry()
+
+
+def test_section_registry_rejects_non_object_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_path = tmp_path / "section_registry.json"
+    registry_path.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(section_registry_module, "REGISTRY_PATH", registry_path)
+
+    with pytest.raises(ValueError, match="must contain an object"):
+        section_registry_module._load_section_registry()
+
+
+def test_section_registry_rejects_non_list_aliases(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Section kind education aliases must be a list\.",
+    ):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [_registry_section("education", "education")],
+        )
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        {
+            **_registry_section(" ", ["education"]),
+            "labels": {"zh": "教育经历", "en": "Education"},
+        },
+        {
+            **_registry_section("education", ["education"]),
+            "labels": {"zh": " ", "en": "Education"},
+        },
+        {
+            **_registry_section("education", ["education"]),
+            "labels": {"zh": "教育经历", "en": " "},
+        },
+        {
+            **_registry_section("education", ["education"]),
+            "labels": {" ": "Education", "zh": "教育经历", "en": "Education"},
+        },
+        {
+            **_registry_section(" education ", ["education"]),
+            "labels": {"zh": "教育经历", "en": "Education"},
+        },
+    ],
+)
+def test_section_registry_rejects_whitespace_identifiers_and_labels(
+    tmp_path: Path,
+    monkeypatch,
+    section: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _load_test_section_registry(tmp_path, monkeypatch, [section])
+
+
+@pytest.mark.parametrize("kind", ["Work", "work experience", "ｗｏｒｋ"])
+def test_section_registry_rejects_noncanonical_kinds(
+    tmp_path: Path,
+    monkeypatch,
+    kind: str,
+) -> None:
+    with pytest.raises(ValueError, match="canonical lowercase identifier"):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [_registry_section(kind, ["work"])],
+        )
+
+
+def test_section_registry_rejects_empty_aliases(tmp_path: Path, monkeypatch) -> None:
+    with pytest.raises(ValueError, match="must be a non-empty list"):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [_registry_section("education", [])],
+        )
+
+
+@pytest.mark.parametrize("alias", [None, 7, "", " \t：: "])
+def test_section_registry_rejects_invalid_alias_entries(
+    tmp_path: Path,
+    monkeypatch,
+    alias: object,
+) -> None:
+    expected = (
+        "is empty after normalization"
+        if isinstance(alias, str) and alias.strip()
+        else "must be a non-empty string"
+    )
+    with pytest.raises(
+        ValueError,
+        match=rf"Section kind education alias at index 0 {expected}",
+    ):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [_registry_section("education", [alias])],
+        )
+
+
+def test_section_registry_rejects_normalized_duplicate_aliases(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Section kind work alias at index 1 .* duplicates alias at index 0 "
+            r".* after normalization\."
+        ),
+    ):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [
+                _registry_section(
+                    "work",
+                    [" Work： Experience ", "workexperience"],
+                )
+            ],
+        )
+
+
+def test_section_registry_rejects_alias_conflicts_between_kinds(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Section kind project alias at index 0 .* conflicts with section "
+            r"kind work alias at index 0 .* after normalization\."
+        ),
+    ):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [
+                _registry_section("work", ["Project Experience"]),
+                _registry_section(
+                    "project",
+                    ["ＰＲＯＪＥＣＴ　ＥＸＰＥＲＩＥＮＣＥ："],
+                ),
+            ],
+        )
+
+
+def test_section_registry_rejects_pdf_compatibility_alias_conflicts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with pytest.raises(ValueError, match="conflicts with section kind"):
+        _load_test_section_registry(
+            tmp_path,
+            monkeypatch,
+            [
+                _registry_section("page", ["页"]),
+                _registry_section("radical_page", ["⻚"]),
+            ],
+        )
+
+
+def test_safe_section_patch_rejects_conflicting_new_and_legacy_kinds() -> None:
+    assert (
+        _safe_section_patch(
+            {
+                "section_type": "work",
+                "kind": "project",
+                "layout": "timeline",
+            }
+        )
+        == {}
+    )
+
+
+def test_safe_section_patch_normalizes_equivalent_new_and_legacy_kinds() -> None:
+    assert _safe_section_patch(
+        {
+            "section_type": "work experience",
+            "kind": "work",
+            "layout": "timeline",
+        }
+    ) == {
+        "kind": "work",
+        "layout": "timeline",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("internship experience", "internship"),
+        ("my internship experience section", "internship"),
+        ("other experience details", "other"),
+        ("ＳＫＩＬＬＳ", "skills"),
+        ("networking", ""),
+        ("customization", ""),
+        ("otherworldly", ""),
+    ],
+)
+def test_section_kind_matching_uses_canonical_specific_aliases(
+    value: str,
+    expected: str,
+) -> None:
+    assert _section_kind_from_text(value) == expected
 
 
 def test_agent_chat_accepts_other_section_kind() -> None:

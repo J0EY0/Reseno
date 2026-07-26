@@ -18,14 +18,10 @@ def get_section_registry() -> ApiResponse[SectionRegistryResponse]:
         SectionRegistryResponse(
             sections=[
                 SectionRegistryEntryResponse(
-                    kind=str(section["kind"]),
-                    defaultLayout=str(section["defaultLayout"]),
-                    labels=dict(section["labels"]),
-                    aliases=[
-                        alias
-                        for alias in section.get("aliases", [])
-                        if isinstance(alias, str) and alias
-                    ],
+                    kind=section["kind"],
+                    defaultLayout=section["defaultLayout"],
+                    labels=section["labels"],
+                    aliases=section["aliases"],
                 )
                 for section in SECTION_REGISTRY
             ],

@@ -86,6 +86,7 @@ export const apiRoutes = {
   resumeImport: "/api/import/resume",
   templateImport: "/api/import/templates",
   sectionRegistry: "/api/section-registry",
+  resumeImportLexicon: "/api/resume-import-lexicon",
 } as const;
 
 function buildSearchParams(

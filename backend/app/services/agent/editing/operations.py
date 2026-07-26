@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from copy import deepcopy
 from typing import Any
 from uuid import uuid4
@@ -14,7 +15,12 @@ from ..prompts import (
     MAX_REACT_MAX_ITERATIONS,
     MIN_REACT_MAX_ITERATIONS,
 )
-from ..section_registry import SECTION_KIND_ALIASES
+from ..section_registry import (
+    SECTION_KIND_ALIAS_MATCHES,
+    SECTION_KIND_ALIASES,
+    SECTION_KIND_ENUM,
+    normalize_section_alias,
+)
 
 
 def _string_list(value: object) -> list[str]:
@@ -35,7 +41,6 @@ BASIC_EDIT_FIELDS = {
     "avatar",
     "summary",
 }
-SECTION_PATCH_FIELDS = {"kind", "section_type", "layout", "customTitle"}
 ITEM_PATCH_FIELDS = {"title", "subtitle", "meta", "period", "description", "highlights"}
 FIELD_ONLY_LABEL_RE = compiled_agent_pattern("editing.field_only_label")
 CONTENT_LABEL_RE = compiled_agent_pattern("editing.content_label")
@@ -110,19 +115,38 @@ def _duplicate_key(value: str) -> str:
 def _section_kind_from_text(value: object) -> str:
     """Map a model-provided section type/name to a standard section kind."""
 
-    text = _model_string(value).lower()
+    raw_text = _model_string(value)
+    text = normalize_section_alias(raw_text)
     if not text:
         return ""
+
+    if text in SECTION_KIND_ENUM:
+        return text
 
     direct = SECTION_KIND_ALIASES.get(text)
     if direct:
         return direct
 
-    for token, kind in SECTION_KIND_ALIASES.items():
-        if token and token in text:
+    for alias, kind in SECTION_KIND_ALIAS_MATCHES:
+        if _section_alias_matches_text(raw_text, alias):
             return kind
 
     return ""
+
+
+def _section_alias_matches_text(value: str, alias: str) -> bool:
+    """Match prose aliases without treating short English aliases as substrings."""
+
+    normalized_alias = unicodedata.normalize("NFKC", alias).lower().strip()
+    if re.fullmatch(r"[a-z0-9]+(?:\s+[a-z0-9]+)*", normalized_alias):
+        words = normalized_alias.split()
+        pattern = r"(?<![a-z0-9])" + r"[\W_]+".join(
+            re.escape(word) for word in words
+        ) + r"(?![a-z0-9])"
+        normalized_value = unicodedata.normalize("NFKC", value).lower()
+        return re.search(pattern, normalized_value) is not None
+
+    return normalize_section_alias(alias) in normalize_section_alias(value)
 
 
 def _normalized_section_kind(*values: object) -> str:
@@ -331,12 +355,26 @@ def _safe_section_patch(value: object) -> dict[str, Any]:
         return {}
 
     patch: dict[str, Any] = {}
-    for key in SECTION_PATCH_FIELDS:
+    section_type = value.get("section_type")
+    legacy_kind = value.get("kind")
+    normalized_section_type = _section_kind_from_text(section_type)
+    normalized_legacy_kind = _section_kind_from_text(legacy_kind)
+    if (
+        isinstance(section_type, str)
+        and isinstance(legacy_kind, str)
+        and normalized_section_type != normalized_legacy_kind
+    ):
+        # A model can still emit the deprecated alias despite the schema.
+        # Reject contradictory values instead of letting hash/set iteration
+        # choose a different winner across Python processes.
+        return {}
+
+    if isinstance(section_type, str) or isinstance(legacy_kind, str):
+        patch["kind"] = _normalized_section_kind(section_type, legacy_kind)
+
+    for key in ("layout", "customTitle"):
         field_value = value.get(key)
         if not isinstance(field_value, str):
-            continue
-        if key in {"kind", "section_type"}:
-            patch["kind"] = _normalized_section_kind(field_value)
             continue
         if key == "layout" and field_value not in {"timeline", "list"}:
             continue

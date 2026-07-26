@@ -11,9 +11,11 @@ declare module "pdfjs-dist/build/pdf.mjs" {
     promise: Promise<{
       numPages: number;
       getPage(pageNumber: number): Promise<{
+        getViewport(params: { scale: number }): { width: number };
         getTextContent(): Promise<{
           items?: Array<{
             str?: string;
+            dir?: string;
             transform?: number[];
             width?: number;
             height?: number;

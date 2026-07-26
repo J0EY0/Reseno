@@ -1,0 +1,40 @@
+{
+  "locales": {
+    "en": {
+      "documentTitleTerms": [
+        "resume",
+        "curriculum vitae",
+        "curriculum",
+        "vitae"
+      ],
+      "currentPeriodTerms": [
+        "present",
+        "current"
+      ],
+      "dateRangeTerms": [],
+      "datePartSeparators": [],
+      "datePartSuffixes": []
+    },
+    "zh": {
+      "documentTitleTerms": [
+        "简历",
+        "个人简历"
+      ],
+      "currentPeriodTerms": [
+        "至今",
+        "今",
+        "现在"
+      ],
+      "dateRangeTerms": [
+        "至",
+        "到"
+      ],
+      "datePartSeparators": [
+        "年"
+      ],
+      "datePartSuffixes": [
+        "月"
+      ]
+    }
+  }
+}
