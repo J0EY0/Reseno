@@ -108,6 +108,7 @@ import {
 } from "@/lib/export-api";
 import {
   applyAgentEditsWithMerge,
+  createAgentDraftBaseSnapshot,
   type AgentDraftApplyError,
 } from "@/lib/resume-agent-edits";
 import {
@@ -1474,6 +1475,10 @@ export function ResumeBuilder({
   const lastOpenedTemplateIdRef = useRef<string | null>(null);
   const defaultTemplateIdRef = useRef<ResumeTemplateId>(defaultTemplate);
   const currentResumeRef = useRef(resume);
+  const agentDraftBaseRef = useRef<{
+    draftId: string;
+    resume: ResumeData;
+  } | null>(null);
   currentResumeRef.current = resume;
 
   const effectiveResume = agentDraft?.resume ?? resume;
@@ -2045,6 +2050,7 @@ export function ResumeBuilder({
   }, [saveState]);
 
   const hydrateResumeWorkspace = useCallback((item: ResumeWorkspaceItem) => {
+    agentDraftBaseRef.current = null;
     setAgentDraft(null);
     setLastAgentDraft(null);
     setResume(item.resume);
@@ -2058,6 +2064,7 @@ export function ResumeBuilder({
   const resetResumeWorkspace = useCallback(() => {
     const emptyResume = createEmptyResume();
 
+    agentDraftBaseRef.current = null;
     setAgentDraft(null);
     setLastAgentDraft(null);
     setResume(emptyResume);
@@ -2860,6 +2867,29 @@ export function ResumeBuilder({
     }
   }
 
+  const clearRejectedAgentDraft = useCallback(
+    (sourceMessageId?: string) => {
+      const shouldClear = (draft: AgentDraftState | null) =>
+        Boolean(
+          draft &&
+            draft.status === "pending" &&
+            (!sourceMessageId || draft.sourceMessageId === sourceMessageId),
+        );
+
+      setAgentDraft((draft) => {
+        if (!shouldClear(draft)) {
+          return draft;
+        }
+        if (agentDraftBaseRef.current?.draftId === draft?.id) {
+          agentDraftBaseRef.current = null;
+        }
+        return null;
+      });
+      setLastAgentDraft((draft) => (shouldClear(draft) ? null : draft));
+    },
+    [],
+  );
+
   const previewAgentEdits = useCallback(
     (
       edits: AgentResumeEditSuggestion[],
@@ -2867,8 +2897,9 @@ export function ResumeBuilder({
       sourceMessageId?: string,
       transactionState: AgentTransactionState = "committed",
     ) => {
+      const draftBase = createAgentDraftBaseSnapshot(baseResume);
       const result = applyAgentEditsWithMerge(
-        baseResume,
+        draftBase,
         currentResumeRef.current,
         edits,
       );
@@ -2877,6 +2908,7 @@ export function ResumeBuilder({
         // Provisional batches are replaced as the tool keeps streaming. Only
         // surface a conflict once the backend has committed its final batch.
         if (transactionState === "committed") {
+          clearRejectedAgentDraft(sourceMessageId);
           toast.error(t.agentDraftBatchRejected, {
             description: formatAgentDraftErrors(result.errors, t),
             closeButton: true,
@@ -2886,6 +2918,9 @@ export function ResumeBuilder({
       }
 
       if (result.appliedCount === 0) {
+        if (transactionState === "committed") {
+          clearRejectedAgentDraft(sourceMessageId);
+        }
         return;
       }
 
@@ -2906,10 +2941,19 @@ export function ResumeBuilder({
         transactionState,
       };
 
+      agentDraftBaseRef.current = {
+        draftId,
+        resume: draftBase,
+      };
       setAgentDraft(nextDraft);
       setLastAgentDraft(nextDraft);
     },
-    [agentDraft?.createdAt, agentDraft?.id, t],
+    [
+      agentDraft?.createdAt,
+      agentDraft?.id,
+      clearRejectedAgentDraft,
+      t,
+    ],
   );
 
   const rollbackAgentDraft = useCallback((sourceMessageId?: string) => {
@@ -2922,7 +2966,16 @@ export function ResumeBuilder({
             : draft.transactionState === "provisional"),
       );
 
-    setAgentDraft((draft) => (shouldRollback(draft) ? null : draft));
+    setAgentDraft((draft) => {
+      if (!shouldRollback(draft)) {
+        return draft;
+      }
+
+      if (agentDraftBaseRef.current?.draftId === draft?.id) {
+        agentDraftBaseRef.current = null;
+      }
+      return null;
+    });
     setLastAgentDraft((draft) => (shouldRollback(draft) ? null : draft));
   }, []);
 
@@ -2931,13 +2984,34 @@ export function ResumeBuilder({
       return;
     }
 
-    setResume(agentDraft.resume);
-    setCollapsedState(createEditorCollapsedState(agentDraft.resume));
+    const draftBase = agentDraftBaseRef.current;
+    if (!draftBase || draftBase.draftId !== agentDraft.id) {
+      return;
+    }
+
+    const result = applyAgentEditsWithMerge(
+      draftBase.resume,
+      currentResumeRef.current,
+      agentDraft.edits,
+    );
+
+    if (result.errors.length > 0) {
+      toast.error(t.agentDraftBatchRejected, {
+        description: formatAgentDraftErrors(result.errors, t),
+        closeButton: true,
+      });
+      return;
+    }
+
+    setResume(result.resume);
+    setCollapsedState(createEditorCollapsedState(result.resume));
     setLastAgentDraft({
       ...agentDraft,
       status: "applied",
       updatedAt: new Date().toISOString(),
+      resume: result.resume,
     });
+    agentDraftBaseRef.current = null;
     setAgentDraft(null);
     toast.success(t.agentDraftApplied, {
       closeButton: true,
@@ -2954,6 +3028,7 @@ export function ResumeBuilder({
       status: "discarded",
       updatedAt: new Date().toISOString(),
     });
+    agentDraftBaseRef.current = null;
     setAgentDraft(null);
     toast.success(t.agentDraftDiscarded, {
       closeButton: true,

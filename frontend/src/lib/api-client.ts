@@ -36,6 +36,8 @@ const API_ERROR_NOTIFIED = Symbol("apiErrorNotified");
 
 type NotifiedApiError = Error & {
   [API_ERROR_NOTIFIED]?: true;
+  apiCode?: string;
+  status?: number;
 };
 
 const apiClient = axios.create({
@@ -170,12 +172,35 @@ export function isApiErrorToastShown(error: unknown) {
   return isApiErrorNotified(error);
 }
 
-export function isAbortError(error: unknown) {
+export function isApiErrorCode(error: unknown, code: string) {
   return Boolean(
     error &&
       typeof error === "object" &&
-      "name" in error &&
-      error.name === "AbortError",
+      "apiCode" in error &&
+      error.apiCode === code,
+  );
+}
+
+export function getApiErrorStatus(error: unknown) {
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("status" in error) ||
+    typeof error.status !== "number"
+  ) {
+    return undefined;
+  }
+
+  return error.status;
+}
+
+export function isAbortError(error: unknown) {
+  return Boolean(
+    axios.isCancel(error) ||
+      (error &&
+        typeof error === "object" &&
+        "name" in error &&
+        (error.name === "AbortError" || error.name === "CanceledError")),
   );
 }
 
@@ -189,21 +214,32 @@ function notifyApiError(message: string) {
   });
 }
 
-function createNotifiedApiError(messageKey: string) {
+function createNotifiedApiError(
+  messageKey: string,
+  metadata: Pick<NotifiedApiError, "apiCode" | "status"> = {},
+) {
   const message = resolveApiMessage(messageKey);
   const error = markApiErrorNotified(new Error(message));
 
+  error.apiCode = metadata.apiCode;
+  error.status = metadata.status;
   notifyApiError(message);
 
   return error;
 }
 
-function createPayloadApiError(payload: ApiResponse<unknown>) {
+function createPayloadApiError(
+  payload: ApiResponse<unknown>,
+  status?: number,
+) {
   if (payload.code === APP_CODE_UNAUTHORIZED) {
     redirectToLogin();
   }
 
-  return createNotifiedApiError(payload.message);
+  return createNotifiedApiError(payload.message, {
+    apiCode: payload.message,
+    status,
+  });
 }
 
 export function unwrapApiResponse<T>(payload: unknown) {
@@ -278,7 +314,9 @@ apiClient.interceptors.request.use((config: ResuMateInternalAxiosRequestConfig) 
 apiClient.interceptors.response.use(
   (response) => {
     if (isApiResponse<unknown>(response.data) && response.data.code !== 0) {
-      return Promise.reject(createPayloadApiError(response.data));
+      return Promise.reject(
+        createPayloadApiError(response.data, response.status),
+      );
     }
 
     return response;
@@ -292,7 +330,31 @@ apiClient.interceptors.response.use(
       const payload = error.response?.data;
 
       if (isApiResponse<unknown>(payload)) {
-        return Promise.reject(createPayloadApiError(payload));
+        return Promise.reject(
+          createPayloadApiError(payload, error.response?.status),
+        );
+      }
+
+      const detail =
+        payload &&
+        typeof payload === "object" &&
+        "detail" in payload &&
+        payload.detail &&
+        typeof payload.detail === "object"
+          ? payload.detail
+          : null;
+      const code =
+        detail && "code" in detail && typeof detail.code === "string"
+          ? detail.code
+          : null;
+
+      if (code) {
+        return Promise.reject(
+          createNotifiedApiError(code, {
+            apiCode: code,
+            status: error.response?.status,
+          }),
+        );
       }
 
       return Promise.reject(createNotifiedApiError("REQUEST_FAILED"));
@@ -313,7 +375,7 @@ async function rejectApiEnvelopeResource(response: Response) {
     return;
   }
 
-  throw createPayloadApiError(payload);
+  throw createPayloadApiError(payload, response.status);
 }
 
 export async function requestApi<T>(
@@ -377,13 +439,17 @@ export async function uploadApi<T>(
   body: FormData,
   options: Pick<ApiRequestOptions, "auth" | "searchParams"> & {
     onProgress?: (progress: { loaded: number; total?: number }) => void;
+    signal?: AbortSignal;
+    timeoutMs?: number;
   } = {},
 ) {
   const requestConfig: ResuMateAxiosRequestConfig = {
     onUploadProgress: options.onProgress
       ? ({ loaded, total }) => options.onProgress?.({ loaded, total })
       : undefined,
+    signal: options.signal,
     skipAuth: options.auth === false,
+    timeout: options.timeoutMs,
   };
   const response = await apiClient.post<unknown>(
     resolveApiUrl(route, options),
@@ -426,7 +492,9 @@ export async function fetchApiResource(url: string, init: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    throw createNotifiedApiError("REQUEST_FAILED");
+    throw createNotifiedApiError("REQUEST_FAILED", {
+      status: response.status,
+    });
   }
 
   await rejectApiEnvelopeResource(response);

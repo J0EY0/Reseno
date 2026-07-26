@@ -2,6 +2,7 @@ import re
 from typing import Any
 
 from .attachments import attachment_text
+from .models import TargetReference
 from .parsing_patterns import compiled_agent_pattern, matches_agent_pattern
 from .privacy import sanitize_agent_text
 
@@ -18,6 +19,7 @@ MATERIAL_FOCI = {
     "skills",
     "education",
     "jd",
+    "target_context",
 }
 SECTION_PATTERNS = (
     ("project", "material.project"),
@@ -44,6 +46,7 @@ def extract_resume_materials(
     prompt: str,
     job_brief: str,
     files: list[dict[str, Any]],
+    target_reference: TargetReference | None = None,
     focus: str = "all",
     max_items: int = DEFAULT_MATERIAL_CANDIDATES,
     hidden_terms: tuple[str, ...] = (),
@@ -57,6 +60,7 @@ def extract_resume_materials(
         prompt=prompt,
         job_brief=job_brief,
         files=files,
+        target_reference=target_reference,
         hidden_terms=hidden_terms,
     )
     candidates = _material_candidates(sources, focus=resolved_focus, limit=limit)
@@ -91,12 +95,17 @@ def _material_sources(
     prompt: str,
     job_brief: str,
     files: list[dict[str, Any]],
+    target_reference: TargetReference | None,
     hidden_terms: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
-    has_reference_sources = bool(job_brief.strip()) or any(
-        attachment_text(session_id, file)
-        for file in files[:5]
+    target_excerpt = (
+        target_reference.excerpt.strip()
+        if target_reference is not None
+        else job_brief.strip()
+    )
+    has_reference_sources = bool(target_excerpt) or any(
+        attachment_text(session_id, file) for file in files[:5]
     )
     if prompt.strip() and _is_substantive_prompt_material(
         prompt,
@@ -112,17 +121,22 @@ def _material_sources(
             },
         )
 
-    if job_brief.strip():
-        sources.append(
-            {
-                "sourceType": "jobBrief",
-                "sourceIndex": 0,
-                "allowFallback": True,
-                "referenceOnly": True,
-                "title": "Job brief",
-                "text": sanitize_agent_text(job_brief, hidden_terms=hidden_terms),
-            },
-        )
+    if target_excerpt:
+        source = {
+            # `jobBrief` is retained as the public source discriminator.
+            "sourceType": "jobBrief",
+            "sourceIndex": 0,
+            "allowFallback": True,
+            "referenceOnly": True,
+            "title": "Target opportunity context",
+            "text": sanitize_agent_text(
+                target_excerpt,
+                hidden_terms=hidden_terms,
+            ),
+        }
+        if target_reference is not None:
+            source["opportunityType"] = target_reference.kind
+        sources.append(source)
 
     for index, file in enumerate(files[:5], start=1):
         content = attachment_text(session_id, file)
@@ -229,6 +243,9 @@ def _candidate_payload(
     media_type = source.get("mediaType")
     if media_type:
         payload["mediaType"] = media_type
+    opportunity_type = source.get("opportunityType")
+    if opportunity_type:
+        payload["opportunityType"] = opportunity_type
     return payload
 
 
@@ -289,7 +306,7 @@ def _matches_focus(
         return bool(sections) or reference_only
     if focus == "resume_facts":
         return bool(sections) and not reference_only
-    if focus == "jd":
+    if focus in {"jd", "target_context"}:
         return reference_only
 
     expected_sections = FOCUS_SECTIONS.get(focus)

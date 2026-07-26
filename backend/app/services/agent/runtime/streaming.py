@@ -457,6 +457,14 @@ async def async_stream_agent_response(
 ) -> AsyncIterator[str]:
     """Stream an agent response through async provider calls."""
 
+    # Import lazily because importing the attachment submodule initializes the
+    # Agent package, whose public runtime imports this streaming module.
+    from app.services.agent_sessions import persist_agent_user_message
+
+    # The user turn is authoritative before provider work begins. Cancellation
+    # or provider failure therefore leaves a recoverable prompt, while the
+    # completion callback remains responsible only for successful assistants.
+    persist_agent_user_message(conn, request)
     runtime = runtime or AgentRuntimeContext()
     config = resolve_agent_llm_config(conn, request.model_config_data)
     if config is None:
@@ -545,10 +553,12 @@ async def async_stream_agent_response(
                     )
                     for tool_id in new_tool_ids:
                         tool_part_ids[tool_id] = part_id
+                # Tool state is streamed through the ID-addressed events above.
+                # Only the timeline needs a message patch here; the terminal
+                # message still carries a complete tool snapshot for replay.
                 yield _message_delta_event(
-                    "tools",
+                    "timeline",
                     text="".join(raw_parts),
-                    tools=tool_payloads,
                     timeline=_timeline_payload(timeline_parts),
                 )
                 continue

@@ -1,5 +1,5 @@
 Supported ResumeEditOperation shapes:
-- replace_field {type,path,value} only for basic.headline or basic.summary; do not edit name/phone/email/location/avatar.
+- replace_field {type,path,value} only for basic.headline, basic.location, or basic.summary; do not edit name/phone/email/avatar.
 - update_item {type,sectionId,itemId,patch:{title,subtitle,meta,period,description,highlights}}.
 - insert_item {type,sectionId,item,index?}.
 - update_section {type,sectionId,patch:{section_type,layout,customTitle}}.
@@ -9,6 +9,7 @@ Supported ResumeEditOperation shapes:
 - reorder_sections {type,sectionIds}.
 - reorder_items {type,sectionId,itemIds}.
 Use existing IDs from the resume. If the target is unclear, call resume_analysis first.
+basic.location is write-only: set it only when the user explicitly provides the desired value. Never infer or claim the current location from resume context.
 
 Field filling rules:
 - title: only the project name, company name, school name, certificate name, or award name.

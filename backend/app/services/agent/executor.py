@@ -17,10 +17,25 @@ from .attachments import attachment_text, current_request_attachments
 from .editing import _string_list
 from .integrations import URL_PATTERN, WebReference, WebSearchResult, _compact_text
 from .localization import agent_text, section_label
-from .models import EditPlanStep, JobReference, ResumeAnalysis
+from .models import (
+    EditPlanStep,
+    ResumeAnalysis,
+    TargetOpportunityKind,
+    TargetReference,
+)
 from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
 from .policy import AgentTaskIntent, infer_agent_task_intent
 from .privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_text
+
+OPPORTUNITY_KIND_PATTERN_KEYS: tuple[
+    tuple[TargetOpportunityKind, str],
+    ...,
+] = (
+    ("scholarship", "target.kind.scholarship"),
+    ("graduate_study", "target.kind.graduate_study"),
+    ("research", "target.kind.research"),
+    ("employment", "target.kind.employment"),
+)
 
 
 def _current_prompt(request: AgentChatRequest) -> str:
@@ -171,6 +186,8 @@ class AgentPlanExecutor:
 
     def __init__(self, request: AgentChatRequest) -> None:
         self.request = request
+        # `jobBrief` remains the request wire name; normalize it at this boundary.
+        self.target_brief = request.job_brief.strip()
         self.resume = _active_resume(request)
         self.hidden_terms = resume_hidden_terms(self.resume)
         self.visible_resume = sanitize_agent_resume(
@@ -183,7 +200,7 @@ class AgentPlanExecutor:
     def build_message_from_parts(
         self,
         *,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
         plan: list[EditPlanStep],
         edits: list[AgentResumeEditSuggestion],
@@ -195,15 +212,15 @@ class AgentPlanExecutor:
     ) -> AgentChatMessage:
         """Assemble the final assistant payload from executed tool outputs."""
 
-        sources = self.build_sources(job_reference, analysis)
-        knowledge = self.build_knowledge(job_reference, analysis)
+        sources = self.build_sources(target_reference, analysis)
+        knowledge = self.build_knowledge(target_reference, analysis)
 
         return AgentChatMessage(
             id=message_id or f"agent-msg-{uuid4().hex[:12]}",
             role="assistant",
             tone="success" if edits else "default",
             text=self.build_response_text(
-                job_reference,
+                target_reference,
                 analysis,
                 plan,
                 edits,
@@ -212,7 +229,7 @@ class AgentPlanExecutor:
                 finish_missing=finish_missing or [],
             ),
             plan=_visible_plan_steps(self.request),
-            suggestions=self.build_suggestions(job_reference, analysis),
+            suggestions=self.build_suggestions(target_reference, analysis),
             knowledge=knowledge,
             tools=tools,
             sources=sources,
@@ -222,32 +239,131 @@ class AgentPlanExecutor:
             actions=self.build_actions(edits),
         )
 
+    def infer_target_kind(self, context: str = "") -> TargetOpportunityKind:
+        """Classify the target into the small set supported by the resume agent."""
+
+        text = f"{self.target_brief}\n{context or self.prompt}".casefold()
+        if matches_agent_pattern(
+            text,
+            "target.exact_job_description",
+            locale="all",
+        ):
+            return "employment"
+
+        for kind, pattern_key in OPPORTUNITY_KIND_PATTERN_KEYS:
+            if matches_agent_pattern(text, pattern_key, locale="all"):
+                return kind
+
+        # Existing `jobBrief` clients historically use the field for a JD.
+        return "employment" if self.target_brief else "general"
+
+    def has_exact_job_description(
+        self,
+        kind: TargetOpportunityKind | None = None,
+    ) -> bool:
+        """Return whether the compatibility brief represents an exact JD."""
+
+        resolved_kind = kind or self.infer_target_kind()
+        if resolved_kind != "employment":
+            return False
+        if self.target_brief:
+            return True
+        return matches_agent_pattern(
+            self.prompt,
+            "target.exact_job_description",
+            locale="all",
+        )
+
+    def infer_target(self, kind: TargetOpportunityKind | None = None) -> str:
+        """Infer a compact opportunity label without forcing a job role."""
+
+        resolved_kind = kind or self.infer_target_kind()
+        if resolved_kind == "employment":
+            return self.infer_target_role()
+
+        context = self.target_brief or self.prompt
+        first_line = next(
+            (line.strip() for line in context.splitlines() if line.strip()),
+            "",
+        )
+        compact = " ".join(first_line.split()).strip()
+        if compact:
+            return compact[:80]
+
+        return agent_text(
+            self.request.locale,
+            f"target.default.{resolved_kind}",
+        )
+
+    def target_reference_from_request(self) -> TargetReference:
+        """Normalize the compatibility request field into internal target context."""
+
+        kind = self.infer_target_kind()
+        return TargetReference(
+            mode="provided" if self.target_brief else "none",
+            kind=kind,
+            target=self.infer_target(kind),
+            query="",
+            url=None,
+            excerpt=sanitize_agent_text(
+                self.target_brief,
+                hidden_terms=self.hidden_terms,
+            ),
+            exact_job_description=self.has_exact_job_description(kind),
+        )
+
+    def target_search_query(
+        self,
+        target: str,
+        kind: TargetOpportunityKind,
+        *,
+        exact_job_description: bool = False,
+    ) -> str:
+        """Build a deterministic search query for one target opportunity."""
+
+        if exact_job_description:
+            return agent_text(self.request.locale, "jd.search.query", role=target)
+
+        suffix = agent_text(
+            self.request.locale,
+            f"target.search_suffix.{kind}",
+        )
+        return f"{target} {suffix}".strip()
+
     def jd_search_query(self, role: str) -> str:
-        """Build the deterministic JD search query for the inferred role."""
+        """Preserve the exact-JD query contract for legacy callers."""
 
-        return agent_text(self.request.locale, "jd.search.query", role=role)
+        return self.target_search_query(
+            role,
+            "employment",
+            exact_job_description=True,
+        )
 
-    def build_url_job_reference_from_web(
+    def build_url_target_reference_from_web(
         self,
         url: str,
-        role: str,
+        target: str,
         web_reference: WebReference | None,
-    ) -> JobReference:
-        """Convert an optional fetched JD URL result into agent context."""
+        *,
+        kind: TargetOpportunityKind,
+        exact_job_description: bool,
+    ) -> TargetReference:
+        """Convert an optional fetched opportunity page into agent context."""
 
         excerpt = (
             web_reference.excerpt
             if web_reference
-            else self.request.job_brief.strip()[:260]
-            or self.prompt.replace(url, "").strip()[:260]
+            else self.target_brief[:260] or self.prompt.replace(url, "").strip()[:260]
         )
         source_excerpt = web_reference.excerpt if web_reference else ""
-        return JobReference(
+        return TargetReference(
             mode="url",
-            role=role,
+            kind=kind,
+            target=target,
             query="",
             url=url,
             excerpt=sanitize_agent_text(excerpt, hidden_terms=self.hidden_terms),
+            exact_job_description=exact_job_description,
             source_title=sanitize_agent_text(
                 web_reference.title if web_reference else "",
                 hidden_terms=self.hidden_terms,
@@ -259,21 +375,32 @@ class AgentPlanExecutor:
             tool_state="output-available" if web_reference else "output-error",
             tool_error=None
             if web_reference
-            else agent_text(self.request.locale, "jd.url.fetch_error"),
+            else (
+                agent_text(self.request.locale, "jd.url.fetch_error")
+                if exact_job_description
+                else self.target_reference_error_text()
+            ),
             result_count=1 if web_reference else 0,
         )
 
-    def build_search_job_reference_from_result(
+    def build_search_target_reference_from_result(
         self,
-        role: str,
+        target: str,
         query: str,
         search_result: WebSearchResult | None,
         result_count: int,
         search_error: str | None,
-    ) -> JobReference:
-        """Convert an optional JD search result into agent context."""
+        *,
+        kind: TargetOpportunityKind,
+        exact_job_description: bool,
+    ) -> TargetReference:
+        """Convert an optional opportunity search result into agent context."""
 
-        fallback_excerpt = agent_text(self.request.locale, "jd.search.fallback_excerpt")
+        fallback_excerpt = (
+            agent_text(self.request.locale, "jd.search.fallback_excerpt")
+            if exact_job_description
+            else self.target_reference_error_text()
+        )
 
         if search_result:
             excerpt = search_result.excerpt
@@ -286,12 +413,14 @@ class AgentPlanExecutor:
             source_url = None
             source_excerpt = ""
 
-        return JobReference(
+        return TargetReference(
             mode="search",
-            role=role,
+            kind=kind,
+            target=target,
             query=query,
             url=source_url,
             excerpt=sanitize_agent_text(excerpt, hidden_terms=self.hidden_terms),
+            exact_job_description=exact_job_description,
             source_title=sanitize_agent_text(
                 source_title,
                 hidden_terms=self.hidden_terms,
@@ -305,10 +434,18 @@ class AgentPlanExecutor:
             result_count=result_count,
         )
 
+    def target_reference_error_text(self) -> str:
+        """Return a neutral fallback for unavailable opportunity context."""
+
+        return agent_text(
+            self.request.locale,
+            "target.error.not_found",
+        )
+
     def infer_target_role(self) -> str:
         """Infer the target role from JD text, user prompt, or resume headline."""
 
-        context = f"{self.request.job_brief}\n{self.prompt}".strip()
+        context = f"{self.target_brief}\n{self.prompt}".strip()
         role_patterns = (
             self.zh_role_patterns() if self.is_zh else self.en_role_patterns()
         )
@@ -402,7 +539,7 @@ class AgentPlanExecutor:
 
     def create_plan(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> list[EditPlanStep]:
         """Create readable, conservative plan steps from user intent."""
@@ -472,7 +609,7 @@ class AgentPlanExecutor:
     def execute_plan(
         self,
         plan: list[EditPlanStep],
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> list[AgentResumeEditSuggestion]:
         """Translate plan steps into frontend-executable draft operations."""
@@ -481,17 +618,17 @@ class AgentPlanExecutor:
 
         for step in plan:
             if step.action in {"replace_summary", "replace_field"}:
-                edits.append(self.build_summary_edit(step, job_reference, analysis))
+                edits.append(self.build_summary_edit(step, target_reference, analysis))
                 continue
 
             if step.action in {"update_first_item", "update_item"}:
-                edit = self.build_first_item_edit(step, job_reference, analysis)
+                edit = self.build_first_item_edit(step, target_reference, analysis)
                 if edit:
                     edits.append(edit)
                 continue
 
             if step.action in {"insert_project", "insert_section", "insert_item"}:
-                edits.append(self.build_project_section_edit(step, job_reference))
+                edits.append(self.build_project_section_edit(step, target_reference))
                 continue
 
             if step.action == "reorder_sections":
@@ -508,7 +645,7 @@ class AgentPlanExecutor:
     def build_summary_edit(
         self,
         step: EditPlanStep,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> AgentResumeEditSuggestion:
         """Build the summary replacement operation."""
@@ -526,7 +663,7 @@ class AgentPlanExecutor:
         replacement = agent_text(
             self.request.locale,
             "summary.replacement",
-            role=job_reference.role,
+            role=target_reference.target,
             keyword_text=keyword_text,
         )
         title = agent_text(self.request.locale, "title.summary_draft")
@@ -548,7 +685,7 @@ class AgentPlanExecutor:
     def build_first_item_edit(
         self,
         step: EditPlanStep,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> AgentResumeEditSuggestion | None:
         """Build an update operation for the first meaningful resume item."""
@@ -577,7 +714,7 @@ class AgentPlanExecutor:
         new_highlight = agent_text(
             self.request.locale,
             "highlight.first_item",
-            role=job_reference.role,
+            role=target_reference.target,
         )
         title = agent_text(self.request.locale, "title.strengthen_first_item")
 
@@ -603,7 +740,7 @@ class AgentPlanExecutor:
     def build_project_section_edit(
         self,
         step: EditPlanStep,
-        job_reference: JobReference,
+        target_reference: TargetReference,
     ) -> AgentResumeEditSuggestion:
         """Build an insert operation for a new project section."""
 
@@ -743,9 +880,7 @@ class AgentPlanExecutor:
                 if not responsibility_match:
                     continue
                 part = (
-                    responsibility_match.group(1)
-                    or responsibility_match.group(2)
-                    or ""
+                    responsibility_match.group(1) or responsibility_match.group(2) or ""
                 ).strip()
             if not part:
                 continue
@@ -862,7 +997,7 @@ class AgentPlanExecutor:
 
     def build_tools(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
         plan: list[EditPlanStep],
         edits: list[AgentResumeEditSuggestion],
@@ -872,7 +1007,10 @@ class AgentPlanExecutor:
 
         tool_ids = tool_ids or {}
         tools = [
-            self.build_jd_tool(job_reference, tool_ids.get("jd")),
+            self.build_target_reference_tool(
+                target_reference,
+                tool_ids.get("jd"),
+            ),
             self.build_resume_analysis_tool(analysis, tool_ids.get("analysis")),
         ]
 
@@ -885,40 +1023,47 @@ class AgentPlanExecutor:
 
         return tools
 
-    def build_jd_tool(
+    def build_target_reference_tool(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         tool_id: str | None = None,
         tool_name: str | None = None,
     ) -> AgentToolInvocation:
-        """Return the completed JD fetch/search tool invocation."""
+        """Return the completed opportunity fetch/search tool invocation."""
 
-        default_tool_name = "web_fetch" if job_reference.mode == "url" else "web_search"
-        resolved_tool_name = tool_name or default_tool_name
-        jd_tool_type = f"tool-{resolved_tool_name}"
-        jd_input = (
-            {"url": job_reference.url}
-            if job_reference.mode == "url"
-            else {"query": job_reference.query, "language": self.request.locale}
+        default_tool_name = (
+            "web_fetch" if target_reference.mode == "url" else "web_search"
         )
-        jd_input["purpose"] = "jd"
-        jd_output = {
-            "mode": job_reference.mode,
-            "role": job_reference.role,
-            "excerpt": job_reference.excerpt,
-            "resultCount": job_reference.result_count,
+        resolved_tool_name = tool_name or default_tool_name
+        tool_type = f"tool-{resolved_tool_name}"
+        tool_input = (
+            {"url": target_reference.url}
+            if target_reference.mode == "url"
+            else {"query": target_reference.query, "language": self.request.locale}
+        )
+        purpose = "jd" if target_reference.exact_job_description else "target_context"
+        tool_input["purpose"] = purpose
+        tool_output = {
+            "mode": target_reference.mode,
+            "opportunityType": target_reference.kind,
+            "target": target_reference.target,
+            "excerpt": target_reference.excerpt,
+            "resultCount": target_reference.result_count,
         }
-        if job_reference.url:
-            jd_output["url"] = job_reference.url
+        if target_reference.exact_job_description:
+            # Exact-JD consumers still read the historical `role` output key.
+            tool_output["role"] = target_reference.target
+        if target_reference.url:
+            tool_output["url"] = target_reference.url
 
         return AgentToolInvocation(
             id=tool_id or f"tool-{uuid4().hex[:8]}",
-            type=jd_tool_type,
+            type=tool_type,
             title=resolved_tool_name,
-            state=job_reference.tool_state,
-            input=jd_input,
-            output=jd_output,
-            errorText=job_reference.tool_error,
+            state=target_reference.tool_state,
+            input=tool_input,
+            output=tool_output,
+            errorText=target_reference.tool_error,
         )
 
     def build_resume_analysis_tool(
@@ -950,7 +1095,7 @@ class AgentPlanExecutor:
         self,
         analysis: ResumeAnalysis,
     ) -> dict[str, Any]:
-        """Return structured target-role fit hints for resume-only planning."""
+        """Return structured target-opportunity fit hints for resume planning."""
 
         has_target_context = bool(
             self.request.job_brief.strip()
@@ -966,9 +1111,14 @@ class AgentPlanExecutor:
         if not self.has_editable_resume_content(analysis):
             warnings.append("empty_resume_limits_matching")
 
+        kind = self.infer_target_kind()
+        target = self.infer_target(kind)
         return {
             "hasTargetContext": has_target_context,
-            "targetRole": self.infer_target_role(),
+            "opportunityType": kind,
+            "targetOpportunity": target,
+            # Keep the response key used by existing employment clients.
+            "targetRole": target if kind == "employment" else "",
             "score": self.keyword_match_score(),
             "matchedKeywordCount": len(analysis.matched_keywords),
             "missingKeywordCount": len(analysis.missing_keywords),
@@ -1092,34 +1242,43 @@ class AgentPlanExecutor:
 
     def build_sources(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> list[AgentSource]:
         """Build citation metadata only from user-visible external content."""
 
         sources: list[AgentSource] = []
 
-        if job_reference.source_excerpt:
+        if target_reference.source_excerpt:
             source_id = (
-                "source-jd-url" if job_reference.mode == "url" else "source-jd-search"
+                "source-jd-url"
+                if target_reference.mode == "url"
+                else "source-jd-search"
+            )
+            fallback_title = agent_text(
+                self.request.locale,
+                "target.source.reference",
             )
             sources.append(
                 AgentSource(
                     id=source_id,
-                    title=job_reference.source_title or "Target JD URL",
+                    title=target_reference.source_title or fallback_title,
                     sourceType="web",
-                    url=job_reference.url,
-                    excerpt=job_reference.source_excerpt,
+                    url=target_reference.url,
+                    excerpt=target_reference.source_excerpt,
                 ),
             )
 
-        if self.request.job_brief.strip():
+        if self.target_brief:
             sources.append(
                 AgentSource(
                     id="source-job-brief",
-                    title="Target job description",
+                    title=agent_text(
+                        self.request.locale,
+                        "target.source.context",
+                    ),
                     sourceType="jobBrief",
-                    excerpt=self.request.job_brief.strip()[:220],
+                    excerpt=self.target_brief[:220],
                 ),
             )
 
@@ -1141,7 +1300,7 @@ class AgentPlanExecutor:
 
     def build_suggestions(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> list[str]:
         """Build short guidance text next to executable edits."""
@@ -1153,7 +1312,7 @@ class AgentPlanExecutor:
                 agent_text(
                     self.request.locale,
                     "suggestion.target_role",
-                    role=job_reference.role,
+                    role=target_reference.target,
                 ),
             ]
 
@@ -1162,7 +1321,7 @@ class AgentPlanExecutor:
             agent_text(
                 self.request.locale,
                 "suggestion.target_role",
-                role=job_reference.role,
+                role=target_reference.target,
             ),
         ]
         if analysis.missing_keywords:
@@ -1180,14 +1339,14 @@ class AgentPlanExecutor:
 
     def build_knowledge(
         self,
-        job_reference: JobReference,
+        target_reference: TargetReference,
         analysis: ResumeAnalysis,
     ) -> list[AgentKnowledgeItem]:
         """Build knowledge preparation entries from role and keyword gaps."""
 
         terms = analysis.missing_keywords[:3] or analysis.matched_keywords[:2]
         if not terms:
-            terms = [job_reference.role]
+            terms = [target_reference.target]
 
         detail = agent_text(self.request.locale, "knowledge.default_detail")
 
@@ -1226,7 +1385,7 @@ class AgentPlanExecutor:
 
     def build_response_text(
         self,
-        _job_reference: JobReference,
+        _target_reference: TargetReference,
         _analysis: ResumeAnalysis,
         _plan: list[EditPlanStep],
         edits: list[AgentResumeEditSuggestion],

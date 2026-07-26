@@ -3,11 +3,13 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from app.schemas.agent import AgentChatRequest
-from app.services import agent_runs
+from app.db.connection import connect
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
+from app.services import agent_runs, agent_sessions
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent_runs import AgentRunConflictError, AgentRunManager
+from app.services.llm import AgentLlmConfig
 
 
 class _FakeConnection:
@@ -89,6 +91,11 @@ def test_message_done_is_not_emitted_before_persistence(
 ) -> None:
     async def scenario() -> None:
         monkeypatch.setattr(
+            agent_sessions,
+            "persist_agent_user_message",
+            lambda conn, request: None,
+        )
+        monkeypatch.setattr(
             streaming,
             "resolve_agent_llm_config",
             lambda conn, model_config: None,
@@ -109,6 +116,90 @@ def test_message_done_is_not_emitted_before_persistence(
 
         assert any("event: message_delta" in frame for frame in frames)
         assert not any("event: message_done" in frame for frame in frames)
+
+    asyncio.run(scenario())
+
+
+def test_user_message_is_persisted_before_cancelled_provider_work(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+
+    async def scenario() -> None:
+        provider_started = asyncio.Event()
+        provider_blocked = asyncio.Event()
+        request = AgentChatRequest(
+            resumeId="resume-cancelled-persistence",
+            message=AgentConversationItem(
+                id="agent-user-before-cancel",
+                role="user",
+                text="Inspect this resume.",
+            ),
+            resume={"basic": {}, "sections": []},
+        )
+        config = AgentLlmConfig(
+            client_id="cancel-test",
+            name="Cancel Test",
+            provider="openai",
+            model="test-model",
+            base_url="https://example.test/v1",
+            api_key="sk-test",
+            temperature=None,
+            top_p=None,
+            max_tokens=None,
+            timeout_seconds=30,
+        )
+
+        async def blocked_loop(
+            *args: object,
+            **kwargs: object,
+        ) -> AsyncIterator[object]:
+            del args, kwargs
+            provider_started.set()
+            await provider_blocked.wait()
+            if False:
+                yield object()
+
+        monkeypatch.setattr(
+            streaming,
+            "resolve_agent_llm_config",
+            lambda conn, model_config: config,
+        )
+        monkeypatch.setattr(
+            streaming,
+            "async_iter_agent_tool_call_loop",
+            blocked_loop,
+        )
+
+        conn = connect()
+
+        async def consume() -> None:
+            async for _frame in streaming.async_stream_agent_response(
+                request,
+                conn,
+            ):
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(provider_started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        rows = conn.execute(
+            """
+            SELECT id, role
+            FROM agent_messages
+            WHERE session_id = ?
+            ORDER BY sequence
+            """,
+            ("resume-cancelled-persistence",),
+        ).fetchall()
+        conn.close()
+
+        assert [(row["id"], row["role"]) for row in rows] == [
+            ("agent-user-before-cancel", "user"),
+        ]
 
     asyncio.run(scenario())
 

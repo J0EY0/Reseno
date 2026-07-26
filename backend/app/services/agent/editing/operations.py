@@ -8,6 +8,7 @@ from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
 
 from ..localization import agent_text
 from ..models import EditPlanStep
+from ..operation_contract import resume_edit_operation_error
 from ..parsing_patterns import compiled_agent_pattern
 from ..privacy import AGENT_WRITABLE_BASIC_FIELDS, is_pii_basic_path
 from ..prompts import (
@@ -140,9 +141,11 @@ def _section_alias_matches_text(value: str, alias: str) -> bool:
     normalized_alias = unicodedata.normalize("NFKC", alias).lower().strip()
     if re.fullmatch(r"[a-z0-9]+(?:\s+[a-z0-9]+)*", normalized_alias):
         words = normalized_alias.split()
-        pattern = r"(?<![a-z0-9])" + r"[\W_]+".join(
-            re.escape(word) for word in words
-        ) + r"(?![a-z0-9])"
+        pattern = (
+            r"(?<![a-z0-9])"
+            + r"[\W_]+".join(re.escape(word) for word in words)
+            + r"(?![a-z0-9])"
+        )
         normalized_value = unicodedata.normalize("NFKC", value).lower()
         return re.search(pattern, normalized_value) is not None
 
@@ -211,13 +214,12 @@ def _has_repeated_field_values(value: str, field_values: list[str]) -> bool:
     """Return whether text repeats multiple structured fields."""
 
     text_key = _duplicate_key(value)
-    matches = 0
-    for field_value in field_values:
-        field_key = _duplicate_key(field_value)
-        if len(field_key) >= 3 and field_key in text_key:
-            matches += 1
-
-    return matches >= 2
+    field_keys = {
+        field_key
+        for field_value in field_values
+        if len(field_key := _duplicate_key(field_value)) >= 3
+    }
+    return sum(field_key in text_key for field_key in field_keys) >= 2
 
 
 def _clean_resume_item_fields(item: dict[str, Any]) -> dict[str, Any]:
@@ -272,21 +274,29 @@ def _normalized_item(value: object) -> dict[str, Any] | None:
         return None
 
     item_id = _model_string(value.get("id")) or f"item-agent-{uuid4().hex[:8]}"
-    return _clean_resume_item_fields({
-        "id": item_id,
-        "title": _model_string(value.get("title")),
-        "subtitle": _model_string(value.get("subtitle")),
-        "meta": _model_string(value.get("meta")),
-        "period": _model_string(value.get("period")),
-        "description": _model_string(value.get("description")),
-        "highlights": _string_list(value.get("highlights")),
-    })
+    return _clean_resume_item_fields(
+        {
+            "id": item_id,
+            "title": _model_string(value.get("title")),
+            "subtitle": _model_string(value.get("subtitle")),
+            "meta": _model_string(value.get("meta")),
+            "period": _model_string(value.get("period")),
+            "description": _model_string(value.get("description")),
+            "highlights": _string_list(value.get("highlights")),
+        }
+    )
 
 
 def _normalized_section(value: object) -> dict[str, Any] | None:
     """Return a safe ResumeSection payload from model JSON."""
 
     if not isinstance(value, dict):
+        return None
+    if _section_kind_aliases_conflict(
+        value.get("section_type"),
+        value.get("sectionType"),
+        value.get("kind"),
+    ):
         return None
 
     kind = _normalized_section_kind(
@@ -348,6 +358,13 @@ def _safe_item_patch(
     return cleaned_patch
 
 
+def _section_kind_aliases_conflict(*values: object) -> bool:
+    """Return whether aliases resolve to different known section kinds."""
+
+    resolved = {kind for value in values if (kind := _section_kind_from_text(value))}
+    return len(resolved) > 1
+
+
 def _safe_section_patch(value: object) -> dict[str, Any]:
     """Return only frontend-writable section fields from a model patch."""
 
@@ -357,16 +374,9 @@ def _safe_section_patch(value: object) -> dict[str, Any]:
     patch: dict[str, Any] = {}
     section_type = value.get("section_type")
     legacy_kind = value.get("kind")
-    normalized_section_type = _section_kind_from_text(section_type)
-    normalized_legacy_kind = _section_kind_from_text(legacy_kind)
-    if (
-        isinstance(section_type, str)
-        and isinstance(legacy_kind, str)
-        and normalized_section_type != normalized_legacy_kind
-    ):
+    if _section_kind_aliases_conflict(section_type, legacy_kind):
         # A model can still emit the deprecated alias despite the schema.
-        # Reject contradictory values instead of letting hash/set iteration
-        # choose a different winner across Python processes.
+        # Reject contradictory values instead of silently choosing one.
         return {}
 
     if isinstance(section_type, str) or isinstance(legacy_kind, str):
@@ -631,16 +641,17 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
 
     if operation_type == "replace_field":
         path = _model_string(operation.get("path"))
-        if is_pii_basic_path(path):
+        field = path[6:] if path.startswith("basic.") else ""
+        if is_pii_basic_path(path) and field not in AGENT_WRITABLE_BASIC_FIELDS:
             return "replace_field cannot edit hidden personal fields."
-        if not path.startswith("basic.") or path[6:] not in BASIC_EDIT_FIELDS:
+        if not path.startswith("basic.") or field not in BASIC_EDIT_FIELDS:
             return "replace_field requires path basic.<writableField>."
-        if path[6:] not in AGENT_WRITABLE_BASIC_FIELDS:
-            return "replace_field can only edit basic.headline or basic.summary."
+        if field not in AGENT_WRITABLE_BASIC_FIELDS:
+            return "replace_field targets a read-only basic field."
         if not isinstance(operation.get("value"), str):
             return "replace_field requires a string value."
         basic = resume.get("basic")
-        if isinstance(basic, dict) and basic.get(path[6:]) == operation.get("value"):
+        if isinstance(basic, dict) and basic.get(field) == operation.get("value"):
             return "replace_field must change the current value."
 
     if operation_type == "insert_section":
@@ -713,9 +724,8 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             ]
             if len(item_ids) != len(set(item_ids)):
                 return "reorder_items cannot contain duplicate itemIds."
-            if (
-                len(item_ids) != len(current_item_ids)
-                or set(item_ids) != set(current_item_ids)
+            if len(item_ids) != len(current_item_ids) or set(item_ids) != set(
+                current_item_ids
             ):
                 return "reorder_items requires every existing itemId exactly once."
             if item_ids == current_item_ids:
@@ -744,8 +754,14 @@ def _model_edit_suggestions_with_diagnostics(
     value: object,
     *,
     locale: str,
+    allow_missing_operations: bool = False,
 ) -> tuple[list[AgentResumeEditSuggestion], list[dict[str, Any]]]:
-    """Convert model edits and return rejected entries for tool observations."""
+    """Convert model edits and return rejected entries for tool observations.
+
+    Plan steps may omit their optional executable operation. Callers can allow
+    those metadata-only steps while still rejecting every operation that was
+    explicitly supplied but failed validation.
+    """
 
     if not isinstance(value, list):
         return [], []
@@ -766,6 +782,9 @@ def _model_edit_suggestions_with_diagnostics(
             )
             continue
 
+        if allow_missing_operations and "operation" not in item:
+            continue
+
         operation = _normalize_edit_operation(
             working_resume,
             item.get("operation"),
@@ -779,6 +798,21 @@ def _model_edit_suggestions_with_diagnostics(
                     "reason": _invalid_operation_reason(
                         working_resume,
                         item.get("operation"),
+                    ),
+                },
+            )
+            continue
+
+        contract_error = resume_edit_operation_error(operation)
+        if contract_error is not None:
+            rejected.append(
+                {
+                    "index": index,
+                    "title": _model_string(item.get("title"))
+                    or agent_text(locale, "edit.default.title", index=index),
+                    "reason": (
+                        "Normalized operation violates the resume edit "
+                        f"protocol: {contract_error}"
                     ),
                 },
             )
@@ -999,6 +1033,14 @@ def _operation_observation_value(
     """Return a user-facing before/after observation value."""
 
     operation_type = operation.get("type")
+    if operation_type == "replace_field":
+        path = str(operation.get("path", ""))
+        if is_pii_basic_path(path):
+            # Never echo an existing personal value back into model-visible
+            # tool output. The post-edit value is safe because it came from
+            # the current user request.
+            return operation.get("value") if after else "[hidden]"
+
     if operation_type == "insert_section":
         if not after:
             return None
@@ -1178,15 +1220,11 @@ def _merge_edits(
     current_edits: list[AgentResumeEditSuggestion],
     incoming_edits: list[AgentResumeEditSuggestion],
 ) -> list[AgentResumeEditSuggestion]:
-    """Merge later draft edits by target so corrective actions replace stale ones."""
+    """Preserve the exact operation sequence used to build the server draft.
 
-    merged = list(current_edits)
-    target_index = {edit.target: index for index, edit in enumerate(merged)}
-    for edit in incoming_edits:
-        if edit.target in target_index:
-            merged[target_index[edit.target]] = edit
-        else:
-            target_index[edit.target] = len(merged)
-            merged.append(edit)
+    Targets are descriptive labels, not operation identities. Collapsing by
+    target can drop an insert followed by an update, leaving the client unable
+    to replay the same transaction that the server already validated.
+    """
 
-    return merged
+    return [*current_edits, *incoming_edits]

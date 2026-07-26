@@ -73,53 +73,6 @@ export interface ResumeData {
   sections: ResumeSection[]
 }
 
-export type ResumeEditOperation =
-  | {
-      type: 'replace_field'
-      path: string
-      value: string | string[]
-    }
-  | {
-      type: 'insert_section'
-      section: ResumeSection
-      index?: number
-    }
-  | {
-      type: 'update_section'
-      sectionId: string
-      patch: Partial<ResumeSection>
-    }
-  | {
-      type: 'delete_section'
-      sectionId: string
-    }
-  | {
-      type: 'reorder_sections'
-      sectionIds: string[]
-    }
-  | {
-      type: 'insert_item'
-      sectionId: string
-      item: ResumeSectionItem
-      index?: number
-    }
-  | {
-      type: 'update_item'
-      sectionId: string
-      itemId: string
-      patch: Partial<ResumeSectionItem>
-    }
-  | {
-      type: 'delete_item'
-      sectionId: string
-      itemId: string
-    }
-  | {
-      type: 'reorder_items'
-      sectionId: string
-      itemIds: string[]
-    }
-
 export type ResumeDraftDiffKind = 'added' | 'modified' | 'deleted' | 'moved'
 
 export interface ResumeDraftDiff {

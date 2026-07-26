@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from inspect import isawaitable
 from typing import Any
 
@@ -15,6 +16,7 @@ from openai import (
 )
 
 from .errors import LlmRequestError
+from .tool_schema import portable_tool_schema
 from .types import LlmStopReason, LlmToolCall, LlmUsage
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -145,15 +147,36 @@ def openai_style_function_tools(tools: list[dict[str, Any]]) -> list[dict[str, A
                 "type": "function",
                 "name": name,
                 "description": str(function.get("description") or ""),
-                "parameters": function.get("parameters") or {
-                    "type": "object",
-                    "properties": {},
-                },
+                "parameters": portable_tool_schema(function.get("parameters")),
                 "strict": False,
             },
         )
 
     return function_tools
+
+
+def openai_chat_function_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Copy Chat Completions tools and project only their input schemas."""
+
+    provider_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        function = tool_function(tool)
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+
+        provider_tool = deepcopy(tool)
+        provider_function = provider_tool.get("function")
+        if not isinstance(provider_function, dict):
+            continue
+        provider_function["parameters"] = portable_tool_schema(
+            function.get("parameters"),
+        )
+        provider_tools.append(provider_tool)
+
+    return provider_tools
 
 
 def delta_text(delta: object, field_names: tuple[str, ...]) -> str:

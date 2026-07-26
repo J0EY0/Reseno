@@ -1,0 +1,217 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://resumate.local/schemas/resume-edit-operation.json",
+  "title": "ResumeEditOperation",
+  "description": "Normalized resume edit operation exchanged by the backend and frontend.",
+  "definitions": {
+    "resumeSectionItem": {
+      "type": "object",
+      "x-typescript-type": "ResumeSectionItem",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "meta": { "type": "string" },
+        "period": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "subtitle",
+        "meta",
+        "period",
+        "description",
+        "highlights"
+      ],
+      "additionalProperties": false
+    },
+    "resumeSection": {
+      "type": "object",
+      "x-typescript-type": "ResumeSection",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "education",
+            "work",
+            "internship",
+            "project",
+            "skills",
+            "awards",
+            "certificates",
+            "languages",
+            "other",
+            "custom"
+          ]
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["timeline", "list"]
+        },
+        "customTitle": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/resumeSectionItem" }
+        }
+      },
+      "required": ["id", "kind", "layout", "customTitle", "items"],
+      "additionalProperties": false
+    },
+    "sectionPatch": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "education",
+            "work",
+            "internship",
+            "project",
+            "skills",
+            "awards",
+            "certificates",
+            "languages",
+            "other",
+            "custom"
+          ],
+          "x-typescript-type": "ResumeSection[\"kind\"]"
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["timeline", "list"],
+          "x-typescript-type": "ResumeSection[\"layout\"]"
+        },
+        "customTitle": { "type": "string" }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "itemPatch": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "meta": { "type": "string" },
+        "period": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "replace_field" },
+        "path": {
+          "type": "string",
+          "enum": ["basic.headline", "basic.location", "basic.summary"]
+        },
+        "value": { "type": "string" }
+      },
+      "required": ["type", "path", "value"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "insert_section" },
+        "section": { "$ref": "#/definitions/resumeSection" },
+        "index": { "type": "integer" }
+      },
+      "required": ["type", "section"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "update_section" },
+        "sectionId": { "type": "string", "minLength": 1 },
+        "patch": { "$ref": "#/definitions/sectionPatch" }
+      },
+      "required": ["type", "sectionId", "patch"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "delete_section" },
+        "sectionId": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "sectionId"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "reorder_sections" },
+        "sectionIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "required": ["type", "sectionIds"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "insert_item" },
+        "sectionId": { "type": "string", "minLength": 1 },
+        "item": { "$ref": "#/definitions/resumeSectionItem" },
+        "index": { "type": "integer" }
+      },
+      "required": ["type", "sectionId", "item"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "update_item" },
+        "sectionId": { "type": "string", "minLength": 1 },
+        "itemId": { "type": "string", "minLength": 1 },
+        "patch": { "$ref": "#/definitions/itemPatch" }
+      },
+      "required": ["type", "sectionId", "itemId", "patch"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "delete_item" },
+        "sectionId": { "type": "string", "minLength": 1 },
+        "itemId": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "sectionId", "itemId"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "reorder_items" },
+        "sectionId": { "type": "string", "minLength": 1 },
+        "itemIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "required": ["type", "sectionId", "itemIds"],
+      "additionalProperties": false
+    }
+  ]
+}

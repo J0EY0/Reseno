@@ -3,7 +3,11 @@ from copy import deepcopy
 from typing import Any
 
 PII_BASIC_FIELDS = frozenset({"name", "phone", "email", "location", "avatar"})
-AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "summary"})
+HIDDEN_BASIC_VALUE = "[hidden]"
+# Location is intentionally write-only for the Agent: it may set a value that
+# the user explicitly supplied, while the existing value remains redacted from
+# model context and tool observations.
+AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "location", "summary"})
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")
@@ -81,12 +85,20 @@ def sanitize_agent_resume(
 
     source_basic = resume.get("basic")
     source_basic_data = source_basic if isinstance(source_basic, dict) else {}
+    field_status = _basic_field_status(source_basic_data)
     basic = sanitized.setdefault("basic", {})
     if isinstance(basic, dict):
         for field in PII_BASIC_FIELDS:
-            basic[field] = ""
+            # Preserve the distinction between absent and deliberately hidden
+            # values. An empty replacement makes models report that populated
+            # personal fields are missing, while this marker reveals no value.
+            basic[field] = (
+                ""
+                if field_status.get(field) == "missing"
+                else HIDDEN_BASIC_VALUE
+            )
 
-    sanitized["basicFieldStatus"] = _basic_field_status(source_basic_data)
+    sanitized["basicFieldStatus"] = field_status
     return sanitized
 
 

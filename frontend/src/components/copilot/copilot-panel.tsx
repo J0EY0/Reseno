@@ -116,10 +116,23 @@ import {
   type AgentChatStreamOptions,
   uploadAgentAttachment,
 } from "@/lib/agent-api";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
+  getAgentQualityWarningCount,
+  mergeStreamingAgentMessage,
+  shouldRollbackOptimisticAgentMessages,
+  shouldShowAgentDraftActions,
+} from "@/lib/agent-panel-state";
+import {
+  isAbortError,
+  isApiErrorCode,
+  isApiErrorToastShown,
+} from "@/lib/api-client";
+import {
+  getAgentToolLabelKey,
   getVisibleCompletedTools,
   getVisibleToolIds,
+  isAgentEditExecutionTool,
+  isToolFailure,
   isToolRunning,
 } from "@/lib/agent-tool-display";
 import { isPlainAgentText } from "@/lib/agent-message-rendering";
@@ -173,6 +186,10 @@ const IMAGE_ATTACHMENT_ACCEPT = [
 ].join(",");
 const JOB_BRIEF_PROMPT_PATTERN = new RegExp(
   languagePatterns.jobBriefPrompt.map(escapeRegExp).join("|"),
+  "i",
+);
+const JOB_BRIEF_CONTEXT_PATTERN = new RegExp(
+  languagePatterns.jobBriefContext.map(escapeRegExp).join("|"),
   "i",
 );
 const ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS = locales.flatMap(
@@ -502,8 +519,7 @@ function AgentPromptSubmitButton({
     hasReferencedAttachments;
   const isDisabled =
     !hasConfiguredModel ||
-    isSubmittingPrompt ||
-    (!isResponding && !hasPromptContent);
+    (!isResponding && !isSubmittingPrompt && !hasPromptContent);
 
   return (
     <PromptInputSubmit
@@ -549,11 +565,14 @@ function AgentPromptSubmitButton({
 
 function isLikelyJobBriefPrompt(prompt: string) {
   const trimmed = prompt.trim();
-
-  return (
+  const hasStructuredBody =
     trimmed.length >= 140 ||
-    trimmed.split(/\n+/).filter(Boolean).length >= 3 ||
-    JOB_BRIEF_PROMPT_PATTERN.test(trimmed)
+    trimmed.split(/\n+/).filter(Boolean).length >= 3;
+
+  // Length alone cannot distinguish a JD from admission or scholarship rules.
+  return (
+    JOB_BRIEF_CONTEXT_PATTERN.test(trimmed) &&
+    (hasStructuredBody || JOB_BRIEF_PROMPT_PATTERN.test(trimmed))
   );
 }
 
@@ -919,108 +938,19 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
 }
 
 function getToolActivityLabel(tool: AgentToolInvocation, t: AppMessages) {
-  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
-  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
-
-  if (toolName.includes("web_fetch") && purpose === "jd") {
-    return t.agentToolFetchingJob;
-  }
-
-  if (toolName.includes("web_search")) {
-    return t.agentToolSearchingJob;
-  }
-
-  if (toolName.includes("resume") && toolName.includes("analysis")) {
-    return t.agentToolAnalyzingResume;
-  }
-
-  if (toolName.includes("material_extract")) {
-    return t.agentToolExtractingMaterial;
-  }
-
-  if (toolName.includes("edit_plan")) {
-    return t.agentToolPlanningEdits;
-  }
-
-  if (toolName.includes("edit_execute")) {
-    return t.agentToolGeneratingDraft;
-  }
-
-  return t.agentToolProcessing;
-}
-
-function getToolCompleteLabel(tool: AgentToolInvocation, t: AppMessages) {
-  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
-  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
-
-  if (toolName.includes("web_fetch") && purpose === "jd") {
-    return t.agentToolFetchingJobDone;
-  }
-
-  if (toolName.includes("web_search")) {
-    return t.agentToolSearchingJobDone;
-  }
-
-  if (toolName.includes("resume") && toolName.includes("analysis")) {
-    return t.agentToolAnalyzingResumeDone;
-  }
-
-  if (toolName.includes("material_extract")) {
-    return t.agentToolExtractingMaterialDone;
-  }
-
-  if (toolName.includes("edit_plan")) {
-    return t.agentToolPlanningEditsDone;
-  }
-
-  if (toolName.includes("edit_execute")) {
-    return t.agentToolGeneratingDraftDone;
-  }
-
-  return t.agentToolProcessingDone;
-}
-
-function getToolErrorLabel(tool: AgentToolInvocation, t: AppMessages) {
-  const toolName = `${tool.type} ${tool.title}`.toLowerCase();
-  const purpose = isRecord(tool.input) ? tool.input.purpose : "";
-
-  if (toolName.includes("web_fetch") && purpose === "jd") {
-    return t.agentToolFetchingJobFailed;
-  }
-
-  if (toolName.includes("web_search")) {
-    return t.agentToolSearchingJobFailed;
-  }
-
-  if (toolName.includes("resume") && toolName.includes("analysis")) {
-    return t.agentToolAnalyzingResumeFailed;
-  }
-
-  if (toolName.includes("material_extract")) {
-    return t.agentToolExtractingMaterialFailed;
-  }
-
-  if (toolName.includes("edit_plan")) {
-    return t.agentToolPlanningEditsFailed;
-  }
-
-  if (toolName.includes("edit_execute")) {
-    return t.agentToolGeneratingDraftFailed;
-  }
-
-  return t.agentToolFailed;
+  return t[getAgentToolLabelKey(tool, "running")];
 }
 
 function getToolTimelineLabel(tool: AgentToolInvocation, t: AppMessages) {
-  if (tool.state === "output-error" || tool.state === "output-denied") {
-    return getToolErrorLabel(tool, t);
+  if (isToolFailure(tool)) {
+    return t[getAgentToolLabelKey(tool, "error")];
   }
 
   if (isToolRunning(tool.state)) {
     return getToolActivityLabel(tool, t);
   }
 
-  return getToolCompleteLabel(tool, t);
+  return t[getAgentToolLabelKey(tool, "complete")];
 }
 
 function getEditsPreviewKey(edits: AgentResumeEditSuggestion[]) {
@@ -1226,8 +1156,14 @@ function AgentUserMessage({
   );
 }
 
-function formatCountMessage(template: string, count: number) {
-  return template.replace("{count}", String(count));
+function formatCountMessage(
+  template: string,
+  count: number,
+  failedCount = 0,
+) {
+  return template
+    .replace("{count}", String(count))
+    .replace("{failed}", String(failedCount));
 }
 
 function getEditSummaryLabel(edit: AgentResumeEditSuggestion) {
@@ -1279,7 +1215,7 @@ function getEditObservationMap(tools: AgentToolInvocation[]) {
   const map = new Map<string, { before?: string; after?: string }>();
 
   tools.forEach((tool) => {
-    if (tool.title !== "edit_execute" || !isRecord(tool.output)) {
+    if (!isAgentEditExecutionTool(tool) || !isRecord(tool.output)) {
       return;
     }
 
@@ -1311,6 +1247,7 @@ function AgentToolDetailsDisclosure({
   t: AppMessages;
 }) {
   const completedTools = getVisibleCompletedTools(tools);
+  const failedToolCount = completedTools.filter(isToolFailure).length;
   const [isOpen, setIsOpen] = useState(false);
 
   if (completedTools.length === 0) {
@@ -1327,7 +1264,15 @@ function AgentToolDetailsDisclosure({
         >
           <SquareTerminal className="size-3.5" />
           <span>
-            {formatCountMessage(t.agentToolDetailsComplete, completedTools.length)}
+            {formatCountMessage(
+              failedToolCount === completedTools.length
+                ? t.agentToolDetailsFailed
+                : failedToolCount > 0
+                  ? t.agentToolDetailsPartial
+                  : t.agentToolDetailsComplete,
+              completedTools.length,
+              failedToolCount,
+            )}
           </span>
           <ChevronRight
             className={cn(
@@ -1338,11 +1283,21 @@ function AgentToolDetailsDisclosure({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-1 space-y-1 pl-6 text-xs leading-5 text-muted-foreground">
-        {completedTools.map((tool) => (
-          <p key={`${tool.id}-${tool.state}`} className="break-words">
-            {getToolTimelineLabel(tool, t)}
-          </p>
-        ))}
+        {completedTools.map((tool) => {
+          const errorDetail =
+            tool.state === "output-error" && tool.errorText?.trim()
+              ? tool.errorText.trim().slice(0, 320)
+              : null;
+
+          return (
+            <div key={`${tool.id}-${tool.state}`} className="break-words">
+              <p>{getToolTimelineLabel(tool, t)}</p>
+              {errorDetail ? (
+                <p className="mt-0.5 text-destructive">{errorDetail}</p>
+              ) : null}
+            </div>
+          );
+        })}
       </CollapsibleContent>
     </Collapsible>
   );
@@ -1438,6 +1393,7 @@ function AgentMessageTimeline({
 function AgentChangeSummary({
   edits,
   observations,
+  qualityWarningCount,
   transactionState,
   hasAgentDraft,
   onApplyAgentDraft,
@@ -1447,6 +1403,7 @@ function AgentChangeSummary({
 }: {
   edits: AgentResumeEditSuggestion[];
   observations: Map<string, { before?: string; after?: string }>;
+  qualityWarningCount: number;
   transactionState: AgentTransactionState | undefined;
   hasAgentDraft: boolean;
   onApplyAgentDraft: () => void;
@@ -1476,8 +1433,13 @@ function AgentChangeSummary({
           {t.agentDraftSynced}
         </p>
       ) : null}
-      <div className="mt-3 space-y-1.5 text-xs leading-5 text-muted-foreground">
-        {edits.slice(0, 4).map((edit) => {
+      {qualityWarningCount > 0 ? (
+        <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
+          {formatCountMessage(t.agentQualityWarnings, qualityWarningCount)}
+        </p>
+      ) : null}
+      <div className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1 text-xs leading-5 text-muted-foreground">
+        {edits.map((edit) => {
           const observation = observations.get(edit.target);
           const hasDiff = Boolean(observation?.before || observation?.after);
 
@@ -1605,6 +1567,8 @@ export function CopilotPanel({
     useState<AgentPanelMessage | null>(null);
   const [isResponding, setIsResponding] = useState(false);
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
+  const [sessionLoadError, setSessionLoadError] = useState(false);
+  const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0);
   const [attachmentUploadProgress, setAttachmentUploadProgress] = useState<
     number | null
   >(null);
@@ -1623,6 +1587,7 @@ export function CopilotPanel({
   const referencedAttachmentsRef = useRef<AgentChatAttachment[]>([]);
   const copyTimerRef = useRef<number | null>(null);
   const activeRequestAbortRef = useRef<AbortController | null>(null);
+  const activeUploadAbortRef = useRef<AbortController | null>(null);
   const activeRunRef = useRef<AgentRunResponse | null>(null);
   const composerRef = useRef<HTMLElement | null>(null);
   const conversationLayoutRef = useRef<HTMLDivElement | null>(null);
@@ -1631,6 +1596,7 @@ export function CopilotPanel({
   const previewedEditsKeyRef = useRef<string | null>(null);
   const requestResumeRef = useRef<ResumeData>(resume);
   const currentResumeIdRef = useRef(resumeId);
+  const sessionRevisionRef = useRef<string | null>(null);
   const onPreviewAgentEditsRef = useRef(onPreviewAgentEdits);
   const onRollbackAgentDraftRef = useRef(onRollbackAgentDraft);
   const transientStatusTextsRef = useRef(t.agentTransientModelStatusTexts);
@@ -1668,23 +1634,9 @@ export function CopilotPanel({
     return Array.from(grouped.entries());
   }, [modelConfigs]);
   const visibleMessages = useMemo(
-    () => (streamingMessage ? [...messages, streamingMessage] : messages),
+    () => mergeStreamingAgentMessage(messages, streamingMessage),
     [messages, streamingMessage],
   );
-  const latestDraftMessageId = useMemo(() => {
-    for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
-      const message = visibleMessages[index];
-
-      if (
-        message.response?.edits?.length &&
-        message.response.transactionState !== "rolled_back"
-      ) {
-        return message.id;
-      }
-    }
-
-    return null;
-  }, [visibleMessages]);
   const hasConfiguredModel = Boolean(selectedModel);
   const promptAttachmentCapacity = Math.max(
     0,
@@ -1712,6 +1664,26 @@ export function CopilotPanel({
     setIsResponding(false);
     return true;
   }, []);
+
+  const refreshAgentSession = useCallback(
+    async (expectedResumeId: string, replaceMessages = false) => {
+      const session = await loadAgentSession(expectedResumeId);
+      if (expectedResumeId !== currentResumeIdRef.current) {
+        return null;
+      }
+
+      sessionRevisionRef.current = session.revision;
+      if (replaceMessages) {
+        setMessages(
+          session.messages.map((message) =>
+            toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
+          ),
+        );
+      }
+      return session;
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const composer = composerRef.current;
@@ -1798,6 +1770,7 @@ export function CopilotPanel({
       notifyOnFailure = true,
     ): Promise<AgentRunStatus> => {
       let streamedMessageId: string | undefined;
+      const expectedResumeId = currentResumeIdRef.current;
 
       try {
         const response = await start({
@@ -1872,7 +1845,10 @@ export function CopilotPanel({
           );
         }
 
-        if (response.messageDone) {
+        // Failed and cancelled runs are intentionally not persisted by the
+        // backend. Do not leave a local-only assistant message that vanishes
+        // the next time the authoritative session is loaded.
+        if (response.messageDone && response.status === "completed") {
           setMessages((currentMessages) => {
             const existingIndex = currentMessages.findIndex(
               (message) => message.id === finalMessage.id,
@@ -1904,6 +1880,19 @@ export function CopilotPanel({
         }
         return "failed";
       } finally {
+        if (expectedResumeId) {
+          try {
+            await refreshAgentSession(expectedResumeId);
+          } catch (error) {
+            if (!isAbortError(error)) {
+              console.error(
+                "Failed to refresh the Agent session revision.",
+                error,
+              );
+            }
+          }
+        }
+
         if (activeRequestAbortRef.current === abortController) {
           activeRequestAbortRef.current = null;
           activeRunRef.current = null;
@@ -1913,7 +1902,7 @@ export function CopilotPanel({
         }
       }
     },
-    [syncPreviewEdits],
+    [refreshAgentSession, syncPreviewEdits],
   );
 
   useEffect(() => {
@@ -1935,6 +1924,8 @@ export function CopilotPanel({
     setEditingMessageId(null);
     setEditingMessageText("");
     setPromptLocalAttachmentCount(0);
+    setSessionLoadError(false);
+    sessionRevisionRef.current = null;
     referencedAttachmentsRef.current = [];
     setReferencedAttachments([]);
 
@@ -1949,7 +1940,10 @@ export function CopilotPanel({
     void (async () => {
       try {
         const session = await loadAgentSession(resumeId);
-        if (cancelled) {
+        if (
+          cancelled ||
+          activeRequestAbortRef.current !== abortController
+        ) {
           return;
         }
 
@@ -1958,6 +1952,7 @@ export function CopilotPanel({
             toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
           ),
         );
+        sessionRevisionRef.current = session.revision;
 
         const run = await loadActiveAgentRun(resumeId);
         if (
@@ -1980,8 +1975,13 @@ export function CopilotPanel({
           abortController,
         );
       } catch (error) {
-        if (!cancelled && !isAbortError(error)) {
+        if (
+          !cancelled &&
+          activeRequestAbortRef.current === abortController &&
+          !isAbortError(error)
+        ) {
           console.error("Failed to restore agent session.", error);
+          setSessionLoadError(true);
         }
         if (activeRequestAbortRef.current === abortController) {
           activeRequestAbortRef.current = null;
@@ -1996,7 +1996,12 @@ export function CopilotPanel({
         activeRequestAbortRef.current = null;
       }
     };
-  }, [cancelScheduledSend, consumeRunStream, resumeId]);
+  }, [
+    cancelScheduledSend,
+    consumeRunStream,
+    resumeId,
+    sessionLoadAttempt,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -2010,6 +2015,7 @@ export function CopilotPanel({
         window.clearTimeout(copyTimerRef.current);
       }
       activeRequestAbortRef.current?.abort();
+      activeUploadAbortRef.current?.abort();
     };
   }, []);
 
@@ -2158,6 +2164,9 @@ export function CopilotPanel({
     promptSubmissionRef.current = true;
     setIsSubmittingPrompt(true);
     const uploadedFiles: AgentChatAttachment[] = [];
+    const uploadAbortController = new AbortController();
+    activeUploadAbortRef.current?.abort();
+    activeUploadAbortRef.current = uploadAbortController;
     let requestAccepted = false;
 
     try {
@@ -2181,19 +2190,22 @@ export function CopilotPanel({
           const uploadedFile = await uploadAgentAttachment(
             file.body,
             resumeId,
-            ({ loaded, total }) => {
-              const fileRatio =
-                total && total > 0
-                  ? Math.min(loaded / total, 1)
-                  : Math.min(loaded / file.byteLength, 1);
-              const uploadedBytes =
-                completedBytes + file.byteLength * fileRatio;
+            {
+              onProgress: ({ loaded, total }) => {
+                const fileRatio =
+                  total && total > 0
+                    ? Math.min(loaded / total, 1)
+                    : Math.min(loaded / file.byteLength, 1);
+                const uploadedBytes =
+                  completedBytes + file.byteLength * fileRatio;
 
-              // Keep 100% for the point where the server has accepted the full
-              // batch, rather than showing completion during response latency.
-              setAttachmentUploadProgress(
-                Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)),
-              );
+                // Keep 100% for the point where the server has accepted the
+                // full batch, rather than during response latency.
+                setAttachmentUploadProgress(
+                  Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)),
+                );
+              },
+              signal: uploadAbortController.signal,
             },
           );
           uploadedFiles.push(uploadedFile);
@@ -2243,8 +2255,10 @@ export function CopilotPanel({
         await deletePendingUploads(resumeId, uploadedFiles);
       }
 
-      console.error("Failed to upload agent attachment.", error);
-      if (!isApiErrorToastShown(error)) {
+      if (!isAbortError(error)) {
+        console.error("Failed to upload agent attachment.", error);
+      }
+      if (!isAbortError(error) && !isApiErrorToastShown(error)) {
         toast.error(t.agentAttachmentUploadFailed, {
           closeButton: true,
         });
@@ -2253,6 +2267,9 @@ export function CopilotPanel({
     } finally {
       setIsSubmittingPrompt(false);
       setAttachmentUploadProgress(null);
+      if (activeUploadAbortRef.current === uploadAbortController) {
+        activeUploadAbortRef.current = null;
+      }
       if (!requestAccepted) {
         promptSubmissionRef.current = false;
       }
@@ -2260,7 +2277,12 @@ export function CopilotPanel({
   }
 
   const stopResponding = useCallback(() => {
-    if (cancelScheduledSend(true)) {
+    if (isSubmittingPrompt && activeUploadAbortRef.current) {
+      activeUploadAbortRef.current.abort();
+      return;
+    }
+
+    if (cancelScheduledSend(false)) {
       return;
     }
 
@@ -2290,7 +2312,7 @@ export function CopilotPanel({
       stopRequestedRef.current = false;
       setIsResponding(false);
     }
-  }, [cancelScheduledSend]);
+  }, [cancelScheduledSend, isSubmittingPrompt]);
 
   async function submitEditedUserMessage(message: AgentPanelMessage) {
     const nextText = editingMessageText.trim();
@@ -2346,7 +2368,13 @@ export function CopilotPanel({
     const nextMessages = [...baseMessages, userMessage];
     const apiMessages = nextMessages.map(toConversationMessage);
 
-    cancelScheduledSend(true);
+    // A session restore may still be in flight when the user starts typing.
+    // Abort it before publishing the optimistic message so stale history can
+    // never replace the newly submitted prompt.
+    activeRequestAbortRef.current?.abort();
+    activeRequestAbortRef.current = null;
+    setSessionLoadError(false);
+    cancelScheduledSend(false);
     setIsResponding(true);
     setMessages(nextMessages);
     setStreamingMessage(null);
@@ -2372,16 +2400,30 @@ export function CopilotPanel({
           const abortController = new AbortController();
           let failure: unknown;
           let status: AgentRunStatus = "failed";
+          let runAccepted = false;
+          let sessionReconciled = false;
 
           activeRequestAbortRef.current?.abort();
           activeRequestAbortRef.current = abortController;
 
           try {
             if (options.replaceSessionBeforeSend && resumeId) {
-              await replaceAgentSession(resumeId, {
+              const revision = sessionRevisionRef.current;
+              if (!revision) {
+                await refreshAgentSession(resumeId, true);
+                sessionReconciled = true;
+                throw new Error(
+                  "Cannot replace Agent history before loading its revision.",
+                );
+              }
+
+              const session = await replaceAgentSession(resumeId, {
                 locale,
                 messages: apiMessages,
+                revision,
               });
+              sessionRevisionRef.current = session.revision;
+              runAccepted = true;
             }
 
             if (abortController.signal.aborted) {
@@ -2416,6 +2458,24 @@ export function CopilotPanel({
           } catch (error) {
             failure = error;
             status = isAbortError(error) ? "cancelled" : "failed";
+            if (
+              status === "failed" &&
+              resumeId &&
+              isApiErrorCode(error, "AGENT_SESSION_REVISION_CONFLICT")
+            ) {
+              try {
+                const session = await refreshAgentSession(resumeId, true);
+                sessionReconciled = Boolean(session);
+                if (sessionReconciled) {
+                  onRollbackAgentDraftRef.current();
+                }
+              } catch (refreshError) {
+                console.error(
+                  "Failed to reconcile the Agent session after a conflict.",
+                  refreshError,
+                );
+              }
+            }
             if (status === "failed") {
               console.error(
                 "Failed to replace the agent session before editing.",
@@ -2423,13 +2483,17 @@ export function CopilotPanel({
               );
             }
           } finally {
-            // A prompt is optimistic in the panel but only authoritative after
-            // the backend reports completion. Failed replacements, provider
-            // errors, and cancellations all restore the exact prior history.
             if (
               status !== "completed" &&
+              !sessionReconciled &&
               pending &&
-              pending.resumeId === currentResumeIdRef.current
+              pending.resumeId === currentResumeIdRef.current &&
+              shouldRollbackOptimisticAgentMessages({
+                replaceSessionBeforeSend: Boolean(
+                  options.replaceSessionBeforeSend,
+                ),
+                runAccepted,
+              })
             ) {
               setMessages(pending.rollbackMessages);
             }
@@ -2496,9 +2560,24 @@ export function CopilotPanel({
                     >
                       <div className="mx-auto grid max-w-[260px] justify-items-center gap-3 text-center">
                         <p className="text-sm leading-6 text-muted-foreground">
-                          {t.agentEmptyPrompt}
+                          {sessionLoadError
+                            ? t.agentHistoryLoadFailed
+                            : t.agentEmptyPrompt}
                         </p>
-                        {!hasConfiguredModel ? (
+                        {sessionLoadError ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 rounded-xl px-3 text-xs"
+                            onClick={() =>
+                              setSessionLoadAttempt((attempt) => attempt + 1)
+                            }
+                          >
+                            <RotateCcw className="mr-1.5 size-3.5" />
+                            {t.agentRetry}
+                          </Button>
+                        ) : !hasConfiguredModel ? (
                           <Button
                             type="button"
                             size="sm"
@@ -2518,6 +2597,8 @@ export function CopilotPanel({
                         isResponding && streamingMessage?.id === message.id;
                       const assistantText = message.text.trim();
                       const tools = response?.tools ?? [];
+                      const qualityWarningCount =
+                        getAgentQualityWarningCount(tools);
                       const timeline = response?.timeline ?? [];
                       const shouldRenderTimeline = timeline.length > 0;
                       const editObservations = getEditObservationMap(tools);
@@ -2532,11 +2613,13 @@ export function CopilotPanel({
                         !assistantText &&
                         !tools.length;
                       const shouldShowDraftActions =
-                        message.id === latestDraftMessageId &&
-                        Boolean(response?.edits?.length) &&
-                        response?.transactionState === "committed" &&
                         hasAgentDraft &&
-                        !isResponding;
+                        shouldShowAgentDraftActions({
+                          draft: agentDraftState,
+                          isResponding,
+                          messageId: message.id,
+                          response,
+                        });
                       const shouldShowChangeSummary =
                         Boolean(response?.edits?.length) &&
                         response?.transactionState !== "rolled_back";
@@ -2636,6 +2719,7 @@ export function CopilotPanel({
                                   <AgentChangeSummary
                                     edits={response?.edits ?? []}
                                     observations={editObservations}
+                                    qualityWarningCount={qualityWarningCount}
                                     transactionState={response?.transactionState}
                                     hasAgentDraft={hasAgentDraft}
                                     onApplyAgentDraft={onApplyAgentDraft}

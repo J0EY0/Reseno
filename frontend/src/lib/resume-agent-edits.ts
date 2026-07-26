@@ -1,9 +1,8 @@
 import type { AgentResumeEditSuggestion } from "@/types/api";
+import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
-  ResumeBasicInfo,
   ResumeData,
   ResumeDraftDiff,
-  ResumeEditOperation,
   ResumeSection,
   ResumeSectionItem,
 } from "@/types/resume";
@@ -64,6 +63,17 @@ function cloneResume(resume: ResumeData): ResumeData {
   }
 
   return JSON.parse(JSON.stringify(resume)) as ResumeData;
+}
+
+/**
+ * Captures the immutable merge base used when an Agent draft is generated.
+ * The editor may keep changing before the user applies the draft, so retaining
+ * a reference to live state would make a later three-way merge unreliable.
+ */
+export function createAgentDraftBaseSnapshot(
+  baseResume: ResumeData,
+): ResumeData {
+  return cloneResume(baseResume);
 }
 
 function isDeepEqual(left: unknown, right: unknown): boolean {
@@ -128,6 +138,21 @@ function findItem(section: ResumeSection, itemId: string) {
   return index >= 0 ? { index, item: section.items[index] } : null;
 }
 
+type ReplaceBasicField = "headline" | "location" | "summary";
+
+function replaceBasicField(path: unknown): ReplaceBasicField | null {
+  switch (path) {
+    case "basic.headline":
+      return "headline";
+    case "basic.location":
+      return "location";
+    case "basic.summary":
+      return "summary";
+    default:
+      return null;
+  }
+}
+
 function fallbackOperation(
   edit: AgentResumeEditSuggestion,
 ): ResumeEditOperation | null {
@@ -135,14 +160,11 @@ function fallbackOperation(
     return edit.operation;
   }
 
-  if (
-    edit.replacement &&
-    typeof edit.target === "string" &&
-    edit.target.startsWith("basic.")
-  ) {
+  const field = replaceBasicField(edit.target);
+  if (edit.replacement && field) {
     return {
       type: "replace_field",
-      path: edit.target,
+      path: `basic.${field}`,
       value: edit.replacement,
     };
   }
@@ -155,9 +177,9 @@ function applyReplaceField(
   edit: AgentResumeEditSuggestion,
   operation: Extract<ResumeEditOperation, { type: "replace_field" }>,
 ): OperationApplyResult {
+  const field = replaceBasicField(operation.path);
   if (
-    typeof operation.path !== "string" ||
-    !operation.path.startsWith("basic.") ||
+    !field ||
     typeof operation.value !== "string"
   ) {
     return operationRejected(
@@ -166,55 +188,13 @@ function applyReplaceField(
     );
   }
 
-  const fieldName = operation.path.slice("basic.".length);
-  const writableFields = new Set<keyof ResumeBasicInfo>([
-    "name",
-    "headline",
-    "phone",
-    "email",
-    "location",
-    "avatar",
-    "summary",
-  ]);
-
-  if (!writableFields.has(fieldName as keyof ResumeBasicInfo)) {
-    return operationRejected("invalid_operation", operation.path);
-  }
-
-  const field = fieldName as keyof ResumeBasicInfo;
   const before = resume.basic[field];
-
-  if (typeof before !== "string") {
-    return operationRejected("invalid_operation", operation.path);
-  }
 
   if (before === operation.value) {
     return operationRejected("no_change", operation.path);
   }
 
-  switch (fieldName) {
-    case "name":
-      resume.basic.name = operation.value;
-      break;
-    case "headline":
-      resume.basic.headline = operation.value;
-      break;
-    case "phone":
-      resume.basic.phone = operation.value;
-      break;
-    case "email":
-      resume.basic.email = operation.value;
-      break;
-    case "location":
-      resume.basic.location = operation.value;
-      break;
-    case "avatar":
-      resume.basic.avatar = operation.value;
-      break;
-    case "summary":
-      resume.basic.summary = operation.value;
-      break;
-  }
+  resume.basic[field] = operation.value;
 
   return operationApplied({
     id: `diff-${edit.id}`,
@@ -271,7 +251,7 @@ function applyUpdateSection(
     );
   }
 
-  const writableFields = ["kind", "layout", "customTitle", "items"] as const;
+  const writableFields = ["kind", "layout", "customTitle"] as const;
   const patchFields = writableFields.filter(
     (field) => operation.patch && field in operation.patch,
   );
@@ -743,10 +723,10 @@ function applyOperationWithMerge(
 ): MergeOperationResult {
   switch (operation.type) {
     case "replace_field": {
-      const fieldName = operation.path.startsWith("basic.")
-        ? operation.path.slice("basic.".length)
-        : "";
-      const field = fieldName as keyof ResumeBasicInfo;
+      const field = replaceBasicField(operation.path);
+      if (!field) {
+        return mergeConflict(operation.path);
+      }
       const baseValue = baseResume.basic[field];
       const currentValue = currentResume.basic[field];
 
@@ -777,7 +757,7 @@ function applyOperationWithMerge(
         return mergeConflict(sectionPath(operation.sectionId));
       }
 
-      const writableFields = ["kind", "layout", "customTitle", "items"] as const;
+      const writableFields = ["kind", "layout", "customTitle"] as const;
       const pendingFields: Array<(typeof writableFields)[number]> = [];
 
       for (const field of writableFields) {
@@ -802,7 +782,10 @@ function applyOperationWithMerge(
 
       const pendingPatch = Object.fromEntries(
         pendingFields.map((field) => [field, operation.patch[field]]),
-      ) as Partial<ResumeSection>;
+      ) as Extract<
+        ResumeEditOperation,
+        { type: "update_section" }
+      >["patch"];
       return applyMergedOperation(currentResume, edit, {
         ...operation,
         patch: pendingPatch,

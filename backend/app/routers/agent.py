@@ -14,7 +14,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.db.connection import connect
 from app.schemas.agent import (
@@ -39,6 +39,7 @@ from app.services.agent_runs import (
     AgentRunNotFoundError,
 )
 from app.services.agent_sessions import (
+    AgentSessionRevisionConflictError,
     is_valid_resume_id,
     load_agent_session,
     replace_agent_session_messages,
@@ -165,7 +166,7 @@ def delete_agent_attachment(
 def put_agent_resume_session(
     resume_id: str,
     request: AgentSessionReplaceRequest,
-) -> ApiResponse[AgentSessionResponse]:
+) -> ApiResponse[AgentSessionResponse] | JSONResponse:
     """Replace persisted Agent messages attached to one resume."""
 
     if not is_valid_resume_id(resume_id):
@@ -174,12 +175,28 @@ def put_agent_resume_session(
             detail=APP_MESSAGE_BAD_REQUEST,
         )
 
-    with closing(connect()) as conn:
-        session = replace_agent_session_messages(
-            conn,
-            resume_id,
-            locale=request.locale,
-            messages=request.messages,
+    try:
+        with closing(connect()) as conn:
+            session = replace_agent_session_messages(
+                conn,
+                resume_id,
+                locale=request.locale,
+                messages=request.messages,
+                revision=request.revision,
+            )
+    except AgentSessionRevisionConflictError as exc:
+        # The application-wide HTTPException handler intentionally converts
+        # business failures to HTTP 200. Concurrency conflicts must remain a
+        # transport-level 409 so clients cannot mistake a stale save for one
+        # that committed.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": {
+                    "code": "AGENT_SESSION_REVISION_CONFLICT",
+                    "revision": exc.current_revision,
+                },
+            },
         )
 
     return ok_response(session)

@@ -1,12 +1,6 @@
 from functools import cache
 from pathlib import Path
 
-from app.agent_locales import (
-    DEFAULT_AGENT_LOCALE,
-    SUPPORTED_AGENT_LOCALES,
-    locale_display_order,
-)
-
 from ..section_registry import section_kind_values, section_label_lines
 
 PROMPT_DIR = Path(__file__).resolve().parent
@@ -19,53 +13,37 @@ def load_prompt(filename: str) -> str:
     return (PROMPT_DIR / filename).read_text(encoding="utf-8").strip()
 
 
-def _render_system_prompt(locale: str) -> str:
-    """Compose the shared system prompt with a short locale-specific addendum."""
+CORE_POLICY_PROMPT = load_prompt("core_policy.md")
+TOOL_POLICY_PROMPT = load_prompt("system.md")
+RESUME_EDITING_PLAYBOOK_PROMPT = load_prompt("resume_editing_playbook.md")
+SYSTEM_PROMPT = "\n\n".join(
+    (
+        CORE_POLICY_PROMPT,
+        TOOL_POLICY_PROMPT,
+        RESUME_EDITING_PLAYBOOK_PROMPT,
+    ),
+)
+FINAL_RESPONSE_PROMPT = load_prompt("final_response.md")
+STREAMING_FINAL_RESPONSE_PROMPT = load_prompt("streaming_final_response.md")
 
-    return "\n\n".join(
-        [
-            load_prompt("system.md"),
-            load_prompt(f"system.locale.{locale}.md"),
-        ],
-    )
-
-
-SYSTEM_PROMPTS = {
-    locale: _render_system_prompt(locale) for locale in SUPPORTED_AGENT_LOCALES
-}
-
-FINAL_RESPONSE_PROMPTS = {
-    locale: load_prompt(f"final_response.{locale}.md")
-    for locale in SUPPORTED_AGENT_LOCALES
-}
-
-STREAMING_FINAL_RESPONSE_PROMPTS = {
-    locale: load_prompt(f"streaming_final_response.{locale}.md")
-    for locale in SUPPORTED_AGENT_LOCALES
-}
 
 def _render_edit_operation_guide(
     filename: str,
-    *,
-    label_locale_order: tuple[str, ...],
 ) -> str:
-    return load_prompt(filename).replace(
-        "{section_kind_values}",
-        section_kind_values(),
-    ).replace(
-        "{section_label_lines}",
-        section_label_lines(label_locale_order),
+    return (
+        load_prompt(filename)
+        .replace(
+            "{section_kind_values}",
+            section_kind_values(),
+        )
+        .replace(
+            "{section_label_lines}",
+            section_label_lines(("en",)),
+        )
     )
 
 
-EDIT_OPERATION_GUIDES = {
-    locale: _render_edit_operation_guide(
-        f"edit_operation_guide.{locale}.md",
-        label_locale_order=locale_display_order(locale),
-    )
-    for locale in SUPPORTED_AGENT_LOCALES
-}
-EDIT_OPERATION_GUIDE = EDIT_OPERATION_GUIDES[DEFAULT_AGENT_LOCALE]
+EDIT_OPERATION_GUIDE = _render_edit_operation_guide("edit_operation_guide.md")
 
 DEFAULT_REACT_MAX_ITERATIONS = 5
 MIN_REACT_MAX_ITERATIONS = 1

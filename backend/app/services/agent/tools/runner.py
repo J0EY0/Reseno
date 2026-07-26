@@ -17,7 +17,6 @@ from ..editing import (
     _apply_edit_operations,
     _edit_observations,
     _merge_edits,
-    _model_edit_suggestions,
     _model_edit_suggestions_with_diagnostics,
     _model_plan_steps,
 )
@@ -35,8 +34,9 @@ from ..materials import DEFAULT_MATERIAL_CANDIDATES, extract_resume_materials
 from ..models import (
     FINISH_MISSING_SET,
     EditPlanStep,
-    JobReference,
     ResumeAnalysis,
+    TargetOpportunityKind,
+    TargetReference,
 )
 from ..policy import (
     capability_policy_for_request,
@@ -46,9 +46,13 @@ from ..policy import (
     tool_block_reason,
 )
 from ..privacy import sanitize_agent_resume, sanitize_agent_text, sanitize_agent_value
-from ..quality import draft_quality_issues
+from ..quality import (
+    blocking_quality_issues,
+    draft_quality_issues,
+    normalization_loss_issues,
+)
 from ..runtime.context import AgentRuntimeContext
-from .registry import ALL_KNOWN_TOOL_NAMES
+from .registry import ALL_KNOWN_TOOL_NAMES, agent_tool_spec
 from .structured import (
     classify_skills_entries,
     draft_diff_summary,
@@ -63,6 +67,7 @@ WEB_FETCH_PURPOSES = {
     "project_reference",
     "portfolio_reference",
     "company_reference",
+    "target_context",
 }
 WEB_SEARCH_PURPOSES = {"jd", "target_context", "company_reference"}
 MAX_WEB_SEARCH_QUERY_COUNT = 5
@@ -77,7 +82,7 @@ class AgentToolRunner:
         self.policy = capability_policy_for_request(executor.request)
         self.base_resume = deepcopy(executor.resume)
         self.draft_resume = deepcopy(self.base_resume)
-        self.job_reference: JobReference | None = None
+        self.target_reference: TargetReference | None = None
         self.analysis: ResumeAnalysis | None = None
         self.plan: list[EditPlanStep] = []
         self.planned_edits: list[AgentResumeEditSuggestion] = []
@@ -110,13 +115,17 @@ class AgentToolRunner:
                 self.tools.append(blocked_tool)
             return blocked_tool, self.tool_result(blocked_tool)
 
-        if tool_call.name == "web_fetch":
-            tool = await self.run_web_fetch_async(tool_call, runtime)
-        elif tool_call.name == "web_search":
-            tool = await self.run_web_search_async(tool_call, runtime)
-        else:
+        spec = agent_tool_spec(tool_call.name)
+        if spec is None:
+            tool = self.unknown_tool(tool_call)
+            self.tools.append(tool)
+            return tool, self.tool_result(tool)
+
+        if spec.execution == "sync":
             return await runtime.run_sync(self._run_local_tool, tool_call)
 
+        handler = getattr(self, spec.handler_name)
+        tool = await handler(tool_call, runtime)
         self.tools.append(tool)
         return tool, self.tool_result(tool)
 
@@ -132,22 +141,12 @@ class AgentToolRunner:
                 self.tools.append(blocked_tool)
             return blocked_tool, self.tool_result(blocked_tool)
 
-        handlers = {
-            "material_extract": self.run_material_extract,
-            "resume_analysis": self.run_resume_analysis,
-            "resume_lookup": self.run_resume_lookup,
-            "draft_diff_summary": self.run_draft_diff_summary,
-            "edit_plan": self.run_edit_plan,
-            "edit_execute": self.run_edit_execute,
-            "edit_move_item": self.run_edit_move_item,
-            "edit_split_item": self.run_edit_split_item,
-            "edit_merge_items": self.run_edit_merge_items,
-            "skills_classify": self.run_skills_classify,
-            "draft_rewrite": self.run_draft_rewrite,
-            "finish": self.run_finish,
-        }
-        handler = handlers.get(tool_call.name)
-        tool = handler(tool_call) if handler else self.unknown_tool(tool_call)
+        spec = agent_tool_spec(tool_call.name)
+        if spec is None or spec.execution != "sync":
+            tool = self.unknown_tool(tool_call)
+        else:
+            handler = getattr(self, spec.handler_name)
+            tool = handler(tool_call)
 
         if tool_call.name != "finish":
             self.tools.append(tool)
@@ -223,10 +222,32 @@ class AgentToolRunner:
                 url,
             )
 
+        target, kind, exact_job_description = self.target_context(
+            tool_call,
+            purpose,
+        )
+
         if purpose != "jd":
             if not web_reference:
                 return self.web_tool_error(tool_call, "error.web_fetch_failed")
 
+            if purpose == "target_context":
+                self.target_reference = (
+                    self.executor.build_url_target_reference_from_web(
+                        url,
+                        target,
+                        web_reference,
+                        kind=kind,
+                        exact_job_description=False,
+                    )
+                )
+
+            # Candidate-owned project and portfolio pages can support supplied
+            # resume material. Other public pages describe only the target.
+            can_support_resume_facts = purpose in {
+                "project_reference",
+                "portfolio_reference",
+            }
             return AgentToolInvocation(
                 id=tool_call.id,
                 type=f"tool-{tool_call.name}",
@@ -239,19 +260,22 @@ class AgentToolRunner:
                         "url": url,
                         "title": web_reference.title,
                         "excerpt": web_reference.excerpt,
-                        "canSupportResumeFacts": True,
+                        "canSupportResumeFacts": can_support_resume_facts,
+                        "personalExperienceEvidence": can_support_resume_facts,
                     },
                     hidden_terms=self.executor.hidden_terms,
                 ),
             )
 
-        self.job_reference = self.executor.build_url_job_reference_from_web(
+        self.target_reference = self.executor.build_url_target_reference_from_web(
             url,
-            self.executor.infer_target_role(),
+            target,
             web_reference,
+            kind=kind,
+            exact_job_description=exact_job_description,
         )
-        return self.executor.build_jd_tool(
-            self.job_reference,
+        return self.executor.build_target_reference_tool(
+            self.target_reference,
             tool_call.id,
             tool_name=tool_call.name,
         )
@@ -270,11 +294,17 @@ class AgentToolRunner:
                 "error.web_search_purpose_required",
             )
 
-        role = str(tool_call.arguments.get("role") or "").strip()
-        if not role:
-            role = self.executor.infer_target_role()
+        target, kind, exact_job_description = self.target_context(
+            tool_call,
+            purpose,
+        )
 
-        queries = self.web_search_queries(tool_call, role)
+        queries = self.web_search_queries(
+            tool_call,
+            target,
+            kind=kind,
+            exact_job_description=exact_job_description,
+        )
         query = queries[0]
         has_queries_argument = isinstance(tool_call.arguments.get("queries"), list)
         max_results = self.web_search_max_results(
@@ -286,7 +316,9 @@ class AgentToolRunner:
             return await self.run_web_search_summary_async(
                 tool_call,
                 runtime,
-                role=role,
+                target=target,
+                kind=kind,
+                exact_job_description=exact_job_description,
                 purpose=purpose,
                 queries=queries,
                 max_results=max_results,
@@ -324,13 +356,18 @@ class AgentToolRunner:
                     ),
                 )
 
-            self.job_reference = self.executor.build_search_job_reference_from_result(
-                role,
-                query,
-                search_result,
-                result_count,
-                search_error,
-            )
+            if purpose == "target_context":
+                self.target_reference = (
+                    self.executor.build_search_target_reference_from_result(
+                        target,
+                        query,
+                        search_result,
+                        result_count,
+                        search_error,
+                        kind=kind,
+                        exact_job_description=False,
+                    )
+                )
             return AgentToolInvocation(
                 id=tool_call.id,
                 type=f"tool-{tool_call.name}",
@@ -355,22 +392,56 @@ class AgentToolRunner:
                 ),
             )
 
-        self.job_reference = self.executor.build_search_job_reference_from_result(
-            role,
+        self.target_reference = self.executor.build_search_target_reference_from_result(
+            target,
             query,
             search_result,
             result_count,
             search_error,
+            kind=kind,
+            exact_job_description=exact_job_description,
         )
-        return self.executor.build_jd_tool(
-            self.job_reference,
+        return self.executor.build_target_reference_tool(
+            self.target_reference,
             tool_call.id,
             tool_name=tool_call.name,
         )
 
-    def web_search_queries(self, tool_call: LlmToolCall, role: str) -> list[str]:
+    def target_context(
+        self,
+        tool_call: LlmToolCall,
+        purpose: str,
+    ) -> tuple[str, TargetOpportunityKind, bool]:
+        """Normalize legacy tool arguments into target-opportunity context."""
+
+        exact_job_description = purpose == "jd"
+        # `role` remains accepted because it is part of the existing tool protocol.
+        supplied_target = str(
+            tool_call.arguments.get("target") or tool_call.arguments.get("role") or "",
+        ).strip()
+        query = str(tool_call.arguments.get("query") or "").strip()
+        context = supplied_target or query
+        kind: TargetOpportunityKind = (
+            "employment"
+            if exact_job_description
+            else self.executor.infer_target_kind(context)
+        )
+        target = supplied_target or self.executor.infer_target(kind)
+        return target, kind, exact_job_description
+
+    def web_search_queries(
+        self,
+        tool_call: LlmToolCall,
+        target: str,
+        *,
+        kind: TargetOpportunityKind | None = None,
+        exact_job_description: bool = False,
+    ) -> list[str]:
         """Return deduplicated search queries for one web_search invocation."""
 
+        infer_from_request = not target and kind is None
+        resolved_kind = kind or self.executor.infer_target_kind(target)
+        resolved_target = target or self.executor.infer_target(resolved_kind)
         raw_values: list[str] = []
         query = str(tool_call.arguments.get("query") or "").strip()
         if query:
@@ -380,8 +451,18 @@ class AgentToolRunner:
         if isinstance(queries, list):
             raw_values.extend(value for value in queries if isinstance(value, str))
 
+        # Direct callers historically received the current prompt unchanged.
+        fallback_query = (
+            self.executor.prompt
+            if infer_from_request and self.executor.prompt
+            else self.executor.target_search_query(
+                resolved_target,
+                resolved_kind,
+                exact_job_description=exact_job_description,
+            )
+        )
         if not raw_values:
-            raw_values.append(self.executor.jd_search_query(role))
+            raw_values.append(fallback_query)
 
         normalized: list[str] = []
         seen: set[str] = set()
@@ -396,7 +477,7 @@ class AgentToolRunner:
             if len(normalized) >= MAX_WEB_SEARCH_QUERY_COUNT:
                 break
 
-        return normalized or [self.executor.jd_search_query(role)]
+        return normalized or [fallback_query]
 
     def web_search_max_results(self, tool_call: LlmToolCall, *, default: int) -> int:
         """Return the bounded maxResults value for aggregated web_search."""
@@ -412,7 +493,9 @@ class AgentToolRunner:
         tool_call: LlmToolCall,
         runtime: AgentRuntimeContext,
         *,
-        role: str,
+        target: str,
+        kind: TargetOpportunityKind,
+        exact_job_description: bool,
         purpose: str,
         queries: list[str],
         max_results: int,
@@ -435,15 +518,18 @@ class AgentToolRunner:
 
         if purpose != "jd":
             if summary.primary and not summary.error:
-                self.job_reference = (
-                    self.executor.build_search_job_reference_from_result(
-                        role,
-                        summary.query,
-                        self.web_search_summary_primary_result(summary),
-                        summary.result_count,
-                        summary.error,
+                if purpose == "target_context":
+                    self.target_reference = (
+                        self.executor.build_search_target_reference_from_result(
+                            target,
+                            summary.query,
+                            self.web_search_summary_primary_result(summary),
+                            summary.result_count,
+                            summary.error,
+                            kind=kind,
+                            exact_job_description=False,
+                        )
                     )
-                )
             return self.web_search_summary_tool(
                 tool_call,
                 purpose,
@@ -453,15 +539,17 @@ class AgentToolRunner:
             )
 
         search_result = self.web_search_summary_primary_result(summary)
-        self.job_reference = self.executor.build_search_job_reference_from_result(
-            role,
+        self.target_reference = self.executor.build_search_target_reference_from_result(
+            target,
             summary.query,
             search_result,
             summary.result_count,
             summary.error,
+            kind=kind,
+            exact_job_description=exact_job_description,
         )
-        tool = self.executor.build_jd_tool(
-            self.job_reference,
+        tool = self.executor.build_target_reference_tool(
+            self.target_reference,
             tool_call.id,
             tool_name=tool_call.name,
         )
@@ -549,7 +637,7 @@ class AgentToolRunner:
         self,
         summary: WebSearchReference,
     ) -> WebSearchResult | None:
-        """Return the primary result with the combined excerpt for JD context."""
+        """Return the primary result with the combined opportunity excerpt."""
 
         primary = summary.primary
         if not primary:
@@ -597,6 +685,7 @@ class AgentToolRunner:
                 prompt=self.executor.prompt,
                 job_brief=self.executor.request.job_brief,
                 files=current_request_attachments(self.executor.request),
+                target_reference=self.current_target_reference(),
                 focus=str(tool_call.arguments.get("focus") or "all").strip(),
                 max_items=max_items,
                 hidden_terms=self.executor.hidden_terms,
@@ -653,11 +742,21 @@ class AgentToolRunner:
 
         steps_value = tool_call.arguments.get("steps")
         model_steps = _model_plan_steps(steps_value)
-        model_edits = _model_edit_suggestions(
+        model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
             steps_value,
             locale=self.executor.request.locale,
+            allow_missing_operations=True,
         )
+        if isinstance(steps_value, list) and rejected_edits:
+            # Plans and direct execution share one atomic contract: never cache
+            # a valid subset when any explicitly supplied operation is invalid.
+            return self.semantic_edit_error(
+                tool_call,
+                entries=steps_value,
+                rejected_edits=rejected_edits,
+                message_key="error.edit_execute_rejected_detailed",
+            )
 
         if model_steps:
             self.plan = model_steps
@@ -678,7 +777,7 @@ class AgentToolRunner:
             )
 
         self.plan = self.executor.create_plan(
-            self.current_job_reference(),
+            self.current_target_reference(),
             self.analysis,
         )
         return self.executor.build_plan_tool(self.plan, tool_call.id)
@@ -708,20 +807,13 @@ class AgentToolRunner:
             )
 
         if model_edits:
-            before_resume = deepcopy(self.draft_resume)
-            _apply_edit_operations(self.draft_resume, model_edits)
-            self.edits = _merge_edits(self.edits, model_edits)
-            self.mark_edit_batch_succeeded()
-            observations = _edit_observations(
-                before_resume,
-                self.draft_resume,
+            error_tool, observations, quality_issues = self.stage_edit_batch(
+                tool_call,
                 model_edits,
+                entries=explicit_edits_value,
             )
-            quality_issues = draft_quality_issues(
-                before_resume,
-                self.draft_resume,
-                model_edits,
-            )
+            if error_tool is not None:
+                return error_tool
             return self.executor.build_execute_tool(
                 self.plan,
                 self.edits,
@@ -747,20 +839,20 @@ class AgentToolRunner:
             )
 
         if self.planned_edits:
-            before_resume = deepcopy(self.draft_resume)
-            _apply_edit_operations(self.draft_resume, self.planned_edits)
-            self.edits = _merge_edits(self.edits, self.planned_edits)
-            self.mark_edit_batch_succeeded()
-            observations = _edit_observations(
-                before_resume,
-                self.draft_resume,
+            error_tool, observations, quality_issues = self.stage_edit_batch(
+                tool_call,
                 self.planned_edits,
+                entries=[
+                    {
+                        "title": edit.title,
+                        "target": edit.target,
+                        "operation": edit.operation,
+                    }
+                    for edit in self.planned_edits
+                ],
             )
-            quality_issues = draft_quality_issues(
-                before_resume,
-                self.draft_resume,
-                self.planned_edits,
-            )
+            if error_tool is not None:
+                return error_tool
             return self.executor.build_execute_tool(
                 self.plan,
                 self.edits,
@@ -784,23 +876,24 @@ class AgentToolRunner:
 
         fallback_edits = self.executor.execute_plan(
             self.plan,
-            self.current_job_reference(),
+            self.current_target_reference(),
             self.analysis,
         )
-        before_resume = deepcopy(self.draft_resume)
-        _apply_edit_operations(self.draft_resume, fallback_edits)
-        self.edits = _merge_edits(self.edits, fallback_edits)
-        self.mark_edit_batch_succeeded()
-        observations = _edit_observations(
-            before_resume,
-            self.draft_resume,
+        fallback_entries = [
+            {
+                "title": edit.title,
+                "target": edit.target,
+                "operation": edit.operation,
+            }
+            for edit in fallback_edits
+        ]
+        error_tool, observations, quality_issues = self.stage_edit_batch(
+            tool_call,
             fallback_edits,
+            entries=fallback_entries,
         )
-        quality_issues = draft_quality_issues(
-            before_resume,
-            self.draft_resume,
-            fallback_edits,
-        )
+        if error_tool is not None:
+            return error_tool
         return self.executor.build_execute_tool(
             self.plan,
             self.edits,
@@ -897,20 +990,13 @@ class AgentToolRunner:
                 message_key="error.edit_execute_rejected",
             )
 
-        before_resume = deepcopy(self.draft_resume)
-        _apply_edit_operations(self.draft_resume, model_edits)
-        self.edits = _merge_edits(self.edits, model_edits)
-        self.mark_edit_batch_succeeded()
-        observations = _edit_observations(
-            before_resume,
-            self.draft_resume,
+        error_tool, observations, quality_issues = self.stage_edit_batch(
+            tool_call,
             model_edits,
+            entries=entries,
         )
-        quality_issues = draft_quality_issues(
-            before_resume,
-            self.draft_resume,
-            model_edits,
-        )
+        if error_tool is not None:
+            return error_tool
         output: dict[str, Any] = {
             "editCount": len(model_edits),
             "operationTypes": [
@@ -928,6 +1014,65 @@ class AgentToolRunner:
             input=tool_call.arguments,
             output=output,
         )
+
+    def stage_edit_batch(
+        self,
+        tool_call: LlmToolCall,
+        model_edits: list[AgentResumeEditSuggestion],
+        *,
+        entries: object,
+    ) -> tuple[
+        AgentToolInvocation | None,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        """Validate a candidate resume before publishing any provisional edits.
+
+        Subjective style findings remain advisory. Deterministic structural
+        failures reject the complete batch and enter the existing one-retry
+        transaction path.
+        """
+
+        before_resume = deepcopy(self.draft_resume)
+        candidate_resume = deepcopy(self.draft_resume)
+        _apply_edit_operations(candidate_resume, model_edits)
+        quality_issues = [
+            *normalization_loss_issues(before_resume, entries, model_edits),
+            *draft_quality_issues(candidate_resume, model_edits),
+        ]
+        blocking_issues = blocking_quality_issues(quality_issues)
+        if blocking_issues:
+            rejected_edits = [
+                {
+                    "index": int(issue.get("operationIndex") or 1),
+                    "reason": (
+                        "Draft quality check failed: "
+                        f"{issue.get('code', 'unknown_quality_issue')}."
+                    ),
+                    "qualityIssue": issue,
+                }
+                for issue in blocking_issues
+            ]
+            return (
+                self.semantic_edit_error(
+                    tool_call,
+                    entries=entries,
+                    rejected_edits=rejected_edits,
+                    message_key="error.edit_execute_rejected_detailed",
+                ),
+                [],
+                quality_issues,
+            )
+
+        self.draft_resume = candidate_resume
+        self.edits = _merge_edits(self.edits, model_edits)
+        self.mark_edit_batch_succeeded()
+        observations = _edit_observations(
+            before_resume,
+            self.draft_resume,
+            model_edits,
+        )
+        return None, observations, quality_issues
 
     def semantic_edit_error(
         self,
@@ -1104,6 +1249,12 @@ class AgentToolRunner:
         self.finish_status = status
         self.finish_reason = reason
         self.finish_missing = missing
+        if status == "blocked":
+            # A blocked turn may explain what is missing, but it must never
+            # publish edits produced before the model discovered that blocker.
+            self.planned_edits = []
+            if self.edits:
+                self.fail_transaction()
 
         return AgentToolInvocation(
             id=tool_call.id,
@@ -1115,6 +1266,7 @@ class AgentToolRunner:
                 "status": status,
                 "reason": reason,
                 "missing": missing,
+                "transactionState": self.transaction_state,
                 "observation": agent_text(
                     self.executor.request.locale,
                     "tool.finish.observation",
@@ -1122,16 +1274,10 @@ class AgentToolRunner:
             },
         )
 
-    def current_job_reference(self) -> JobReference:
-        """Return the explicit JD context, or a no-JD placeholder."""
+    def current_target_reference(self) -> TargetReference:
+        """Return resolved target context, or the request-derived placeholder."""
 
-        return self.job_reference or JobReference(
-            mode="none",
-            role=self.executor.infer_target_role(),
-            query="",
-            url=None,
-            excerpt="",
-        )
+        return self.target_reference or self.executor.target_reference_from_request()
 
     def tool_result(self, tool: AgentToolInvocation) -> dict[str, Any]:
         """Return compact JSON sent back to the model after tool execution."""
@@ -1156,10 +1302,10 @@ class AgentToolRunner:
     def build_message(self, message_id: str | None = None) -> AgentChatMessage:
         """Assemble an assistant payload from the tools the model used."""
 
-        job_reference = self.current_job_reference()
+        target_reference = self.current_target_reference()
         analysis = self.analysis or self.executor.analyze_resume()
         message = self.executor.build_message_from_parts(
-            job_reference=job_reference,
+            target_reference=target_reference,
             analysis=analysis,
             plan=self.plan,
             edits=self.edits,
@@ -1170,6 +1316,15 @@ class AgentToolRunner:
             finish_missing=self.finish_missing,
         )
         if self.transaction_failed:
+            if self.finish_status == "blocked":
+                # Preserve the model's structured blocked response while
+                # exposing that its provisional edits were discarded.
+                return message.model_copy(
+                    update={
+                        "edits": [],
+                        "transaction_state": "rolled_back",
+                    },
+                )
             # A model may explain why its repair attempt cannot continue. Keep
             # that actionable reason while still returning a rolled-back turn.
             rollback_text = self.terminal_text.strip() or agent_text(

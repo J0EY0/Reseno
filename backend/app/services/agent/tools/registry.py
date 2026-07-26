@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ..models import FINISH_MISSING_ENUM, PLAN_INTENT_ENUM
+from ..operation_contract import assert_model_operation_adapter_compatible
 from ..prompts import EDIT_OPERATION_GUIDE
 from ..section_registry import SECTION_KIND_ENUM
 
@@ -67,7 +68,11 @@ SECTION_SCHEMA: dict[str, Any] = {
         },
         "items": {"type": "array", "items": ITEM_SCHEMA},
     },
-    "required": ["section_type", "layout", "items"],
+    "required": ["layout", "items"],
+    "anyOf": [
+        {"required": ["section_type"]},
+        {"required": ["kind"]},
+    ],
     "additionalProperties": False,
 }
 
@@ -190,7 +195,12 @@ OPERATION_SCHEMA: dict[str, Any] = {
     ],
 }
 
+# Model tools accept an adapter-friendly payload, while API responses use the
+# stricter canonical protocol. Top-level variants must still evolve together.
+assert_model_operation_adapter_compatible(OPERATION_SCHEMA)
+
 AgentToolMode = Literal["read", "write", "control"]
+AgentToolExecution = Literal["sync", "async"]
 
 
 @dataclass(frozen=True)
@@ -201,6 +211,7 @@ class AgentToolSpec:
     mode: AgentToolMode
     schema: dict[str, Any]
     handler_name: str
+    execution: AgentToolExecution = "sync"
     requires_pending_draft: bool = False
 
 
@@ -210,8 +221,9 @@ WEB_FETCH_SCHEMA: dict[str, Any] = {
         "name": "web_fetch",
         "description": (
             "Fetch and extract text from a user-provided URL for an explicit "
-            "resume-editing purpose. Do not infer personal experience facts "
-            "from fetched pages; use them only as reference material."
+            "application-material purpose. Use target_context for admissions, "
+            "research, scholarship, or other external selection requirements. "
+            "Do not infer personal experience facts from fetched pages."
         ),
         "parameters": {
             "type": "object",
@@ -227,6 +239,7 @@ WEB_FETCH_SCHEMA: dict[str, Any] = {
                         "project_reference",
                         "portfolio_reference",
                         "company_reference",
+                        "target_context",
                     ],
                     "description": (
                         "Why this URL should be fetched. If unsure, ask the "
@@ -245,10 +258,10 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
     "function": {
         "name": "web_search",
         "description": (
-            "Search the web only for target role, JD, company, or public "
-            "reference context. For role exploration, prefer one call with "
-            "3-5 complementary queries and summarize the combined results. "
-            "Never use search as evidence for the user's personal experience."
+            "Search the web for a target job, graduate program, research group, "
+            "scholarship, company, or other public opportunity context. Prefer "
+            "one call with 3-5 complementary queries and summarize the combined "
+            "results. Never use search as evidence for personal experience."
         ),
         "parameters": {
             "type": "object",
@@ -266,8 +279,8 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
                     "maxItems": 5,
                     "description": (
                         "Optional complementary queries for one search task, "
-                        "such as responsibilities, required skills, and resume "
-                        "keywords for the same target role."
+                        "such as role responsibilities and qualifications, or "
+                        "program requirements, research areas, faculty, and funding."
                     ),
                 },
                 "maxResults": {
@@ -281,7 +294,10 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
                 },
                 "role": {
                     "type": "string",
-                    "description": "Target role inferred from the user prompt.",
+                    "description": (
+                        "Optional target role or concise opportunity name inferred "
+                        "from the user prompt."
+                    ),
                 },
                 "purpose": {
                     "type": "string",
@@ -347,7 +363,7 @@ RESUME_ANALYSIS_SCHEMA: dict[str, Any] = {
         "name": "resume_analysis",
         "description": (
             "Analyze the current structured resume JSON, keyword gaps, and "
-            "target-role fit hints for conservative resume editing."
+            "target-opportunity fit hints for conservative resume editing."
         ),
         "parameters": {
             "type": "object",
@@ -702,8 +718,20 @@ FINISH_SCHEMA: dict[str, Any] = {
 }
 
 AGENT_TOOL_SPECS: list[AgentToolSpec] = [
-    AgentToolSpec("web_fetch", "read", WEB_FETCH_SCHEMA, "run_web_fetch_async"),
-    AgentToolSpec("web_search", "read", WEB_SEARCH_SCHEMA, "run_web_search_async"),
+    AgentToolSpec(
+        "web_fetch",
+        "read",
+        WEB_FETCH_SCHEMA,
+        "run_web_fetch_async",
+        execution="async",
+    ),
+    AgentToolSpec(
+        "web_search",
+        "read",
+        WEB_SEARCH_SCHEMA,
+        "run_web_search_async",
+        execution="async",
+    ),
     AgentToolSpec(
         "material_extract",
         "read",
@@ -759,6 +787,10 @@ AGENT_TOOL_SPECS: list[AgentToolSpec] = [
     AgentToolSpec("finish", "control", FINISH_SCHEMA, "run_finish"),
 ]
 
+AGENT_TOOL_SPECS_BY_NAME = {spec.name: spec for spec in AGENT_TOOL_SPECS}
+if len(AGENT_TOOL_SPECS_BY_NAME) != len(AGENT_TOOL_SPECS):
+    raise RuntimeError("Agent tool registry contains duplicate tool names.")
+
 AGENT_TOOL_SCHEMAS = [spec.schema for spec in AGENT_TOOL_SPECS]
 WEB_FETCH_TOOL_NAMES = frozenset({"web_fetch"})
 WEB_SEARCH_TOOL_NAMES = frozenset({"web_search"})
@@ -793,9 +825,16 @@ def agent_tool_schemas_for_names(
     return [spec.schema for spec in AGENT_TOOL_SPECS if spec.name in tool_names]
 
 
+def agent_tool_spec(tool_name: str) -> AgentToolSpec | None:
+    """Return the single registered execution contract for a tool name."""
+
+    return AGENT_TOOL_SPECS_BY_NAME.get(tool_name)
+
+
 __all__ = [
     "AGENT_TOOL_SCHEMAS",
     "AGENT_TOOL_SPECS",
+    "AGENT_TOOL_SPECS_BY_NAME",
     "ALL_KNOWN_TOOL_NAMES",
     "CONTROL_TOOL_NAMES",
     "DRAFT_WRITE_TOOL_NAMES",
@@ -807,5 +846,7 @@ __all__ = [
     "WEB_SEARCH_TOOL_NAMES",
     "WRITE_TOOL_NAMES",
     "AgentToolSpec",
+    "AgentToolExecution",
+    "agent_tool_spec",
     "agent_tool_schemas_for_names",
 ]

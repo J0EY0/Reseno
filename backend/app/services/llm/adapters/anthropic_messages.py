@@ -18,6 +18,7 @@ from ..common import (
     tool_function,
 )
 from ..errors import LlmRequestError
+from ..tool_schema import portable_tool_schema
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -67,6 +68,7 @@ async def stream(
     payload = {**_payload(config, messages), "stream": True}
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
+    thinking_blocks_by_index: dict[int, dict[str, Any]] = {}
     response_id: str | None = None
     stop_reason: LlmStopReason = "unknown"
     # Anthropic splits usage across message_start/message_delta events. Merge
@@ -89,6 +91,16 @@ async def stream(
                     usage.update(message_usage)
             continue
 
+        if event_type == "content_block_start":
+            block = event.get("content_block")
+            if isinstance(block, dict):
+                thinking_block = _thinking_block(block)
+                if thinking_block:
+                    thinking_blocks_by_index[_content_block_index(event)] = (
+                        thinking_block
+                    )
+            continue
+
         if event_type == "content_block_delta":
             delta = event.get("delta")
             if not isinstance(delta, dict):
@@ -99,14 +111,29 @@ async def stream(
                 if isinstance(text, str) and text:
                     content_parts.append(text)
                     yield LlmStreamEvent(type="text_delta", delta=text)
-            elif delta_type in {"thinking_delta", "signature_delta"}:
+            elif delta_type == "thinking_delta":
                 # Extended thinking is provider metadata for the agent; expose
                 # it through reasoning_delta instead of leaking Anthropic block
                 # event names into the runtime.
-                thinking = delta.get("thinking") or delta.get("text")
+                thinking = delta.get("thinking")
                 if isinstance(thinking, str) and thinking:
                     reasoning_parts.append(thinking)
+                    block = thinking_blocks_by_index.setdefault(
+                        _content_block_index(event),
+                        {"type": "thinking", "thinking": ""},
+                    )
+                    block["thinking"] = str(block.get("thinking") or "") + thinking
                     yield LlmStreamEvent(type="reasoning_delta", delta=thinking)
+            elif delta_type == "signature_delta":
+                # The signature is opaque continuation state. It must be
+                # replayed unchanged, but must never surface as reasoning text.
+                signature = delta.get("signature")
+                if isinstance(signature, str) and signature:
+                    block = thinking_blocks_by_index.setdefault(
+                        _content_block_index(event),
+                        {"type": "thinking", "thinking": ""},
+                    )
+                    block["signature"] = str(block.get("signature") or "") + signature
             continue
 
         if event_type == "message_delta":
@@ -132,6 +159,9 @@ async def stream(
             usage=anthropic_usage({"usage": usage}),
             stop_reason=stop_reason,
             response_id=response_id,
+            provider_state=_thinking_provider_state(
+                [block for _, block in sorted(thinking_blocks_by_index.items())],
+            ),
         ),
     )
 
@@ -210,7 +240,10 @@ def anthropic_messages(
             continue
 
         if role == "assistant":
-            blocks: list[dict[str, Any]] = []
+            # Signed thinking blocks are continuation state, not display text.
+            # Anthropic requires the original block to precede the matching
+            # tool_use block when the tool result is sent back.
+            blocks = _thinking_blocks_from_state(message.get("provider_state"))
             text = message_content_text(message.get("content")).strip()
             if text:
                 blocks.append({"type": "text", "text": text})
@@ -304,10 +337,7 @@ def _tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "description": str(function.get("description") or ""),
-                "input_schema": function.get("parameters") or {
-                    "type": "object",
-                    "properties": {},
-                },
+                "input_schema": portable_tool_schema(function.get("parameters")),
             },
         )
 
@@ -316,14 +346,17 @@ def _tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
     tool_calls = _tool_calls(payload)
+    thinking_blocks = _thinking_blocks_from_content(payload.get("content"))
     return LlmAssistantMessage(
         content=_text(payload),
         tool_calls=tool_calls,
+        reasoning=_thinking_text(thinking_blocks),
         usage=anthropic_usage(payload),
         stop_reason="tool_calls"
         if tool_calls
         else map_stop_reason(payload.get("stop_reason")),
         response_id=str(payload.get("id") or "") or None,
+        provider_state={"thinking_blocks": thinking_blocks} if thinking_blocks else {},
     )
 
 
@@ -359,6 +392,71 @@ def _tool_calls(payload: dict[str, Any]) -> list[LlmToolCall]:
         )
 
     return tool_calls
+
+
+def _thinking_blocks_from_content(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        normalized = _thinking_block(block)
+        if normalized:
+            blocks.append(normalized)
+    return blocks
+
+
+def _thinking_blocks_from_state(provider_state: Any) -> list[dict[str, Any]]:
+    if not isinstance(provider_state, dict):
+        return []
+    return _thinking_blocks_from_content(provider_state.get("thinking_blocks"))
+
+
+def _thinking_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = block.get("type")
+    if block_type == "thinking":
+        thinking = block.get("thinking")
+        signature = block.get("signature")
+        if not isinstance(thinking, str):
+            return None
+        normalized: dict[str, Any] = {
+            "type": "thinking",
+            "thinking": thinking,
+        }
+        if isinstance(signature, str):
+            normalized["signature"] = signature
+        return normalized
+
+    if block_type == "redacted_thinking":
+        data = block.get("data")
+        if isinstance(data, str):
+            return {"type": "redacted_thinking", "data": data}
+
+    return None
+
+
+def _thinking_text(blocks: list[dict[str, Any]]) -> str:
+    return "".join(
+        str(block["thinking"]) for block in blocks if block.get("type") == "thinking"
+    ).strip()
+
+
+def _thinking_provider_state(
+    blocks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized = [
+        thinking_block
+        for block in blocks
+        if (thinking_block := _thinking_block(block)) is not None
+    ]
+    return {"thinking_blocks": normalized} if normalized else {}
+
+
+def _content_block_index(event: dict[str, Any]) -> int:
+    index = event.get("index")
+    return index if isinstance(index, int) else 0
 
 
 def _safe_json_object(raw_arguments: str) -> dict[str, Any]:

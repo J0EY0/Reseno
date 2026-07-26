@@ -64,6 +64,14 @@ class StoredAgentAttachment:
     sent_at: str | None
 
 
+@dataclass(frozen=True)
+class AgentAttachmentSentReceipt:
+    """Metadata snapshots used to compensate a cross-store message write."""
+
+    session_id: str
+    previous_metadata: tuple[tuple[str, dict[str, Any]], ...]
+
+
 def current_request_attachments(request: AgentChatRequest) -> list[dict[str, Any]]:
     """Return only files explicitly attached to the current user request.
 
@@ -260,16 +268,55 @@ def attachment_content_part(
 def mark_agent_attachments_sent(
     session_id: str,
     files: list[dict[str, Any]],
-) -> None:
-    """Mark persisted message attachments as protected conversation history."""
+) -> AgentAttachmentSentReceipt:
+    """Mark message attachments as sent, rolling back any partial file update."""
 
-    sent_at = _now_iso()
+    pending_updates: list[tuple[str, dict[str, Any]]] = []
     for attachment_id in _attachment_ids(files):
         metadata = _read_metadata(session_id, attachment_id)
-        if metadata is None or metadata.get("sentAt"):
-            continue
-        metadata["sentAt"] = sent_at
-        _write_metadata(session_id, attachment_id, metadata)
+        if metadata is None:
+            raise AgentAttachmentError("The attachment is no longer available.")
+        if not metadata.get("sentAt"):
+            pending_updates.append((attachment_id, dict(metadata)))
+
+    receipt = AgentAttachmentSentReceipt(
+        session_id=session_id,
+        previous_metadata=tuple(pending_updates),
+    )
+    sent_at = _now_iso()
+    attempted_count = 0
+    try:
+        for attachment_id, previous_metadata in pending_updates:
+            metadata = {**previous_metadata, "sentAt": sent_at}
+            # Include the current file before writing: storage wrappers may
+            # raise after the atomic replace has already reached disk.
+            attempted_count += 1
+            _write_metadata(session_id, attachment_id, metadata)
+    except BaseException:
+        partial_receipt = AgentAttachmentSentReceipt(
+            session_id=session_id,
+            previous_metadata=receipt.previous_metadata[:attempted_count],
+        )
+        try:
+            rollback_agent_attachments_sent(partial_receipt)
+        except Exception as rollback_exc:
+            raise AgentAttachmentError(
+                "Attachment metadata could not be restored after a partial update.",
+            ) from rollback_exc
+        raise
+
+    return receipt
+
+
+def rollback_agent_attachments_sent(
+    receipt: AgentAttachmentSentReceipt | None,
+) -> None:
+    """Restore attachment metadata after the related database write fails."""
+
+    if receipt is None:
+        return
+    for attachment_id, metadata in receipt.previous_metadata:
+        _write_metadata(receipt.session_id, attachment_id, dict(metadata))
 
 
 def delete_pending_agent_attachment(session_id: str, attachment_id: str) -> bool:

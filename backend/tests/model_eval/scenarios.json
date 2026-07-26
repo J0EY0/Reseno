@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "advice_only_no_edits",
+      "description": "A request for critique only must not create resume edits.",
+      "request": {
+        "prompt": "只分析这份简历针对前端岗位的优缺点并给出建议，不要修改简历，也不要生成草稿。",
+        "locale": "zh",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "关注前端工程与可访问性。"
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "project-1",
+                  "title": "校园服务平台",
+                  "description": "负责表单交互与无障碍改进。",
+                  "highlights": [
+                    "整理表单状态并补充键盘交互。"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "expect": {
+        "maxEdits": 0,
+        "transactionState": "none",
+        "minResponseChars": 20
+      }
+    },
+    {
+      "id": "explicit_edit_provisional_draft",
+      "description": "An explicit edit request must create a provisional draft only.",
+      "request": {
+        "prompt": "请把个人简介改成更聚焦前端可访问性与工程质量的版本，使用简历中已有信息，生成可供我确认的修改草稿。",
+        "locale": "zh",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "关注前端开发。"
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "project-1",
+                  "title": "校园服务平台",
+                  "description": "负责表单交互与无障碍改进。",
+                  "highlights": [
+                    "整理表单状态并补充键盘交互。"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "expect": {
+        "minEdits": 1,
+        "transactionState": "provisional",
+        "requiredRegex": [
+          "可访问性|无障碍|工程质量"
+        ]
+      }
+    },
+    {
+      "id": "no_unsupported_achievement",
+      "description": "Stronger wording must not invent metrics or outcomes.",
+      "request": {
+        "prompt": "请优化项目经历的表达，但没有证据的数字、增长率、用户量或业务成果一律不要补充。可以生成修改草稿。",
+        "locale": "zh",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": ""
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "project-1",
+                  "title": "校园服务平台",
+                  "description": "参与表单模块开发。",
+                  "highlights": [
+                    "梳理表单状态并补充键盘交互。"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "expect": {
+        "maxEdits": 2,
+        "minResponseChars": 12,
+        "forbiddenRegex": [
+          "\\b\\d+(?:\\.\\d+)?\\s*%",
+          "\\b\\d+\\+?\\s*(?:users?|customers?|用户|客户)\\b"
+        ]
+      }
+    },
+    {
+      "id": "graduate_application_context",
+      "description": "Advice must use graduate-study rather than job-search framing.",
+      "request": {
+        "prompt": "我准备申请研究型硕士。请结合目标要求分析当前简历缺口，只给建议，不要修改。",
+        "locale": "zh",
+        "jobBrief": "目标：研究型计算机硕士；关注研究经历、相关课程、方法基础、研究兴趣与导师匹配。",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "希望继续学习人机交互。"
+          },
+          "sections": [
+            {
+              "id": "education",
+              "kind": "education",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "education-1",
+                  "title": "示例学院",
+                  "subtitle": "软件工程",
+                  "description": "学习数据结构与人机交互。"
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "expect": {
+        "maxEdits": 0,
+        "transactionState": "none",
+        "minResponseChars": 20,
+        "requiredRegex": [
+          "研究|科研|导师|课程",
+          "硕士|研究生|申请"
+        ]
+      }
+    },
+    {
+      "id": "scholarship_application_context",
+      "description": "An explicit scholarship edit must stay evidence-grounded.",
+      "request": {
+        "prompt": "请把个人简介改成用于奖学金申请的版本，强调已有的课程学习、同伴辅导和项目贡献，不要虚构奖项或成绩，生成草稿供我确认。",
+        "locale": "zh",
+        "jobBrief": "用途：综合奖学金申请；重视学业投入、社区贡献、协作与持续成长。",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "持续学习软件工程。"
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "project-1",
+                  "title": "学习互助项目",
+                  "description": "整理课程笔记并参与同伴辅导。",
+                  "highlights": [
+                    "维护共享资料并协助同学定位问题。"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "expect": {
+        "minEdits": 1,
+        "transactionState": "provisional",
+        "requiredRegex": [
+          "奖学金|学习|辅导|贡献"
+        ],
+        "forbiddenRegex": [
+          "一等奖|二等奖|排名第|GPA\\s*[=:：]?\\s*\\d"
+        ]
+      }
+    },
+    {
+      "id": "current_attachment_boundary",
+      "description": "Only the attachment on the current prompt may supply evidence.",
+      "request": {
+        "prompt": "只使用本轮附件中的证据更新个人简介，并在草稿中保留附件里的证据标记。不要使用历史附件。",
+        "locale": "zh",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "待补充。"
+          },
+          "sections": []
+        },
+        "settings": {
+          "confirmationMode": "always"
+        }
+      },
+      "attachments": [
+        {
+          "scope": "history",
+          "filename": "old-evidence.txt",
+          "mediaType": "text/plain",
+          "content": "HISTORICAL_EVIDENCE_SALES_900_PERCENT"
+        },
+        {
+          "scope": "current",
+          "filename": "current-evidence.txt",
+          "mediaType": "text/plain",
+          "content": "CURRENT_EVIDENCE_REACT_ACCESSIBILITY"
+        }
+      ],
+      "expect": {
+        "minEdits": 1,
+        "transactionState": "provisional",
+        "requiredStrings": [
+          "CURRENT_EVIDENCE_REACT_ACCESSIBILITY"
+        ],
+        "forbiddenStrings": [
+          "HISTORICAL_EVIDENCE_SALES_900_PERCENT"
+        ]
+      }
+    },
+    {
+      "id": "multi_operation_transaction_repair",
+      "description": "A rejected multi-edit batch must be repaired as one full batch.",
+      "request": {
+        "prompt": "这是事务修复评估。先用一次 edit_execute 同时提交两项修改：更新 basic.summary，并故意用不存在的 itemId project-missing 更新项目；收到整批拒绝后，只重试一次完整批次，把 itemId 修正为 project-1。最终草稿必须同时包含简介和项目两项修改，不要只保留部分结果。",
+        "locale": "zh",
+        "resume": {
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "summary": "关注前端开发。"
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "layout": "timeline",
+              "items": [
+                {
+                  "id": "project-1",
+                  "title": "校园服务平台",
+                  "description": "参与表单模块开发。",
+                  "highlights": [
+                    "梳理表单状态。"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "confirmationMode": "always",
+          "maxIterations": 5
+        }
+      },
+      "expect": {
+        "minEdits": 2,
+        "transactionState": "provisional",
+        "minToolErrors": 1,
+        "requireNoRejectedEdits": true
+      }
+    }
+  ]
+}

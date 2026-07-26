@@ -216,7 +216,7 @@ async def async_iter_agent_tool_call_loop(
         )
         tool_messages: list[dict[str, Any]] = []
         revision_before_tools = runner.edit_revision
-        for tool_call in tool_calls:
+        for tool_index, tool_call in enumerate(tool_calls):
             await runtime.checkpoint()
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(
@@ -236,7 +236,33 @@ async def async_iter_agent_tool_call_loop(
                     "content": json.dumps(result, ensure_ascii=False),
                 },
             )
+            # A provider may emit several tool calls in one response. `finish`
+            # is a terminal action, so calls ordered after it must never run.
+            if runner.finished:
+                break
             if runner.transaction_failed:
+                break
+            if runner.semantic_retry_pending:
+                # Providers can emit an edit and `finish` in one response. Once
+                # the edit is rejected, every remaining call belongs to the
+                # invalid batch and must be acknowledged but not executed. This
+                # preserves the single repair round instead of letting `finish`
+                # roll back the transaction immediately.
+                tool_messages.extend(
+                    {
+                        "role": "tool",
+                        "tool_call_id": deferred_call.id,
+                        "content": json.dumps(
+                            {
+                                "skipped": True,
+                                "retryable": True,
+                                "reason": "A prior edit batch requires repair.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    for deferred_call in tool_calls[tool_index + 1 :]
+                )
                 break
         if runner.transaction_failed:
             rollback_emitted = True

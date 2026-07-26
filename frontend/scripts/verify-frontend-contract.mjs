@@ -260,10 +260,10 @@ assert(
   "Editing must stop when persisted Agent history replacement fails.",
 );
 assert(
-  /status\s*!==\s*"completed"[\s\S]{0,300}setMessages\(pending\.rollbackMessages\)/.test(
+  /status\s*!==\s*"completed"[\s\S]{0,800}shouldRollbackOptimisticAgentMessages\([\s\S]{0,500}setMessages\(pending\.rollbackMessages\)/.test(
     copilotPanel,
   ),
-  "Every non-completed Agent request must roll back its optimistic message.",
+  "Every non-completed Agent request must apply the optimistic-message rollback policy.",
 );
 assert(
   /function AgentUserMessage[\s\S]{0,3000}message\.files\?\.length[\s\S]{0,500}<AgentMessageAttachments[\s\S]{0,500}files=\{message\.files\}/.test(

@@ -2,6 +2,7 @@ import {
   apiRoutes,
   clearApiCache,
   fetchApiResource,
+  getApiErrorStatus,
   requestApi,
   resolveApiUrl,
   uploadApi,
@@ -228,6 +229,77 @@ function toToolInvocations(value: unknown): AgentChatMessage["tools"] {
     .filter((item) => item.id && item.type && item.title);
 }
 
+function isTerminalToolState(state: AgentToolInvocation["state"]) {
+  return (
+    state === "output-available" ||
+    state === "output-error" ||
+    state === "output-denied"
+  );
+}
+
+function mergeAgentToolInvocation(
+  current: AgentToolInvocation,
+  incoming: AgentToolInvocation,
+): AgentToolInvocation {
+  const preserveTerminalState =
+    isTerminalToolState(current.state) &&
+    !isTerminalToolState(incoming.state);
+
+  return {
+    ...current,
+    ...incoming,
+    state: preserveTerminalState ? current.state : incoming.state,
+    input: incoming.input === undefined ? current.input : incoming.input,
+    output: incoming.output === undefined ? current.output : incoming.output,
+    errorText:
+      incoming.errorText === undefined ? current.errorText : incoming.errorText,
+    startedAt:
+      incoming.startedAt === undefined ? current.startedAt : incoming.startedAt,
+    completedAt:
+      incoming.completedAt === undefined
+        ? current.completedAt
+        : incoming.completedAt,
+  };
+}
+
+/**
+ * Reconcile incremental tool events and full message snapshots by invocation id.
+ * First-seen order is stable, duplicate events update in place, and a late
+ * non-terminal snapshot cannot regress a completed invocation.
+ */
+export function mergeAgentToolInvocations(
+  current: AgentToolInvocation[] = [],
+  incoming: AgentToolInvocation[] = [],
+) {
+  const toolsById = new Map<string, AgentToolInvocation>();
+  const orderedIds: string[] = [];
+
+  for (const tool of current) {
+    if (!toolsById.has(tool.id)) {
+      orderedIds.push(tool.id);
+      toolsById.set(tool.id, tool);
+    } else {
+      toolsById.set(
+        tool.id,
+        mergeAgentToolInvocation(toolsById.get(tool.id)!, tool),
+      );
+    }
+  }
+
+  for (const tool of incoming) {
+    const existing = toolsById.get(tool.id);
+    if (!existing) {
+      orderedIds.push(tool.id);
+      toolsById.set(tool.id, tool);
+      continue;
+    }
+
+    toolsById.set(tool.id, mergeAgentToolInvocation(existing, tool));
+  }
+
+  return orderedIds.map((id) => toolsById.get(id)!);
+}
+
 function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
   if (!Array.isArray(value)) {
     return undefined;
@@ -339,7 +411,10 @@ function mergeAgentMessage(
     plan: plan ?? current.plan,
     suggestions: suggestions ?? current.suggestions,
     knowledge: knowledge ?? current.knowledge,
-    tools: tools ?? current.tools,
+    tools:
+      tools === undefined
+        ? current.tools
+        : mergeAgentToolInvocations(current.tools, tools),
     sources: sources ?? current.sources,
     edits: edits ?? current.edits,
     transactionState: transactionState ?? current.transactionState,
@@ -398,6 +473,21 @@ function getPayloadPatch(payload: unknown, key: string) {
   }
 
   return payload[key] ?? payload;
+}
+
+export function applyAgentToolStreamEvent(
+  message: AgentChatMessage,
+  payload: unknown,
+) {
+  const tools = toToolInvocations([getPayloadPatch(payload, "tool")]);
+  if (!tools?.length) {
+    return message;
+  }
+
+  return {
+    ...message,
+    tools: mergeAgentToolInvocations(message.tools, tools),
+  };
 }
 
 function yieldToRenderer() {
@@ -466,6 +556,19 @@ async function readAgentChatStream(
         };
         publishMessage();
       }
+      return;
+    }
+
+    if (
+      type === "tool_start" ||
+      type === "tool_delta" ||
+      type === "tool_done"
+    ) {
+      accumulator.message = applyAgentToolStreamEvent(
+        accumulator.message,
+        payload,
+      );
+      publishMessage();
       return;
     }
 
@@ -651,6 +754,8 @@ async function consumeAgentRun(
   const accumulator = createStreamAccumulator(run.status);
   let response = initialResponse;
   let reconnectDelayMs = 250;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
 
   options.onRun?.(run);
 
@@ -665,16 +770,25 @@ async function consumeAgentRun(
       );
       await readAgentChatStream(response, options, accumulator);
       reconnectDelayMs = 250;
+      reconnectAttempts = 0;
       response = undefined;
     } catch (error) {
       throwIfAborted(options.signal);
-      if (error instanceof AgentRunStreamHttpError) {
+      if (
+        error instanceof AgentRunStreamHttpError ||
+        getApiErrorStatus(error) !== undefined ||
+        error instanceof SyntaxError
+      ) {
         throw error;
       }
 
       // A subscriber can disappear while the process-local Agent run keeps
-      // working. Reconnect from the last acknowledged SSE id instead of
-      // turning a browser/network interruption into an Agent cancellation.
+      // working. Retry bounded transport interruptions from the last
+      // acknowledged SSE id, but never loop forever on a broken connection.
+      reconnectAttempts += 1;
+      if (reconnectAttempts > maxReconnectAttempts) {
+        throw error;
+      }
       await waitBeforeReconnect(options.signal, reconnectDelayMs);
       reconnectDelayMs = Math.min(reconnectDelayMs * 2, 2000);
       response = undefined;
@@ -765,11 +879,15 @@ export function stopAgentRun(runId: string) {
 export function uploadAgentAttachment(
   file: FormData,
   resumeId: string,
-  onProgress?: (progress: { loaded: number; total?: number }) => void,
+  options: {
+    onProgress?: (progress: { loaded: number; total?: number }) => void;
+    signal?: AbortSignal;
+  } = {},
 ) {
   file.set("resumeId", resumeId);
   return uploadApi<AgentChatAttachment>(apiRoutes.agentAttachments, file, {
-    onProgress,
+    onProgress: options.onProgress,
+    signal: options.signal,
   });
 }
 
@@ -799,7 +917,9 @@ export function deletePendingAgentAttachment(
 
 export async function loadAgentSession(resumeId: string) {
   return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
-    cacheTtlMs: 2000,
+    // Session revisions are optimistic-concurrency tokens. Reusing even a
+    // short-lived GET cache can make an otherwise valid history edit stale.
+    cacheTtlMs: 0,
   });
 }
 

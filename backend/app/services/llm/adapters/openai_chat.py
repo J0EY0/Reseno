@@ -11,6 +11,7 @@ from ..common import (
     close_async_stream,
     delta_text,
     map_stop_reason,
+    openai_chat_function_tools,
     openai_chat_usage,
     parsed_tool_call,
     raise_openai_error,
@@ -62,12 +63,7 @@ async def complete_tool_call(
     # Disable parallel tool calls at the provider boundary. The agent loop
     # executes one assistant turn as a single transaction, then validates every
     # returned call before running any of them.
-    params = {
-        **chat_completion_params(config, messages, stream=False),
-        "tools": tools,
-        "tool_choice": "auto",
-        "parallel_tool_calls": False,
-    }
+    params = _tool_completion_params(config, messages, tools)
     try:
         response = await async_openai_client(config).chat.completions.create(**params)
     except APIStatusError as exc:
@@ -92,6 +88,21 @@ async def complete_tool_call(
         raise_openai_error(exc)
 
     return _message_from_response(response)
+
+
+def _tool_completion_params(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build provider-facing params without weakening local tool validation."""
+
+    return {
+        **chat_completion_params(config, messages, stream=False),
+        "tools": openai_chat_function_tools(tools),
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
 
 
 async def stream(

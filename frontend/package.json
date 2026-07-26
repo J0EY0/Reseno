@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "generate:agent-contract": "node scripts/generate-resume-edit-operation-types.mjs --write",
     "lint": "eslint .",
     "preview": "vite preview",
     "test:contact-links": "node scripts/verify-contact-links.mjs",
-    "test:contract": "node scripts/verify-frontend-contract.mjs",
+    "test:contract": "node scripts/verify-frontend-contract.mjs && node scripts/generate-resume-edit-operation-types.mjs",
     "test:agent-edits": "node scripts/verify-resume-agent-edits.mjs",
+    "test:agent-panel": "node scripts/verify-agent-panel-state.mjs",
+    "test:agent-tools": "node scripts/verify-agent-tool-stream.mjs",
     "test:pdf-import": "node scripts/verify-pdf-resume-import.mjs"
   },
   "dependencies": {

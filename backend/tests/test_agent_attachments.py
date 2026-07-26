@@ -16,6 +16,7 @@ from app.schemas.agent import (
 )
 from app.schemas.common import APP_CODE_NOT_FOUND
 from app.services import agent_sessions
+from app.services.agent import attachments as agent_attachments
 from app.services.agent.attachments import mark_agent_attachments_sent
 from app.services.agent.runtime.messages import (
     build_agent_messages,
@@ -278,6 +279,151 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
 
     assert message_count == 0
     assert session_count == 0
+
+
+def test_stale_assistant_is_rejected_after_session_history_replacement(
+    client: TestClient,
+) -> None:
+    del client  # The fixture provides an isolated database for this session test.
+    session_id = "resume-stale-assistant"
+    request = AgentChatRequest(
+        resumeId=session_id,
+        message=AgentConversationItem(
+            id="agent-user-old-run",
+            role="user",
+            text="Old run prompt",
+        ),
+    )
+    assistant = AgentChatMessage(
+        id="agent-assistant-old-run",
+        role="assistant",
+        text="Old run response",
+    )
+    replacement = AgentConversationItem(
+        id="agent-user-replacement",
+        role="user",
+        text="Replacement history",
+    )
+
+    conn = connect()
+    try:
+        agent_sessions.persist_agent_user_message(conn, request)
+        agent_sessions.replace_agent_session_messages(
+            conn,
+            session_id,
+            locale="en",
+            messages=[replacement],
+        )
+
+        with pytest.raises(agent_sessions.AgentSessionTurnConflictError):
+            agent_sessions.append_agent_exchange(conn, request, assistant)
+
+        persisted = agent_sessions.load_agent_session(conn, session_id)
+    finally:
+        conn.close()
+
+    assert [message.id for message in persisted.messages] == [
+        "agent-user-replacement",
+    ]
+
+
+def test_marking_multiple_attachments_is_all_or_nothing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-attachment-partial-failure"
+    first = _upload(
+        client,
+        session_id=session_id,
+        filename="first.pdf",
+        payload=_pdf_with_text("First"),
+        media_type="application/pdf",
+    )
+    second = _upload(
+        client,
+        session_id=session_id,
+        filename="second.pdf",
+        payload=_pdf_with_text("Second"),
+        media_type="application/pdf",
+    )
+    original_write_metadata = agent_attachments._write_metadata
+    sent_write_count = 0
+
+    def fail_second_sent_write(
+        protected_session_id: str,
+        attachment_id: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        nonlocal sent_write_count
+        if metadata.get("sentAt"):
+            sent_write_count += 1
+        original_write_metadata(protected_session_id, attachment_id, metadata)
+        if sent_write_count == 2 and metadata.get("sentAt"):
+            raise OSError("second metadata write failed")
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "_write_metadata",
+        fail_second_sent_write,
+    )
+
+    with pytest.raises(OSError, match="second metadata write failed"):
+        mark_agent_attachments_sent(session_id, [first, second])
+
+    first_attachment = agent_attachments.load_agent_attachment(session_id, first)
+    second_attachment = agent_attachments.load_agent_attachment(session_id, second)
+    assert first_attachment is not None
+    assert second_attachment is not None
+    assert first_attachment.sent_at is None
+    assert second_attachment.sent_at is None
+
+
+def test_user_message_and_attachment_state_are_compensated_on_db_failure(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-user-message-compensation"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="evidence.pdf",
+        payload=_pdf_with_text("Evidence"),
+        media_type="application/pdf",
+    )
+    request = AgentChatRequest(
+        resumeId=session_id,
+        message=AgentConversationItem(
+            id="agent-user-compensation",
+            role="user",
+            text="Use the evidence.",
+            files=[attachment],
+        ),
+    )
+
+    def fail_insert(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise OSError("message insert failed")
+
+    monkeypatch.setattr(agent_sessions, "_insert_message", fail_insert)
+
+    conn = connect()
+    try:
+        with pytest.raises(OSError, match="message insert failed"):
+            agent_sessions.persist_agent_user_message(conn, request)
+        message_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    stored_attachment = agent_attachments.load_agent_attachment(
+        session_id,
+        attachment,
+    )
+    assert message_count == 0
+    assert stored_attachment is not None
+    assert stored_attachment.sent_at is None
 
 
 def test_replace_session_rolls_back_when_attachment_protection_fails(

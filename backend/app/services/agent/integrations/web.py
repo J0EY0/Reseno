@@ -1,8 +1,14 @@
+import asyncio
+import ipaddress
 import re
+import socket
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 import httpx
 
@@ -19,14 +25,27 @@ SEARCH_ENDPOINTS = (
 )
 MAX_WEB_SEARCH_QUERIES = 5
 MAX_WEB_SEARCH_RESULTS = 10
+MAX_WEB_REDIRECTS = 5
+BLOCKED_WEB_HOSTS = frozenset(
+    {
+        "instance-data.ec2.internal",
+        "metadata.azure.internal",
+        "metadata.google",
+        "metadata.google.internal",
+    },
+)
 
 
 @dataclass(frozen=True)
 class WebReference:
-    """Text extracted from a fetched webpage."""
+    """Text plus non-sensitive provenance from a fetched webpage."""
 
     title: str
     excerpt: str
+    final_url: str = ""
+    status_code: int | None = None
+    fetched_at: str = ""
+    content_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +55,10 @@ class WebSearchResult:
     title: str
     url: str
     excerpt: str
+    final_url: str = ""
+    status_code: int | None = None
+    fetched_at: str = ""
+    content_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,6 +78,19 @@ class WebSearchReference:
     @property
     def excerpt(self) -> str:
         return _compact_text(" ".join(result.excerpt for result in self.results))
+
+
+@dataclass(frozen=True)
+class _BoundedWebResponse:
+    """Security-checked response bytes plus non-sensitive provenance metadata."""
+
+    raw: bytes
+    content_type: str
+    charset: str
+    final_url: str
+    status_code: int
+    fetched_at: str
+    content_sha256: str
 
 
 def _search_result_url(href: str | None) -> str:
@@ -242,11 +278,91 @@ def _web_headers(accept: str) -> dict[str, str]:
     }
 
 
+def _is_public_ip_address(value: str) -> bool:
+    """Return whether an IP literal is safe for an outbound web request."""
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+
+    # ``is_global`` also excludes shared carrier-grade NAT space such as
+    # 100.64.0.0/10, which some cloud platforms use for metadata services.
+    return address.is_global and not address.is_multicast
+
+
+def _is_allowed_web_url(url: str) -> bool:
+    """Resolve and reject any target that is not entirely on the public internet."""
+
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        # Reading ``port`` also rejects malformed or out-of-range port values.
+        _ = parsed.port
+    except ValueError:
+        return False
+
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or hostname == "localhost"
+        or hostname.endswith(".localhost")
+        or hostname in BLOCKED_WEB_HOSTS
+    ):
+        return False
+
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        try:
+            address_info = socket.getaddrinfo(
+                hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError):
+            return False
+
+        resolved_addresses = {sockaddr[0] for *_, sockaddr in address_info}
+        return bool(resolved_addresses) and all(
+            _is_public_ip_address(address) for address in resolved_addresses
+        )
+
+    return _is_public_ip_address(hostname)
+
+
+def _has_public_connected_peer(response: httpx.Response) -> bool:
+    """Fail closed unless httpcore reports a public address for the actual peer."""
+
+    network_stream = response.extensions.get("network_stream")
+    get_extra_info = getattr(network_stream, "get_extra_info", None)
+    if not callable(get_extra_info):
+        return False
+
+    try:
+        server_addr = get_extra_info("server_addr")
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+    if isinstance(server_addr, tuple) and server_addr:
+        peer_address = server_addr[0]
+    else:
+        peer_address = server_addr
+
+    return isinstance(peer_address, str) and _is_public_ip_address(peer_address)
+
+
 def _web_reference_from_response(
     url: str,
     raw: bytes,
     content_type: str,
     charset: str,
+    *,
+    status_code: int,
+    fetched_at: str,
+    content_sha256: str,
 ) -> WebReference | None:
     """Parse fetched response bytes into a web reference."""
 
@@ -254,7 +370,14 @@ def _web_reference_from_response(
     if "html" not in content_type.lower():
         excerpt = _compact_text(decoded)
         return (
-            WebReference(title=url, excerpt=excerpt)
+            WebReference(
+                title=url,
+                excerpt=excerpt,
+                final_url=url,
+                status_code=status_code,
+                fetched_at=fetched_at,
+                content_sha256=content_sha256,
+            )
             if _is_useful_web_excerpt(excerpt)
             else None
         )
@@ -266,7 +389,132 @@ def _web_reference_from_response(
     if not _is_useful_web_excerpt(excerpt):
         return None
 
-    return WebReference(title=title or url, excerpt=excerpt)
+    return WebReference(
+        title=title or url,
+        excerpt=excerpt,
+        final_url=url,
+        status_code=status_code,
+        fetched_at=fetched_at,
+        content_sha256=content_sha256,
+    )
+
+
+def _utc_timestamp() -> str:
+    """Return an unambiguous UTC timestamp for fetched evidence metadata."""
+
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _read_limited_bytes(chunks: Iterable[bytes], limit: int) -> bytes:
+    """Read at most ``limit`` decoded response bytes without buffering the rest."""
+
+    captured = bytearray()
+    for chunk in chunks:
+        remaining = limit - len(captured)
+        if remaining <= 0:
+            break
+        captured.extend(chunk[:remaining])
+        if len(captured) >= limit:
+            break
+    return bytes(captured)
+
+
+async def _async_read_limited_bytes(
+    chunks: AsyncIterable[bytes],
+    limit: int,
+) -> bytes:
+    """Async counterpart to ``_read_limited_bytes``."""
+
+    captured = bytearray()
+    async for chunk in chunks:
+        remaining = limit - len(captured)
+        if remaining <= 0:
+            break
+        captured.extend(chunk[:remaining])
+        if len(captured) >= limit:
+            break
+    return bytes(captured)
+
+
+def _get_bounded_web_response(
+    client: httpx.Client,
+    url: str,
+    byte_limit: int,
+) -> _BoundedWebResponse | None:
+    """GET a public URL while validating every redirect and bounding its body."""
+
+    current_url = url
+    for redirect_count in range(MAX_WEB_REDIRECTS + 1):
+        if not _is_allowed_web_url(current_url):
+            return None
+
+        with client.stream("GET", current_url) as response:
+            if not _has_public_connected_peer(response):
+                return None
+
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location or redirect_count >= MAX_WEB_REDIRECTS:
+                    return None
+                current_url = urljoin(str(response.url), location)
+                continue
+
+            response.raise_for_status()
+            raw = _read_limited_bytes(response.iter_bytes(), byte_limit)
+            return _BoundedWebResponse(
+                raw=raw,
+                content_type=response.headers.get("content-type", ""),
+                charset=response.encoding or "utf-8",
+                final_url=str(response.url),
+                status_code=response.status_code,
+                fetched_at=_utc_timestamp(),
+                content_sha256=sha256(raw).hexdigest(),
+            )
+
+    return None
+
+
+async def _async_get_bounded_web_response(
+    client: httpx.AsyncClient,
+    url: str,
+    byte_limit: int,
+) -> _BoundedWebResponse | None:
+    """Async counterpart to ``_get_bounded_web_response``."""
+
+    current_url = url
+    for redirect_count in range(MAX_WEB_REDIRECTS + 1):
+        # DNS resolution uses the blocking socket API, so keep it off the
+        # event loop while retaining the same validation as the sync path.
+        if not await asyncio.to_thread(_is_allowed_web_url, current_url):
+            return None
+
+        async with client.stream("GET", current_url) as response:
+            if not _has_public_connected_peer(response):
+                return None
+
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location or redirect_count >= MAX_WEB_REDIRECTS:
+                    return None
+                current_url = urljoin(str(response.url), location)
+                continue
+
+            response.raise_for_status()
+            raw = await _async_read_limited_bytes(
+                response.aiter_bytes(),
+                byte_limit,
+            )
+            return _BoundedWebResponse(
+                raw=raw,
+                content_type=response.headers.get("content-type", ""),
+                charset=response.encoding or "utf-8",
+                final_url=str(response.url),
+                status_code=response.status_code,
+                fetched_at=_utc_timestamp(),
+                content_sha256=sha256(raw).hexdigest(),
+            )
+
+    return None
 
 
 def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
@@ -275,19 +523,25 @@ def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
     try:
         with httpx.Client(
             headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=timeout,
+            trust_env=False,
         ) as client:
-            response = client.get(url)
-            response.raise_for_status()
+            fetched = _get_bounded_web_response(client, url, FETCH_MAX_BYTES)
     except (httpx.HTTPError, ValueError):
         return None
 
+    if fetched is None:
+        return None
+
     return _web_reference_from_response(
-        url,
-        response.content[:FETCH_MAX_BYTES],
-        response.headers.get("content-type", ""),
-        response.encoding or "utf-8",
+        fetched.final_url,
+        fetched.raw,
+        fetched.content_type,
+        fetched.charset,
+        status_code=fetched.status_code,
+        fetched_at=fetched.fetched_at,
+        content_sha256=fetched.content_sha256,
     )
 
 
@@ -300,20 +554,29 @@ async def _async_fetch_web_reference(
     try:
         async with httpx.AsyncClient(
             headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=timeout,
+            trust_env=False,
         ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+            fetched = await _async_get_bounded_web_response(
+                client,
+                url,
+                FETCH_MAX_BYTES,
+            )
     except (httpx.HTTPError, ValueError):
         return None
 
-    raw = response.content[:FETCH_MAX_BYTES]
+    if fetched is None:
+        return None
+
     return _web_reference_from_response(
-        url,
-        raw,
-        response.headers.get("content-type", ""),
-        response.encoding or "utf-8",
+        fetched.final_url,
+        fetched.raw,
+        fetched.content_type,
+        fetched.charset,
+        status_code=fetched.status_code,
+        fetched_at=fetched.fetched_at,
+        content_sha256=fetched.content_sha256,
     )
 
 
@@ -326,20 +589,27 @@ def _search_web_results(
     last_error: str | None = None
     with httpx.Client(
         headers=_web_headers("text/html,*/*;q=0.8"),
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=timeout,
+        trust_env=False,
     ) as client:
         for search_url in _search_urls(query):
             try:
-                response = client.get(search_url)
-                response.raise_for_status()
+                fetched = _get_bounded_web_response(
+                    client,
+                    search_url,
+                    SEARCH_MAX_BYTES,
+                )
             except (httpx.HTTPError, ValueError) as exc:
                 last_error = f"Web search request failed: {exc}"
                 continue
+            if fetched is None:
+                last_error = "Web search target was blocked or redirected unsafely."
+                continue
 
             results, parse_error = _parse_search_results(
-                response.content[:SEARCH_MAX_BYTES],
-                response.encoding or "utf-8",
+                fetched.raw,
+                fetched.charset,
             )
             if results:
                 return results, None
@@ -357,20 +627,27 @@ async def _async_search_web_results(
     last_error: str | None = None
     async with httpx.AsyncClient(
         headers=_web_headers("text/html,*/*;q=0.8"),
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=timeout,
+        trust_env=False,
     ) as client:
         for search_url in _search_urls(query):
             try:
-                response = await client.get(search_url)
-                response.raise_for_status()
+                fetched = await _async_get_bounded_web_response(
+                    client,
+                    search_url,
+                    SEARCH_MAX_BYTES,
+                )
             except (httpx.HTTPError, ValueError) as exc:
                 last_error = f"Web search request failed: {exc}"
                 continue
+            if fetched is None:
+                last_error = "Web search target was blocked or redirected unsafely."
+                continue
 
             results, parse_error = _parse_search_results(
-                response.content[:SEARCH_MAX_BYTES],
-                response.encoding or "utf-8",
+                fetched.raw,
+                fetched.charset,
             )
             if results:
                 return results, None
@@ -431,11 +708,7 @@ def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str 
             continue
 
         return (
-            WebSearchResult(
-                title=web_reference.title or result.title,
-                url=result.url,
-                excerpt=web_reference.excerpt,
-            ),
+            _web_search_result_from_reference(result, web_reference),
             len(results),
             None,
         )
@@ -493,11 +766,7 @@ async def _async_search_web_reference(
             continue
 
         return (
-            WebSearchResult(
-                title=web_reference.title or result.title,
-                url=result.url,
-                excerpt=web_reference.excerpt,
-            ),
+            _web_search_result_from_reference(result, web_reference),
             len(results),
             None,
         )
@@ -645,10 +914,15 @@ def _web_search_result_from_reference(
     result: WebSearchResult,
     web_reference: WebReference,
 ) -> WebSearchResult:
+    final_url = web_reference.final_url or result.url
     return WebSearchResult(
         title=web_reference.title or result.title,
-        url=result.url,
+        url=final_url,
         excerpt=web_reference.excerpt,
+        final_url=final_url,
+        status_code=web_reference.status_code,
+        fetched_at=web_reference.fetched_at,
+        content_sha256=web_reference.content_sha256,
     )
 
 
@@ -661,4 +935,8 @@ def _search_snippet_fallback(result: WebSearchResult) -> WebSearchResult | None:
         title=result.title,
         url=result.url,
         excerpt=excerpt,
+        final_url=result.final_url,
+        status_code=result.status_code,
+        fetched_at=result.fetched_at,
+        content_sha256=result.content_sha256,
     )

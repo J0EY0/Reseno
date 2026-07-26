@@ -10,6 +10,17 @@
     "requirements",
     "qualifications"
   ],
+  "jobBriefContext": [
+    "岗位",
+    "职位",
+    "招聘",
+    "任职",
+    "jd",
+    "job description",
+    "job opening",
+    "role",
+    "position"
+  ],
   "keywordStopWords": {
     "latin": [
       "about",

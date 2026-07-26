@@ -16,6 +16,8 @@ from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import append_agent_exchange
 
 MAX_RETAINED_AGENT_RUNS: Final = 24
+MAX_BUFFERED_AGENT_EVENTS: Final = 512
+MAX_BUFFERED_AGENT_EVENT_BYTES: Final = 4 * 1024 * 1024
 
 
 class AgentRunConflictError(Exception):
@@ -46,6 +48,8 @@ class AgentRun:
     has_provisional_edits: bool = False
     has_terminal_message: bool = False
     has_error: bool = False
+    buffered_event_bytes: int = 0
+    replay_message: dict[str, object] = field(default_factory=dict)
 
     def response(self) -> AgentRunResponse:
         return AgentRunResponse(
@@ -240,12 +244,14 @@ class AgentRunManager:
         async with run.condition:
             sequence = run.next_sequence
             run.next_sequence += 1
-            run.events.append(
-                BufferedAgentEvent(
-                    sequence=sequence,
-                    frame=_with_event_id(frame, sequence),
-                ),
+            buffered_event = BufferedAgentEvent(
+                sequence=sequence,
+                frame=_with_event_id(frame, sequence),
             )
+            _merge_replay_message(run.replay_message, frame)
+            run.events.append(buffered_event)
+            run.buffered_event_bytes += _frame_size(buffered_event.frame)
+            _compact_replay_buffer(run, sequence)
             run.condition.notify_all()
 
     async def _publish_terminal(
@@ -262,13 +268,14 @@ class AgentRunManager:
         async with run.condition:
             sequence = run.next_sequence
             run.next_sequence += 1
-            run.events.append(
-                BufferedAgentEvent(
-                    sequence=sequence,
-                    frame=_with_event_id(frame, sequence),
-                ),
+            terminal_event = BufferedAgentEvent(
+                sequence=sequence,
+                frame=_with_event_id(frame, sequence),
             )
+            run.events.append(terminal_event)
+            run.buffered_event_bytes += _frame_size(terminal_event.frame)
             run.status = status
+            _compact_terminal_replay_buffer(run, terminal_event)
             run.condition.notify_all()
 
     async def _release(self, run: AgentRun) -> None:
@@ -290,6 +297,142 @@ def _with_event_id(frame: str, sequence: int) -> str:
     else:
         lines.insert(0, f"id: {sequence}")
     return "\n".join(lines) + "\n\n"
+
+
+def _frame_size(frame: str) -> int:
+    return len(frame.encode("utf-8"))
+
+
+def _event_payload(frame: str) -> tuple[str, dict[str, object]]:
+    """Return the event name and JSON object carried by one SSE frame."""
+
+    event_name = _event_name(frame)
+    data_lines = [
+        line.removeprefix("data:").strip()
+        for line in frame.splitlines()
+        if line.startswith("data:")
+    ]
+    if not data_lines:
+        return event_name, {}
+
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except json.JSONDecodeError:
+        return event_name, {}
+    return event_name, payload if isinstance(payload, dict) else {}
+
+
+def _merge_replay_tool(
+    message: dict[str, object],
+    incoming: dict[str, object],
+) -> None:
+    """Merge one tool event by id so a compacted replay keeps terminal state."""
+
+    tool_id = incoming.get("id")
+    if not isinstance(tool_id, str) or not tool_id:
+        return
+
+    tools = message.get("tools")
+    current_tools = (
+        [tool for tool in tools if isinstance(tool, dict)]
+        if isinstance(tools, list)
+        else []
+    )
+    for index, current in enumerate(current_tools):
+        if current.get("id") == tool_id:
+            current_tools[index] = {**current, **incoming}
+            message["tools"] = current_tools
+            return
+
+    current_tools.append(incoming)
+    message["tools"] = current_tools
+
+
+def _merge_replay_message(
+    message: dict[str, object],
+    frame: str,
+) -> None:
+    """Fold incremental SSE events into one authoritative replay snapshot.
+
+    A reconnecting subscriber either already owns events before its cursor or
+    starts at zero. Replacing a long prefix with an absolute message snapshot
+    is therefore lossless for both cases and avoids retaining every token delta.
+    """
+
+    event_name, payload = _event_payload(frame)
+    patch = payload.get("message")
+    if isinstance(patch, dict):
+        message.update(patch)
+
+    if event_name == "text_delta":
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            message["text"] = f"{message.get('text', '')}{delta}"
+    elif event_name == "reasoning_delta":
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            message["reasoning"] = f"{message.get('reasoning', '')}{delta}"
+    elif event_name in {"tool_start", "tool_delta", "tool_done"}:
+        tool = payload.get("tool")
+        if isinstance(tool, dict):
+            _merge_replay_tool(message, tool)
+    elif event_name == "error" and not message.get("text"):
+        error_text = payload.get("message") or payload.get("error")
+        if isinstance(error_text, str):
+            message["text"] = error_text
+
+    message.setdefault("role", "assistant")
+    message.setdefault("text", "")
+
+
+def _replay_snapshot_event(run: AgentRun, sequence: int) -> BufferedAgentEvent:
+    event_name = "message_done" if run.has_terminal_message else "message_delta"
+    frame = _sse_frame(
+        event_name,
+        {
+            "type": event_name,
+            "message": run.replay_message,
+        },
+    )
+    return BufferedAgentEvent(
+        sequence=sequence,
+        frame=_with_event_id(frame, sequence),
+    )
+
+
+def _replay_buffer_exceeded(run: AgentRun) -> bool:
+    return (
+        len(run.events) > MAX_BUFFERED_AGENT_EVENTS
+        or run.buffered_event_bytes > MAX_BUFFERED_AGENT_EVENT_BYTES
+    )
+
+
+def _compact_replay_buffer(run: AgentRun, sequence: int) -> None:
+    """Replace a long active-run prefix with one absolute message snapshot."""
+
+    if not _replay_buffer_exceeded(run):
+        return
+
+    snapshot = _replay_snapshot_event(run, sequence)
+    run.events = [snapshot]
+    run.buffered_event_bytes = _frame_size(snapshot.frame)
+
+
+def _compact_terminal_replay_buffer(
+    run: AgentRun,
+    terminal_event: BufferedAgentEvent,
+) -> None:
+    """Bound completed-run replay while retaining both message and run status."""
+
+    if not _replay_buffer_exceeded(run):
+        return
+
+    snapshot_sequence = max(terminal_event.sequence - 1, 1)
+    snapshot = _replay_snapshot_event(run, snapshot_sequence)
+    run.events = [snapshot, terminal_event]
+    run.buffered_event_bytes = _frame_size(snapshot.frame) + _frame_size(
+        terminal_event.frame,
+    )
 
 
 def _transaction_state(frame: str) -> str:

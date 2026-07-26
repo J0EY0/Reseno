@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from app.schemas.agent import AgentToolState
 
@@ -32,21 +33,35 @@ FINISH_MISSING_ENUM = [
 ]
 FINISH_MISSING_SET = set(FINISH_MISSING_ENUM)
 
+TargetOpportunityKind = Literal[
+    "employment",
+    "graduate_study",
+    "research",
+    "scholarship",
+    "general",
+]
+
 
 @dataclass(frozen=True)
-class JobReference:
-    """Resolved JD context used by the agent plan."""
+class TargetReference:
+    """Resolved target-opportunity context used by the agent plan."""
 
     mode: str
-    role: str
+    kind: TargetOpportunityKind
+    target: str
     query: str
     url: str | None
     excerpt: str
+    exact_job_description: bool = False
     source_title: str = ""
     source_excerpt: str = ""
     tool_state: AgentToolState = "output-available"
     tool_error: str | None = None
     result_count: int = 0
+
+
+# Keep the former package symbol for callers compiled against the old API.
+JobReference = TargetReference
 
 
 @dataclass(frozen=True)

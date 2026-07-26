@@ -28,14 +28,16 @@ from ..executor import (
 from ..localization import agent_text
 from ..privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_value
 from ..prompts import (
-    EDIT_OPERATION_GUIDES,
-    FINAL_RESPONSE_PROMPTS,
-    STREAMING_FINAL_RESPONSE_PROMPTS,
-    SYSTEM_PROMPTS,
+    CORE_POLICY_PROMPT,
+    EDIT_OPERATION_GUIDE,
+    FINAL_RESPONSE_PROMPT,
+    STREAMING_FINAL_RESPONSE_PROMPT,
+    SYSTEM_PROMPT,
 )
 
 AgentMessageMode = Literal["tools", "final", "streaming_final"]
 CONTEXT_COMPRESSION_RATIO = 0.85
+CONTEXT_HARD_LIMIT_RATIO = 0.99
 DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
 
 
@@ -54,7 +56,7 @@ def build_agent_messages(
     into complete text; extraction never truncates silently.
     """
 
-    system_content = "\n\n".join(_system_parts(request, config, mode))
+    system_content = "\n\n".join(_system_parts(mode))
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -175,9 +177,8 @@ def _current_attachment_payload(
                 binary_parts.append(attachment_content_part(session_id, file))
                 continue
 
-            if (
-                not force_attachment_text
-                and supports_native_attachment(config, attachment.media_type)
+            if not force_attachment_text and supports_native_attachment(
+                config, attachment.media_type
             ):
                 binary_parts.append(attachment_content_part(session_id, file))
                 continue
@@ -219,20 +220,13 @@ def _attachment_session_id(request: AgentChatRequest) -> str:
 
 
 def _system_parts(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
     mode: AgentMessageMode,
 ) -> list[str]:
-    parts = [SYSTEM_PROMPTS[request.locale]]
-
     if mode == "tools":
-        parts.append(EDIT_OPERATION_GUIDES[request.locale])
-    elif mode == "final":
-        parts.append(FINAL_RESPONSE_PROMPTS[request.locale])
-    elif mode == "streaming_final":
-        parts.append(STREAMING_FINAL_RESPONSE_PROMPTS[request.locale])
-
-    return parts
+        return [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
+    if mode == "final":
+        return [CORE_POLICY_PROMPT, FINAL_RESPONSE_PROMPT]
+    return [CORE_POLICY_PROMPT, STREAMING_FINAL_RESPONSE_PROMPT]
 
 
 def _agent_payload(
@@ -309,6 +303,10 @@ def _conversation_payload(
     ]
     exact_messages = _conversation_entries(conversation_messages)
     budget_tokens = _context_input_budget_tokens(request, config)
+    compression_trigger_tokens = _context_compression_trigger_tokens(
+        request,
+        config,
+    )
     state_token_budget = _state_token_budget(budget_tokens)
     latest_draft = _latest_draft_state(
         conversation_messages,
@@ -344,7 +342,11 @@ def _conversation_payload(
         },
     )
 
-    if budget_tokens is None or estimated_tokens <= budget_tokens:
+    if (
+        budget_tokens is None
+        or compression_trigger_tokens is None
+        or estimated_tokens <= compression_trigger_tokens
+    ):
         context["compression"]["estimatedInputTokens"] = estimated_tokens
         return {
             "conversation": exact_messages,
@@ -435,8 +437,47 @@ def _compressed_conversation_payload(
             "conversationContext": context,
         },
     )
+
+    # Exact current input and active draft state are more valuable than old
+    # prose. Drop the oldest low-signal summaries first instead of knowingly
+    # sending an over-budget request and relying on provider-side truncation.
+    while estimated_tokens > budget_tokens and compressed_messages:
+        removable_index = next(
+            (
+                index
+                for index, item in enumerate(compressed_messages)
+                if not item.get("assistantState")
+            ),
+            0,
+        )
+        compressed_messages.pop(removable_index)
+        context = _conversation_context(
+            request,
+            total_messages=len(exact_messages),
+            exact_messages=exact_remaining,
+            compressed_messages=compressed_messages,
+            current_draft=current_draft,
+            latest_draft=latest_draft,
+            last_assistant_state=last_assistant_state,
+            budget_tokens=budget_tokens,
+            estimated_tokens=estimated_tokens,
+            compressed=True,
+        )
+        estimated_tokens = base_tokens + _estimated_json_tokens(
+            {
+                "conversation": exact_remaining,
+                "conversationContext": context,
+            },
+        )
+
     context["compression"]["estimatedInputTokens"] = estimated_tokens
-    context["compression"]["overBudget"] = estimated_tokens > budget_tokens
+    if estimated_tokens > budget_tokens:
+        raise LlmRequestError(
+            "The current resume and conversation state exceed the selected "
+            "model context window. Start a new conversation or choose a model "
+            "with a larger context window.",
+        )
+
     return {
         "conversation": exact_remaining,
         "conversationContext": context,
@@ -460,6 +501,10 @@ def _conversation_context(
         "totalMessages": total_messages,
         "exactMessageCount": len(exact_messages),
         "compressedMessageCount": len(compressed_messages),
+        "omittedMessageCount": max(
+            0,
+            total_messages - len(exact_messages) - len(compressed_messages),
+        ),
         "olderSummary": compressed_messages,
         "currentDraft": current_draft,
         "activeDraft": _active_draft_state(current_draft, latest_draft),
@@ -469,6 +514,19 @@ def _conversation_context(
         "compression": {
             "applied": compressed,
             "triggerRatio": CONTEXT_COMPRESSION_RATIO,
+            "hardLimitRatio": CONTEXT_HARD_LIMIT_RATIO,
+            "triggerInputTokens": (
+                None
+                if budget_tokens is None
+                else max(
+                    1,
+                    int(
+                        budget_tokens
+                        * CONTEXT_COMPRESSION_RATIO
+                        / CONTEXT_HARD_LIMIT_RATIO
+                    ),
+                )
+            ),
             "inputBudgetTokens": budget_tokens,
             "estimatedInputTokens": estimated_tokens,
         },
@@ -620,6 +678,16 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
     tools = response.get("tools")
     sources = response.get("sources")
 
+    source_refs = [
+        {
+            key: source[key]
+            for key in ("id", "title", "url")
+            if isinstance(source.get(key), str) and source[key].strip()
+        }
+        for source in (sources if isinstance(sources, list) else [])[:4]
+        if isinstance(source, dict)
+    ]
+
     return {
         "editCount": len(edits) if isinstance(edits, list) else 0,
         "editTitles": [
@@ -631,6 +699,9 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
         ],
         "toolCount": len(tools) if isinstance(tools, list) else 0,
         "sourceCount": len(sources) if isinstance(sources, list) else 0,
+        # Preserve compact citation identity across compression so later turns
+        # can distinguish grounded evidence from unsupported recollection.
+        "sourceRefs": [source for source in source_refs if source],
     }
 
 
@@ -833,6 +904,17 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _context_input_budget_tokens(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+) -> int | None:
+    window_tokens = _context_window_tokens(request, config)
+    if window_tokens is None:
+        return None
+
+    return max(1, int(window_tokens * CONTEXT_HARD_LIMIT_RATIO))
+
+
+def _context_compression_trigger_tokens(
     request: AgentChatRequest,
     config: AgentLlmConfig,
 ) -> int | None:

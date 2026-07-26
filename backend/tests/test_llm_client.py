@@ -375,7 +375,7 @@ def test_tool_argument_validation_returns_repair_error(monkeypatch) -> None:
     assert "required property" in message.validation_errors[0].message
 
 
-def test_tool_argument_validation_is_all_or_nothing_for_provider_state(
+def test_tool_argument_validation_retries_the_complete_unexecuted_batch(
     monkeypatch,
 ) -> None:
     async def fake_post_json(_: str, **__: Any) -> dict[str, Any]:
@@ -424,11 +424,20 @@ def test_tool_argument_validation_is_all_or_nothing_for_provider_state(
 
     assert message.tool_calls == []
     assert [error.tool_call.id for error in message.validation_errors] == [
+        "fc-valid",
         "fc-invalid",
     ]
+    assert "not executed" in message.validation_errors[0].message
+    assert "required property" in message.validation_errors[1].message
     assert message.provider_state == {
         "steps": [
             {"type": "thought", "text": "Need two lookups."},
+            {
+                "type": "function_call",
+                "id": "fc-valid",
+                "name": "resume_lookup",
+                "arguments": {"query": "skills"},
+            },
             {
                 "type": "function_call",
                 "id": "fc-invalid",
@@ -510,6 +519,144 @@ def test_anthropic_adapter_maps_tool_schema_and_calls(monkeypatch) -> None:
     assert message.tool_calls[0].arguments == {"query": "project"}
 
 
+def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
+    monkeypatch,
+) -> None:
+    captured_payloads: list[dict[str, Any]] = []
+
+    async def fake_post_json(_: str, **kwargs: Any) -> dict[str, Any]:
+        captured_payloads.append(kwargs["payload"])
+        if len(captured_payloads) == 1:
+            return {
+                "id": "msg-thinking-tool",
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I should inspect the resume.",
+                        "signature": "signed-thinking-block",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu-thinking",
+                        "name": "resume_lookup",
+                        "input": {"query": "project"},
+                    },
+                ],
+            }
+        return {
+            "id": "msg-after-tool",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Done"}],
+        }
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
+    config = _config(
+        provider="anthropic",
+        model="claude-thinking",
+        base_url="https://api.anthropic.com/v1",
+        api_family="anthropic_messages",
+        supports_thinking=True,
+        thinking_enabled=True,
+        temperature=None,
+        top_p=None,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "resume_lookup",
+                "description": "Lookup resume",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        },
+    ]
+
+    first = asyncio.run(
+        async_complete_tool_call(
+            config,
+            [{"role": "user", "content": "Inspect my project."}],
+            tools,
+        ),
+    )
+    assert first.reasoning == "I should inspect the resume."
+    assert first.provider_state == {
+        "thinking_blocks": [
+            {
+                "type": "thinking",
+                "thinking": "I should inspect the resume.",
+                "signature": "signed-thinking-block",
+            },
+        ],
+    }
+
+    second = asyncio.run(
+        async_complete_tool_call(
+            config,
+            [
+                {"role": "user", "content": "Inspect my project."},
+                {
+                    "role": "assistant",
+                    "content": first.content or None,
+                    "tool_calls": [
+                        {
+                            "id": first.tool_calls[0].id,
+                            "type": "function",
+                            "function": {
+                                "name": first.tool_calls[0].name,
+                                "arguments": first.tool_calls[0].raw_arguments,
+                            },
+                        },
+                    ],
+                    "reasoning_content": first.reasoning,
+                    "provider_state": first.provider_state,
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": first.tool_calls[0].id,
+                    "content": '{"matches":["Project A"]}',
+                },
+            ],
+            tools,
+        ),
+    )
+
+    assert second.content == "Done"
+    assert captured_payloads[1]["messages"] == [
+        {"role": "user", "content": "Inspect my project."},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "I should inspect the resume.",
+                    "signature": "signed-thinking-block",
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-thinking",
+                    "name": "resume_lookup",
+                    "input": {"query": "project"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu-thinking",
+                    "content": '{"matches":["Project A"]}',
+                },
+            ],
+        },
+    ]
+
+
 def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -525,11 +672,31 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
                 },
             },
             {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+            {
                 "type": "content_block_delta",
+                "index": 0,
                 "delta": {"type": "thinking_delta", "thinking": "think "},
             },
             {
                 "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "signature_delta",
+                    "signature": "stream-signature",
+                },
+            },
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
                 "delta": {"type": "text_delta", "text": "Hello"},
             },
             {
@@ -567,7 +734,53 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
     assert events[-1].message.content == "Hello"
     assert events[-1].message.reasoning == "think"
     assert events[-1].message.response_id == "msg-stream"
+    assert events[-1].message.provider_state == {
+        "thinking_blocks": [
+            {
+                "type": "thinking",
+                "thinking": "think ",
+                "signature": "stream-signature",
+            },
+        ],
+    }
     assert events[-1].message.usage and events[-1].message.usage.total_tokens == 6
+
+    _, replayed = anthropic_messages.anthropic_messages(
+        [
+            {
+                "role": "assistant",
+                "provider_state": events[-1].message.provider_state,
+                "tool_calls": [
+                    {
+                        "id": "toolu-stream",
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "arguments": '{"query":"project"}',
+                        },
+                    },
+                ],
+            },
+        ],
+    )
+    assert replayed == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "think ",
+                    "signature": "stream-signature",
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-stream",
+                    "name": "resume_lookup",
+                    "input": {"query": "project"},
+                },
+            ],
+        },
+    ]
 
 
 def test_gemini_adapter_builds_stateless_interaction(monkeypatch) -> None:

@@ -1,4 +1,81 @@
 {
+  "target.exact_job_description": {
+    "common": [
+      "jd"
+    ],
+    "zh": [
+      "岗位职责",
+      "任职要求",
+      "职位描述"
+    ],
+    "en": [
+      "job description",
+      "job requirements",
+      "responsibilities"
+    ]
+  },
+  "target.kind.scholarship": {
+    "common": [],
+    "zh": [
+      "奖学金",
+      "助学金",
+      "奖助",
+      "资助项目"
+    ],
+    "en": [
+      "scholarship",
+      "fellowship",
+      "grant application"
+    ]
+  },
+  "target.kind.graduate_study": {
+    "common": [],
+    "zh": [
+      "研究生",
+      "硕士",
+      "博士",
+      "升学",
+      "招生"
+    ],
+    "en": [
+      "graduate admission",
+      "graduate program",
+      "master's",
+      "masters",
+      "phd"
+    ]
+  },
+  "target.kind.research": {
+    "common": [],
+    "zh": [
+      "科研",
+      "研究机会",
+      "课题组",
+      "实验室"
+    ],
+    "en": [
+      "research opportunity",
+      "research program",
+      "research assistant",
+      "laboratory",
+      "lab position"
+    ]
+  },
+  "target.kind.employment": {
+    "common": [],
+    "zh": [
+      "岗位",
+      "职位",
+      "招聘",
+      "求职"
+    ],
+    "en": [
+      "job",
+      "role",
+      "position",
+      "hiring"
+    ]
+  },
   "visible_plan.job_context": {
     "common": [
       "jd"

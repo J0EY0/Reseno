@@ -133,8 +133,7 @@ TEXT: dict[str, dict[str, str]] = {
             "The summary should align with the target role and JD keywords."
         ),
         "plan.reason.update_first_item": (
-            "The strongest experience needs clearer responsibility, stack, "
-            "and outcome."
+            "The strongest experience needs clearer responsibility, stack, and outcome."
         ),
         "plan.review_resume": "Review the current resume",
         "plan.summarize": "Summarize the changes",
@@ -220,6 +219,30 @@ TEXT: dict[str, dict[str, str]] = {
             "Review highlighted draft areas before applying or discarding."
         ),
         "suggestion.target_role": "Target role for this pass: {role}.",
+        "target.default.employment": "Target role",
+        "target.default.general": "Target opportunity",
+        "target.default.graduate_study": "Graduate program",
+        "target.default.research": "Research opportunity",
+        "target.default.scholarship": "Scholarship",
+        "target.error.not_found": (
+            "No verified target-opportunity details were found; "
+            "use the official source."
+        ),
+        "target.search_suffix.employment": (
+            "opportunity requirements selection criteria"
+        ),
+        "target.search_suffix.general": ("opportunity requirements selection criteria"),
+        "target.search_suffix.graduate_study": (
+            "admissions requirements selection criteria"
+        ),
+        "target.search_suffix.research": (
+            "research opportunity requirements selection criteria"
+        ),
+        "target.search_suffix.scholarship": (
+            "eligibility requirements selection criteria"
+        ),
+        "target.source.context": "Target opportunity context",
+        "target.source.reference": "Target opportunity reference",
         "summary.replacement": (
             "Targeting {role} roles, with practical experience turning product "
             "requirements into maintainable engineering solutions{keyword_text}. "
@@ -289,12 +312,8 @@ TEXT: dict[str, dict[str, str]] = {
         "error.tool_blocked_clarify_only": (
             "本轮需要先澄清信息，不能调用会修改简历的工具。"
         ),
-        "error.tool_blocked_read_only": (
-            "本轮是只读任务，已禁用草稿编辑工具。"
-        ),
-        "error.tool_blocked_suggest_only": (
-            "仅给建议模式下已禁用草稿编辑工具。"
-        ),
+        "error.tool_blocked_read_only": ("本轮是只读任务，已禁用草稿编辑工具。"),
+        "error.tool_blocked_suggest_only": ("仅给建议模式下已禁用草稿编辑工具。"),
         "error.tool_requires_pending_draft": "这个请求需要先有一个待确认草稿。",
         "error.tool_requires_delete_intent": "删除操作需要用户明确提出删除请求。",
         "error.tool_requires_reorder_intent": (
@@ -408,6 +427,19 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "suggestion.review_draft": "先在草稿预览中检查高亮区域，再决定应用或撤回。",
         "suggestion.target_role": "本轮参考岗位：{role}。",
+        "target.default.employment": "目标岗位",
+        "target.default.general": "目标机会",
+        "target.default.graduate_study": "研究生项目",
+        "target.default.research": "科研机会",
+        "target.default.scholarship": "奖学金",
+        "target.error.not_found": ("未检索到可验证的目标机会详情，请以官方信息为准。"),
+        "target.search_suffix.employment": "机会 要求 选拔标准",
+        "target.search_suffix.general": "机会 要求 选拔标准",
+        "target.search_suffix.graduate_study": "招生要求 申请条件 选拔标准",
+        "target.search_suffix.research": "研究机会 要求 选拔标准",
+        "target.search_suffix.scholarship": "申请条件 资格要求 评选标准",
+        "target.source.context": "目标机会信息",
+        "target.source.reference": "目标机会参考",
         "summary.replacement": (
             "面向{role}岗位，具备与业务场景结合的项目推进、工程实现和跨模块"
             "协作经验{keyword_text}。能够把需求拆解为可落地方案，并通过清晰"

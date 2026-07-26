@@ -2,7 +2,9 @@ import asyncio
 import json
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from cryptography.fernet import Fernet
@@ -45,14 +47,16 @@ from app.services.agent.policy import (
     capability_policy_for_request,
 )
 from app.services.agent.prompts import (
+    CORE_POLICY_PROMPT,
     EDIT_OPERATION_GUIDE,
-    EDIT_OPERATION_GUIDES,
-    FINAL_RESPONSE_PROMPTS,
-    STREAMING_FINAL_RESPONSE_PROMPTS,
-    SYSTEM_PROMPTS,
+    FINAL_RESPONSE_PROMPT,
+    RESUME_EDITING_PLAYBOOK_PROMPT,
+    STREAMING_FINAL_RESPONSE_PROMPT,
+    SYSTEM_PROMPT,
+    TOOL_POLICY_PROMPT,
 )
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.messages import build_agent_messages
+from app.services.agent.runtime.messages import _system_parts, build_agent_messages
 from app.services.agent.section_registry import (
     SECTION_DEFAULT_LAYOUTS,
     SECTION_KIND_ENUM,
@@ -1994,6 +1998,7 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
     messages = session_data["messages"]
     assert session_data["resumeId"] == "resume-test"
     assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert len({message["id"] for message in messages}) == 2
     assert messages[0]["id"] == "agent-user-session-1"
     assert messages[0]["text"] == "帮我检查项目经历"
     assert messages[1]["response"]["role"] == "assistant"
@@ -2074,6 +2079,200 @@ def test_agent_session_put_replaces_persisted_messages(
     assert stored_count == 1
 
 
+def test_agent_session_replace_rejects_stale_revision_without_pruning_files(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-concurrent-replace"
+    winner_attachment = store_agent_attachment(
+        session_id=resume_id,
+        filename="winner.txt",
+        media_type="text/plain",
+        payload=b"winner",
+    ).model_dump(mode="json", by_alias=True)
+    stale_attachment = store_agent_attachment(
+        session_id=resume_id,
+        filename="stale.txt",
+        media_type="text/plain",
+        payload=b"stale",
+    ).model_dump(mode="json", by_alias=True)
+
+    initial_response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "messages": [
+                {
+                    "id": "initial-message",
+                    "role": "user",
+                    "text": "Initial",
+                },
+            ],
+        },
+    )
+    initial_revision = initial_response.json()["data"]["revision"]
+
+    winner_response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "revision": initial_revision,
+            "messages": [
+                {
+                    "id": "winner-message",
+                    "role": "user",
+                    "text": "Winner",
+                    "files": [winner_attachment],
+                },
+            ],
+        },
+    )
+    stale_response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "revision": initial_revision,
+            "messages": [
+                {
+                    "id": "stale-message",
+                    "role": "user",
+                    "text": "Stale",
+                    "files": [stale_attachment],
+                },
+            ],
+        },
+    )
+
+    assert winner_response.status_code == 200
+    assert winner_response.json()["data"]["revision"] != initial_revision
+    assert stale_response.status_code == 409
+    assert stale_response.json()["detail"]["code"] == (
+        "AGENT_SESSION_REVISION_CONFLICT"
+    )
+
+    persisted = client.get(f"/api/agent/resumes/{resume_id}/session")
+    assert [message["id"] for message in persisted.json()["data"]["messages"]] == [
+        "winner-message",
+    ]
+    assert (
+        client.get(
+            f"/api/agent/resumes/{resume_id}/attachments/{winner_attachment['id']}",
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/agent/resumes/{resume_id}/attachments/{stale_attachment['id']}",
+        ).status_code
+        == 200
+    )
+
+
+def test_agent_session_replace_serializes_two_concurrent_clients(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-simultaneous-replace"
+    initial_response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "messages": [
+                {
+                    "id": "simultaneous-initial",
+                    "role": "user",
+                    "text": "Initial",
+                },
+            ],
+        },
+    )
+    initial_revision = initial_response.json()["data"]["revision"]
+    start_together = Barrier(2)
+
+    def replace_from_client(
+        test_client: TestClient,
+        client_number: int,
+    ):
+        start_together.wait(timeout=2)
+        return test_client.put(
+            f"/api/agent/resumes/{resume_id}/session",
+            json={
+                "locale": "en",
+                "revision": initial_revision,
+                "messages": [
+                    {
+                        "id": f"simultaneous-client-{client_number}",
+                        "role": "user",
+                        "text": f"Client {client_number}",
+                    },
+                ],
+            },
+        )
+
+    with TestClient(client.app) as second_client:
+        second_client.headers.update(client.headers)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(replace_from_client, test_client, client_number)
+                for test_client, client_number in ((client, 1), (second_client, 2))
+            ]
+            responses = [future.result() for future in futures]
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    conflict = next(response for response in responses if response.status_code == 409)
+    assert conflict.json()["detail"]["code"] == "AGENT_SESSION_REVISION_CONFLICT"
+
+    persisted = client.get(f"/api/agent/resumes/{resume_id}/session")
+    persisted_ids = [message["id"] for message in persisted.json()["data"]["messages"]]
+    assert persisted_ids in [
+        ["simultaneous-client-1"],
+        ["simultaneous-client-2"],
+    ]
+
+
+def test_provider_failure_keeps_user_message_without_assistant(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def raise_provider_error(*_: object) -> str:
+        raise LlmRequestError("provider unavailable")
+
+    monkeypatch.setattr(
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        raise_provider_error,
+    )
+
+    post_agent_chat_stream(
+        client,
+        {
+            "resumeId": "resume-provider-failure",
+            "prompt": "Keep this prompt.",
+            "message": {
+                "id": "agent-user-provider-failure",
+                "role": "user",
+                "text": "Keep this prompt.",
+            },
+            "messages": [],
+            "conversation": [],
+            "files": [],
+            "locale": "en",
+            "resume": {"basic": {}, "sections": []},
+            "jobBrief": "",
+            "keywordMatch": {"matched": [], "missing": [], "score": 0},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    session = client.get(
+        "/api/agent/resumes/resume-provider-failure/session",
+    ).json()["data"]
+    assert [(message["id"], message["role"]) for message in session["messages"]] == [
+        ("agent-user-provider-failure", "user"),
+    ]
+
+
 def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     config = AgentLlmConfig(
         client_id="llm-test",
@@ -2086,7 +2285,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         top_p=0.9,
         max_tokens=None,
         timeout_seconds=60,
-        context_window_tokens=1600,
+        context_window_tokens=5000,
     )
     conversation = [
         {
@@ -2103,6 +2302,13 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                 "role": "assistant",
                 "text": "已生成项目经历草稿。",
                 "actions": ["execute"],
+                "sources": [
+                    {
+                        "id": "source-project-brief",
+                        "title": "Project brief",
+                        "sourceType": "attachment",
+                    },
+                ],
                 "edits": [
                     {
                         "id": "edit-project-1",
@@ -2198,8 +2404,13 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     payload = json.loads(messages[1]["content"])
     context = payload["conversationContext"]
 
+    assert payload["responseLanguage"] == "Chinese"
+    assert "responseLanguage" in messages[0]["content"]
     assert context["compression"]["applied"] is True
-    assert context["compression"]["inputBudgetTokens"] < context["totalMessages"] * 200
+    assert (
+        context["compression"]["estimatedInputTokens"]
+        <= context["compression"]["inputBudgetTokens"]
+    )
     assert context["compressedMessageCount"] > 0
     assert context["exactMessageCount"] == len(payload["conversation"])
     assert context["totalMessages"] == len(conversation)
@@ -2213,10 +2424,100 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     assert context["activeDraft"]["id"] == "draft-current"
     assert payload["resume"]["sections"][0]["id"] == "project"
     assert context["appliedActions"] == ["execute"]
+    assistant_states = [
+        item.get("assistantState", {}) for item in context["olderSummary"]
+    ]
+    assistant_states.append(context["lastAssistantState"])
+    assert any(item.get("editCount") == 1 for item in assistant_states)
     assert any(
-        item.get("assistantState", {}).get("editCount") == 1
-        for item in context["olderSummary"]
+        item.get("sourceRefs")
+        == [{"id": "source-project-brief", "title": "Project brief"}]
+        for item in assistant_states
     )
+
+
+def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
+    config = AgentLlmConfig(
+        client_id="llm-test",
+        name="Test Model",
+        provider="openai",
+        model="gpt-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=None,
+        timeout_seconds=60,
+        context_window_tokens=5000,
+    )
+    conversation = [
+        {
+            "id": f"agent-history-{index}",
+            "role": "assistant" if index % 2 else "user",
+            "text": f"历史消息 {index} " + ("用于验证上下文压缩。" * 20),
+        }
+        for index in range(40)
+    ]
+    request = AgentChatRequest(
+        prompt="只保留当前这条请求",
+        messages=conversation,
+        conversation=conversation,
+        files=[],
+        locale="zh",
+        resume={"basic": {"name": "测试用户"}, "sections": []},
+        jobBrief="",
+        keywordMatch={"matched": [], "missing": [], "score": 0},
+        appliedActions=[],
+        modelConfig=None,
+        settings={},
+    )
+
+    messages = build_agent_messages(request, config, mode="tools")
+    payload = json.loads(messages[1]["content"])
+    context = payload["conversationContext"]
+
+    assert context["compression"]["applied"] is True
+    assert (
+        context["compression"]["estimatedInputTokens"]
+        <= context["compression"]["inputBudgetTokens"]
+    )
+    assert context["omittedMessageCount"] > 0
+    assert payload["conversation"][-1]["content"] == "只保留当前这条请求"
+
+
+def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
+    config = AgentLlmConfig(
+        client_id="llm-test",
+        name="Tiny Model",
+        provider="openai",
+        model="tiny-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=None,
+        timeout_seconds=60,
+        context_window_tokens=128,
+    )
+    request = AgentChatRequest(
+        prompt="继续",
+        messages=[],
+        conversation=[],
+        files=[],
+        locale="zh",
+        resume={
+            "basic": {"name": "测试用户", "summary": "很长的简介" * 300},
+            "sections": [],
+        },
+        jobBrief="",
+        keywordMatch={"matched": [], "missing": [], "score": 0},
+        appliedActions=[],
+        modelConfig=None,
+        settings={},
+    )
+
+    with pytest.raises(LlmRequestError, match="exceed the selected model context"):
+        build_agent_messages(request, config, mode="tools")
 
 
 def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
@@ -2284,13 +2585,15 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
     assert "13800138000" not in content
     assert "xiaoming@example.com" not in content
     assert "https://avatar.example/wxm.png" not in content
-    assert payload["resume"]["basic"]["name"] == ""
-    assert payload["resume"]["basic"]["phone"] == ""
-    assert payload["resume"]["basic"]["email"] == ""
-    assert payload["resume"]["basic"]["avatar"] == ""
+    assert payload["resume"]["basic"]["name"] == "[hidden]"
+    assert payload["resume"]["basic"]["phone"] == "[hidden]"
+    assert payload["resume"]["basic"]["email"] == "[hidden]"
+    assert payload["resume"]["basic"]["location"] == "[hidden]"
+    assert payload["resume"]["basic"]["avatar"] == "[hidden]"
     assert payload["resume"]["basicFieldStatus"]["name"] == "present"
     assert payload["resume"]["basicFieldStatus"]["phone"] == "present"
     assert payload["resume"]["basicFieldStatus"]["email"] == "present"
+    assert payload["resume"]["basicFieldStatus"]["location"] == "present"
     assert "[redacted_email]" in payload["resume"]["basic"]["summary"]
     assert "[redacted_phone]" in payload["resume"]["basic"]["summary"]
     assert "[redacted_email]" in payload["files"][0]["excerpt"]
@@ -2463,6 +2766,45 @@ def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
     assert edits == []
     assert len(rejected) == 1
     assert "hidden personal fields" in rejected[0]["reason"]
+
+
+def test_agent_writes_explicit_location_without_observing_old_value() -> None:
+    request = AgentChatRequest(
+        prompt="请修改这份简历，只把基本信息中的地点改为远程，并生成待确认草稿。",
+        locale="zh",
+        resume={
+            "basic": {"location": "杭州"},
+            "sections": [],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = runner._run_local_tool(
+        tool_call(
+            "call-location",
+            "edit_execute",
+            {
+                "edits": [
+                    {
+                        "title": "更新地点",
+                        "target": "basic.location",
+                        "reason": "用户明确要求使用远程。",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.location",
+                            "value": "远程",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert tool.state == "output-available"
+    assert runner.draft_resume["basic"]["location"] == "远程"
+    assert result["output"]["observations"][0]["before"] == "[hidden]"
+    assert result["output"]["observations"][0]["after"] == "远程"
+    assert "杭州" not in json.dumps(result["output"], ensure_ascii=False)
 
 
 def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
@@ -3175,6 +3517,46 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
             ],
             [
                 tool_call(
+                    "call-execute-repair",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "新增项目经历",
+                                "target": "sections",
+                                "reason": "移除重复元数据后重新提交完整项目条目。",
+                                "operation": {
+                                    "type": "insert_section",
+                                    "section": {
+                                        "section_type": "project",
+                                        "layout": "timeline",
+                                        "customTitle": "",
+                                        "items": [
+                                            {
+                                                "title": "电商后台管理系统",
+                                                "subtitle": "后端开发",
+                                                "meta": (
+                                                    "Spring Boot, MySQL, Redis, Docker"
+                                                ),
+                                                "period": "2023.03 - 2023.06",
+                                                "description": "",
+                                                "highlights": [
+                                                    (
+                                                        "设计并实现订单模块，通过 SQL "
+                                                        "优化将查询时间从 2s 降至 0.3s"
+                                                    ),
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ],
+            [
+                tool_call(
                     "call-finish",
                     "finish",
                     {
@@ -3225,13 +3607,8 @@ def test_agent_section_registry_drives_schema_and_prompt() -> None:
         f"Allowed section_type values are: {', '.join(SECTION_KIND_ENUM)}."
         in EDIT_OPERATION_GUIDE
     )
-    assert (
-        f"允许的 section_type 值是：{', '.join(SECTION_KIND_ENUM)}。"
-        in EDIT_OPERATION_GUIDES["zh"]
-    )
     for kind in SECTION_KIND_ENUM:
         assert f"- {kind}:" in EDIT_OPERATION_GUIDE
-        assert f"- {kind}:" in EDIT_OPERATION_GUIDES["zh"]
 
 
 def test_agent_fine_grained_tools_are_registered() -> None:
@@ -3274,24 +3651,57 @@ def _assert_language_pattern_schema(
 def test_agent_supported_locales_cover_resources() -> None:
     supported = set(SUPPORTED_AGENT_LOCALES)
     prompt_dir = Path(__file__).parents[1] / "app/services/agent/prompts"
-    system_core = (prompt_dir / "system.md").read_text(encoding="utf-8").strip()
+    expected_prompt_files = {
+        "core_policy.md",
+        "edit_operation_guide.md",
+        "final_response.md",
+        "resume_editing_playbook.md",
+        "streaming_final_response.md",
+        "system.md",
+    }
 
     assert DEFAULT_AGENT_LOCALE in supported
     assert set(supported_agent_text_locales()) == supported
     assert set(AGENT_LOCALIZED_TEXT) == supported
-    assert set(SYSTEM_PROMPTS) == supported
-    assert set(FINAL_RESPONSE_PROMPTS) == supported
-    assert set(STREAMING_FINAL_RESPONSE_PROMPTS) == supported
-    assert set(EDIT_OPERATION_GUIDES) == supported
-    assert EDIT_OPERATION_GUIDE == EDIT_OPERATION_GUIDES[DEFAULT_AGENT_LOCALE]
-    assert not (prompt_dir / "system.en.md").exists()
-    assert not (prompt_dir / "system.zh.md").exists()
+    assert {path.name for path in prompt_dir.glob("*.md")} == expected_prompt_files
+    for prompt_path in prompt_dir.glob("*.md"):
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        assert re.search(r"[\u4e00-\u9fff]", prompt_text) is None
+    assert CORE_POLICY_PROMPT == (
+        prompt_dir / "core_policy.md"
+    ).read_text(encoding="utf-8").strip()
+    assert TOOL_POLICY_PROMPT == (
+        prompt_dir / "system.md"
+    ).read_text(encoding="utf-8").strip()
+    assert RESUME_EDITING_PLAYBOOK_PROMPT == (
+        prompt_dir / "resume_editing_playbook.md"
+    ).read_text(encoding="utf-8").strip()
+    assert SYSTEM_PROMPT == "\n\n".join(
+        (
+            CORE_POLICY_PROMPT,
+            TOOL_POLICY_PROMPT,
+            RESUME_EDITING_PLAYBOOK_PROMPT,
+        ),
+    )
+    assert FINAL_RESPONSE_PROMPT == (
+        prompt_dir / "final_response.md"
+    ).read_text(encoding="utf-8").strip()
+    assert STREAMING_FINAL_RESPONSE_PROMPT == (
+        prompt_dir / "streaming_final_response.md"
+    ).read_text(encoding="utf-8").strip()
+    assert "responseLanguage" in SYSTEM_PROMPT
 
-    for locale in SUPPORTED_AGENT_LOCALES:
-        locale_addendum = (
-            prompt_dir / f"system.locale.{locale}.md"
-        ).read_text(encoding="utf-8").strip()
-        assert SYSTEM_PROMPTS[locale] == f"{system_core}\n\n{locale_addendum}"
+
+def test_agent_system_prompts_are_scoped_to_each_runtime_phase() -> None:
+    assert _system_parts("tools") == [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
+    assert _system_parts("final") == [
+        CORE_POLICY_PROMPT,
+        FINAL_RESPONSE_PROMPT,
+    ]
+    assert _system_parts("streaming_final") == [
+        CORE_POLICY_PROMPT,
+        STREAMING_FINAL_RESPONSE_PROMPT,
+    ]
 
 
 def test_agent_intent_patterns_are_externalized() -> None:
@@ -3423,6 +3833,40 @@ def test_agent_web_search_schema_supports_multi_queries() -> None:
     assert parameters["properties"]["maxResults"]["maximum"] == 10
 
 
+def test_agent_target_context_search_fallback_uses_current_prompt() -> None:
+    request = AgentChatRequest(
+        prompt="查找示例大学计算机硕士项目的课程和研究方向",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    queries = runner.web_search_queries(
+        tool_call(
+            "call-web-search",
+            "web_search",
+            {"purpose": "target_context"},
+        ),
+        "",
+    )
+
+    assert queries == [request.prompt]
+    assert all(" JD " not in query for query in queries)
+
+
+def test_agent_web_fetch_schema_supports_generic_target_context() -> None:
+    schema = next(
+        schema
+        for schema in tool_registry.AGENT_TOOL_SCHEMAS
+        if schema["function"]["name"] == "web_fetch"
+    )
+
+    purposes = schema["function"]["parameters"]["properties"]["purpose"]["enum"]
+
+    assert "jd" in purposes
+    assert "target_context" in purposes
+
+
 def test_agent_web_fetch_requires_explicit_purpose() -> None:
     request = AgentChatRequest(
         prompt="参考这个链接 https://example.test/project",
@@ -3446,6 +3890,43 @@ def test_agent_web_fetch_requires_explicit_purpose() -> None:
     assert tool.state == "output-error"
     assert result["output"]["blocked"] is True
     assert "链接用途" in tool.error_text
+
+
+def test_agent_web_fetch_target_context_is_not_candidate_evidence(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.agent._fetch_web_reference",
+        lambda *_: WebReference(
+            title="Example Graduate Program",
+            excerpt="Official admissions requirements and research areas.",
+        ),
+    )
+    request = AgentChatRequest(
+        prompt="请参考 https://example.test/graduate-program 的申请要求",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool, result = asyncio.run(
+        runner.run(
+            tool_call(
+                "call-web-fetch",
+                "web_fetch",
+                {
+                    "url": "https://example.test/graduate-program",
+                    "purpose": "target_context",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.state == "output-available"
+    assert result["output"]["purpose"] == "target_context"
+    assert result["output"]["canSupportResumeFacts"] is False
+    assert result["output"]["personalExperienceEvidence"] is False
 
 
 def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
@@ -3914,6 +4395,55 @@ def test_agent_role_research_policy_allows_web_search_without_edits() -> None:
     assert "web_fetch" not in schema_names
     assert "edit_plan" not in schema_names
     assert "edit_execute" not in schema_names
+
+
+def test_agent_admission_research_policy_allows_web_search_without_edits() -> None:
+    request = AgentChatRequest(
+        prompt="帮我了解示例大学计算机硕士项目的申请要求和研究方向",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.RESEARCH_ROLE
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "web_search" in schema_names
+    assert "edit_plan" not in schema_names
+    assert "edit_execute" not in schema_names
+
+
+def test_agent_admission_tailoring_can_draft_and_research_target() -> None:
+    request = AgentChatRequest(
+        prompt="根据示例大学计算机硕士项目的申请要求优化这份简历",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
+    schema_names = {schema["function"]["name"] for schema in schemas}
+
+    assert policy.intent == AgentTaskIntent.EDIT_RESUME
+    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
+    assert "web_search" in schema_names
+    assert "edit_plan" in schema_names
+    assert "edit_execute" in schema_names
+
+
+def test_agent_scholarship_application_is_not_misclassified_as_jd() -> None:
+    request = AgentChatRequest(
+        prompt="我想申请奖学金，应该怎么准备？",
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    policy = capability_policy_for_request(request)
+
+    assert policy.intent != AgentTaskIntent.MATCH_JD
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
 
 
 def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
@@ -5221,7 +5751,6 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "event: timeline" in body
     assert "event: text_delta" not in body
     assert "我先分析目标岗位和当前简历" not in body
-    assert "event: tools" in body
     assert "event: tool_start" in body
     assert "event: tool_delta" in body
     assert "event: tool_done" in body
@@ -5232,7 +5761,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert "流式真实模型响应" in body
     assert body.index("web_search") < body.index("resume_analysis")
     assert body.index("resume_analysis") < body.index("edit_plan")
-    assert body.index("event: tools") < body.index("流式真实模型响应")
+    assert body.index("event: tool_start") < body.index("流式真实模型响应")
     assert body.index("流式真实模型响应") < body.index('"source-jd-search"')
     assert '"tools":' in body
     assert '"source-jd-search"' in body
@@ -5634,11 +6163,12 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     assert response.status_code == 200
     assert "我先分析目标岗位和当前简历" not in body
     assert "event: plan" not in body
-    assert "event: tools" in body
+    assert "event: tool_start" in body
+    assert "event: tool_done" in body
     assert "event: edits" in body
     assert "event: text_delta" not in body
     assert "模型完成分析" in body
-    assert body.index("event: tools") < body.index("模型完成分析")
+    assert body.index("event: tool_start") < body.index("模型完成分析")
     assert body.index("event: edits") < body.index("模型完成分析")
     assert body.rindex('"edits":[{') > body.index("模型完成分析")
     assert '"edits":[{' in body

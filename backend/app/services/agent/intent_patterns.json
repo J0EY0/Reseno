@@ -73,7 +73,6 @@
       "职位",
       "匹配",
       "投递",
-      "申请",
       "关键词",
       "缺失关键词"
     ],
@@ -95,6 +94,18 @@
       "what is .* (?:role|position|engineer|developer)",
       "learn about .* (?:role|position|engineer|developer)",
       "(?:role|position|engineer|developer).*(?:responsibilities|requirements|skills|market|trends)"
+    ]
+  },
+  "target_research": {
+    "common": [],
+    "zh": [
+      "(?:了解|查找|搜索|寻找|推荐|比较).*(?:硕士|博士|研究生|培养项目|专业|院校|学校|导师|实验室|研究组|奖学金|招生)",
+      "(?:硕士|博士|研究生|培养项目|专业|院校|学校|导师|实验室|研究组|奖学金|招生).*(?:要求|条件|资格|方向|课程|研究|截止|材料|资助|匹配)",
+      "(?:申请要求|招生要求|奖学金条件|培养项目要求|申请项目要求|导师方向)"
+    ],
+    "en": [
+      "(?:research|find|search|learn about|compare).*(?:master'?s|phd|graduate program|degree program|university|faculty|supervisor|lab|research group|scholarship|admissions)",
+      "(?:master'?s|phd|graduate program|degree program|university|faculty|supervisor|lab|research group|scholarship|admissions).*(?:requirements|eligibility|criteria|curriculum|research|deadline|materials|funding|fit)"
     ]
   },
   "jd_gap_diagnosis": {

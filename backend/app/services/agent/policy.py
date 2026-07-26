@@ -148,7 +148,7 @@ def infer_agent_task_intent(request: AgentChatRequest) -> AgentTaskIntent:
     ):
         return AgentTaskIntent.DIAGNOSE_JD_GAP
 
-    if _matches_intent(prompt, "role_research") and not _matches_intent(
+    if _requests_target_research(prompt) and not _matches_intent(
         prompt,
         "edit_resume",
     ):
@@ -207,7 +207,9 @@ def _read_tools_for_request(
     if intent in {AgentTaskIntent.MATCH_JD, AgentTaskIntent.DIAGNOSE_JD_GAP}:
         tools.update(WEB_FETCH_TOOL_NAMES)
         tools.update(WEB_SEARCH_TOOL_NAMES)
-    elif intent == AgentTaskIntent.RESEARCH_ROLE:
+    elif intent == AgentTaskIntent.RESEARCH_ROLE or _requests_target_research(
+        _current_prompt(request),
+    ):
         tools.update(WEB_SEARCH_TOOL_NAMES)
         if _prompt_has_url(request):
             tools.update(WEB_FETCH_TOOL_NAMES)
@@ -241,7 +243,16 @@ def _has_target_context(request: AgentChatRequest, prompt: str) -> bool:
         request.job_brief.strip()
         or _prompt_has_url(request)
         or _matches_intent(prompt, "job_request")
-        or _matches_intent(prompt, "role_research"),
+        or _requests_target_research(prompt),
+    )
+
+
+def _requests_target_research(prompt: str) -> bool:
+    """Return whether the turn asks to research a role or other opportunity."""
+
+    return _matches_intent(prompt, "role_research") or _matches_intent(
+        prompt,
+        "target_research",
     )
 
 

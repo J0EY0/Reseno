@@ -8,6 +8,7 @@ from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
     LlmStreamEvent,
+    LlmToolCall,
     LlmToolValidationError,
 )
 from .validation import validate_tool_calls
@@ -64,9 +65,14 @@ async def async_complete_tool_call(
     valid_tool_calls, validation_errors = validate_tool_calls(message.tool_calls, tools)
     if validation_errors:
         # Tool execution is all-or-nothing for one assistant turn. Executing only
-        # the valid subset would make later edit state depend on a model output
-        # that the model itself must still repair.
+        # the valid subset risks duplicate side effects when the model retries.
+        # Return one observation for every proposed call so the retry history
+        # explicitly records that the valid calls were not executed either.
         valid_tool_calls = []
+        validation_errors = _complete_batch_retry_errors(
+            message.tool_calls,
+            validation_errors,
+        )
 
     return LlmAssistantMessage(
         content=message.content,
@@ -81,6 +87,27 @@ async def async_complete_tool_call(
             validation_errors,
         ),
     )
+
+
+def _complete_batch_retry_errors(
+    tool_calls: list[LlmToolCall],
+    validation_errors: list[LlmToolValidationError],
+) -> list[LlmToolValidationError]:
+    """Describe an all-or-nothing retry without losing valid tool proposals."""
+
+    errors_by_call_id = {error.tool_call.id: error for error in validation_errors}
+    return [
+        errors_by_call_id.get(tool_call.id)
+        or LlmToolValidationError(
+            tool_call=tool_call,
+            message=(
+                "This tool call was not executed because another call in the "
+                "same batch failed validation. Resubmit the complete batch "
+                "after correcting every invalid call."
+            ),
+        )
+        for tool_call in tool_calls
+    ]
 
 
 async def async_stream_chat(
@@ -110,8 +137,8 @@ def _provider_state_for_validation_retry(
 
     The agent never executes a partial set of tool calls: if any call is invalid,
     every call must be retried. Gemini provider state can contain several
-    function_call steps, so drop the valid ones to avoid sending a later request
-    with function calls that have no matching tool result.
+    function_call steps, so retain the complete rejected batch for the model's
+    repair turn; every retained call has a matching "not executed" observation.
     """
 
     if not provider_state or not validation_errors:

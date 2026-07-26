@@ -1,4 +1,5 @@
 import type { Locale } from "@/i18n";
+import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
   AgentSettings,
   DeletedResumeTemplateDefinition,
@@ -7,7 +8,6 @@ import type {
   ModelConfig,
   ResumeData,
   ResumeDraftDiff,
-  ResumeEditOperation,
   ResumeTemplateDefinition,
   ResumeWorkspaceItem,
   WorkspacePayload,
@@ -326,11 +326,13 @@ export interface AgentStoredMessage extends AgentConversationMessage {
 
 export interface AgentSessionResponse {
   resumeId: string;
+  revision: string;
   messages: AgentStoredMessage[];
 }
 
 export interface AgentSessionReplaceRequest {
   locale: Locale;
+  revision: string;
   messages: AgentConversationMessage[];
 }
 
@@ -374,6 +376,10 @@ export type AgentChatStreamEvent =
   | {
       type: "tools";
       message: Partial<Pick<AgentChatMessage, "text" | "tools" | "timeline">>;
+    }
+  | {
+      type: "tool_start" | "tool_delta" | "tool_done";
+      tool: AgentToolInvocation;
     }
   | {
       type: "sources";

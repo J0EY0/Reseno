@@ -221,6 +221,7 @@ class AgentSessionResponse(BaseModel):
     """Response body for a persisted Agent conversation."""
 
     resume_id: str = Field(alias="resumeId")
+    revision: str
     messages: list[AgentStoredMessage] = Field(default_factory=list)
 
 
@@ -228,4 +229,5 @@ class AgentSessionReplaceRequest(BaseModel):
     """Request body for replacing one resume's persisted Agent conversation."""
 
     locale: AgentLocale = "zh"
+    revision: str | None = None
     messages: list[AgentConversationItem] = Field(default_factory=list)

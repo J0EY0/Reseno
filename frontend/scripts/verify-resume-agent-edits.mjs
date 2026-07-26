@@ -56,21 +56,24 @@ function createResume() {
   };
 }
 
-const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
-  await loadResumeAgentEdits();
+const {
+  applyAgentEditsToDraft,
+  applyAgentEditsWithMerge,
+  createAgentDraftBaseSnapshot,
+} = await loadResumeAgentEdits();
 
 {
   const baseResume = createResume();
   const result = applyAgentEditsToDraft(baseResume, [
     {
-      id: "rename",
-      title: "Rename candidate",
-      target: "basic.name",
-      reason: "Use the requested name.",
+      id: "update-headline",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Clarify the candidate's role.",
       operation: {
         type: "replace_field",
-        path: "basic.name",
-        value: "Updated name",
+        path: "basic.headline",
+        value: "Staff Engineer",
       },
     },
     {
@@ -110,14 +113,14 @@ const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
   const baseResume = createResume();
   const result = applyAgentEditsToDraft(baseResume, [
     {
-      id: "rename",
-      title: "Rename candidate",
-      target: "basic.name",
-      reason: "Use the requested name.",
+      id: "update-headline",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Clarify the candidate's role.",
       operation: {
         type: "replace_field",
-        path: "basic.name",
-        value: "Updated name",
+        path: "basic.headline",
+        value: "Staff Engineer",
       },
     },
     {
@@ -131,19 +134,32 @@ const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
         value: "Updated summary",
       },
     },
+    {
+      id: "update-location",
+      title: "Update location",
+      target: "basic.location",
+      reason: "Use the location explicitly supplied by the user.",
+      operation: {
+        type: "replace_field",
+        path: "basic.location",
+        value: "Remote",
+      },
+    },
   ]);
 
   assert(result.errors.length === 0, "A valid batch must not return errors.");
-  assert(result.appliedCount === 2, "A valid batch must commit every edit.");
-  assert(result.diffs.length === 2, "A valid batch must expose every diff.");
+  assert(result.appliedCount === 3, "A valid batch must commit every edit.");
+  assert(result.diffs.length === 3, "A valid batch must expose every diff.");
   assert(
-    result.resume.basic.name === "Updated name" &&
-      result.resume.basic.summary === "Updated summary",
+    result.resume.basic.headline === "Staff Engineer" &&
+      result.resume.basic.summary === "Updated summary" &&
+      result.resume.basic.location === "Remote",
     "A valid batch must return the fully updated resume.",
   );
   assert(
-    baseResume.basic.name === "Original name" &&
-      baseResume.basic.summary === "Original summary",
+    baseResume.basic.headline === "Engineer" &&
+      baseResume.basic.summary === "Original summary" &&
+      baseResume.basic.location === "",
     "Applying a batch must never mutate the source resume.",
   );
 }
@@ -152,14 +168,14 @@ const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
   const baseResume = createResume();
   const result = applyAgentEditsToDraft(baseResume, [
     {
-      id: "rename",
-      title: "Rename candidate",
-      target: "basic.name",
-      reason: "Use the requested name.",
+      id: "update-headline",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Clarify the candidate's role.",
       operation: {
         type: "replace_field",
-        path: "basic.name",
-        value: "Updated name",
+        path: "basic.headline",
+        value: "Staff Engineer",
       },
     },
     {
@@ -174,7 +190,7 @@ const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
   ]);
 
   assert(
-    result.appliedCount === 0 && result.resume.basic.name === "Original name",
+    result.appliedCount === 0 && result.resume.basic.headline === "Engineer",
     "An unknown operation must reject and roll back the entire batch.",
   );
   assert(
@@ -338,6 +354,97 @@ const { applyAgentEditsToDraft, applyAgentEditsWithMerge } =
     result.errors.length === 1 &&
       result.errors[0].reason === "invalid_operation",
     "A reorder must include every current section exactly once.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  const draftBase = createAgentDraftBaseSnapshot(baseResume);
+  const edits = [
+    {
+      id: "update-summary",
+      title: "Update summary",
+      target: "basic.summary",
+      reason: "Improve the opening statement.",
+      operation: {
+        type: "replace_field",
+        path: "basic.summary",
+        value: "Agent-edited summary",
+      },
+    },
+  ];
+  const generatedDraft = applyAgentEditsWithMerge(
+    draftBase,
+    baseResume,
+    edits,
+  );
+  const latestResume = structuredClone(baseResume);
+  latestResume.basic.name = "User edit after draft generation";
+  const appliedDraft = applyAgentEditsWithMerge(
+    draftBase,
+    latestResume,
+    edits,
+  );
+
+  assert(
+    generatedDraft.resume.basic.summary === "Agent-edited summary",
+    "Draft generation must still preview the Agent batch.",
+  );
+  assert(
+    appliedDraft.errors.length === 0 &&
+      appliedDraft.resume.basic.name ===
+        "User edit after draft generation" &&
+      appliedDraft.resume.basic.summary === "Agent-edited summary",
+    "Applying a stored draft must rebase onto manual edits made after draft generation.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  const draftBase = createAgentDraftBaseSnapshot(baseResume);
+  const edits = [
+    {
+      id: "update-headline",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Clarify the candidate's role.",
+      operation: {
+        type: "replace_field",
+        path: "basic.headline",
+        value: "Agent-edited headline",
+      },
+    },
+    {
+      id: "update-summary",
+      title: "Update summary",
+      target: "basic.summary",
+      reason: "Improve the opening statement.",
+      operation: {
+        type: "replace_field",
+        path: "basic.summary",
+        value: "Agent-edited summary",
+      },
+    },
+  ];
+  const latestResume = structuredClone(baseResume);
+  latestResume.basic.summary = "User edit after draft generation";
+  const appliedDraft = applyAgentEditsWithMerge(
+    draftBase,
+    latestResume,
+    edits,
+  );
+
+  assert(
+    appliedDraft.errors.length === 1 &&
+      appliedDraft.errors[0].reason === "conflict",
+    "A competing manual edit made after draft generation must reject the draft.",
+  );
+  assert(
+    appliedDraft.appliedCount === 0 &&
+      appliedDraft.resume.basic.headline === "Engineer" &&
+      appliedDraft.resume.basic.summary ===
+        "User edit after draft generation",
+    "A late conflict must leave the complete current resume untouched.",
   );
 }
 

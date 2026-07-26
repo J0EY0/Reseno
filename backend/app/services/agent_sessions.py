@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -17,8 +18,11 @@ from app.schemas.agent import (
     AgentStoredMessage,
 )
 from app.services.agent.attachments import (
+    AgentAttachmentError,
+    AgentAttachmentSentReceipt,
     mark_agent_attachments_sent,
     prune_sent_agent_attachments,
+    rollback_agent_attachments_sent,
 )
 
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -33,6 +37,26 @@ class UserAgentMessage:
     text: str
     files: list[dict[str, Any]]
     created_at: str
+
+
+class AgentSessionRevisionConflictError(RuntimeError):
+    """Raised when a client replaces history from a stale session snapshot."""
+
+    def __init__(self, current_revision: str) -> None:
+        super().__init__("The Agent session was modified by another client.")
+        self.current_revision = current_revision
+
+
+class AgentSessionTurnConflictError(RuntimeError):
+    """Raised when a completed run no longer owns the persisted user turn."""
+
+    def __init__(self, expected_revision: str, current_revision: str) -> None:
+        super().__init__(
+            "The Agent session changed while the run was active; "
+            "the stale assistant response was discarded.",
+        )
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
 
 
 def is_valid_resume_id(resume_id: str) -> bool:
@@ -66,31 +90,40 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
         for row in rows
     ]
 
-    return AgentSessionResponse(resumeId=resume_id, messages=messages)
+    return AgentSessionResponse(
+        resumeId=resume_id,
+        revision=_session_revision(conn, resume_id),
+        messages=messages,
+    )
 
 
-def append_agent_exchange(
+def persist_agent_user_message(
     conn: Connection,
     request: AgentChatRequest,
-    assistant_message: AgentChatMessage,
-) -> None:
-    """Persist the user message and generated assistant response for a resume."""
+) -> str | None:
+    """Persist the user turn and bind its authoritative revision to the run."""
+
+    persisted_revision = _request_session_revision(request)
+    if persisted_revision is not None:
+        return persisted_revision
 
     if not request.resume_id:
-        return
+        return None
 
     resume_id = request.resume_id.strip()
     if not is_valid_resume_id(resume_id):
-        return
+        return None
 
     now = _now_iso()
     user_message = _current_user_message(request, now)
+    if user_message is None:
+        return None
 
-    with _transaction(conn):
-        _upsert_session(conn, request, resume_id, user_message, now)
-        next_sequence = _next_message_sequence(conn, resume_id)
-
-        if user_message:
+    receipt: AgentAttachmentSentReceipt | None = None
+    authoritative_revision: str | None = None
+    try:
+        with _transaction(conn):
+            _upsert_session(conn, request, resume_id, user_message, now)
             _insert_message(
                 conn,
                 session_id=resume_id,
@@ -99,11 +132,56 @@ def append_agent_exchange(
                 text=user_message.text,
                 files=user_message.files,
                 response=None,
-                sequence=next_sequence,
+                sequence=_next_message_sequence(conn, resume_id),
                 created_at=user_message.created_at,
             )
-            next_sequence += 1
+            # SQLite and attachment metadata live in separate stores. Keeping
+            # the receipt until commit lets ordinary write/commit failures
+            # restore sentAt without introducing a persistent job/outbox.
+            receipt = mark_agent_attachments_sent(resume_id, user_message.files)
+            authoritative_revision = _session_revision(conn, resume_id)
+    except BaseException:
+        _compensate_attachment_state(receipt)
+        raise
 
+    if authoritative_revision is not None:
+        object.__setattr__(
+            request,
+            "_persisted_session_revision",
+            authoritative_revision,
+        )
+    return authoritative_revision
+
+
+def append_agent_exchange(
+    conn: Connection,
+    request: AgentChatRequest,
+    assistant_message: AgentChatMessage,
+) -> None:
+    """Append a successful assistant response without duplicating the user turn."""
+
+    if not request.resume_id:
+        return
+
+    resume_id = request.resume_id.strip()
+    if not is_valid_resume_id(resume_id):
+        return
+
+    expected_revision = persist_agent_user_message(conn, request)
+    if expected_revision is None:
+        return
+
+    with _transaction(conn):
+        current_revision = _session_revision(conn, resume_id)
+        if current_revision != expected_revision:
+            if _message_exists(conn, resume_id, assistant_message.id):
+                return
+            raise AgentSessionTurnConflictError(
+                expected_revision,
+                current_revision,
+            )
+
+        now = _now_iso()
         _insert_message(
             conn,
             session_id=resume_id,
@@ -112,14 +190,9 @@ def append_agent_exchange(
             text=assistant_message.text,
             files=[],
             response=assistant_message,
-            sequence=next_sequence,
+            sequence=_next_message_sequence(conn, resume_id),
             created_at=now,
         )
-        if user_message:
-            # Protect originals before committing their message references.
-            # A metadata write failure therefore rolls back the SQLite turn
-            # instead of leaving history that cleanup may later invalidate.
-            mark_agent_attachments_sent(resume_id, user_message.files)
 
 
 def replace_agent_session_messages(
@@ -128,12 +201,17 @@ def replace_agent_session_messages(
     *,
     locale: str,
     messages: list[AgentConversationItem],
+    revision: str | None = None,
 ) -> AgentSessionResponse:
-    """Replace persisted messages for a resume Agent session."""
+    """Replace history if the caller still owns the supplied revision."""
 
     safe_resume_id = resume_id.strip()
     if not safe_resume_id or not is_valid_resume_id(safe_resume_id):
-        return AgentSessionResponse(resumeId=resume_id, messages=[])
+        return AgentSessionResponse(
+            resumeId=resume_id,
+            revision=_session_revision(conn, resume_id),
+            messages=[],
+        )
 
     now = _now_iso()
     normalized_messages = _normalize_replacement_messages(messages)
@@ -144,32 +222,41 @@ def replace_agent_session_messages(
         if isinstance(file, dict)
     ]
 
-    with _transaction(conn):
-        _upsert_replacement_session(
-            conn,
-            safe_resume_id,
-            locale,
-            _replacement_session_title(normalized_messages),
-            now,
-        )
-        conn.execute(
-            "DELETE FROM agent_messages WHERE session_id = ?",
-            (safe_resume_id,),
-        )
+    receipt: AgentAttachmentSentReceipt | None = None
+    try:
+        with _transaction(conn):
+            current_revision = _session_revision(conn, safe_resume_id)
+            if revision is not None and revision != current_revision:
+                raise AgentSessionRevisionConflictError(current_revision)
 
-        for sequence, message in enumerate(normalized_messages, start=1):
-            _insert_message(
+            _upsert_replacement_session(
                 conn,
-                session_id=safe_resume_id,
-                message_id=message["id"],
-                role=message["role"],
-                text=message["text"],
-                files=message["files"],
-                response=message["response"],
-                sequence=sequence,
-                created_at=message["created_at"] or now,
+                safe_resume_id,
+                locale,
+                _replacement_session_title(normalized_messages),
+                now,
             )
-        mark_agent_attachments_sent(safe_resume_id, retained_files)
+            conn.execute(
+                "DELETE FROM agent_messages WHERE session_id = ?",
+                (safe_resume_id,),
+            )
+
+            for sequence, message in enumerate(normalized_messages, start=1):
+                _insert_message(
+                    conn,
+                    session_id=safe_resume_id,
+                    message_id=message["id"],
+                    role=message["role"],
+                    text=message["text"],
+                    files=message["files"],
+                    response=message["response"],
+                    sequence=sequence,
+                    created_at=message["created_at"] or now,
+                )
+            receipt = mark_agent_attachments_sent(safe_resume_id, retained_files)
+    except BaseException:
+        _compensate_attachment_state(receipt)
+        raise
 
     # Pruning is post-commit garbage collection. It must not turn a completed
     # replacement into an API failure after the new history is authoritative.
@@ -213,7 +300,12 @@ def _transaction(conn: Connection) -> Iterator[None]:
         conn.rollback()
         raise
     else:
-        conn.commit()
+        try:
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
 
 def _now_iso() -> str:
@@ -226,6 +318,62 @@ def _json_dumps(value: object) -> str:
     """Serialize persisted message fragments without ASCII escaping."""
 
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _session_revision(conn: Connection, resume_id: str) -> str:
+    """Hash authoritative history fields into a stable optimistic revision."""
+
+    session = conn.execute(
+        """
+        SELECT locale, title
+        FROM agent_sessions
+        WHERE id = ?
+        """,
+        (resume_id,),
+    ).fetchone()
+    messages = conn.execute(
+        """
+        SELECT id, role, text, files_json, response_json, sequence, created_at
+        FROM agent_messages
+        WHERE session_id = ?
+        ORDER BY sequence ASC
+        """,
+        (resume_id,),
+    ).fetchall()
+    payload = {
+        "session": (
+            {"locale": session["locale"], "title": session["title"]}
+            if session is not None
+            else None
+        ),
+        "messages": [
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "text": row["text"],
+                "files": row["files_json"],
+                "response": row["response_json"],
+                "sequence": row["sequence"],
+                "createdAt": row["created_at"],
+            }
+            for row in messages
+        ],
+    }
+    return hashlib.sha256(_json_dumps(payload).encode("utf-8")).hexdigest()
+
+
+def _compensate_attachment_state(
+    receipt: AgentAttachmentSentReceipt | None,
+) -> None:
+    """Restore file metadata when the paired SQLite transaction did not commit."""
+
+    try:
+        rollback_agent_attachments_sent(receipt)
+    except Exception as exc:
+        logger.exception("Failed to compensate Agent attachment metadata.")
+        raise AgentAttachmentError(
+            "Attachment state could not be restored after a message write failure.",
+        ) from exc
 
 
 def _decode_files(raw_value: str) -> list[dict[str, Any]]:
@@ -269,8 +417,9 @@ def _current_user_message(
     """Build the persisted user message from the current chat request."""
 
     if request.message and (request.message.text.strip() or request.message.files):
+        message_id = request.message.id or _request_user_message_id(request)
         return UserAgentMessage(
-            id=request.message.id or f"agent-user-{uuid4().hex[:12]}",
+            id=message_id,
             text=request.message.text.strip(),
             files=request.message.files,
             created_at=request.message.created_at or created_at,
@@ -282,11 +431,30 @@ def _current_user_message(
 
     text = prompt or _attachment_summary(request.files)
     return UserAgentMessage(
-        id=f"agent-user-{uuid4().hex[:12]}",
+        id=_request_user_message_id(request),
         text=text,
         files=request.files,
         created_at=created_at,
     )
+
+
+def _request_user_message_id(request: AgentChatRequest) -> str:
+    """Keep a generated id stable across start and completion callbacks."""
+
+    existing = getattr(request, "_persisted_user_message_id", None)
+    if isinstance(existing, str):
+        return existing
+
+    message_id = f"agent-user-{uuid4().hex[:12]}"
+    object.__setattr__(request, "_persisted_user_message_id", message_id)
+    return message_id
+
+
+def _request_session_revision(request: AgentChatRequest) -> str | None:
+    """Return the user-turn revision captured before provider execution."""
+
+    revision = getattr(request, "_persisted_session_revision", None)
+    return revision if isinstance(revision, str) else None
 
 
 def _attachment_summary(files: list[dict[str, Any]]) -> str:
@@ -491,7 +659,7 @@ def _insert_message(
     response: AgentChatMessage | None,
     sequence: int,
     created_at: str,
-) -> None:
+) -> bool:
     """Insert one message and ignore duplicate ids from client retries."""
 
     response_json = (
@@ -499,7 +667,7 @@ def _insert_message(
         if response
         else None
     )
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT OR IGNORE INTO agent_messages (
             id,
@@ -524,3 +692,22 @@ def _insert_message(
             created_at,
         ),
     )
+    return cursor.rowcount > 0
+
+
+def _message_exists(
+    conn: Connection,
+    session_id: str,
+    message_id: str,
+) -> bool:
+    """Return whether an idempotent completion already reached this session."""
+
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_messages
+        WHERE session_id = ? AND id = ?
+        """,
+        (session_id, message_id),
+    ).fetchone()
+    return row is not None
