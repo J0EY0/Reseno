@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
+from typing import Literal
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 import httpx
@@ -25,7 +26,17 @@ SEARCH_ENDPOINTS = (
 )
 MAX_WEB_SEARCH_QUERIES = 5
 MAX_WEB_SEARCH_RESULTS = 10
+WEB_SEARCH_MAX_CONCURRENCY = 3
+WEB_SEARCH_OPERATION_TIMEOUT_SECONDS = 12.0
 MAX_WEB_REDIRECTS = 5
+TEXTUAL_APPLICATION_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/ld+json",
+        "application/xhtml+xml",
+        "application/xml",
+    },
+)
 BLOCKED_WEB_HOSTS = frozenset(
     {
         "instance-data.ec2.internal",
@@ -46,19 +57,26 @@ class WebReference:
     status_code: int | None = None
     fetched_at: str = ""
     content_sha256: str = ""
+    excerpt_start: int = 0
+    excerpt_end: int = 0
+    excerpt_section: str = ""
 
 
 @dataclass(frozen=True)
 class WebSearchResult:
-    """One web search result that can be fetched as JD context."""
+    """One search result, with an explicit distinction between snippet and page text."""
 
     title: str
     url: str
     excerpt: str
+    source_kind: Literal["fetched_page", "search_snippet"] = "search_snippet"
     final_url: str = ""
     status_code: int | None = None
     fetched_at: str = ""
     content_sha256: str = ""
+    excerpt_start: int = 0
+    excerpt_end: int = 0
+    excerpt_section: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +88,8 @@ class WebSearchReference:
     query_count: int
     result_count: int
     error: str | None = None
+    timed_out: bool = False
+    partial: bool = False
 
     @property
     def primary(self) -> WebSearchResult | None:
@@ -91,6 +111,71 @@ class _BoundedWebResponse:
     status_code: int
     fetched_at: str
     content_sha256: str
+
+
+@dataclass(frozen=True)
+class _AsyncQuerySearchState:
+    """Completed search-link state recorded before page fetches finish."""
+
+    results: tuple[WebSearchResult, ...]
+    result_count: int
+    error: str | None
+
+
+@dataclass(frozen=True)
+class _PageTextBlock:
+    """One visible semantic block with enough structure for excerpt selection."""
+
+    text: str
+    tag: str
+    section: str
+    in_main: bool
+    in_article: bool
+    in_chrome: bool
+
+
+@dataclass(frozen=True)
+class _SelectedExcerpt:
+    """A normalized excerpt and its character range inside the selected page scope."""
+
+    text: str
+    start: int
+    end: int
+    section: str
+
+
+class _RelevantWebUrl(str):
+    """A URL carrying ranking hints while preserving the one-argument fetch seam."""
+
+    relevance_query: str
+    reference_title: str
+
+    def __new__(
+        cls,
+        url: str,
+        *,
+        relevance_query: str,
+        reference_title: str,
+    ) -> "_RelevantWebUrl":
+        instance = super().__new__(cls, url)
+        instance.relevance_query = relevance_query
+        instance.reference_title = reference_title
+        return instance
+
+
+def _relevant_web_url(
+    url: str,
+    *,
+    relevance_query: str,
+    reference_title: str,
+) -> str:
+    """Attach excerpt-ranking context without changing replaceable fetch call shapes."""
+
+    return _RelevantWebUrl(
+        url,
+        relevance_query=relevance_query,
+        reference_title=reference_title,
+    )
 
 
 def _search_result_url(href: str | None) -> str:
@@ -192,14 +277,73 @@ class SearchResultParser(HTMLParser):
 
 
 class PageTextParser(HTMLParser):
-    """Extract title and visible text from a small HTML document."""
+    """Extract visible semantic blocks while retaining coarse page structure."""
+
+    _BLOCK_TAGS = frozenset(
+        {
+            "blockquote",
+            "dd",
+            "dt",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "p",
+            "pre",
+        },
+    )
+    _BOUNDARY_TAGS = frozenset({"div", "section", "table", "tr"})
+    _CHROME_TAGS = frozenset({"aside", "footer", "header", "nav"})
 
     def __init__(self) -> None:
         super().__init__()
         self._ignored_depth = 0
         self._in_title = False
+        self._main_depth = 0
+        self._article_depth = 0
+        self._chrome_depth = 0
+        self._block_tag = ""
+        self._block_parts: list[str] = []
+        self._block_in_main = False
+        self._block_in_article = False
+        self._block_in_chrome = False
+        self._current_section = ""
         self.title_parts: list[str] = []
-        self.text_parts: list[str] = []
+        self.blocks: list[_PageTextBlock] = []
+
+    @property
+    def text_parts(self) -> list[str]:
+        """Preserve the previous visible-text view for internal compatibility."""
+
+        return [block.text for block in self.blocks]
+
+    def _start_block(self, tag: str) -> None:
+        self._flush_block()
+        self._block_tag = tag
+        self._block_in_main = self._main_depth > 0
+        self._block_in_article = self._article_depth > 0
+        self._block_in_chrome = self._chrome_depth > 0
+
+    def _flush_block(self) -> None:
+        text = _compact_text(" ".join(self._block_parts), limit=20_000)
+        if text:
+            block = _PageTextBlock(
+                text=text,
+                tag=self._block_tag or "text",
+                section=self._current_section,
+                in_main=self._block_in_main,
+                in_article=self._block_in_article,
+                in_chrome=self._block_in_chrome,
+            )
+            self.blocks.append(block)
+            if block.tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                self._current_section = block.text
+
+        self._block_tag = ""
+        self._block_parts = []
 
     def handle_starttag(
         self,
@@ -211,8 +355,27 @@ class PageTextParser(HTMLParser):
         normalized_tag = tag.lower()
         if normalized_tag in {"script", "style", "noscript"}:
             self._ignored_depth += 1
+            return
         if normalized_tag == "title":
             self._in_title = True
+            return
+        if self._ignored_depth:
+            return
+
+        if normalized_tag == "main":
+            self._flush_block()
+            self._main_depth += 1
+        elif normalized_tag == "article":
+            self._flush_block()
+            self._article_depth += 1
+        elif normalized_tag in self._CHROME_TAGS:
+            self._flush_block()
+            self._chrome_depth += 1
+
+        if normalized_tag in self._BLOCK_TAGS:
+            self._start_block(normalized_tag)
+        elif normalized_tag in self._BOUNDARY_TAGS:
+            self._flush_block()
 
     def handle_endtag(self, tag: str) -> None:
         """Close ignored and title elements."""
@@ -220,8 +383,27 @@ class PageTextParser(HTMLParser):
         normalized_tag = tag.lower()
         if normalized_tag in {"script", "style", "noscript"}:
             self._ignored_depth = max(0, self._ignored_depth - 1)
+            return
         if normalized_tag == "title":
             self._in_title = False
+            return
+        if self._ignored_depth:
+            return
+
+        if (
+            normalized_tag in self._BLOCK_TAGS
+            or normalized_tag in self._BOUNDARY_TAGS
+            or normalized_tag in {"main", "article"}
+            or normalized_tag in self._CHROME_TAGS
+        ):
+            self._flush_block()
+
+        if normalized_tag == "main":
+            self._main_depth = max(0, self._main_depth - 1)
+        elif normalized_tag == "article":
+            self._article_depth = max(0, self._article_depth - 1)
+        elif normalized_tag in self._CHROME_TAGS:
+            self._chrome_depth = max(0, self._chrome_depth - 1)
 
     def handle_data(self, data: str) -> None:
         """Collect visible text and page title fragments."""
@@ -235,13 +417,139 @@ class PageTextParser(HTMLParser):
             return
 
         if self._ignored_depth == 0:
-            self.text_parts.append(text)
+            if not self._block_parts:
+                self._block_in_main = self._main_depth > 0
+                self._block_in_article = self._article_depth > 0
+                self._block_in_chrome = self._chrome_depth > 0
+            self._block_parts.append(text)
+
+    def close(self) -> None:
+        """Flush trailing text after HTMLParser completes."""
+
+        super().close()
+        self._flush_block()
 
 
 def _compact_text(value: str, limit: int = 700) -> str:
     """Collapse whitespace and trim text for prompts and citations."""
 
     return re.sub(r"\s+", " ", unescape(value)).strip()[:limit]
+
+
+def _relevance_terms(*values: str) -> frozenset[str]:
+    """Build language-agnostic terms without maintaining a domain keyword list."""
+
+    terms: set[str] = set()
+    for value in values:
+        normalized = unescape(value).casefold()
+        terms.update(
+            match.group(0)
+            for match in re.finditer(r"[a-z0-9][a-z0-9.+#-]{1,}", normalized)
+        )
+        for sequence in re.findall(r"[\u3400-\u9fff]+", normalized):
+            if len(sequence) == 1:
+                terms.add(sequence)
+                continue
+            terms.update(
+                sequence[index : index + 2] for index in range(len(sequence) - 1)
+            )
+    return frozenset(terms)
+
+
+def _preferred_page_blocks(blocks: list[_PageTextBlock]) -> list[_PageTextBlock]:
+    """Prefer semantic document regions, falling back only when they are absent."""
+
+    for candidates in (
+        [block for block in blocks if block.in_article],
+        [block for block in blocks if block.in_main],
+        [block for block in blocks if not block.in_chrome],
+        blocks,
+    ):
+        if _is_useful_web_excerpt(" ".join(block.text for block in candidates)):
+            return candidates
+    return []
+
+
+def _block_relevance_score(
+    block: _PageTextBlock,
+    terms: frozenset[str],
+) -> int:
+    if not terms:
+        return 0
+
+    text = block.text.casefold()
+    section = block.section.casefold()
+    text_matches = sum(1 for term in terms if term in text)
+    section_matches = sum(1 for term in terms if term in section)
+    heading_bonus = 1 if block.tag.startswith("h") and text_matches else 0
+    return text_matches * 3 + section_matches * 2 + heading_bonus
+
+
+def _select_page_excerpt(
+    blocks: list[_PageTextBlock],
+    *,
+    relevance_query: str,
+    reference_title: str,
+    page_title: str,
+    limit: int = 700,
+) -> _SelectedExcerpt | None:
+    """Select a contiguous relevant window and expose its normalized char range."""
+
+    candidates = _preferred_page_blocks(blocks)
+    if not candidates:
+        return None
+
+    terms = _relevance_terms(relevance_query, reference_title, page_title)
+    scores = [_block_relevance_score(block, terms) for block in candidates]
+    best_index = max(range(len(candidates)), key=scores.__getitem__) if scores else 0
+
+    start_index = best_index
+    end_index = best_index
+    selected_length = len(candidates[best_index].text)
+    if best_index > 0 and candidates[best_index - 1].tag.startswith("h"):
+        heading_length = len(candidates[best_index - 1].text) + 1
+        if selected_length + heading_length <= limit:
+            start_index -= 1
+            selected_length += heading_length
+
+    # Keep the excerpt contiguous so start/end remain directly explainable.
+    while end_index + 1 < len(candidates):
+        next_length = len(candidates[end_index + 1].text) + 1
+        if selected_length + next_length > limit:
+            break
+        end_index += 1
+        selected_length += next_length
+
+    while start_index > 0:
+        previous_length = len(candidates[start_index - 1].text) + 1
+        if selected_length + previous_length > limit:
+            break
+        start_index -= 1
+        selected_length += previous_length
+
+    offsets: list[int] = []
+    offset = 0
+    for block in candidates:
+        offsets.append(offset)
+        offset += len(block.text) + 1
+
+    excerpt = _compact_text(
+        " ".join(block.text for block in candidates[start_index : end_index + 1]),
+        limit=limit,
+    )
+    excerpt_start = offsets[start_index]
+    selected_block = candidates[best_index]
+    section = (
+        selected_block.text
+        if selected_block.tag.startswith("h")
+        else selected_block.section
+    )
+    return _SelectedExcerpt(
+        text=excerpt,
+        start=excerpt_start,
+        end=excerpt_start + len(excerpt),
+        section=section,
+    )
 
 
 def _is_useful_web_excerpt(value: str) -> bool:
@@ -325,7 +633,7 @@ def _is_allowed_web_url(url: str) -> bool:
         except (OSError, UnicodeError):
             return False
 
-        resolved_addresses = {sockaddr[0] for *_, sockaddr in address_info}
+        resolved_addresses = {str(sockaddr[0]) for *_, sockaddr in address_info}
         return bool(resolved_addresses) and all(
             _is_public_ip_address(address) for address in resolved_addresses
         )
@@ -363,11 +671,24 @@ def _web_reference_from_response(
     status_code: int,
     fetched_at: str,
     content_sha256: str,
+    relevance_query: str = "",
+    reference_title: str = "",
 ) -> WebReference | None:
     """Parse fetched response bytes into a web reference."""
 
+    media_type = content_type.partition(";")[0].strip().lower()
+    is_textual = (
+        media_type.startswith("text/")
+        or media_type in TEXTUAL_APPLICATION_MEDIA_TYPES
+        or media_type.endswith(("+json", "+xml"))
+    )
+    # Binary formats require a format-aware parser. Decoding arbitrary bytes
+    # with the advertised charset can manufacture plausible but invalid text.
+    if not is_textual:
+        return None
+
     decoded = raw.decode(charset, errors="replace")
-    if "html" not in content_type.lower():
+    if media_type not in {"application/xhtml+xml", "text/html"}:
         excerpt = _compact_text(decoded)
         return (
             WebReference(
@@ -377,6 +698,8 @@ def _web_reference_from_response(
                 status_code=status_code,
                 fetched_at=fetched_at,
                 content_sha256=content_sha256,
+                excerpt_start=0,
+                excerpt_end=len(excerpt),
             )
             if _is_useful_web_excerpt(excerpt)
             else None
@@ -384,18 +707,27 @@ def _web_reference_from_response(
 
     parser = PageTextParser()
     parser.feed(decoded)
+    parser.close()
     title = _compact_text(" ".join(parser.title_parts), limit=120)
-    excerpt = _compact_text(" ".join(parser.text_parts))
-    if not _is_useful_web_excerpt(excerpt):
+    selected = _select_page_excerpt(
+        parser.blocks,
+        relevance_query=relevance_query,
+        reference_title=reference_title,
+        page_title=title,
+    )
+    if selected is None or not _is_useful_web_excerpt(selected.text):
         return None
 
     return WebReference(
         title=title or url,
-        excerpt=excerpt,
+        excerpt=selected.text,
         final_url=url,
         status_code=status_code,
         fetched_at=fetched_at,
         content_sha256=content_sha256,
+        excerpt_start=selected.start,
+        excerpt_end=selected.end,
+        excerpt_section=selected.section,
     )
 
 
@@ -517,9 +849,18 @@ async def _async_get_bounded_web_response(
     return None
 
 
-def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
+def _fetch_web_reference(
+    url: str,
+    timeout: float = 4.0,
+    *,
+    relevance_query: str = "",
+    reference_title: str = "",
+) -> WebReference | None:
     """Fetch a URL and return visible text that can be cited."""
 
+    if isinstance(url, _RelevantWebUrl):
+        relevance_query = relevance_query or url.relevance_query
+        reference_title = reference_title or url.reference_title
     try:
         with httpx.Client(
             headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
@@ -542,15 +883,23 @@ def _fetch_web_reference(url: str, timeout: float = 4.0) -> WebReference | None:
         status_code=fetched.status_code,
         fetched_at=fetched.fetched_at,
         content_sha256=fetched.content_sha256,
+        relevance_query=relevance_query,
+        reference_title=reference_title,
     )
 
 
 async def _async_fetch_web_reference(
     url: str,
     timeout: float = 4.0,
+    *,
+    relevance_query: str = "",
+    reference_title: str = "",
 ) -> WebReference | None:
     """Fetch a URL with an async HTTP client and return visible citation text."""
 
+    if isinstance(url, _RelevantWebUrl):
+        relevance_query = relevance_query or url.relevance_query
+        reference_title = reference_title or url.reference_title
     try:
         async with httpx.AsyncClient(
             headers=_web_headers("text/html,text/plain;q=0.9,*/*;q=0.8"),
@@ -577,6 +926,8 @@ async def _async_fetch_web_reference(
         status_code=fetched.status_code,
         fetched_at=fetched.fetched_at,
         content_sha256=fetched.content_sha256,
+        relevance_query=relevance_query,
+        reference_title=reference_title,
     )
 
 
@@ -702,7 +1053,13 @@ def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str 
 
     snippet_fallback: WebSearchResult | None = None
     for result in results:
-        web_reference = _fetch_web_reference(result.url)
+        web_reference = _fetch_web_reference(
+            _relevant_web_url(
+                result.url,
+                relevance_query=query,
+                reference_title=result.title,
+            ),
+        )
         if not web_reference:
             snippet_fallback = snippet_fallback or _search_snippet_fallback(result)
             continue
@@ -734,7 +1091,13 @@ def _search_web_reference_results(
         if len(references) >= max_results:
             break
 
-        web_reference = _fetch_web_reference(result.url)
+        web_reference = _fetch_web_reference(
+            _relevant_web_url(
+                result.url,
+                relevance_query=query,
+                reference_title=result.title,
+            ),
+        )
         if web_reference:
             references.append(_web_search_result_from_reference(result, web_reference))
             continue
@@ -760,7 +1123,13 @@ async def _async_search_web_reference(
 
     snippet_fallback: WebSearchResult | None = None
     for result in results:
-        web_reference = await _async_fetch_web_reference(result.url)
+        web_reference = await _async_fetch_web_reference(
+            _relevant_web_url(
+                result.url,
+                relevance_query=query,
+                reference_title=result.title,
+            ),
+        )
         if not web_reference:
             snippet_fallback = snippet_fallback or _search_snippet_fallback(result)
             continue
@@ -787,12 +1156,31 @@ async def _async_search_web_reference_results(
     if error:
         return [], 0, error
 
-    references: list[WebSearchResult] = []
-    for result in results:
-        if len(references) >= max_results:
-            break
+    semaphore = asyncio.Semaphore(WEB_SEARCH_MAX_CONCURRENCY)
 
-        web_reference = await _async_fetch_web_reference(result.url)
+    async def fetch(result: WebSearchResult) -> WebReference | None:
+        async with semaphore:
+            return await _async_fetch_web_reference(
+                _relevant_web_url(
+                    result.url,
+                    relevance_query=query,
+                    reference_title=result.title,
+                ),
+            )
+
+    # ``gather`` preserves input order while allowing bounded page fetches.
+    fetched_references: list[WebReference | None] = list(
+        await asyncio.gather(
+            *(fetch(result) for result in results[:max_results]),
+        ),
+    )
+
+    references: list[WebSearchResult] = []
+    for result, web_reference in zip(
+        results[:max_results],
+        fetched_references,
+        strict=True,
+    ):
         if web_reference:
             references.append(_web_search_result_from_reference(result, web_reference))
             continue
@@ -805,6 +1193,39 @@ async def _async_search_web_reference_results(
         return references, len(results), None
 
     return [], len(results), "Search returned links, but no readable page text."
+
+
+async def _async_search_results_limited(
+    query: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[list[WebSearchResult], str | None]:
+    async with semaphore:
+        return await _async_search_web_results(query)
+
+
+async def _async_fetch_reference_limited(
+    result: WebSearchResult,
+    semaphore: asyncio.Semaphore,
+    relevance_query: str,
+) -> WebReference | None:
+    async with semaphore:
+        return await _async_fetch_web_reference(
+            _relevant_web_url(
+                result.url,
+                relevance_query=relevance_query,
+                reference_title=result.title,
+            ),
+        )
+
+
+async def _cancel_tasks(tasks: Iterable[asyncio.Task[object]]) -> None:
+    task_list = list(tasks)
+    for task in task_list:
+        task.cancel()
+    if task_list:
+        # Consume only cancellations initiated by this scheduler during timeout
+        # cleanup. Cancellation of the parent operation is re-raised by callers.
+        await asyncio.gather(*task_list, return_exceptions=True)
 
 
 def _search_web_reference_summary(
@@ -851,34 +1272,145 @@ def _search_web_reference_summary(
 async def _async_search_web_reference_summary(
     queries: list[str],
     max_results: int = MAX_WEB_SEARCH_RESULTS,
+    operation_timeout: float = WEB_SEARCH_OPERATION_TIMEOUT_SECONDS,
 ) -> WebSearchReference:
-    """Search multiple query variants async and return deduplicated context."""
+    """Search query variants within one fair, bounded, cancellation-safe operation."""
 
     normalized_queries = _normalized_search_queries(queries)
     result_limit = _normalized_max_search_results(max_results)
-    results: list[WebSearchResult] = []
-    seen_urls: set[str] = set()
+    if not normalized_queries:
+        return WebSearchReference(
+            query="",
+            results=(),
+            query_count=0,
+            result_count=0,
+            error="Web search received no usable queries.",
+        )
+
+    loop = asyncio.get_running_loop()
+    timeout_budget = max(operation_timeout, 0.0)
+    operation_deadline = loop.time() + timeout_budget
+    semaphore = asyncio.Semaphore(WEB_SEARCH_MAX_CONCURRENCY)
+    query_states: dict[int, _AsyncQuerySearchState] = {}
+
+    async def search_query(query_index: int, query: str) -> None:
+        query_results, error = await _async_search_results_limited(query, semaphore)
+        # Record search links immediately so a total timeout can still return
+        # useful snippet evidence from work that completed before cancellation.
+        query_states[query_index] = _AsyncQuerySearchState(
+            results=tuple(query_results),
+            result_count=len(query_results),
+            error=error,
+        )
+
+    query_tasks = [
+        asyncio.create_task(search_query(index, query))
+        for index, query in enumerate(normalized_queries)
+    ]
+    try:
+        completed_queries, pending_queries = await asyncio.wait(
+            query_tasks,
+            # Reserve half of the total deadline for page retrieval. A slow
+            # search variant must not consume the entire evidence operation.
+            timeout=timeout_budget / 2,
+        )
+        search_timed_out = bool(pending_queries)
+        if pending_queries:
+            await _cancel_tasks(pending_queries)
+    except asyncio.CancelledError:
+        await _cancel_tasks(query_tasks)
+        raise
+
+    # Surface unexpected worker cancellation/errors instead of silently
+    # converting them into an empty or partial search result.
+    for task in completed_queries:
+        task.result()
+
     total_result_count = 0
     last_error: str | None = None
+    for query_index in range(len(normalized_queries)):
+        state = query_states.get(query_index)
+        if state is None:
+            continue
 
-    for query in normalized_queries:
-        remaining = result_limit - len(results)
-        if remaining <= 0:
-            break
+        total_result_count += state.result_count
+        if state.error:
+            last_error = state.error
 
-        query_results, result_count, error = await _async_search_web_reference_results(
-            query,
-            remaining,
-        )
-        total_result_count += result_count
-        if error:
-            last_error = error
-        for result in query_results:
+    # Select before fetching so the page budget is global rather than
+    # ``query_count * max_results``. Walking one result depth at a time gives
+    # every completed query a fair chance while preserving deterministic order.
+    selected_results: list[WebSearchResult] = []
+    seen_urls: set[str] = set()
+    max_query_results = max(
+        (len(state.results) for state in query_states.values()),
+        default=0,
+    )
+    for result_index in range(max_query_results):
+        for query_index in range(len(normalized_queries)):
+            state = query_states.get(query_index)
+            if state is None or result_index >= len(state.results):
+                continue
+
+            result = state.results[result_index]
             if result.url in seen_urls:
                 continue
 
             seen_urls.add(result.url)
-            results.append(result)
+            selected_results.append(result)
+            if len(selected_results) >= result_limit:
+                break
+        if len(selected_results) >= result_limit:
+            break
+
+    page_states: dict[int, WebReference | None] = {}
+    relevance_query = " ".join(normalized_queries)
+
+    async def fetch_and_record(index: int, result: WebSearchResult) -> None:
+        page_states[index] = await _async_fetch_reference_limited(
+            result,
+            semaphore,
+            relevance_query,
+        )
+
+    fetch_tasks = [
+        asyncio.create_task(fetch_and_record(index, result))
+        for index, result in enumerate(selected_results)
+    ]
+    fetch_timed_out = False
+    if fetch_tasks:
+        try:
+            completed_fetches, pending_fetches = await asyncio.wait(
+                fetch_tasks,
+                timeout=max(operation_deadline - loop.time(), 0.0),
+            )
+            fetch_timed_out = bool(pending_fetches)
+            if pending_fetches:
+                await _cancel_tasks(pending_fetches)
+        except asyncio.CancelledError:
+            await _cancel_tasks(fetch_tasks)
+            raise
+
+        for task in completed_fetches:
+            task.result()
+
+    results: list[WebSearchResult] = []
+    for index, result in enumerate(selected_results):
+        web_reference = page_states.get(index)
+        candidate = (
+            _web_search_result_from_reference(result, web_reference)
+            if web_reference
+            else _search_snippet_fallback(result)
+        )
+        if candidate is not None:
+            results.append(candidate)
+
+    timed_out = search_timed_out or fetch_timed_out
+
+    if timed_out and not results:
+        last_error = "Web search exceeded its operation time budget."
+    elif not results and last_error is None:
+        last_error = "Search returned links, but no readable page text."
 
     return WebSearchReference(
         query=normalized_queries[0] if normalized_queries else "",
@@ -886,6 +1418,8 @@ async def _async_search_web_reference_summary(
         query_count=len(normalized_queries),
         result_count=total_result_count,
         error=None if results else last_error,
+        timed_out=timed_out,
+        partial=timed_out and bool(results),
     )
 
 
@@ -923,6 +1457,10 @@ def _web_search_result_from_reference(
         status_code=web_reference.status_code,
         fetched_at=web_reference.fetched_at,
         content_sha256=web_reference.content_sha256,
+        excerpt_start=web_reference.excerpt_start,
+        excerpt_end=web_reference.excerpt_end,
+        excerpt_section=web_reference.excerpt_section,
+        source_kind="fetched_page",
     )
 
 
@@ -939,4 +1477,7 @@ def _search_snippet_fallback(result: WebSearchResult) -> WebSearchResult | None:
         status_code=result.status_code,
         fetched_at=result.fetched_at,
         content_sha256=result.content_sha256,
+        excerpt_start=0,
+        excerpt_end=len(excerpt),
+        source_kind="search_snippet",
     )

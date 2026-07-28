@@ -1355,6 +1355,12 @@ function normalizeWorkspaceTheme(value: unknown): ThemeMode {
   return value === "dark" || value === "system" ? value : "light";
 }
 
+interface UserSettingsSnapshot {
+  locale: Locale;
+  theme: ThemeMode;
+  agentSettings: AgentSettings;
+}
+
 export function ResumeBuilder({
   locale,
   messages,
@@ -1461,6 +1467,13 @@ export function ResumeBuilder({
   const duplicateResumeInFlightRef = useRef(false);
   const createTemplateInFlightRef = useRef(false);
   const setDefaultTemplateInFlightRef = useRef(false);
+  const userSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const userSettingsMutationIdRef = useRef(0);
+  const persistedUserSettingsRef = useRef<UserSettingsSnapshot>({
+    locale: initialLocaleRef.current,
+    theme: "light",
+    agentSettings: createDefaultAgentSettings(),
+  });
   const saveRequestRef = useRef<Promise<SaveResponse> | null>(null);
   const pendingSaveAfterCurrentRef = useRef(false);
   const versionLoadRequestRef = useRef<string | null>(null);
@@ -2266,6 +2279,11 @@ export function ResumeBuilder({
         setModelConfigs(nextModelConfigs);
         setAgentSettings(nextAgentSettings);
         setTheme(nextTheme);
+        persistedUserSettingsRef.current = {
+          locale: initialLocaleRef.current,
+          theme: nextTheme,
+          agentSettings: nextAgentSettings,
+        };
         setLastSavedAt(payload.savedAt);
         lastPersistedResumeRef.current = createResumeFingerprint(firstResume);
         lastPersistedResumeItemRef.current = firstResume;
@@ -2549,10 +2567,6 @@ export function ResumeBuilder({
     action();
   }
 
-  useEffect(() => {
-    setAgentSettings((current) => normalizeAgentSettings(current, modelConfigs));
-  }, [modelConfigs]);
-
   const persistUserSettings = useCallback(
     (
       nextLocale: Locale,
@@ -2563,11 +2577,34 @@ export function ResumeBuilder({
         return;
       }
 
-      void saveUserSettingsApi(nextLocale, {
-        agentSettings: nextAgentSettings,
+      const mutationId = ++userSettingsMutationIdRef.current;
+      const snapshot: UserSettingsSnapshot = {
+        locale: nextLocale,
         theme: nextTheme,
-      }).catch((error) => {
+        agentSettings: nextAgentSettings,
+      };
+
+      // Serialize full-snapshot writes so a slower request cannot overwrite a newer
+      // settings choice. The queue remains usable after an individual save fails.
+      const request = userSettingsSaveQueueRef.current.then(async () => {
+        await saveUserSettingsApi(snapshot.locale, {
+          agentSettings: snapshot.agentSettings,
+          theme: snapshot.theme,
+        });
+        persistedUserSettingsRef.current = snapshot;
+      });
+      userSettingsSaveQueueRef.current = request.catch(() => undefined);
+
+      void request.catch((error) => {
         console.error("Failed to save user settings.", error);
+        if (userSettingsMutationIdRef.current === mutationId) {
+          const persisted = persistedUserSettingsRef.current;
+          onLocaleChange(persisted.locale);
+          setTheme(persisted.theme);
+          setAgentSettings(
+            normalizeAgentSettings(persisted.agentSettings, modelConfigs),
+          );
+        }
         if (!isApiErrorToastShown(error)) {
           toast.error(t.loadError, {
             closeButton: true,
@@ -2575,7 +2612,12 @@ export function ResumeBuilder({
         }
       });
     },
-    [isLoading, t.loadError],
+    [isLoading, modelConfigs, onLocaleChange, t.loadError],
+  );
+
+  const flushUserSettings = useCallback(
+    () => userSettingsSaveQueueRef.current,
+    [],
   );
 
   const handleSettingsLocaleChange = useCallback(
@@ -2601,6 +2643,24 @@ export function ResumeBuilder({
       persistUserSettings(locale, theme, normalizedSettings);
     },
     [locale, modelConfigs, persistUserSettings, theme],
+  );
+
+  const handleModelConfigsChange = useCallback(
+    (nextModelConfigs: ModelConfig[]) => {
+      const normalizedSettings = normalizeAgentSettings(
+        agentSettings,
+        nextModelConfigs,
+      );
+
+      setModelConfigs(nextModelConfigs);
+      if (
+        normalizedSettings.defaultModelId !== agentSettings.defaultModelId
+      ) {
+        setAgentSettings(normalizedSettings);
+        persistUserSettings(locale, theme, normalizedSettings);
+      }
+    },
+    [agentSettings, locale, persistUserSettings, theme],
   );
 
   useEffect(() => {
@@ -4359,7 +4419,6 @@ export function ResumeBuilder({
           keywordMatch={keywordMatch}
           modelConfigs={modelConfigs}
           selectedModelId={agentSettings.defaultModelId}
-          agentSettings={agentSettings}
           onSelectedModelChange={(modelId) =>
             handleAgentSettingsChange({
               ...agentSettings,
@@ -4373,6 +4432,7 @@ export function ResumeBuilder({
           onApplyAgentDraft={applyAgentDraft}
           onDiscardAgentDraft={discardAgentDraft}
           onOpenModelSettings={() => handleViewChange("models")}
+          onBeforeSend={flushUserSettings}
         />
       </Suspense>
     );
@@ -4543,7 +4603,7 @@ export function ResumeBuilder({
             locale={locale}
             t={t}
             configs={modelConfigs}
-            onChange={setModelConfigs}
+            onChange={handleModelConfigsChange}
           />
         </Suspense>
       </main>

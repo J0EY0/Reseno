@@ -625,6 +625,8 @@
   "agentRequestFailed": "Agent request failed. Confirm the backend service is running and try again.",
   "agentHistoryLoadFailed": "Failed to load conversation",
   "agentRetry": "Retry",
+  "agentRunFailed": "Not completed",
+  "agentRunCancelled": "Stopped",
   "agentAppliedSummary": "I have already refined the summary toward the current role.",
   "agentAppliedBullet": "I have already rewritten the key experience into a more quantified style.",
   "agentAppliedKeywords": "I have already written the role keywords back into the resume.",

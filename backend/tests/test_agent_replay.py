@@ -1,9 +1,11 @@
 import json
 
 from app.schemas.agent import AgentChatRequest
+from app.schemas.agent_settings import normalize_agent_settings
 from app.services.agent import WebReference
 from app.services.agent.attachments import store_agent_attachment
 from app.services.agent.policy import capability_policy_for_request
+from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.runtime.events import AgentRunEvent
 from app.services.agent.tools import registry as tool_registry
 from tests.agent_replay import AgentReplayScenario, ReplayToolCall, run_agent_replay
@@ -130,11 +132,13 @@ def test_replay_suggest_only_blocks_draft() -> None:
     result = run_agent_replay(
         AgentReplayScenario(
             name="suggest_only_blocks_draft",
-            request=AgentChatRequest(
-                prompt="优化个人简介",
-                locale="zh",
-                resume={"basic": {"summary": "已有简介"}, "sections": []},
-                settings={"confirmationMode": "suggestOnly"},
+            request=prepare_agent_request(
+                AgentChatRequest(
+                    prompt="优化个人简介",
+                    locale="zh",
+                    resume={"basic": {"summary": "已有简介"}, "sections": []},
+                ),
+                normalize_agent_settings({"confirmationMode": "suggestOnly"}),
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -203,6 +207,46 @@ def test_replay_pii_write_blocked() -> None:
 
     assert result.tools[0].state == "output-error"
     assert result.runner.edits == []
+
+
+def test_replay_external_evidence_rejects_entire_edit_batch() -> None:
+    result = run_agent_replay(
+        AgentReplayScenario(
+            name="external_evidence_rejects_batch",
+            request=AgentChatRequest(
+                prompt="优化个人简介",
+                locale="zh",
+                resume={"basic": {"summary": "已有简介"}, "sections": []},
+            ),
+            tool_calls=[
+                ReplayToolCall(
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "优化简介",
+                                "target": "basic.summary",
+                                "evidenceRefs": ["web:https://example.com/profile"],
+                                "operation": {
+                                    "type": "replace_field",
+                                    "path": "basic.summary",
+                                    "value": "未经用户材料支持的新简介",
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ],
+        ),
+    )
+
+    output = result.observations[0]["output"]
+
+    assert result.tools[0].state == "output-error"
+    assert output["fullBatchRequired"] is True
+    assert output["rejectedEdits"][0]["qualityIssue"]["code"] == "invalid_edit_evidence"
+    assert result.runner.edits == []
+    assert result.runner.draft_resume["basic"]["summary"] == "已有简介"
 
 
 def test_replay_explain_draft_no_pending_blocks_diff_tool() -> None:

@@ -36,7 +36,11 @@ class AgentRuntimeContext:
         *args: Any,
         timeout_seconds: float | None = None,
     ) -> T:
-        """Run sync work without pinning the event loop after cancellation."""
+        """Run sync work without pinning the event loop after cancellation.
+
+        An abandoned worker may finish in the background, so callers must pass
+        isolated state when the function can mutate request-scoped data.
+        """
 
         await self.checkpoint()
         try:

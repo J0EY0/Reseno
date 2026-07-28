@@ -51,16 +51,15 @@ export function shouldShowAgentDraftActions({
 }
 
 export function shouldRollbackOptimisticAgentMessages({
-  replaceSessionBeforeSend,
   runAccepted,
 }: {
   replaceSessionBeforeSend: boolean;
   runAccepted: boolean;
 }) {
-  // Keep ordinary prompts visible after transport/provider failures so users
-  // can retry them. Only an edited-history replacement that never reached
-  // persistence can safely restore the exact previous conversation.
-  return replaceSessionBeforeSend && !runAccepted;
+  // Once the backend accepts a run, its user turn is authoritative and will
+  // reappear during reconciliation. Before acceptance, the optimistic row has
+  // no durable counterpart and must be removed for every send mode.
+  return !runAccepted;
 }
 
 export function getAgentQualityWarningCount(tools: AgentToolInvocation[]) {

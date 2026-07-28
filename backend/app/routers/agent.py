@@ -14,7 +14,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from app.db.connection import connect
 from app.schemas.agent import (
@@ -33,6 +33,7 @@ from app.services.agent.attachments import (
     load_agent_attachment,
     store_agent_attachment,
 )
+from app.services.agent.preferences import prepare_agent_request
 from app.services.agent_runs import (
     AgentRunConflictError,
     AgentRunManager,
@@ -40,10 +41,12 @@ from app.services.agent_runs import (
 )
 from app.services.agent_sessions import (
     AgentSessionRevisionConflictError,
+    AgentSessionTurnReplayError,
     is_valid_resume_id,
     load_agent_session,
     replace_agent_session_messages,
 )
+from app.services.workspace import load_agent_settings
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -206,7 +209,7 @@ def put_agent_resume_session(
 async def post_agent_chat(
     http_request: Request,
     request: AgentChatRequest,
-) -> StreamingResponse:
+) -> Response:
     """Start one background Agent run and subscribe to its event stream."""
 
     if request.resume_id and not is_valid_resume_id(request.resume_id):
@@ -215,9 +218,32 @@ async def post_agent_chat(
             detail=APP_MESSAGE_BAD_REQUEST,
         )
 
+    # Freeze persisted preferences before handing the request to the background
+    # run. A settings change during this run takes effect on the next turn.
+    prepared_request = prepare_agent_request(request, load_agent_settings())
     manager = _run_manager(http_request)
     try:
-        run = await manager.start(request)
+        run = await manager.start(prepared_request)
+    except AgentSessionRevisionConflictError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": {
+                    "code": "AGENT_SESSION_REVISION_CONFLICT",
+                    "revision": exc.current_revision,
+                },
+            },
+        )
+    except AgentSessionTurnReplayError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": {
+                    "code": "AGENT_SESSION_TURN_CONFLICT",
+                    "revision": exc.current_revision,
+                },
+            },
+        )
     except AgentRunConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

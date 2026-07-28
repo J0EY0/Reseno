@@ -92,11 +92,11 @@ assert(
   "A draft must never appear actionable on another assistant message.",
 );
 assert(
-  !panelState.shouldRollbackOptimisticAgentMessages({
+  panelState.shouldRollbackOptimisticAgentMessages({
     replaceSessionBeforeSend: false,
     runAccepted: false,
   }),
-  "A normal failed prompt must remain visible for retry.",
+  "An unaccepted normal prompt must not remain as a ghost message.",
 );
 assert(
   panelState.shouldRollbackOptimisticAgentMessages({

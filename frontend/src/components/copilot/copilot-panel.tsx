@@ -148,14 +148,15 @@ import type {
   AgentResumeEditSuggestion,
   AgentRunResponse,
   AgentRunStatus,
+  AgentSessionResponse,
   AgentSource,
   AgentStoredMessage,
   AgentTimelinePart,
+  AgentTurnExecution,
   AgentToolInvocation,
   AgentTransactionState,
 } from "@/types/api";
 import type {
-  AgentSettings,
   KeywordMatch,
   ModelConfig,
   ResumeData,
@@ -204,6 +205,7 @@ interface AgentPanelMessage {
   text: string;
   files?: AgentChatAttachment[];
   response?: AgentChatMessage;
+  execution?: AgentTurnExecution;
 }
 
 interface PendingAgentSend {
@@ -644,6 +646,7 @@ function toConversationResponse(
   return {
     actions: response.actions,
     edits: response.edits?.map((edit) => ({
+      evidenceRefs: edit.evidenceRefs,
       id: edit.id,
       operation: edit.operation,
       reason: edit.reason,
@@ -919,6 +922,24 @@ function toPanelMessage(
   };
 }
 
+function toPanelMessages(
+  session: AgentSessionResponse,
+  transientStatusTexts: readonly string[],
+) {
+  const latestExecutionByTurn = new Map<string, AgentTurnExecution>();
+  for (const execution of session.executions) {
+    latestExecutionByTurn.set(execution.turnId, execution);
+  }
+
+  return session.messages.map((message) => ({
+    ...toPanelMessage(message, transientStatusTexts),
+    execution:
+      message.role === "user"
+        ? latestExecutionByTurn.get(message.id)
+        : undefined,
+  }));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
@@ -1019,8 +1040,10 @@ function AgentUserMessage({
   onDownloadAttachment,
   onEditTextChange,
   onReferenceAttachment,
+  onRetry,
   onStartEdit,
   onSubmitEdit,
+  retryable,
   t,
 }: {
   copied: boolean;
@@ -1033,12 +1056,18 @@ function AgentUserMessage({
   onDownloadAttachment: (file: AgentChatAttachment) => void;
   onEditTextChange: (value: string) => void;
   onReferenceAttachment: (file: AgentChatAttachment) => void;
+  onRetry: () => void;
   onStartEdit: () => void;
   onSubmitEdit: () => void;
+  retryable: boolean;
   t: AppMessages;
 }) {
   const submitDisabled = disabled || !editedText.trim();
   const hasText = Boolean(message.text.trim());
+  const executionStatus = message.execution?.status;
+  const canRetry =
+    retryable &&
+    (executionStatus === "failed" || executionStatus === "cancelled");
 
   return (
     <div
@@ -1121,6 +1150,27 @@ function AgentUserMessage({
             </span>
           )}
         </MessageContent>
+      ) : null}
+
+      {!isEditing && canRetry ? (
+        <div className="mr-1 mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+          <span role="status">
+            {executionStatus === "failed"
+              ? t.agentRunFailed
+              : t.agentRunCancelled}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 rounded-md px-1.5 text-xs hover:bg-muted hover:text-foreground"
+            disabled={disabled}
+            onClick={onRetry}
+          >
+            <RotateCcw className="size-3" />
+            {t.agentRetry}
+          </Button>
+        </div>
       ) : null}
 
       {!isEditing ? (
@@ -1527,7 +1577,6 @@ export function CopilotPanel({
   keywordMatch,
   modelConfigs,
   selectedModelId,
-  agentSettings,
   onSelectedModelChange,
   hasAgentDraft,
   agentDraftState,
@@ -1536,6 +1585,7 @@ export function CopilotPanel({
   onApplyAgentDraft,
   onDiscardAgentDraft,
   onOpenModelSettings,
+  onBeforeSend,
 }: {
   mode?: "docked" | "sheet";
   resumeId?: string;
@@ -1547,7 +1597,6 @@ export function CopilotPanel({
   keywordMatch: KeywordMatch;
   modelConfigs: ModelConfig[];
   selectedModelId: string;
-  agentSettings: AgentSettings;
   onSelectedModelChange: (modelId: string) => void;
   hasAgentDraft: boolean;
   agentDraftState: AgentDraftState | null;
@@ -1561,6 +1610,7 @@ export function CopilotPanel({
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
   onOpenModelSettings: () => void;
+  onBeforeSend?: () => Promise<void>;
 }) {
   const [messages, setMessages] = useState<AgentPanelMessage[]>([]);
   const [streamingMessage, setStreamingMessage] =
@@ -1597,6 +1647,8 @@ export function CopilotPanel({
   const requestResumeRef = useRef<ResumeData>(resume);
   const currentResumeIdRef = useRef(resumeId);
   const sessionRevisionRef = useRef<string | null>(null);
+  const sessionReadyPromiseRef = useRef<Promise<void> | null>(null);
+  const isRespondingRef = useRef(isResponding);
   const onPreviewAgentEditsRef = useRef(onPreviewAgentEdits);
   const onRollbackAgentDraftRef = useRef(onRollbackAgentDraft);
   const transientStatusTextsRef = useRef(t.agentTransientModelStatusTexts);
@@ -1606,6 +1658,7 @@ export function CopilotPanel({
   transientStatusTextsRef.current = t.agentTransientModelStatusTexts;
   requestFailedTextRef.current = t.agentRequestFailed;
   currentResumeIdRef.current = resumeId;
+  isRespondingRef.current = isResponding;
   referencedAttachmentsRef.current = referencedAttachments;
   const selectedModel = useMemo(
     () =>
@@ -1675,9 +1728,7 @@ export function CopilotPanel({
       sessionRevisionRef.current = session.revision;
       if (replaceMessages) {
         setMessages(
-          session.messages.map((message) =>
-            toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
-          ),
+          toPanelMessages(session, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
         );
       }
       return session;
@@ -1882,7 +1933,7 @@ export function CopilotPanel({
       } finally {
         if (expectedResumeId) {
           try {
-            await refreshAgentSession(expectedResumeId);
+            await refreshAgentSession(expectedResumeId, true);
           } catch (error) {
             if (!isAbortError(error)) {
               console.error(
@@ -1908,9 +1959,22 @@ export function CopilotPanel({
   useEffect(() => {
     let cancelled = false;
     const abortController = new AbortController();
+    let resolveSessionReady: () => void = () => undefined;
+    let sessionReadyResolved = false;
+    const sessionReadyPromise = new Promise<void>((resolve) => {
+      resolveSessionReady = resolve;
+    });
+    const markSessionReady = () => {
+      if (sessionReadyResolved) {
+        return;
+      }
+      sessionReadyResolved = true;
+      resolveSessionReady();
+    };
 
     activeRequestAbortRef.current?.abort();
     activeRequestAbortRef.current = abortController;
+    sessionReadyPromiseRef.current = sessionReadyPromise;
     activeRunRef.current = null;
     stopRequestedRef.current = false;
     previewedEditsKeyRef.current = null;
@@ -1930,6 +1994,8 @@ export function CopilotPanel({
     setReferencedAttachments([]);
 
     if (!resumeId) {
+      markSessionReady();
+      sessionReadyPromiseRef.current = null;
       activeRequestAbortRef.current = null;
       return () => {
         cancelled = true;
@@ -1948,9 +2014,7 @@ export function CopilotPanel({
         }
 
         setMessages(
-          session.messages.map((message) =>
-            toPanelMessage(message, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
-          ),
+          toPanelMessages(session, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
         );
         sessionRevisionRef.current = session.revision;
 
@@ -1961,6 +2025,7 @@ export function CopilotPanel({
           !run ||
           run.status !== "active"
         ) {
+          markSessionReady();
           if (activeRequestAbortRef.current === abortController) {
             activeRequestAbortRef.current = null;
           }
@@ -1969,12 +2034,15 @@ export function CopilotPanel({
 
         requestResumeRef.current = run.baseResume;
         activeRunRef.current = run;
+        isRespondingRef.current = true;
         setIsResponding(true);
+        markSessionReady();
         await consumeRunStream(
           (options) => connectAgentRun(run, options),
           abortController,
         );
       } catch (error) {
+        markSessionReady();
         if (
           !cancelled &&
           activeRequestAbortRef.current === abortController &&
@@ -1986,12 +2054,21 @@ export function CopilotPanel({
         if (activeRequestAbortRef.current === abortController) {
           activeRequestAbortRef.current = null;
         }
+      } finally {
+        markSessionReady();
+        if (sessionReadyPromiseRef.current === sessionReadyPromise) {
+          sessionReadyPromiseRef.current = null;
+        }
       }
     })();
 
     return () => {
       cancelled = true;
+      markSessionReady();
       abortController.abort();
+      if (sessionReadyPromiseRef.current === sessionReadyPromise) {
+        sessionReadyPromiseRef.current = null;
+      }
       if (activeRequestAbortRef.current === abortController) {
         activeRequestAbortRef.current = null;
       }
@@ -2337,6 +2414,18 @@ export function CopilotPanel({
     });
   }
 
+  async function retryUserMessage(message: AgentPanelMessage) {
+    const messageIndex = messages.findIndex((item) => item.id === message.id);
+    if (messageIndex < 0 || isResponding) {
+      return;
+    }
+
+    await sendPrompt(message.text, message.files ?? [], {
+      baseMessages: messages.slice(0, messageIndex),
+      messageId: message.id,
+    });
+  }
+
   async function sendPrompt(
     text: string,
     files: AgentChatAttachment[] = [],
@@ -2350,6 +2439,19 @@ export function CopilotPanel({
 
     if ((!prompt && files.length === 0) || isResponding) {
       return "cancelled";
+    }
+
+    await onBeforeSend?.();
+    await sessionReadyPromiseRef.current;
+
+    if (isRespondingRef.current) {
+      return "cancelled";
+    }
+    if (resumeId && !sessionRevisionRef.current) {
+      const session = await refreshAgentSession(resumeId, true);
+      if (!session) {
+        return "failed";
+      }
     }
 
     const baseMessages = options.baseMessages ?? messages;
@@ -2376,6 +2478,7 @@ export function CopilotPanel({
     setSessionLoadError(false);
     cancelScheduledSend(false);
     setIsResponding(true);
+    isRespondingRef.current = true;
     setMessages(nextMessages);
     setStreamingMessage(null);
     previewedEditsKeyRef.current = null;
@@ -2434,7 +2537,10 @@ export function CopilotPanel({
                   sendAgentChatMessage(
                     {
                       appliedActions: [],
+                      clientTurnId: userMessage.id,
                       conversation: apiMessages,
+                      expectedRevision:
+                        sessionRevisionRef.current ?? undefined,
                       files,
                       jobBrief: nextJobBrief,
                       keywordMatch: nextKeywordMatch,
@@ -2446,10 +2552,15 @@ export function CopilotPanel({
                       resume,
                       resumeId,
                       draftState: agentDraftState,
-                      settings: agentSettings,
                       stream: true,
                     },
-                    streamOptions,
+                    {
+                      ...streamOptions,
+                      onRun: (run) => {
+                        runAccepted = true;
+                        streamOptions.onRun?.(run);
+                      },
+                    },
                   ),
                 abortController,
                 false,
@@ -2461,7 +2572,8 @@ export function CopilotPanel({
             if (
               status === "failed" &&
               resumeId &&
-              isApiErrorCode(error, "AGENT_SESSION_REVISION_CONFLICT")
+              (isApiErrorCode(error, "AGENT_SESSION_REVISION_CONFLICT") ||
+                isApiErrorCode(error, "AGENT_SESSION_TURN_CONFLICT"))
             ) {
               try {
                 const session = await refreshAgentSession(resumeId, true);
@@ -2509,6 +2621,7 @@ export function CopilotPanel({
               activeRunRef.current = null;
               stopRequestedRef.current = false;
               setStreamingMessage(null);
+              isRespondingRef.current = false;
               setIsResponding(false);
             }
             pending?.resolve(status);
@@ -2660,10 +2773,16 @@ export function CopilotPanel({
                               onReferenceAttachment={
                                 referenceHistoryAttachment
                               }
+                              onRetry={() => {
+                                void retryUserMessage(message);
+                              }}
                               onStartEdit={() => startEditingUserMessage(message)}
                               onSubmitEdit={() => {
                                 void submitEditedUserMessage(message);
                               }}
+                              retryable={
+                                message.id === messages[messages.length - 1]?.id
+                              }
                             />
                           ) : (
                             <MessageContent className="w-full min-w-0 max-w-full px-0 py-1 text-foreground">

@@ -32,6 +32,10 @@ TEXT: dict[str, dict[str, str]] = {
         "error.edit_plan_missing_inputs": (
             "Call resume_analysis first or provide explicit plan steps."
         ),
+        "error.finish_invalid_status": (
+            "finish.status must be either ready or blocked. The edit transaction "
+            "was rolled back."
+        ),
         "error.jd_url_missing": "Missing JD URL.",
         "error.merge_items_missing_args": (
             "merge_items requires sectionId, at least two itemIds, and mergedItem."
@@ -284,6 +288,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.edit_entry_must_object": "修改条目必须是对象。",
         "error.edit_plan_missing_inputs": (
             "请先调用 resume_analysis，或提供明确的计划步骤。"
+        ),
+        "error.finish_invalid_status": (
+            "finish.status 必须是 ready 或 blocked，修改事务已回滚。"
         ),
         "error.jd_url_missing": "缺少 JD URL。",
         "error.merge_items_missing_args": (

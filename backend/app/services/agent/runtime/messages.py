@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.schemas.agent import (
@@ -12,6 +13,7 @@ from app.services.llm import (
     LlmRequestError,
     supports_native_attachment,
 )
+from app.services.llm.common import request_max_output_tokens
 
 from ..attachments import (
     AgentAttachmentError,
@@ -26,6 +28,11 @@ from ..executor import (
     _current_prompt,
 )
 from ..localization import agent_text
+from ..policy import capability_policy_for_request
+from ..preferences import (
+    execution_profile_for_request,
+    execution_profile_prompt,
+)
 from ..privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_value
 from ..prompts import (
     CORE_POLICY_PROMPT,
@@ -34,11 +41,103 @@ from ..prompts import (
     STREAMING_FINAL_RESPONSE_PROMPT,
     SYSTEM_PROMPT,
 )
+from ..tools.registry import agent_tool_schemas_for_names
 
 AgentMessageMode = Literal["tools", "final", "streaming_final"]
 CONTEXT_COMPRESSION_RATIO = 0.85
-CONTEXT_HARD_LIMIT_RATIO = 0.99
+CONTEXT_SAFETY_MARGIN_RATIO = 0.01
+MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 256
 DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
+RECENT_EXACT_MESSAGE_COUNT = 4
+ROLLING_MEMORY_KEYS = (
+    "userGoals",
+    "factsAndMaterials",
+    "constraints",
+    "acceptedDecisions",
+    "rejectedDecisions",
+    "pendingQuestions",
+    "sourceReferences",
+)
+ROLLING_MEMORY_TRIM_ORDER = (
+    "factsAndMaterials",
+    "sourceReferences",
+    "pendingQuestions",
+    "acceptedDecisions",
+    "rejectedDecisions",
+    "constraints",
+    "userGoals",
+)
+GOAL_PREFIXES = (
+    "目标",
+    "目的",
+    "申请",
+    "希望",
+    "想要",
+    "goal",
+    "objective",
+    "target",
+    "apply",
+)
+FACT_PREFIXES = (
+    "材料",
+    "事实",
+    "背景",
+    "经历",
+    "证据",
+    "material",
+    "fact",
+    "evidence",
+    "experience",
+)
+CONSTRAINT_PREFIXES = (
+    "约束",
+    "要求",
+    "必须",
+    "只能",
+    "不要",
+    "不得",
+    "constraint",
+    "requirement",
+    "must",
+    "only",
+    "do not",
+    "don't",
+)
+ACCEPTED_DECISION_PREFIXES = (
+    "已确认",
+    "确认保留",
+    "同意",
+    "接受",
+    "accepted",
+    "approved",
+    "confirmed",
+)
+REJECTED_DECISION_PREFIXES = (
+    "已拒绝",
+    "拒绝",
+    "不接受",
+    "rejected",
+    "declined",
+)
+PENDING_QUESTION_PREFIXES = (
+    "待确认",
+    "需要确认",
+    "待补充",
+    "pending",
+    "open question",
+    "needs confirmation",
+)
+
+
+@dataclass(frozen=True)
+class _ContextBudget:
+    """One shared context budget for compression and final validation."""
+
+    input_tokens: int
+    trigger_tokens: int
+    output_reserve_tokens: int
+    tool_schema_tokens: int
+    safety_margin_tokens: int
 
 
 def build_agent_messages(
@@ -56,7 +155,13 @@ def build_agent_messages(
     into complete text; extraction never truncates silently.
     """
 
-    system_content = "\n\n".join(_system_parts(mode))
+    profile = execution_profile_for_request(request)
+    system_content = "\n\n".join(
+        [
+            *_system_parts(mode),
+            execution_profile_prompt(profile),
+        ],
+    )
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -64,10 +169,12 @@ def build_agent_messages(
         },
     ]
 
+    tool_schema_tokens = _tool_schema_token_reserve(request, config, mode=mode)
     context_files, binary_parts = _current_attachment_payload(
         request,
         config,
         force_attachment_text=force_attachment_text,
+        tool_schema_tokens=tool_schema_tokens,
     )
     payload_text = json.dumps(
         _agent_payload(
@@ -76,6 +183,7 @@ def build_agent_messages(
             draft=draft,
             system_content=system_content,
             context_files=context_files,
+            tool_schema_tokens=tool_schema_tokens,
         ),
         ensure_ascii=False,
     )
@@ -151,6 +259,7 @@ def _current_attachment_payload(
     config: AgentLlmConfig,
     *,
     force_attachment_text: bool,
+    tool_schema_tokens: int,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     files = _safe_current_request_attachments(request)
     if not files:
@@ -193,7 +302,11 @@ def _current_attachment_payload(
         return (
             _fit_attachment_context(
                 text_context,
-                token_budget=_attachment_context_token_budget(request, config),
+                token_budget=_attachment_context_token_budget(
+                    request,
+                    config,
+                    tool_schema_tokens=tool_schema_tokens,
+                ),
             ),
             binary_parts,
         )
@@ -236,6 +349,7 @@ def _agent_payload(
     draft: AgentChatMessage | None = None,
     system_content: str,
     context_files: list[dict[str, Any]],
+    tool_schema_tokens: int,
 ) -> dict[str, Any]:
     active_resume = _active_resume(request)
     hidden_terms = resume_hidden_terms(active_resume)
@@ -246,7 +360,6 @@ def _agent_payload(
         "files": context_files,
         "keywordMatch": request.keyword_match,
         "resume": sanitize_agent_resume(active_resume, hidden_terms=hidden_terms),
-        "agentSettings": _visible_agent_settings(request),
         "conversationDepth": _conversation_depth(request),
     }
 
@@ -269,6 +382,7 @@ def _agent_payload(
         config=config,
         base_payload=payload,
         system_content=system_content,
+        tool_schema_tokens=tool_schema_tokens,
     )
     payload["conversation"] = conversation_payload["conversation"]
     payload["conversationContext"] = conversation_payload["conversationContext"]
@@ -277,35 +391,27 @@ def _agent_payload(
     return sanitized_payload if isinstance(sanitized_payload, dict) else {}
 
 
-def _visible_agent_settings(request: AgentChatRequest) -> dict[str, Any]:
-    confirmation_mode = request.settings.get("confirmationMode")
-    return {
-        "responseLanguage": request.settings.get("responseLanguage", "follow"),
-        "behaviorMode": request.settings.get("behaviorMode", "balanced"),
-        "confirmationMode": (
-            confirmation_mode
-            if confirmation_mode in {"always", "suggestOnly"}
-            else "always"
-        ),
-    }
-
-
 def _conversation_payload(
     request: AgentChatRequest,
     *,
     config: AgentLlmConfig,
     base_payload: dict[str, Any],
     system_content: str,
+    tool_schema_tokens: int,
 ) -> dict[str, Any]:
     conversation = _conversation_with_current_prompt(request)
     conversation_messages = [
         item for item in conversation if _conversation_item_text(item)
     ]
     exact_messages = _conversation_entries(conversation_messages)
-    budget_tokens = _context_input_budget_tokens(request, config)
-    compression_trigger_tokens = _context_compression_trigger_tokens(
+    context_budget = _context_budget(
         request,
         config,
+        tool_schema_tokens=tool_schema_tokens,
+    )
+    budget_tokens = context_budget.input_tokens if context_budget else None
+    compression_trigger_tokens = (
+        context_budget.trigger_tokens if context_budget else None
     )
     state_token_budget = _state_token_budget(budget_tokens)
     latest_draft = _latest_draft_state(
@@ -331,7 +437,7 @@ def _conversation_payload(
         current_draft=current_draft,
         latest_draft=latest_draft,
         last_assistant_state=last_assistant_state,
-        budget_tokens=budget_tokens,
+        context_budget=context_budget,
         estimated_tokens=base_tokens,
         compressed=False,
     )
@@ -353,10 +459,14 @@ def _conversation_payload(
             "conversationContext": context,
         }
 
+    # The early return above narrows both scalar limits, but type checkers do
+    # not infer that they originated from the same optional budget object.
+    assert context_budget is not None
     return _compressed_conversation_payload(
         request,
         base_tokens=base_tokens,
         budget_tokens=budget_tokens,
+        context_budget=context_budget,
         exact_messages=exact_messages,
         latest_draft=latest_draft,
         current_draft=current_draft,
@@ -370,65 +480,33 @@ def _compressed_conversation_payload(
     *,
     base_tokens: int,
     budget_tokens: int,
+    context_budget: _ContextBudget,
     exact_messages: list[dict[str, str]],
     latest_draft: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
     last_assistant_state: dict[str, Any] | None,
     source_conversation: list[Any],
 ) -> dict[str, Any]:
-    compressed_messages: list[dict[str, Any]] = []
-    exact_remaining = list(exact_messages)
-    source_remaining = list(source_conversation)
-    summary_token_budget = _summary_token_budget(
-        budget_tokens,
-        max(len(source_conversation), 1),
+    exact_count = min(RECENT_EXACT_MESSAGE_COUNT, len(exact_messages))
+    exact_remaining = exact_messages[-exact_count:] if exact_count else []
+    older_conversation = (
+        source_conversation[:-exact_count] if exact_count else list(source_conversation)
     )
-    estimated_tokens = base_tokens
-
-    while len(exact_remaining) > 1:
-        compressed_messages.append(
-            _compressed_conversation_entry(
-                source_remaining.pop(0),
-                token_budget=summary_token_budget,
-            ),
-        )
-        exact_remaining.pop(0)
-        context = _conversation_context(
-            request,
-            total_messages=len(exact_messages),
-            exact_messages=exact_remaining,
-            compressed_messages=compressed_messages,
-            current_draft=current_draft,
-            latest_draft=latest_draft,
-            last_assistant_state=last_assistant_state,
-            budget_tokens=budget_tokens,
-            estimated_tokens=base_tokens,
-            compressed=True,
-        )
-        estimated_tokens = base_tokens + _estimated_json_tokens(
-            {
-                "conversation": exact_remaining,
-                "conversationContext": context,
-            },
-        )
-        context["compression"]["estimatedInputTokens"] = estimated_tokens
-
-        if estimated_tokens <= budget_tokens:
-            return {
-                "conversation": exact_remaining,
-                "conversationContext": context,
-            }
-
+    rolling_memory, represented_message_count = _build_rolling_memory(
+        older_conversation,
+    )
     context = _conversation_context(
         request,
         total_messages=len(exact_messages),
         exact_messages=exact_remaining,
-        compressed_messages=compressed_messages,
+        compressed_messages=[],
+        compressed_message_count=represented_message_count,
+        rolling_memory=rolling_memory,
         current_draft=current_draft,
         latest_draft=latest_draft,
         last_assistant_state=last_assistant_state,
-        budget_tokens=budget_tokens,
-        estimated_tokens=estimated_tokens,
+        context_budget=context_budget,
+        estimated_tokens=base_tokens,
         compressed=True,
     )
     estimated_tokens = base_tokens + _estimated_json_tokens(
@@ -438,29 +516,24 @@ def _compressed_conversation_payload(
         },
     )
 
-    # Exact current input and active draft state are more valuable than old
-    # prose. Drop the oldest low-signal summaries first instead of knowingly
-    # sending an over-budget request and relying on provider-side truncation.
-    while estimated_tokens > budget_tokens and compressed_messages:
-        removable_index = next(
-            (
-                index
-                for index, item in enumerate(compressed_messages)
-                if not item.get("assistantState")
-            ),
-            0,
-        )
-        compressed_messages.pop(removable_index)
+    # Memory entries are semantic units. When space is tight, remove only
+    # duplicate/older units from a category; never keep a misleading text
+    # prefix. One value per populated category is protected.
+    while estimated_tokens > budget_tokens and _drop_oldest_redundant_memory_item(
+        rolling_memory
+    ):
         context = _conversation_context(
             request,
             total_messages=len(exact_messages),
             exact_messages=exact_remaining,
-            compressed_messages=compressed_messages,
+            compressed_messages=[],
+            compressed_message_count=represented_message_count,
+            rolling_memory=rolling_memory,
             current_draft=current_draft,
             latest_draft=latest_draft,
             last_assistant_state=last_assistant_state,
-            budget_tokens=budget_tokens,
-            estimated_tokens=estimated_tokens,
+            context_budget=context_budget,
+            estimated_tokens=base_tokens,
             compressed=True,
         )
         estimated_tokens = base_tokens + _estimated_json_tokens(
@@ -471,17 +544,20 @@ def _compressed_conversation_payload(
         )
 
     context["compression"]["estimatedInputTokens"] = estimated_tokens
-    if estimated_tokens > budget_tokens:
-        raise LlmRequestError(
-            "The current resume and conversation state exceed the selected "
-            "model context window. Start a new conversation or choose a model "
-            "with a larger context window.",
-        )
+    if estimated_tokens <= budget_tokens:
+        return {
+            "conversation": exact_remaining,
+            "conversationContext": context,
+        }
 
-    return {
-        "conversation": exact_remaining,
-        "conversationContext": context,
-    }
+    # The latest exact window and one value in every populated memory category
+    # are correctness boundaries. If they do not fit, fail before the provider
+    # call rather than silently dropping recent turns or semantic state.
+    raise LlmRequestError(
+        "The current resume and conversation state exceed the selected "
+        "model context window. Start a new conversation or choose a model "
+        "with a larger context window.",
+    )
 
 
 def _conversation_context(
@@ -490,22 +566,32 @@ def _conversation_context(
     total_messages: int,
     exact_messages: list[dict[str, str]],
     compressed_messages: list[dict[str, Any]],
+    compressed_message_count: int | None = None,
+    rolling_memory: dict[str, list[Any]] | None = None,
     current_draft: dict[str, Any] | None,
     latest_draft: dict[str, Any] | None,
     last_assistant_state: dict[str, Any] | None,
-    budget_tokens: int | None,
+    context_budget: _ContextBudget | None,
     estimated_tokens: int,
     compressed: bool,
 ) -> dict[str, Any]:
+    represented_count = (
+        compressed_message_count
+        if compressed_message_count is not None
+        else len(compressed_messages)
+    )
     return {
         "totalMessages": total_messages,
         "exactMessageCount": len(exact_messages),
-        "compressedMessageCount": len(compressed_messages),
+        "compressedMessageCount": represented_count,
         "omittedMessageCount": max(
             0,
-            total_messages - len(exact_messages) - len(compressed_messages),
+            total_messages - len(exact_messages) - represented_count,
         ),
+        # Kept for clients from the previous payload shape. New compression
+        # state lives in rollingMemory and never contains truncated prose.
         "olderSummary": compressed_messages,
+        "rollingMemory": rolling_memory or _empty_rolling_memory(),
         "currentDraft": current_draft,
         "activeDraft": _active_draft_state(current_draft, latest_draft),
         "latestDraft": latest_draft,
@@ -514,20 +600,21 @@ def _conversation_context(
         "compression": {
             "applied": compressed,
             "triggerRatio": CONTEXT_COMPRESSION_RATIO,
-            "hardLimitRatio": CONTEXT_HARD_LIMIT_RATIO,
             "triggerInputTokens": (
-                None
-                if budget_tokens is None
-                else max(
-                    1,
-                    int(
-                        budget_tokens
-                        * CONTEXT_COMPRESSION_RATIO
-                        / CONTEXT_HARD_LIMIT_RATIO
-                    ),
-                )
+                context_budget.trigger_tokens if context_budget else None
             ),
-            "inputBudgetTokens": budget_tokens,
+            "inputBudgetTokens": (
+                context_budget.input_tokens if context_budget else None
+            ),
+            "outputReserveTokens": (
+                context_budget.output_reserve_tokens if context_budget else 0
+            ),
+            "toolSchemaTokens": (
+                context_budget.tool_schema_tokens if context_budget else 0
+            ),
+            "safetyMarginTokens": (
+                context_budget.safety_margin_tokens if context_budget else 0
+            ),
             "estimatedInputTokens": estimated_tokens,
         },
     }
@@ -566,20 +653,134 @@ def _conversation_entries(conversation: list[Any]) -> list[dict[str, str]]:
     return entries
 
 
-def _compressed_conversation_entry(
-    item: Any,
-    *,
-    token_budget: int | None,
-) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "role": _conversation_item_role(item),
-        "content": _truncate_to_tokens(_conversation_item_text(item), token_budget),
-    }
-    response = _conversation_item_response(item)
-    if response is not None:
-        entry["assistantState"] = _assistant_response_state(response)
+def _empty_rolling_memory() -> dict[str, list[Any]]:
+    return {key: [] for key in ROLLING_MEMORY_KEYS}
 
-    return entry
+
+def _build_rolling_memory(
+    conversation: list[Any],
+) -> tuple[dict[str, list[Any]], int]:
+    """Extract stable long-term state without another nondeterministic LLM call."""
+
+    memory = _empty_rolling_memory()
+    represented_ids: set[int] = set()
+    fallback_goal: tuple[int, str] | None = None
+
+    for index, item in enumerate(conversation):
+        text = _conversation_item_text(item)
+        role = _conversation_item_role(item)
+        represented = False
+
+        if role == "user" and text:
+            if fallback_goal is None:
+                fallback_goal = (index, text)
+            category = _user_memory_category(text)
+            if category:
+                represented = _append_unique(memory[category], text) or represented
+        elif role == "assistant" and _is_pending_question(text):
+            represented = (
+                _append_unique(memory["pendingQuestions"], text) or represented
+            )
+
+        for filename in _conversation_item_filenames(item):
+            represented = (
+                _append_unique(memory["factsAndMaterials"], filename) or represented
+            )
+
+        for source in _conversation_source_references(item):
+            represented = (
+                _append_unique(memory["sourceReferences"], source) or represented
+            )
+
+        if represented:
+            represented_ids.add(index)
+
+    # A conversation may predate explicit labels. Preserve its first user
+    # request as the best deterministic goal fallback instead of discarding it.
+    if not memory["userGoals"] and fallback_goal is not None:
+        index, text = fallback_goal
+        _append_unique(memory["userGoals"], text)
+        represented_ids.add(index)
+
+    return memory, len(represented_ids)
+
+
+def _user_memory_category(text: str) -> str | None:
+    normalized = text.strip().casefold()
+    for category, prefixes in (
+        ("acceptedDecisions", ACCEPTED_DECISION_PREFIXES),
+        ("rejectedDecisions", REJECTED_DECISION_PREFIXES),
+        ("constraints", CONSTRAINT_PREFIXES),
+        ("userGoals", GOAL_PREFIXES),
+        ("factsAndMaterials", FACT_PREFIXES),
+    ):
+        if normalized.startswith(prefixes):
+            return category
+    return None
+
+
+def _is_pending_question(text: str) -> bool:
+    normalized = text.strip().casefold()
+    return bool(normalized) and (
+        normalized.startswith(PENDING_QUESTION_PREFIXES)
+        or normalized.endswith(("?", "？"))
+    )
+
+
+def _append_unique(items: list[Any], value: Any) -> bool:
+    if value in items:
+        return False
+    items.append(value)
+    return True
+
+
+def _conversation_item_filenames(item: Any) -> list[str]:
+    files = item.get("files") if isinstance(item, dict) else getattr(item, "files", [])
+    if not isinstance(files, list):
+        return []
+
+    filenames: list[str] = []
+    for file in files:
+        value = (
+            file.get("filename")
+            if isinstance(file, dict)
+            else getattr(file, "filename", None)
+        )
+        if isinstance(value, str) and value.strip():
+            _append_unique(filenames, value.strip())
+    return filenames
+
+
+def _conversation_source_references(item: Any) -> list[dict[str, str]]:
+    response = _conversation_item_response(item)
+    sources = response.get("sources") if response else None
+    if not isinstance(sources, list):
+        return []
+
+    references: list[dict[str, str]] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        reference = {
+            key: value.strip()
+            for key in ("id", "title", "sourceType", "url", "excerpt")
+            for value in [source.get(key)]
+            if isinstance(value, str) and value.strip()
+        }
+        if reference:
+            _append_unique(references, reference)
+    return references
+
+
+def _drop_oldest_redundant_memory_item(
+    memory: dict[str, list[Any]],
+) -> bool:
+    for key in ROLLING_MEMORY_TRIM_ORDER:
+        items = memory[key]
+        if len(items) > 1:
+            items.pop(0)
+            return True
+    return False
 
 
 def _latest_draft_state(
@@ -903,31 +1104,63 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str) and item.strip()]
 
 
+def _context_budget(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    *,
+    tool_schema_tokens: int,
+) -> _ContextBudget | None:
+    window_tokens = _context_window_tokens(request, config)
+    if window_tokens is None:
+        return None
+
+    # Adapters apply a default output cap when max_tokens is unset. Reuse that
+    # exact value so context planning cannot silently spend the output reserve.
+    output_reserve_tokens = max(0, request_max_output_tokens(config))
+    safety_margin_tokens = max(
+        MIN_CONTEXT_SAFETY_MARGIN_TOKENS,
+        int(window_tokens * CONTEXT_SAFETY_MARGIN_RATIO),
+    )
+    input_tokens = (
+        window_tokens
+        - output_reserve_tokens
+        - tool_schema_tokens
+        - safety_margin_tokens
+    )
+    if input_tokens <= 0:
+        raise LlmRequestError(
+            "The selected model context window is too small after reserving "
+            "output, tool definitions, and runtime safety margin.",
+        )
+
+    return _ContextBudget(
+        input_tokens=input_tokens,
+        trigger_tokens=max(1, int(input_tokens * CONTEXT_COMPRESSION_RATIO)),
+        output_reserve_tokens=output_reserve_tokens,
+        tool_schema_tokens=tool_schema_tokens,
+        safety_margin_tokens=safety_margin_tokens,
+    )
+
+
 def _context_input_budget_tokens(
     request: AgentChatRequest,
     config: AgentLlmConfig,
+    *,
+    tool_schema_tokens: int = 0,
 ) -> int | None:
-    window_tokens = _context_window_tokens(request, config)
-    if window_tokens is None:
-        return None
-
-    return max(1, int(window_tokens * CONTEXT_HARD_LIMIT_RATIO))
-
-
-def _context_compression_trigger_tokens(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> int | None:
-    window_tokens = _context_window_tokens(request, config)
-    if window_tokens is None:
-        return None
-
-    return max(1, int(window_tokens * CONTEXT_COMPRESSION_RATIO))
+    budget = _context_budget(
+        request,
+        config,
+        tool_schema_tokens=tool_schema_tokens,
+    )
+    return budget.input_tokens if budget else None
 
 
 def _attachment_context_token_budget(
     request: AgentChatRequest,
     config: AgentLlmConfig,
+    *,
+    tool_schema_tokens: int,
 ) -> int:
     """Reserve at most half of model input context for uploaded material.
 
@@ -936,7 +1169,11 @@ def _attachment_context_token_budget(
     paper while remaining bounded for compatible endpoints with unknown limits.
     """
 
-    input_budget = _context_input_budget_tokens(request, config)
+    input_budget = _context_input_budget_tokens(
+        request,
+        config,
+        tool_schema_tokens=tool_schema_tokens,
+    )
     if input_budget is None:
         return DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET
     return max(1_024, input_budget // 2)
@@ -972,15 +1209,27 @@ def _context_window_tokens(
     return None
 
 
+def _tool_schema_token_reserve(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    *,
+    mode: AgentMessageMode,
+) -> int:
+    """Estimate only schemas that the same frozen policy exposes this turn."""
+
+    if mode != "tools" or not config.supports_tools:
+        return 0
+
+    policy = capability_policy_for_request(request)
+    schemas = agent_tool_schemas_for_names(policy.allowed_tools)
+    return _estimated_json_tokens(schemas) if schemas else 0
+
+
 def _state_token_budget(input_budget_tokens: int | None) -> int | None:
     if input_budget_tokens is None:
         return None
 
     return max(128, input_budget_tokens // 32)
-
-
-def _summary_token_budget(input_budget_tokens: int, message_count: int) -> int:
-    return max(32, input_budget_tokens // max(message_count * 4, 1))
 
 
 def _estimated_json_tokens(value: Any) -> int:
@@ -1103,7 +1352,7 @@ def _visible_web_search_result(value: Any) -> dict[str, str]:
         return {}
 
     result: dict[str, str] = {}
-    for key in ("title", "url", "excerpt"):
+    for key in ("title", "url", "excerpt", "sourceKind"):
         text = _string_value(value.get(key))
         if text:
             result[key] = _truncate_to_tokens(text, 180 if key == "excerpt" else 80)

@@ -1,6 +1,9 @@
 import json
+import re
+from collections import OrderedDict
 from copy import deepcopy
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from app.schemas.agent import (
     AgentChatMessage,
@@ -20,15 +23,18 @@ from ..editing import (
     _model_edit_suggestions_with_diagnostics,
     _model_plan_steps,
 )
+from ..evidence import ground_edit_evidence
 from ..executor import AgentPlanExecutor
 from ..integrations import (
     URL_PATTERN,
+    WebReference,
     WebSearchReference,
     WebSearchResult,
     _fetch_web_reference,
     _search_web_reference,
     _search_web_reference_summary,
 )
+from ..integrations.web import _relevant_web_url
 from ..localization import agent_text
 from ..materials import DEFAULT_MATERIAL_CANDIDATES, extract_resume_materials
 from ..models import (
@@ -72,6 +78,52 @@ WEB_FETCH_PURPOSES = {
 WEB_SEARCH_PURPOSES = {"jd", "target_context", "company_reference"}
 MAX_WEB_SEARCH_QUERY_COUNT = 5
 MAX_WEB_SEARCH_RESULT_COUNT = 10
+MAX_WEB_SEARCH_QUERY_LENGTH = 160
+MAX_WEB_SEARCH_CACHE_ENTRIES = 32
+_LOCAL_TOOL_STABLE_REFERENCES = ("executor", "policy")
+_OUTBOUND_REDACTION_MARKERS = (
+    "[redacted_email]",
+    "[redacted_phone]",
+    "[redacted_name]",
+)
+
+_OUTBOUND_EMAIL_PATTERN = re.compile(
+    r"(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"
+    r"(?![A-Z0-9.-])",
+    flags=re.IGNORECASE,
+)
+_OUTBOUND_PHONE_PATTERN = re.compile(
+    r"(?<![A-Z0-9@])(?:\+?\d[\d\s().-]{5,}\d)(?![A-Z0-9@])",
+    flags=re.IGNORECASE,
+)
+_YEAR_RANGE_PATTERN = re.compile(
+    r"(?:19|20)\d{2}\s*[-/]\s*(?:19|20)\d{2}",
+)
+
+
+def _sanitize_outbound_search_query(
+    value: str,
+    *,
+    hidden_terms: tuple[str, ...] = (),
+) -> str:
+    """Remove common direct identifiers before a query crosses the network."""
+
+    # Reuse the model privacy boundary so identity terms are handled
+    # consistently, then remove its markers instead of leaking them to search.
+    sanitized = sanitize_agent_text(value, hidden_terms=hidden_terms)
+    for marker in _OUTBOUND_REDACTION_MARKERS:
+        sanitized = sanitized.replace(f"+{marker}", " ")
+        sanitized = sanitized.replace(marker, " ")
+    without_email = _OUTBOUND_EMAIL_PATTERN.sub(" ", sanitized)
+
+    def remove_phone(match: re.Match[str]) -> str:
+        candidate = match.group(0).strip()
+        if _YEAR_RANGE_PATTERN.fullmatch(candidate):
+            return candidate
+        return " " if len(re.sub(r"\D", "", candidate)) >= 7 else candidate
+
+    without_phone = _OUTBOUND_PHONE_PATTERN.sub(remove_phone, without_email)
+    return " ".join(without_phone.split()).strip()[:MAX_WEB_SEARCH_QUERY_LENGTH]
 
 
 class AgentToolRunner:
@@ -101,6 +153,149 @@ class AgentToolRunner:
         # Set only after an explicit provider rejection causes the single
         # current-request original-file fallback to extracted text.
         self.native_attachment_text_fallback_used = False
+        self._web_search_cache: OrderedDict[
+            tuple[tuple[str, ...], int, str],
+            WebSearchReference,
+        ] = OrderedDict()
+        # URL provenance is a separate boundary from SSRF validation: only
+        # user-supplied context and this turn's search results may be fetched.
+        self.authorized_web_fetch_urls: set[str] = set()
+        self.remember_authorized_web_urls(
+            *self.web_urls_in_text(executor.prompt),
+            *self.web_urls_in_text(executor.target_brief),
+        )
+
+    @staticmethod
+    def canonical_web_url(value: str) -> str:
+        """Normalize a URL for exact provenance comparisons, not URL rewriting."""
+
+        candidate = value.strip().rstrip(".,;:!?，。；：！？]}'】》")
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            return ""
+        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+            return ""
+
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+        return urlunsplit(
+            (
+                parsed.scheme.casefold(),
+                parsed.netloc.casefold(),
+                path,
+                parsed.query,
+                "",
+            ),
+        )
+
+    @classmethod
+    def web_urls_in_text(cls, value: str) -> tuple[str, ...]:
+        """Extract canonical URLs from user-controlled text fields."""
+
+        urls: list[str] = []
+        for match in URL_PATTERN.finditer(value):
+            normalized = cls.canonical_web_url(match.group(0))
+            if normalized:
+                urls.append(normalized)
+        return tuple(urls)
+
+    def remember_authorized_web_urls(self, *urls: str) -> None:
+        """Record URLs whose origin is trusted for this runner invocation."""
+
+        for url in urls:
+            normalized = self.canonical_web_url(url)
+            if normalized:
+                self.authorized_web_fetch_urls.add(normalized)
+
+    def remember_web_search_result(self, result: WebSearchResult) -> None:
+        """Authorize only URLs actually returned by the current search turn."""
+
+        self.remember_authorized_web_urls(result.url, result.final_url)
+
+    def web_search_cache_key(
+        self,
+        queries: list[str],
+        max_results: int,
+    ) -> tuple[tuple[str, ...], int, str]:
+        """Return the request identity used only within this Agent run."""
+
+        normalized_queries = tuple(
+            " ".join(query.split()).casefold() for query in queries
+        )
+        locale = " ".join(self.executor.request.locale.split()).casefold()
+        return normalized_queries, max_results, locale
+
+    def cached_web_search(
+        self,
+        queries: list[str],
+        max_results: int,
+    ) -> WebSearchReference | None:
+        """Return one reusable result and refresh its bounded LRU position."""
+
+        key = self.web_search_cache_key(queries, max_results)
+        cached = self._web_search_cache.get(key)
+        if cached is None:
+            return None
+
+        self._web_search_cache.move_to_end(key)
+        return WebSearchReference(
+            query=queries[0] if queries else cached.query,
+            results=cached.results,
+            query_count=len(queries),
+            result_count=cached.result_count,
+            error=cached.error,
+            timed_out=cached.timed_out,
+            partial=cached.partial,
+        )
+
+    def cache_web_search(
+        self,
+        queries: list[str],
+        max_results: int,
+        summary: WebSearchReference,
+    ) -> None:
+        """Cache complete success or an explicitly useful partial success."""
+
+        complete_success = (
+            summary.primary is not None
+            and summary.error is None
+            and not summary.timed_out
+            and not summary.partial
+        )
+        reusable_partial = (
+            summary.primary is not None and summary.error is None and summary.partial
+        )
+        if not complete_success and not reusable_partial:
+            return
+
+        key = self.web_search_cache_key(queries, max_results)
+        self._web_search_cache[key] = summary
+        self._web_search_cache.move_to_end(key)
+        while len(self._web_search_cache) > MAX_WEB_SEARCH_CACHE_ENTRIES:
+            self._web_search_cache.popitem(last=False)
+
+    def is_authorized_web_fetch_url(self, url: str) -> bool:
+        normalized = self.canonical_web_url(url)
+        return bool(normalized) and normalized in self.authorized_web_fetch_urls
+
+    @staticmethod
+    def web_excerpt_boundary(
+        result: WebReference | WebSearchResult | None,
+    ) -> dict[str, Any] | None:
+        """Return the normalized source range selected by the fetch parser."""
+
+        start = getattr(result, "excerpt_start", None)
+        end = getattr(result, "excerpt_end", None)
+        if not isinstance(start, int) or not isinstance(end, int) or end <= start:
+            return None
+
+        boundary: dict[str, Any] = {"start": start, "end": end}
+        section = getattr(result, "excerpt_section", "")
+        if isinstance(section, str) and section:
+            boundary["section"] = section
+        return boundary
 
     async def run(
         self,
@@ -122,12 +317,47 @@ class AgentToolRunner:
             return tool, self.tool_result(tool)
 
         if spec.execution == "sync":
-            return await runtime.run_sync(self._run_local_tool, tool_call)
+            initial_state = self._local_tool_state_snapshot()
+            tool, result, final_state = await runtime.run_sync(
+                self._run_local_tool_isolated,
+                tool_call,
+                initial_state,
+            )
+            # No await may occur between this final cancellation gate and the
+            # one-step state swap into the live runner.
+            await runtime.checkpoint()
+            self._commit_local_tool_state(final_state)
+            return tool, result
 
         handler = getattr(self, spec.handler_name)
         tool = await handler(tool_call, runtime)
         self.tools.append(tool)
         return tool, self.tool_result(tool)
+
+    def _local_tool_state_snapshot(self) -> dict[str, Any]:
+        """Copy every run-scoped field that a local tool may mutate."""
+
+        return deepcopy(vars(self))
+
+    def _run_local_tool_isolated(
+        self,
+        tool_call: LlmToolCall,
+        initial_state: dict[str, Any],
+    ) -> tuple[AgentToolInvocation, dict[str, Any], dict[str, Any]]:
+        """Execute one local tool against a detached runner snapshot."""
+
+        isolated = object.__new__(type(self))
+        isolated.__dict__ = initial_state
+        tool, result = isolated._run_local_tool(tool_call)
+        return tool, result, isolated._local_tool_state_snapshot()
+
+    def _commit_local_tool_state(self, state: dict[str, Any]) -> None:
+        """Atomically replace live run state after cancellation checks pass."""
+
+        stable_references = {
+            name: vars(self)[name] for name in _LOCAL_TOOL_STABLE_REFERENCES
+        }
+        self.__dict__ = {**state, **stable_references}
 
     def _run_local_tool(
         self,
@@ -210,6 +440,17 @@ class AgentToolRunner:
         if not url:
             return self.web_tool_error(tool_call, "error.web_fetch_url_missing")
 
+        if not self.is_authorized_web_fetch_url(url):
+            return self.web_tool_error(
+                tool_call,
+                "error.web_fetch_failed",
+                reason="url_not_authorized",
+            )
+
+        target, kind, exact_job_description = self.target_context(
+            tool_call,
+            purpose,
+        )
         agent_api = get_agent_api()
         if agent_api._fetch_web_reference is not _fetch_web_reference:
             web_reference = await runtime.run_sync(
@@ -217,15 +458,31 @@ class AgentToolRunner:
                 url,
             )
         else:
-            web_reference = await runtime.run_async(
-                agent_api._async_fetch_web_reference,
-                url,
+            relevance_query = " ".join(
+                part
+                for part in (target, self.executor.target_brief, self.executor.prompt)
+                if part
             )
 
-        target, kind, exact_job_description = self.target_context(
-            tool_call,
-            purpose,
+            async def fetch_reference() -> WebReference | None:
+                return await agent_api._async_fetch_web_reference(
+                    _relevant_web_url(
+                        url,
+                        relevance_query=relevance_query,
+                        reference_title=target,
+                    ),
+                )
+
+            web_reference = await runtime.run_async(
+                fetch_reference,
+            )
+
+        source_url = (
+            str(getattr(web_reference, "final_url", "") or url)
+            if web_reference
+            else url
         )
+        excerpt_boundary = self.web_excerpt_boundary(web_reference)
 
         if purpose != "jd":
             if not web_reference:
@@ -234,7 +491,7 @@ class AgentToolRunner:
             if purpose == "target_context":
                 self.target_reference = (
                     self.executor.build_url_target_reference_from_web(
-                        url,
+                        source_url,
                         target,
                         web_reference,
                         kind=kind,
@@ -257,9 +514,10 @@ class AgentToolRunner:
                 output=sanitize_agent_value(
                     {
                         "purpose": purpose,
-                        "url": url,
+                        "url": source_url,
                         "title": web_reference.title,
                         "excerpt": web_reference.excerpt,
+                        "excerptBoundary": excerpt_boundary,
                         "canSupportResumeFacts": can_support_resume_facts,
                         "personalExperienceEvidence": can_support_resume_facts,
                     },
@@ -268,17 +526,20 @@ class AgentToolRunner:
             )
 
         self.target_reference = self.executor.build_url_target_reference_from_web(
-            url,
+            source_url,
             target,
             web_reference,
             kind=kind,
             exact_job_description=exact_job_description,
         )
-        return self.executor.build_target_reference_tool(
+        tool = self.executor.build_target_reference_tool(
             self.target_reference,
             tool_call.id,
             tool_name=tool_call.name,
         )
+        if isinstance(tool.output, dict) and excerpt_boundary:
+            tool.output["excerptBoundary"] = excerpt_boundary
+        return tool
 
     async def run_web_search_async(
         self,
@@ -305,12 +566,20 @@ class AgentToolRunner:
             kind=kind,
             exact_job_description=exact_job_description,
         )
+        if not queries:
+            return self.web_tool_error(
+                tool_call,
+                "error.web_search_failed",
+                reason="safe_query_required",
+            )
+
         query = queries[0]
         has_queries_argument = isinstance(tool_call.arguments.get("queries"), list)
         max_results = self.web_search_max_results(
             tool_call,
             default=MAX_WEB_SEARCH_RESULT_COUNT if has_queries_argument else 1,
         )
+        await runtime.checkpoint()
 
         if len(queries) > 1 or has_queries_argument or max_results > 1:
             return await self.run_web_search_summary_async(
@@ -324,17 +593,36 @@ class AgentToolRunner:
                 max_results=max_results,
             )
 
-        agent_api = get_agent_api()
-        if agent_api._search_web_reference is not _search_web_reference:
-            search_result, result_count, search_error = await runtime.run_sync(
-                agent_api._search_web_reference,
-                query,
+        summary = self.cached_web_search(queries, max_results)
+        if summary is None:
+            agent_api = get_agent_api()
+            if agent_api._search_web_reference is not _search_web_reference:
+                search_result, result_count, search_error = await runtime.run_sync(
+                    agent_api._search_web_reference,
+                    query,
+                )
+            else:
+                search_result, result_count, search_error = await runtime.run_async(
+                    agent_api._async_search_web_reference,
+                    query,
+                )
+
+            summary = WebSearchReference(
+                query=query,
+                results=(search_result,) if search_result else (),
+                query_count=1,
+                result_count=result_count,
+                error=search_error,
             )
+            self.cache_web_search(queries, max_results, summary)
         else:
-            search_result, result_count, search_error = await runtime.run_async(
-                agent_api._async_search_web_reference,
-                query,
-            )
+            search_result = summary.primary
+            result_count = summary.result_count
+            search_error = summary.error
+
+        if search_result:
+            self.remember_web_search_result(search_result)
+        excerpt_boundary = self.web_excerpt_boundary(search_result)
 
         if purpose != "jd":
             if search_error or not search_result:
@@ -386,6 +674,7 @@ class AgentToolRunner:
                         "url": search_result.url,
                         "title": search_result.title,
                         "excerpt": search_result.excerpt,
+                        "excerptBoundary": excerpt_boundary,
                         "personalExperienceEvidence": False,
                     },
                     hidden_terms=self.executor.hidden_terms,
@@ -401,11 +690,14 @@ class AgentToolRunner:
             kind=kind,
             exact_job_description=exact_job_description,
         )
-        return self.executor.build_target_reference_tool(
+        tool = self.executor.build_target_reference_tool(
             self.target_reference,
             tool_call.id,
             tool_name=tool_call.name,
         )
+        if isinstance(tool.output, dict) and excerpt_boundary:
+            tool.output["excerptBoundary"] = excerpt_boundary
+        return tool
 
     def target_context(
         self,
@@ -439,9 +731,7 @@ class AgentToolRunner:
     ) -> list[str]:
         """Return deduplicated search queries for one web_search invocation."""
 
-        infer_from_request = not target and kind is None
         resolved_kind = kind or self.executor.infer_target_kind(target)
-        resolved_target = target or self.executor.infer_target(resolved_kind)
         raw_values: list[str] = []
         query = str(tool_call.arguments.get("query") or "").strip()
         if query:
@@ -451,23 +741,15 @@ class AgentToolRunner:
         if isinstance(queries, list):
             raw_values.extend(value for value in queries if isinstance(value, str))
 
-        # Direct callers historically received the current prompt unchanged.
-        fallback_query = (
-            self.executor.prompt
-            if infer_from_request and self.executor.prompt
-            else self.executor.target_search_query(
-                resolved_target,
-                resolved_kind,
-                exact_job_description=exact_job_description,
-            )
-        )
-        if not raw_values:
-            raw_values.append(fallback_query)
-
         normalized: list[str] = []
         seen: set[str] = set()
         for value in raw_values:
-            compacted = " ".join(value.split()).strip()[:160]
+            # This is the outbound privacy boundary. Never substitute the full
+            # user prompt when the model omits a query.
+            compacted = _sanitize_outbound_search_query(
+                value,
+                hidden_terms=self.executor.hidden_terms,
+            )
             key = compacted.casefold()
             if not compacted or key in seen:
                 continue
@@ -477,7 +759,34 @@ class AgentToolRunner:
             if len(normalized) >= MAX_WEB_SEARCH_QUERY_COUNT:
                 break
 
-        return normalized or [fallback_query]
+        if normalized:
+            return normalized
+
+        supplied_target = str(
+            tool_call.arguments.get("target") or tool_call.arguments.get("role") or "",
+        ).strip()
+        # jobBrief is a structured request field; an inferred prompt target is
+        # not safe enough to send when no explicit query/target was provided.
+        fallback_target = supplied_target or (
+            target if self.executor.target_brief else ""
+        )
+        safe_target = _sanitize_outbound_search_query(
+            fallback_target,
+            hidden_terms=self.executor.hidden_terms,
+        )
+        if not safe_target:
+            return []
+
+        fallback_query = self.executor.target_search_query(
+            safe_target,
+            resolved_kind,
+            exact_job_description=exact_job_description,
+        )
+        sanitized_fallback = _sanitize_outbound_search_query(
+            fallback_query,
+            hidden_terms=self.executor.hidden_terms,
+        )
+        return [sanitized_fallback] if sanitized_fallback else []
 
     def web_search_max_results(self, tool_call: LlmToolCall, *, default: int) -> int:
         """Return the bounded maxResults value for aggregated web_search."""
@@ -502,19 +811,29 @@ class AgentToolRunner:
     ) -> AgentToolInvocation:
         """Search multiple query variants as one model-visible tool call."""
 
-        agent_api = get_agent_api()
-        if agent_api._search_web_reference_summary is not _search_web_reference_summary:
-            summary = await runtime.run_sync(
-                agent_api._search_web_reference_summary,
-                queries,
-                max_results,
-            )
-        else:
-            summary = await runtime.run_async(
-                agent_api._async_search_web_reference_summary,
-                queries,
-                max_results,
-            )
+        await runtime.checkpoint()
+        summary = self.cached_web_search(queries, max_results)
+        if summary is None:
+            agent_api = get_agent_api()
+            if (
+                agent_api._search_web_reference_summary
+                is not _search_web_reference_summary
+            ):
+                summary = await runtime.run_sync(
+                    agent_api._search_web_reference_summary,
+                    queries,
+                    max_results,
+                )
+            else:
+                summary = await runtime.run_async(
+                    agent_api._async_search_web_reference_summary,
+                    queries,
+                    max_results,
+                )
+            self.cache_web_search(queries, max_results, summary)
+
+        for result in summary.results:
+            self.remember_web_search_result(result)
 
         if purpose != "jd":
             if summary.primary and not summary.error:
@@ -528,6 +847,7 @@ class AgentToolRunner:
                             summary.error,
                             kind=kind,
                             exact_job_description=False,
+                            search_results=summary.results,
                         )
                     )
             return self.web_search_summary_tool(
@@ -547,6 +867,7 @@ class AgentToolRunner:
             summary.error,
             kind=kind,
             exact_job_description=exact_job_description,
+            search_results=summary.results,
         )
         tool = self.executor.build_target_reference_tool(
             self.target_reference,
@@ -563,6 +884,11 @@ class AgentToolRunner:
         if isinstance(tool.output, dict):
             tool.output["queryCount"] = summary.query_count
             tool.output["maxResults"] = max_results
+            tool.output["timedOut"] = summary.timed_out
+            tool.output["partial"] = summary.partial
+            excerpt_boundary = self.web_excerpt_boundary(search_result)
+            if excerpt_boundary:
+                tool.output["excerptBoundary"] = excerpt_boundary
         return tool
 
     def web_search_summary_tool(
@@ -592,6 +918,8 @@ class AgentToolRunner:
                 output={
                     "queryCount": summary.query_count,
                     "resultCount": summary.result_count,
+                    "timedOut": summary.timed_out,
+                    "partial": summary.partial,
                 },
                 errorText=summary.error
                 or agent_text(
@@ -600,15 +928,20 @@ class AgentToolRunner:
                 ),
             )
 
-        results = [
-            {
+        results = []
+        for result in summary.results:
+            item: dict[str, Any] = {
                 "url": result.url,
                 "title": result.title,
                 "excerpt": result.excerpt,
+                "sourceKind": result.source_kind,
             }
-            for result in summary.results
-        ]
+            excerpt_boundary = self.web_excerpt_boundary(result)
+            if excerpt_boundary:
+                item["excerptBoundary"] = excerpt_boundary
+            results.append(item)
         primary = summary.primary
+        primary_boundary = self.web_excerpt_boundary(primary)
         return AgentToolInvocation(
             id=tool_call.id,
             type=f"tool-{tool_call.name}",
@@ -623,10 +956,15 @@ class AgentToolRunner:
                     "queryCount": summary.query_count,
                     "maxResults": max_results,
                     "resultCount": summary.result_count,
+                    "timedOut": summary.timed_out,
+                    "partial": summary.partial,
                     "results": results,
                     "url": primary.url,
                     "title": primary.title,
-                    "excerpt": summary.excerpt or primary.excerpt,
+                    # Keep the legacy top-level source fields internally
+                    # consistent; the full evidence set lives in `results`.
+                    "excerpt": primary.excerpt,
+                    "excerptBoundary": primary_boundary,
                     "personalExperienceEvidence": False,
                 },
                 hidden_terms=self.executor.hidden_terms,
@@ -637,32 +975,29 @@ class AgentToolRunner:
         self,
         summary: WebSearchReference,
     ) -> WebSearchResult | None:
-        """Return the primary result with the combined opportunity excerpt."""
+        """Return the primary result without borrowing other sources' text."""
 
-        primary = summary.primary
-        if not primary:
-            return None
-
-        return WebSearchResult(
-            title=primary.title,
-            url=primary.url,
-            excerpt=summary.excerpt or primary.excerpt,
-        )
+        return summary.primary
 
     def web_tool_error(
         self,
         tool_call: LlmToolCall,
         message_key: str,
+        *,
+        reason: str | None = None,
     ) -> AgentToolInvocation:
         """Return a consistent web tool validation error."""
 
+        output: dict[str, Any] = {"blocked": True}
+        if reason:
+            output["reason"] = reason
         return AgentToolInvocation(
             id=tool_call.id,
             type=f"tool-{tool_call.name}",
             title=tool_call.name,
             state="output-error",
             input=tool_call.arguments,
-            output={"blocked": True},
+            output=output,
             errorText=agent_text(self.executor.request.locale, message_key),
         )
 
@@ -1034,11 +1369,21 @@ class AgentToolRunner:
         """
 
         before_resume = deepcopy(self.draft_resume)
+        model_edits, evidence_issues = ground_edit_evidence(
+            before_resume,
+            self.executor.request,
+            model_edits,
+        )
         candidate_resume = deepcopy(self.draft_resume)
         _apply_edit_operations(candidate_resume, model_edits)
         quality_issues = [
+            *evidence_issues,
             *normalization_loss_issues(before_resume, entries, model_edits),
-            *draft_quality_issues(candidate_resume, model_edits),
+            *draft_quality_issues(
+                candidate_resume,
+                model_edits,
+                target_context=self.quality_target_context(),
+            ),
         ]
         blocking_issues = blocking_quality_issues(quality_issues)
         if blocking_issues:
@@ -1240,7 +1585,22 @@ class AgentToolRunner:
 
         status = str(tool_call.arguments.get("status") or "").strip()
         if status not in {"ready", "blocked"}:
-            status = "ready"
+            # Tool schemas normally reject this earlier. Keep the runtime
+            # boundary fail-closed so malformed provider output can never
+            # commit edits as a successful transaction.
+            self.fail_transaction()
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type="tool-finish",
+                title="finish",
+                state="output-error",
+                input=tool_call.arguments,
+                output={"status": "rolled_back"},
+                errorText=agent_text(
+                    self.executor.request.locale,
+                    "error.finish_invalid_status",
+                ),
+            )
         reason = str(tool_call.arguments.get("reason") or "").strip()
         missing = self.finish_missing_values(tool_call.arguments.get("missing"))
         if status != "blocked":
@@ -1278,6 +1638,14 @@ class AgentToolRunner:
         """Return resolved target context, or the request-derived placeholder."""
 
         return self.target_reference or self.executor.target_reference_from_request()
+
+    def quality_target_context(self) -> str | None:
+        """Return explicit target requirements, never inferred public evidence."""
+
+        reference = self.current_target_reference()
+        if reference.mode == "none":
+            return None
+        return reference.excerpt or reference.source_excerpt or None
 
     def tool_result(self, tool: AgentToolInvocation) -> dict[str, Any]:
         """Return compact JSON sent back to the model after tool execution."""

@@ -10,14 +10,25 @@ from typing import Final
 from uuid import uuid4
 
 from app.db.connection import connect
-from app.schemas.agent import AgentChatRequest, AgentRunResponse, AgentRunStatus
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentRunResponse,
+    AgentRunStatus,
+    AgentTurnErrorCode,
+    AgentTurnExecutionStatus,
+)
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.streaming import async_stream_agent_response
-from app.services.agent_sessions import append_agent_exchange
+from app.services.agent_sessions import (
+    append_agent_exchange,
+    finish_agent_turn_execution,
+    prepare_agent_turn,
+)
 
 MAX_RETAINED_AGENT_RUNS: Final = 24
 MAX_BUFFERED_AGENT_EVENTS: Final = 512
 MAX_BUFFERED_AGENT_EVENT_BYTES: Final = 4 * 1024 * 1024
+AGENT_SSE_HEARTBEAT_SECONDS: Final = 12.0
 
 
 class AgentRunConflictError(Exception):
@@ -48,6 +59,8 @@ class AgentRun:
     has_provisional_edits: bool = False
     has_terminal_message: bool = False
     has_error: bool = False
+    execution_state: AgentTurnExecutionStatus = "running"
+    error_code: AgentTurnErrorCode | None = None
     buffered_event_bytes: int = 0
     replay_message: dict[str, object] = field(default_factory=dict)
 
@@ -57,6 +70,8 @@ class AgentRun:
             resumeId=self.resume_id,
             baseResume=self.request.resume,
             status=self.status,
+            executionState=self.execution_state,
+            errorCode=self.error_code,
             lastEventId=self.next_sequence - 1,
         )
 
@@ -64,9 +79,9 @@ class AgentRun:
 class AgentRunManager:
     """Own background Agent runs independently from HTTP stream subscribers.
 
-    Runs intentionally remain process-local: reconnects survive browser/network
-    interruption, while a backend restart aborts unfinished work without a
-    durable queue or partial draft persistence.
+    Work and replay events intentionally remain process-local; only the turn
+    lifecycle is durable. Reconnects survive browser/network interruption,
+    while a backend restart still aborts work without a durable queue.
     """
 
     def __init__(self) -> None:
@@ -84,8 +99,15 @@ class AgentRunManager:
                 if active_run and active_run.status == "active":
                     raise AgentRunConflictError
 
+            # Run reservation and user-turn acceptance share this lock. This
+            # prevents a losing concurrent request from persisting a message
+            # before it discovers another run already owns the resume.
+            run_id = f"agent-run-{uuid4().hex[:16]}"
+            with closing(connect()) as conn:
+                request = prepare_agent_turn(conn, request, run_id=run_id)
+
             run = AgentRun(
-                id=f"agent-run-{uuid4().hex[:16]}",
+                id=run_id,
                 request=request,
                 resume_id=resume_id,
             )
@@ -135,13 +157,27 @@ class AgentRunManager:
         run = await self.get(run_id)
         cursor = max(after, 0)
         while True:
+            emit_heartbeat = False
             async with run.condition:
                 pending = [event for event in run.events if event.sequence > cursor]
                 if not pending and run.status != "active":
                     return
                 if not pending:
-                    await run.condition.wait()
-                    continue
+                    try:
+                        await asyncio.wait_for(
+                            run.condition.wait(),
+                            timeout=AGENT_SSE_HEARTBEAT_SECONDS,
+                        )
+                    except TimeoutError:
+                        emit_heartbeat = run.status == "active"
+                    else:
+                        continue
+
+            if emit_heartbeat:
+                # Comments keep idle transports alive without entering the
+                # sequenced replay protocol or changing Last-Event-ID.
+                yield ": ping\n\n"
+                continue
 
             for event in pending:
                 cursor = event.sequence
@@ -182,23 +218,33 @@ class AgentRunManager:
                     run.has_terminal_message = (
                         run.has_terminal_message or event_name == "message_done"
                     )
-                    run.has_error = run.has_error or event_name == "error"
+                    if event_name == "error":
+                        run.has_error = True
+                        run.error_code = run.error_code or _provider_error_code(frame)
                     await self._publish(run, frame)
 
             if run.cancel_event.is_set() and not run.has_terminal_message:
                 await self._rollback_provisional_edits(run)
+                run.error_code = "AGENT_RUN_CANCELLED"
                 final_status = "cancelled"
             elif run.has_error or run.has_provisional_edits:
                 # A normal completion must resolve every provisional edit with
                 # an explicit commit or rollback. Provider failures can still
                 # emit a user-facing message_done, so that event alone is not a
                 # valid transaction commit signal.
+                if run.error_code is None:
+                    run.error_code = (
+                        "AGENT_EDIT_TRANSACTION_INCOMPLETE"
+                        if run.has_provisional_edits
+                        else "AGENT_PROVIDER_ERROR"
+                    )
                 await self._rollback_provisional_edits(run)
                 final_status = "failed"
             else:
                 final_status = "completed"
         except asyncio.CancelledError:
             run.cancel_event.set()
+            run.error_code = "AGENT_RUN_CANCELLED"
             await self._rollback_provisional_edits(run)
             final_status = "cancelled"
         except Exception:
@@ -212,14 +258,19 @@ class AgentRunManager:
                     {"type": "error", "error": "Agent request failed."},
                 ),
             )
+            run.error_code = "AGENT_INTERNAL_ERROR"
             await self._rollback_provisional_edits(run)
             final_status = "failed"
         finally:
-            await self._publish_terminal(
-                run,
-                final_status,
-            )
-            await self._release(run)
+            try:
+                await self._publish_terminal(
+                    run,
+                    final_status,
+                )
+            finally:
+                # Never retain an in-memory reservation if terminal
+                # persistence or publication fails unexpectedly.
+                await self._release(run)
 
     async def _rollback_provisional_edits(self, run: AgentRun) -> None:
         """Resolve an unfinished transaction before publishing run_done."""
@@ -261,9 +312,28 @@ class AgentRunManager:
     ) -> None:
         """Publish the terminal cursor and status as one observable state change."""
 
+        execution_state = _execution_state(status)
+        error_code = None if execution_state == "succeeded" else run.error_code
+        # Commit the durable terminal state before exposing run_done. A client
+        # that refreshes after that event must never observe the turn as running.
+        with closing(connect()) as conn:
+            finish_agent_turn_execution(
+                conn,
+                run.request,
+                run_id=run.id,
+                status=execution_state,
+                error_code=error_code,
+            )
+
         frame = _sse_frame(
             "run_done",
-            {"type": "run_done", "runId": run.id, "status": status},
+            {
+                "type": "run_done",
+                "runId": run.id,
+                "status": status,
+                "executionState": execution_state,
+                "errorCode": error_code,
+            },
         )
         async with run.condition:
             sequence = run.next_sequence
@@ -275,6 +345,8 @@ class AgentRunManager:
             run.events.append(terminal_event)
             run.buffered_event_bytes += _frame_size(terminal_event.frame)
             run.status = status
+            run.execution_state = execution_state
+            run.error_code = error_code
             _compact_terminal_replay_buffer(run, terminal_event)
             run.condition.notify_all()
 
@@ -452,6 +524,34 @@ def _transaction_state(frame: str) -> str:
 def _event_name(frame: str) -> str:
     first_line = frame.splitlines()[0] if frame else ""
     return first_line.removeprefix("event:").strip()
+
+
+def _provider_error_code(frame: str) -> AgentTurnErrorCode:
+    """Classify a public provider error without persisting its free-form text."""
+
+    _, payload = _event_payload(frame)
+    explicit_code = payload.get("errorCode")
+    if explicit_code == "AGENT_PROVIDER_AUTH_ERROR":
+        return "AGENT_PROVIDER_AUTH_ERROR"
+    if explicit_code == "AGENT_PROVIDER_ERROR":
+        return "AGENT_PROVIDER_ERROR"
+
+    error_text = payload.get("error") or payload.get("message")
+    normalized = error_text.casefold() if isinstance(error_text, str) else ""
+    if any(
+        marker in normalized
+        for marker in ("http 401", "http 403", "unauthorized", "forbidden")
+    ):
+        return "AGENT_PROVIDER_AUTH_ERROR"
+    return "AGENT_PROVIDER_ERROR"
+
+
+def _execution_state(status: AgentRunStatus) -> AgentTurnExecutionStatus:
+    if status == "completed":
+        return "succeeded"
+    if status == "cancelled":
+        return "cancelled"
+    return "failed"
 
 
 def _sse_frame(event_name: str, payload: dict[str, object]) -> str:

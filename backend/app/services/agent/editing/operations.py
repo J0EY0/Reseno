@@ -831,6 +831,13 @@ def _model_edit_suggestions_with_diagnostics(
         replacement = _model_string(item.get("replacement")) or _operation_replacement(
             operation,
         )
+        evidence_refs = list(
+            dict.fromkeys(
+                reference.strip()
+                for reference in _string_list(item.get("evidenceRefs"))
+                if reference.strip()
+            ),
+        )
 
         edits.append(
             AgentResumeEditSuggestion(
@@ -840,6 +847,7 @@ def _model_edit_suggestions_with_diagnostics(
                 reason=reason,
                 replacement=replacement,
                 operation=operation,
+                evidenceRefs=evidence_refs,
                 status="executed",
             ),
         )

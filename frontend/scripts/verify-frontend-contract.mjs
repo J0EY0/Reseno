@@ -67,6 +67,7 @@ async function loadAgentMessageRenderingHelpers() {
 
 const files = await collectFiles(srcDir);
 const resumeTypes = await readFile(join(srcDir, "types", "resume.ts"), "utf8");
+const apiTypes = await readFile(join(srcDir, "types", "api.ts"), "utf8");
 const modelConfigForm = await readFile(
   join(srcDir, "components", "model-config-form-popover.tsx"),
   "utf8",
@@ -258,6 +259,16 @@ assert(
 assert(
   !/continuing with chat request/.test(copilotPanel),
   "Editing must stop when persisted Agent history replacement fails.",
+);
+assert(
+  !/settings:\s*agentSettings/.test(copilotPanel),
+  "Agent chat requests must not resend backend-owned Agent preferences.",
+);
+const agentChatRequestType =
+  apiTypes.match(/export interface AgentChatRequest \{[\s\S]*?\n\}/)?.[0] ?? "";
+assert(
+  agentChatRequestType.length > 0 && !/\bsettings\s*:/.test(agentChatRequestType),
+  "The frontend Agent request contract must not expose persisted Agent preferences.",
 );
 assert(
   /status\s*!==\s*"completed"[\s\S]{0,800}shouldRollbackOptimisticAgentMessages\([\s\S]{0,500}setMessages\(pending\.rollbackMessages\)/.test(

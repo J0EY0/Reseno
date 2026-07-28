@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from typing import cast
 
 from fastapi import FastAPI, HTTPException, Request
@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.config import get_settings
+from app.db.connection import connect
 from app.db.migrations import migrate_db
 from app.exceptions import (
     http_exception_handler,
@@ -30,6 +31,7 @@ from app.routers import (
     workspace,
 )
 from app.services.agent_runs import AgentRunManager
+from app.services.agent_sessions import fail_interrupted_agent_turn_executions
 from app.services.model_metadata import ensure_model_metadata_cache
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
@@ -40,6 +42,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup database migrations before serving requests."""
 
     migrate_db()
+    with closing(connect()) as conn:
+        fail_interrupted_agent_turn_executions(conn)
     ensure_model_metadata_cache()
     app.state.agent_runs = AgentRunManager()
     try:

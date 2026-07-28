@@ -30,9 +30,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "expect": {
@@ -70,9 +67,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "expect": {
@@ -112,9 +106,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "expect": {
@@ -154,9 +145,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "expect": {
@@ -199,9 +187,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "expect": {
@@ -228,9 +213,6 @@
             "summary": "待补充。"
           },
           "sections": []
-        },
-        "settings": {
-          "confirmationMode": "always"
         }
       },
       "attachments": [
@@ -289,7 +271,6 @@
           ]
         },
         "settings": {
-          "confirmationMode": "always",
           "maxIterations": 5
         }
       },

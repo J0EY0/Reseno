@@ -7,6 +7,7 @@ import shutil
 import xml.etree.ElementTree as ElementTree
 import zipfile
 from base64 import b64encode
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,10 @@ from app.schemas.agent import AgentAttachmentResponse, AgentChatRequest
 MAX_AGENT_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_AGENT_ATTACHMENT_TEXT_CHARS = 250_000
 MAX_AGENT_CONTEXT_ATTACHMENTS = 5
+# Request-level caps bound aggregate provider payload and extraction memory even
+# when every individual attachment remains below its own limit.
+MAX_AGENT_REQUEST_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_AGENT_REQUEST_ATTACHMENT_TEXT_CHARS = 400_000
 MAX_AGENT_ATTACHMENT_FILENAME_BYTES = 180
 MAX_PDF_PAGES = 50
 MAX_DOCX_XML_BYTES = 8 * 1024 * 1024
@@ -62,6 +67,16 @@ class StoredAgentAttachment:
     path: Path
     created_at: str
     sent_at: str | None
+    state: Literal["stored", "ready", "consumed"]
+
+
+@dataclass(frozen=True)
+class AgentAttachmentPrevalidation:
+    """Validated current-turn attachment totals."""
+
+    attachment_ids: tuple[str, ...]
+    total_bytes: int
+    total_text_chars: int
 
 
 @dataclass(frozen=True)
@@ -153,6 +168,7 @@ def store_agent_attachment(
             "size": len(payload),
             "createdAt": now,
             "sentAt": None,
+            "state": "stored",
         }
         _write_metadata(session_id, attachment_id, metadata)
     except Exception:
@@ -209,6 +225,68 @@ def load_agent_attachment(
         sent_at=(
             str(metadata["sentAt"]) if isinstance(metadata.get("sentAt"), str) else None
         ),
+        state=_metadata_state(metadata),
+    )
+
+
+def prevalidate_agent_attachments(
+    session_id: str,
+    files: list[dict[str, Any]],
+    *,
+    can_consume_native: Callable[[StoredAgentAttachment], bool] | None = None,
+) -> AgentAttachmentPrevalidation:
+    """Validate that every current-turn file can be consumed before commit.
+
+    Native-capable files keep their original bytes. Other documents must
+    produce readable text, which also warms the extraction cache for runtime.
+    Metadata advances to ``ready`` only after the whole batch succeeds.
+    """
+
+    unique_files = _unique_attachment_files(files)
+    if len(unique_files) > MAX_AGENT_CONTEXT_ATTACHMENTS:
+        raise AgentAttachmentError(
+            f"At most {MAX_AGENT_CONTEXT_ATTACHMENTS} attachments can be sent "
+            "in one request.",
+        )
+
+    native_predicate = can_consume_native or (lambda _attachment: False)
+    attachments: list[StoredAgentAttachment] = []
+    total_bytes = 0
+    total_text_chars = 0
+
+    for file in unique_files:
+        attachment = load_agent_attachment(session_id, file)
+        if attachment is None:
+            raise AgentAttachmentError("The attachment is no longer available.")
+        payload = _read_validated_payload(attachment)
+
+        total_bytes += len(payload)
+        if total_bytes > MAX_AGENT_REQUEST_ATTACHMENT_BYTES:
+            raise AgentAttachmentError(
+                "The attachments exceed the total size limit for one request.",
+            )
+
+        if native_predicate(attachment):
+            _validate_native_attachment(attachment, payload)
+        elif attachment.kind == "image":
+            raise AgentAttachmentError(
+                "The selected model cannot consume this image attachment.",
+            )
+        else:
+            text = attachment_text(session_id, file)
+            total_text_chars += len(text)
+            if total_text_chars > MAX_AGENT_REQUEST_ATTACHMENT_TEXT_CHARS:
+                raise AgentAttachmentError(
+                    "The extracted attachments exceed the total text limit "
+                    "for one request.",
+                )
+        attachments.append(attachment)
+
+    _mark_agent_attachments_ready(session_id, attachments)
+    return AgentAttachmentPrevalidation(
+        attachment_ids=tuple(attachment.id for attachment in attachments),
+        total_bytes=total_bytes,
+        total_text_chars=total_text_chars,
     )
 
 
@@ -236,7 +314,16 @@ def attachment_text(session_id: str, file: dict[str, Any]) -> str:
     except OSError as exc:
         raise AgentAttachmentError("The attachment could not be read.") from exc
 
-    text = _extract_attachment_text(attachment, payload)
+    try:
+        text = _extract_attachment_text(attachment, payload)
+    except AgentAttachmentError:
+        raise
+    except Exception as exc:
+        # Extractor/parser internals are not stable API and must not escape the
+        # attachment boundary or leave a half-committed user turn.
+        raise AgentAttachmentError(
+            "The attachment could not be extracted.",
+        ) from exc
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_text_atomic(cache_path, text)
     return text
@@ -276,7 +363,12 @@ def mark_agent_attachments_sent(
         metadata = _read_metadata(session_id, attachment_id)
         if metadata is None:
             raise AgentAttachmentError("The attachment is no longer available.")
-        if not metadata.get("sentAt"):
+        state = _metadata_state(metadata)
+        if state == "stored":
+            # Consumption is the commit point; validation must have advanced
+            # every attachment in the turn before any metadata is mutated.
+            raise AgentAttachmentError("The attachment is not ready to be consumed.")
+        if state == "ready":
             pending_updates.append((attachment_id, dict(metadata)))
 
     receipt = AgentAttachmentSentReceipt(
@@ -287,7 +379,11 @@ def mark_agent_attachments_sent(
     attempted_count = 0
     try:
         for attachment_id, previous_metadata in pending_updates:
-            metadata = {**previous_metadata, "sentAt": sent_at}
+            metadata = {
+                **previous_metadata,
+                "sentAt": sent_at,
+                "state": "consumed",
+            }
             # Include the current file before writing: storage wrappers may
             # raise after the atomic replace has already reached disk.
             attempted_count += 1
@@ -519,6 +615,24 @@ def _attachment_ids(files: list[dict[str, Any]]) -> list[str]:
     return ids
 
 
+def _unique_attachment_files(
+    files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    unique_files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for file in files:
+        if not isinstance(file, dict):
+            raise AgentAttachmentError("The attachment reference is invalid.")
+        attachment_id = _normalized_attachment_id(file.get("id"))
+        if attachment_id is None:
+            raise AgentAttachmentError("The attachment reference is invalid.")
+        if attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        unique_files.append(file)
+    return unique_files
+
+
 def _normalized_attachment_id(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -609,6 +723,44 @@ def _validate_attachment(
     raise AgentAttachmentError("The attachment type is not supported.")
 
 
+def _read_validated_payload(attachment: StoredAgentAttachment) -> bytes:
+    try:
+        payload = attachment.path.read_bytes()
+    except OSError as exc:
+        raise AgentAttachmentError("The attachment could not be read.") from exc
+
+    if len(payload) != attachment.size or len(payload) > MAX_AGENT_ATTACHMENT_BYTES:
+        raise AgentAttachmentError("The stored attachment size is invalid.")
+
+    kind, media_type = _validate_attachment(
+        attachment.filename,
+        attachment.media_type,
+        payload,
+    )
+    if kind != attachment.kind or media_type != attachment.media_type:
+        raise AgentAttachmentError("The stored attachment metadata is invalid.")
+    return payload
+
+
+def _validate_native_attachment(
+    attachment: StoredAgentAttachment,
+    payload: bytes,
+) -> None:
+    if attachment.media_type != "application/pdf":
+        return
+    try:
+        reader = PdfReader(io.BytesIO(payload), strict=False)
+        if reader.is_encrypted:
+            raise AgentAttachmentError("Encrypted PDF attachments are not supported.")
+        # Accessing the page tree catches truncated cross-reference structures
+        # without requiring text extraction from scanned/native PDF inputs.
+        len(reader.pages)
+    except AgentAttachmentError:
+        raise
+    except Exception as exc:
+        raise AgentAttachmentError("The PDF could not be read.") from exc
+
+
 def _validate_docx(payload: bytes) -> None:
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
@@ -695,6 +847,53 @@ def _require_text(value: str) -> str:
             "The extracted attachment is too large for a single model request.",
         )
     return text
+
+
+def _metadata_state(
+    metadata: dict[str, Any],
+) -> Literal["stored", "ready", "consumed"]:
+    state = metadata.get("state")
+    if state == "stored":
+        return "stored"
+    if state == "ready":
+        return "ready"
+    if state == "consumed":
+        return "consumed"
+    # Version 2 metadata created before lifecycle states remains valid during
+    # development; sentAt is sufficient to infer its terminal state.
+    return "consumed" if metadata.get("sentAt") else "stored"
+
+
+def _mark_agent_attachments_ready(
+    session_id: str,
+    attachments: list[StoredAgentAttachment],
+) -> None:
+    pending_updates: list[tuple[str, dict[str, Any]]] = []
+    for attachment in attachments:
+        metadata = _read_metadata(session_id, attachment.id)
+        if metadata is None:
+            raise AgentAttachmentError("The attachment is no longer available.")
+        if _metadata_state(metadata) == "stored":
+            pending_updates.append((attachment.id, dict(metadata)))
+
+    attempted_count = 0
+    try:
+        for attachment_id, previous_metadata in pending_updates:
+            attempted_count += 1
+            _write_metadata(
+                session_id,
+                attachment_id,
+                {**previous_metadata, "state": "ready"},
+            )
+    except BaseException:
+        try:
+            for attachment_id, metadata in pending_updates[:attempted_count]:
+                _write_metadata(session_id, attachment_id, metadata)
+        except Exception as rollback_exc:
+            raise AgentAttachmentError(
+                "Attachment metadata could not be restored after validation.",
+            ) from rollback_exc
+        raise
 
 
 def _detected_image_media_type(payload: bytes) -> str | None:

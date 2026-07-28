@@ -69,6 +69,11 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
         monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
         monkeypatch.setattr(agent_runs, "MAX_BUFFERED_AGENT_EVENTS", 3)
+        monkeypatch.setattr(
+            agent_runs,
+            "prepare_agent_turn",
+            lambda conn, request, *, run_id=None: request,
+        )
 
         manager = AgentRunManager()
         run = await manager.start(

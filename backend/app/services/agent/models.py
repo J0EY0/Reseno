@@ -43,6 +43,15 @@ TargetOpportunityKind = Literal[
 
 
 @dataclass(frozen=True)
+class TargetReferenceSource:
+    """One externally verifiable source and the excerpt taken from it."""
+
+    title: str
+    url: str | None
+    excerpt: str
+
+
+@dataclass(frozen=True)
 class TargetReference:
     """Resolved target-opportunity context used by the agent plan."""
 
@@ -58,6 +67,8 @@ class TargetReference:
     tool_state: AgentToolState = "output-available"
     tool_error: str | None = None
     result_count: int = 0
+    # Appended to preserve the positional order of the legacy single-source API.
+    sources: tuple[TargetReferenceSource, ...] = ()
 
 
 # Keep the former package symbol for callers compiled against the old API.

@@ -8,7 +8,12 @@ from hashlib import sha256
 import httpx
 import pytest
 
+from app.schemas.agent import AgentChatRequest
+from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.integrations import web as agent_web
+from app.services.agent.runtime.context import AgentRuntimeContext
+from app.services.agent.tools.runner import AgentToolRunner
+from app.services.llm import LlmToolCall
 
 
 class _FakeNetworkStream:
@@ -25,6 +30,25 @@ class _FakeNetworkStream:
 
 def _peer_extensions(address: str = "93.184.216.34") -> dict[str, object]:
     return {"network_stream": _FakeNetworkStream(address)}
+
+
+def _web_tool_call(name: str, arguments: dict[str, object]) -> LlmToolCall:
+    return LlmToolCall(
+        id=f"call-{name}",
+        name=name,
+        arguments=arguments,
+        raw_arguments="{}",
+    )
+
+
+def _agent_runner(*, prompt: str, job_brief: str = "") -> AgentToolRunner:
+    request = AgentChatRequest(
+        prompt=prompt,
+        jobBrief=job_brief,
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+    return AgentToolRunner(AgentPlanExecutor(request))
 
 
 @pytest.mark.parametrize(
@@ -181,6 +205,165 @@ def test_fetch_web_reference_records_final_public_redirect_url(monkeypatch) -> N
     assert reference.content_sha256 == sha256(body).hexdigest()
 
 
+def test_web_reference_selects_relevant_jd_content_near_page_end() -> None:
+    early_filler = "Generic company introduction without role details. " * 30
+    html = f"""
+        <html>
+          <head><title>Staff Platform Engineer</title></head>
+          <body>
+            <nav>Home Careers About Contact</nav>
+            <main>
+              <article>
+                <p>{early_filler}</p>
+                <h2>Qualifications</h2>
+                <p>
+                  Build Kubernetes platform services and improve observability
+                  for production Go workloads.
+                </p>
+              </article>
+            </main>
+          </body>
+        </html>
+    """.encode()
+
+    reference = agent_web._web_reference_from_response(
+        "https://jobs.example/roles/platform",
+        html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        status_code=200,
+        fetched_at="2026-07-28T00:00:00Z",
+        content_sha256=sha256(html).hexdigest(),
+        relevance_query="platform engineer Kubernetes observability Go",
+        reference_title="Staff Platform Engineer",
+    )
+
+    assert reference is not None
+    assert "Kubernetes platform services" in reference.excerpt
+    assert "Generic company introduction" not in reference.excerpt
+    assert reference.final_url == "https://jobs.example/roles/platform"
+    assert reference.excerpt_section == "Qualifications"
+    assert reference.excerpt_start > 0
+    assert reference.excerpt_end > reference.excerpt_start
+
+
+def test_web_fetch_rejects_model_invented_url_before_network(monkeypatch) -> None:
+    runner = _agent_runner(prompt="请优化目标岗位简历")
+
+    def fail_if_network_boundary_is_reached() -> object:
+        raise AssertionError("An untrusted model URL reached the network boundary.")
+
+    monkeypatch.setattr(
+        "app.services.agent.tools.runner.get_agent_api",
+        fail_if_network_boundary_is_reached,
+    )
+
+    tool = asyncio.run(
+        runner.run_web_fetch_async(
+            _web_tool_call(
+                "web_fetch",
+                {
+                    "url": "https://invented.example/jobs/123",
+                    "purpose": "jd",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert tool.output == {"blocked": True, "reason": "url_not_authorized"}
+
+
+@pytest.mark.parametrize("source_field", ("prompt", "job_brief"))
+def test_web_fetch_allows_url_from_user_context(
+    monkeypatch,
+    source_field: str,
+) -> None:
+    url = "https://portfolio.example/projects/search"
+    runner = _agent_runner(
+        prompt=f"请查看 {url}" if source_field == "prompt" else "请查看项目材料",
+        job_brief=url if source_field == "job_brief" else "",
+    )
+
+    def fake_fetch(requested_url: str) -> agent_web.WebReference:
+        assert requested_url == url
+        return agent_web.WebReference(
+            title="Search project",
+            excerpt="Implemented a public search project with measurable outcomes.",
+            final_url=url,
+            excerpt_end=62,
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent._fetch_web_reference",
+        fake_fetch,
+    )
+
+    tool = asyncio.run(
+        runner.run_web_fetch_async(
+            _web_tool_call(
+                "web_fetch",
+                {"url": url, "purpose": "project_reference"},
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert tool.state == "output-available"
+    assert tool.output and tool.output["url"] == url
+
+
+def test_web_fetch_allows_url_returned_by_current_web_search(monkeypatch) -> None:
+    url = "https://company.example/careers/platform"
+    runner = _agent_runner(prompt="请搜索并分析目标公司")
+    search_result = agent_web.WebSearchResult(
+        title="Platform careers",
+        url=url,
+        excerpt="Public company platform engineering information.",
+    )
+
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference",
+        lambda _query: (search_result, 1, None),
+    )
+    search_tool = asyncio.run(
+        runner.run_web_search_async(
+            _web_tool_call(
+                "web_search",
+                {
+                    "query": "company platform engineering",
+                    "purpose": "company_reference",
+                },
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+    assert search_tool.state == "output-available"
+
+    monkeypatch.setattr(
+        "app.services.agent._fetch_web_reference",
+        lambda requested_url: agent_web.WebReference(
+            title="Platform careers",
+            excerpt="Detailed public company platform engineering information.",
+            final_url=requested_url,
+            excerpt_end=56,
+        ),
+    )
+    fetch_tool = asyncio.run(
+        runner.run_web_fetch_async(
+            _web_tool_call(
+                "web_fetch",
+                {"url": url, "purpose": "company_reference"},
+            ),
+            AgentRuntimeContext(),
+        ),
+    )
+
+    assert fetch_tool.state == "output-available"
+    assert fetch_tool.output and fetch_tool.output["url"] == url
+
+
 def test_fetch_web_reference_limits_redirect_count(monkeypatch) -> None:
     real_client = httpx.Client
     requested_urls: list[str] = []
@@ -263,6 +446,22 @@ def test_fetch_web_reference_allows_public_target_and_records_metadata(
     assert reference.status_code == 200
     assert reference.content_sha256 == sha256(body).hexdigest()
     assert datetime.fromisoformat(reference.fetched_at.replace("Z", "+00:00"))
+
+
+def test_web_reference_rejects_binary_pdf_content() -> None:
+    raw = b"%PDF-1.7\n" + (b"apparently readable resume evidence " * 10)
+
+    reference = agent_web._web_reference_from_response(
+        "https://public.example/resume.pdf",
+        raw,
+        "application/pdf",
+        "utf-8",
+        status_code=200,
+        fetched_at="2026-07-27T08:00:00Z",
+        content_sha256=sha256(raw).hexdigest(),
+    )
+
+    assert reference is None
 
 
 def test_fetch_web_reference_rejects_private_connected_peer_before_body_read(
@@ -635,7 +834,7 @@ def test_search_web_reference_preserves_fetched_evidence_metadata(
     monkeypatch.setattr(
         agent_web,
         "_fetch_web_reference",
-        lambda _url: agent_web.WebReference(
+        lambda _url, **_kwargs: agent_web.WebReference(
             title="Fetched title",
             excerpt="Fetched evidence " * 10,
             final_url="https://public.example/final",
@@ -655,3 +854,317 @@ def test_search_web_reference_preserves_fetched_evidence_metadata(
     assert result.status_code == 200
     assert result.fetched_at == fetched_at
     assert result.content_sha256 == content_sha256
+    assert result.source_kind == "fetched_page"
+
+
+def test_search_web_reference_marks_search_snippet_fallback(monkeypatch) -> None:
+    search_result = agent_web.WebSearchResult(
+        title="Search title",
+        url="https://public.example/result",
+        excerpt="Useful search result evidence for the target role. " * 4,
+    )
+    monkeypatch.setattr(
+        agent_web,
+        "_search_web_results",
+        lambda _query: ([search_result], None),
+    )
+    monkeypatch.setattr(
+        agent_web,
+        "_fetch_web_reference",
+        lambda _url, **_kwargs: None,
+    )
+
+    result, result_count, error = agent_web._search_web_reference("resume")
+
+    assert error is None
+    assert result_count == 1
+    assert result is not None
+    assert result.source_kind == "search_snippet"
+    assert result.final_url == ""
+    assert result.status_code is None
+
+
+def test_async_search_summary_bounds_query_concurrency(monkeypatch) -> None:
+    async def run() -> None:
+        release = asyncio.Event()
+        concurrency_reached = asyncio.Event()
+        active = 0
+        maximum_active = 0
+        started = 0
+
+        async def fake_search(query: str):
+            nonlocal active, maximum_active, started
+            active += 1
+            started += 1
+            maximum_active = max(maximum_active, active)
+            if active == 2:
+                concurrency_reached.set()
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+            return (
+                [
+                    agent_web.WebSearchResult(
+                        title=query,
+                        url=f"https://example.com/{query}",
+                        excerpt="Useful search evidence " * 5,
+                    ),
+                ],
+                None,
+            )
+
+        async def fake_fetch(url: str, **_kwargs):
+            return agent_web.WebReference(
+                title=url,
+                excerpt="Fetched reference evidence " * 5,
+                final_url=url,
+            )
+
+        monkeypatch.setattr(agent_web, "WEB_SEARCH_MAX_CONCURRENCY", 2)
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+        task = asyncio.create_task(
+            agent_web._async_search_web_reference_summary(
+                ["first", "second", "third"],
+            ),
+        )
+        await asyncio.wait_for(concurrency_reached.wait(), timeout=0.2)
+
+        assert started == 2
+        assert maximum_active == 2
+
+        release.set()
+        summary = await asyncio.wait_for(task, timeout=0.2)
+
+        assert [result.title for result in summary.results] == [
+            "https://example.com/first",
+            "https://example.com/second",
+            "https://example.com/third",
+        ]
+
+    asyncio.run(run())
+
+
+def test_async_search_summary_bounds_page_fetches_and_preserves_order(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        release = asyncio.Event()
+        concurrency_reached = asyncio.Event()
+        active = 0
+        maximum_active = 0
+        started = 0
+
+        search_results = [
+            agent_web.WebSearchResult(
+                title=f"result-{index}",
+                url=f"https://example.com/{index}",
+                excerpt="Useful search evidence " * 5,
+            )
+            for index in range(4)
+        ]
+
+        async def fake_search(_query: str):
+            return search_results, None
+
+        async def fake_fetch(url: str, **_kwargs):
+            nonlocal active, maximum_active, started
+            active += 1
+            started += 1
+            maximum_active = max(maximum_active, active)
+            if active == 2:
+                concurrency_reached.set()
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+            return agent_web.WebReference(
+                title=url,
+                excerpt="Fetched reference evidence " * 5,
+                final_url=url,
+            )
+
+        monkeypatch.setattr(agent_web, "WEB_SEARCH_MAX_CONCURRENCY", 2)
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+        task = asyncio.create_task(
+            agent_web._async_search_web_reference_summary(["resume"]),
+        )
+        await asyncio.wait_for(concurrency_reached.wait(), timeout=0.2)
+
+        assert started == 2
+        assert maximum_active == 2
+
+        release.set()
+        summary = await asyncio.wait_for(task, timeout=0.2)
+
+        assert [result.url for result in summary.results] == [
+            f"https://example.com/{index}" for index in range(4)
+        ]
+
+    asyncio.run(run())
+
+
+def test_async_search_summary_uses_one_round_robin_fetch_budget(monkeypatch) -> None:
+    async def run() -> None:
+        query_results = {
+            "first": [
+                ("shared", "https://example.com/shared"),
+                ("first-2", "https://example.com/first-2"),
+                ("first-3", "https://example.com/first-3"),
+            ],
+            "second": [
+                ("shared duplicate", "https://example.com/shared"),
+                ("second-2", "https://example.com/second-2"),
+                ("second-3", "https://example.com/second-3"),
+            ],
+            "third": [
+                ("third-1", "https://example.com/third-1"),
+                ("third-2", "https://example.com/third-2"),
+                ("third-3", "https://example.com/third-3"),
+            ],
+        }
+        fetched_urls: list[str] = []
+
+        async def fake_search(query: str):
+            return (
+                [
+                    agent_web.WebSearchResult(
+                        title=title,
+                        url=url,
+                        excerpt="Useful search evidence " * 5,
+                    )
+                    for title, url in query_results[query]
+                ],
+                None,
+            )
+
+        async def fake_fetch(url: str, **_kwargs):
+            fetched_urls.append(url)
+            return agent_web.WebReference(
+                title=url,
+                excerpt="Fetched reference evidence " * 5,
+                final_url=url,
+            )
+
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+        summary = await agent_web._async_search_web_reference_summary(
+            ["first", "second", "third"],
+            max_results=4,
+        )
+
+        expected_urls = [
+            "https://example.com/shared",
+            "https://example.com/third-1",
+            "https://example.com/first-2",
+            "https://example.com/second-2",
+        ]
+        assert fetched_urls == expected_urls
+        assert [result.url for result in summary.results] == expected_urls
+
+    asyncio.run(run())
+
+
+def test_async_search_summary_returns_partial_results_and_cancels_on_timeout(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        slow_query_started = asyncio.Event()
+        slow_query_cancelled = asyncio.Event()
+        slow_fetch_cancelled = asyncio.Event()
+
+        async def fake_search(query: str):
+            if query == "slow":
+                slow_query_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    slow_query_cancelled.set()
+                    raise
+
+            return (
+                [
+                    agent_web.WebSearchResult(
+                        title="fast",
+                        url="https://example.com/fast",
+                        excerpt="Useful search evidence " * 5,
+                    ),
+                    agent_web.WebSearchResult(
+                        title="slow page",
+                        url="https://example.com/slow-page",
+                        excerpt="short",
+                    ),
+                ],
+                None,
+            )
+
+        async def fake_fetch(url: str, **_kwargs):
+            if url.endswith("/slow-page"):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    slow_fetch_cancelled.set()
+                    raise
+
+            return agent_web.WebReference(
+                title="fast fetched",
+                excerpt="Fetched reference evidence " * 5,
+                final_url=url,
+            )
+
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+        summary = await asyncio.wait_for(
+            agent_web._async_search_web_reference_summary(
+                ["fast", "slow"],
+                operation_timeout=0.05,
+            ),
+            timeout=0.2,
+        )
+
+        assert slow_query_started.is_set()
+        assert slow_query_cancelled.is_set()
+        assert slow_fetch_cancelled.is_set()
+        assert summary.timed_out is True
+        assert summary.partial is True
+        assert [result.url for result in summary.results] == [
+            "https://example.com/fast",
+        ]
+        assert summary.error is None
+
+    asyncio.run(run())
+
+
+def test_async_search_summary_propagates_external_cancellation(monkeypatch) -> None:
+    async def run() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def fake_search(_query: str):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+
+        task = asyncio.create_task(
+            agent_web._async_search_web_reference_summary(["resume"]),
+        )
+        await asyncio.wait_for(started.wait(), timeout=0.2)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert cancelled.is_set()
+
+    asyncio.run(run())

@@ -4,7 +4,7 @@ import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -15,7 +15,9 @@ from app.agent_locales import DEFAULT_AGENT_LOCALE, SUPPORTED_AGENT_LOCALES
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
+from app.schemas.agent_settings import normalize_agent_settings
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
+from app.services import workspace as workspace_service
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
 from app.services.agent import section_registry as section_registry_module
 from app.services.agent.attachments import store_agent_attachment
@@ -46,6 +48,7 @@ from app.services.agent.policy import (
     AgentTaskIntent,
     capability_policy_for_request,
 )
+from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.prompts import (
     CORE_POLICY_PROMPT,
     EDIT_OPERATION_GUIDE,
@@ -737,8 +740,7 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert restore_response.status_code == 200
     assert restore_response.json()["data"]["resume"]["id"] == resume_id
     assert (
-        restore_response.json()["data"]["resume"]["title"]
-        == "Backend Managed Resume"
+        restore_response.json()["data"]["resume"]["title"] == "Backend Managed Resume"
     )
 
     client.post(f"/api/resumes/{resume_id}/trash")
@@ -1254,11 +1256,71 @@ def test_user_settings_endpoint_persists_json_preferences(
     persisted_settings = json.loads(
         get_settings().user_settings_path.read_text(encoding="utf-8")
     )
-    assert persisted_settings["agentSettings"] == response.json()["data"][
-        "agentSettings"
-    ]
+    assert (
+        persisted_settings["agentSettings"] == response.json()["data"]["agentSettings"]
+    )
     assert persisted_settings["locale"] == "zh"
     assert persisted_settings["theme"] == "system"
+
+
+def test_user_settings_updates_serialize_the_read_modify_write_transaction(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_load = workspace_service._load_user_settings
+    first_load_entered = Event()
+    second_load_entered = Event()
+    allow_first_load = Event()
+    call_lock = Lock()
+    load_calls = 0
+
+    def controlled_load() -> dict[str, object]:
+        nonlocal load_calls
+        with call_lock:
+            load_calls += 1
+            call_number = load_calls
+
+        if call_number == 1:
+            first_load_entered.set()
+            assert allow_first_load.wait(timeout=2)
+        elif call_number == 2:
+            second_load_entered.set()
+
+        return original_load()
+
+    monkeypatch.setattr(workspace_service, "_load_user_settings", controlled_load)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            workspace_service.save_user_settings,
+            "en",
+            {"theme": "dark"},
+        )
+        assert first_load_entered.wait(timeout=2)
+        second = executor.submit(
+            workspace_service.save_user_settings,
+            "zh",
+            {
+                "agentSettings": {
+                    "responseLanguage": "zh",
+                    "behaviorMode": "strict",
+                    "confirmationMode": "suggestOnly",
+                }
+            },
+        )
+
+        # The second request must wait outside the entire read-modify-write section.
+        assert not second_load_entered.wait(timeout=0.05)
+        allow_first_load.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    persisted = json.loads(
+        get_settings().user_settings_path.read_text(encoding="utf-8")
+    )
+    assert persisted["locale"] == "zh"
+    assert persisted["theme"] == "dark"
+    assert persisted["agentSettings"]["behaviorMode"] == "strict"
 
 
 def test_identical_resume_hash_does_not_create_new_version(
@@ -1455,9 +1517,7 @@ def test_migrate_db_rebuilds_legacy_llm_configs_table(
     migrate_db()
 
     with sqlite3.connect(db_path) as conn:
-        columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(llm_configs)")
-        }
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_configs)")}
         row_count = conn.execute("SELECT COUNT(*) FROM llm_configs").fetchone()[0]
 
     assert LLM_CONFIG_REQUIRED_COLUMNS.issubset(columns)
@@ -2283,9 +2343,9 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         api_key="sk-test",
         temperature=0.4,
         top_p=0.9,
-        max_tokens=None,
+        max_tokens=512,
         timeout_seconds=60,
-        context_window_tokens=5000,
+        context_window_tokens=13000,
     )
     conversation = [
         {
@@ -2329,7 +2389,8 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         {
             "id": f"agent-user-followup-{index}",
             "role": "user",
-            "text": f"后续补充 {index}",
+            "text": f"后续补充 {index}"
+            + (("用于触发上下文压缩。" * 80) if index < 4 else ""),
         }
         for index in range(8)
     )
@@ -2446,9 +2507,9 @@ def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
         api_key="sk-test",
         temperature=0.4,
         top_p=0.9,
-        max_tokens=None,
+        max_tokens=512,
         timeout_seconds=60,
-        context_window_tokens=5000,
+        context_window_tokens=12000,
     )
     conversation = [
         {
@@ -2516,7 +2577,7 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
         settings={},
     )
 
-    with pytest.raises(LlmRequestError, match="exceed the selected model context"):
+    with pytest.raises(LlmRequestError, match="context window"):
         build_agent_messages(request, config, mode="tools")
 
 
@@ -2526,9 +2587,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         session_id=session_id,
         filename="note.txt",
         media_type="text/plain",
-        payload=(
-            "联系人 王小明，邮箱 xiaoming@example.com，电话 13800138000"
-        ).encode(),
+        payload=("联系人 王小明，邮箱 xiaoming@example.com，电话 13800138000").encode(),
     ).model_dump(mode="json", by_alias=True)
     config = AgentLlmConfig(
         client_id="llm-test",
@@ -2539,9 +2598,9 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         api_key="sk-test",
         temperature=0.4,
         top_p=0.9,
-        max_tokens=None,
+        max_tokens=512,
         timeout_seconds=60,
-        context_window_tokens=4096,
+        context_window_tokens=12000,
     )
     request = AgentChatRequest(
         prompt="帮王小明优化简介，电话 13800138000",
@@ -3158,6 +3217,13 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                     },
                 ),
             ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {"status": "ready", "reason": "Draft is complete."},
+                ),
+            ],
         ),
     )
     monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
@@ -3213,23 +3279,17 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     assert message["sources"]
     assert message["edits"]
     assert message["quickReplies"]
+    assert any(source["sourceType"] == "jobBrief" for source in message["sources"])
     assert any(
-        source["sourceType"] == "jobBrief" for source in message["sources"]
-    )
-    assert any(
-        source["sourceType"] == "attachment"
-        and source["title"] == "jd.txt"
+        source["sourceType"] == "attachment" and source["title"] == "jd.txt"
         for source in message["sources"]
     )
     assert not any(
-        source["sourceType"] in {"resume", "system"}
-        for source in message["sources"]
+        source["sourceType"] in {"resume", "system"} for source in message["sources"]
     )
     assert message["edits"][0]["status"] == "executed"
     assert message["edits"][0]["operation"]["type"] == "replace_field"
-    assert any(
-        tool["title"] == "web_search" for tool in message["tools"]
-    )
+    assert any(tool["title"] == "web_search" for tool in message["tools"])
 
 
 def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
@@ -3667,15 +3727,20 @@ def test_agent_supported_locales_cover_resources() -> None:
     for prompt_path in prompt_dir.glob("*.md"):
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert re.search(r"[\u4e00-\u9fff]", prompt_text) is None
-    assert CORE_POLICY_PROMPT == (
-        prompt_dir / "core_policy.md"
-    ).read_text(encoding="utf-8").strip()
-    assert TOOL_POLICY_PROMPT == (
-        prompt_dir / "system.md"
-    ).read_text(encoding="utf-8").strip()
-    assert RESUME_EDITING_PLAYBOOK_PROMPT == (
-        prompt_dir / "resume_editing_playbook.md"
-    ).read_text(encoding="utf-8").strip()
+    assert (
+        CORE_POLICY_PROMPT
+        == (prompt_dir / "core_policy.md").read_text(encoding="utf-8").strip()
+    )
+    assert (
+        TOOL_POLICY_PROMPT
+        == (prompt_dir / "system.md").read_text(encoding="utf-8").strip()
+    )
+    assert (
+        RESUME_EDITING_PLAYBOOK_PROMPT
+        == (prompt_dir / "resume_editing_playbook.md")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
     assert SYSTEM_PROMPT == "\n\n".join(
         (
             CORE_POLICY_PROMPT,
@@ -3683,13 +3748,17 @@ def test_agent_supported_locales_cover_resources() -> None:
             RESUME_EDITING_PLAYBOOK_PROMPT,
         ),
     )
-    assert FINAL_RESPONSE_PROMPT == (
-        prompt_dir / "final_response.md"
-    ).read_text(encoding="utf-8").strip()
-    assert STREAMING_FINAL_RESPONSE_PROMPT == (
-        prompt_dir / "streaming_final_response.md"
-    ).read_text(encoding="utf-8").strip()
-    assert "responseLanguage" in SYSTEM_PROMPT
+    assert (
+        FINAL_RESPONSE_PROMPT
+        == (prompt_dir / "final_response.md").read_text(encoding="utf-8").strip()
+    )
+    assert (
+        STREAMING_FINAL_RESPONSE_PROMPT
+        == (prompt_dir / "streaming_final_response.md")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+    assert "confirmationMode" not in SYSTEM_PROMPT
 
 
 def test_agent_system_prompts_are_scoped_to_each_runtime_phase() -> None:
@@ -3833,7 +3902,7 @@ def test_agent_web_search_schema_supports_multi_queries() -> None:
     assert parameters["properties"]["maxResults"]["maximum"] == 10
 
 
-def test_agent_target_context_search_fallback_uses_current_prompt() -> None:
+def test_agent_target_context_search_fallback_uses_explicit_target() -> None:
     request = AgentChatRequest(
         prompt="查找示例大学计算机硕士项目的课程和研究方向",
         locale="zh",
@@ -3845,12 +3914,17 @@ def test_agent_target_context_search_fallback_uses_current_prompt() -> None:
         tool_call(
             "call-web-search",
             "web_search",
-            {"purpose": "target_context"},
+            {
+                "purpose": "target_context",
+                "target": "示例大学计算机硕士项目",
+            },
         ),
-        "",
+        "示例大学计算机硕士项目",
     )
 
-    assert queries == [request.prompt]
+    assert queries
+    assert queries[0].startswith("示例大学计算机硕士项目")
+    assert queries != [request.prompt]
     assert all(" JD " not in query for query in queries)
 
 
@@ -3996,7 +4070,9 @@ def test_agent_web_search_accepts_multi_query_target_context(monkeypatch) -> Non
     assert result["output"]["queryCount"] == 3
     assert result["output"]["maxResults"] == 10
     assert len(result["output"]["results"]) == 2
-    assert result["output"]["url"] == "https://example.test/roles/ai-application-developer"
+    assert (
+        result["output"]["url"] == "https://example.test/roles/ai-application-developer"
+    )
     assert result["output"]["personalExperienceEvidence"] is False
 
 
@@ -4016,7 +4092,7 @@ def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> N
         top_p=0.9,
         max_tokens=None,
         timeout_seconds=60,
-        context_window_tokens=4096,
+        context_window_tokens=16_384,
     )
     request = AgentChatRequest(
         prompt="帮我了解 AI application developer 岗位",
@@ -4057,6 +4133,7 @@ def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> N
     assert len(web_context["results"]) == 2
     assert "LLM features" in web_context["results"][0]["excerpt"]
     assert "evaluation" in web_context["results"][1]["excerpt"]
+    assert web_context["results"][0]["sourceKind"] == "search_snippet"
 
 
 def test_agent_web_search_falls_back_to_search_snippet(monkeypatch) -> None:
@@ -4139,14 +4216,16 @@ def test_agent_web_headers_are_browser_compatible() -> None:
 
 
 def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
-    request = AgentChatRequest(
-        prompt="优化个人简介",
-        locale="zh",
-        resume={
-            "basic": {"summary": "已有简介"},
-            "sections": [],
-        },
-        settings={"confirmationMode": "suggestOnly"},
+    request = prepare_agent_request(
+        AgentChatRequest(
+            prompt="优化个人简介",
+            locale="zh",
+            resume={
+                "basic": {"summary": "已有简介"},
+                "sections": [],
+            },
+        ),
+        normalize_agent_settings({"confirmationMode": "suggestOnly"}),
     )
 
     policy = capability_policy_for_request(request)
@@ -5326,6 +5405,13 @@ def test_agent_chat_uses_provided_jd_url(
             [
                 tool_call("call-execute", "edit_execute"),
             ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {"status": "ready", "reason": "Draft is complete."},
+                ),
+            ],
         ),
     )
     monkeypatch.setattr(
@@ -5417,8 +5503,7 @@ def test_agent_chat_uses_provided_jd_url(
         },
     ]
     assert any(
-        edit["operation"]["type"] == "reorder_sections"
-        for edit in message["edits"]
+        edit["operation"]["type"] == "reorder_sections" for edit in message["edits"]
     )
 
 
@@ -5479,9 +5564,7 @@ def test_agent_chat_cleans_chinese_target_role(
         },
     )
 
-    jd_tool = next(
-        tool for tool in message["tools"] if tool["title"] == "web_search"
-    )
+    jd_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
     assert jd_tool["output"]["role"] == "AI应用开发"
     assert jd_tool["input"]["query"] == "AI应用开发 岗位 JD 职责 任职要求"
     assert message["knowledge"][0]["title"] == "AI应用开发"
@@ -5556,9 +5639,7 @@ def test_agent_chat_streams_role_research_web_summary(
         },
     )
 
-    web_tool = next(
-        tool for tool in message["tools"] if tool["title"] == "web_search"
-    )
+    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
     assert message["edits"] == []
     assert "岗位情报" in message["text"]
     assert web_tool["input"]["maxResults"] == 10
@@ -5611,8 +5692,7 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         yield LlmStreamEvent(
             type="text_delta",
             delta=(
-                "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；"
-                "需要补充项目证据。"
+                "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；需要补充项目证据。"
             ),
         )
 
@@ -6121,6 +6201,13 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
             ],
             [
                 tool_call("call-execute", "edit_execute"),
+            ],
+            [
+                tool_call(
+                    "call-finish",
+                    "finish",
+                    {"status": "ready", "reason": "Draft is complete."},
+                ),
             ],
         ),
     )

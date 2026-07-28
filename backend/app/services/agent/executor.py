@@ -22,6 +22,7 @@ from .models import (
     ResumeAnalysis,
     TargetOpportunityKind,
     TargetReference,
+    TargetReferenceSource,
 )
 from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
 from .policy import AgentTaskIntent, infer_agent_task_intent
@@ -356,6 +357,21 @@ class AgentPlanExecutor:
             else self.target_brief[:260] or self.prompt.replace(url, "").strip()[:260]
         )
         source_excerpt = web_reference.excerpt if web_reference else ""
+        source = (
+            TargetReferenceSource(
+                title=sanitize_agent_text(
+                    web_reference.title,
+                    hidden_terms=self.hidden_terms,
+                ),
+                url=url,
+                excerpt=sanitize_agent_text(
+                    source_excerpt,
+                    hidden_terms=self.hidden_terms,
+                ),
+            )
+            if web_reference and source_excerpt
+            else None
+        )
         return TargetReference(
             mode="url",
             kind=kind,
@@ -372,6 +388,7 @@ class AgentPlanExecutor:
                 source_excerpt,
                 hidden_terms=self.hidden_terms,
             ),
+            sources=(source,) if source else (),
             tool_state="output-available" if web_reference else "output-error",
             tool_error=None
             if web_reference
@@ -393,6 +410,9 @@ class AgentPlanExecutor:
         *,
         kind: TargetOpportunityKind,
         exact_job_description: bool,
+        search_results: (
+            tuple[WebSearchResult, ...] | list[WebSearchResult] | None
+        ) = None,
     ) -> TargetReference:
         """Convert an optional opportunity search result into agent context."""
 
@@ -402,11 +422,39 @@ class AgentPlanExecutor:
             else self.target_reference_error_text()
         )
 
-        if search_result:
-            excerpt = search_result.excerpt
-            source_title = search_result.title
-            source_url = search_result.url
-            source_excerpt = search_result.excerpt if not search_error else ""
+        result_sources = tuple(search_results or ())
+        if not result_sources and search_result:
+            result_sources = (search_result,)
+
+        # Search context may aggregate several excerpts for the model, but each
+        # citation keeps only the text obtained from its own URL.
+        source_items: list[TargetReferenceSource] = []
+        seen_source_urls: set[str] = set()
+        if not search_error:
+            for result in result_sources:
+                if not result.excerpt or result.url in seen_source_urls:
+                    continue
+                seen_source_urls.add(result.url)
+                source_items.append(
+                    TargetReferenceSource(
+                        title=sanitize_agent_text(
+                            result.title,
+                            hidden_terms=self.hidden_terms,
+                        ),
+                        url=result.url,
+                        excerpt=sanitize_agent_text(
+                            result.excerpt,
+                            hidden_terms=self.hidden_terms,
+                        ),
+                    ),
+                )
+        sources = tuple(source_items)
+
+        if sources:
+            excerpt = _compact_text(" ".join(source.excerpt for source in sources))
+            source_title = sources[0].title
+            source_url = sources[0].url
+            source_excerpt = sources[0].excerpt
         else:
             excerpt = fallback_excerpt
             source_title = ""
@@ -429,6 +477,7 @@ class AgentPlanExecutor:
                 source_excerpt,
                 hidden_terms=self.hidden_terms,
             ),
+            sources=sources,
             tool_state="output-error" if search_error else "output-available",
             tool_error=search_error,
             result_count=result_count,
@@ -1043,18 +1092,37 @@ class AgentPlanExecutor:
         )
         purpose = "jd" if target_reference.exact_job_description else "target_context"
         tool_input["purpose"] = purpose
+        primary_source = (
+            target_reference.sources[0] if target_reference.sources else None
+        )
         tool_output = {
             "mode": target_reference.mode,
             "opportunityType": target_reference.kind,
             "target": target_reference.target,
-            "excerpt": target_reference.excerpt,
+            # Compatibility fields must describe one source only. Aggregated
+            # context stays in TargetReference.excerpt; callers use `results`
+            # when they need every source.
+            "excerpt": (
+                primary_source.excerpt if primary_source else target_reference.excerpt
+            ),
             "resultCount": target_reference.result_count,
         }
+        if primary_source and primary_source.title:
+            tool_output["title"] = primary_source.title
         if target_reference.exact_job_description:
             # Exact-JD consumers still read the historical `role` output key.
             tool_output["role"] = target_reference.target
         if target_reference.url:
             tool_output["url"] = target_reference.url
+        if target_reference.sources:
+            tool_output["results"] = [
+                {
+                    "url": source.url,
+                    "title": source.title,
+                    "excerpt": source.excerpt,
+                }
+                for source in target_reference.sources
+            ]
 
         return AgentToolInvocation(
             id=tool_id or f"tool-{uuid4().hex[:8]}",
@@ -1249,11 +1317,32 @@ class AgentPlanExecutor:
 
         sources: list[AgentSource] = []
 
-        if target_reference.source_excerpt:
-            source_id = (
+        reference_sources = target_reference.sources
+        if not reference_sources and target_reference.source_excerpt:
+            reference_sources = (
+                TargetReferenceSource(
+                    title=target_reference.source_title,
+                    url=target_reference.url,
+                    excerpt=target_reference.source_excerpt,
+                ),
+            )
+
+        seen_urls: set[str] = set()
+        for reference_source in reference_sources:
+            if reference_source.url and reference_source.url in seen_urls:
+                continue
+            if reference_source.url:
+                seen_urls.add(reference_source.url)
+
+            source_id_prefix = (
                 "source-jd-url"
                 if target_reference.mode == "url"
                 else "source-jd-search"
+            )
+            source_id = (
+                source_id_prefix
+                if not sources
+                else f"{source_id_prefix}-{len(sources) + 1}"
             )
             fallback_title = agent_text(
                 self.request.locale,
@@ -1262,10 +1351,10 @@ class AgentPlanExecutor:
             sources.append(
                 AgentSource(
                     id=source_id,
-                    title=target_reference.source_title or fallback_title,
+                    title=reference_source.title or fallback_title,
                     sourceType="web",
-                    url=target_reference.url,
-                    excerpt=target_reference.source_excerpt,
+                    url=reference_source.url,
+                    excerpt=reference_source.excerpt,
                 ),
             )
 

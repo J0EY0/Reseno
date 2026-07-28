@@ -108,3 +108,29 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 
 CREATE INDEX IF NOT EXISTS idx_agent_messages_session_sequence
 ON agent_messages (session_id, sequence);
+
+CREATE TABLE IF NOT EXISTS agent_turn_executions (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
+    error_code TEXT
+        CHECK (
+            error_code IS NULL
+            OR error_code IN (
+                'AGENT_PROVIDER_AUTH_ERROR',
+                'AGENT_PROVIDER_ERROR',
+                'AGENT_INTERNAL_ERROR',
+                'AGENT_RUN_CANCELLED',
+                'AGENT_EDIT_TRANSACTION_INCOMPLETE'
+            )
+        ),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_turn_executions_session_started
+ON agent_turn_executions (session_id, started_at ASC);

@@ -625,6 +625,8 @@
   "agentRequestFailed": "Agent 请求失败，请确认后端服务可用后重试。",
   "agentHistoryLoadFailed": "对话加载失败",
   "agentRetry": "重试",
+  "agentRunFailed": "未完成",
+  "agentRunCancelled": "已停止",
   "agentAppliedSummary": "我已经按当前岗位方向润色了简介",
   "agentAppliedBullet": "我已经把关键经历改得更偏量化表达",
   "agentAppliedKeywords": "我已经把岗位关键词补回到简历里了",

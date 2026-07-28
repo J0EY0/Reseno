@@ -3,10 +3,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent_locales import AgentLocale
+from app.schemas.agent_settings import AgentExecutionProfile
 
 AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
 AgentTransactionState = Literal["none", "provisional", "committed", "rolled_back"]
 AgentRunStatus = Literal["active", "completed", "cancelled", "failed"]
+AgentTurnExecutionStatus = Literal["running", "succeeded", "failed", "cancelled"]
+AgentTurnErrorCode = Literal[
+    "AGENT_PROVIDER_AUTH_ERROR",
+    "AGENT_PROVIDER_ERROR",
+    "AGENT_INTERNAL_ERROR",
+    "AGENT_RUN_CANCELLED",
+    "AGENT_EDIT_TRANSACTION_INCOMPLETE",
+]
 AgentFinishMissing = Literal[
     "pending_draft",
     "url_purpose",
@@ -76,6 +85,8 @@ class AgentChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     resume_id: str | None = Field(default=None, alias="resumeId")
+    expected_revision: str | None = Field(default=None, alias="expectedRevision")
+    client_turn_id: str | None = Field(default=None, alias="clientTurnId")
     prompt: str = ""
     message: AgentConversationItem | None = None
     messages: list[AgentConversationItem] = Field(default_factory=list)
@@ -89,6 +100,11 @@ class AgentChatRequest(BaseModel):
     draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
     settings: dict[str, Any] = Field(default_factory=dict)
+    execution_profile: AgentExecutionProfile | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
     stream: bool = True
 
 
@@ -101,6 +117,8 @@ class AgentRunResponse(BaseModel):
     resume_id: str | None = Field(default=None, alias="resumeId")
     base_resume: dict[str, Any] = Field(default_factory=dict, alias="baseResume")
     status: AgentRunStatus
+    execution_state: AgentTurnExecutionStatus = Field(alias="executionState")
+    error_code: AgentTurnErrorCode | None = Field(default=None, alias="errorCode")
     last_event_id: int = Field(default=0, alias="lastEventId")
 
 
@@ -148,12 +166,15 @@ class AgentToolInvocation(BaseModel):
 class AgentResumeEditSuggestion(BaseModel):
     """One suggested resume edit returned by the agent."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     title: str
     target: str
     reason: str
     replacement: str | None = None
     operation: dict[str, Any] | None = None
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
     status: Literal["planned", "executed", "rejected"] = "planned"
 
 
@@ -217,12 +238,26 @@ class AgentStoredMessage(BaseModel):
     created_at: str = Field(alias="createdAt")
 
 
+class AgentTurnExecution(BaseModel):
+    """Durable lifecycle state for one accepted user turn execution."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    run_id: str = Field(alias="runId")
+    turn_id: str = Field(alias="turnId")
+    status: AgentTurnExecutionStatus
+    error_code: AgentTurnErrorCode | None = Field(default=None, alias="errorCode")
+    started_at: str = Field(alias="startedAt")
+    completed_at: str | None = Field(default=None, alias="completedAt")
+
+
 class AgentSessionResponse(BaseModel):
     """Response body for a persisted Agent conversation."""
 
     resume_id: str = Field(alias="resumeId")
     revision: str
     messages: list[AgentStoredMessage] = Field(default_factory=list)
+    executions: list[AgentTurnExecution] = Field(default_factory=list)
 
 
 class AgentSessionReplaceRequest(BaseModel):

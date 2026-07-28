@@ -8,6 +8,7 @@ from app.schemas.agent import AgentChatRequest
 from .attachments import AgentAttachmentError, current_request_attachments
 from .intent_patterns import matches_intent_pattern
 from .materials import extract_resume_materials
+from .preferences import execution_profile_for_request
 from .tools.registry import (
     ALL_KNOWN_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
@@ -321,8 +322,7 @@ def _policy_resume(request: AgentChatRequest) -> dict[str, Any]:
 
 
 def _confirmation_mode(request: AgentChatRequest) -> str:
-    value = request.settings.get("confirmationMode")
-    return value if value in {"always", "suggestOnly"} else "always"
+    return execution_profile_for_request(request).confirmation_mode.value
 
 
 def _matches_intent(prompt: str, pattern_name: str) -> bool:

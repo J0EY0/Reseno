@@ -21,6 +21,8 @@ import type {
   AgentSessionResponse,
   AgentSource,
   AgentTimelinePart,
+  AgentTurnErrorCode,
+  AgentTurnExecutionStatus,
   AgentToolInvocation,
   AgentTransactionState,
 } from "@/types/api";
@@ -37,6 +39,8 @@ interface AgentStreamAccumulator {
   messageDone: boolean;
   receivedEvent: boolean;
   status: AgentRunStatus;
+  executionState: AgentTurnExecutionStatus;
+  errorCode: AgentTurnErrorCode | null;
 }
 
 class AgentRunStreamHttpError extends Error {}
@@ -60,6 +64,19 @@ const agentFinishMissingValues = new Set<AgentFinishMissing>([
   "explicit_reorder_intent",
   "model_config",
 ]);
+const agentTurnExecutionStatuses = new Set<AgentTurnExecutionStatus>([
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+const agentTurnErrorCodes = new Set<AgentTurnErrorCode>([
+  "AGENT_PROVIDER_AUTH_ERROR",
+  "AGENT_PROVIDER_ERROR",
+  "AGENT_INTERNAL_ERROR",
+  "AGENT_RUN_CANCELLED",
+  "AGENT_EDIT_TRANSACTION_INCOMPLETE",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
@@ -69,6 +86,20 @@ function toStringArray(value: unknown) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : undefined;
+}
+
+function toExecutionState(value: unknown) {
+  return typeof value === "string" &&
+    agentTurnExecutionStatuses.has(value as AgentTurnExecutionStatus)
+    ? (value as AgentTurnExecutionStatus)
+    : undefined;
+}
+
+function toErrorCode(value: unknown) {
+  return typeof value === "string" &&
+    agentTurnErrorCodes.has(value as AgentTurnErrorCode)
+    ? (value as AgentTurnErrorCode)
+    : null;
 }
 
 function toKnowledgeItems(value: unknown): AgentChatMessage["knowledge"] {
@@ -315,6 +346,12 @@ function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
       const diffs = Array.isArray(item.diffs)
         ? (item.diffs as AgentResumeEditSuggestion["diffs"])
         : undefined;
+      const evidenceRefs = Array.isArray(item.evidenceRefs)
+        ? item.evidenceRefs.filter(
+            (reference): reference is string =>
+              typeof reference === "string" && reference.length > 0,
+          )
+        : undefined;
 
       return {
         id: typeof item.id === "string" ? item.id : "",
@@ -324,6 +361,7 @@ function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
         replacement:
           typeof item.replacement === "string" ? item.replacement : undefined,
         operation,
+        evidenceRefs,
         status:
           item.status === "planned" ||
           item.status === "executed" ||
@@ -608,6 +646,15 @@ async function readAgentChatStream(
       if (status) {
         accumulator.status = status;
       }
+      const executionState = isRecord(payload)
+        ? toExecutionState(payload.executionState)
+        : undefined;
+      if (executionState) {
+        accumulator.executionState = executionState;
+      }
+      accumulator.errorCode = isRecord(payload)
+        ? toErrorCode(payload.errorCode)
+        : null;
       return;
     }
 
@@ -677,14 +724,16 @@ async function readAgentChatStream(
 }
 
 function createStreamAccumulator(
-  status: AgentRunStatus = "active",
+  run: Pick<AgentRunResponse, "status" | "executionState" | "errorCode">,
 ): AgentStreamAccumulator {
   return {
     lastEventId: 0,
     message: createEmptyAssistantMessage(),
     messageDone: false,
     receivedEvent: false,
-    status,
+    status: run.status,
+    executionState: run.executionState,
+    errorCode: run.errorCode,
   };
 }
 
@@ -751,7 +800,7 @@ async function consumeAgentRun(
   options: AgentChatStreamOptions,
   initialResponse?: Response,
 ) {
-  const accumulator = createStreamAccumulator(run.status);
+  const accumulator = createStreamAccumulator(run);
   let response = initialResponse;
   let reconnectDelayMs = 250;
   let reconnectAttempts = 0;
@@ -801,12 +850,16 @@ async function consumeAgentRun(
 
   const completedRun: AgentRunResponse = {
     ...run,
+    errorCode: accumulator.errorCode,
+    executionState: accumulator.executionState,
     lastEventId: accumulator.lastEventId,
     status: accumulator.status,
   };
   options.onRun?.(completedRun);
 
   return {
+    errorCode: accumulator.errorCode,
+    executionState: accumulator.executionState,
     lastEventId: accumulator.lastEventId,
     message: accumulator.message,
     messageDone: accumulator.messageDone,
@@ -843,6 +896,8 @@ export async function sendAgentChatMessage(
     {
       baseResume: request.resume,
       id: runId,
+      errorCode: null,
+      executionState: "running",
       lastEventId: 0,
       resumeId: request.resumeId,
       status: "active",

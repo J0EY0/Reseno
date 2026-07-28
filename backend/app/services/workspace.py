@@ -6,12 +6,15 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
+from threading import Lock
 from typing import Any, cast
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
+from app.schemas.agent_settings import AgentSettings, normalize_agent_settings
 from app.services.agent.attachments import delete_agent_session_attachments
 from app.services.model_configs import list_llm_configs
 
@@ -28,15 +31,7 @@ DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 USER_SETTINGS_KEYS = {"agentSettings", "theme"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
-DEFAULT_AGENT_SETTINGS = {
-    "defaultModelId": "",
-    "responseLanguage": "follow",
-    "behaviorMode": "balanced",
-    "confirmationMode": "always",
-}
-AGENT_RESPONSE_LANGUAGES = {"follow", "zh", "en"}
-AGENT_BEHAVIOR_MODES = {"balanced", "strict", "aggressive"}
-AGENT_CONFIRMATION_MODES = {"always", "suggestOnly"}
+_USER_SETTINGS_LOCK = Lock()
 
 
 def normalize_locale(locale: str) -> str:
@@ -54,9 +49,7 @@ def workspace_data_locale() -> str:
 def generate_resume_id() -> str:
     """Generate a compact backend-owned resume id."""
 
-    return "".join(
-        secrets.choice(RESUME_ID_ALPHABET) for _ in range(RESUME_ID_LENGTH)
-    )
+    return "".join(secrets.choice(RESUME_ID_ALPHABET) for _ in range(RESUME_ID_LENGTH))
 
 
 def generate_template_id() -> str:
@@ -345,33 +338,10 @@ def _read_template_json(template_id: str) -> dict[str, Any]:
 def _normalize_agent_settings(value: Any) -> dict[str, str]:
     """Keep only supported Agent settings, tolerating older settings payloads."""
 
-    settings = dict(DEFAULT_AGENT_SETTINGS)
-    if not isinstance(value, dict):
-        return settings
-
-    default_model_id = value.get("defaultModelId")
-    if isinstance(default_model_id, str):
-        settings["defaultModelId"] = default_model_id
-
-    response_language = value.get("responseLanguage")
-    if (
-        isinstance(response_language, str)
-        and response_language in AGENT_RESPONSE_LANGUAGES
-    ):
-        settings["responseLanguage"] = response_language
-
-    behavior_mode = value.get("behaviorMode")
-    if isinstance(behavior_mode, str) and behavior_mode in AGENT_BEHAVIOR_MODES:
-        settings["behaviorMode"] = behavior_mode
-
-    confirmation_mode = value.get("confirmationMode")
-    if (
-        isinstance(confirmation_mode, str)
-        and confirmation_mode in AGENT_CONFIRMATION_MODES
-    ):
-        settings["confirmationMode"] = confirmation_mode
-
-    return settings
+    return normalize_agent_settings(value).model_dump(
+        mode="json",
+        by_alias=True,
+    )
 
 
 def _normalize_theme(value: Any) -> str | None:
@@ -417,35 +387,47 @@ def _load_user_settings() -> dict[str, Any]:
         return {}
 
 
+def load_agent_settings() -> AgentSettings:
+    """Load the backend-authoritative Agent preferences."""
+
+    return normalize_agent_settings(_load_user_settings().get("agentSettings"))
+
+
 def _write_user_settings(settings: dict[str, Any]) -> None:
     """Write settings-page preferences atomically."""
 
     path = get_settings().user_settings_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp")
-    temp_path.write_text(_canonical_json(settings), encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(_canonical_json(settings), encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def save_user_settings(locale: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Persist settings-page preferences without saving the whole workspace."""
 
-    normalized_locale = normalize_locale(locale)
-    next_settings = _load_user_settings()
-    next_settings["locale"] = normalized_locale
+    # The lock covers the whole read-modify-write transaction. Atomic replace alone
+    # prevents partial JSON, but cannot prevent two concurrent updates from losing data.
+    with _USER_SETTINGS_LOCK:
+        normalized_locale = normalize_locale(locale)
+        next_settings = _load_user_settings()
+        next_settings["locale"] = normalized_locale
 
-    theme = _normalize_theme(settings.get("theme"))
-    if theme is not None:
-        next_settings["theme"] = theme
+        theme = _normalize_theme(settings.get("theme"))
+        if theme is not None:
+            next_settings["theme"] = theme
 
-    if "agentSettings" in settings:
-        next_settings["agentSettings"] = _normalize_agent_settings(
-            settings.get("agentSettings")
-        )
+        if "agentSettings" in settings:
+            next_settings["agentSettings"] = _normalize_agent_settings(
+                settings.get("agentSettings")
+            )
 
-    next_settings = _normalize_user_settings(next_settings)
-    _write_user_settings(next_settings)
-    return next_settings
+        next_settings = _normalize_user_settings(next_settings)
+        _write_user_settings(next_settings)
+        return next_settings
 
 
 def _apply_user_settings(state: dict[str, Any]) -> dict[str, Any]:

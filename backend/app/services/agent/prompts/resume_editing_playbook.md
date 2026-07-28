@@ -17,6 +17,18 @@ Map every proposed claim to its source and classify it:
 
 Use direct evidence as written support. Use transferable evidence only with wording that remains true to the source. Treat adjacent evidence as a clarification target, not a claim. Omit unsupported claims.
 
+Every `edit_execute` entry must include `evidenceRefs` using only:
+
+- `resume:basic:<field>`;
+- `resume:section:<sectionId>`;
+- `resume:item:<sectionId>:<itemId>`;
+- `prompt:current`;
+- `attachment:<attachmentId>`.
+
+Reference the narrowest resume item or field that supports the claim. A target
+page, JD, search result, or other web source may explain relevance but must
+never appear as candidate evidence.
+
 ### 3. Resolve Material Gaps
 
 For a major unsupported requirement, ask 2-4 focused questions about responsibility, method, constraints, deliverable, and observable result. For a minor gap, omit it rather than blocking the task. Never fill a gap by copying target-page language or inferring facts from a technology name.

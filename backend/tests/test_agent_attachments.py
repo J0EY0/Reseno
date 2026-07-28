@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 from app.db.connection import connect
 from app.schemas.agent import (
@@ -145,6 +146,261 @@ def _docx_with_text(text: str) -> bytes:
             </w:document>""",
         )
     return buffer.getvalue()
+
+
+def _encrypted_pdf() -> bytes:
+    buffer = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.encrypt("secret")
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_prevalidate_rejects_corrupt_pdf_before_consumption(
+    client: TestClient,
+) -> None:
+    session_id = "resume-corrupt-pdf"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="corrupt.pdf",
+        payload=b"%PDF-1.4\nnot-a-valid-document",
+        media_type="application/pdf",
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="PDF could not be read",
+    ):
+        agent_attachments.prevalidate_agent_attachments(
+            session_id,
+            [attachment],
+        )
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+
+
+def test_prevalidate_rejects_encrypted_native_pdf(
+    client: TestClient,
+) -> None:
+    session_id = "resume-encrypted-pdf"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="encrypted.pdf",
+        payload=_encrypted_pdf(),
+        media_type="application/pdf",
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="Encrypted PDF attachments are not supported",
+    ):
+        agent_attachments.prevalidate_agent_attachments(
+            session_id,
+            [attachment],
+            can_consume_native=lambda _attachment: True,
+        )
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+
+
+def test_prevalidate_normalizes_unexpected_extraction_failure(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-extraction-failure"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="notes.txt",
+        payload=b"Readable source material",
+        media_type="text/plain",
+    )
+
+    def fail_extraction(
+        stored: agent_attachments.StoredAgentAttachment,
+        payload: bytes,
+    ) -> str:
+        del stored, payload
+        raise RuntimeError("extractor crashed")
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "_extract_attachment_text",
+        fail_extraction,
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="could not be extracted",
+    ):
+        agent_attachments.prevalidate_agent_attachments(
+            session_id,
+            [attachment],
+        )
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+
+
+def test_prevalidate_rejects_aggregate_raw_bytes_without_partial_readiness(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-aggregate-bytes"
+    files = [
+        _upload(
+            client,
+            session_id=session_id,
+            filename=f"part-{index}.txt",
+            payload=b"123456",
+            media_type="text/plain",
+        )
+        for index in range(2)
+    ]
+    monkeypatch.setattr(
+        agent_attachments,
+        "MAX_AGENT_REQUEST_ATTACHMENT_BYTES",
+        10,
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="total size limit",
+    ):
+        agent_attachments.prevalidate_agent_attachments(session_id, files)
+
+    assert [
+        agent_attachments.load_agent_attachment(session_id, file).state
+        for file in files
+    ] == ["stored", "stored"]
+
+
+def test_prevalidate_rejects_aggregate_extracted_text(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-aggregate-text"
+    files = [
+        _upload(
+            client,
+            session_id=session_id,
+            filename=f"part-{index}.txt",
+            payload=b"abcdef",
+            media_type="text/plain",
+        )
+        for index in range(2)
+    ]
+    monkeypatch.setattr(
+        agent_attachments,
+        "MAX_AGENT_REQUEST_ATTACHMENT_TEXT_CHARS",
+        10,
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="total text limit",
+    ):
+        agent_attachments.prevalidate_agent_attachments(session_id, files)
+
+    assert [
+        agent_attachments.load_agent_attachment(session_id, file).state
+        for file in files
+    ] == ["stored", "stored"]
+
+
+def test_attachment_lifecycle_advances_after_batch_validation_and_consumption(
+    client: TestClient,
+) -> None:
+    session_id = "resume-attachment-lifecycle"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="evidence.txt",
+        payload=b"Verified evidence",
+        media_type="text/plain",
+    )
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+
+    result = agent_attachments.prevalidate_agent_attachments(
+        session_id,
+        [attachment],
+    )
+    ready = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert result.total_bytes == len(b"Verified evidence")
+    assert result.total_text_chars == len("Verified evidence")
+    assert ready is not None
+    assert ready.state == "ready"
+
+    mark_agent_attachments_sent(session_id, [attachment])
+    consumed = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert consumed is not None
+    assert consumed.state == "consumed"
+    assert consumed.sent_at is not None
+
+    repeated_receipt = mark_agent_attachments_sent(session_id, [attachment])
+    assert repeated_receipt.previous_metadata == ()
+
+
+def test_mark_sent_rejects_attachment_that_is_still_stored(
+    client: TestClient,
+) -> None:
+    session_id = "resume-stored-attachment-consumption"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="unvalidated.txt",
+        payload=b"Unvalidated evidence",
+        media_type="text/plain",
+    )
+
+    with pytest.raises(
+        agent_attachments.AgentAttachmentError,
+        match="not ready",
+    ):
+        mark_agent_attachments_sent(session_id, [attachment])
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+    assert stored.sent_at is None
+
+
+def test_version_two_metadata_without_state_is_inferred(
+    client: TestClient,
+) -> None:
+    session_id = "resume-legacy-attachment-state"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="legacy.txt",
+        payload=b"Legacy metadata",
+        media_type="text/plain",
+    )
+    metadata = agent_attachments._read_metadata(session_id, attachment["id"])
+    assert metadata is not None
+    metadata.pop("state")
+    agent_attachments._write_metadata(session_id, attachment["id"], metadata)
+
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert stored is not None
+    assert stored.state == "stored"
+
+    agent_attachments.prevalidate_agent_attachments(session_id, [attachment])
+    mark_agent_attachments_sent(session_id, [attachment])
+    consumed = agent_attachments.load_agent_attachment(session_id, attachment)
+    assert consumed is not None
+    assert consumed.state == "consumed"
 
 
 @pytest.mark.parametrize(
@@ -346,6 +602,7 @@ def test_marking_multiple_attachments_is_all_or_nothing(
         payload=_pdf_with_text("Second"),
         media_type="application/pdf",
     )
+    agent_attachments.prevalidate_agent_attachments(session_id, [first, second])
     original_write_metadata = agent_attachments._write_metadata
     sent_write_count = 0
 
@@ -778,6 +1035,7 @@ def test_pending_attachment_can_be_deleted_but_sent_history_is_protected(
         payload=_pdf_with_text("Sent"),
         media_type="application/pdf",
     )
+    agent_attachments.prevalidate_agent_attachments(session_id, [sent])
     mark_agent_attachments_sent(session_id, [sent])
 
     pending_response = client.delete(

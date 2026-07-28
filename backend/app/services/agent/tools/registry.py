@@ -517,12 +517,33 @@ EDIT_EXECUTE_SCHEMA: dict[str, Any] = {
                             "target": {"type": "string"},
                             "reason": {"type": "string"},
                             "replacement": {"type": "string"},
+                            "evidenceRefs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "minItems": 1,
+                                "description": (
+                                    "Candidate-owned evidence supporting this edit. "
+                                    "Use resume:basic:<field>, "
+                                    "resume:section:<sectionId>, "
+                                    "resume:item:<sectionId>:<itemId>, "
+                                    "prompt:current, or "
+                                    "attachment:<attachmentId>. Public target, JD, "
+                                    "search, and web sources are never candidate "
+                                    "evidence."
+                                ),
+                            },
                             "operation": {
                                 **OPERATION_SCHEMA,
                                 "description": EDIT_OPERATION_GUIDE,
                             },
                         },
-                        "required": ["title", "target", "reason", "operation"],
+                        "required": [
+                            "title",
+                            "target",
+                            "reason",
+                            "evidenceRefs",
+                            "operation",
+                        ],
                         "additionalProperties": False,
                     },
                 },

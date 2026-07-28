@@ -1,9 +1,15 @@
 import pytest
 
 from app.schemas.agent import AgentChatRequest
-from app.services.agent import JobReference, TargetReference
+from app.services.agent import (
+    JobReference,
+    TargetReference,
+    WebSearchReference,
+    WebSearchResult,
+)
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.materials import extract_resume_materials
+from app.services.agent.tools.runner import AgentToolRunner
 
 
 def _executor(*, prompt: str, job_brief: str = "") -> AgentPlanExecutor:
@@ -91,3 +97,69 @@ def test_material_extraction_labels_target_context_without_job_only_wording() ->
     assert candidate["sourceType"] == "jobBrief"
     assert candidate["opportunityType"] == "graduate_study"
     assert candidate["referenceOnly"] is True
+
+
+def test_multi_search_sources_keep_each_excerpt_with_its_real_url() -> None:
+    executor = _executor(prompt="根据目标岗位优化简历")
+    first = WebSearchResult(
+        title="Example role",
+        url="https://example.test/role",
+        excerpt="Role-specific requirements.",
+    )
+    second = WebSearchResult(
+        title="Example team",
+        url="https://example.test/team",
+        excerpt="Team-specific context.",
+    )
+    duplicate = WebSearchResult(
+        title="Duplicate role result",
+        url=first.url,
+        excerpt="A duplicate excerpt must not create a second source.",
+    )
+    summary = WebSearchReference(
+        query="example frontend role",
+        results=(first, second, duplicate),
+        query_count=2,
+        result_count=3,
+    )
+    runner = AgentToolRunner(executor)
+
+    primary = runner.web_search_summary_primary_result(summary)
+    reference = executor.build_search_target_reference_from_result(
+        "Frontend engineer",
+        summary.query,
+        primary,
+        summary.result_count,
+        summary.error,
+        kind="employment",
+        exact_job_description=True,
+        search_results=summary.results,
+    )
+    sources = executor.build_sources(reference, executor.analyze_resume())
+    tool = executor.build_target_reference_tool(reference)
+
+    assert primary == first
+    assert [
+        (source.url, source.excerpt)
+        for source in sources
+        if source.source_type == "web"
+    ] == [
+        (first.url, first.excerpt),
+        (second.url, second.excerpt),
+    ]
+    assert tool.output["url"] == first.url
+    assert tool.output["title"] == first.title
+    assert tool.output["excerpt"] == first.excerpt
+    assert reference.excerpt == f"{first.excerpt} {second.excerpt}"
+    assert tool.output["results"] == [
+        {
+            "url": first.url,
+            "title": first.title,
+            "excerpt": first.excerpt,
+        },
+        {
+            "url": second.url,
+            "title": second.title,
+            "excerpt": second.excerpt,
+        },
+    ]

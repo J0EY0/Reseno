@@ -1,7 +1,6 @@
 import type { Locale } from "@/i18n";
 import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
-  AgentSettings,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   KeywordMatch,
@@ -183,6 +182,17 @@ export type AgentTransactionState =
   | "committed"
   | "rolled_back";
 export type AgentRunStatus = "active" | "completed" | "cancelled" | "failed";
+export type AgentTurnExecutionStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+export type AgentTurnErrorCode =
+  | "AGENT_PROVIDER_AUTH_ERROR"
+  | "AGENT_PROVIDER_ERROR"
+  | "AGENT_INTERNAL_ERROR"
+  | "AGENT_RUN_CANCELLED"
+  | "AGENT_EDIT_TRANSACTION_INCOMPLETE";
 
 export interface AgentDraftState {
   id: string;
@@ -199,6 +209,8 @@ export interface AgentDraftState {
 
 export interface AgentChatRequest {
   resumeId?: string;
+  expectedRevision?: string;
+  clientTurnId?: string;
   prompt: string;
   message?: AgentConversationMessage;
   messages?: AgentConversationMessage[];
@@ -211,7 +223,6 @@ export interface AgentChatRequest {
   appliedActions: string[];
   draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
-  settings: AgentSettings;
   stream?: true;
 }
 
@@ -268,6 +279,7 @@ export interface AgentResumeEditSuggestion {
   reason: string;
   replacement?: string;
   operation?: ResumeEditOperation;
+  evidenceRefs?: string[];
   status?: "planned" | "executed" | "rejected";
   diffs?: ResumeDraftDiff[];
 }
@@ -306,6 +318,8 @@ export interface AgentChatResponse {
   message: AgentChatMessage;
   runId: string;
   status: AgentRunStatus;
+  executionState: AgentTurnExecutionStatus;
+  errorCode: AgentTurnErrorCode | null;
   lastEventId: number;
   messageDone: boolean;
 }
@@ -315,6 +329,8 @@ export interface AgentRunResponse {
   resumeId?: string;
   baseResume: ResumeData;
   status: AgentRunStatus;
+  executionState: AgentTurnExecutionStatus;
+  errorCode: AgentTurnErrorCode | null;
   lastEventId: number;
 }
 
@@ -324,10 +340,20 @@ export interface AgentStoredMessage extends AgentConversationMessage {
   response?: AgentChatMessage;
 }
 
+export interface AgentTurnExecution {
+  runId: string;
+  turnId: string;
+  status: AgentTurnExecutionStatus;
+  errorCode: AgentTurnErrorCode | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
 export interface AgentSessionResponse {
   resumeId: string;
   revision: string;
   messages: AgentStoredMessage[];
+  executions: AgentTurnExecution[];
 }
 
 export interface AgentSessionReplaceRequest {
@@ -405,6 +431,8 @@ export type AgentChatStreamEvent =
       type: "run_done";
       runId: string;
       status: AgentRunStatus;
+      executionState: AgentTurnExecutionStatus;
+      errorCode: AgentTurnErrorCode | null;
     }
   | {
       type: "error";
