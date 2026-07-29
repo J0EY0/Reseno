@@ -25,6 +25,7 @@ from app.services.agent.attachments import (
     AgentAttachmentSentReceipt,
     StoredAgentAttachment,
     mark_agent_attachments_sent,
+    prepare_agent_history_attachments,
     prevalidate_agent_attachments,
     prune_sent_agent_attachments,
     rollback_agent_attachments_sent,
@@ -445,14 +446,9 @@ def replace_agent_session_messages(
         for file in message["files"]
         if isinstance(file, dict)
     ]
-    # History replacement does not send bytes to a provider. It still validates
-    # the complete retained set before the DB transaction so a broken file
-    # cannot leave message history and attachment metadata out of sync.
-    prevalidate_agent_attachments(
-        safe_resume_id,
-        retained_files,
-        can_consume_native=lambda _attachment: True,
-    )
+    # History persistence only verifies that retained references still resolve.
+    # Request count and aggregate payload limits belong to provider-bound turns.
+    prepare_agent_history_attachments(safe_resume_id, retained_files)
 
     receipt: AgentAttachmentSentReceipt | None = None
     try:

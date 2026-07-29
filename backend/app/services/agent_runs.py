@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import closing
@@ -24,6 +25,8 @@ from app.services.agent_sessions import (
     finish_agent_turn_execution,
     prepare_agent_turn,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_RETAINED_AGENT_RUNS: Final = 24
 MAX_BUFFERED_AGENT_EVENTS: Final = 512
@@ -314,16 +317,26 @@ class AgentRunManager:
 
         execution_state = _execution_state(status)
         error_code = None if execution_state == "succeeded" else run.error_code
-        # Commit the durable terminal state before exposing run_done. A client
-        # that refreshes after that event must never observe the turn as running.
-        with closing(connect()) as conn:
-            finish_agent_turn_execution(
-                conn,
-                run.request,
-                run_id=run.id,
-                status=execution_state,
-                error_code=error_code,
-            )
+        try:
+            # Commit the durable terminal state before exposing run_done. A client
+            # that refreshes after that event must never observe the turn as running.
+            with closing(connect()) as conn:
+                finish_agent_turn_execution(
+                    conn,
+                    run.request,
+                    run_id=run.id,
+                    status=execution_state,
+                    error_code=error_code,
+                )
+        except Exception:
+            logger.exception("Failed to persist terminal Agent run %s", run.id)
+            # Persistence failure must not strand the process-local run as active.
+            # Publish a failed terminal event so subscribers and the resume lock
+            # converge even though the durable execution could not be finalized.
+            status = "failed"
+            execution_state = "failed"
+            error_code = "AGENT_INTERNAL_ERROR"
+            run.has_error = True
 
         frame = _sse_frame(
             "run_done",

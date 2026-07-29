@@ -148,3 +148,5 @@ assert(
 );
 
 console.log("Agent panel state checks passed.");
+
+await import("./verify-agent-panel-races.mjs");

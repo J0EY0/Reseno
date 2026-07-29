@@ -209,9 +209,23 @@ interface AgentPanelMessage {
 }
 
 interface PendingAgentSend {
+  optimisticMessageId: string;
   resolve: (status: AgentRunStatus) => void;
   resumeId?: string;
   rollbackMessages: AgentPanelMessage[];
+}
+
+function isPendingSendOwner(
+  currentOwnerId: string | null,
+  pendingOwnerId: string | undefined,
+  pendingResumeId: string | undefined,
+  currentResumeId: string | undefined,
+) {
+  return (
+    currentOwnerId !== null &&
+    currentOwnerId === pendingOwnerId &&
+    pendingResumeId === currentResumeId
+  );
 }
 
 function toAttachmentData(
@@ -1633,6 +1647,9 @@ export function CopilotPanel({
   >([]);
   const replyTimerRef = useRef<number | null>(null);
   const pendingSendRef = useRef<PendingAgentSend | null>(null);
+  // Only the send that published the provisional message may remove it.
+  // Loading authoritative history revokes this ownership before replacing UI state.
+  const optimisticMessageOwnerRef = useRef<string | null>(null);
   const promptSubmissionRef = useRef(false);
   const referencedAttachmentsRef = useRef<AgentChatAttachment[]>([]);
   const copyTimerRef = useRef<number | null>(null);
@@ -1705,15 +1722,24 @@ export function CopilotPanel({
     replyTimerRef.current = null;
     const pending = pendingSendRef.current;
     pendingSendRef.current = null;
-
-    if (
-      rollback &&
+    const ownsOptimisticMessage = Boolean(
       pending &&
-      pending.resumeId === currentResumeIdRef.current
-    ) {
+        isPendingSendOwner(
+          optimisticMessageOwnerRef.current,
+          pending.optimisticMessageId,
+          pending.resumeId,
+          currentResumeIdRef.current,
+        ),
+    );
+
+    if (rollback && pending && ownsOptimisticMessage) {
       setMessages(pending.rollbackMessages);
     }
+    if (ownsOptimisticMessage) {
+      optimisticMessageOwnerRef.current = null;
+    }
     pending?.resolve("cancelled");
+    isRespondingRef.current = false;
     setIsResponding(false);
     return true;
   }, []);
@@ -1727,6 +1753,7 @@ export function CopilotPanel({
 
       sessionRevisionRef.current = session.revision;
       if (replaceMessages) {
+        optimisticMessageOwnerRef.current = null;
         setMessages(
           toPanelMessages(session, ALL_AGENT_TRANSIENT_MODEL_STATUS_TEXTS),
         );
@@ -1990,6 +2017,7 @@ export function CopilotPanel({
     setPromptLocalAttachmentCount(0);
     setSessionLoadError(false);
     sessionRevisionRef.current = null;
+    optimisticMessageOwnerRef.current = null;
     referencedAttachmentsRef.current = [];
     setReferencedAttachments([]);
 
@@ -2359,7 +2387,7 @@ export function CopilotPanel({
       return;
     }
 
-    if (cancelScheduledSend(false)) {
+    if (cancelScheduledSend(true)) {
       return;
     }
 
@@ -2480,6 +2508,7 @@ export function CopilotPanel({
     setIsResponding(true);
     isRespondingRef.current = true;
     setMessages(nextMessages);
+    optimisticMessageOwnerRef.current = userMessage.id;
     setStreamingMessage(null);
     previewedEditsKeyRef.current = null;
     requestResumeRef.current = resume;
@@ -2490,6 +2519,7 @@ export function CopilotPanel({
 
     return new Promise<AgentRunStatus>((resolve) => {
       pendingSendRef.current = {
+        optimisticMessageId: userMessage.id,
         resolve,
         resumeId,
         rollbackMessages,
@@ -2595,11 +2625,20 @@ export function CopilotPanel({
               );
             }
           } finally {
+            const ownsOptimisticMessage = Boolean(
+              pending &&
+                isPendingSendOwner(
+                  optimisticMessageOwnerRef.current,
+                  pending.optimisticMessageId,
+                  pending.resumeId,
+                  currentResumeIdRef.current,
+                ),
+            );
             if (
               status !== "completed" &&
               !sessionReconciled &&
               pending &&
-              pending.resumeId === currentResumeIdRef.current &&
+              ownsOptimisticMessage &&
               shouldRollbackOptimisticAgentMessages({
                 replaceSessionBeforeSend: Boolean(
                   options.replaceSessionBeforeSend,
@@ -2608,6 +2647,9 @@ export function CopilotPanel({
               })
             ) {
               setMessages(pending.rollbackMessages);
+            }
+            if (ownsOptimisticMessage) {
+              optimisticMessageOwnerRef.current = null;
             }
 
             if (status === "failed" && !isApiErrorToastShown(failure)) {

@@ -449,6 +449,67 @@ def test_successful_execution_state_is_persisted(
     assert execution["completedAt"] is not None
 
 
+def test_terminal_persistence_failure_still_finalizes_in_memory_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: _FakeConnection,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "message-terminal-persistence-failure",
+                        "text": "Done",
+                        "transactionState": "committed",
+                    },
+                },
+            )
+
+        def fail_terminal_persistence(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise OSError("terminal database commit failed")
+
+        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(
+            agent_runs,
+            "finish_agent_turn_execution",
+            fail_terminal_persistence,
+        )
+        _bypass_turn_preparation(monkeypatch)
+
+        manager = AgentRunManager()
+        run = await manager.start(_request("resume-terminal-persistence-failure"))
+        subscription = asyncio.create_task(_collect_events(manager, run.id))
+
+        assert run.task is not None
+        task_results = await asyncio.wait_for(
+            asyncio.gather(run.task, return_exceptions=True),
+            timeout=1,
+        )
+        events = await asyncio.wait_for(subscription, timeout=0.2)
+
+        assert task_results == [None]
+        assert run.status == "failed"
+        assert run.execution_state == "failed"
+        assert run.error_code == "AGENT_INTERNAL_ERROR"
+        assert await manager.active_for_resume(run.resume_id or "") is None
+        assert run.resume_id not in manager._active_by_resume
+        assert "event: run_done" in events[-1]
+        assert sum("event: run_done" in frame for frame in events) == 1
+        assert '"status":"failed"' in events[-1]
+        assert '"errorCode":"AGENT_INTERNAL_ERROR"' in events[-1]
+
+    asyncio.run(scenario())
+
+
 def test_provider_401_execution_state_is_persisted(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

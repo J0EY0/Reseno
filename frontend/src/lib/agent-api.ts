@@ -818,9 +818,14 @@ async function consumeAgentRun(
         options.signal,
       );
       await readAgentChatStream(response, options, accumulator);
-      reconnectDelayMs = 250;
-      reconnectAttempts = 0;
       response = undefined;
+
+      if (accumulator.status === "active") {
+        // A clean EOF before run_done is still a transport interruption. Route
+        // it through the same bounded budget as network failures so repeated
+        // short streams cannot reconnect forever.
+        throw new Error("Agent stream ended before a terminal event.");
+      }
     } catch (error) {
       throwIfAborted(options.signal);
       if (

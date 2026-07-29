@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -49,6 +50,13 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+
+# Attachment metadata and SQLite history cannot share one transaction. This
+# process-local lock makes cleanup/manual deletion and the consumption handoff
+# mutually exclusive, so a stale unsent snapshot cannot delete a file after its
+# message becomes authoritative. ResuMate runs one backend process by default;
+# avoiding a persistent lock keeps this development-stage boundary lightweight.
+_ATTACHMENT_LIFECYCLE_LOCK = RLock()
 
 
 class AgentAttachmentError(ValueError):
@@ -290,6 +298,31 @@ def prevalidate_agent_attachments(
     )
 
 
+def prepare_agent_history_attachments(
+    session_id: str,
+    files: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    """Validate retained history references without current-request quotas.
+
+    History replacement persists metadata; it does not send attachment bytes
+    to a provider. Applying request count, aggregate byte, or extracted-text
+    limits here would reject otherwise valid long-lived conversations.
+    """
+
+    attachments: list[StoredAgentAttachment] = []
+    for file in _unique_attachment_files(files):
+        attachment = load_agent_attachment(session_id, file)
+        if attachment is None:
+            raise AgentAttachmentError("The attachment is no longer available.")
+        attachments.append(attachment)
+
+    # A stored upload may enter history through replacement rather than a model
+    # request. Advance it only after every retained reference resolves so the
+    # later consumption step remains all-or-nothing.
+    _mark_agent_attachments_ready(session_id, attachments)
+    return tuple(attachment.id for attachment in attachments)
+
+
 def attachment_text(session_id: str, file: dict[str, Any]) -> str:
     """Return cached or lazily extracted text for one original file."""
 
@@ -358,48 +391,52 @@ def mark_agent_attachments_sent(
 ) -> AgentAttachmentSentReceipt:
     """Mark message attachments as sent, rolling back any partial file update."""
 
-    pending_updates: list[tuple[str, dict[str, Any]]] = []
-    for attachment_id in _attachment_ids(files):
-        metadata = _read_metadata(session_id, attachment_id)
-        if metadata is None:
-            raise AgentAttachmentError("The attachment is no longer available.")
-        state = _metadata_state(metadata)
-        if state == "stored":
-            # Consumption is the commit point; validation must have advanced
-            # every attachment in the turn before any metadata is mutated.
-            raise AgentAttachmentError("The attachment is not ready to be consumed.")
-        if state == "ready":
-            pending_updates.append((attachment_id, dict(metadata)))
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        pending_updates: list[tuple[str, dict[str, Any]]] = []
+        for attachment_id in _attachment_ids(files):
+            metadata = _read_metadata(session_id, attachment_id)
+            if metadata is None:
+                raise AgentAttachmentError("The attachment is no longer available.")
+            state = _metadata_state(metadata)
+            if state == "stored":
+                # Consumption is the commit point; validation must have advanced
+                # every attachment in the turn before any metadata is mutated.
+                raise AgentAttachmentError(
+                    "The attachment is not ready to be consumed.",
+                )
+            if state == "ready":
+                pending_updates.append((attachment_id, dict(metadata)))
 
-    receipt = AgentAttachmentSentReceipt(
-        session_id=session_id,
-        previous_metadata=tuple(pending_updates),
-    )
-    sent_at = _now_iso()
-    attempted_count = 0
-    try:
-        for attachment_id, previous_metadata in pending_updates:
-            metadata = {
-                **previous_metadata,
-                "sentAt": sent_at,
-                "state": "consumed",
-            }
-            # Include the current file before writing: storage wrappers may
-            # raise after the atomic replace has already reached disk.
-            attempted_count += 1
-            _write_metadata(session_id, attachment_id, metadata)
-    except BaseException:
-        partial_receipt = AgentAttachmentSentReceipt(
+        receipt = AgentAttachmentSentReceipt(
             session_id=session_id,
-            previous_metadata=receipt.previous_metadata[:attempted_count],
+            previous_metadata=tuple(pending_updates),
         )
+        sent_at = _now_iso()
+        attempted_count = 0
         try:
-            rollback_agent_attachments_sent(partial_receipt)
-        except Exception as rollback_exc:
-            raise AgentAttachmentError(
-                "Attachment metadata could not be restored after a partial update.",
-            ) from rollback_exc
-        raise
+            for attachment_id, previous_metadata in pending_updates:
+                metadata = {
+                    **previous_metadata,
+                    "sentAt": sent_at,
+                    "state": "consumed",
+                }
+                # Include the current file before writing: storage wrappers may
+                # raise after the atomic replace has already reached disk.
+                attempted_count += 1
+                _write_metadata(session_id, attachment_id, metadata)
+        except BaseException:
+            partial_receipt = AgentAttachmentSentReceipt(
+                session_id=session_id,
+                previous_metadata=receipt.previous_metadata[:attempted_count],
+            )
+            try:
+                rollback_agent_attachments_sent(partial_receipt)
+            except Exception as rollback_exc:
+                raise AgentAttachmentError(
+                    "Attachment metadata could not be restored after a partial "
+                    "update.",
+                ) from rollback_exc
+            raise
 
     return receipt
 
@@ -418,11 +455,12 @@ def rollback_agent_attachments_sent(
 def delete_pending_agent_attachment(session_id: str, attachment_id: str) -> bool:
     """Delete an unsent upload; sent history must use session lifecycle cleanup."""
 
-    attachment = load_agent_attachment(session_id, attachment_id)
-    if attachment is None or attachment.sent_at is not None:
-        return False
-    _delete_attachment_files(session_id, attachment)
-    return True
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        attachment = load_agent_attachment(session_id, attachment_id)
+        if attachment is None or attachment.sent_at is not None:
+            return False
+        _delete_attachment_files(session_id, attachment)
+        return True
 
 
 def prune_sent_agent_attachments(
@@ -465,13 +503,17 @@ def cleanup_expired_pending_attachments(
         if not _is_valid_session_id(session_dir.name):
             continue
         for attachment in _iter_session_attachments(session_dir.name):
-            if attachment.sent_at is not None:
-                continue
-            created_at = _parse_iso(attachment.created_at)
-            if created_at is None or created_at > cutoff:
-                continue
-            _delete_attachment_files(session_dir.name, attachment)
-            deleted += 1
+            # Re-read under the same lock used by consumption. The object from
+            # iteration is only a candidate and may already be stale.
+            with _ATTACHMENT_LIFECYCLE_LOCK:
+                current = load_agent_attachment(session_dir.name, attachment.id)
+                if current is None or current.sent_at is not None:
+                    continue
+                created_at = _parse_iso(current.created_at)
+                if created_at is None or created_at > cutoff:
+                    continue
+                _delete_attachment_files(session_dir.name, current)
+                deleted += 1
         _remove_empty_session_dirs(session_dir.name)
 
     return deleted
@@ -868,32 +910,38 @@ def _mark_agent_attachments_ready(
     session_id: str,
     attachments: list[StoredAgentAttachment],
 ) -> None:
-    pending_updates: list[tuple[str, dict[str, Any]]] = []
-    for attachment in attachments:
-        metadata = _read_metadata(session_id, attachment.id)
-        if metadata is None:
-            raise AgentAttachmentError("The attachment is no longer available.")
-        if _metadata_state(metadata) == "stored":
-            pending_updates.append((attachment.id, dict(metadata)))
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        pending_updates: list[tuple[str, dict[str, Any]]] = []
+        for attachment in attachments:
+            # Re-resolve the original under the lifecycle lock. Without this
+            # check, cleanup could delete both files after validation and a
+            # later metadata write could resurrect a file-less attachment.
+            if load_agent_attachment(session_id, attachment.id) is None:
+                raise AgentAttachmentError("The attachment is no longer available.")
+            metadata = _read_metadata(session_id, attachment.id)
+            if metadata is None:
+                raise AgentAttachmentError("The attachment is no longer available.")
+            if _metadata_state(metadata) == "stored":
+                pending_updates.append((attachment.id, dict(metadata)))
 
-    attempted_count = 0
-    try:
-        for attachment_id, previous_metadata in pending_updates:
-            attempted_count += 1
-            _write_metadata(
-                session_id,
-                attachment_id,
-                {**previous_metadata, "state": "ready"},
-            )
-    except BaseException:
+        attempted_count = 0
         try:
-            for attachment_id, metadata in pending_updates[:attempted_count]:
-                _write_metadata(session_id, attachment_id, metadata)
-        except Exception as rollback_exc:
-            raise AgentAttachmentError(
-                "Attachment metadata could not be restored after validation.",
-            ) from rollback_exc
-        raise
+            for attachment_id, previous_metadata in pending_updates:
+                attempted_count += 1
+                _write_metadata(
+                    session_id,
+                    attachment_id,
+                    {**previous_metadata, "state": "ready"},
+                )
+        except BaseException:
+            try:
+                for attachment_id, metadata in pending_updates[:attempted_count]:
+                    _write_metadata(session_id, attachment_id, metadata)
+            except Exception as rollback_exc:
+                raise AgentAttachmentError(
+                    "Attachment metadata could not be restored after validation.",
+                ) from rollback_exc
+            raise
 
 
 def _detected_image_media_type(payload: bytes) -> str | None:

@@ -2,6 +2,8 @@ import base64
 import io
 import json
 import zipfile
+from datetime import UTC, datetime, timedelta
+from threading import Event, Thread
 from typing import Any
 from uuid import uuid4
 
@@ -350,6 +352,186 @@ def test_attachment_lifecycle_advances_after_batch_validation_and_consumption(
 
     repeated_receipt = mark_agent_attachments_sent(session_id, [attachment])
     assert repeated_receipt.previous_metadata == ()
+
+
+def test_cleanup_cannot_delete_attachment_referenced_by_committed_history(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-cleanup-consume-race"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="evidence.txt",
+        payload=b"Verified evidence",
+        media_type="text/plain",
+    )
+    agent_attachments.prevalidate_agent_attachments(session_id, [attachment])
+
+    delete_started = Event()
+    consumed_metadata_written = Event()
+    original_delete = agent_attachments._delete_attachment_files
+    original_write = agent_attachments._write_metadata
+
+    def pause_stale_cleanup(
+        cleanup_session_id: str,
+        stored: agent_attachments.StoredAgentAttachment,
+    ) -> None:
+        delete_started.set()
+        consumed_metadata_written.wait(timeout=1)
+        original_delete(cleanup_session_id, stored)
+
+    def observe_consumption(
+        metadata_session_id: str,
+        attachment_id: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        original_write(metadata_session_id, attachment_id, metadata)
+        if metadata.get("state") == "consumed":
+            consumed_metadata_written.set()
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "_delete_attachment_files",
+        pause_stale_cleanup,
+    )
+    monkeypatch.setattr(agent_attachments, "_write_metadata", observe_consumption)
+
+    cleanup_thread = Thread(
+        target=agent_attachments.cleanup_expired_pending_attachments,
+        kwargs={"now": datetime.now(UTC) + timedelta(days=2)},
+    )
+    cleanup_thread.start()
+    assert delete_started.wait(timeout=1)
+
+    request = AgentChatRequest(
+        resumeId=session_id,
+        prompt="Use the evidence.",
+        message=AgentConversationItem(
+            id="agent-user-cleanup-race",
+            role="user",
+            text="Use the evidence.",
+            files=[attachment],
+        ),
+    )
+    prepare_errors: list[BaseException] = []
+
+    def prepare_turn() -> None:
+        conn = connect()
+        try:
+            agent_sessions.prepare_agent_turn(conn, request)
+        except BaseException as exc:
+            prepare_errors.append(exc)
+        finally:
+            conn.close()
+
+    prepare_thread = Thread(target=prepare_turn)
+    prepare_thread.start()
+    prepare_thread.join(timeout=2)
+    cleanup_thread.join(timeout=2)
+    assert not prepare_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+
+    conn = connect()
+    try:
+        persisted = agent_sessions.load_agent_session(conn, session_id)
+    finally:
+        conn.close()
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+
+    # Cleanup may win and make the turn fail, or consumption may win and keep
+    # the file. It must never leave committed history pointing at a deleted file.
+    assert not (persisted.messages and stored is None)
+    if persisted.messages:
+        assert not prepare_errors
+        assert stored is not None
+        assert stored.state == "consumed"
+
+
+def test_cleanup_cannot_delete_during_attachment_readiness_handoff(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-cleanup-ready-race"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="history.txt",
+        payload=b"Retained history",
+        media_type="text/plain",
+    )
+
+    ready_write_started = Event()
+    cleanup_finished = Event()
+    original_write = agent_attachments._write_metadata
+
+    def pause_ready_write(
+        metadata_session_id: str,
+        attachment_id: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        if metadata.get("state") == "ready":
+            ready_write_started.set()
+            cleanup_finished.wait(timeout=1)
+        original_write(metadata_session_id, attachment_id, metadata)
+
+    monkeypatch.setattr(agent_attachments, "_write_metadata", pause_ready_write)
+
+    messages = [
+        AgentConversationItem(
+            id="history-ready-race",
+            role="user",
+            text="Retain this attachment.",
+            files=[attachment],
+        ),
+    ]
+    replace_errors: list[BaseException] = []
+
+    def replace_history() -> None:
+        conn = connect()
+        try:
+            agent_sessions.replace_agent_session_messages(
+                conn,
+                session_id,
+                locale="en",
+                messages=messages,
+            )
+        except BaseException as exc:
+            replace_errors.append(exc)
+        finally:
+            conn.close()
+
+    replace_thread = Thread(target=replace_history)
+    replace_thread.start()
+    assert ready_write_started.wait(timeout=1)
+
+    def cleanup() -> None:
+        try:
+            agent_attachments.cleanup_expired_pending_attachments(
+                now=datetime.now(UTC) + timedelta(days=2),
+            )
+        finally:
+            cleanup_finished.set()
+
+    cleanup_thread = Thread(target=cleanup)
+    cleanup_thread.start()
+    replace_thread.join(timeout=2)
+    cleanup_thread.join(timeout=2)
+    assert not replace_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+
+    conn = connect()
+    try:
+        persisted = agent_sessions.load_agent_session(conn, session_id)
+    finally:
+        conn.close()
+    stored = agent_attachments.load_agent_attachment(session_id, attachment)
+
+    assert not (persisted.messages and stored is None)
+    if persisted.messages:
+        assert not replace_errors
+        assert stored is not None
+        assert stored.state == "consumed"
 
 
 def test_mark_sent_rejects_attachment_that_is_still_stored(
@@ -744,6 +926,99 @@ def test_replace_session_rolls_back_when_attachment_protection_fails(
     assert [message.id for message in persisted.messages] == [
         "original-user-message",
     ]
+
+
+def test_history_replacement_preserves_more_than_request_attachment_limit(
+    client: TestClient,
+) -> None:
+    session_id = "resume-history-many-attachments"
+    attachments = [
+        _upload(
+            client,
+            session_id=session_id,
+            filename=f"history-{index}.txt",
+            payload=f"History {index}".encode(),
+            media_type="text/plain",
+        )
+        for index in range(agent_attachments.MAX_AGENT_CONTEXT_ATTACHMENTS + 1)
+    ]
+    for attachment in attachments:
+        agent_attachments.prevalidate_agent_attachments(session_id, [attachment])
+        mark_agent_attachments_sent(session_id, [attachment])
+
+    messages = [
+        AgentConversationItem(
+            id=f"history-message-{index}",
+            role="user",
+            text=f"History message {index}",
+            files=[attachment],
+        )
+        for index, attachment in enumerate(attachments)
+    ]
+
+    conn = connect()
+    try:
+        replaced = agent_sessions.replace_agent_session_messages(
+            conn,
+            session_id,
+            locale="en",
+            messages=messages,
+        )
+    finally:
+        conn.close()
+
+    assert [message.id for message in replaced.messages] == [
+        message.id for message in messages
+    ]
+    assert sum(len(message.files) for message in replaced.messages) == len(attachments)
+
+
+def test_history_replacement_ignores_current_request_aggregate_size_limit(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "resume-history-aggregate-size"
+    attachments = [
+        _upload(
+            client,
+            session_id=session_id,
+            filename=f"history-{index}.txt",
+            payload=b"historical attachment",
+            media_type="text/plain",
+        )
+        for index in range(2)
+    ]
+    for attachment in attachments:
+        agent_attachments.prevalidate_agent_attachments(session_id, [attachment])
+        mark_agent_attachments_sent(session_id, [attachment])
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "MAX_AGENT_REQUEST_ATTACHMENT_BYTES",
+        1,
+    )
+    messages = [
+        AgentConversationItem(
+            id=f"aggregate-history-message-{index}",
+            role="user",
+            text=f"History message {index}",
+            files=[attachment],
+        )
+        for index, attachment in enumerate(attachments)
+    ]
+
+    conn = connect()
+    try:
+        replaced = agent_sessions.replace_agent_session_messages(
+            conn,
+            session_id,
+            locale="en",
+            messages=messages,
+        )
+    finally:
+        conn.close()
+
+    assert sum(len(message.files) for message in replaced.messages) == len(attachments)
 
 
 def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:

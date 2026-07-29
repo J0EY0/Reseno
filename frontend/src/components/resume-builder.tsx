@@ -145,8 +145,6 @@ import {
   deleteResumeForeverApi,
   deleteTemplateForeverApi,
   duplicateResumeApi,
-  emptyResumeTrashApi,
-  emptyTemplateTrashApi,
   fetchDeletedTemplatesApi,
   fetchDeletedResumesApi,
   fetchResumeApi,
@@ -3241,30 +3239,6 @@ export function ResumeBuilder({
     return true;
   }
 
-  async function emptyResumeTrash() {
-    if (deletedResumeDocuments.length === 0) {
-      return false;
-    }
-
-    try {
-      await emptyResumeTrashApi();
-    } catch (error) {
-      console.error("Failed to empty resume trash.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(t.loadError, {
-          closeButton: true,
-        });
-      }
-      return false;
-    }
-
-    startTransition(() => setDeletedResumeDocuments([]));
-    toast.success(t.resumeTrashEmptied, {
-      closeButton: true,
-    });
-    return true;
-  }
-
   async function createCustomTemplate() {
     if (
       isLoading ||
@@ -3571,30 +3545,6 @@ export function ResumeBuilder({
         closeButton: true,
       },
     );
-    return true;
-  }
-
-  async function emptyTemplateTrash() {
-    if (deletedTemplates.length === 0) {
-      return false;
-    }
-
-    try {
-      await emptyTemplateTrashApi();
-    } catch (error) {
-      console.error("Failed to empty template trash.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(t.loadError, {
-          closeButton: true,
-        });
-      }
-      return false;
-    }
-
-    startTransition(() => setDeletedTemplates([]));
-    toast.success(t.templateTrashEmptied, {
-      closeButton: true,
-    });
     return true;
   }
 
@@ -4375,10 +4325,8 @@ export function ResumeBuilder({
           templatePreviewResume={deferredTemplatePreviewResume}
           onRestoreResume={restoreResumes}
           onDeleteResumeForever={permanentlyDeleteResumes}
-          onEmptyResumeTrash={emptyResumeTrash}
           onRestoreTemplate={restoreTemplates}
           onDeleteTemplateForever={permanentlyDeleteTemplates}
-          onEmptyTemplateTrash={emptyTemplateTrash}
         />
       </Suspense>
     );

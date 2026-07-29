@@ -53,11 +53,13 @@ export function GalleryPagination({
   totalPages,
   t,
   onPageChange,
+  disabled = false,
 }: {
   currentPage: number;
   totalPages: number;
   t: AppMessages;
   onPageChange: (page: number) => void;
+  disabled?: boolean;
 }) {
   const pageItems = useMemo(
     () => getPaginationItems(currentPage, totalPages),
@@ -69,7 +71,12 @@ export function GalleryPagination({
   }
 
   function goToPage(page: number) {
-    if (page < 1 || page > totalPages || page === currentPage) {
+    if (
+      disabled ||
+      page < 1 ||
+      page > totalPages ||
+      page === currentPage
+    ) {
       return;
     }
 
@@ -86,10 +93,11 @@ export function GalleryPagination({
           <PaginationLink
             href="#"
             aria-label={t.paginationPrevious}
-            aria-disabled={currentPage === 1}
+            aria-disabled={disabled || currentPage === 1}
             className={cn(
               "h-8 gap-1 rounded-full px-2.5 text-xs",
-              currentPage === 1 && "pointer-events-none opacity-45",
+              (disabled || currentPage === 1) &&
+                "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
               event.preventDefault();
@@ -111,7 +119,11 @@ export function GalleryPagination({
               <PaginationLink
                 href="#"
                 isActive={item === currentPage}
-                className="size-8 rounded-full text-xs"
+                aria-disabled={disabled}
+                className={cn(
+                  "size-8 rounded-full text-xs",
+                  disabled && "pointer-events-none opacity-45",
+                )}
                 onClick={(event) => {
                   event.preventDefault();
                   goToPage(item);
@@ -127,10 +139,11 @@ export function GalleryPagination({
           <PaginationLink
             href="#"
             aria-label={t.paginationNext}
-            aria-disabled={currentPage === totalPages}
+            aria-disabled={disabled || currentPage === totalPages}
             className={cn(
               "h-8 gap-1 rounded-full px-2.5 text-xs",
-              currentPage === totalPages && "pointer-events-none opacity-45",
+              (disabled || currentPage === totalPages) &&
+                "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
               event.preventDefault();
