@@ -6,149 +6,279 @@ import type {
   ResumeAvatarPosition,
   ResumeAvatarShape,
   ResumeFontFamily,
+  ResumeListItemLayout,
   ResumeTemplateLayout,
   ResumeTemplateDefinition,
   ResumeTemplateId,
   ResumeTemplateImageElement,
   ResumeTemplateImageFit,
   ResumeTemplateSettings,
+  ResumeTimelineItemLayout,
   ResumeTypographySettings,
 } from '@/types/resume'
 
-export const builtinTemplateIds: BuiltinResumeTemplateId[] = [
-  'minimal',
-  'modern',
-  'compact',
-]
-
-const templateSettingsByPreset: Record<
-  BuiltinResumeTemplateId,
-  ResumeTemplateSettings
-> = {
-  minimal: {
-    pagePaddingTop: 13,
-    pagePaddingX: 12,
-    pagePaddingBottom: 11,
-    sectionGap: 1.25,
-    itemGap: 0.88,
-    bodyLineHeight: 1.7,
-    nameScale: 2.15,
-    sectionTitleScale: 1.28,
-    itemTitleScale: 1.02,
-    metaScale: 0.92,
-    bodyScale: 0.96,
-    pageBackground: '#ffffff',
-    surfaceColor: '#f8fafc',
-    headingColor: '#111827',
-    bodyColor: '#334155',
-    mutedColor: '#64748b',
-    dividerColor: '#202020',
-    dividerThickness: 1,
-  },
-  modern: {
-    pagePaddingTop: 10,
-    pagePaddingX: 12,
-    pagePaddingBottom: 10,
-    sectionGap: 0.92,
-    itemGap: 0.62,
-    bodyLineHeight: 1.46,
-    nameScale: 1.98,
-    sectionTitleScale: 0.82,
-    itemTitleScale: 1.04,
-    metaScale: 0.92,
-    bodyScale: 0.95,
-    pageBackground: '#ffffff',
-    surfaceColor: '#f8fafc',
-    headingColor: '#2563eb',
-    bodyColor: '#475569',
-    mutedColor: '#64748b',
-    dividerColor: '#3b82f6',
-    dividerThickness: 1,
-  },
-  compact: {
-    pagePaddingTop: 11,
-    pagePaddingX: 10,
-    pagePaddingBottom: 10,
-    sectionGap: 1.05,
-    itemGap: 0.82,
-    bodyLineHeight: 1.66,
-    nameScale: 1.9,
-    sectionTitleScale: 0.98,
-    itemTitleScale: 1,
-    metaScale: 0.9,
-    bodyScale: 0.94,
-    pageBackground: '#ffffff',
-    surfaceColor: '#be123c',
-    headingColor: '#be123c',
-    bodyColor: '#18181b',
-    mutedColor: '#71717a',
-    dividerColor: '#be123c',
-    dividerThickness: 1,
-  },
+interface BuiltinTemplatePreset {
+  layout: ResumeTemplateLayout
+  typography: ResumeTypographySettings
+  settings: ResumeTemplateSettings
 }
 
-const templateTypographyByPreset: Record<
-  BuiltinResumeTemplateId,
-  ResumeTypographySettings
-> = {
+/**
+ * Keep each built-in preset atomic. Adding a template in one registry avoids
+ * layout, typography, and visual defaults drifting across separate maps.
+ */
+const builtinTemplatePresets = {
   minimal: {
-    fontFamily: 'inter',
-    fontSize: 16,
+    layout: {
+      basicInfo: 'centered',
+      section: 'ruled',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'none',
+      avatarShape: 'rounded',
+      avatarWidth: 25,
+      avatarHeight: 32,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 0,
+      avatarBorderColor: '#e5e7eb',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'inter',
+      fontSize: 16,
+    },
+    settings: {
+      pagePaddingTop: 13,
+      pagePaddingX: 12,
+      pagePaddingBottom: 11,
+      sectionGap: 1.25,
+      itemGap: 0.88,
+      bodyLineHeight: 1.7,
+      nameScale: 2.15,
+      sectionTitleScale: 1.28,
+      itemTitleScale: 1.02,
+      metaScale: 0.92,
+      bodyScale: 0.96,
+      pageBackground: '#ffffff',
+      surfaceColor: '#f8fafc',
+      headingColor: '#111827',
+      bodyColor: '#334155',
+      mutedColor: '#64748b',
+      dividerColor: '#202020',
+      dividerThickness: 1,
+    },
   },
   modern: {
-    fontFamily: 'serif',
-    fontSize: 16,
+    layout: {
+      basicInfo: 'profile',
+      section: 'accent',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'center',
+      avatarShape: 'circle',
+      avatarWidth: 24,
+      avatarHeight: 24,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 2,
+      avatarBorderColor: '#ffffff',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'serif',
+      fontSize: 16,
+    },
+    settings: {
+      pagePaddingTop: 10,
+      pagePaddingX: 12,
+      pagePaddingBottom: 10,
+      sectionGap: 0.92,
+      itemGap: 0.62,
+      bodyLineHeight: 1.46,
+      nameScale: 1.98,
+      sectionTitleScale: 0.82,
+      itemTitleScale: 1.04,
+      metaScale: 0.92,
+      bodyScale: 0.95,
+      pageBackground: '#ffffff',
+      surfaceColor: '#f8fafc',
+      headingColor: '#2563eb',
+      bodyColor: '#475569',
+      mutedColor: '#64748b',
+      dividerColor: '#3b82f6',
+      dividerThickness: 1,
+    },
   },
   compact: {
-    fontFamily: 'plex',
-    fontSize: 14,
+    layout: {
+      basicInfo: 'sidebar',
+      section: 'accent',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'center',
+      avatarShape: 'square',
+      avatarWidth: 26,
+      avatarHeight: 32,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 0,
+      avatarBorderColor: '#ffffff',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'plex',
+      fontSize: 14,
+    },
+    settings: {
+      pagePaddingTop: 11,
+      pagePaddingX: 10,
+      pagePaddingBottom: 10,
+      sectionGap: 1.05,
+      itemGap: 0.82,
+      bodyLineHeight: 1.66,
+      nameScale: 1.9,
+      sectionTitleScale: 0.98,
+      itemTitleScale: 1,
+      metaScale: 0.9,
+      bodyScale: 0.94,
+      pageBackground: '#ffffff',
+      surfaceColor: '#be123c',
+      headingColor: '#be123c',
+      bodyColor: '#18181b',
+      mutedColor: '#71717a',
+      dividerColor: '#be123c',
+      dividerThickness: 1,
+    },
   },
-}
+  classic: {
+    layout: {
+      basicInfo: 'left',
+      section: 'ruled',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'none',
+      avatarShape: 'rounded',
+      avatarWidth: 25,
+      avatarHeight: 32,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 0,
+      avatarBorderColor: '#d6d3d1',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'serif',
+      fontSize: 16,
+    },
+    settings: {
+      pagePaddingTop: 13,
+      pagePaddingX: 14,
+      pagePaddingBottom: 12,
+      sectionGap: 1.15,
+      itemGap: 0.78,
+      bodyLineHeight: 1.58,
+      nameScale: 2.05,
+      sectionTitleScale: 1.12,
+      itemTitleScale: 1.03,
+      metaScale: 0.9,
+      bodyScale: 0.95,
+      pageBackground: '#ffffff',
+      surfaceColor: '#f5f5f4',
+      headingColor: '#1c1917',
+      bodyColor: '#292524',
+      mutedColor: '#78716c',
+      dividerColor: '#44403c',
+      dividerThickness: 1,
+    },
+  },
+  executive: {
+    layout: {
+      basicInfo: 'split',
+      section: 'band',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'none',
+      avatarShape: 'square',
+      avatarWidth: 25,
+      avatarHeight: 32,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 0,
+      avatarBorderColor: '#cbd5e1',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'inter',
+      fontSize: 16,
+    },
+    settings: {
+      pagePaddingTop: 12,
+      pagePaddingX: 13,
+      pagePaddingBottom: 11,
+      sectionGap: 1,
+      itemGap: 0.68,
+      bodyLineHeight: 1.5,
+      nameScale: 2.2,
+      sectionTitleScale: 0.94,
+      itemTitleScale: 1.05,
+      metaScale: 0.92,
+      bodyScale: 0.94,
+      pageBackground: '#ffffff',
+      surfaceColor: '#e7f2f0',
+      headingColor: '#0f172a',
+      bodyColor: '#334155',
+      mutedColor: '#64748b',
+      dividerColor: '#0f766e',
+      dividerThickness: 1.5,
+    },
+  },
+  academic: {
+    layout: {
+      basicInfo: 'left',
+      section: 'plain',
+      timelineItemLayout: 'split',
+      listItemLayout: 'list',
+      avatarPosition: 'none',
+      avatarShape: 'rounded',
+      avatarWidth: 25,
+      avatarHeight: 32,
+      avatarOffsetX: 0,
+      avatarOffsetY: 0,
+      avatarBorderWidth: 0,
+      avatarBorderColor: '#d1d5db',
+      images: [],
+    },
+    typography: {
+      fontFamily: 'serif',
+      fontSize: 14,
+    },
+    settings: {
+      pagePaddingTop: 15,
+      pagePaddingX: 15,
+      pagePaddingBottom: 14,
+      sectionGap: 1.2,
+      itemGap: 0.7,
+      bodyLineHeight: 1.52,
+      nameScale: 1.9,
+      sectionTitleScale: 1,
+      itemTitleScale: 1.02,
+      metaScale: 0.88,
+      bodyScale: 0.93,
+      pageBackground: '#ffffff',
+      surfaceColor: '#f8fafc',
+      headingColor: '#111827',
+      bodyColor: '#374151',
+      mutedColor: '#6b7280',
+      dividerColor: '#9ca3af',
+      dividerThickness: 1,
+    },
+  },
+} satisfies Record<BuiltinResumeTemplateId, BuiltinTemplatePreset>
 
-const templateLayoutByPreset: Record<
-  BuiltinResumeTemplateId,
-  ResumeTemplateLayout
-> = {
-  minimal: {
-    basicInfo: 'centered',
-    section: 'ruled',
-    avatarPosition: 'none',
-    avatarShape: 'rounded',
-    avatarWidth: 25,
-    avatarHeight: 32,
-    avatarOffsetX: 0,
-    avatarOffsetY: 0,
-    avatarBorderWidth: 0,
-    avatarBorderColor: '#e5e7eb',
-    images: [],
-  },
-  modern: {
-    basicInfo: 'profile',
-    section: 'accent',
-    avatarPosition: 'center',
-    avatarShape: 'circle',
-    avatarWidth: 24,
-    avatarHeight: 24,
-    avatarOffsetX: 0,
-    avatarOffsetY: 0,
-    avatarBorderWidth: 2,
-    avatarBorderColor: '#ffffff',
-    images: [],
-  },
-  compact: {
-    basicInfo: 'sidebar',
-    section: 'accent',
-    avatarPosition: 'center',
-    avatarShape: 'square',
-    avatarWidth: 26,
-    avatarHeight: 32,
-    avatarOffsetX: 0,
-    avatarOffsetY: 0,
-    avatarBorderWidth: 0,
-    avatarBorderColor: '#ffffff',
-    images: [],
-  },
-}
+export const builtinTemplateIds = Object.keys(
+  builtinTemplatePresets,
+) as BuiltinResumeTemplateId[]
 
 const supportedFontFamilies: ResumeFontFamily[] = ['inter', 'serif', 'plex']
 export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const
@@ -213,6 +343,24 @@ function normalizeTemplateImageFit(value: unknown): ResumeTemplateImageFit {
   return value === 'cover' ? 'cover' : 'contain'
 }
 
+function normalizeTimelineItemLayout(
+  value: unknown,
+  fallback: ResumeTimelineItemLayout,
+): ResumeTimelineItemLayout {
+  return value === 'split' || value === 'stacked' || value === 'compact'
+    ? value
+    : fallback
+}
+
+function normalizeListItemLayout(
+  value: unknown,
+  fallback: ResumeListItemLayout,
+): ResumeListItemLayout {
+  return value === 'list' || value === 'inline' || value === 'columns'
+    ? value
+    : fallback
+}
+
 function normalizeTemplateImages(value: unknown): ResumeTemplateImageElement[] {
   if (!Array.isArray(value)) {
     return []
@@ -250,7 +398,7 @@ function createTemplateTypography(
   preset: BuiltinResumeTemplateId,
   overrides: Partial<ResumeTypographySettings> = {},
 ): ResumeTypographySettings {
-  const defaults = templateTypographyByPreset[preset]
+  const defaults = builtinTemplatePresets[preset].typography
   const nextFontFamily = supportedFontFamilies.includes(
     overrides.fontFamily as ResumeFontFamily,
   )
@@ -271,9 +419,11 @@ export function createTemplateLayout(
   preset: BuiltinResumeTemplateId,
   overrides: Partial<ResumeTemplateLayout> = {},
 ): ResumeTemplateLayout {
-  const defaults = templateLayoutByPreset[preset]
+  const defaults = builtinTemplatePresets[preset].layout
   const basicInfo =
     overrides.basicInfo === 'centered' ||
+    overrides.basicInfo === 'left' ||
+    overrides.basicInfo === 'split' ||
     overrides.basicInfo === 'profile' ||
     overrides.basicInfo === 'sidebar'
       ? overrides.basicInfo
@@ -303,6 +453,14 @@ export function createTemplateLayout(
   return {
     basicInfo,
     section,
+    timelineItemLayout: normalizeTimelineItemLayout(
+      overrides.timelineItemLayout,
+      defaults.timelineItemLayout,
+    ),
+    listItemLayout: normalizeListItemLayout(
+      overrides.listItemLayout,
+      defaults.listItemLayout,
+    ),
     avatarPosition,
     avatarShape,
     avatarWidth: clampNumber(
@@ -347,7 +505,7 @@ export function createTemplateSettings(
   preset: BuiltinResumeTemplateId,
   overrides: Partial<ResumeTemplateSettings> = {},
 ): ResumeTemplateSettings {
-  const defaults = templateSettingsByPreset[preset]
+  const defaults = builtinTemplatePresets[preset].settings
 
   return {
     pagePaddingTop: clampNumber(

@@ -12,10 +12,23 @@ export const SECTION_KINDS = [
 ] as const
 export type SectionKind = (typeof SECTION_KINDS)[number]
 export type SectionLayout = 'timeline' | 'list'
+export type ResumeTimelineItemLayout = 'split' | 'stacked' | 'compact'
+export type ResumeListItemLayout = 'list' | 'inline' | 'columns'
 export type ResumeFontFamily = 'inter' | 'serif' | 'plex'
 export type ThemeMode = 'light' | 'dark' | 'system'
-export type BuiltinResumeTemplateId = 'minimal' | 'modern' | 'compact'
-export type ResumeBasicInfoLayout = 'centered' | 'profile' | 'sidebar'
+export type BuiltinResumeTemplateId =
+  | 'minimal'
+  | 'modern'
+  | 'compact'
+  | 'classic'
+  | 'executive'
+  | 'academic'
+export type ResumeBasicInfoLayout =
+  | 'centered'
+  | 'left'
+  | 'split'
+  | 'profile'
+  | 'sidebar'
 export type ResumeAvatarPosition = 'none' | 'right' | 'left' | 'center'
 export type ResumeAvatarShape = 'rounded' | 'circle' | 'square'
 export type ResumeSectionTemplateStyle =
@@ -140,6 +153,10 @@ export interface ResumeTemplateImageElement {
 export interface ResumeTemplateLayout {
   basicInfo: ResumeBasicInfoLayout
   section: ResumeSectionTemplateStyle
+  // Item layouts follow the section's semantic layout family. New section
+  // kinds therefore inherit template behavior without a kind-specific map.
+  timelineItemLayout: ResumeTimelineItemLayout
+  listItemLayout: ResumeListItemLayout
   avatarPosition: ResumeAvatarPosition
   avatarShape: ResumeAvatarShape
   avatarWidth: number
@@ -236,16 +253,4 @@ export interface DeletedResumeWorkspaceItem extends ResumeWorkspaceItem {
 
 export interface DeletedResumeTemplateDefinition extends ResumeTemplateDefinition {
   deletedAt: string
-}
-
-export interface WorkspacePayload {
-  resumes?: ResumeWorkspaceItem[]
-  defaultTemplateId?: ResumeTemplateId
-  customTemplates?: ResumeTemplateDefinition[]
-  deletedResumes?: DeletedResumeWorkspaceItem[]
-  deletedTemplates?: DeletedResumeTemplateDefinition[]
-  modelConfigs?: ModelConfig[]
-  modelConfig?: LegacyModelConfig
-  agentSettings?: AgentSettings
-  theme?: ThemeMode
 }

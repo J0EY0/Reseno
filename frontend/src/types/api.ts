@@ -1,6 +1,7 @@
 import type { Locale } from "@/i18n";
 import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
+  AgentSettings,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   KeywordMatch,
@@ -9,7 +10,7 @@ import type {
   ResumeDraftDiff,
   ResumeTemplateDefinition,
   ResumeWorkspaceItem,
-  WorkspacePayload,
+  ThemeMode,
 } from "@/types/resume";
 
 export interface ApiResponse<T> {
@@ -24,19 +25,9 @@ export interface ApiRequestOptions {
   auth?: boolean;
   body?: unknown;
   cacheTtlMs?: number;
+  notifyOnError?: boolean;
   searchParams?: Record<string, string | number | boolean | null | undefined>;
-}
-
-export interface WorkspaceBootstrapQuery {
-  locale: Locale;
-}
-
-export type WorkspaceBootstrapResponse = WorkspacePayload;
-
-export interface WorkspaceBootstrapResult {
-  workspace: WorkspacePayload;
-  savedAt: string | null;
-  source: "backend";
+  signal?: AbortSignal;
 }
 
 export interface SaveResponse {
@@ -96,6 +87,12 @@ export interface DefaultTemplateSaveRequest {
 
 export interface DefaultTemplateSaveResponse {
   defaultTemplateId: string;
+}
+
+export interface UserSettingsSaveResponse {
+  locale: Locale;
+  theme?: ThemeMode;
+  agentSettings?: AgentSettings;
 }
 
 export interface TemplateSaveRequest {

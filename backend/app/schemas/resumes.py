@@ -1,8 +1,32 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 JsonObject = dict[str, Any]
+
+
+class ResumeWorkspaceItemResponse(BaseModel):
+    """Stable top-level shape of a resume returned to workspace clients."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str
+    title: str
+    updated_at: str = Field(alias="updatedAt")
+    resume: JsonObject
+    job_brief: str = Field(alias="jobBrief")
+    typography: JsonObject | None = None
+    template: str | None = None
+    template_settings: JsonObject | None = Field(
+        default=None,
+        alias="templateSettings",
+    )
+
+
+class DeletedResumeWorkspaceItemResponse(ResumeWorkspaceItemResponse):
+    """Recycle-bin resume preview with deletion metadata."""
+
+    deleted_at: str = Field(alias="deletedAt")
 
 
 class ResumeCreateRequest(BaseModel):

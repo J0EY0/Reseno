@@ -46,7 +46,7 @@ from app.services.agent_sessions import (
     load_agent_session,
     replace_agent_session_messages,
 )
-from app.services.workspace import load_agent_settings
+from app.services.user_preferences import load_agent_settings
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 

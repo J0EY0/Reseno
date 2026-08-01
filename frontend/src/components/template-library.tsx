@@ -39,12 +39,14 @@ import type {
   ResumeBasicInfoLayout,
   ResumeData,
   ResumeFontFamily,
+  ResumeListItemLayout,
   ResumeSectionTemplateStyle,
   ResumeTemplateDefinition,
   ResumeTemplateImageElement,
   ResumeTemplateImageFit,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
+  ResumeTimelineItemLayout,
 } from "@/types/resume";
 
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
@@ -78,6 +80,8 @@ import { useGalleryUrlState } from "@/components/use-gallery-url-state";
 
 type TemplateEditorTab = "layout" | "typography" | "visual" | "images";
 type TemplatePageMarginPreset = "compact" | "standard" | "relaxed";
+type TemplateContentDensityPreset = "compact" | "standard" | "relaxed";
+type TemplateContentDensity = TemplateContentDensityPreset | "custom";
 type TemplateDividerStyle = "thin" | "medium" | "bold";
 
 const pageMarginPresetValues: Record<
@@ -108,6 +112,27 @@ const dividerStyleValues: Record<TemplateDividerStyle, number> = {
   thin: 1,
   medium: 1.5,
   bold: 2.5,
+};
+
+const contentDensityValues: Record<
+  TemplateContentDensityPreset,
+  Pick<ResumeTemplateSettings, "sectionGap" | "itemGap" | "bodyLineHeight">
+> = {
+  compact: {
+    sectionGap: 0.9,
+    itemGap: 0.6,
+    bodyLineHeight: 1.45,
+  },
+  standard: {
+    sectionGap: 1.2,
+    itemGap: 0.8,
+    bodyLineHeight: 1.6,
+  },
+  relaxed: {
+    sectionGap: 1.5,
+    itemGap: 1,
+    bodyLineHeight: 1.75,
+  },
 };
 
 const readonlyDisabledControlClassName =
@@ -145,6 +170,28 @@ function getDividerStyle(settings: ResumeTemplateSettings): TemplateDividerStyle
   }
 
   return "thin";
+}
+
+function getContentDensity(
+  settings: ResumeTemplateSettings,
+): TemplateContentDensity {
+  const densities = Object.keys(
+    contentDensityValues,
+  ) as TemplateContentDensityPreset[];
+
+  // Numeric settings remain the source of truth. Manual tuning and Smart
+  // One Page must not be mislabeled as the nearest named preset.
+  return (
+    densities.find((density) => {
+      const preset = contentDensityValues[density];
+
+      return (
+        Math.abs(settings.sectionGap - preset.sectionGap) <= 0.01 &&
+        Math.abs(settings.itemGap - preset.itemGap) <= 0.01 &&
+        Math.abs(settings.bodyLineHeight - preset.bodyLineHeight) <= 0.01
+      );
+    }) ?? "custom"
+  );
 }
 
 function TemplateTabLabel({
@@ -1040,6 +1087,12 @@ export function TemplateLibrary({
                               <SelectItem value="centered">
                                 {t.basicInfoLayoutCentered}
                               </SelectItem>
+                              <SelectItem value="left">
+                                {t.basicInfoLayoutLeft}
+                              </SelectItem>
+                              <SelectItem value="split">
+                                {t.basicInfoLayoutSplit}
+                              </SelectItem>
                               <SelectItem value="profile">
                                 {t.basicInfoLayoutProfile}
                               </SelectItem>
@@ -1081,6 +1134,67 @@ export function TemplateLibrary({
                               </SelectItem>
                               <SelectItem value="band">
                                 {t.sectionStyleBand}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TemplateSelectRow>
+
+                        <TemplateSelectRow
+                          icon={LayoutTemplate}
+                          label={t.timelineItemLayout}
+                        >
+                          <Select
+                            value={activeTemplate.layout.timelineItemLayout}
+                            disabled={isTemplateReadonly}
+                            onValueChange={(value) =>
+                              updateLayout({
+                                timelineItemLayout:
+                                  value as ResumeTimelineItemLayout,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="split">
+                                {t.timelineItemLayoutSplit}
+                              </SelectItem>
+                              <SelectItem value="stacked">
+                                {t.timelineItemLayoutStacked}
+                              </SelectItem>
+                              <SelectItem value="compact">
+                                {t.timelineItemLayoutCompact}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TemplateSelectRow>
+
+                        <TemplateSelectRow
+                          icon={ListMinus}
+                          label={t.listItemLayout}
+                        >
+                          <Select
+                            value={activeTemplate.layout.listItemLayout}
+                            disabled={isTemplateReadonly}
+                            onValueChange={(value) =>
+                              updateLayout({
+                                listItemLayout: value as ResumeListItemLayout,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="list">
+                                {t.listItemLayoutList}
+                              </SelectItem>
+                              <SelectItem value="inline">
+                                {t.listItemLayoutInline}
+                              </SelectItem>
+                              <SelectItem value="columns">
+                                {t.listItemLayoutColumns}
                               </SelectItem>
                             </SelectContent>
                           </Select>
@@ -1146,6 +1260,45 @@ export function TemplateLibrary({
                               </SelectItem>
                               <SelectItem value="relaxed">
                                 {t.pageMarginRelaxed}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TemplateSelectRow>
+
+                        <TemplateSelectRow
+                          icon={SlidersHorizontal}
+                          label={t.templateContentDensity}
+                        >
+                          <Select
+                            value={getContentDensity(activeTemplate.settings)}
+                            disabled={isTemplateReadonly}
+                            onValueChange={(value) => {
+                              if (value === "custom") {
+                                return;
+                              }
+
+                              updateSettings(
+                                contentDensityValues[
+                                  value as TemplateContentDensityPreset
+                                ],
+                              );
+                            }}
+                          >
+                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="compact">
+                                {t.templateDensityCompact}
+                              </SelectItem>
+                              <SelectItem value="standard">
+                                {t.templateDensityStandard}
+                              </SelectItem>
+                              <SelectItem value="relaxed">
+                                {t.templateDensityRelaxed}
+                              </SelectItem>
+                              <SelectItem value="custom" disabled>
+                                {t.templateDensityCustom}
                               </SelectItem>
                             </SelectContent>
                           </Select>

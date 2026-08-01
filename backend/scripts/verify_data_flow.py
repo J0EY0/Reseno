@@ -74,10 +74,10 @@ def main() -> None:
             assert resume_saved.status_code == 200
             resume_id = resume_saved.json()["data"]["resume"]["id"]
 
-            bootstrap = client.get("/api/workspace/bootstrap?locale=en")
-            assert bootstrap.status_code == 200
-            assert "resumes" not in bootstrap.json()["data"]
-            model_config = bootstrap.json()["data"]["modelConfigs"][0]
+            models_page = client.get("/api/workspace/pages/models")
+            assert models_page.status_code == 200
+            assert "resumes" not in models_page.json()["data"]
+            model_config = models_page.json()["data"]["modelConfigs"][0]
             assert "apiKey" not in model_config
             assert "apiKeyEnvName" not in model_config
             assert model_config["apiKeyPreview"] == "sk-scr****"

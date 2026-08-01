@@ -10,15 +10,17 @@ import {
   type Locale,
 } from "@/i18n";
 import {
+  createTemplateSettings,
   getTemplateById,
   getTemplateCatalog,
   normalizeCustomTemplates,
   normalizeDeletedTemplates,
 } from "@/lib/templates";
+import { isAbortError } from "@/lib/api-client";
 import {
   fetchResumeApi,
   fetchResumeVersionApi,
-  fetchWorkspaceBootstrap,
+  fetchWorkspaceRouteData,
 } from "@/lib/workspace-api";
 import type {
   ResumeTemplateDefinition,
@@ -112,17 +114,22 @@ export function PdfExportRenderer() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     async function loadExportData() {
       try {
         const [messages, result, resumeResult] = await Promise.all([
           loadMessages(locale).catch(() => defaultMessages),
-          fetchWorkspaceBootstrap(locale),
+          fetchWorkspaceRouteData("pdf-export", {
+            signal: controller.signal,
+          }),
           versionId
-            ? fetchResumeVersionApi(resumeId, versionId)
-            : fetchResumeApi(resumeId),
+            ? fetchResumeVersionApi(resumeId, versionId, {
+                signal: controller.signal,
+              })
+            : fetchResumeApi(resumeId, { signal: controller.signal }),
         ]);
-        const workspace = result.workspace;
+        const workspace = result.data;
         const resumeItem = resumeResult.resume;
 
         const deletedTemplates = normalizeDeletedTemplates(workspace);
@@ -131,7 +138,7 @@ export function PdfExportRenderer() {
           normalizeCustomTemplates(workspace),
           deletedTemplates.map((item) => item.id),
         );
-        const template = getTemplateById(
+        const resolvedTemplate = getTemplateById(
           templateCatalog,
           getResumeTemplateId(resumeItem, workspace.defaultTemplateId),
           getResumeTemplateId(
@@ -140,9 +147,18 @@ export function PdfExportRenderer() {
           ),
         );
 
-        if (!template) {
+        if (!resolvedTemplate) {
           throw new Error("Template not found.");
         }
+        const template = {
+          ...resolvedTemplate,
+          // Export must resolve the same resume-level overrides as the editor;
+          // otherwise PDF/PNG output can diverge from the visible preview.
+          settings: createTemplateSettings(resolvedTemplate.preset, {
+            ...resolvedTemplate.settings,
+            ...(resumeItem.templateSettings ?? {}),
+          }),
+        };
 
         if (!cancelled) {
           setState({
@@ -155,6 +171,10 @@ export function PdfExportRenderer() {
           });
         }
       } catch (loadError) {
+        if (isAbortError(loadError)) {
+          return;
+        }
+
         const message =
           loadError instanceof Error
             ? loadError.message
@@ -167,10 +187,18 @@ export function PdfExportRenderer() {
       }
     }
 
-    void loadExportData();
+    // Avoid sending the development-only StrictMode preflight request. The
+    // real effect still owns an AbortController for route/query changes.
+    const loadTimer = window.setTimeout(() => {
+      if (!controller.signal.aborted) {
+        void loadExportData();
+      }
+    }, 0);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(loadTimer);
+      controller.abort();
     };
   }, [locale, resumeId, versionId]);
 

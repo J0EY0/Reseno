@@ -174,7 +174,7 @@
   "fontSerif": "思源宋体",
   "fontPlex": "IBM Plex",
   "loading": "正在从后端加载简历数据...",
-  "loadError": "数据加载失败，已回退为空白简历",
+  "loadError": "请求失败，请稍后重试",
   "editorHint": "侧边栏参考 shadcn sidebar block，主编辑区已拆分为可复用组件",
   "previewTitle": "实时预览",
   "exportImages": "PNG 图片",
@@ -288,6 +288,8 @@
   "templatePreset": "模板基底",
   "basicInfoLayout": "基本信息布局",
   "basicInfoLayoutCentered": "居中标题",
+  "basicInfoLayoutLeft": "左对齐标题",
+  "basicInfoLayoutSplit": "左右分栏",
   "basicInfoLayoutProfile": "头像头图",
   "basicInfoLayoutSidebar": "左侧栏",
   "sectionTemplateStyle": "模块标题样式",
@@ -296,6 +298,14 @@
   "sectionStyleAccent": "强调标题",
   "sectionStylePlain": "纯标题",
   "sectionStyleBand": "色带标题",
+  "timelineItemLayout": "经历条目布局",
+  "timelineItemLayoutSplit": "左右分栏",
+  "timelineItemLayoutStacked": "上下堆叠",
+  "timelineItemLayoutCompact": "紧凑双行",
+  "listItemLayout": "列表条目布局",
+  "listItemLayoutList": "纵向列表",
+  "listItemLayoutInline": "行内排列",
+  "listItemLayoutColumns": "双栏排列",
   "avatarPosition": "头像位置",
   "avatarPositionNone": "不显示头像",
   "avatarPositionRight": "右侧",
@@ -320,6 +330,11 @@
   "sectionGap": "模块间距",
   "itemGap": "模块内条目间距",
   "bodyLineHeight": "正文行高",
+  "templateContentDensity": "内容密度",
+  "templateDensityCompact": "紧凑",
+  "templateDensityStandard": "标准",
+  "templateDensityRelaxed": "宽松",
+  "templateDensityCustom": "自定义",
   "dividerThickness": "分隔线粗细",
   "templateDividerStyle": "分割线样式",
   "templateDividerThin": "细线",
@@ -742,6 +757,18 @@
     "compact": {
       "name": "Compact",
       "description": "更紧凑的数据密度，适合经历较多的单页简历"
+    },
+    "classic": {
+      "name": "Classic",
+      "description": "传统左对齐版式，适合法律、金融与行政岗位"
+    },
+    "executive": {
+      "name": "Executive",
+      "description": "强调资历与成果，适合高年资和管理岗位"
+    },
+    "academic": {
+      "name": "Academic",
+      "description": "克制的学术版式，适合升学、科研与教学申请"
     }
   }
 }

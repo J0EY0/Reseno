@@ -8,6 +8,7 @@ import {
   formatApiKeyPreview,
   getModelDisplayName,
 } from '@/lib/model-config'
+import { isApiErrorToastShown } from '@/lib/api-client'
 import { deleteModelConfig } from '@/lib/model-config-api'
 import type { ModelConfig } from '@/types/resume'
 
@@ -60,7 +61,9 @@ export function ModelConfigPanel({
       toast.success(t.modelConfigDeleted, { closeButton: true })
     } catch (error) {
       console.error('Failed to delete model config.', error)
-      toast.error(t.modelConfigDeleteFailed, { closeButton: true })
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.modelConfigDeleteFailed, { closeButton: true })
+      }
     } finally {
       setDeletingModelId(null)
     }

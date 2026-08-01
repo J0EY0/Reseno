@@ -187,6 +187,42 @@ function toDraft(locale: Locale, config?: ModelConfig): ModelConfigDraft {
   };
 }
 
+function toDialogDraft(
+  locale: Locale,
+  initialConfig: ModelConfig | undefined,
+  providers: ModelProviderMeta[],
+) {
+  const baseDraft = toDraft(locale, initialConfig);
+  const nextProvider =
+    providerById(providers, baseDraft.provider) ??
+    (initialConfig ? null : providers[0]);
+
+  if (!nextProvider) {
+    return baseDraft;
+  }
+
+  return initialConfig
+    ? {
+        ...baseDraft,
+        provider: nextProvider.id,
+        providerKind: nextProvider.kind,
+        apiFamily: nextProvider.apiFamily ?? baseDraft.apiFamily,
+        apiUrl:
+          nextProvider.kind === "cloud"
+            ? nextProvider.defaultBaseUrl
+            : baseDraft.apiUrl,
+      }
+    : {
+        ...baseDraft,
+        provider: nextProvider.id,
+        providerKind: nextProvider.kind,
+        apiFamily: nextProvider.apiFamily ?? DEFAULT_MODEL_API_FAMILY,
+        apiUrl: nextProvider.defaultBaseUrl,
+        supportsTools: nextProvider.supportsTools,
+        supportsStreaming: nextProvider.supportsStreaming,
+      };
+}
+
 function validateDraft(
   draft: ModelConfigDraft,
   provider: ModelProviderMeta | null,
@@ -345,12 +381,17 @@ export function ModelConfigFormPopover({
   );
 
   useEffect(() => {
+    if (!open || providersLoaded) {
+      return;
+    }
+
     let cancelled = false;
 
     void getModelProviders()
       .then((response) => {
         if (!cancelled) {
           setProviders(response.providers);
+          setDraft(toDialogDraft(locale, initialConfig, response.providers));
           setProvidersLoaded(true);
         }
       })
@@ -366,7 +407,7 @@ export function ModelConfigFormPopover({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialConfig, locale, open, providersLoaded]);
 
   useEffect(() => {
     if (!open || !canDiscoverModels || !modelDiscoveryApiUrl) {
@@ -557,41 +598,11 @@ export function ModelConfigFormPopover({
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
-      if (!providersLoaded) {
-        return;
+      if (providers.length === 0) {
+        setProvidersLoaded(false);
       }
 
-      const baseDraft = toDraft(locale, initialConfig);
-      const nextProvider =
-        providerById(providers, baseDraft.provider) ??
-        (initialConfig ? null : providers[0]);
-      let nextDraft = baseDraft;
-
-      if (nextProvider) {
-        nextDraft = initialConfig
-          ? {
-              ...baseDraft,
-              provider: nextProvider.id,
-              providerKind: nextProvider.kind,
-              apiFamily: nextProvider.apiFamily ?? baseDraft.apiFamily,
-              apiUrl:
-                nextProvider.kind === "cloud"
-                  ? nextProvider.defaultBaseUrl
-                  : baseDraft.apiUrl,
-            }
-          : {
-              ...baseDraft,
-              provider: nextProvider.id,
-              providerKind: nextProvider.kind,
-              apiFamily:
-                nextProvider.apiFamily ?? DEFAULT_MODEL_API_FAMILY,
-              apiUrl: nextProvider.defaultBaseUrl,
-              supportsTools: nextProvider.supportsTools,
-              supportsStreaming: nextProvider.supportsStreaming,
-            };
-      }
-
-      setDraft(nextDraft);
+      setDraft(toDialogDraft(locale, initialConfig, providers));
       setDiscoveredModels(discoveredFromConfig(initialConfig));
       setErrors({});
       setSubmitting(false);
@@ -604,16 +615,8 @@ export function ModelConfigFormPopover({
   function renderTrigger(): ReactElement {
     if (!trigger) {
       return (
-        <Button
-          type="button"
-          disabled={!providersLoaded}
-          aria-busy={!providersLoaded}
-        >
-          {providersLoaded ? (
-            <Plus data-icon="inline-start" />
-          ) : (
-            <Spinner data-icon="inline-start" aria-hidden="true" />
-          )}
+        <Button type="button">
+          <Plus data-icon="inline-start" />
           {t.addModelConfig}
         </Button>
       );
@@ -719,11 +722,7 @@ export function ModelConfigFormPopover({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger
-        asChild
-        disabled={!providersLoaded}
-        aria-busy={!providersLoaded}
-      >
+      <DialogTrigger asChild>
         {renderTrigger()}
       </DialogTrigger>
       <DialogContent

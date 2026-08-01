@@ -1,8 +1,30 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 JsonObject = dict[str, Any]
+
+
+class TemplateDefinitionResponse(BaseModel):
+    """Stable top-level shape of a custom resume template."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str
+    preset: str
+    name: str
+    description: str
+    layout: JsonObject
+    typography: JsonObject
+    settings: JsonObject
+    updated_at: str = Field(alias="updatedAt")
+    is_built_in: bool | None = Field(default=None, alias="isBuiltIn")
+
+
+class DeletedTemplateDefinitionResponse(TemplateDefinitionResponse):
+    """Recycle-bin template with deletion metadata."""
+
+    deleted_at: str = Field(alias="deletedAt")
 
 
 class TemplateSaveRequest(BaseModel):

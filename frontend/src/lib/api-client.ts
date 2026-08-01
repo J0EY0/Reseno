@@ -20,11 +20,13 @@ interface ApiCacheEntry {
 }
 
 interface ResuMateAxiosRequestConfig extends AxiosRequestConfig {
+  notifyOnError?: boolean;
   skipAuth?: boolean;
 }
 
 interface ResuMateInternalAxiosRequestConfig
   extends InternalAxiosRequestConfig {
+  notifyOnError?: boolean;
   skipAuth?: boolean;
 }
 
@@ -34,7 +36,7 @@ const getRequestCache = new Map<string, ApiCacheEntry>();
 const APP_CODE_UNAUTHORIZED = 40001;
 const API_ERROR_NOTIFIED = Symbol("apiErrorNotified");
 
-type NotifiedApiError = Error & {
+type ResuMateApiError = Error & {
   [API_ERROR_NOTIFIED]?: true;
   apiCode?: string;
   status?: number;
@@ -48,7 +50,6 @@ export const apiRoutes = {
   authLogin: "/api/auth/login",
   authRefresh: "/api/auth/refresh",
   authPassword: "/api/auth/password",
-  workspaceBootstrap: "/api/workspace/bootstrap",
   workspaceDefaultTemplate: "/api/workspace/default-template",
   workspaceUserSettings: "/api/workspace/user-settings",
   resumes: "/api/resumes",
@@ -70,7 +71,6 @@ export const apiRoutes = {
   modelConfigs: "/api/model-configs",
   modelProviders: "/api/model-providers",
   modelProviderDiscovery: "/api/model-providers/discover-models",
-  agentSettings: "/api/agent/settings",
   agentResumeSession: (resumeId: string) =>
     `/api/agent/resumes/${encodeURIComponent(resumeId)}/session`,
   agentResumeRun: (resumeId: string) =>
@@ -156,8 +156,8 @@ function isApiResponse<T>(value: unknown): value is ApiResponse<T> {
 }
 
 function markApiErrorNotified(error: Error) {
-  (error as NotifiedApiError)[API_ERROR_NOTIFIED] = true;
-  return error as NotifiedApiError;
+  (error as ResuMateApiError)[API_ERROR_NOTIFIED] = true;
+  return error as ResuMateApiError;
 }
 
 function isApiErrorNotified(error: unknown) {
@@ -214,16 +214,34 @@ function notifyApiError(message: string) {
   });
 }
 
-function createNotifiedApiError(
+function notifyApiErrorOnce(error: unknown) {
+  if (isAbortError(error) || isApiErrorNotified(error)) {
+    return;
+  }
+
+  const apiError =
+    error instanceof Error
+      ? markApiErrorNotified(error)
+      : markApiErrorNotified(
+          createApiError("REQUEST_FAILED", {}, false),
+        );
+  notifyApiError(apiError.message);
+}
+
+function createApiError(
   messageKey: string,
-  metadata: Pick<NotifiedApiError, "apiCode" | "status"> = {},
+  metadata: Pick<ResuMateApiError, "apiCode" | "status"> = {},
+  notifyOnError = true,
 ) {
   const message = resolveApiMessage(messageKey);
-  const error = markApiErrorNotified(new Error(message));
+  const error = new Error(message) as ResuMateApiError;
 
   error.apiCode = metadata.apiCode;
   error.status = metadata.status;
-  notifyApiError(message);
+  if (notifyOnError) {
+    markApiErrorNotified(error);
+    notifyApiError(message);
+  }
 
   return error;
 }
@@ -231,24 +249,34 @@ function createNotifiedApiError(
 function createPayloadApiError(
   payload: ApiResponse<unknown>,
   status?: number,
+  notifyOnError = true,
 ) {
   if (payload.code === APP_CODE_UNAUTHORIZED) {
     redirectToLogin();
   }
 
-  return createNotifiedApiError(payload.message, {
-    apiCode: payload.message,
-    status,
-  });
+  return createApiError(
+    payload.message,
+    {
+      apiCode: payload.message,
+      status,
+    },
+    notifyOnError,
+  );
 }
 
-export function unwrapApiResponse<T>(payload: unknown) {
+export function unwrapApiResponse<T>(
+  payload: unknown,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
+) {
+  const notifyOnError = options.notifyOnError !== false;
+
   if (!isApiResponse<T>(payload)) {
-    throw createNotifiedApiError("INVALID_API_RESPONSE");
+    throw createApiError("INVALID_API_RESPONSE", {}, notifyOnError);
   }
 
   if (payload.code !== 0) {
-    throw createPayloadApiError(payload);
+    throw createPayloadApiError(payload, undefined, notifyOnError);
   }
 
   return payload.data;
@@ -281,7 +309,7 @@ function getAuthHeaders(
   const token = getAccessToken();
   if (!token || isTokenLocallyInvalidated(token)) {
     redirectToLogin();
-    throw createNotifiedApiError("AUTHENTICATION_REQUIRED");
+    throw createApiError("AUTHENTICATION_REQUIRED");
   }
 
   headers.set("Authorization", `Bearer ${token}`);
@@ -300,7 +328,13 @@ apiClient.interceptors.request.use((config: ResuMateInternalAxiosRequestConfig) 
     const token = getAccessToken();
     if (!token || isTokenLocallyInvalidated(token)) {
       redirectToLogin();
-      return Promise.reject(createNotifiedApiError("AUTHENTICATION_REQUIRED"));
+      return Promise.reject(
+        createApiError(
+          "AUTHENTICATION_REQUIRED",
+          {},
+          config.notifyOnError !== false,
+        ),
+      );
     }
 
     headers.set("Authorization", `Bearer ${token}`);
@@ -315,23 +349,41 @@ apiClient.interceptors.response.use(
   (response) => {
     if (isApiResponse<unknown>(response.data) && response.data.code !== 0) {
       return Promise.reject(
-        createPayloadApiError(response.data, response.status),
+        createPayloadApiError(
+          response.data,
+          response.status,
+          (
+            response.config as ResuMateInternalAxiosRequestConfig
+          ).notifyOnError !== false,
+        ),
       );
     }
 
     return response;
   },
   (error) => {
+    if (isAbortError(error)) {
+      return Promise.reject(error);
+    }
+
     if (isApiErrorNotified(error)) {
       return Promise.reject(error);
     }
 
     if (axios.isAxiosError(error)) {
       const payload = error.response?.data;
+      const notifyOnError =
+        (
+          error.config as ResuMateInternalAxiosRequestConfig | undefined
+        )?.notifyOnError !== false;
 
       if (isApiResponse<unknown>(payload)) {
         return Promise.reject(
-          createPayloadApiError(payload, error.response?.status),
+          createPayloadApiError(
+            payload,
+            error.response?.status,
+            notifyOnError,
+          ),
         );
       }
 
@@ -350,17 +402,23 @@ apiClient.interceptors.response.use(
 
       if (code) {
         return Promise.reject(
-          createNotifiedApiError(code, {
-            apiCode: code,
-            status: error.response?.status,
-          }),
+          createApiError(
+            code,
+            {
+              apiCode: code,
+              status: error.response?.status,
+            },
+            notifyOnError,
+          ),
         );
       }
 
-      return Promise.reject(createNotifiedApiError("REQUEST_FAILED"));
+      return Promise.reject(
+        createApiError("REQUEST_FAILED", {}, notifyOnError),
+      );
     }
 
-    return Promise.reject(createNotifiedApiError("REQUEST_FAILED"));
+    return Promise.reject(createApiError("REQUEST_FAILED"));
   },
 );
 
@@ -383,41 +441,47 @@ export async function requestApi<T>(
   options: ApiRequestOptions = {},
 ) {
   const method = options.method ?? "GET";
-  const shouldUseCache = method === "GET" && (options.cacheTtlMs ?? 0) > 0;
+  // A cancelable request is owned by its caller. Sharing its promise would
+  // let one route abort every other consumer of the same cached GET.
+  const shouldUseCache =
+    method === "GET" && !options.signal && (options.cacheTtlMs ?? 0) > 0;
   const cacheKey = shouldUseCache ? createRequestCacheKey(route, options) : null;
   const now = Date.now();
 
-  if (cacheKey) {
-    const cached = getRequestCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return cached.promise as Promise<T>;
-    }
-  }
+  const cached = cacheKey ? getRequestCache.get(cacheKey) : undefined;
+  const request =
+    cached && cached.expiresAt > now
+      ? (cached.promise as Promise<T>)
+      : (async () => {
+          const requestConfig: ResuMateAxiosRequestConfig = {
+            data: options.body,
+            headers: options.body
+              ? {
+                  "Content-Type": "application/json",
+                }
+              : undefined,
+            method,
+            // Error notification belongs to the caller awaiting this promise,
+            // not the shared transport. Otherwise the first cached GET caller
+            // would decide whether every other caller sees an error toast.
+            notifyOnError: false,
+            signal: options.signal,
+            skipAuth: options.auth === false,
+            url: resolveApiUrl(route, options),
+          };
+          const response = await apiClient.request<unknown>(requestConfig);
+          const data = unwrapApiResponse<T>(response.data, {
+            notifyOnError: false,
+          });
 
-  const request = (async () => {
-    const requestConfig: ResuMateAxiosRequestConfig = {
-      data: options.body,
-      headers: options.body
-        ? {
-            "Content-Type": "application/json",
+          if (method !== "GET") {
+            clearApiCache();
           }
-        : undefined,
-      method,
-      skipAuth: options.auth === false,
-      url: resolveApiUrl(route, options),
-    };
-    const response = await apiClient.request<unknown>(requestConfig);
 
-    const data = unwrapApiResponse<T>(response.data);
+          return data;
+        })();
 
-    if (method !== "GET") {
-      clearApiCache();
-    }
-
-    return data;
-  })();
-
-  if (cacheKey) {
+  if (cacheKey && request !== cached?.promise) {
     getRequestCache.set(cacheKey, {
       expiresAt: now + (options.cacheTtlMs ?? 0),
       promise: request,
@@ -429,6 +493,9 @@ export async function requestApi<T>(
   } catch (error) {
     if (cacheKey) {
       getRequestCache.delete(cacheKey);
+    }
+    if (options.notifyOnError !== false) {
+      notifyApiErrorOnce(error);
     }
     throw error;
   }
@@ -488,11 +555,11 @@ export async function fetchApiResource(url: string, init: RequestInit = {}) {
       throw error;
     }
 
-    throw createNotifiedApiError("REQUEST_FAILED");
+    throw createApiError("REQUEST_FAILED");
   }
 
   if (!response.ok) {
-    throw createNotifiedApiError("REQUEST_FAILED", {
+    throw createApiError("REQUEST_FAILED", {
       status: response.status,
     });
   }

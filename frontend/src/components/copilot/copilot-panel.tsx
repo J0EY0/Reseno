@@ -2033,7 +2033,9 @@ export function CopilotPanel({
 
     void (async () => {
       try {
-        const session = await loadAgentSession(resumeId);
+        const session = await loadAgentSession(resumeId, {
+          signal: abortController.signal,
+        });
         if (
           cancelled ||
           activeRequestAbortRef.current !== abortController
@@ -2046,7 +2048,9 @@ export function CopilotPanel({
         );
         sessionRevisionRef.current = session.revision;
 
-        const run = await loadActiveAgentRun(resumeId);
+        const run = await loadActiveAgentRun(resumeId, {
+          signal: abortController.signal,
+        });
         if (
           cancelled ||
           activeRequestAbortRef.current !== abortController ||

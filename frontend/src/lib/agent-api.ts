@@ -926,8 +926,13 @@ export async function connectAgentRun(
   return consumeAgentRun({ ...run, lastEventId: 0, status: "active" }, options);
 }
 
-export function loadActiveAgentRun(resumeId: string) {
-  return requestApi<AgentRunResponse | null>(apiRoutes.agentResumeRun(resumeId));
+export function loadActiveAgentRun(
+  resumeId: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  return requestApi<AgentRunResponse | null>(apiRoutes.agentResumeRun(resumeId), {
+    signal: options.signal,
+  });
 }
 
 export function stopAgentRun(runId: string) {
@@ -975,11 +980,15 @@ export function deletePendingAgentAttachment(
   );
 }
 
-export async function loadAgentSession(resumeId: string) {
+export async function loadAgentSession(
+  resumeId: string,
+  options: { signal?: AbortSignal } = {},
+) {
   return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
     // Session revisions are optimistic-concurrency tokens. Reusing even a
     // short-lived GET cache can make an otherwise valid history edit stale.
     cacheTtlMs: 0,
+    signal: options.signal,
   });
 }
 

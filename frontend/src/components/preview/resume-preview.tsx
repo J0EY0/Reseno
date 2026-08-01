@@ -27,12 +27,14 @@ import type {
   ResumeData,
   ResumeDraftDiff,
   ResumeFontFamily,
+  ResumeListItemLayout,
   ResumeSection,
   ResumeSectionItem,
   ResumeTemplateDefinition,
   ResumeTemplateImageElement,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
+  ResumeTimelineItemLayout,
 } from '@/types/resume'
 
 interface ResumePreviewProps {
@@ -591,6 +593,8 @@ function StandardBasicInfo({
   enableContactLinks: boolean
 }) {
   const isProfile = layout.basicInfo === 'profile'
+  const isLeftAligned = layout.basicInfo === 'left'
+  const isSplit = layout.basicInfo === 'split'
   const avatarPosition = layout.avatarPosition
   const hasAvatar = avatarPosition !== 'none' && Boolean(basic.avatar.trim())
   const shouldFloatSideAvatar =
@@ -616,7 +620,7 @@ function StandardBasicInfo({
       )}
     />
   ) : null
-  const infoContent = (
+  const identityContent = (
     <>
       <h1
         className="font-extrabold tracking-[-0.04em]"
@@ -638,11 +642,19 @@ function StandardBasicInfo({
           {basic.headline}
         </p>
       ) : null}
-      <ContactLine
-        items={contactItems}
-        enableLinks={enableContactLinks}
-        className="resume-tone-body mt-3"
-      />
+    </>
+  )
+  const contactContent = (
+    <ContactLine
+      items={contactItems}
+      enableLinks={enableContactLinks}
+      className="resume-tone-body mt-3"
+    />
+  )
+  const infoContent = (
+    <>
+      {identityContent}
+      {contactContent}
     </>
   )
 
@@ -689,6 +701,19 @@ function StandardBasicInfo({
           </div>
           {avatarPosition !== 'left' ? avatar : null}
         </div>
+      ) : isSplit ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-end gap-8">
+          <div className="text-left">{identityContent}</div>
+          <div className="min-w-0">
+            <ContactLine
+              items={contactItems}
+              enableLinks={enableContactLinks}
+              className="resume-tone-body mt-0 justify-end text-right"
+            />
+          </div>
+        </div>
+      ) : isLeftAligned ? (
+        <div className="text-left">{infoContent}</div>
       ) : (
         <div className="mx-auto text-center">{infoContent}</div>
       )}
@@ -810,13 +835,105 @@ function TimelineItem({
   t,
   settings,
   diff,
+  layout,
 }: {
   item: ResumeSectionItem
   t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
+  layout: ResumeTimelineItemLayout
 }) {
   const highlightsHtml = serializeHighlightsToHtml(item.highlights)
+  const title = (
+    <h3
+      className="min-w-0 break-words font-extrabold"
+      style={{
+        color: settings.bodyColor,
+        fontSize: `${settings.itemTitleScale}em`,
+      }}
+    >
+      {item.title}
+    </h3>
+  )
+  const subtitle = item.subtitle ? (
+    <p
+      className={cn(
+        'min-w-0 break-words font-medium',
+        layout === 'split' && 'mt-1',
+      )}
+      style={{
+        color: settings.bodyColor,
+        fontSize: `${settings.bodyScale}em`,
+      }}
+    >
+      {item.subtitle}
+    </p>
+  ) : null
+  const metadata = [item.meta, item.period].filter(Boolean)
+
+  let heading: ReactNode
+
+  if (layout === 'stacked') {
+    heading = (
+      <div className="grid gap-1">
+        {title}
+        {subtitle}
+        {metadata.length > 0 ? (
+          <div
+            className="resume-tone-muted flex flex-wrap gap-x-3 gap-y-1"
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            {metadata.map((value, index) => (
+              <span key={`${value}-${index}`}>{value}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    )
+  } else if (layout === 'compact') {
+    heading = (
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1">
+        {title}
+        {item.period ? (
+          <span
+            className="resume-tone-muted col-start-2 row-start-1 whitespace-nowrap text-right"
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            {item.period}
+          </span>
+        ) : null}
+        {item.subtitle ? (
+          <div className="col-start-1 row-start-2">{subtitle}</div>
+        ) : null}
+        {item.meta ? (
+          <span
+            className="resume-tone-muted col-start-2 row-start-2 whitespace-nowrap text-right"
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            {item.meta}
+          </span>
+        ) : null}
+      </div>
+    )
+  } else {
+    heading = (
+      <div className="flex items-start justify-between gap-4 max-md:flex-col">
+        <div className="min-w-0">
+          {title}
+          {subtitle}
+        </div>
+        {metadata.length > 0 ? (
+          <div
+            className="resume-tone-muted grid min-w-[170px] gap-1 text-right max-md:min-w-0 max-md:text-left"
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            {item.meta ? <span>{item.meta}</span> : null}
+            {item.period ? <span>{item.period}</span> : null}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
 
   return (
     <article
@@ -825,37 +942,7 @@ function TimelineItem({
       data-resume-diff-kind={diff?.kind}
       data-resume-diff-label={getDiffLabel(diff, t)}
     >
-      <div className="flex items-start justify-between gap-4 max-md:flex-col">
-        <div>
-          <h3
-            className="font-extrabold"
-            style={{
-              color: settings.bodyColor,
-              fontSize: `${settings.itemTitleScale}em`,
-            }}
-          >
-            {item.title}
-          </h3>
-          {item.subtitle ? (
-            <p
-              className="mt-1 font-medium"
-              style={{
-                color: settings.bodyColor,
-                fontSize: `${settings.bodyScale}em`,
-              }}
-            >
-              {item.subtitle}
-            </p>
-          ) : null}
-        </div>
-        <div
-          className="resume-tone-muted grid min-w-[170px] gap-1 text-right max-md:min-w-0 max-md:text-left"
-          style={{ fontSize: `${settings.metaScale}em` }}
-        >
-          {item.meta ? <span>{item.meta}</span> : null}
-          {item.period ? <span>{item.period}</span> : null}
-        </div>
-      </div>
+      {heading}
 
       {item.description ? (
         <p
@@ -885,7 +972,13 @@ function TimelineItem({
   )
 }
 
-function TimelineItems({ items, t, settings, itemDiffById }: SectionItemsProps) {
+function TimelineItems({
+  items,
+  t,
+  settings,
+  itemDiffById,
+  layout,
+}: SectionItemsProps & { layout: ResumeTimelineItemLayout }) {
   return (
     <div
       className="grid"
@@ -899,6 +992,7 @@ function TimelineItems({ items, t, settings, itemDiffById }: SectionItemsProps) 
           t={t}
           settings={settings}
           diff={itemDiffById?.get(item.id)}
+          layout={layout}
         />
       ))}
     </div>
@@ -910,17 +1004,27 @@ function ListItem({
   t,
   settings,
   diff,
+  layout,
 }: {
   item: ResumeSectionItem
   t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
+  layout: ResumeListItemLayout
 }) {
   const highlightsHtml = serializeHighlightsToHtml(item.highlights)
+  const hasDetails =
+    Boolean(item.description) || !isRichTextEmpty(highlightsHtml)
 
   return (
     <li
-      className={cn('resume-item', getDiffClassName(diff))}
+      className={cn(
+        'resume-item min-w-0',
+        layout === 'inline' &&
+          'flex items-start gap-1.5 before:shrink-0 before:content-["•"]',
+        layout === 'inline' && (hasDetails ? 'basis-full' : 'flex-none'),
+        getDiffClassName(diff),
+      )}
       data-resume-item-id={item.id}
       data-resume-diff-kind={diff?.kind}
       data-resume-diff-label={getDiffLabel(diff, t)}
@@ -947,10 +1051,22 @@ function ListItem({
   )
 }
 
-function ListItems({ items, t, settings, itemDiffById }: SectionItemsProps) {
+function ListItems({
+  items,
+  t,
+  settings,
+  itemDiffById,
+  layout,
+}: SectionItemsProps & { layout: ResumeListItemLayout }) {
   return (
     <ul
-      className="resume-tone-body grid list-disc pl-5"
+      className={cn(
+        'resume-tone-body',
+        layout === 'list' && 'grid list-disc pl-5',
+        layout === 'columns' &&
+          'grid grid-cols-2 gap-x-6 list-disc pl-5',
+        layout === 'inline' && 'flex flex-wrap items-start gap-x-4 pl-0',
+      )}
       data-resume-items-list="true"
       style={{
         gap: `${Math.max(0.35, settings.itemGap / 2)}em`,
@@ -965,6 +1081,7 @@ function ListItems({ items, t, settings, itemDiffById }: SectionItemsProps) {
           t={t}
           settings={settings}
           diff={itemDiffById?.get(item.id)}
+          layout={layout}
         />
       ))}
     </ul>
@@ -975,12 +1092,14 @@ function SectionItems({
   section,
   t,
   settings,
+  layout,
   items,
   itemDiffById,
 }: {
   section: ResumeSection
   t: AppMessages
   settings: ResumeTemplateSettings
+  layout: ResumeTemplateLayout
   items?: ResumeSectionItem[]
   itemDiffById?: Map<string, ResumeDraftDiff>
 }) {
@@ -993,6 +1112,7 @@ function SectionItems({
         t={t}
         settings={settings}
         itemDiffById={itemDiffById}
+        layout={layout.listItemLayout}
       />
     )
   }
@@ -1003,6 +1123,7 @@ function SectionItems({
       t={t}
       settings={settings}
       itemDiffById={itemDiffById}
+      layout={layout.timelineItemLayout}
     />
   )
 }
@@ -1128,6 +1249,7 @@ function SectionBlock({
             section={section}
             t={t}
             settings={settings}
+            layout={layout}
             items={visibleItems}
             itemDiffById={itemDiffById}
           />
@@ -1166,6 +1288,7 @@ function SectionBlock({
             section={section}
             t={t}
             settings={settings}
+            layout={layout}
             items={visibleItems}
             itemDiffById={itemDiffById}
           />
@@ -1210,6 +1333,7 @@ function SectionBlock({
           section={section}
           t={t}
           settings={settings}
+          layout={layout}
           items={visibleItems}
           itemDiffById={itemDiffById}
         />

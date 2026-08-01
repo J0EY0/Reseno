@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import sqlite3
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Event, Lock
@@ -17,7 +18,7 @@ from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.agent_settings import normalize_agent_settings
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
-from app.services import workspace as workspace_service
+from app.services import user_preferences, workspace_pages
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
 from app.services.agent import section_registry as section_registry_module
 from app.services.agent.attachments import store_agent_attachment
@@ -670,19 +671,255 @@ def stub_terminal_tool_text(text: str):
     return call_tools
 
 
-def test_workspace_bootstrap_returns_empty_backend_workspace(
+@pytest.mark.parametrize(
+    ("endpoint", "expected_fields", "expected_reads"),
+    [
+        (
+            "/api/workspace/pages/resumes",
+            {"defaultTemplateId", "resumes", "customTemplates"},
+            ["user-settings", "workspace-state", "templates:active", "resumes:active"],
+        ),
+        (
+            "/api/workspace/pages/resume-editor",
+            {
+                "defaultTemplateId",
+                "customTemplates",
+                "modelConfigs",
+                "agentSettings",
+            },
+            ["user-settings", "workspace-state", "templates:active", "model-configs"],
+        ),
+        (
+            "/api/workspace/pages/templates",
+            {"defaultTemplateId", "customTemplates"},
+            ["user-settings", "workspace-state", "templates:active"],
+        ),
+        (
+            "/api/workspace/pages/trash",
+            {
+                "defaultTemplateId",
+                "customTemplates",
+                "deletedResumes",
+                "deletedTemplates",
+            },
+            [
+                "user-settings",
+                "workspace-state",
+                "templates:active",
+                "resumes:deleted",
+                "templates:deleted",
+            ],
+        ),
+        (
+            "/api/workspace/pages/models",
+            {"modelConfigs", "agentSettings"},
+            ["user-settings", "model-configs"],
+        ),
+        (
+            "/api/workspace/pages/settings",
+            {"modelConfigs", "agentSettings"},
+            ["user-settings", "model-configs"],
+        ),
+    ],
+    ids=[
+        "resumes",
+        "resume-editor",
+        "templates",
+        "trash",
+        "models",
+        "settings",
+    ],
+)
+def test_workspace_page_endpoint_only_reads_owned_data(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    expected_fields: set[str],
+    expected_reads: list[str],
 ) -> None:
-    response = client.get("/api/workspace/bootstrap?locale=zh")
+    reads: list[str] = []
+
+    def load_user_settings() -> dict:
+        reads.append("user-settings")
+        return {}
+
+    def load_workspace_state(_: sqlite3.Connection) -> dict:
+        reads.append("workspace-state")
+        return {"defaultTemplateId": "minimal"}
+
+    def load_resume_items(
+        _: sqlite3.Connection,
+        *,
+        locale: str,
+        deleted: bool,
+    ) -> list[dict]:
+        del locale
+        reads.append(f"resumes:{'deleted' if deleted else 'active'}")
+        return []
+
+    def load_template_items(
+        _: sqlite3.Connection,
+        *,
+        locale: str,
+        deleted: bool,
+    ) -> list[dict]:
+        del locale
+        reads.append(f"templates:{'deleted' if deleted else 'active'}")
+        return []
+
+    def list_model_configs(_: sqlite3.Connection) -> list:
+        reads.append("model-configs")
+        return []
+
+    monkeypatch.setattr(workspace_pages, "load_user_settings", load_user_settings)
+    monkeypatch.setattr(
+        workspace_pages,
+        "_load_workspace_state",
+        load_workspace_state,
+    )
+    monkeypatch.setattr(workspace_pages, "_load_resume_items", load_resume_items)
+    monkeypatch.setattr(workspace_pages, "_load_template_items", load_template_items)
+    monkeypatch.setattr(workspace_pages, "list_llm_configs", list_model_configs)
+
+    response = client.get(endpoint)
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["code"] == 0
-    assert payload["data"]["defaultTemplateId"] == "minimal"
-    assert payload["data"]["customTemplates"] == []
-    assert payload["data"]["deletedTemplates"] == []
-    assert "resumes" not in payload["data"]
-    assert "deletedResumes" not in payload["data"]
+    assert response.json()["code"] == 0
+    assert set(response.json()["data"]) == expected_fields
+    assert Counter(reads) == Counter(expected_reads)
+
+
+def test_workspace_bootstrap_endpoint_is_removed(client: TestClient) -> None:
+    response = client.get("/api/workspace/bootstrap?locale=zh&scope=models")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "schema_name", "properties", "required"),
+    [
+        (
+            "/api/workspace/pages/resumes",
+            "ResumesPageResponse",
+            {"theme", "defaultTemplateId", "customTemplates", "resumes"},
+            {"defaultTemplateId", "customTemplates", "resumes"},
+        ),
+        (
+            "/api/workspace/pages/resume-editor",
+            "ResumeEditorPageResponse",
+            {
+                "theme",
+                "defaultTemplateId",
+                "customTemplates",
+                "modelConfigs",
+                "agentSettings",
+            },
+            {
+                "defaultTemplateId",
+                "customTemplates",
+                "modelConfigs",
+                "agentSettings",
+            },
+        ),
+        (
+            "/api/workspace/pages/templates",
+            "TemplatesPageResponse",
+            {"theme", "defaultTemplateId", "customTemplates"},
+            {"defaultTemplateId", "customTemplates"},
+        ),
+        (
+            "/api/workspace/pages/trash",
+            "TrashPageResponse",
+            {
+                "theme",
+                "defaultTemplateId",
+                "customTemplates",
+                "deletedResumes",
+                "deletedTemplates",
+            },
+            {
+                "defaultTemplateId",
+                "customTemplates",
+                "deletedResumes",
+                "deletedTemplates",
+            },
+        ),
+        (
+            "/api/workspace/pages/models",
+            "ModelsPageResponse",
+            {"theme", "modelConfigs", "agentSettings"},
+            {"modelConfigs", "agentSettings"},
+        ),
+        (
+            "/api/workspace/pages/settings",
+            "SettingsPageResponse",
+            {"theme", "modelConfigs", "agentSettings"},
+            {"modelConfigs", "agentSettings"},
+        ),
+    ],
+    ids=[
+        "resumes",
+        "resume-editor",
+        "templates",
+        "trash",
+        "models",
+        "settings",
+    ],
+)
+def test_workspace_page_openapi_uses_exact_response_contract(
+    client: TestClient,
+    endpoint: str,
+    schema_name: str,
+    properties: set[str],
+    required: set[str],
+) -> None:
+    document = client.get("/openapi.json").json()
+    response_schema = document["paths"][endpoint]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    envelope_name = response_schema["$ref"].rsplit("/", 1)[-1]
+    envelope = document["components"]["schemas"][envelope_name]
+    data_ref = envelope["properties"]["data"]["$ref"]
+
+    assert data_ref == f"#/components/schemas/{schema_name}"
+    page_schema = document["components"]["schemas"][schema_name]
+    assert set(page_schema["properties"]) == properties
+    assert set(page_schema["required"]) == required
+    assert page_schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize(
+    ("page_schema_name", "property_name", "item_schema_name"),
+    [
+        ("ResumesPageResponse", "resumes", "ResumeWorkspaceItemResponse"),
+        (
+            "ResumesPageResponse",
+            "customTemplates",
+            "TemplateDefinitionResponse",
+        ),
+        (
+            "TrashPageResponse",
+            "deletedResumes",
+            "DeletedResumeWorkspaceItemResponse",
+        ),
+        (
+            "TrashPageResponse",
+            "deletedTemplates",
+            "DeletedTemplateDefinitionResponse",
+        ),
+    ],
+)
+def test_workspace_page_openapi_uses_typed_collection_items(
+    client: TestClient,
+    page_schema_name: str,
+    property_name: str,
+    item_schema_name: str,
+) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    item_ref = schemas[page_schema_name]["properties"][property_name]["items"]["$ref"]
+
+    assert item_ref == f"#/components/schemas/{item_schema_name}"
+    assert schemas[item_schema_name]["additionalProperties"] is False
 
 
 def test_resume_command_flow_owns_identity_versions_and_lifecycle(
@@ -732,6 +969,7 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert trash_response.status_code == 200
     assert trash_response.json()["data"]["resume"]["deletedAt"]
     assert trash_response.json()["data"]["resume"]["resume"]["sections"] == []
+    assert "templateSettings" not in trash_response.json()["data"]["resume"]
     assert deleted_list_response.json()["data"]["resumes"][0]["id"] == resume_id
     assert save_deleted_response.json()["code"] != 0
 
@@ -886,7 +1124,7 @@ def test_auth_login_does_not_return_credentials(
 
 
 def test_protected_api_requires_jwt(unauthenticated_client: TestClient) -> None:
-    response = unauthenticated_client.get("/api/workspace/bootstrap?locale=en")
+    response = unauthenticated_client.get("/api/workspace/pages/settings")
 
     assert response.status_code == 200
     assert response.json()["code"] == 40001
@@ -919,7 +1157,7 @@ def test_protected_api_requires_jwt_with_default_initialized_password(
     get_settings.cache_clear()
 
     with TestClient(create_app()) as test_client:
-        response = test_client.get("/api/workspace/bootstrap?locale=en")
+        response = test_client.get("/api/workspace/pages/settings")
 
     env_content = (tmp_path / ".env").read_text(encoding="utf-8")
     get_settings.cache_clear()
@@ -946,7 +1184,7 @@ def test_development_app_env_skips_jwt_middleware(tmp_path, monkeypatch) -> None
     get_settings.cache_clear()
 
     with TestClient(create_app()) as test_client:
-        response = test_client.get("/api/workspace/bootstrap?locale=en")
+        response = test_client.get("/api/workspace/pages/settings")
         password_response = test_client.post(
             "/api/auth/password",
             json={
@@ -979,11 +1217,11 @@ def test_auth_refresh_revokes_previous_jwt(
     )
     new_token = refresh_response.json()["data"]["accessToken"]
     old_token_response = unauthenticated_client.get(
-        "/api/workspace/bootstrap?locale=en",
+        "/api/workspace/pages/settings",
         headers={"Authorization": f"Bearer {old_token}"},
     )
     new_token_response = unauthenticated_client.get(
-        "/api/workspace/bootstrap?locale=en",
+        "/api/workspace/pages/settings",
         headers={"Authorization": f"Bearer {new_token}"},
     )
 
@@ -1023,7 +1261,7 @@ def test_auth_password_update_writes_env_and_requires_new_login(
         json={"username": "admin", "password": "Changed@2026"},
     )
     revoked_token_response = unauthenticated_client.get(
-        "/api/workspace/bootstrap?locale=en",
+        "/api/workspace/pages/settings",
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -1067,7 +1305,7 @@ def test_auth_password_update_wrong_current_password_keeps_session(
             "confirmPassword": "Changed@2026",
         },
     )
-    session_response = client.get("/api/workspace/bootstrap?locale=en")
+    session_response = client.get("/api/workspace/pages/settings")
 
     assert response.status_code == 200
     assert response.json()["code"] == 40000
@@ -1078,7 +1316,7 @@ def test_auth_password_update_wrong_current_password_keeps_session(
 def test_expired_jwt_is_rejected(client: TestClient) -> None:
     expired_token, _ = create_access_token("admin", ttl_seconds=-1)
     response = client.get(
-        "/api/workspace/bootstrap?locale=en",
+        "/api/workspace/pages/settings",
         headers={"Authorization": f"Bearer {expired_token}"},
     )
 
@@ -1118,7 +1356,7 @@ def test_template_command_flow_owns_identity_and_lifecycle(
         json={"templateId": template_id},
     )
     trash_response = client.post(f"/api/templates/{template_id}/trash")
-    bootstrap_response = client.get("/api/workspace/bootstrap?locale=en")
+    templates_page_response = client.get("/api/workspace/pages/templates")
     deleted_response = client.get("/api/templates?status=deleted")
     set_deleted_default_response = client.put(
         "/api/workspace/default-template",
@@ -1129,7 +1367,7 @@ def test_template_command_flow_owns_identity_and_lifecycle(
     assert default_response.json()["data"]["defaultTemplateId"] == template_id
     assert trash_response.status_code == 200
     assert trash_response.json()["data"]["template"]["deletedAt"]
-    assert bootstrap_response.json()["data"]["defaultTemplateId"] == "minimal"
+    assert templates_page_response.json()["data"]["defaultTemplateId"] == "minimal"
     assert deleted_response.json()["data"]["templates"][0]["id"] == template_id
     assert set_deleted_default_response.json()["code"] != 0
 
@@ -1235,7 +1473,7 @@ def test_user_settings_endpoint_persists_json_preferences(
         "/api/workspace/user-settings?locale=zh",
         json={"settings": settings},
     )
-    bootstrap_response = client.get("/api/workspace/bootstrap?locale=zh")
+    settings_page_response = client.get("/api/workspace/pages/settings")
 
     assert response.status_code == 200
     assert response.json()["data"] == {
@@ -1248,10 +1486,12 @@ def test_user_settings_endpoint_persists_json_preferences(
         "locale": "zh",
         "theme": "system",
     }
-    assert bootstrap_response.status_code == 200
-    bootstrap_data = bootstrap_response.json()["data"]
-    assert bootstrap_data["theme"] == "system"
-    assert bootstrap_data["agentSettings"] == response.json()["data"]["agentSettings"]
+    assert settings_page_response.status_code == 200
+    settings_page_data = settings_page_response.json()["data"]
+    assert settings_page_data["theme"] == "system"
+    assert (
+        settings_page_data["agentSettings"] == response.json()["data"]["agentSettings"]
+    )
 
     persisted_settings = json.loads(
         get_settings().user_settings_path.read_text(encoding="utf-8")
@@ -1263,11 +1503,24 @@ def test_user_settings_endpoint_persists_json_preferences(
     assert persisted_settings["theme"] == "system"
 
 
+def test_user_settings_endpoint_rejects_workspace_resource_fields(
+    client: TestClient,
+) -> None:
+    response = client.put(
+        "/api/workspace/user-settings?locale=zh",
+        json={"settings": {"resumes": []}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] != 0
+    assert response.json()["message"] == "VALIDATION_ERROR"
+
+
 def test_user_settings_updates_serialize_the_read_modify_write_transaction(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_load = workspace_service._load_user_settings
+    original_load = user_preferences.load_user_settings
     first_load_entered = Event()
     second_load_entered = Event()
     allow_first_load = Event()
@@ -1288,17 +1541,17 @@ def test_user_settings_updates_serialize_the_read_modify_write_transaction(
 
         return original_load()
 
-    monkeypatch.setattr(workspace_service, "_load_user_settings", controlled_load)
+    monkeypatch.setattr(user_preferences, "load_user_settings", controlled_load)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(
-            workspace_service.save_user_settings,
+            user_preferences.save_user_settings,
             "en",
             {"theme": "dark"},
         )
         assert first_load_entered.wait(timeout=2)
         second = executor.submit(
-            workspace_service.save_user_settings,
+            user_preferences.save_user_settings,
             "zh",
             {
                 "agentSettings": {

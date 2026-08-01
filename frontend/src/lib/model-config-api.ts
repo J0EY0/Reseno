@@ -23,9 +23,10 @@ let modelProvidersRequest: Promise<ModelProvidersResponse> | null = null
 export function getModelProviders() {
   if (!modelProvidersRequest) {
     // Provider metadata is shared by every create/edit dialog. Reusing the
-    // request prevents eagerly mounted forms from issuing the same call.
+    // request prevents concurrently opened forms from issuing the same call.
     modelProvidersRequest = requestApi<ModelProvidersResponse>(
       apiRoutes.modelProviders,
+      { notifyOnError: false },
     ).catch((error) => {
       modelProvidersRequest = null
       throw error

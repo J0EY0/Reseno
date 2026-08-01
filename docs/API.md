@@ -131,94 +131,110 @@ token 会返回 HTTP 200，但 payload 为：
 
 前端收到 `code = 40001` 后清理本地 session 并跳转登录页。
 
-## Workspace
+## Workspace 页面查询与资源边界
 
-### GET `/api/workspace/bootstrap?locale=zh|en`
+`/api/workspace/pages/*` 是只读的页面聚合查询（BFF），用于一次返回某个路由
+首次渲染需要的上下文。它不是通用 workspace 快照，也不负责资源 CRUD 或版本
+管理。每个页面只能调用对应的查询；未知路由不发起 workspace 请求。
 
-用途：初始化整个工作区。
+原 `/api/workspace/bootstrap`、`/api/workspace/snapshot` 和
+`/api/workspace/versions*` 已移除。简历、模板和模型的写操作由各自的资源接口
+负责，简历版本也必须带上所属的 `resumeId`。
 
-响应数据：
+### 页面查询矩阵
+
+| 页面 | 页面查询 | 职责 |
+| --- | --- | --- |
+| `/resume` | `GET /api/workspace/pages/resumes` | 有效简历列表和模板目录 |
+| `/resume/:id` | `GET /api/workspace/pages/resume-editor` | 编辑器共享的模板、模型和 Agent 设置；简历详情及版本由资源接口读取 |
+| `/templates`、`/template/:id` | `GET /api/workspace/pages/templates` | 有效模板目录和默认模板 |
+| `/trash` | `GET /api/workspace/pages/trash` | 已删除简历、已删除模板及预览所需的有效模板目录 |
+| `/models` | `GET /api/workspace/pages/models` | 模型配置和引用模型的 Agent 设置 |
+| `/settings` | `GET /api/workspace/pages/settings` | 设置页所需的模型配置和 Agent 设置 |
+
+PDF 渲染页同样需要模板目录，因此复用 templates 页面查询。共享依赖不表示页面
+可以读取无关资源，例如 templates、models 和 settings 查询都不会读取简历列表。
+
+六个页面查询都使用独立的强类型响应模型；响应 `data` 的准确字段如下：
 
 ```ts
-type WorkspaceBootstrapResponse = WorkspacePayload
-```
-
-核心字段：
-
-```ts
-type WorkspacePayload = {
-  resumes: ResumeWorkspaceItem[]
-  defaultTemplateId: string
-  customTemplates: ResumeTemplateDefinition[]
-  deletedResumes?: ResumeWorkspaceItem[]
-  deletedTemplates?: ResumeTemplateDefinition[]
-  modelConfigs?: ModelConfig[]
-  modelConfig?: ModelConfig
-  agentSettings?: AgentSettings
+type WorkspacePageTheme = {
   theme?: "light" | "dark" | "system"
 }
-```
 
-### PUT `/api/workspace/snapshot`
+type TemplatePageContext = {
+  defaultTemplateId: string
+  customTemplates: ResumeTemplateDefinition[]
+}
 
-用途：保存前端提交的工作区数据。后端不会把完整 `resumes` 数组作为
-workspace snapshot 存入 SQLite；每份简历会拆分为独立版本 JSON 文件。
-
-请求：
-
-```ts
-type WorkspaceSnapshot = {
-  resumes: ResumeWorkspaceItem[]
-  defaultTemplateId?: string
-  customTemplates?: ResumeTemplateDefinition[]
-  deletedResumes?: ResumeWorkspaceItem[]
-  deletedTemplates?: ResumeTemplateDefinition[]
+type ModelPageContext = {
   modelConfigs: ModelConfig[]
-  modelConfig?: ModelConfig
-  savedAt: string
+  agentSettings: AgentSettings
 }
 
-type WorkspaceSaveRequest = {
-  snapshot: WorkspaceSnapshot
-}
+type ResumesPageResponse = WorkspacePageTheme &
+  TemplatePageContext & {
+    resumes: ResumeWorkspaceItem[]
+  }
+
+type ResumeEditorPageResponse = WorkspacePageTheme &
+  TemplatePageContext &
+  ModelPageContext
+
+type TemplatesPageResponse = WorkspacePageTheme & TemplatePageContext
+
+type TrashPageResponse = WorkspacePageTheme &
+  TemplatePageContext & {
+    deletedResumes: DeletedResumeWorkspaceItem[]
+    deletedTemplates: DeletedResumeTemplateDefinition[]
+  }
+
+type ModelsPageResponse = WorkspacePageTheme & ModelPageContext
+type SettingsPageResponse = WorkspacePageTheme & ModelPageContext
 ```
 
-响应：
+字段是按页面必需依赖声明的，不再使用“所有字段都可选”的统一
+`WorkspacePayload`。后端 response model 会校验并过滤响应字段，前端也按路由
+获得对应 DTO。
+
+### Workspace 偏好命令
+
+| 方法 | 路径 | 职责 |
+| --- | --- | --- |
+| `PUT` | `/api/workspace/user-settings?locale=zh\|en` | 保存主题和 Agent 设置，不保存简历或模板 |
+| `PUT` | `/api/workspace/default-template` | 校验模板可用后保存默认模板 ID |
+
+`PUT /api/workspace/user-settings` 的请求体为
+`{ settings: { theme?, agentSettings? } }`；
+`PUT /api/workspace/default-template` 的请求体为 `{ templateId: string }`，响应
+`data` 为 `{ defaultTemplateId: string }`。
+
+### 简历资源与版本
+
+| 方法 | 路径 | 职责 |
+| --- | --- | --- |
+| `GET` | `/api/resumes?status=active\|deleted` | 按状态列出简历；deleted 返回回收站预览 |
+| `POST` | `/api/resumes` | 创建简历及初始版本 |
+| `GET` | `/api/resumes/{resumeId}` | 读取一份有效简历的当前版本 |
+| `PUT` | `/api/resumes/{resumeId}` | 保存完整简历；内容变化时创建新版本 |
+| `POST` | `/api/resumes/{resumeId}/duplicate?locale=zh\|en` | 从当前版本创建独立副本，不复制会话和版本历史 |
+| `POST` | `/api/resumes/{resumeId}/trash` | 将有效简历移入回收站，不创建版本 |
+| `POST` | `/api/resumes/{resumeId}/restore` | 恢复已删除简历，不创建版本 |
+| `DELETE` | `/api/resumes/{resumeId}` | 永久删除已在回收站中的简历及其版本、会话和附件 |
+| `DELETE` | `/api/resumes/trash` | 永久清空简历回收站 |
+| `GET` | `/api/resumes/{resumeId}/versions` | 列出指定简历的版本摘要 |
+| `GET` | `/api/resumes/{resumeId}/versions/{versionId}` | 读取指定简历的一个历史版本 |
+
+简历详情和历史版本都返回：
 
 ```ts
-type WorkspaceSaveResponse = {
+type ResumeDetailResponse = {
+  resume: ResumeWorkspaceItem
   savedAt: string
   versionId: string
 }
-```
 
-说明：前端通过保存按钮或 `Ctrl/Cmd + S` 调用该接口。后端按简历 id 保存：
-
-```text
-SQLite:
-  resumes(id, locale, current_version_id, title, saved_at, deleted, purged, ...)
-  resume_versions(resume_id, version_id, content_hash, saved_at, ...)
-  templates(id, locale, name, saved_at, deleted, purged, ...)
-
-Storage:
-  resumes/{resume_id}/versions/{version_id}.json
-  templates/{template_id}/current.json
-```
-
-`version_id` 是每份简历从 `1` 开始递增的整数。保存时会计算简历内容 hash；
-如果和当前版本一致，不新增 JSON 版本。`updatedAt` / `savedAt` 这类时间戳
-不参与 hash，避免空保存制造新版本。
-自定义模板使用相同的“SQLite 元信息 + Storage JSON”模式，但不做版本控制；
-每个模板只保存当前 JSON。
-
-### GET `/api/workspace/versions`
-
-用途：列出当前可切换的简历版本号。版本号来自 `resume_versions.version_id`。
-
-响应：
-
-```ts
-type WorkspaceVersionsResponse = {
+type ResumeVersionsResponse = {
   versions: Array<{
     versionId: string
     savedAt: string
@@ -226,18 +242,36 @@ type WorkspaceVersionsResponse = {
 }
 ```
 
-### GET `/api/workspace/versions/{versionId}`
+后端按简历 ID 持久化。`versionId` 从 `1` 开始递增；内容 hash 与当前版本相同
+时不会制造新版本，展示时间字段不参与 hash。
 
-用途：按版本号读取简历 JSON 并组装为前端需要的 workspace 数据。
+```text
+SQLite:
+  resumes(id, locale, current_version_id, title, saved_at, deleted, ...)
+  resume_versions(resume_id, version_id, content_hash, saved_at, ...)
 
-响应：
-
-```ts
-type WorkspaceVersionResponse = {
-  versionId: string
-  snapshot: WorkspaceSnapshot
-}
+Storage:
+  resumes/{resume_id}/versions/{version_id}.json
 ```
+
+### 模板资源
+
+| 方法 | 路径 | 职责 |
+| --- | --- | --- |
+| `GET` | `/api/templates?status=active\|deleted` | 按状态列出自定义模板 |
+| `POST` | `/api/templates` | 创建后端分配 ID 的自定义模板 |
+| `PUT` | `/api/templates/{templateId}` | 更新一份有效的自定义模板 |
+| `POST` | `/api/templates/{templateId}/trash` | 将自定义模板移入回收站；若为默认模板则恢复内置默认值 |
+| `POST` | `/api/templates/{templateId}/restore` | 恢复已删除模板 |
+| `DELETE` | `/api/templates/{templateId}` | 永久删除已在回收站中的模板 |
+| `DELETE` | `/api/templates/trash` | 永久清空模板回收站 |
+
+内置模板不能通过模板资源接口修改或删除。自定义模板使用 SQLite 元信息和
+`templates/{template_id}/current.json` 保存当前内容，不创建版本历史。
+
+模型配置由 `/api/model-configs` 负责查询、创建或更新、删除；Provider 元数据和
+模型发现由 `/api/model-providers*` 负责。模型资源接口的完整契约见后文
+“ModelConfig”章节。
 
 ## PDF Export
 
@@ -585,35 +619,6 @@ type AgentSessionResponse = {
 }
 ```
 
-## Reserved CRUD Routes
-
-以下路由已在前端集中定义，后端可按需实现。当前产品的公开接口仍使用
-workspace 聚合读写，但后端内部已经按简历 id/version 拆分保存。
-
-```txt
-GET    /api/resumes
-POST   /api/resumes
-GET    /api/resumes/:id
-PUT    /api/resumes/:id
-DELETE /api/resumes/:id
-
-GET    /api/templates
-POST   /api/templates
-GET    /api/templates/:id
-PUT    /api/templates/:id
-DELETE /api/templates/:id
-
-GET    /api/model-configs
-POST   /api/model-configs
-PUT    /api/model-configs/:id
-DELETE /api/model-configs/:id
-GET    /api/model-providers
-POST   /api/model-providers/discover-models
-
-GET    /api/agent/settings
-PUT    /api/agent/settings
-```
-
 ## Core Data Shapes
 
 ### ResumeWorkspaceItem
@@ -685,7 +690,13 @@ type ResumeSection = {
 ```ts
 type ResumeTemplateDefinition = {
   id: string
-  preset: "minimal" | "modern" | "compact"
+  preset:
+    | "minimal"
+    | "modern"
+    | "compact"
+    | "classic"
+    | "executive"
+    | "academic"
   name: string
   description: string
   layout: ResumeTemplateLayout
@@ -710,7 +721,7 @@ type ModelConfig = {
     | "openai_compatible_chat"
     | "anthropic_messages"
     | "google_gemini"
-  nickname?: string
+  nickname: string
   apiKeyPreview: string
   model: string
   apiUrl: string
@@ -720,6 +731,8 @@ type ModelConfig = {
   contextWindowTokens: number
   supportsImage: boolean
   supportsThinking: boolean
+  supportsTools: boolean
+  supportsStreaming: boolean
   thinkingEnabled: boolean
 }
 ```
@@ -750,7 +763,7 @@ type ModelConfigsResponse = {
 
 ```ts
 type ModelConfigUpsertRequest = {
-  id: string
+  id?: string
   provider: string
   providerKind: "cloud" | "local" | "custom"
   apiFamily:
@@ -768,8 +781,9 @@ type ModelConfigUpsertRequest = {
   contextWindowTokens?: number | null
   supportsImage?: boolean
   supportsThinking?: boolean
+  supportsTools?: boolean
+  supportsStreaming?: boolean
   thinkingEnabled?: boolean
-  isDefault?: boolean
 }
 ```
 
@@ -866,11 +880,12 @@ type AgentSettings = {
 
 - 保持统一 `ApiResponse<T>` envelope。
 - 支持 `VITE_API_BASE_URL` 作为前端后端切换开关。
-- 先实现 workspace bootstrap/snapshot 可最快接入。
+- 页面初始化使用职责明确的 `/api/workspace/pages/*` 查询；不要增加通用
+  bootstrap，也不要让页面查询承担资源写入或版本管理。
+- 简历、模板、模型和 Agent 会话通过各自资源接口读写，组件不要自行拼接路径。
 - 文件上传接口需要支持 multipart。
 - 生产环境不要返回明文认证配置；任何环境都不要返回明文 API Key。
 - Agent 普通 JSON 和 SSE 流式响应格式已固定，后端可先返回 JSON，再切到 SSE。
-- 如果拆分 CRUD，前端 helper 应该统一适配，避免 UI 组件直接拼接接口。
 
 ## Runtime Data And Environment
 

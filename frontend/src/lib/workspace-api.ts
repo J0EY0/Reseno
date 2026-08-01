@@ -1,23 +1,25 @@
 import type { Locale } from "@/i18n";
 import { apiRoutes, requestApi } from "@/lib/api-client";
+import {
+  getWorkspaceRouteDataPath,
+  type LoadableWorkspaceRouteDataKind,
+  type WorkspaceRouteDataMap,
+  type WorkspaceRouteDataResult,
+} from "@/lib/workspace-route-data";
 import type {
+  ApiRequestOptions,
   DefaultTemplateSaveResponse,
-  DeletedResumeListResponse,
-  DeletedTemplateListResponse,
   ResumeCreateRequest,
   ResumeDeleteResponse,
   ResumeDetailResponse,
-  ResumeListResponse,
   ResumeSaveRequest,
   ResumeTrashEmptyResponse,
   ResumeTrashResponse,
   TemplateDeleteResponse,
   TemplateDetailResponse,
-  TemplateListResponse,
   TemplateTrashEmptyResponse,
   TemplateTrashResponse,
-  WorkspaceBootstrapResponse,
-  WorkspaceBootstrapResult,
+  UserSettingsSaveResponse,
   WorkspaceVersionsResponse,
 } from "@/types/api";
 import type {
@@ -26,25 +28,24 @@ import type {
   ThemeMode,
 } from "@/types/resume";
 
-export async function fetchWorkspaceBootstrap(
-  locale: Locale,
-): Promise<WorkspaceBootstrapResult> {
-  const workspace = await requestApi<WorkspaceBootstrapResponse>(
-    apiRoutes.workspaceBootstrap,
-    {
-      cacheTtlMs: 3000,
-      searchParams: { locale },
-    },
-  );
+export async function fetchWorkspaceRouteData<
+  Kind extends LoadableWorkspaceRouteDataKind,
+>(
+  routeKind: Kind,
+  options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
+): Promise<WorkspaceRouteDataResult<Kind>> {
+  const path = getWorkspaceRouteDataPath(routeKind);
 
-  return {
-    workspace,
-    savedAt:
-      "savedAt" in workspace && typeof workspace.savedAt === "string"
-        ? workspace.savedAt
-        : null,
-    source: "backend",
-  };
+  if (!path) {
+    throw new Error("Unknown workspace route.");
+  }
+
+  const data = await requestApi<WorkspaceRouteDataMap[Kind]>(path, {
+    cacheTtlMs: 3000,
+    ...options,
+  });
+
+  return { kind: routeKind, data } as WorkspaceRouteDataResult<Kind>;
 }
 
 export function saveUserSettingsApi(
@@ -54,7 +55,7 @@ export function saveUserSettingsApi(
     theme?: ThemeMode;
   },
 ) {
-  return requestApi<Record<string, unknown>>(apiRoutes.workspaceUserSettings, {
+  return requestApi<UserSettingsSaveResponse>(apiRoutes.workspaceUserSettings, {
     body: { settings },
     method: "PUT",
     searchParams: { locale },
@@ -71,20 +72,6 @@ export function saveDefaultTemplateApi(templateId: string) {
   );
 }
 
-export function fetchResumesApi(status: "active" = "active") {
-  return requestApi<ResumeListResponse>(apiRoutes.resumes, {
-    cacheTtlMs: 3000,
-    searchParams: { status },
-  });
-}
-
-export function fetchDeletedResumesApi() {
-  return requestApi<DeletedResumeListResponse>(apiRoutes.resumes, {
-    cacheTtlMs: 3000,
-    searchParams: { status: "deleted" },
-  });
-}
-
 export function createResumeApi(request: ResumeCreateRequest = {}) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resumes, {
     body: request,
@@ -99,9 +86,13 @@ export function duplicateResumeApi(resumeId: string, locale: Locale) {
   });
 }
 
-export function fetchResumeApi(resumeId: string) {
+export function fetchResumeApi(
+  resumeId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
+) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
     cacheTtlMs: 3000,
+    ...options,
   });
 }
 
@@ -136,36 +127,31 @@ export function emptyResumeTrashApi() {
   });
 }
 
-export function fetchResumeVersionsApi(resumeId: string) {
+export function fetchResumeVersionsApi(
+  resumeId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
+) {
   return requestApi<WorkspaceVersionsResponse>(
     apiRoutes.resumeVersions(resumeId),
     {
       cacheTtlMs: 3000,
+      ...options,
     },
   );
 }
 
-export function fetchResumeVersionApi(resumeId: string, versionId: string) {
+export function fetchResumeVersionApi(
+  resumeId: string,
+  versionId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
+) {
   return requestApi<ResumeDetailResponse>(
     apiRoutes.resumeVersion(resumeId, versionId),
     {
       cacheTtlMs: 10000,
+      ...options,
     },
   );
-}
-
-export function fetchTemplatesApi(status: "active" = "active") {
-  return requestApi<TemplateListResponse>(apiRoutes.templates, {
-    cacheTtlMs: 3000,
-    searchParams: { status },
-  });
-}
-
-export function fetchDeletedTemplatesApi() {
-  return requestApi<DeletedTemplateListResponse>(apiRoutes.templates, {
-    cacheTtlMs: 3000,
-    searchParams: { status: "deleted" },
-  });
 }
 
 export function createTemplateApi(template: ResumeTemplateDefinition) {

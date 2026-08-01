@@ -174,7 +174,7 @@
   "fontSerif": "Noto Serif",
   "fontPlex": "IBM Plex",
   "loading": "Loading resume data from the backend...",
-  "loadError": "Failed to load remote data. Falling back to an empty resume.",
+  "loadError": "Request failed. Please try again later.",
   "editorHint": "The shell now follows a shadcn sidebar layout and the editor is split into reusable feature components.",
   "previewTitle": "Live Preview",
   "exportImages": "PNG Images",
@@ -288,6 +288,8 @@
   "templatePreset": "Base Preset",
   "basicInfoLayout": "Basic Info Layout",
   "basicInfoLayoutCentered": "Centered Header",
+  "basicInfoLayoutLeft": "Left-aligned Header",
+  "basicInfoLayoutSplit": "Split Header",
   "basicInfoLayoutProfile": "Profile Header",
   "basicInfoLayoutSidebar": "Sidebar",
   "sectionTemplateStyle": "Section Title Style",
@@ -296,6 +298,14 @@
   "sectionStyleAccent": "Accent Title",
   "sectionStylePlain": "Plain Title",
   "sectionStyleBand": "Band Title",
+  "timelineItemLayout": "Experience Item Layout",
+  "timelineItemLayoutSplit": "Split",
+  "timelineItemLayoutStacked": "Stacked",
+  "timelineItemLayoutCompact": "Compact",
+  "listItemLayout": "List Item Layout",
+  "listItemLayoutList": "List",
+  "listItemLayoutInline": "Inline",
+  "listItemLayoutColumns": "Two Columns",
   "avatarPosition": "Avatar Position",
   "avatarPositionNone": "Hide Avatar",
   "avatarPositionRight": "Right",
@@ -320,6 +330,11 @@
   "sectionGap": "Section Gap",
   "itemGap": "Entry Gap",
   "bodyLineHeight": "Body Line Height",
+  "templateContentDensity": "Content Density",
+  "templateDensityCompact": "Compact",
+  "templateDensityStandard": "Standard",
+  "templateDensityRelaxed": "Relaxed",
+  "templateDensityCustom": "Custom",
   "dividerThickness": "Divider Thickness",
   "templateDividerStyle": "Divider Style",
   "templateDividerThin": "Thin",
@@ -742,6 +757,18 @@
     "compact": {
       "name": "Compact",
       "description": "Denser layout for fitting more experience into one page."
+    },
+    "classic": {
+      "name": "Classic",
+      "description": "A traditional layout for law, finance, and operations."
+    },
+    "executive": {
+      "name": "Executive",
+      "description": "Highlights seniority and outcomes for leadership roles."
+    },
+    "academic": {
+      "name": "Academic",
+      "description": "A restrained layout for study, research, and teaching."
     }
   }
 }

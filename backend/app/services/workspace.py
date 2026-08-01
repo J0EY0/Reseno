@@ -6,32 +6,32 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
-from threading import Lock
 from typing import Any, cast
-from uuid import uuid4
 
 from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
-from app.schemas.agent_settings import AgentSettings, normalize_agent_settings
 from app.services.agent.attachments import delete_agent_session_attachments
-from app.services.model_configs import list_llm_configs
 
 SUPPORTED_LOCALES = {"zh", "en"}
-THEME_MODES = {"light", "dark", "system"}
 WORKSPACE_DATA_LOCALE = "__workspace__"
 RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
 DEFAULT_TEMPLATE_ID = "minimal"
-BUILT_IN_TEMPLATE_IDS = {"minimal", "modern", "compact"}
+BUILT_IN_TEMPLATE_IDS = {
+    "minimal",
+    "modern",
+    "compact",
+    "classic",
+    "executive",
+    "academic",
+}
 DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
-USER_SETTINGS_KEYS = {"agentSettings", "theme"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
-_USER_SETTINGS_LOCK = Lock()
 
 
 def normalize_locale(locale: str) -> str:
@@ -142,20 +142,6 @@ def utc_now() -> str:
             "Z",
         )
     )
-
-
-def _attach_model_configs(
-    conn: Connection,
-    workspace: dict[str, Any],
-) -> dict[str, Any]:
-    # Model API keys live in llm_configs, so workspace responses only receive
-    # backend-sanitized config previews at response time.
-    return {
-        **workspace,
-        "modelConfigs": [
-            item.model_dump(by_alias=True) for item in list_llm_configs(conn)
-        ],
-    }
 
 
 def _validate_resume_id(resume_id: str) -> str:
@@ -333,120 +319,6 @@ def _read_template_json(template_id: str) -> dict[str, Any]:
         )
 
     return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-
-
-def _normalize_agent_settings(value: Any) -> dict[str, str]:
-    """Keep only supported Agent settings, tolerating older settings payloads."""
-
-    return normalize_agent_settings(value).model_dump(
-        mode="json",
-        by_alias=True,
-    )
-
-
-def _normalize_theme(value: Any) -> str | None:
-    """Return a persisted theme value when it is supported."""
-
-    return value if isinstance(value, str) and value in THEME_MODES else None
-
-
-def _normalize_user_settings(value: Any) -> dict[str, Any]:
-    """Normalize settings-page preferences loaded from the JSON settings file."""
-
-    if not isinstance(value, dict):
-        return {}
-
-    settings: dict[str, Any] = {}
-
-    locale = value.get("locale")
-    if isinstance(locale, str) and locale in SUPPORTED_LOCALES:
-        settings["locale"] = locale
-
-    theme = _normalize_theme(value.get("theme"))
-    if theme is not None:
-        settings["theme"] = theme
-
-    if "agentSettings" in value:
-        settings["agentSettings"] = _normalize_agent_settings(
-            value.get("agentSettings")
-        )
-
-    return settings
-
-
-def _load_user_settings() -> dict[str, Any]:
-    """Load persisted settings-page preferences from the configured JSON path."""
-
-    path = get_settings().user_settings_path
-    if not path.exists():
-        return {}
-
-    try:
-        return _normalize_user_settings(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def load_agent_settings() -> AgentSettings:
-    """Load the backend-authoritative Agent preferences."""
-
-    return normalize_agent_settings(_load_user_settings().get("agentSettings"))
-
-
-def _write_user_settings(settings: dict[str, Any]) -> None:
-    """Write settings-page preferences atomically."""
-
-    path = get_settings().user_settings_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        temp_path.write_text(_canonical_json(settings), encoding="utf-8")
-        temp_path.replace(path)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def save_user_settings(locale: str, settings: dict[str, Any]) -> dict[str, Any]:
-    """Persist settings-page preferences without saving the whole workspace."""
-
-    # The lock covers the whole read-modify-write transaction. Atomic replace alone
-    # prevents partial JSON, but cannot prevent two concurrent updates from losing data.
-    with _USER_SETTINGS_LOCK:
-        normalized_locale = normalize_locale(locale)
-        next_settings = _load_user_settings()
-        next_settings["locale"] = normalized_locale
-
-        theme = _normalize_theme(settings.get("theme"))
-        if theme is not None:
-            next_settings["theme"] = theme
-
-        if "agentSettings" in settings:
-            next_settings["agentSettings"] = _normalize_agent_settings(
-                settings.get("agentSettings")
-            )
-
-        next_settings = _normalize_user_settings(next_settings)
-        _write_user_settings(next_settings)
-        return next_settings
-
-
-def _apply_user_settings(state: dict[str, Any]) -> dict[str, Any]:
-    """Merge JSON-backed settings into a workspace response."""
-
-    settings = _load_user_settings()
-    workspace = {
-        key: value for key, value in state.items() if key not in USER_SETTINGS_KEYS
-    }
-
-    workspace["agentSettings"] = _normalize_agent_settings(
-        settings.get("agentSettings")
-    )
-
-    theme = _normalize_theme(settings.get("theme"))
-    if theme is not None:
-        workspace["theme"] = theme
-
-    return workspace
 
 
 def _load_workspace_state(conn: Connection) -> dict[str, Any]:
@@ -782,7 +654,7 @@ def _deleted_resume_preview(
     basic = resume.get("basic") if isinstance(resume, dict) else None
     deleted_at = row["deleted_at"] or row["saved_at"]
 
-    return {
+    preview: dict[str, Any] = {
         "id": row["id"],
         "title": row["title"] or _resume_title(resume_item),
         "updatedAt": row["saved_at"],
@@ -791,11 +663,22 @@ def _deleted_resume_preview(
             "sections": [],
         },
         "jobBrief": "",
-        "typography": resume_item.get("typography"),
-        "template": resume_item.get("template"),
-        "templateSettings": resume_item.get("templateSettings"),
         "deletedAt": deleted_at,
     }
+
+    typography = resume_item.get("typography")
+    if isinstance(typography, dict):
+        preview["typography"] = typography
+
+    template_id = resume_item.get("template")
+    if isinstance(template_id, str) and template_id:
+        preview["template"] = template_id
+
+    template_settings = resume_item.get("templateSettings")
+    if isinstance(template_settings, dict):
+        preview["templateSettings"] = template_settings
+
+    return preview
 
 
 def _load_resume_items(
@@ -865,30 +748,6 @@ def _load_template_items(
         items.append(item)
 
     return items
-
-
-def load_workspace(locale: str) -> dict[str, Any]:
-    """Load the current workspace payload for a locale."""
-
-    data_locale = workspace_data_locale()
-
-    with connect() as conn:
-        state = _apply_user_settings(_load_workspace_state(conn))
-        workspace = {
-            **state,
-            "customTemplates": _load_template_items(
-                conn,
-                locale=data_locale,
-                deleted=False,
-            ),
-            "deletedTemplates": _load_template_items(
-                conn,
-                locale=data_locale,
-                deleted=True,
-            ),
-        }
-
-        return _attach_model_configs(conn, workspace)
 
 
 def _default_template_id(state: dict[str, Any]) -> str:
