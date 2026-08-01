@@ -10,7 +10,7 @@ from app.schemas.templates import (
     TemplateSaveRequest,
     TemplateTrashEmptyResponse,
 )
-from app.services.workspace import (
+from app.services.templates import (
     create_template,
     delete_template_forever,
     empty_template_trash,

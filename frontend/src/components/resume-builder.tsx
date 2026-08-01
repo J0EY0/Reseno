@@ -1380,13 +1380,16 @@ export function ResumeBuilder({
   const navigate = useNavigate();
   const location = useLocation();
   const initialLocaleRef = useRef(locale);
+  const currentRoute = useMemo(
+    () => getWorkspaceRoute(location.pathname),
+    [location.pathname],
+  );
+  const activeView = getWorkspaceViewFromRoute(currentRoute);
+  const showResumeGallery = currentRoute.kind === "resume-gallery";
+  const showTemplateGallery = currentRoute.kind === "template-gallery";
 
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
-  // Initialize from the URL so direct visits never paint the resume shell first.
-  const [activeView, setActiveView] = useState<WorkspaceView>(() =>
-    getWorkspaceViewFromRoute(getWorkspaceRoute(location.pathname)),
-  );
   const [resumeDocuments, setResumeDocuments] = useState<ResumeWorkspaceItem[]>(
     [],
   );
@@ -1394,8 +1397,6 @@ export function ResumeBuilder({
     DeletedResumeWorkspaceItem[]
   >([]);
   const [activeResumeId, setActiveResumeId] = useState<string | null>(null);
-  const [showResumeGallery, setShowResumeGallery] = useState(true);
-  const [showTemplateGallery, setShowTemplateGallery] = useState(true);
   const [resume, setResume] = useState<ResumeData>(() => createEmptyResume());
   const [collapsedState, setCollapsedState] = useState<Record<string, boolean>>(
     createEditorCollapsedState(createEmptyResume()),
@@ -1419,6 +1420,14 @@ export function ResumeBuilder({
     createDefaultAgentSettings(),
   );
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLoadedResumeGallery, setHasLoadedResumeGallery] = useState(false);
+  const [hasLoadedTemplateRouteData, setHasLoadedTemplateRouteData] =
+    useState(false);
+  const [hasLoadedTrashRouteData, setHasLoadedTrashRouteData] = useState(false);
+  const [hasLoadedModelsRouteData, setHasLoadedModelsRouteData] =
+    useState(false);
+  const [hasLoadedSettingsRouteData, setHasLoadedSettingsRouteData] =
+    useState(false);
   const [hasLoadError, setHasLoadError] = useState(false);
   const [hasWorkspaceLoadError, setHasWorkspaceLoadError] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -1533,10 +1542,6 @@ export function ResumeBuilder({
   );
   const previewDocument =
     activeView === "templates" ? deferredTemplatePreviewResume : previewResume;
-  const currentRoute = useMemo(
-    () => getWorkspaceRoute(location.pathname),
-    [location.pathname],
-  );
   const currentRouteRef = useRef(currentRoute);
   currentRouteRef.current = currentRoute;
 
@@ -1558,13 +1563,24 @@ export function ResumeBuilder({
           : activeView === "models"
             ? t.modelSettings
             : t.settings;
-  const isResumeDetailView = activeView === "resume" && !showResumeGallery;
-  const isTemplateDetailView =
-    activeView === "templates" && !showTemplateGallery;
+  const isResumeDetailView = currentRoute.kind === "resume-detail";
+  const isTemplateDetailView = currentRoute.kind === "template-detail";
   const activeResumeDocument = useMemo(
     () => resumeDocuments.find((item) => item.id === activeResumeId) ?? null,
     [activeResumeId, resumeDocuments],
   );
+  const hasRenderableResumeDetail =
+    currentRoute.kind === "resume-detail" &&
+    activeResumeDocument?.id === currentRoute.id;
+  const hasRenderableTemplateDetail =
+    currentRoute.kind === "template-detail" &&
+    hasLoadedTemplateRouteData &&
+    template === currentRoute.id &&
+    templateCatalog.some((item) => item.id === currentRoute.id);
+  // Keep cached route content mounted while metadata refreshes. Skeletons are
+  // reserved for cold loads, unknown targets, and explicit version loading.
+  const shouldShowResumeWorkspaceSkeleton =
+    !hasRenderableResumeDetail || versionLoadRequestRef.current !== null;
   const activeResumeTitle = activeResumeDocument?.title ?? "";
   const activeResumeToolbarTitle = activeResumeTitle || t.untitledResume;
   const resumeTitleSaveLabel = t.saveResumeTitle;
@@ -1704,6 +1720,7 @@ export function ResumeBuilder({
     };
   }, [
     isAgentPanelCollapsed,
+    isLoading,
     isResumeDetailView,
     isTemplateDetailView,
   ]);
@@ -2274,10 +2291,12 @@ export function ResumeBuilder({
         ) => {
           const requestedDefaultTemplateId =
             source.defaultTemplateId.trim() || defaultTemplateIdRef.current;
+          const nextCustomTemplates = normalizeCustomTemplates(source);
 
           defaultTemplateIdRef.current = requestedDefaultTemplateId;
           setDefaultTemplateId(requestedDefaultTemplateId);
-          setCustomTemplates(normalizeCustomTemplates(source));
+          setCustomTemplates(nextCustomTemplates);
+          setHasLoadedTemplateRouteData(true);
           lastPersistedTemplateRef.current = null;
           lastPersistedTemplateItemRef.current = null;
           lastOpenedTemplateIdRef.current = null;
@@ -2324,8 +2343,8 @@ export function ResumeBuilder({
             const firstResume = nextDocuments[0] ?? null;
 
             setResumeDocuments(nextDocuments);
+            setHasLoadedResumeGallery(true);
             setActiveResumeId(firstResume?.id ?? null);
-            setShowResumeGallery(true);
             if (firstResume) {
               hydrateResumeWorkspace(firstResume);
             } else {
@@ -2358,13 +2377,20 @@ export function ResumeBuilder({
               ),
             );
             setDeletedTemplates(normalizeDeletedTemplates(source));
+            setHasLoadedTrashRouteData(true);
             break;
           }
           case "models":
+            nextAgentSettings = applyModelSettingsRouteData(
+              workspaceSource.data,
+            );
+            setHasLoadedModelsRouteData(true);
+            break;
           case "settings":
             nextAgentSettings = applyModelSettingsRouteData(
               workspaceSource.data,
             );
+            setHasLoadedSettingsRouteData(true);
             break;
           default:
             workspaceSource satisfies never;
@@ -2463,20 +2489,15 @@ export function ResumeBuilder({
   }, [loadWorkspace]);
 
   useEffect(() => {
-    if (isLoading) {
-      return;
-    }
-
     switch (currentRoute.kind) {
-      case "resume-gallery": {
-        setActiveView("resume");
-        setShowResumeGallery(true);
+      case "resume-gallery":
+      case "template-gallery":
+      case "trash":
+      case "models":
+      case "settings": {
         return;
       }
       case "resume-detail": {
-        setActiveView("resume");
-        setShowResumeGallery(false);
-
         if (hasWorkspaceLoadError) {
           return;
         }
@@ -2491,16 +2512,8 @@ export function ResumeBuilder({
         }
         return;
       }
-      case "template-gallery": {
-        setActiveView("templates");
-        setShowTemplateGallery(true);
-        return;
-      }
       case "template-detail": {
-        setActiveView("templates");
-        setShowTemplateGallery(false);
-
-        if (hasWorkspaceLoadError) {
+        if (hasWorkspaceLoadError || !hasLoadedTemplateRouteData) {
           return;
         }
 
@@ -2527,18 +2540,6 @@ export function ResumeBuilder({
         }
         return;
       }
-      case "trash": {
-        setActiveView("trash");
-        return;
-      }
-      case "models": {
-        setActiveView("models");
-        return;
-      }
-      case "settings": {
-        setActiveView("settings");
-        return;
-      }
       case "unknown":
       default: {
         navigate("/resume", { replace: true });
@@ -2548,8 +2549,8 @@ export function ResumeBuilder({
     activeResumeId,
     currentRoute,
     hydrateResumeWorkspace,
+    hasLoadedTemplateRouteData,
     hasWorkspaceLoadError,
-    isLoading,
     navigate,
     resumeDocuments,
     template,
@@ -2798,8 +2799,6 @@ export function ResumeBuilder({
       setActiveResumeId(resumeId);
       hydrateResumeWorkspace(targetResume);
       lastLoadedResumeDetailIdRef.current = null;
-      setActiveView("resume");
-      setShowResumeGallery(false);
       runViewTransition(() => navigate(getResumePath(resumeId)), "nav-forward");
     });
   }
@@ -2811,8 +2810,6 @@ export function ResumeBuilder({
       }
 
       setTemplate(templateId);
-      setActiveView("templates");
-      setShowTemplateGallery(false);
       runViewTransition(
         () => navigate(getTemplatePath(templateId)),
         "nav-forward",
@@ -2851,8 +2848,6 @@ export function ResumeBuilder({
       setActiveWorkspaceVersionId(result.versionId);
       setWorkspaceVersions([{ versionId: result.versionId, savedAt: result.savedAt }]);
       setSaveState("saved");
-      setActiveView("resume");
-      setShowResumeGallery(false);
       runViewTransition(
         () => navigate(getResumePath(nextItem.id)),
         "nav-forward",
@@ -2902,8 +2897,6 @@ export function ResumeBuilder({
         { versionId: result.versionId, savedAt: result.savedAt },
       ]);
       setSaveState("saved");
-      setActiveView("resume");
-      setShowResumeGallery(false);
       runViewTransition(
         () => navigate(getResumePath(nextItem.id)),
         "nav-forward",
@@ -3011,8 +3004,6 @@ export function ResumeBuilder({
         },
       ]);
       setSaveState("saved");
-      setActiveView("resume");
-      setShowResumeGallery(false);
       runViewTransition(
         () => navigate(getResumePath(firstImportedResume.id)),
         "nav-forward",
@@ -3255,8 +3246,6 @@ export function ResumeBuilder({
 
       if (nextActiveResume) {
         hydrateResumeWorkspace(nextActiveResume);
-      } else {
-        setShowResumeGallery(true);
       }
 
       runViewTransition(
@@ -3378,8 +3367,6 @@ export function ResumeBuilder({
       lastPersistedTemplateItemRef.current = nextTemplate;
       lastOpenedTemplateIdRef.current = nextTemplate.id;
       setLastSavedAt(nextTemplate.updatedAt);
-      setActiveView("templates");
-      setShowTemplateGallery(false);
       runViewTransition(
         () => navigate(getTemplatePath(nextTemplate.id)),
         "nav-forward",
@@ -3447,8 +3434,6 @@ export function ResumeBuilder({
       lastPersistedTemplateItemRef.current = firstImportedTemplate;
       lastOpenedTemplateIdRef.current = firstImportedTemplate.id;
       setLastSavedAt(firstImportedTemplate.updatedAt);
-      setActiveView("templates");
-      setShowTemplateGallery(false);
       runViewTransition(
         () => navigate(getTemplatePath(firstImportedTemplate.id)),
         "nav-forward",
@@ -3818,13 +3803,7 @@ export function ResumeBuilder({
   function handleViewChange(view: WorkspaceView) {
     requestWorkspaceLeave(() => {
       preloadWorkspaceView(view);
-
-      runViewTransition(() => {
-        setActiveView(view);
-        setShowResumeGallery(view === "resume");
-        setShowTemplateGallery(view === "templates");
-        navigate(getWorkspacePath(view));
-      }, "nav-lateral");
+      navigate(getWorkspacePath(view));
     });
   }
 
@@ -4350,7 +4329,7 @@ export function ResumeBuilder({
   function renderResumeGalleryWorkspace() {
     const skeletonItemCount = Math.max(1, resumeDocuments.length);
 
-    if (isLoading) {
+    if (!hasLoadedResumeGallery) {
       return <GalleryRouteSkeleton itemCount={skeletonItemCount} />;
     }
 
@@ -4396,7 +4375,7 @@ export function ResumeBuilder({
   function renderTemplateGalleryWorkspace() {
     const skeletonItemCount = Math.max(1, templateCatalog.length);
 
-    if (isLoading) {
+    if (!hasLoadedTemplateRouteData) {
       return <GalleryRouteSkeleton itemCount={skeletonItemCount} />;
     }
 
@@ -4431,7 +4410,7 @@ export function ResumeBuilder({
   }
 
   function renderTrashWorkspace() {
-    if (isLoading) {
+    if (!hasLoadedTrashRouteData) {
       return <WorkspaceRouteSkeleton />;
     }
 
@@ -4526,7 +4505,7 @@ export function ResumeBuilder({
             </Card>
           ) : null}
 
-          {isLoading ? (
+          {shouldShowResumeWorkspaceSkeleton ? (
             <WorkspacePanelSkeleton />
           ) : (
             <>
@@ -4578,7 +4557,11 @@ export function ResumeBuilder({
           )}
         </section>
 
-        {isLoading ? <WorkspacePreviewSkeleton /> : renderPreviewCard()}
+        {shouldShowResumeWorkspaceSkeleton ? (
+          <WorkspacePreviewSkeleton />
+        ) : (
+          renderPreviewCard()
+        )}
 
         {renderAgentSeamRail()}
 
@@ -4632,37 +4615,47 @@ export function ResumeBuilder({
             </Card>
           ) : null}
 
-          <Suspense fallback={<WorkspacePanelSkeleton />}>
-            <TemplateLibrary
-              mode="editor"
-              t={t}
-              resume={deferredTemplatePreviewResume}
-              templates={templateCatalog}
-              defaultTemplateId={defaultTemplateId}
-              activeTemplateId={template}
-              isImporting={isImporting}
-              isCreating={isCreatingTemplate}
-              settingDefaultTemplateId={settingDefaultTemplateId}
-              onOpenTemplate={openTemplateEditor}
-              onSetDefaultTemplate={handleSetDefaultTemplate}
-              onCreateCustomTemplate={createCustomTemplate}
-              onImportTemplates={(file) => {
-                void importTemplates(file);
-              }}
-              onUpdateTemplate={updateCustomTemplate}
-              onDeleteTemplate={(templateId) => deleteTemplates([templateId])}
-              onBulkDeleteTemplates={deleteTemplates}
-            />
-          </Suspense>
+          {hasRenderableTemplateDetail ? (
+            <Suspense fallback={<WorkspacePanelSkeleton />}>
+              <TemplateLibrary
+                mode="editor"
+                t={t}
+                resume={deferredTemplatePreviewResume}
+                templates={templateCatalog}
+                defaultTemplateId={defaultTemplateId}
+                activeTemplateId={template}
+                isImporting={isImporting}
+                isCreating={isCreatingTemplate}
+                settingDefaultTemplateId={settingDefaultTemplateId}
+                onOpenTemplate={openTemplateEditor}
+                onSetDefaultTemplate={handleSetDefaultTemplate}
+                onCreateCustomTemplate={createCustomTemplate}
+                onImportTemplates={(file) => {
+                  void importTemplates(file);
+                }}
+                onUpdateTemplate={updateCustomTemplate}
+                onDeleteTemplate={(templateId) =>
+                  deleteTemplates([templateId])
+                }
+                onBulkDeleteTemplates={deleteTemplates}
+              />
+            </Suspense>
+          ) : (
+            <WorkspacePanelSkeleton />
+          )}
         </section>
 
-        {isLoading ? <WorkspacePreviewSkeleton /> : renderPreviewCard()}
+        {hasRenderableTemplateDetail ? (
+          renderPreviewCard()
+        ) : (
+          <WorkspacePreviewSkeleton />
+        )}
       </main>
     );
   }
 
   function renderModelsWorkspace() {
-    if (isLoading) {
+    if (!hasLoadedModelsRouteData) {
       return <WorkspaceRouteSkeleton />;
     }
 
@@ -4681,7 +4674,7 @@ export function ResumeBuilder({
   }
 
   function renderSettingsWorkspace() {
-    if (isLoading) {
+    if (!hasLoadedSettingsRouteData) {
       return <WorkspaceRouteSkeleton />;
     }
 
@@ -5269,19 +5262,16 @@ export function ResumeBuilder({
           enter={{
             "nav-forward": "nav-forward",
             "nav-back": "nav-back",
-            "nav-lateral": "fade-in",
             default: "none",
           }}
           exit={{
             "nav-forward": "nav-forward",
             "nav-back": "nav-back",
-            "nav-lateral": "fade-out",
             default: "none",
           }}
           update={{
             "nav-forward": "nav-forward",
             "nav-back": "nav-back",
-            "nav-lateral": "fade-in",
             default: "none",
           }}
         >

@@ -20,10 +20,7 @@ router = APIRouter(prefix="/api/model-configs", tags=["model-configs"])
 def get_model_configs() -> ApiResponse[ModelConfigsResponse]:
     """Return all enabled model configs with masked API key previews."""
 
-    with connect() as conn:
-        configs = list_llm_configs(conn)
-
-    return ok_response(ModelConfigsResponse(configs=configs))
+    return ok_response(ModelConfigsResponse(configs=list_llm_configs()))
 
 
 @router.post("", response_model=ApiResponse[ModelConfigResponse])

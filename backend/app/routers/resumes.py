@@ -12,7 +12,7 @@ from app.schemas.resumes import (
     ResumeTrashEmptyResponse,
     ResumeVersionsResponse,
 )
-from app.services.workspace import (
+from app.services.resumes import (
     create_resume,
     delete_resume_forever,
     duplicate_resume,
@@ -60,9 +60,7 @@ def post_resume(
 def delete_resume_trash() -> ApiResponse[ResumeTrashEmptyResponse]:
     """Physically delete every resume in the recycle bin."""
 
-    return ok_response(
-        ResumeTrashEmptyResponse.model_validate(empty_resume_trash())
-    )
+    return ok_response(ResumeTrashEmptyResponse.model_validate(empty_resume_trash()))
 
 
 @router.get("/{resume_id}", response_model=ApiResponse[ResumeDetailResponse])

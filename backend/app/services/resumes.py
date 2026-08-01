@@ -13,49 +13,32 @@ from fastapi import HTTPException, status
 from app.config import get_settings
 from app.db.connection import connect
 from app.services.agent.attachments import delete_agent_session_attachments
+from app.services.workspace_state import (
+    DEFAULT_TEMPLATE_ID,
+    WORKSPACE_DATA_LOCALE,
+    load_default_template_id,
+)
 
 SUPPORTED_LOCALES = {"zh", "en"}
-WORKSPACE_DATA_LOCALE = "__workspace__"
 RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
-DEFAULT_TEMPLATE_ID = "minimal"
-BUILT_IN_TEMPLATE_IDS = {
-    "minimal",
-    "modern",
-    "compact",
-    "classic",
-    "executive",
-    "academic",
-}
 DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
 
 
-def normalize_locale(locale: str) -> str:
+def _normalize_locale(locale: str) -> str:
     """Return a supported locale, falling back to English."""
 
     return locale if locale in SUPPORTED_LOCALES else "en"
-
-
-def workspace_data_locale() -> str:
-    """Return the locale column value used for language-independent workspace data."""
-
-    return WORKSPACE_DATA_LOCALE
 
 
 def generate_resume_id() -> str:
     """Generate a compact backend-owned resume id."""
 
     return "".join(secrets.choice(RESUME_ID_ALPHABET) for _ in range(RESUME_ID_LENGTH))
-
-
-def generate_template_id() -> str:
-    """Generate a backend-owned custom template id."""
-
-    return f"template-{generate_resume_id()}"
 
 
 def _generate_document_id(prefix: str) -> str:
@@ -124,14 +107,7 @@ def _allocate_resume_id(conn: Connection) -> str:
     )
 
 
-def allocate_resume_id() -> str:
-    """Generate a resume id that does not currently exist in storage."""
-
-    with connect() as conn:
-        return _allocate_resume_id(conn)
-
-
-def utc_now() -> str:
+def _utc_now() -> str:
     """Return the current UTC time in frontend-compatible ISO format."""
 
     return (
@@ -176,35 +152,6 @@ def _resume_storage_dir(resume_id: str) -> Path:
 
     safe_resume_id = _validate_resume_id(resume_id)
     return get_settings().storage_dir / "resumes" / safe_resume_id
-
-
-def _validate_template_id(template_id: str) -> str:
-    """Validate that a template id is safe for database and path use."""
-
-    if not RESUME_ID_PATTERN.fullmatch(template_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Template id may only contain letters, numbers, dot, dash, "
-                "or underscore."
-            ),
-        )
-
-    return template_id
-
-
-def _template_path(template_id: str) -> Path:
-    """Build the storage path for one template JSON file."""
-
-    safe_template_id = _validate_template_id(template_id)
-    return get_settings().storage_dir / "templates" / safe_template_id / "current.json"
-
-
-def _template_storage_dir(template_id: str) -> Path:
-    """Build the storage directory for all files belonging to one template."""
-
-    safe_template_id = _validate_template_id(template_id)
-    return get_settings().storage_dir / "templates" / safe_template_id
 
 
 def _canonical_json(value: Any) -> str:
@@ -297,68 +244,6 @@ def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
-def _write_template_json(template_id: str, template_item: dict[str, Any]) -> None:
-    """Write one template JSON file atomically."""
-
-    path = _template_path(template_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = _canonical_json(template_item)
-    temp_path = path.with_suffix(".json.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
-
-
-def _read_template_json(template_id: str) -> dict[str, Any]:
-    """Load one stored template JSON file."""
-
-    path = _template_path(template_id)
-    if not path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Template JSON is missing.",
-        )
-
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-
-
-def _load_workspace_state(conn: Connection) -> dict[str, Any]:
-    """Load explicit workspace state with sensible defaults."""
-
-    row = conn.execute(
-        """
-        SELECT default_template_id
-        FROM workspace_state
-        WHERE id = 1
-        """,
-    ).fetchone()
-
-    if row is None:
-        return {
-            "defaultTemplateId": DEFAULT_TEMPLATE_ID,
-        }
-
-    return {"defaultTemplateId": row["default_template_id"] or DEFAULT_TEMPLATE_ID}
-
-
-def _save_workspace_default_template(conn: Connection, template_id: str) -> None:
-    """Persist the workspace default template id."""
-
-    conn.execute(
-        """
-        INSERT INTO workspace_state (
-            id,
-            default_template_id,
-            updated_at
-        )
-        VALUES (1, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            default_template_id = excluded.default_template_id,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (template_id,),
-    )
-
-
 def _resume_title(resume_item: dict[str, Any]) -> str:
     """Derive a stable display title for a resume row."""
 
@@ -384,7 +269,7 @@ def _duplicate_resume_title(
 ) -> str:
     """Return the first available localized copy title."""
 
-    copy_label = RESUME_COPY_LABELS[normalize_locale(locale)]
+    copy_label = RESUME_COPY_LABELS[_normalize_locale(locale)]
     base_title = source_title.strip() or "Untitled"
     first_title = f"{base_title} - {copy_label}"
     existing_titles = {
@@ -395,7 +280,7 @@ def _duplicate_resume_title(
             FROM resumes
             WHERE locale = ? AND purged = 0
             """,
-            (workspace_data_locale(),),
+            (WORKSPACE_DATA_LOCALE,),
         ).fetchall()
     }
     if first_title not in existing_titles:
@@ -552,72 +437,6 @@ def _save_resume_item(
     return resume_id, next_version_id
 
 
-def _template_name(template_item: dict[str, Any]) -> str:
-    """Derive a stable display name for a template row."""
-
-    name = template_item.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-
-    template_id = template_item.get("id")
-    return template_id if isinstance(template_id, str) else "Untitled"
-
-
-def _save_template_item(
-    conn: Connection,
-    *,
-    locale: str,
-    template_item: dict[str, Any],
-    saved_at: str,
-    deleted: bool,
-    deleted_at: str | None = None,
-) -> str:
-    """Persist one template item without creating versions."""
-
-    template_id = template_item.get("id")
-    if not isinstance(template_id, str) or not template_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Template id is required.",
-        )
-    template_id = _validate_template_id(template_id.strip())
-    _write_template_json(template_id, template_item)
-
-    conn.execute(
-        """
-        INSERT INTO templates (
-            id,
-            locale,
-            name,
-            saved_at,
-            deleted,
-            deleted_at,
-            purged,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            locale = excluded.locale,
-            name = excluded.name,
-            saved_at = excluded.saved_at,
-            deleted = excluded.deleted,
-            deleted_at = excluded.deleted_at,
-            purged = 0,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (
-            template_id,
-            locale,
-            _template_name(template_item),
-            saved_at,
-            int(deleted),
-            deleted_at,
-        ),
-    )
-
-    return template_id
-
-
 def _version_for_resume(
     conn: Connection,
     *,
@@ -717,48 +536,6 @@ def _load_resume_items(
         )
 
     return items
-
-
-def _load_template_items(
-    conn: Connection,
-    *,
-    locale: str,
-    deleted: bool,
-) -> list[dict[str, Any]]:
-    """Load active or deleted templates for a locale."""
-
-    rows = conn.execute(
-        """
-        SELECT id, deleted_at, saved_at
-        FROM templates
-        WHERE locale = ? AND deleted = ? AND purged = 0
-        ORDER BY saved_at DESC, updated_at DESC
-        """,
-        (locale, int(deleted)),
-    ).fetchall()
-
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        item = _read_template_json(row["id"])
-        if deleted:
-            item = {
-                **item,
-                "deletedAt": row["deleted_at"] or row["saved_at"],
-            }
-        items.append(item)
-
-    return items
-
-
-def _default_template_id(state: dict[str, Any]) -> str:
-    """Read the current default template id from workspace state."""
-
-    template_id = state.get("defaultTemplateId")
-    return (
-        template_id.strip()
-        if isinstance(template_id, str) and template_id.strip()
-        else DEFAULT_TEMPLATE_ID
-    )
 
 
 def _resume_row(conn: Connection, resume_id: str) -> Row | None:
@@ -943,7 +720,7 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
             detail="Unsupported resume status filter.",
         )
 
-    data_locale = workspace_data_locale()
+    data_locale = WORKSPACE_DATA_LOCALE
     with connect() as conn:
         return {
             "resumes": _load_resume_items(
@@ -957,12 +734,11 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
 def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a backend-owned empty resume and initial version."""
 
-    data_locale = workspace_data_locale()
-    saved_at = utc_now()
+    data_locale = WORKSPACE_DATA_LOCALE
+    saved_at = _utc_now()
 
     with connect() as conn:
         conn.execute("BEGIN")
-        state = _load_workspace_state(conn)
         resume_id = _allocate_resume_id(conn)
         count_row = conn.execute(
             """
@@ -975,7 +751,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
         default_title = f"Untitled Resume {int(count_row['resume_count']) + 1}"
         template_id = payload.get("template")
         if not isinstance(template_id, str) or not template_id.strip():
-            template_id = _default_template_id(state)
+            template_id = load_default_template_id(conn)
 
         resume_item = _normalize_resume_item_payload(
             resume_id=resume_id,
@@ -1009,7 +785,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
 def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
     """Create an independent resume from the source's current content."""
 
-    saved_at = utc_now()
+    saved_at = _utc_now()
     with connect() as conn:
         row = _require_resume_row(conn, resume_id)
         if row["deleted"]:
@@ -1050,7 +826,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
         )
         _, version_id = _save_resume_item(
             conn,
-            locale=workspace_data_locale(),
+            locale=WORKSPACE_DATA_LOCALE,
             resume_item=duplicate_item,
             saved_at=saved_at,
             deleted=False,
@@ -1075,7 +851,7 @@ def load_resume(resume_id: str) -> dict[str, Any]:
 def save_resume(resume_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Persist a full resume update and create a version when content changed."""
 
-    saved_at = utc_now()
+    saved_at = _utc_now()
     with connect() as conn:
         row = _require_resume_row(conn, resume_id)
         if row["deleted"]:
@@ -1100,7 +876,7 @@ def save_resume(resume_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         conn.execute("BEGIN")
         _, version_id = _save_resume_item(
             conn,
-            locale=workspace_data_locale(),
+            locale=WORKSPACE_DATA_LOCALE,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=False,
@@ -1156,7 +932,7 @@ def load_resume_version(resume_id: str, version_id: str) -> dict[str, Any]:
 def trash_resume(resume_id: str) -> dict[str, Any]:
     """Move an active resume into the recycle bin without creating a version."""
 
-    deleted_at = utc_now()
+    deleted_at = _utc_now()
     with connect() as conn:
         row = _require_resume_row(conn, resume_id)
         current_version_id = int(row["current_version_id"])
@@ -1252,7 +1028,7 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
 def empty_resume_trash() -> dict[str, Any]:
     """Physically delete every resume currently in the recycle bin."""
 
-    data_locale = workspace_data_locale()
+    data_locale = WORKSPACE_DATA_LOCALE
     with connect() as conn:
         rows = conn.execute(
             """
@@ -1273,309 +1049,3 @@ def empty_resume_trash() -> dict[str, Any]:
         delete_agent_session_attachments(deleted_resume_id)
 
     return {"deletedCount": len(resume_ids)}
-
-
-def _allocate_template_id(conn: Connection) -> str:
-    """Generate a custom template id that does not currently exist."""
-
-    for _ in range(20):
-        template_id = generate_template_id()
-        row = conn.execute(
-            "SELECT 1 FROM templates WHERE id = ?",
-            (template_id,),
-        ).fetchone()
-        if row is None:
-            return template_id
-
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Failed to allocate a template id.",
-    )
-
-
-def _template_row(
-    conn: Connection,
-    template_id: str,
-    *,
-    include_deleted: bool = False,
-) -> Row | None:
-    """Fetch one custom template row."""
-
-    safe_template_id = _validate_template_id(template_id.strip())
-    deleted_clause = "" if include_deleted else "AND deleted = 0"
-    return cast(
-        Row | None,
-        conn.execute(
-            f"""
-            SELECT id, name, saved_at, deleted, deleted_at
-            FROM templates
-            WHERE id = ? AND purged = 0 {deleted_clause}
-            """,
-            (safe_template_id,),
-        ).fetchone(),
-    )
-
-
-def _require_custom_template_row(
-    conn: Connection,
-    template_id: str,
-    *,
-    include_deleted: bool = False,
-) -> Row:
-    """Return a custom template row or raise a public error."""
-
-    safe_template_id = _validate_template_id(template_id.strip())
-    if safe_template_id in BUILT_IN_TEMPLATE_IDS:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Built-in templates cannot be changed.",
-        )
-
-    row = _template_row(conn, safe_template_id, include_deleted=include_deleted)
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Template not found.",
-        )
-
-    return row
-
-
-def _is_visible_template(conn: Connection, template_id: str) -> bool:
-    """Return whether a template id can currently be selected."""
-
-    safe_template_id = _validate_template_id(template_id.strip())
-    if safe_template_id in BUILT_IN_TEMPLATE_IDS:
-        return True
-
-    return _template_row(conn, safe_template_id) is not None
-
-
-def _normalize_template_payload(
-    *,
-    template_id: str,
-    payload: dict[str, Any],
-    saved_at: str,
-) -> dict[str, Any]:
-    """Normalize custom template payload while preserving internal ids."""
-
-    preset = payload.get("preset")
-    name = payload.get("name")
-    description = payload.get("description")
-    layout = payload.get("layout")
-    typography = payload.get("typography")
-    settings = payload.get("settings")
-
-    return {
-        "id": _validate_template_id(template_id.strip()),
-        "preset": preset if isinstance(preset, str) and preset.strip() else "minimal",
-        "name": name.strip()
-        if isinstance(name, str) and name.strip()
-        else "Custom Template",
-        "description": description.strip() if isinstance(description, str) else "",
-        "layout": layout if isinstance(layout, dict) else {"images": []},
-        "typography": (
-            typography if isinstance(typography, dict) else DEFAULT_TYPOGRAPHY
-        ),
-        "settings": settings if isinstance(settings, dict) else {},
-        "updatedAt": saved_at,
-        "isBuiltIn": False,
-    }
-
-
-def list_templates(status_filter: str = "active") -> dict[str, Any]:
-    """Return active or deleted custom templates."""
-
-    if status_filter not in {"active", "deleted"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported template status filter.",
-        )
-
-    with connect() as conn:
-        return {
-            "templates": _load_template_items(
-                conn,
-                locale=workspace_data_locale(),
-                deleted=status_filter == "deleted",
-            )
-        }
-
-
-def create_template(payload: dict[str, Any]) -> dict[str, Any]:
-    """Create a backend-owned custom template."""
-
-    saved_at = utc_now()
-    with connect() as conn:
-        conn.execute("BEGIN")
-        template_id = _allocate_template_id(conn)
-        template_item = _normalize_template_payload(
-            template_id=template_id,
-            payload=payload,
-            saved_at=saved_at,
-        )
-        _save_template_item(
-            conn,
-            locale=workspace_data_locale(),
-            template_item=template_item,
-            saved_at=saved_at,
-            deleted=False,
-            deleted_at=None,
-        )
-        conn.execute("COMMIT")
-
-    return {"template": template_item}
-
-
-def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Replace one active custom template."""
-
-    saved_at = utc_now()
-    with connect() as conn:
-        row = _require_custom_template_row(conn, template_id)
-        template_item = _normalize_template_payload(
-            template_id=row["id"],
-            payload=payload,
-            saved_at=saved_at,
-        )
-
-        conn.execute("BEGIN")
-        _save_template_item(
-            conn,
-            locale=workspace_data_locale(),
-            template_item=template_item,
-            saved_at=saved_at,
-            deleted=False,
-            deleted_at=None,
-        )
-        conn.execute("COMMIT")
-
-    return {"template": template_item}
-
-
-def trash_template(template_id: str) -> dict[str, Any]:
-    """Move a custom template into the recycle bin."""
-
-    deleted_at = utc_now()
-    with connect() as conn:
-        row = _require_custom_template_row(conn, template_id)
-        template_item = _read_template_json(row["id"])
-        state = _load_workspace_state(conn)
-
-        conn.execute("BEGIN")
-        if state["defaultTemplateId"] == row["id"]:
-            _save_workspace_default_template(conn, DEFAULT_TEMPLATE_ID)
-        conn.execute(
-            """
-            UPDATE templates
-            SET deleted = 1,
-                deleted_at = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (deleted_at, row["id"]),
-        )
-        conn.execute("COMMIT")
-
-    return {
-        "template": {
-            **template_item,
-            "deletedAt": deleted_at,
-        }
-    }
-
-
-def restore_template(template_id: str) -> dict[str, Any]:
-    """Restore one deleted custom template."""
-
-    with connect() as conn:
-        row = _require_custom_template_row(
-            conn,
-            template_id,
-            include_deleted=True,
-        )
-        if not row["deleted"]:
-            return {"template": _read_template_json(row["id"])}
-
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE templates
-            SET deleted = 0,
-                deleted_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (row["id"],),
-        )
-        conn.execute("COMMIT")
-
-        return {"template": _read_template_json(row["id"])}
-
-
-def delete_template_forever(template_id: str) -> dict[str, Any]:
-    """Physically delete one already-deleted custom template."""
-
-    with connect() as conn:
-        row = _require_custom_template_row(
-            conn,
-            template_id,
-            include_deleted=True,
-        )
-        if not row["deleted"]:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Only deleted templates can be permanently deleted.",
-            )
-
-        conn.execute("BEGIN")
-        conn.execute("DELETE FROM templates WHERE id = ?", (row["id"],))
-        conn.execute("COMMIT")
-
-    shutil.rmtree(_template_storage_dir(row["id"]), ignore_errors=True)
-    return {"id": row["id"]}
-
-
-def empty_template_trash() -> dict[str, Any]:
-    """Physically delete every custom template currently in the recycle bin."""
-
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id
-            FROM templates
-            WHERE locale = ? AND deleted = 1 AND purged = 0
-            """,
-            (workspace_data_locale(),),
-        ).fetchall()
-        template_ids = [row["id"] for row in rows]
-        if template_ids:
-            conn.execute("BEGIN")
-            conn.executemany(
-                "DELETE FROM templates WHERE id = ?",
-                [(template_id,) for template_id in template_ids],
-            )
-            conn.execute("COMMIT")
-
-    for deleted_template_id in template_ids:
-        shutil.rmtree(_template_storage_dir(deleted_template_id), ignore_errors=True)
-
-    return {"deletedCount": len(template_ids)}
-
-
-def save_default_template(template_id: str) -> dict[str, Any]:
-    """Persist the workspace default template after validating the reference."""
-
-    safe_template_id = _validate_template_id(template_id.strip())
-    with connect() as conn:
-        if not _is_visible_template(conn, safe_template_id):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Template not found.",
-            )
-
-        conn.execute("BEGIN")
-        _save_workspace_default_template(conn, safe_template_id)
-        conn.execute("COMMIT")
-
-    return {"defaultTemplateId": safe_template_id}

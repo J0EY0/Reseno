@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 
-from app.services.workspace import generate_resume_id
+from app.services.resumes import generate_resume_id
 
 
 async def load_json_upload(file: UploadFile) -> Any:
@@ -36,9 +36,7 @@ def coerce_resume_import(payload: Any) -> list[dict[str, Any]]:
 
     if isinstance(data, dict) and isinstance(data.get("resumes"), list):
         return [
-            _with_resume_id(item)
-            for item in data["resumes"]
-            if isinstance(item, dict)
+            _with_resume_id(item) for item in data["resumes"] if isinstance(item, dict)
         ]
 
     if isinstance(data, list):

@@ -15,8 +15,8 @@ from app.schemas.workspace import (
     UserSettingsSaveRequest,
     UserSettingsSaveResponse,
 )
+from app.services.templates import save_default_template
 from app.services.user_preferences import save_user_settings
-from app.services.workspace import save_default_template
 from app.services.workspace_pages import (
     load_models_page,
     load_resume_editor_page,

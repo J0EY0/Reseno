@@ -21,7 +21,7 @@ from app.services.pdf import (
     write_resume_images,
     write_resume_pdf,
 )
-from app.services.workspace import load_resume, load_resume_version
+from app.services.resumes import load_resume, load_resume_version
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 
@@ -108,9 +108,7 @@ def export_resume_images(
     return ok_response(
         ExportResumeImagesResponse(
             exportId=export_id,
-            downloadUrl=(
-                f"/api/exports/image-download/{export_id}?{download_query}"
-            ),
+            downloadUrl=(f"/api/exports/image-download/{export_id}?{download_query}"),
             fileName=file_name,
             expiresAt=None,
             pageCount=result.page_count,

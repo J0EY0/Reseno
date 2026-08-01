@@ -82,6 +82,7 @@ from app.services.model_discovery_cache import (
 )
 from app.services.model_providers import DiscoveredModel
 from app.services.pdf import ResumeImageExportResult
+from app.services.templates import TemplateCatalog
 
 ASYNC_COMPLETE_TOOL_CALL_PATH = (
     "app.services.agent.runtime.loop.async_complete_tool_call"
@@ -743,42 +744,30 @@ def test_workspace_page_endpoint_only_reads_owned_data(
         reads.append("user-settings")
         return {}
 
-    def load_workspace_state(_: sqlite3.Connection) -> dict:
-        reads.append("workspace-state")
-        return {"defaultTemplateId": "minimal"}
+    def load_template_catalog() -> TemplateCatalog:
+        reads.extend(("workspace-state", "templates:active"))
+        return TemplateCatalog(default_template_id="minimal", templates=[])
 
-    def load_resume_items(
-        _: sqlite3.Connection,
-        *,
-        locale: str,
-        deleted: bool,
-    ) -> list[dict]:
-        del locale
-        reads.append(f"resumes:{'deleted' if deleted else 'active'}")
-        return []
+    def list_resumes(status_filter: str) -> dict[str, list[dict]]:
+        reads.append(f"resumes:{status_filter}")
+        return {"resumes": []}
 
-    def load_template_items(
-        _: sqlite3.Connection,
-        *,
-        locale: str,
-        deleted: bool,
-    ) -> list[dict]:
-        del locale
-        reads.append(f"templates:{'deleted' if deleted else 'active'}")
-        return []
+    def list_templates(status_filter: str) -> dict[str, list[dict]]:
+        reads.append(f"templates:{status_filter}")
+        return {"templates": []}
 
-    def list_model_configs(_: sqlite3.Connection) -> list:
+    def list_model_configs() -> list:
         reads.append("model-configs")
         return []
 
     monkeypatch.setattr(workspace_pages, "load_user_settings", load_user_settings)
     monkeypatch.setattr(
         workspace_pages,
-        "_load_workspace_state",
-        load_workspace_state,
+        "load_template_catalog",
+        load_template_catalog,
     )
-    monkeypatch.setattr(workspace_pages, "_load_resume_items", load_resume_items)
-    monkeypatch.setattr(workspace_pages, "_load_template_items", load_template_items)
+    monkeypatch.setattr(workspace_pages, "list_resumes", list_resumes)
+    monkeypatch.setattr(workspace_pages, "list_templates", list_templates)
     monkeypatch.setattr(workspace_pages, "list_llm_configs", list_model_configs)
 
     response = client.get(endpoint)
@@ -933,9 +922,17 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert create_response.status_code == 200
     created = create_response.json()["data"]
     resume_id = created["resume"]["id"]
+    store_agent_attachment(
+        session_id=resume_id,
+        filename="resume-context.txt",
+        media_type="text/plain",
+        payload=b"resume context",
+    )
+    attachment_dir = get_settings().storage_dir / "agent-attachments" / resume_id
     assert re.fullmatch(r"[A-Za-z0-9]{16}", resume_id)
     assert created["resume"]["title"] == "新建简历1"
     assert created["versionId"] == "1"
+    assert attachment_dir.exists()
 
     save_payload = {
         **created["resume"],
@@ -965,6 +962,8 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     trash_response = client.post(f"/api/resumes/{resume_id}/trash")
     deleted_list_response = client.get("/api/resumes?status=deleted")
     save_deleted_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
+    current_deleted_response = client.get(f"/api/resumes/{resume_id}")
+    historical_response = client.get(f"/api/resumes/{resume_id}/versions/1")
 
     assert trash_response.status_code == 200
     assert trash_response.json()["data"]["resume"]["deletedAt"]
@@ -972,6 +971,9 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert "templateSettings" not in trash_response.json()["data"]["resume"]
     assert deleted_list_response.json()["data"]["resumes"][0]["id"] == resume_id
     assert save_deleted_response.json()["code"] != 0
+    assert current_deleted_response.json()["code"] != 0
+    assert historical_response.status_code == 200
+    assert historical_response.json()["data"]["versionId"] == "1"
 
     restore_response = client.post(f"/api/resumes/{resume_id}/restore")
 
@@ -990,6 +992,7 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert delete_response.json()["data"]["id"] == resume_id
     assert detail_after_delete_response.json()["code"] != 0
     assert not resume_dir.exists()
+    assert not attachment_dir.exists()
 
 
 def test_duplicate_resume_copies_content_without_history_or_agent_context(

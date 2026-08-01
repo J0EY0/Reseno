@@ -2,6 +2,7 @@ import secrets
 from sqlite3 import Connection, Row
 from typing import Any
 
+from app.db.connection import connect
 from app.schemas.model_configs import ModelConfigResponse, ModelConfigUpsertRequest
 from app.services.llm_secrets import (
     decrypt_api_key,
@@ -61,7 +62,7 @@ def _row_to_response(row: Row) -> ModelConfigResponse:
     )
 
 
-def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
+def _list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
     """List enabled model configs without exposing stored API keys."""
 
     rows = conn.execute(
@@ -94,12 +95,18 @@ def list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
     return [_row_to_response(row) for row in rows]
 
 
+def list_llm_configs() -> list[ModelConfigResponse]:
+    """Load enabled model configs without exposing the persistence seam."""
+
+    with connect() as conn:
+        return _list_llm_configs(conn)
+
+
 def generate_model_config_id() -> str:
     """Generate a backend-owned model config id."""
 
     suffix = "".join(
-        secrets.choice(MODEL_CONFIG_ID_ALPHABET)
-        for _ in range(MODEL_CONFIG_ID_LENGTH)
+        secrets.choice(MODEL_CONFIG_ID_ALPHABET) for _ in range(MODEL_CONFIG_ID_LENGTH)
     )
     return f"llm-{suffix}"
 
@@ -544,9 +551,7 @@ def upsert_llm_config_dict(
         item.get("id") or item.get("client_id") or "",
     ).strip()
     existing = (
-        _select_llm_config(conn, requested_client_id)
-        if requested_client_id
-        else None
+        _select_llm_config(conn, requested_client_id) if requested_client_id else None
     )
     client_id = (
         requested_client_id if existing is not None else _allocate_llm_config_id(conn)

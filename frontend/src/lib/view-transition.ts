@@ -1,7 +1,7 @@
 import * as React from "react";
 import { startTransition } from "react";
 
-type TransitionType = "nav-forward" | "nav-back" | "nav-lateral";
+type TransitionType = "nav-forward" | "nav-back";
 
 const addTransitionType = (
   React as unknown as {
@@ -21,4 +21,3 @@ export function runViewTransition(
     scope();
   });
 }
-
