@@ -181,7 +181,7 @@
   "exportJson": "JSON",
   "exportPdf": "Export PDF",
   "logout": "Log Out",
-  "exportSuccess": "Opening browser PDF export",
+  "exportSuccess": "PDF downloaded",
   "exportWarning": "PDF exported, but some images were skipped",
   "templatesTitle": "Template Library",
   "templatesHint": "Switch templates and the A4 preview updates immediately. Export uses the active template.",

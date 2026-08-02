@@ -103,8 +103,10 @@ import {
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   downloadExportedFile,
+  downloadExportedPdf,
   downloadResumeJson,
   requestResumeImagesExport,
+  requestResumePdfExport,
 } from "@/lib/export-api";
 import {
   applyAgentEditsWithMerge,
@@ -396,31 +398,21 @@ type SmartOnePageStyleSnapshot = {
 
 function WorkspacePanelSkeleton() {
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-2.5">
       {Array.from({ length: 4 }).map((_, index) => (
         <Card
           key={index}
-          className="rounded-2xl border-border/80 bg-card shadow-sm"
+          className="gap-0 rounded-xl border-border/75 bg-card py-0 shadow-xs"
         >
-          <CardContent className="space-y-4 p-5">
-            <div className="flex items-center gap-3">
-              <Skeleton className="size-11 rounded-2xl" />
+          <CardContent className="p-0">
+            <div className="flex min-h-[60px] items-center gap-2.5 px-4 py-3">
+              <Skeleton className="size-9 rounded-xl" />
               <div className="grid flex-1 gap-2">
                 <Skeleton className="h-4 w-32" />
-                <Skeleton className="h-3 w-48" />
+                <Skeleton className="h-3 w-40" />
               </div>
               <Skeleton className="size-9 rounded-xl" />
             </div>
-            {index === 0 ? (
-              <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)]">
-                <Skeleton className="h-36 rounded-2xl" />
-                <div className="grid gap-3">
-                  <Skeleton className="h-10 rounded-xl" />
-                  <Skeleton className="h-10 rounded-xl" />
-                  <Skeleton className="h-10 rounded-xl" />
-                </div>
-              </div>
-            ) : null}
           </CardContent>
         </Card>
       ))}
@@ -1488,8 +1480,10 @@ export function ResumeBuilder({
     theme: "light",
     agentSettings: createDefaultAgentSettings(),
   });
-  const saveRequestRef = useRef<Promise<SaveResponse> | null>(null);
-  const pendingSaveAfterCurrentRef = useRef(false);
+  const saveRequestRef = useRef<{
+    promise: Promise<SaveResponse>;
+    targetKey: string;
+  } | null>(null);
   const versionLoadRequestRef = useRef<string | null>(null);
   const workspaceLoadRequestIdRef = useRef(0);
   const lastLoadedResumeDetailIdRef = useRef<string | null>(null);
@@ -1854,16 +1848,35 @@ export function ResumeBuilder({
   ]);
 
   const saveCurrentWorkspace = useCallback(async () => {
-    if (saveRequestRef.current) {
-      pendingSaveAfterCurrentRef.current = true;
-      return saveRequestRef.current;
-    }
-
     const isEditingCustomTemplate =
       activeView === "templates" &&
       !showTemplateGallery &&
       !activeTemplateDefinition.isBuiltIn;
-    const stableActiveResume = buildActiveResumeItem(lastSavedAt ?? "");
+    const saveTargetKey = isEditingCustomTemplate
+      ? `template:${activeTemplateDefinition.id}`
+      : `resume:${activeResumeId ?? ""}`;
+    let latestCompletedSave: SaveResponse | null = null;
+
+    // Serialize callers so an export cannot reuse the version returned by an
+    // older save while newer editor state is still waiting to be persisted.
+    while (saveRequestRef.current) {
+      const activeRequest = saveRequestRef.current;
+      const completedSave = await activeRequest.promise;
+
+      if (activeRequest.targetKey === saveTargetKey) {
+        latestCompletedSave = completedSave;
+      }
+      if (saveRequestRef.current === activeRequest) {
+        saveRequestRef.current = null;
+      }
+    }
+
+    const effectiveLastSavedAt = latestCompletedSave?.savedAt ?? lastSavedAt;
+    const effectiveVersionId =
+      latestCompletedSave?.versionId ?? activeWorkspaceVersionId ?? undefined;
+    const stableActiveResume = buildActiveResumeItem(
+      effectiveLastSavedAt ?? "",
+    );
     const stableResumeFingerprint = createResumeFingerprint(stableActiveResume);
     const stableTemplateFingerprint = isEditingCustomTemplate
       ? createTemplateFingerprint(activeTemplateDefinition)
@@ -1872,13 +1885,13 @@ export function ResumeBuilder({
       (isEditingCustomTemplate
         ? stableTemplateFingerprint === lastPersistedTemplateRef.current
         : stableResumeFingerprint === lastPersistedResumeRef.current) &&
-      lastSavedAt &&
-      (isEditingCustomTemplate || activeWorkspaceVersionId || !stableActiveResume)
+      effectiveLastSavedAt &&
+      (isEditingCustomTemplate || effectiveVersionId || !stableActiveResume)
     ) {
       setSaveState("saved");
       return {
-        savedAt: lastSavedAt,
-        versionId: activeWorkspaceVersionId ?? undefined,
+        savedAt: effectiveLastSavedAt,
+        versionId: effectiveVersionId,
       } satisfies SaveResponse;
     }
 
@@ -1889,9 +1902,9 @@ export function ResumeBuilder({
 
       try {
         const nextActiveResume = buildActiveResumeItem(savedAt);
-        let result: SaveResponse = {
-          savedAt: lastSavedAt ?? savedAt,
-          versionId: activeWorkspaceVersionId ?? undefined,
+        let result: SaveResponse = latestCompletedSave ?? {
+          savedAt: effectiveLastSavedAt ?? savedAt,
+          versionId: effectiveVersionId,
         };
 
         if (isEditingCustomTemplate) {
@@ -1991,18 +2004,24 @@ export function ResumeBuilder({
       }
     })();
 
-    saveRequestRef.current = request;
+    const trackedRequest = {
+      promise: request,
+      targetKey: saveTargetKey,
+    };
+    saveRequestRef.current = trackedRequest;
 
     try {
       return await request;
     } catch (error) {
-      pendingSaveAfterCurrentRef.current = false;
       setSaveState("idle");
       throw error;
     } finally {
-      saveRequestRef.current = null;
+      if (saveRequestRef.current === trackedRequest) {
+        saveRequestRef.current = null;
+      }
     }
   }, [
+    activeResumeId,
     activeWorkspaceVersionId,
     activeTemplateDefinition,
     activeView,
@@ -2010,23 +2029,6 @@ export function ResumeBuilder({
     lastSavedAt,
     showTemplateGallery,
     templateSettings,
-  ]);
-
-  useEffect(() => {
-    if (
-      saveState !== "saved" ||
-      !pendingSaveAfterCurrentRef.current ||
-      isLoading
-    ) {
-      return;
-    }
-
-    pendingSaveAfterCurrentRef.current = false;
-    void saveCurrentWorkspace();
-  }, [
-    isLoading,
-    saveCurrentWorkspace,
-    saveState,
   ]);
 
   useEffect(() => {
@@ -4033,71 +4035,6 @@ export function ResumeBuilder({
     });
   }
 
-  function buildPdfExportUrl(input: {
-    resumeId: string;
-    savedAt: string;
-    versionId?: string;
-    shouldPrint?: boolean;
-  }) {
-    const url = new URL("/pdf-export", window.location.origin);
-
-    url.searchParams.set("resumeId", input.resumeId);
-    url.searchParams.set("locale", locale);
-    url.searchParams.set("savedAt", input.savedAt);
-    if (input.shouldPrint) {
-      url.searchParams.set("print", "1");
-    }
-    if (input.versionId) {
-      url.searchParams.set("versionId", input.versionId);
-    }
-
-    return url.toString();
-  }
-
-  function createPdfExportFrame(title: string) {
-    const frame = document.createElement("iframe");
-    let cleanupTimer: number | undefined;
-
-    function cleanup() {
-      if (cleanupTimer !== undefined) {
-        window.clearTimeout(cleanupTimer);
-        cleanupTimer = undefined;
-      }
-      frame.remove();
-    }
-
-    frame.title = title;
-    frame.setAttribute("aria-hidden", "true");
-    frame.style.position = "fixed";
-    frame.style.right = "0";
-    frame.style.bottom = "0";
-    frame.style.width = "0";
-    frame.style.height = "0";
-    frame.style.border = "0";
-    frame.style.opacity = "0";
-    frame.style.pointerEvents = "none";
-
-    frame.addEventListener(
-      "load",
-      () => {
-        frame.contentWindow?.addEventListener("afterprint", cleanup, {
-          once: true,
-        });
-      },
-      { once: true },
-    );
-
-    document.body.append(frame);
-
-    return {
-      cleanup,
-      load(source: string) {
-        frame.src = source;
-        cleanupTimer = window.setTimeout(cleanup, 120_000);
-      },
-    };
-  }
-
   async function exportPdf() {
     if (exportInFlightRef.current || !activeResumeId) {
       return;
@@ -4105,23 +4042,26 @@ export function ResumeBuilder({
 
     exportInFlightRef.current = true;
     setIsExporting(true);
-    const exportFrame = createPdfExportFrame(t.exportPdf);
 
     try {
       const savedVersion = await saveCurrentWorkspace();
-      const exportUrl = buildPdfExportUrl({
-        resumeId: activeResumeId,
-        savedAt: savedVersion.savedAt,
-        versionId: savedVersion.versionId ?? undefined,
-        shouldPrint: true,
-      });
+      const activeResume = buildActiveResumeItem(savedVersion.savedAt);
+      if (!activeResume) {
+        throw new Error("No active resume is available for PDF export.");
+      }
 
-      exportFrame.load(exportUrl);
+      const result = await requestResumePdfExport({
+        resumeId: activeResume.id,
+        locale,
+        fileNameSeed: activeResume.title,
+        savedAt: savedVersion.savedAt,
+        versionId: savedVersion.versionId,
+      });
+      await downloadExportedPdf(result);
       toast.success(t.exportSuccess, {
         closeButton: true,
       });
     } catch (error) {
-      exportFrame.cleanup();
       console.error("Failed to export resume PDF.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(t.exportFailed, {
@@ -4437,8 +4377,8 @@ export function ResumeBuilder({
     const shouldDockAgent = isAgentDockLayout && !isAgentPanelCollapsed;
     const resumeWorkspaceStyle = {
       "--resume-workspace-columns": shouldDockAgent
-        ? "440px minmax(0,1fr) 18px 360px"
-        : "440px minmax(0,1fr) 18px 0px",
+        ? "400px minmax(0,1fr) 18px 360px"
+        : "400px minmax(0,1fr) 18px 0px",
     } as CSSProperties;
     const renderCopilotPanel = (mode: "docked" | "sheet") => (
       <Suspense
@@ -4495,7 +4435,7 @@ export function ResumeBuilder({
         )}
       >
         <section
-          className="resume-editor-panel flex flex-col gap-4 print:hidden"
+          className="resume-editor-panel flex flex-col gap-2.5 print:hidden"
         >
           {hasLoadError ? (
             <Card className="rounded-2xl border-border/80 shadow-sm">
@@ -4547,7 +4487,7 @@ export function ResumeBuilder({
               <Button
                 type="button"
                 variant="outline"
-                className="h-11 rounded-2xl border-dashed bg-background/95"
+                className="h-10 rounded-xl border-dashed bg-background/95"
                 onClick={() => addResumeSection("custom")}
               >
                 <Plus className="size-4" />
@@ -4996,7 +4936,7 @@ export function ResumeBuilder({
                       >
                         <SelectTrigger
                           aria-label={t.applyTemplate}
-                          className="h-8 w-[148px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                          className="h-8 min-w-[112px] max-w-[148px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
                         >
                           <SelectValue />
                         </SelectTrigger>
@@ -5017,10 +4957,6 @@ export function ResumeBuilder({
                     </div>
 
                     <Separator />
-
-                    <div className="px-0.5 text-sm font-semibold">
-                      {t.formatTypography}
-                    </div>
 
                     <div className="grid gap-1">
                       <div className="flex min-h-8 items-center justify-between gap-3">

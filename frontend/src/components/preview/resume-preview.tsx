@@ -1,6 +1,7 @@
 import { ImageIcon } from 'lucide-react'
 import {
   forwardRef,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -46,6 +47,7 @@ interface ResumePreviewProps {
   variant?: 'default' | 'thumbnail'
   editableTemplateImages?: boolean
   diffs?: ResumeDraftDiff[]
+  onPaginationReadyChange?: (ready: boolean) => void
   onMoveTemplateImage?: (
     imageId: string,
     patch: Pick<ResumeTemplateImageElement, 'x' | 'y'>,
@@ -92,6 +94,7 @@ const fontFamilyMap: Record<ResumeFontFamily, string> = {
 const A4_WIDTH_MM = 210
 const A4_HEIGHT_MM = 297
 const PAGINATION_TOLERANCE_PX = 8
+const PAGINATION_STABLE_FRAME_COUNT = 2
 
 interface ContactItem {
   id: string
@@ -1497,10 +1500,7 @@ function calculateResumePagination({
   const pageCount = Math.max(
     1,
     Math.ceil(
-      Math.max(
-        measuredContentHeight + addedSpacerDelta - PAGINATION_TOLERANCE_PX,
-        0,
-      ) / pageHeight,
+      Math.max(measuredContentHeight + addedSpacerDelta, 0) / pageHeight,
     ),
   )
 
@@ -1519,6 +1519,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
   variant = 'default',
   editableTemplateImages = false,
   diffs = [],
+  onPaginationReadyChange,
   onMoveTemplateImage,
 }, ref) {
   const visibleSections = useMemo(
@@ -1544,6 +1545,13 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
     pageCount: 1,
     breakBeforeSectionSpacers: {},
   })
+  const [isPaginationReady, setIsPaginationReady] = useState(
+    variant === 'thumbnail',
+  )
+
+  useEffect(() => {
+    onPaginationReadyChange?.(isPaginationReady)
+  }, [isPaginationReady, onPaginationReadyChange])
 
   const pageStyle: CSSProperties = {
     fontFamily: fontFamilyMap[fontFamily],
@@ -1585,7 +1593,11 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
 
   useLayoutEffect(() => {
     if (variant === 'thumbnail') {
-      return
+      const readyFrameId = window.requestAnimationFrame(() => {
+        setIsPaginationReady(true)
+      })
+
+      return () => window.cancelAnimationFrame(readyFrameId)
     }
 
     const element = measureRef.current
@@ -1595,6 +1607,8 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
     }
 
     let animationFrameId = 0
+    let lastPaginationSignature: string | null = null
+    let matchingFrameCount = 0
 
     const syncPages = () => {
       animationFrameId = 0
@@ -1612,6 +1626,20 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
           ? currentPagination
           : nextPagination,
       )
+
+      if (lastPaginationSignature === nextSignature) {
+        matchingFrameCount += 1
+      } else {
+        lastPaginationSignature = nextSignature
+        matchingFrameCount = 1
+      }
+
+      if (matchingFrameCount >= PAGINATION_STABLE_FRAME_COUNT) {
+        setIsPaginationReady(true)
+        return
+      }
+
+      animationFrameId = window.requestAnimationFrame(syncPages)
     }
 
     const scheduleSync = () => {
@@ -1619,6 +1647,9 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
         window.cancelAnimationFrame(animationFrameId)
       }
 
+      lastPaginationSignature = null
+      matchingFrameCount = 0
+      setIsPaginationReady(false)
       animationFrameId = window.requestAnimationFrame(syncPages)
     }
 
@@ -1780,6 +1811,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
         ref={ref}
         className="resume-page-stack"
         data-resume-page-count={pagination.pageCount}
+        data-resume-pagination-ready={isPaginationReady ? 'true' : 'false'}
       >
         <div
           ref={measureRef}
@@ -1843,6 +1875,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
       ref={ref}
       className="resume-page-stack"
       data-resume-page-count={pagination.pageCount}
+      data-resume-pagination-ready={isPaginationReady ? 'true' : 'false'}
     >
       <div
         ref={measureRef}

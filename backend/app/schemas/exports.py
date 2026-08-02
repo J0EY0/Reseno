@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent_locales import AgentLocale
 
@@ -6,12 +6,13 @@ from app.agent_locales import AgentLocale
 class ExportResumeRenderRequest(BaseModel):
     """Shared request fields for exports rendered by the frontend preview."""
 
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     resume_id: str = Field(alias="resumeId")
     locale: AgentLocale
     file_name_seed: str = Field(alias="fileNameSeed")
     saved_at: str = Field(alias="savedAt")
     version_id: str | None = Field(default=None, alias="versionId")
-    render_base_url: str | None = Field(default=None, alias="renderBaseUrl")
 
 
 class ExportResumePdfRequest(ExportResumeRenderRequest):

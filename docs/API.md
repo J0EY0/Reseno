@@ -280,8 +280,9 @@ Storage:
 用途：基于刚保存的简历版本生成 PDF。调用方必须先保存当前简历版本，
 再调用该接口；PDF 生成由后端完成。
 
-当前前端导出按钮默认通过同源隐藏 iframe 加载 `/pdf-export?print=1`，
-并触发浏览器原生打印/保存 PDF 对话框，不依赖该后端接口。
+当前前端导出按钮保存最新版本后调用该接口，并通过返回的 `downloadUrl`
+直接下载固定 A4 PDF。`/pdf-export` 仅作为后端 Playwright 使用的内部渲染页面，
+不会触发浏览器原生打印对话框。
 
 请求：
 
@@ -292,9 +293,11 @@ type ExportResumePdfRequest = {
   fileNameSeed: string
   savedAt: string
   versionId?: string
-  renderBaseUrl?: string // 前端当前 origin，后端用于打开 PDF 专用渲染页
 }
 ```
+
+渲染页面地址只允许由后端的 `FRONTEND_RENDER_BASE_URL` 配置提供，客户端不能
+覆盖该地址。
 
 响应：
 

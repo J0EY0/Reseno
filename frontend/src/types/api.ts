@@ -137,7 +137,6 @@ export interface ExportResumePdfRequest {
   fileNameSeed: string;
   savedAt: string;
   versionId?: string;
-  renderBaseUrl?: string;
 }
 
 export interface ExportResumePdfResponse {

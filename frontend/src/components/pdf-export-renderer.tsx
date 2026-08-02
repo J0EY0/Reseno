@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { ResumePreview } from "@/components/preview/resume-preview";
@@ -99,22 +99,28 @@ export function PdfExportRenderer() {
   const locale = resolveLocale(searchParams.get("locale"));
   const resumeId = searchParams.get("resumeId") ?? "";
   const versionId = searchParams.get("versionId");
-  const shouldPrint = searchParams.get("print") === "1";
   const [state, setState] = useState<PdfExportState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isReady, setIsReady] = useState(false);
-  const hasPrintedRef = useRef(false);
+  const [areAssetsReady, setAreAssetsReady] = useState(false);
+  const [isPaginationReady, setIsPaginationReady] = useState(false);
   const initialMessages = useMemo(() => getMessagesSync(locale), [locale]);
+  const isReady = Boolean(state && areAssetsReady && isPaginationReady);
 
   useEffect(() => {
-    setIsReady(false);
     window.__RESUMATE_PDF_READY__ = false;
     window.__RESUMATE_PDF_ERROR__ = undefined;
   }, []);
 
   useEffect(() => {
+    window.__RESUMATE_PDF_READY__ = isReady;
+  }, [isReady]);
+
+  useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
+
+    setAreAssetsReady(false);
+    setIsPaginationReady(false);
 
     async function loadExportData() {
       try {
@@ -204,15 +210,17 @@ export function PdfExportRenderer() {
 
   useEffect(() => {
     if (!state) {
+      setAreAssetsReady(false);
       return;
     }
 
     let cancelled = false;
 
+    setAreAssetsReady(false);
+
     void waitForRenderAssets().then(() => {
       if (!cancelled) {
-        window.__RESUMATE_PDF_READY__ = true;
-        setIsReady(true);
+        setAreAssetsReady(true);
       }
     });
 
@@ -220,23 +228,6 @@ export function PdfExportRenderer() {
       cancelled = true;
     };
   }, [state]);
-
-  useEffect(() => {
-    if (!shouldPrint || !isReady || hasPrintedRef.current) {
-      return;
-    }
-
-    hasPrintedRef.current = true;
-    // Browser-native PDF export depends on the print dialog, so wait until
-    // fonts/images have settled before asking the browser to print the page.
-    const printTimer = window.setTimeout(() => {
-      window.print();
-    }, 100);
-
-    return () => {
-      window.clearTimeout(printTimer);
-    };
-  }, [isReady, shouldPrint]);
 
   if (error) {
     return (
@@ -271,6 +262,7 @@ export function PdfExportRenderer() {
         fontFamily={state.typography.fontFamily}
         fontSize={state.typography.fontSize}
         template={state.template}
+        onPaginationReadyChange={setIsPaginationReady}
       />
     </main>
   );

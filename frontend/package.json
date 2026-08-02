@@ -10,14 +10,16 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:contact-links": "node scripts/verify-contact-links.mjs",
-    "test:contract": "node scripts/verify-frontend-contract.mjs && node scripts/generate-resume-edit-operation-types.mjs",
+    "test:contract": "node scripts/verify-frontend-contract.mjs && node scripts/verify-pdf-export-flow.mjs && node scripts/verify-pdf-export-readiness.mjs && node scripts/generate-resume-edit-operation-types.mjs",
+    "test:pdf-export": "node scripts/verify-pdf-export-flow.mjs",
     "test:workspace-load-failure": "node scripts/verify-workspace-load-failure.mjs",
     "test:workspace-routes": "node scripts/verify-workspace-route-data.mjs",
     "test:workspace-network": "cd ../backend && RUN_BROWSER_E2E=1 uv run pytest tests/e2e/test_workspace_route_network.py -q",
     "test:agent-edits": "node scripts/verify-resume-agent-edits.mjs",
     "test:agent-panel": "node scripts/verify-agent-panel-state.mjs",
     "test:agent-tools": "node scripts/verify-agent-tool-stream.mjs",
-    "test:pdf-import": "node scripts/verify-pdf-resume-import.mjs"
+    "test:pdf-import": "node scripts/verify-pdf-resume-import.mjs",
+    "test:pdf-export-readiness": "node scripts/verify-pdf-export-readiness.mjs"
   },
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.2.8",

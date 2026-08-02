@@ -181,7 +181,7 @@
   "exportJson": "JSON",
   "exportPdf": "导出 PDF",
   "logout": "退出登录",
-  "exportSuccess": "正在打开浏览器 PDF 导出",
+  "exportSuccess": "PDF 已下载",
   "exportWarning": "PDF 已导出，但图片已被忽略",
   "templatesTitle": "模板库",
   "templatesHint": "切换模板后，中间 A4 预览会即时更新，导出会沿用当前模板",

@@ -63,10 +63,10 @@ def get_export_path(export_id: str) -> Path:
     return get_settings().export_dir / f"{export_id}.pdf"
 
 
-def _normalize_render_base_url(value: str | None) -> str:
-    """Validate and normalize the frontend URL used for resume rendering."""
+def _normalize_render_base_url() -> str:
+    """Validate and normalize the configured frontend resume renderer URL."""
 
-    base_url = (value or get_settings().frontend_render_base_url).strip().rstrip("/")
+    base_url = get_settings().frontend_render_base_url.strip().rstrip("/")
     parsed = urlsplit(base_url)
 
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -81,7 +81,7 @@ def _normalize_render_base_url(value: str | None) -> str:
 def build_render_url(request: ExportResumeRenderRequest) -> str:
     """Build the frontend URL that Playwright will render for an export."""
 
-    base_url = _normalize_render_base_url(request.render_base_url)
+    base_url = _normalize_render_base_url()
     parsed = urlsplit(base_url)
     base_path = parsed.path.rstrip("/")
     query = urlencode(

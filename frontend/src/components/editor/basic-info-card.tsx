@@ -65,7 +65,7 @@ export function BasicInfoCard({
       collapsed={collapsed}
       onToggle={onToggle}
     >
-      <div className="grid gap-5 lg:grid-cols-[144px_minmax(0,1fr)]">
+      <div className="grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
         <div className="grid content-start gap-3 self-start">
           <div className="relative">
             <div className="flex aspect-[4/5] items-center justify-center overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-primary/12 to-amber-200/30 text-2xl font-semibold text-primary">
@@ -95,7 +95,7 @@ export function BasicInfoCard({
               className="h-auto w-full whitespace-normal px-3 py-3 text-center leading-tight"
               asChild
             >
-              <span className="flex min-h-14 flex-col items-center justify-center gap-1.5">
+              <span className="flex min-h-12 flex-col items-center justify-center gap-1.5">
                 <Upload className="size-4" />
                 {t.uploadAvatar}
               </span>

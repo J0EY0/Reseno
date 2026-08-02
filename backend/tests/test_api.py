@@ -6612,7 +6612,6 @@ def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:
         export_path = get_export_path(export_id)
         export_path.parent.mkdir(parents=True, exist_ok=True)
         export_path.write_bytes(b"%PDF-1.4\n% test\n")
-        assert request.render_base_url == "http://frontend.test"
         return export_path
 
     monkeypatch.setattr("app.routers.exports.write_resume_pdf", write_test_pdf)
@@ -6635,7 +6634,6 @@ def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:
             "locale": "en",
             "fileNameSeed": "resume-en",
             "savedAt": "2026-05-16T00:00:00.000Z",
-            "renderBaseUrl": "http://frontend.test",
         },
     )
 
@@ -6651,6 +6649,87 @@ def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:
     assert download_response.content.startswith(b"%PDF")
 
 
+def test_export_pdf_rejects_client_render_base_url(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    render_called = False
+
+    def unexpected_write(*_: object, **__: object) -> Path:
+        nonlocal render_called
+        render_called = True
+        raise AssertionError("The renderer must not receive a client-controlled URL.")
+
+    monkeypatch.setattr("app.routers.exports.write_resume_pdf", unexpected_write)
+
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Protected Export Resume",
+            "resume": minimal_resume_item(title="Protected Export Resume")["resume"],
+            "template": "minimal",
+        },
+    )
+    resume_id = create_response.json()["data"]["resume"]["id"]
+
+    response = client.post(
+        "/api/exports/resume-pdf",
+        json={
+            "resumeId": resume_id,
+            "locale": "en",
+            "fileNameSeed": "protected-export",
+            "savedAt": "2026-05-16T00:00:00.000Z",
+            "renderBaseUrl": "https://attacker.example",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["code"] == 40002
+    assert payload["message"] == "VALIDATION_ERROR"
+    assert any(
+        error["loc"][-1] == "renderBaseUrl" and error["type"] == "extra_forbidden"
+        for error in payload["data"]["errors"]
+    )
+    assert render_called is False
+
+
+def test_export_render_url_uses_only_server_configuration(monkeypatch) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.services.pdf import build_render_url
+
+    monkeypatch.setenv(
+        "FRONTEND_RENDER_BASE_URL",
+        "https://renderer.example/internal",
+    )
+    get_settings.cache_clear()
+
+    try:
+        render_url = build_render_url(
+            ExportResumePdfRequest(
+                resumeId="resume-configured-renderer",
+                locale="en",
+                fileNameSeed="resume",
+                savedAt="2026-05-16T00:00:00.000Z",
+                versionId="7",
+            )
+        )
+    finally:
+        get_settings.cache_clear()
+
+    parsed = urlsplit(render_url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "renderer.example"
+    assert parsed.path == "/internal/pdf-export"
+    assert parse_qs(parsed.query) == {
+        "locale": ["en"],
+        "resumeId": ["resume-configured-renderer"],
+        "savedAt": ["2026-05-16T00:00:00.000Z"],
+        "versionId": ["7"],
+    }
+
+
 def test_export_images_creates_png_download(client: TestClient, monkeypatch) -> None:
     def write_test_image(
         export_id: str,
@@ -6662,7 +6741,6 @@ def test_export_images_creates_png_download(client: TestClient, monkeypatch) -> 
         export_path = get_image_export_path(export_id, is_archive=False)
         export_path.parent.mkdir(parents=True, exist_ok=True)
         export_path.write_bytes(b"\x89PNG\r\n\x1a\n")
-        assert request.render_base_url == "http://frontend.test"
         return ResumeImageExportResult(
             path=export_path,
             page_count=1,
@@ -6690,7 +6768,6 @@ def test_export_images_creates_png_download(client: TestClient, monkeypatch) -> 
             "locale": "en",
             "fileNameSeed": "resume-images",
             "savedAt": "2026-05-16T00:00:00.000Z",
-            "renderBaseUrl": "http://frontend.test",
         },
     )
 

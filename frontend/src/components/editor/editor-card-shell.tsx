@@ -234,20 +234,28 @@ export function EditorCardShell({
   return (
     <Card
       ref={cardRef}
-      className="gap-0 overflow-hidden rounded-2xl border-border/80 py-0 shadow-sm transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]"
+      data-collapsed={collapsed ? 'true' : 'false'}
+      className={cn(
+        'gap-0 overflow-hidden rounded-xl border-border/75 py-0 shadow-xs transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
+        !collapsed && 'border-primary/20',
+      )}
     >
       <Collapsible open={!collapsed} onOpenChange={onToggle}>
-        <div className="flex items-start justify-between gap-4 p-5">
-          <div className="grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] gap-3">
+        <div className="flex min-h-[60px] items-center justify-between gap-3 px-4 py-3">
+          <div className="grid min-w-0 flex-1 grid-cols-[2.25rem_minmax(0,1fr)] items-center gap-2.5">
             <div className="flex size-9 items-center justify-center rounded-xl bg-primary/8 text-primary">
               <Icon className="size-4" />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
-              <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
+              <h3 className="truncate text-sm font-semibold leading-5 tracking-tight" title={title}>
+                {title}
+              </h3>
+              <p className="mt-0.5 truncate text-xs leading-4 text-muted-foreground" title={summary}>
+                {summary}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1">
             {headerAction}
             <CollapsibleTrigger asChild>
               <Button
@@ -265,7 +273,7 @@ export function EditorCardShell({
           </div>
         </div>
         <CollapsibleContent className="collapsible-content">
-          <CardContent className="collapsible-content-inner grid gap-5 border-t border-border/70 p-5 pt-5">
+          <CardContent className="collapsible-content-inner grid gap-4 border-t border-border/70 p-4">
             {children}
           </CardContent>
         </CollapsibleContent>

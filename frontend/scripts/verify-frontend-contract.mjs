@@ -237,20 +237,27 @@ assert(
   "Manual model configs must let users declare tool support.",
 );
 assert(
-  /ZAI_PROVIDER_IDS\s*=\s*new Set\(\[[\s\S]*"glm"[\s\S]*"zai"[\s\S]*"zhipu"[\s\S]*"zhipuai"[\s\S]*\]\)/.test(
+  /import ZAI from "@lobehub\/icons\/es\/ZAI";/.test(
     modelProviderIcon,
   ),
-  "Z.ai provider ids must be handled by the dedicated ZAI icon mapping.",
+  "Z.ai icon rendering must use the dedicated @lobehub/icons ZAI entrypoint.",
+);
+const providerAliases =
+  modelProviderIcon.match(/const PROVIDER_ALIASES[^=]*=\s*\{([\s\S]*?)\n};/)?.[1] ?? "";
+const providerIcons =
+  modelProviderIcon.match(/const PROVIDER_ICONS\s*=\s*\{([\s\S]*?)\n} as const;/)?.[1] ?? "";
+assert(
+  /\bglm:\s*"zai"/.test(providerAliases) &&
+    /\bzhipu:\s*"zai"/.test(providerAliases) &&
+    /\bzhipuai:\s*"zai"/.test(providerAliases) &&
+    /\bzai:\s*ZAI\b/.test(providerIcons),
+  "Z.ai provider ids must normalize to the dedicated ZAI icon mapping.",
 );
 assert(
-  /module\.ZAI\s+as\s+LobeCompoundIcon/.test(modelProviderIcon),
-  "Z.ai icon rendering must use @lobehub/icons ZAI.",
-);
-assert(
-  /ZAI_PROVIDER_IDS\.has\(provider\)[\s\S]*LoadedZaiIcon/.test(
+  /const normalizedProvider = PROVIDER_ALIASES\[provider\] \?\? provider;[\s\S]*?if \(!hasProviderIcon\(normalizedProvider\)\)[\s\S]*?const ProviderIcon = PROVIDER_ICONS\[normalizedProvider\];/.test(
     modelProviderIcon,
   ),
-  "Z.ai providers must render the loaded ZAI icon before the ProviderIcon fallback.",
+  "Provider aliases must be resolved before the generic icon fallback.",
 );
 assert(
   !/glm:\s*"zhipu"|zhipuai:\s*"zhipu"/.test(modelProviderIcon),
