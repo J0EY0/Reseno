@@ -739,7 +739,16 @@ class AgentPlanExecutor:
     ) -> AgentResumeEditSuggestion | None:
         """Build an update operation for the first meaningful resume item."""
 
-        section = self.find_first_item_section(analysis)
+        section = next(
+            (
+                candidate
+                for candidate in analysis.sections
+                if candidate.get("layout") == "timeline"
+                and isinstance(candidate.get("items"), list)
+                and any(_has_item_content(item) for item in candidate["items"])
+            ),
+            None,
+        )
         if not section:
             return None
 

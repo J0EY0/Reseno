@@ -13,6 +13,10 @@ from app.schemas.agent import (
     AgentTransactionState,
 )
 from app.services.llm import LlmRequestError, LlmToolCall
+from app.services.resume_document_contract import (
+    ResumeDocumentContractError,
+    validate_resume_document,
+)
 
 from ..attachments import AgentAttachmentError, current_request_attachments
 from ..compat import get_agent_api
@@ -1376,6 +1380,24 @@ class AgentToolRunner:
         )
         candidate_resume = deepcopy(self.draft_resume)
         _apply_edit_operations(candidate_resume, model_edits)
+        try:
+            validate_resume_document(candidate_resume)
+        except ResumeDocumentContractError as exc:
+            return (
+                self.semantic_edit_error(
+                    tool_call,
+                    entries=entries,
+                    rejected_edits=[
+                        {
+                            "index": 1,
+                            "reason": f"{exc.code} at {exc.path}.",
+                        },
+                    ],
+                    message_key="error.edit_execute_rejected_detailed",
+                ),
+                [],
+                [],
+            )
         quality_issues = [
             *evidence_issues,
             *normalization_loss_issues(before_resume, entries, model_edits),

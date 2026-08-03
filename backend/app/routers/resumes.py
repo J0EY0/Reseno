@@ -74,6 +74,10 @@ def get_resume(resume_id: str) -> ApiResponse[ResumeDetailResponse]:
 def put_resume(
     resume_id: str,
     request: ResumeSaveRequest,
+    save_mode: Literal["autosave", "checkpoint"] = Query(
+        default="checkpoint",
+        alias="saveMode",
+    ),
 ) -> ApiResponse[ResumeDetailResponse]:
     """Persist a full resume update."""
 
@@ -82,6 +86,7 @@ def put_resume(
             save_resume(
                 resume_id,
                 request.model_dump(by_alias=True, exclude_unset=True),
+                save_mode=save_mode,
             )
         )
     )

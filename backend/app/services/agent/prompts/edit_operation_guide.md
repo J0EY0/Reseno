@@ -19,6 +19,10 @@ Field filling rules:
 - description: one short background sentence only; it may be empty.
 - highlights: concrete actions, technical solutions, outcomes, and impact only.
 
+For layout=list, item content may use only title and subtitle. Keep meta,
+period, description, and highlights empty. Use layout=timeline when an item
+needs metadata, dates, a description, or highlights.
+
 Do not repeat title, subtitle, period/date, or meta content in highlights.
 Do not fully repeat title, period/date, role, or tech stack in description.
 If the original input is one mixed paragraph, split it into the matching fields first, then generate highlights.

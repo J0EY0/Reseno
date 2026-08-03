@@ -124,6 +124,25 @@ function itemLabel(item: ResumeSectionItem) {
   return item.title.trim() || item.subtitle.trim() || item.id;
 }
 
+function hasCanonicalListItemContent(item: ResumeSectionItem) {
+  return (
+    typeof item.title === "string" &&
+    typeof item.subtitle === "string" &&
+    item.meta === "" &&
+    item.period === "" &&
+    item.description === "" &&
+    Array.isArray(item.highlights) &&
+    item.highlights.length === 0
+  );
+}
+
+function hasCanonicalSectionContent(section: ResumeSection) {
+  return (
+    section.layout !== "list" ||
+    section.items.every(hasCanonicalListItemContent)
+  );
+}
+
 function findSection(resume: ResumeData, sectionId: string) {
   const index = resume.sections.findIndex((section) => section.id === sectionId);
 
@@ -216,6 +235,13 @@ function applyInsertSection(
     return operationRejected("invalid_operation", edit.target);
   }
 
+  if (!hasCanonicalSectionContent(operation.section)) {
+    return operationRejected(
+      "invalid_operation",
+      sectionPath(operation.section.id),
+    );
+  }
+
   if (findSection(resume, operation.section.id)) {
     return operationRejected(
       "duplicate_target",
@@ -272,11 +298,20 @@ function applyUpdateSection(
   }
 
   const before = { ...match.section };
-  resume.sections[match.index] = {
+  const nextSection = {
     ...match.section,
     ...operation.patch,
     id: match.section.id,
   };
+
+  if (!hasCanonicalSectionContent(nextSection)) {
+    return operationRejected(
+      "invalid_operation",
+      sectionPath(operation.sectionId),
+    );
+  }
+
+  resume.sections[match.index] = nextSection;
 
   return operationApplied({
     id: `diff-${edit.id}`,
@@ -392,6 +427,16 @@ function applyInsertItem(
     return operationRejected("invalid_operation", edit.target);
   }
 
+  if (
+    match.section.layout === "list" &&
+    !hasCanonicalListItemContent(operation.item)
+  ) {
+    return operationRejected(
+      "invalid_operation",
+      itemPath(operation.sectionId, operation.item.id),
+    );
+  }
+
   if (findItem(match.section, operation.item.id)) {
     return operationRejected(
       "duplicate_target",
@@ -468,11 +513,23 @@ function applyUpdateItem(
   }
 
   const before = { ...itemMatch.item };
-  sectionMatch.section.items[itemMatch.index] = {
+  const nextItem = {
     ...itemMatch.item,
     ...operation.patch,
     id: itemMatch.item.id,
   };
+
+  if (
+    sectionMatch.section.layout === "list" &&
+    !hasCanonicalListItemContent(nextItem)
+  ) {
+    return operationRejected(
+      "invalid_operation",
+      itemPath(operation.sectionId, operation.itemId),
+    );
+  }
+
+  sectionMatch.section.items[itemMatch.index] = nextItem;
 
   return operationApplied({
     id: `diff-${edit.id}`,

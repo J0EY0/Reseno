@@ -6,13 +6,17 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
 from app.services.agent.attachments import delete_agent_session_attachments
+from app.services.resume_document_contract import (
+    ResumeDocumentContractError,
+    validate_resume_document,
+)
 from app.services.workspace_state import (
     DEFAULT_TEMPLATE_ID,
     WORKSPACE_DATA_LOCALE,
@@ -27,6 +31,7 @@ RESUME_ID_LENGTH = 16
 DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
+ResumeVersionKind = Literal["autosave", "checkpoint"]
 
 
 def _normalize_locale(locale: str) -> str:
@@ -201,21 +206,13 @@ def _resume_version_payload(resume_item: dict[str, Any]) -> dict[str, Any]:
 def _ensure_resume_document(value: Any) -> dict[str, Any]:
     """Validate the stored resume document shape expected by the frontend."""
 
-    if not isinstance(value, dict):
+    try:
+        return validate_resume_document(value)
+    except ResumeDocumentContractError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume document is required.",
-        )
-
-    basic = value.get("basic")
-    sections = value.get("sections")
-    if not isinstance(basic, dict) or not isinstance(sections, list):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume document must include basic info and sections.",
-        )
-
-    return value
+            detail=exc.code,
+        ) from exc
 
 
 def _write_resume_json(
@@ -229,6 +226,16 @@ def _write_resume_json(
     temp_path = path.with_suffix(".json.tmp")
     temp_path.write_text(content, encoding="utf-8")
     temp_path.replace(path)
+
+
+def _delete_resume_json(resume_id: str, version_id: int) -> None:
+    """Best-effort cleanup for a superseded autosave snapshot."""
+
+    try:
+        _resume_version_path(resume_id, version_id).unlink(missing_ok=True)
+    except OSError:
+        # A stale autosave file is harmless and can be removed with the resume.
+        pass
 
 
 def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
@@ -306,7 +313,7 @@ def _current_resume_version_row(
         Row | None,
         conn.execute(
             """
-            SELECT content_hash
+            SELECT content_hash, kind
             FROM resume_versions
             WHERE resume_id = ? AND version_id = ?
             """,
@@ -323,7 +330,8 @@ def _save_resume_item(
     saved_at: str,
     deleted: bool,
     deleted_at: str | None = None,
-) -> tuple[str, int]:
+    version_kind: ResumeVersionKind = "checkpoint",
+) -> tuple[str, int, int | None]:
     """Persist one resume item and create a new version when content changed."""
 
     resume_item = _resume_version_payload(resume_item)
@@ -378,6 +386,10 @@ def _save_resume_item(
     should_write_version = (
         current_version is None or current_version["content_hash"] != content_hash
     )
+    current_version_kind = (
+        str(current_version["kind"]) if current_version is not None else None
+    )
+    obsolete_autosave_version_id: int | None = None
 
     next_version_id = (
         current_version_id + 1 if should_write_version else current_version_id
@@ -390,14 +402,40 @@ def _save_resume_item(
                 resume_id,
                 version_id,
                 content_hash,
+                kind,
                 saved_at
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (resume_id, next_version_id, content_hash, saved_at),
+            (
+                resume_id,
+                next_version_id,
+                content_hash,
+                version_kind,
+                saved_at,
+            ),
         )
-    else:
+        if current_version_kind == "autosave":
+            conn.execute(
+                """
+                DELETE FROM resume_versions
+                WHERE resume_id = ? AND version_id = ?
+                """,
+                (resume_id, current_version_id),
+            )
+            obsolete_autosave_version_id = current_version_id
+    elif current_version_kind == "autosave":
+        # Autosaves are mutable until a manual save/export promotes the latest
+        # snapshot to an immutable history checkpoint.
         _write_resume_json(resume_id, next_version_id, resume_item)
+        conn.execute(
+            """
+            UPDATE resume_versions
+            SET kind = ?, saved_at = ?
+            WHERE resume_id = ? AND version_id = ?
+            """,
+            (version_kind, saved_at, resume_id, next_version_id),
+        )
 
     conn.execute(
         """
@@ -434,7 +472,7 @@ def _save_resume_item(
         ),
     )
 
-    return resume_id, next_version_id
+    return resume_id, next_version_id, obsolete_autosave_version_id
 
 
 def _version_for_resume(
@@ -765,7 +803,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
             },
             saved_at=saved_at,
         )
-        _, version_id = _save_resume_item(
+        _, version_id, _ = _save_resume_item(
             conn,
             locale=data_locale,
             resume_item=resume_item,
@@ -824,7 +862,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
             },
             saved_at=saved_at,
         )
-        _, version_id = _save_resume_item(
+        _, version_id, _ = _save_resume_item(
             conn,
             locale=WORKSPACE_DATA_LOCALE,
             resume_item=duplicate_item,
@@ -848,11 +886,18 @@ def load_resume(resume_id: str) -> dict[str, Any]:
         return _load_resume_detail(conn, resume_id=resume_id)
 
 
-def save_resume(resume_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Persist a full resume update and create a version when content changed."""
+def save_resume(
+    resume_id: str,
+    payload: dict[str, Any],
+    *,
+    save_mode: ResumeVersionKind = "checkpoint",
+) -> dict[str, Any]:
+    """Persist the latest snapshot and retain only explicit checkpoints."""
 
     saved_at = _utc_now()
+    obsolete_autosave_version_id: int | None = None
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_resume_row(conn, resume_id)
         if row["deleted"]:
             raise HTTPException(
@@ -873,16 +918,19 @@ def save_resume(resume_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             fallback_item=fallback_item,
         )
 
-        conn.execute("BEGIN")
-        _, version_id = _save_resume_item(
+        _, version_id, obsolete_autosave_version_id = _save_resume_item(
             conn,
             locale=WORKSPACE_DATA_LOCALE,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=False,
             deleted_at=None,
+            version_kind=save_mode,
         )
         conn.execute("COMMIT")
+
+    if obsolete_autosave_version_id is not None:
+        _delete_resume_json(resume_id, obsolete_autosave_version_id)
 
     return {
         "resume": resume_item,
@@ -900,7 +948,7 @@ def list_resume_versions(resume_id: str) -> dict[str, Any]:
             """
             SELECT version_id, saved_at
             FROM resume_versions
-            WHERE resume_id = ?
+            WHERE resume_id = ? AND kind = 'checkpoint'
             ORDER BY version_id DESC
             """,
             (row["id"],),

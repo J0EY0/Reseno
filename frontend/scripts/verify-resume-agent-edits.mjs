@@ -111,6 +111,88 @@ const {
 
 {
   const baseResume = createResume();
+  baseResume.sections.push({
+    id: "skills",
+    kind: "skills",
+    layout: "list",
+    customTitle: "Skills",
+    items: [
+      {
+        id: "skill-1",
+        title: "Frontend",
+        subtitle: "React, TypeScript",
+        meta: "",
+        period: "",
+        description: "",
+        highlights: [],
+      },
+    ],
+  });
+  const result = applyAgentEditsToDraft(baseResume, [
+    {
+      id: "update-invalid-skills",
+      title: "Add skill highlights",
+      target: "sections.skills.items.skill-1",
+      reason: "Exercise list-item update validation.",
+      operation: {
+        type: "update_item",
+        sectionId: "skills",
+        itemId: "skill-1",
+        patch: { highlights: ["React"] },
+      },
+    },
+  ]);
+
+  assert(
+    result.appliedCount === 0 &&
+      result.errors.length === 1 &&
+      result.errors[0].reason === "invalid_operation" &&
+      result.resume.sections[1].items[0].highlights.length === 0,
+    "List item updates must preserve the canonical title/subtitle-only shape.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  const result = applyAgentEditsToDraft(baseResume, [
+    {
+      id: "insert-invalid-skills",
+      title: "Add skills",
+      target: "sections.skills",
+      reason: "Exercise the canonical list-item contract.",
+      operation: {
+        type: "insert_section",
+        section: {
+          id: "skills",
+          kind: "skills",
+          layout: "list",
+          customTitle: "Skills",
+          items: [
+            {
+              id: "skill-1",
+              title: "Frontend",
+              subtitle: "",
+              meta: "",
+              period: "",
+              description: "",
+              highlights: ["React"],
+            },
+          ],
+        },
+      },
+    },
+  ]);
+
+  assert(
+    result.appliedCount === 0 &&
+      result.errors.length === 1 &&
+      result.errors[0].reason === "invalid_operation",
+    "List sections must reject content outside title and subtitle.",
+  );
+}
+
+{
+  const baseResume = createResume();
   const result = applyAgentEditsToDraft(baseResume, [
     {
       id: "update-headline",

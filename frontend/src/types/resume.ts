@@ -67,6 +67,8 @@ export interface ResumeSectionItem {
   id: string
   title: string
   subtitle: string
+  // For list sections, only title and subtitle may contain content. The fields
+  // below remain in the wire shape but must be empty.
   meta: string
   period: string
   description: string

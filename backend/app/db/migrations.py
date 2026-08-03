@@ -54,6 +54,20 @@ def _ensure_resume_lifecycle_columns(conn: Connection) -> None:
         )
 
 
+def _ensure_resume_version_kind_column(conn: Connection) -> None:
+    """Mark existing immutable versions as checkpoints."""
+
+    columns = _table_columns(conn, "resume_versions")
+    if "kind" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE resume_versions
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'checkpoint'
+                CHECK (kind IN ('autosave', 'checkpoint'))
+            """
+        )
+
+
 def _ensure_template_lifecycle_columns(conn: Connection) -> None:
     """Add template lifecycle metadata introduced after soft delete support."""
 
@@ -106,5 +120,6 @@ def migrate_db() -> None:
         _ensure_current_llm_config_schema(conn)
         conn.executescript(schema)
         _ensure_resume_lifecycle_columns(conn)
+        _ensure_resume_version_kind_column(conn)
         _ensure_template_lifecycle_columns(conn)
         _ensure_workspace_state_schema(conn)

@@ -103,7 +103,11 @@ interface ContactItem {
 }
 
 function getRenderableItems(section: ResumeSection) {
-  return section.items.filter(hasItemContent)
+  return section.items.filter((item) =>
+    section.layout === 'list'
+      ? Boolean(item.title.trim() || item.subtitle.trim())
+      : hasItemContent(item),
+  )
 }
 
 function createFullPreviewSections(sections: ResumeSection[]) {
@@ -1015,17 +1019,13 @@ function ListItem({
   diff?: ResumeDraftDiff
   layout: ResumeListItemLayout
 }) {
-  const highlightsHtml = serializeHighlightsToHtml(item.highlights)
-  const hasDetails =
-    Boolean(item.description) || !isRichTextEmpty(highlightsHtml)
-
   return (
     <li
       className={cn(
         'resume-item min-w-0',
         layout === 'inline' &&
           'flex items-start gap-1.5 before:shrink-0 before:content-["•"]',
-        layout === 'inline' && (hasDetails ? 'basis-full' : 'flex-none'),
+        layout === 'inline' && 'flex-none',
         getDiffClassName(diff),
       )}
       data-resume-item-id={item.id}
@@ -1033,22 +1033,11 @@ function ListItem({
       data-resume-diff-label={getDiffLabel(diff, t)}
     >
       <strong style={{ color: settings.bodyColor }}>{item.title}</strong>
-      {item.subtitle ? <span>：{item.subtitle}</span> : null}
-      {item.meta || item.period ? (
-        <span className="resume-tone-muted ml-2">
-          {[item.meta, item.period].filter(Boolean).join(' · ')}
+      {item.subtitle ? (
+        <span>
+          {item.title ? '：' : ''}
+          {item.subtitle}
         </span>
-      ) : null}
-      {item.description ? (
-        <p className="resume-tone-muted mt-1">{item.description}</p>
-      ) : null}
-      {!isRichTextEmpty(highlightsHtml) ? (
-        <div
-          className="resume-rich-text mt-1"
-          dangerouslySetInnerHTML={{
-            __html: sanitizeRichTextHtml(highlightsHtml),
-          }}
-        />
       ) : null}
     </li>
   )
@@ -1523,7 +1512,10 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
   onMoveTemplateImage,
 }, ref) {
   const visibleSections = useMemo(
-    () => resume.sections.filter((section) => section.items.some(hasItemContent)),
+    () =>
+      resume.sections.filter(
+        (section) => getRenderableItems(section).length > 0,
+      ),
     [resume.sections],
   )
   const settings = template.settings

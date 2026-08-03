@@ -606,3 +606,410 @@ def test_pdf_export_route_request_allowlist(
     )
 
     assert Counter(actual_paths) == Counter(expected_paths)
+
+
+def test_resume_autosave_persists_edit_made_during_active_save(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    save_payloads: list[dict[str, object]] = []
+    save_urls: list[str] = []
+
+    def delay_first_save(route: Route) -> None:
+        request = route.request
+        if request.method != "PUT":
+            route.continue_()
+            return
+
+        payload = request.post_data_json
+        assert isinstance(payload, dict)
+        save_payloads.append(payload)
+        save_urls.append(request.url)
+        if len(save_payloads) == 1:
+            time.sleep(1)
+        route.continue_()
+
+    page.route(f"**/api/resumes/{resume_id}*", delay_first_save)
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        name_input = page.locator('input[name="name"]')
+        name_input.fill("First Save Payload")
+        page.wait_for_timeout(50)
+        page.evaluate(
+            """
+            () => {
+              const input = document.querySelector('input[name="name"]');
+              if (!(input instanceof HTMLInputElement)) {
+                throw new Error("Name input is unavailable.");
+              }
+              const valueSetter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype,
+                "value",
+              )?.set;
+              if (!valueSetter) {
+                throw new Error("Native input value setter is unavailable.");
+              }
+              window.setTimeout(() => {
+                valueSetter.call(input, "Latest Edit During Save");
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+
+                const editTitleButton = document.querySelector(
+                  'button[aria-label="修改简历标题"]',
+                );
+                if (!(editTitleButton instanceof HTMLButtonElement)) {
+                  throw new Error("Edit title button is unavailable.");
+                }
+                editTitleButton.click();
+                window.setTimeout(() => {
+                  const dialog = document.querySelector('[role="dialog"]');
+                  const titleInput = dialog?.querySelector("input");
+                  const saveButton = [...(dialog?.querySelectorAll("button") ?? [])]
+                    .find((button) => button.textContent?.trim() === "保存");
+                  if (
+                    !(titleInput instanceof HTMLInputElement) ||
+                    !(saveButton instanceof HTMLButtonElement)
+                  ) {
+                    throw new Error("Resume title dialog is unavailable.");
+                  }
+                  valueSetter.call(titleInput, "Latest Title During");
+                  titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+                  saveButton.click();
+                }, 0);
+              }, 200);
+              window.setTimeout(() => {
+                const backButton = [...document.querySelectorAll("button")].find(
+                  (button) => button.textContent?.includes("返回简历列表"),
+                );
+                if (!(backButton instanceof HTMLButtonElement)) {
+                  throw new Error("Back button is unavailable.");
+                }
+                backButton.click();
+              }, 500);
+            }
+            """
+        )
+        page.keyboard.press("Control+S")
+
+        deadline = time.monotonic() + 8
+        while len(save_payloads) < 2 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+
+        assert len(save_payloads) >= 2, save_payloads
+        assert "saveMode=autosave" in save_urls[1]
+        autosaved_payload = save_payloads[1]
+        assert autosaved_payload["title"] == "Latest Title During"
+        assert autosaved_payload["resume"]["basic"]["name"] == (
+            "Latest Edit During Save"
+        )
+
+        save_and_leave = page.get_by_role(
+            "button",
+            name="保存并离开",
+            exact=True,
+        )
+        assert save_and_leave.count() == 1
+        save_and_leave.click()
+        page.wait_for_url(f"{frontend_url}/resume")
+
+        deadline = time.monotonic() + 5
+        while len(save_payloads) < 3 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+
+        assert len(save_payloads) >= 3, save_payloads
+        assert "saveMode=checkpoint" in save_urls[-1]
+        assert save_payloads[-1]["title"] == "Latest Title During"
+        assert save_payloads[-1]["resume"]["basic"]["name"] == (
+            "Latest Edit During Save"
+        )
+
+        page.wait_for_load_state("networkidle")
+        persisted_response = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        )
+        persisted = persisted_response.json()["data"]["resume"]
+        assert persisted["title"] == "Latest Title During"
+        assert persisted["resume"]["basic"]["name"] == "Latest Edit During Save"
+    finally:
+        context.close()
+
+
+def test_template_autosave_preserves_edit_made_during_active_save(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        template_id = page.url.rsplit("/", maxsplit=1)[-1]
+        save_payloads: list[dict[str, object]] = []
+
+        def delay_first_save(route: Route) -> None:
+            request = route.request
+            if request.method != "PUT":
+                route.continue_()
+                return
+
+            payload = request.post_data_json
+            assert isinstance(payload, dict)
+            save_payloads.append(payload)
+            if len(save_payloads) == 1:
+                time.sleep(1)
+            route.continue_()
+
+        page.route(f"**/api/templates/{template_id}", delay_first_save)
+        page.locator('[data-slot="collapsible-trigger"]').filter(
+            has_text="模板信息"
+        ).click()
+        template_name_input = page.get_by_label("模板名称", exact=True)
+        template_name_input.fill("First Template Save")
+        page.wait_for_timeout(50)
+        page.evaluate(
+            """
+            () => {
+              const labels = [...document.querySelectorAll("label")];
+              const label = labels.find((candidate) =>
+                candidate.textContent?.includes("模板名称"),
+              );
+              const input = label?.querySelector("input");
+              const valueSetter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype,
+                "value",
+              )?.set;
+              if (!(input instanceof HTMLInputElement) || !valueSetter) {
+                throw new Error("Template name input is unavailable.");
+              }
+              window.setTimeout(() => {
+                valueSetter.call(input, "Latest Template During Save");
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              }, 200);
+            }
+            """
+        )
+        page.keyboard.press("Control+S")
+
+        deadline = time.monotonic() + 8
+        while len(save_payloads) < 2 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+
+        assert len(save_payloads) >= 2, save_payloads
+        assert save_payloads[-1]["template"]["name"] == (
+            "Latest Template During Save"
+        )
+    finally:
+        context.close()
+
+
+def test_template_return_checks_unsaved_changes_before_navigation(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        page.locator('[data-slot="collapsible-trigger"]').filter(
+            has_text="模板信息"
+        ).click()
+        page.get_by_label("模板名称", exact=True).fill(
+            "Template Saved Before Return"
+        )
+        page.get_by_role(
+            "button",
+            name="返回模板列表",
+            exact=True,
+        ).click()
+
+        assert page.url.startswith(f"{frontend_url}/template/template-")
+        assert page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).count() == 1
+
+        page.get_by_role(
+            "button",
+            name="保存并离开",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/templates")
+    finally:
+        context.close()
+
+
+def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    save_urls: list[str] = []
+
+    def capture_save(route: Route) -> None:
+        if route.request.method == "PUT":
+            save_urls.append(route.request.url)
+        route.continue_()
+
+    page.route(f"**/api/resumes/{resume_id}*", capture_save)
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        page.locator('input[name="name"]').fill("Autosaved Before Leave")
+
+        deadline = time.monotonic() + 8
+        while len(save_urls) < 1 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+
+        assert len(save_urls) == 1, save_urls
+        assert "saveMode=autosave" in save_urls[0]
+        page.wait_for_load_state("networkidle")
+        page.get_by_role(
+            "button",
+            name="返回简历列表",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/resume")
+
+        assert len(save_urls) == 2, save_urls
+        assert "saveMode=checkpoint" in save_urls[1]
+    finally:
+        context.close()
+
+
+def test_discard_waits_for_active_save_and_restores_persisted_resume(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    save_count = 0
+
+    def delay_first_save(route: Route) -> None:
+        nonlocal save_count
+        if route.request.method != "PUT":
+            route.continue_()
+            return
+
+        save_count += 1
+        if save_count == 1:
+            time.sleep(1)
+        route.continue_()
+
+    page.route(f"**/api/resumes/{resume_id}*", delay_first_save)
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        name_input = page.locator('input[name="name"]')
+        original_name = name_input.input_value()
+        name_input.fill("Discarded During Active Save")
+        page.evaluate(
+            """
+            () => {
+              window.setTimeout(() => {
+                const backButton = [...document.querySelectorAll("button")].find(
+                  (button) => button.textContent?.includes("返回简历列表"),
+                );
+                if (!(backButton instanceof HTMLButtonElement)) {
+                  throw new Error("Back button is unavailable.");
+                }
+                backButton.click();
+              }, 200);
+              window.setTimeout(() => {
+                const discardButton = [...document.querySelectorAll("button")].find(
+                  (button) => button.textContent?.trim() === "放弃更改",
+                );
+                if (!(discardButton instanceof HTMLButtonElement)) {
+                  throw new Error("Discard button is unavailable.");
+                }
+                discardButton.click();
+              }, 400);
+            }
+            """
+        )
+        page.keyboard.press("Control+S")
+        page.wait_for_url(f"{frontend_url}/resume")
+        page.wait_for_load_state("networkidle")
+
+        persisted_response = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        )
+        persisted = persisted_response.json()["data"]["resume"]
+        assert persisted["resume"]["basic"]["name"] == original_name
+        assert save_count == 2
+    finally:
+        context.close()
+
+
+def test_browser_history_navigation_uses_unsaved_changes_guard(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        page.locator('input[name="name"]').fill("Unsaved Browser Back")
+        page.evaluate("window.history.back()")
+        page.wait_for_timeout(250)
+
+        assert page.url == f"{frontend_url}/resume/{resume_id}"
+        assert page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).count() == 1
+
+        page.get_by_role(
+            "button",
+            name="继续编辑",
+            exact=True,
+        ).click()
+        assert page.url == f"{frontend_url}/resume/{resume_id}"
+    finally:
+        context.close()

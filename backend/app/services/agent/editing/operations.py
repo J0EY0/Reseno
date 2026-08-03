@@ -5,6 +5,10 @@ from typing import Any
 from uuid import uuid4
 
 from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
+from app.services.resume_document_contract import (
+    ResumeDocumentContractError,
+    validate_resume_document,
+)
 
 from ..localization import agent_text
 from ..models import EditPlanStep
@@ -818,6 +822,21 @@ def _model_edit_suggestions_with_diagnostics(
             )
             continue
 
+        candidate_resume = deepcopy(working_resume)
+        _apply_edit_operation(candidate_resume, operation)
+        try:
+            validate_resume_document(candidate_resume)
+        except ResumeDocumentContractError as exc:
+            rejected.append(
+                {
+                    "index": index,
+                    "title": _model_string(item.get("title"))
+                    or agent_text(locale, "edit.default.title", index=index),
+                    "reason": f"{exc.code} at {exc.path}.",
+                },
+            )
+            continue
+
         title = _model_string(item.get("title")) or agent_text(
             locale,
             "edit.default.title",
@@ -851,7 +870,7 @@ def _model_edit_suggestions_with_diagnostics(
                 status="executed",
             ),
         )
-        _apply_edit_operation(working_resume, operation)
+        working_resume = candidate_resume
 
     return edits, rejected
 

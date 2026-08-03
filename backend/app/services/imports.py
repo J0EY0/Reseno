@@ -3,6 +3,10 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 
+from app.services.resume_document_contract import (
+    ResumeDocumentContractError,
+    validate_resume_document,
+)
 from app.services.resumes import generate_resume_id
 
 
@@ -33,19 +37,29 @@ def coerce_resume_import(payload: Any) -> list[dict[str, Any]]:
     """Normalize supported resume import JSON shapes into resume items."""
 
     data = unwrap_api_payload(payload)
+    items: list[dict[str, Any]]
 
     if isinstance(data, dict) and isinstance(data.get("resumes"), list):
-        return [
+        items = [
             _with_resume_id(item) for item in data["resumes"] if isinstance(item, dict)
         ]
+    elif isinstance(data, list):
+        items = [_with_resume_id(item) for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        items = [_with_resume_id(data)]
+    else:
+        return []
 
-    if isinstance(data, list):
-        return [_with_resume_id(item) for item in data if isinstance(item, dict)]
+    for item in items:
+        try:
+            validate_resume_document(item.get("resume"))
+        except ResumeDocumentContractError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=exc.code,
+            ) from exc
 
-    if isinstance(data, dict):
-        return [_with_resume_id(data)]
-
-    return []
+    return items
 
 
 def _with_resume_id(item: dict[str, Any]) -> dict[str, Any]:

@@ -494,15 +494,16 @@ def classify_skills_entries(
             group.get("highlights"),
         )
         if title and skills:
+            separator = "、" if locale == "zh" else ", "
             items.append(
                 {
                     "id": f"item-agent-skill-{uuid4().hex[:8]}",
                     "title": title,
-                    "subtitle": "",
+                    "subtitle": separator.join(skills),
                     "meta": "",
                     "period": "",
                     "description": "",
-                    "highlights": skills,
+                    "highlights": [],
                 },
             )
 

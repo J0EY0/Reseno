@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS resume_versions (
     resume_id TEXT NOT NULL,
     version_id INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'checkpoint'
+        CHECK (kind IN ('autosave', 'checkpoint')),
     saved_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (resume_id, version_id),

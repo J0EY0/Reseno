@@ -30,7 +30,12 @@ import {
   type CSSProperties,
   type ChangeEvent,
 } from "react";
-import { matchPath, useLocation, useNavigate } from "react-router-dom";
+import {
+  matchPath,
+  useBlocker,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
@@ -170,6 +175,7 @@ import type {
   AgentDraftState,
   AgentResumeEditSuggestion,
   AgentTransactionState,
+  ResumeSaveMode,
   SaveResponse,
   WorkspaceVersionSummary,
 } from "@/types/api";
@@ -340,6 +346,7 @@ const A4_WIDTH_PX = (210 / 25.4) * 96;
 const A4_HEIGHT_PX = (297 / 25.4) * 96;
 const PREVIEW_FRAME_GUTTER_PX = 48;
 const MAX_RESUME_TITLE_LENGTH = 20;
+const AUTOSAVE_DELAY_MS = 5000;
 // Keep this aligned with the 2xl workspace breakpoint in index.css. Below it,
 // the Agent uses a Sheet so the editor and preview retain usable widths.
 const AGENT_DOCK_MEDIA_QUERY = "(min-width: 1536px)";
@@ -645,6 +652,7 @@ type WorkspaceRoute =
 
 interface PendingWorkspaceLeaveAction {
   run: () => void;
+  cancel?: () => void;
 }
 
 function getWorkspaceRoute(pathname: string): WorkspaceRoute {
@@ -1447,6 +1455,10 @@ export function ResumeBuilder({
   const [activeWorkspaceVersionId, setActiveWorkspaceVersionId] = useState<
     string | null
   >(null);
+  const lastSavedAtRef = useRef(lastSavedAt);
+  const activeWorkspaceVersionIdRef = useRef(activeWorkspaceVersionId);
+  lastSavedAtRef.current = lastSavedAt;
+  activeWorkspaceVersionIdRef.current = activeWorkspaceVersionId;
   const [avatarCropSource, setAvatarCropSource] = useState<string | null>(null);
   const [isAgentPanelCollapsed, setIsAgentPanelCollapsed] = useState(false);
   const [isAgentSheetOpen, setIsAgentSheetOpen] = useState(false);
@@ -1484,11 +1496,15 @@ export function ResumeBuilder({
     promise: Promise<SaveResponse>;
     targetKey: string;
   } | null>(null);
+  const autosaveGenerationRef = useRef(0);
+  const workspaceLeaveInFlightRef = useRef(false);
+  const handledBlockedNavigationKeyRef = useRef<string | null>(null);
   const versionLoadRequestRef = useRef<string | null>(null);
   const workspaceLoadRequestIdRef = useRef(0);
   const lastLoadedResumeDetailIdRef = useRef<string | null>(null);
   const lastPersistedResumeRef = useRef<string | null>(null);
   const lastPersistedResumeItemRef = useRef<ResumeWorkspaceItem | null>(null);
+  const lastResumeSaveModeRef = useRef<ResumeSaveMode>("checkpoint");
   const recentlySavedResumeFingerprintsRef = useRef<Set<string>>(new Set());
   const lastPersistedTemplateRef = useRef<string | null>(null);
   const lastPersistedTemplateItemRef =
@@ -1524,6 +1540,8 @@ export function ResumeBuilder({
     template,
     defaultTemplateId,
   );
+  const activeTemplateDefinitionRef = useRef(activeTemplateDefinition);
+  activeTemplateDefinitionRef.current = activeTemplateDefinition;
   const activeResumeTemplateDefinition = useMemo<ResumeTemplateDefinition>(
     () => ({
       ...activeTemplateDefinition,
@@ -1822,6 +1840,8 @@ export function ResumeBuilder({
       typography,
     ],
   );
+  const buildActiveResumeItemRef = useRef(buildActiveResumeItem);
+  buildActiveResumeItemRef.current = buildActiveResumeItem;
 
   const unsavedWorkspaceChangeCount = useMemo(() => {
     if (isResumeDetailView) {
@@ -1847,13 +1867,16 @@ export function ResumeBuilder({
     lastSavedAt,
   ]);
 
-  const saveCurrentWorkspace = useCallback(async () => {
+  const saveCurrentWorkspace = useCallback(async (
+    saveMode: ResumeSaveMode = "checkpoint",
+  ) => {
+    const initialTemplate = activeTemplateDefinitionRef.current;
     const isEditingCustomTemplate =
       activeView === "templates" &&
       !showTemplateGallery &&
-      !activeTemplateDefinition.isBuiltIn;
+      !initialTemplate.isBuiltIn;
     const saveTargetKey = isEditingCustomTemplate
-      ? `template:${activeTemplateDefinition.id}`
+      ? `template:${initialTemplate.id}`
       : `resume:${activeResumeId ?? ""}`;
     let latestCompletedSave: SaveResponse | null = null;
 
@@ -1861,30 +1884,45 @@ export function ResumeBuilder({
     // older save while newer editor state is still waiting to be persisted.
     while (saveRequestRef.current) {
       const activeRequest = saveRequestRef.current;
-      const completedSave = await activeRequest.promise;
+      try {
+        const completedSave = await activeRequest.promise;
 
-      if (activeRequest.targetKey === saveTargetKey) {
-        latestCompletedSave = completedSave;
-      }
-      if (saveRequestRef.current === activeRequest) {
-        saveRequestRef.current = null;
+        if (activeRequest.targetKey === saveTargetKey) {
+          latestCompletedSave = completedSave;
+        }
+      } catch {
+        // A queued save is a separate intent. If the active request failed,
+        // retry the latest snapshot instead of inheriting the old failure.
+      } finally {
+        if (saveRequestRef.current === activeRequest) {
+          saveRequestRef.current = null;
+        }
       }
     }
 
-    const effectiveLastSavedAt = latestCompletedSave?.savedAt ?? lastSavedAt;
+    const effectiveLastSavedAt =
+      latestCompletedSave?.savedAt ?? lastSavedAtRef.current;
     const effectiveVersionId =
-      latestCompletedSave?.versionId ?? activeWorkspaceVersionId ?? undefined;
-    const stableActiveResume = buildActiveResumeItem(
+      latestCompletedSave?.versionId ??
+      activeWorkspaceVersionIdRef.current ??
+      undefined;
+    const latestTemplate = activeTemplateDefinitionRef.current;
+    const stableActiveResume = buildActiveResumeItemRef.current(
       effectiveLastSavedAt ?? "",
     );
     const stableResumeFingerprint = createResumeFingerprint(stableActiveResume);
     const stableTemplateFingerprint = isEditingCustomTemplate
-      ? createTemplateFingerprint(activeTemplateDefinition)
+      ? createTemplateFingerprint(latestTemplate)
       : null;
+    const requiresCheckpointPromotion =
+      !isEditingCustomTemplate &&
+      saveMode === "checkpoint" &&
+      lastResumeSaveModeRef.current === "autosave";
     if (
       (isEditingCustomTemplate
         ? stableTemplateFingerprint === lastPersistedTemplateRef.current
-        : stableResumeFingerprint === lastPersistedResumeRef.current) &&
+        : stableResumeFingerprint === lastPersistedResumeRef.current &&
+          !requiresCheckpointPromotion) &&
       effectiveLastSavedAt &&
       (isEditingCustomTemplate || effectiveVersionId || !stableActiveResume)
     ) {
@@ -1901,50 +1939,69 @@ export function ResumeBuilder({
       recentlySavedResumeFingerprintsRef.current.clear();
 
       try {
-        const nextActiveResume = buildActiveResumeItem(savedAt);
+        const nextActiveResume = buildActiveResumeItemRef.current(savedAt);
+        const templateToSave = activeTemplateDefinitionRef.current;
         let result: SaveResponse = latestCompletedSave ?? {
           savedAt: effectiveLastSavedAt ?? savedAt,
           versionId: effectiveVersionId,
         };
 
         if (isEditingCustomTemplate) {
+          const submittedTemplateFingerprint =
+            createTemplateFingerprint(templateToSave);
           const savedTemplate = await saveTemplateApi(
-            activeTemplateDefinition.id,
-            activeTemplateDefinition,
+            templateToSave.id,
+            templateToSave,
           );
+          const savedTemplateFingerprint = createTemplateFingerprint(
+            savedTemplate.template,
+          );
+          const completedTemplateFingerprints = new Set([
+            submittedTemplateFingerprint,
+            savedTemplateFingerprint,
+          ]);
 
           result = {
             savedAt: savedTemplate.template.updatedAt || savedAt,
           };
-          lastPersistedTemplateRef.current = createTemplateFingerprint(
-            savedTemplate.template,
-          );
+          lastPersistedTemplateRef.current = savedTemplateFingerprint;
           lastPersistedTemplateItemRef.current = savedTemplate.template;
           lastOpenedTemplateIdRef.current = savedTemplate.template.id;
           setCustomTemplates((current) =>
-            current.map((item) =>
-              item.id === savedTemplate.template.id
+            current.map((item) => {
+              if (item.id !== savedTemplate.template.id) {
+                return item;
+              }
+
+              return completedTemplateFingerprints.has(
+                createTemplateFingerprint(item),
+              )
                 ? savedTemplate.template
-                : item,
-            ),
+                : item;
+            }),
           );
           setTemplate(savedTemplate.template.id);
           setLastSavedAt(result.savedAt);
         } else if (
           nextActiveResume &&
-          createResumeFingerprint(nextActiveResume) !==
-            lastPersistedResumeRef.current
+          (createResumeFingerprint(nextActiveResume) !==
+            lastPersistedResumeRef.current ||
+            requiresCheckpointPromotion)
         ) {
           const submittedResumeFingerprint =
             createResumeFingerprint(nextActiveResume);
-          const savedResume = await saveResumeApi(nextActiveResume.id, {
-            title: nextActiveResume.title,
-            resume: nextActiveResume.resume,
-            jobBrief: nextActiveResume.jobBrief,
-            typography: nextActiveResume.typography,
-            template: nextActiveResume.template,
-            templateSettings: templateSettings ?? null,
-          });
+          const savedResume = await saveResumeApi(
+            nextActiveResume.id,
+            {
+              title: nextActiveResume.title,
+              resume: nextActiveResume.resume,
+              jobBrief: nextActiveResume.jobBrief,
+              typography: nextActiveResume.typography,
+              template: nextActiveResume.template,
+              templateSettings: nextActiveResume.templateSettings ?? null,
+            },
+            saveMode,
+          );
 
           result = {
             savedAt: savedResume.savedAt,
@@ -1953,22 +2010,36 @@ export function ResumeBuilder({
           const savedResumeFingerprint = createResumeFingerprint(
             savedResume.resume,
           );
-          lastPersistedResumeRef.current = savedResumeFingerprint;
-          recentlySavedResumeFingerprintsRef.current = new Set(
-            [submittedResumeFingerprint, savedResumeFingerprint].filter(Boolean),
+          const completedResumeFingerprints = new Set(
+            [submittedResumeFingerprint, savedResumeFingerprint].filter(
+              Boolean,
+            ),
           );
+          lastPersistedResumeRef.current = savedResumeFingerprint;
+          recentlySavedResumeFingerprintsRef.current =
+            completedResumeFingerprints;
           lastPersistedResumeItemRef.current = savedResume.resume;
+          lastResumeSaveModeRef.current = saveMode;
           lastLoadedResumeDetailIdRef.current = savedResume.resume.id;
           setResumeDocuments((current) =>
-            current.map((item) =>
-              item.id === savedResume.resume.id ? savedResume.resume : item,
-            ),
+            current.map((item) => {
+              if (item.id !== savedResume.resume.id) {
+                return item;
+              }
+
+              return completedResumeFingerprints.has(
+                createResumeFingerprint(item),
+              )
+                ? savedResume.resume
+                : item;
+            }),
           );
           setLastSavedAt(savedResume.savedAt);
           setActiveWorkspaceVersionId(savedResume.versionId);
 
           const routeAfterSave = currentRouteRef.current;
           if (
+            saveMode === "checkpoint" &&
             routeAfterSave.kind === "resume-detail" &&
             routeAfterSave.id === savedResume.resume.id
           ) {
@@ -1993,12 +2064,10 @@ export function ResumeBuilder({
           }
         }
 
-        setHasLoadError(false);
         setSaveState("saved");
 
         return result;
       } catch (error) {
-        setHasLoadError(true);
         setSaveState("idle");
         throw error;
       }
@@ -2022,13 +2091,8 @@ export function ResumeBuilder({
     }
   }, [
     activeResumeId,
-    activeWorkspaceVersionId,
-    activeTemplateDefinition,
     activeView,
-    buildActiveResumeItem,
-    lastSavedAt,
     showTemplateGallery,
-    templateSettings,
   ]);
 
   useEffect(() => {
@@ -2039,11 +2103,11 @@ export function ResumeBuilder({
 
       event.preventDefault();
 
-      if (isLoading || saveState === "saving" || !canSaveCurrentWorkspace) {
+      if (isLoading || !canSaveCurrentWorkspace) {
         return;
       }
 
-      void saveCurrentWorkspace();
+      void saveCurrentWorkspace("checkpoint");
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -2051,7 +2115,52 @@ export function ResumeBuilder({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [canSaveCurrentWorkspace, isLoading, saveCurrentWorkspace, saveState]);
+  }, [canSaveCurrentWorkspace, isLoading, saveCurrentWorkspace]);
+
+  useEffect(() => {
+    if (isLoading || !canSaveCurrentWorkspace) {
+      return;
+    }
+
+    const isEditingCustomTemplate =
+      activeView === "templates" &&
+      !showTemplateGallery &&
+      !activeTemplateDefinition.isBuiltIn;
+    const activeFingerprint = isEditingCustomTemplate
+      ? createTemplateFingerprint(activeTemplateDefinition)
+      : createResumeFingerprint(buildActiveResumeItem(lastSavedAt ?? ""));
+    const persistedFingerprint = isEditingCustomTemplate
+      ? lastPersistedTemplateRef.current
+      : lastPersistedResumeRef.current;
+
+    if (!activeFingerprint || activeFingerprint === persistedFingerprint) {
+      return;
+    }
+
+    const autosaveGeneration = autosaveGenerationRef.current;
+    const timer = window.setTimeout(() => {
+      if (autosaveGeneration !== autosaveGenerationRef.current) {
+        return;
+      }
+
+      void saveCurrentWorkspace("autosave").catch((error) => {
+        console.error("Failed to autosave workspace.", error);
+      });
+    }, AUTOSAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeTemplateDefinition,
+    activeView,
+    buildActiveResumeItem,
+    canSaveCurrentWorkspace,
+    isLoading,
+    lastSavedAt,
+    saveCurrentWorkspace,
+    showTemplateGallery,
+  ]);
 
   useEffect(() => {
     if (isLoading || saveState === "saving") {
@@ -2135,12 +2244,12 @@ export function ResumeBuilder({
   }, []);
 
   const hasUnsavedCurrentWorkspaceChanges = useCallback(() => {
-    if (saveState === "saving") {
-      return false;
-    }
+    const route = currentRouteRef.current;
 
-    if (isResumeDetailView) {
-      const stableActiveResume = buildActiveResumeItem(lastSavedAt ?? "");
+    if (route.kind === "resume-detail") {
+      const stableActiveResume = buildActiveResumeItemRef.current(
+        lastSavedAtRef.current ?? "",
+      );
 
       return Boolean(
         stableActiveResume &&
@@ -2149,22 +2258,16 @@ export function ResumeBuilder({
       );
     }
 
-    if (isTemplateDetailView && !activeTemplateDefinition.isBuiltIn) {
+    const latestTemplate = activeTemplateDefinitionRef.current;
+    if (route.kind === "template-detail" && !latestTemplate.isBuiltIn) {
       return (
-        createTemplateFingerprint(activeTemplateDefinition) !==
+        createTemplateFingerprint(latestTemplate) !==
         lastPersistedTemplateRef.current
       );
     }
 
     return false;
-  }, [
-    activeTemplateDefinition,
-    buildActiveResumeItem,
-    isResumeDetailView,
-    isTemplateDetailView,
-    lastSavedAt,
-    saveState,
-  ]);
+  }, []);
 
   const restorePersistedActiveResume = useCallback(() => {
     const persistedResume = lastPersistedResumeItemRef.current;
@@ -2209,16 +2312,85 @@ export function ResumeBuilder({
   ]);
 
   const requestWorkspaceLeave = useCallback(
-    (run: () => void) => {
+    (run: () => void, cancel?: () => void) => {
       if (!hasUnsavedCurrentWorkspaceChanges()) {
+        if (
+          currentRouteRef.current.kind === "resume-detail" &&
+          lastResumeSaveModeRef.current === "autosave"
+        ) {
+          if (workspaceLeaveInFlightRef.current) {
+            return;
+          }
+
+          workspaceLeaveInFlightRef.current = true;
+          void saveCurrentWorkspace("checkpoint")
+            .then(() => {
+              if (hasUnsavedCurrentWorkspaceChanges()) {
+                setPendingWorkspaceLeaveAction({ run, cancel });
+                return;
+              }
+
+              run();
+            })
+            .catch((error) => {
+              console.error(
+                "Failed to checkpoint autosaved workspace before leaving.",
+                error,
+              );
+              if (!isApiErrorToastShown(error)) {
+                toast.error(t.loadError, {
+                  closeButton: true,
+                });
+              }
+              cancel?.();
+            })
+            .finally(() => {
+              workspaceLeaveInFlightRef.current = false;
+            });
+          return;
+        }
+
         run();
         return;
       }
 
-      setPendingWorkspaceLeaveAction({ run });
+      setPendingWorkspaceLeaveAction({ run, cancel });
     },
+    [hasUnsavedCurrentWorkspaceChanges, saveCurrentWorkspace, t.loadError],
+  );
+
+  const shouldBlockWorkspaceNavigation = useCallback(
+    () =>
+      hasUnsavedCurrentWorkspaceChanges() ||
+      (currentRouteRef.current.kind === "resume-detail" &&
+        lastResumeSaveModeRef.current === "autosave"),
     [hasUnsavedCurrentWorkspaceChanges],
   );
+  const navigationBlocker = useBlocker(shouldBlockWorkspaceNavigation);
+
+  useEffect(() => {
+    if (navigationBlocker.state !== "blocked") {
+      handledBlockedNavigationKeyRef.current = null;
+      return;
+    }
+
+    const blockedLocationKey = navigationBlocker.location.key;
+    if (handledBlockedNavigationKeyRef.current === blockedLocationKey) {
+      return;
+    }
+
+    handledBlockedNavigationKeyRef.current = blockedLocationKey;
+    requestWorkspaceLeave(
+      () => {
+        handledBlockedNavigationKeyRef.current = null;
+        navigationBlocker.proceed();
+      },
+      () => {
+        handledBlockedNavigationKeyRef.current = null;
+        navigationBlocker.reset();
+      },
+    );
+  }, [navigationBlocker, requestWorkspaceLeave]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -2355,6 +2527,7 @@ export function ResumeBuilder({
             lastPersistedResumeRef.current =
               createResumeFingerprint(firstResume);
             lastPersistedResumeItemRef.current = firstResume;
+            lastResumeSaveModeRef.current = "checkpoint";
             break;
           }
           case "resume-detail":
@@ -2433,11 +2606,17 @@ export function ResumeBuilder({
           lastPersistedResumeRef.current =
             createResumeFingerprint(detail.resume);
           lastPersistedResumeItemRef.current = detail.resume;
+          lastResumeSaveModeRef.current = versionsPayload.versions.some(
+            (version) => version.versionId === detail.versionId,
+          )
+            ? "checkpoint"
+            : "autosave";
           lastLoadedResumeDetailIdRef.current = detail.resume.id;
         } else if (route.kind !== "resume-detail") {
           lastLoadedResumeDetailIdRef.current = null;
           setWorkspaceVersions([]);
           setActiveWorkspaceVersionId(null);
+          lastResumeSaveModeRef.current = "checkpoint";
         }
 
         setHasLoadError(false);
@@ -2624,6 +2803,7 @@ export function ResumeBuilder({
       lastPersistedResumeRef.current =
         createResumeFingerprint(nextActiveResume);
       lastPersistedResumeItemRef.current = nextActiveResume;
+      lastResumeSaveModeRef.current = "checkpoint";
       setSaveState("saved");
 
       if (isResumeDetailView) {
@@ -2664,17 +2844,124 @@ export function ResumeBuilder({
     }
   }
 
-  function discardAndRunPendingWorkspaceLeaveAction() {
+  function cancelPendingWorkspaceLeaveAction() {
+    pendingWorkspaceLeaveAction?.cancel?.();
+    setPendingWorkspaceLeaveAction(null);
+  }
+
+  async function discardAndRunPendingWorkspaceLeaveAction() {
     if (!pendingWorkspaceLeaveAction || isResolvingWorkspaceLeave) {
       return;
     }
 
     const action = pendingWorkspaceLeaveAction.run;
+    const route = currentRouteRef.current;
+    const persistedResume =
+      route.kind === "resume-detail"
+        ? lastPersistedResumeItemRef.current
+        : null;
+    const persistedTemplate =
+      route.kind === "template-detail"
+        ? lastPersistedTemplateItemRef.current
+        : null;
+    const activeRequest = saveRequestRef.current;
+    const hasActiveResumeSave = Boolean(
+      persistedResume &&
+        activeRequest?.targetKey === `resume:${persistedResume.id}`,
+    );
+    const hasActiveTemplateSave = Boolean(
+      persistedTemplate &&
+        activeRequest?.targetKey === `template:${persistedTemplate.id}`,
+    );
+    const shouldCheckpointPersistedResume = Boolean(
+      persistedResume &&
+        (hasActiveResumeSave ||
+          lastResumeSaveModeRef.current === "autosave"),
+    );
 
+    autosaveGenerationRef.current += 1;
     restorePersistedActiveResume();
     restorePersistedActiveTemplate();
-    setPendingWorkspaceLeaveAction(null);
-    action();
+    setIsResolvingWorkspaceLeave(true);
+
+    try {
+      if (hasActiveResumeSave || hasActiveTemplateSave) {
+        try {
+          await activeRequest?.promise;
+        } catch {
+          // Persisting the captured snapshot below is the source of truth for
+          // the discard action, even when the superseded request failed.
+        }
+      }
+
+      if (persistedResume && shouldCheckpointPersistedResume) {
+        const restoredResume = await saveResumeApi(
+          persistedResume.id,
+          {
+            title: persistedResume.title,
+            resume: persistedResume.resume,
+            jobBrief: persistedResume.jobBrief,
+            typography: persistedResume.typography,
+            template: persistedResume.template,
+            templateSettings: persistedResume.templateSettings ?? null,
+          },
+          "checkpoint",
+        );
+
+        setResumeDocuments((current) =>
+          current.map((item) =>
+            item.id === restoredResume.resume.id
+              ? restoredResume.resume
+              : item,
+          ),
+        );
+        hydrateResumeWorkspace(restoredResume.resume);
+        lastPersistedResumeRef.current = createResumeFingerprint(
+          restoredResume.resume,
+        );
+        lastPersistedResumeItemRef.current = restoredResume.resume;
+        lastResumeSaveModeRef.current = "checkpoint";
+        lastLoadedResumeDetailIdRef.current = restoredResume.resume.id;
+        setLastSavedAt(restoredResume.savedAt);
+        setActiveWorkspaceVersionId(restoredResume.versionId);
+        setSaveState("saved");
+      }
+
+      if (persistedTemplate && hasActiveTemplateSave) {
+        const restoredTemplate = await saveTemplateApi(
+          persistedTemplate.id,
+          persistedTemplate,
+        );
+
+        setCustomTemplates((current) =>
+          current.map((item) =>
+            item.id === restoredTemplate.template.id
+              ? restoredTemplate.template
+              : item,
+          ),
+        );
+        setTemplate(restoredTemplate.template.id);
+        lastPersistedTemplateRef.current = createTemplateFingerprint(
+          restoredTemplate.template,
+        );
+        lastPersistedTemplateItemRef.current = restoredTemplate.template;
+        lastOpenedTemplateIdRef.current = restoredTemplate.template.id;
+        setLastSavedAt(restoredTemplate.template.updatedAt);
+        setSaveState("saved");
+      }
+
+      setPendingWorkspaceLeaveAction(null);
+      action();
+    } catch (error) {
+      console.error("Failed to discard workspace changes safely.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.loadError, {
+          closeButton: true,
+        });
+      }
+    } finally {
+      setIsResolvingWorkspaceLeave(false);
+    }
   }
 
   const persistUserSettings = useCallback(
@@ -2845,6 +3132,7 @@ export function ResumeBuilder({
       hydrateResumeWorkspace(nextItem);
       lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
       lastPersistedResumeItemRef.current = nextItem;
+      lastResumeSaveModeRef.current = "checkpoint";
       lastLoadedResumeDetailIdRef.current = nextItem.id;
       setLastSavedAt(result.savedAt);
       setActiveWorkspaceVersionId(result.versionId);
@@ -2892,6 +3180,7 @@ export function ResumeBuilder({
       hydrateResumeWorkspace(nextItem);
       lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
       lastPersistedResumeItemRef.current = nextItem;
+      lastResumeSaveModeRef.current = "checkpoint";
       lastLoadedResumeDetailIdRef.current = nextItem.id;
       setLastSavedAt(result.savedAt);
       setActiveWorkspaceVersionId(result.versionId);
@@ -2996,6 +3285,7 @@ export function ResumeBuilder({
       lastPersistedResumeRef.current =
         createResumeFingerprint(firstImportedResume);
       lastPersistedResumeItemRef.current = firstImportedResume;
+      lastResumeSaveModeRef.current = "checkpoint";
       lastLoadedResumeDetailIdRef.current = firstImportedResume.id;
       setLastSavedAt(savedImports[0].savedAt);
       setActiveWorkspaceVersionId(savedImports[0].versionId);
@@ -4719,7 +5009,7 @@ export function ResumeBuilder({
         open={Boolean(pendingWorkspaceLeaveAction)}
         onOpenChange={(open) => {
           if (!open && !isResolvingWorkspaceLeave) {
-            setPendingWorkspaceLeaveAction(null);
+            cancelPendingWorkspaceLeaveAction();
           }
         }}
       >
@@ -4750,7 +5040,7 @@ export function ResumeBuilder({
               type="button"
               variant="outline"
               disabled={isResolvingWorkspaceLeave}
-              onClick={() => setPendingWorkspaceLeaveAction(null)}
+              onClick={cancelPendingWorkspaceLeaveAction}
             >
               {t.unsavedChangesContinueEditing}
             </Button>
@@ -4758,7 +5048,9 @@ export function ResumeBuilder({
               type="button"
               variant="destructive"
               disabled={isResolvingWorkspaceLeave}
-              onClick={discardAndRunPendingWorkspaceLeaveAction}
+              onClick={() =>
+                void discardAndRunPendingWorkspaceLeaveAction()
+              }
             >
               {t.unsavedChangesDiscard}
             </Button>
@@ -4835,7 +5127,12 @@ export function ResumeBuilder({
                     return;
                   }
 
-                  runViewTransition(() => navigate("/templates"), "nav-back");
+                  requestWorkspaceLeave(() =>
+                    runViewTransition(
+                      () => navigate("/templates"),
+                      "nav-back",
+                    ),
+                  );
                 }}
               >
                 <ChevronLeft className="size-4" />

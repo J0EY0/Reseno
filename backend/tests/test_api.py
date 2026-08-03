@@ -118,6 +118,30 @@ def minimal_resume_item(
     }
 
 
+def noncanonical_list_resume() -> dict:
+    resume = minimal_resume_item(title="Invalid List Resume")["resume"]
+    resume["sections"] = [
+        {
+            "id": "skills",
+            "kind": "skills",
+            "layout": "list",
+            "customTitle": "",
+            "items": [
+                {
+                    "id": "skill-1",
+                    "title": "前端",
+                    "subtitle": "",
+                    "meta": "",
+                    "period": "",
+                    "description": "",
+                    "highlights": ["React", "TypeScript"],
+                },
+            ],
+        },
+    ]
+    return resume
+
+
 def minimal_template_definition(
     template_id: str = "template-client-id",
     name: str = "Custom Template",
@@ -995,6 +1019,51 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert not attachment_dir.exists()
 
 
+def test_resume_create_rejects_noncanonical_list_item_content(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/resumes",
+        json={"title": "Invalid List Resume", "resume": noncanonical_list_resume()},
+    )
+
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
+
+
+def test_resume_update_rejects_noncanonical_list_content_without_new_version(
+    client: TestClient,
+) -> None:
+    canonical_resume = noncanonical_list_resume()
+    canonical_item = canonical_resume["sections"][0]["items"][0]
+    canonical_item["subtitle"] = "React、TypeScript"
+    canonical_item["highlights"] = []
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "Canonical List Resume", "resume": canonical_resume},
+    )
+    created = create_response.json()["data"]["resume"]
+
+    update_response = client.put(
+        f"/api/resumes/{created['id']}",
+        json={**created, "resume": noncanonical_list_resume()},
+    )
+    current_response = client.get(f"/api/resumes/{created['id']}")
+    versions_response = client.get(f"/api/resumes/{created['id']}/versions")
+
+    assert update_response.json()["code"] == 40000
+    assert update_response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
+    current_item = current_response.json()["data"]["resume"]["resume"]["sections"][
+        0
+    ]["items"][0]
+    assert current_item["subtitle"] == "React、TypeScript"
+    assert current_item["highlights"] == []
+    assert [
+        item["versionId"]
+        for item in versions_response.json()["data"]["versions"]
+    ] == ["1"]
+
+
 def test_duplicate_resume_copies_content_without_history_or_agent_context(
     client: TestClient,
 ) -> None:
@@ -1619,6 +1688,97 @@ def test_identical_resume_hash_does_not_create_new_version(
     assert version_count == 1
 
 
+def test_resume_autosave_persists_without_creating_history_version(
+    client: TestClient,
+) -> None:
+    create_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Autosave Draft",
+            "resume": minimal_resume_item("ignored", "Initial Name")["resume"],
+            "template": "minimal",
+        },
+    )
+    created = create_response.json()["data"]
+    resume = created["resume"]
+    resume_id = resume["id"]
+    autosave_payload = {
+        **resume,
+        "resume": {
+            **resume["resume"],
+            "basic": {
+                **resume["resume"]["basic"],
+                "name": "Latest Autosaved Name",
+            },
+        },
+        "templateSettings": None,
+    }
+
+    autosave_response = client.put(
+        f"/api/resumes/{resume_id}?saveMode=autosave",
+        json=autosave_payload,
+    )
+    detail_response = client.get(f"/api/resumes/{resume_id}")
+    versions_after_autosave = client.get(f"/api/resumes/{resume_id}/versions")
+
+    assert autosave_response.status_code == 200
+    autosave_version_id = autosave_response.json()["data"]["versionId"]
+    assert (
+        detail_response.json()["data"]["resume"]["resume"]["basic"]["name"]
+        == "Latest Autosaved Name"
+    )
+    assert [
+        item["versionId"]
+        for item in versions_after_autosave.json()["data"]["versions"]
+    ] == ["1"]
+
+    latest_autosave_payload = {
+        **autosave_payload,
+        "resume": {
+            **autosave_payload["resume"],
+            "basic": {
+                **autosave_payload["resume"]["basic"],
+                "name": "Newest Autosaved Name",
+            },
+        },
+    }
+    latest_autosave_response = client.put(
+        f"/api/resumes/{resume_id}?saveMode=autosave",
+        json=latest_autosave_payload,
+    )
+    latest_autosave_version_id = latest_autosave_response.json()["data"][
+        "versionId"
+    ]
+    versions_after_latest_autosave = client.get(
+        f"/api/resumes/{resume_id}/versions"
+    )
+    versions_dir = get_settings().storage_dir / "resumes" / resume_id / "versions"
+
+    assert latest_autosave_version_id != autosave_version_id
+    assert [
+        item["versionId"]
+        for item in versions_after_latest_autosave.json()["data"]["versions"]
+    ] == ["1"]
+    assert not (versions_dir / f"{autosave_version_id}.json").exists()
+    assert (versions_dir / f"{latest_autosave_version_id}.json").exists()
+
+    checkpoint_response = client.put(
+        f"/api/resumes/{resume_id}?saveMode=checkpoint",
+        json=latest_autosave_payload,
+    )
+    versions_after_checkpoint = client.get(f"/api/resumes/{resume_id}/versions")
+
+    assert checkpoint_response.status_code == 200
+    assert [
+        item["versionId"]
+        for item in versions_after_checkpoint.json()["data"]["versions"]
+    ] == [latest_autosave_version_id, "1"]
+    assert (
+        checkpoint_response.json()["data"]["versionId"]
+        == latest_autosave_version_id
+    )
+
+
 def test_master_key_generated_once(client: TestClient) -> None:
     settings = get_settings()
     env_file = settings.env_file_path
@@ -1778,6 +1938,62 @@ def test_migrate_db_rebuilds_legacy_llm_configs_table(
 
     assert LLM_CONFIG_REQUIRED_COLUMNS.issubset(columns)
     assert row_count == 0
+    get_settings.cache_clear()
+
+
+def test_migrate_db_marks_legacy_resume_versions_as_checkpoints(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.migrations import migrate_db
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE resume_versions (
+                resume_id TEXT NOT NULL,
+                version_id INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (resume_id, version_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO resume_versions (
+                resume_id,
+                version_id,
+                content_hash,
+                saved_at
+            )
+            VALUES ('resume-legacy', 1, 'hash', '2026-08-02T00:00:00.000Z')
+            """
+        )
+
+    migrate_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(resume_versions)")
+        }
+        version_kind = conn.execute(
+            """
+            SELECT kind
+            FROM resume_versions
+            WHERE resume_id = 'resume-legacy' AND version_id = 1
+            """
+        ).fetchone()[0]
+
+    assert "kind" in columns
+    assert version_kind == "checkpoint"
     get_settings.cache_clear()
 
 
@@ -3122,7 +3338,7 @@ def test_agent_writes_explicit_location_without_observing_old_value() -> None:
     assert "杭州" not in json.dumps(result["output"], ensure_ascii=False)
 
 
-def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
+def test_agent_edit_move_item_rejects_cross_layout_content() -> None:
     request = AgentChatRequest(
         prompt="把项目移动到其他经历",
         locale="zh",
@@ -3170,16 +3386,14 @@ def test_agent_edit_move_item_generates_incremental_draft_edits() -> None:
     )
 
     assert tool.title == "edit_move_item"
-    assert tool.state == "output-available"
-    assert result["output"]["editCount"] == 2
-    assert [edit.operation["type"] for edit in runner.edits] == [
-        "insert_item",
-        "delete_item",
-    ]
+    assert tool.state == "output-error"
+    assert result["output"]["editCount"] == 0
+    assert "RESUME_LIST_ITEM_CONTENT_INVALID" in json.dumps(result["output"])
+    assert runner.edits == []
     project_items = runner.draft_resume["sections"][0]["items"]
     other_items = runner.draft_resume["sections"][1]["items"]
-    assert project_items == []
-    assert other_items[0]["id"] == "project-1"
+    assert project_items[0]["id"] == "project-1"
+    assert other_items == []
 
 
 def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -> None:
@@ -4878,7 +5092,11 @@ def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() 
                         {
                             "id": "skill-1",
                             "title": "旧技能",
-                            "highlights": ["HTML"],
+                            "subtitle": "HTML",
+                            "meta": "",
+                            "period": "",
+                            "description": "",
+                            "highlights": [],
                         },
                     ],
                 },
@@ -4904,8 +5122,8 @@ def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() 
     assert tool.state == "output-available"
     assert result["output"]["editCount"] == 3
     assert [item["title"] for item in items] == ["前端", "后端"]
-    assert items[0]["highlights"] == ["React", "TypeScript"]
-    assert items[1]["highlights"] == ["Python"]
+    assert [item["subtitle"] for item in items] == ["React、TypeScript", "Python"]
+    assert all(item["highlights"] == [] for item in items)
 
 
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
@@ -5204,11 +5422,11 @@ def test_agent_chat_accepts_other_section_kind() -> None:
                         "items": [
                             {
                                 "title": "开源贡献",
-                                "subtitle": "",
+                                "subtitle": "维护项目文档",
                                 "meta": "",
                                 "period": "",
                                 "description": "",
-                                "highlights": ["维护项目文档"],
+                                "highlights": [],
                             },
                         ],
                     },
@@ -5224,6 +5442,39 @@ def test_agent_chat_accepts_other_section_kind() -> None:
     assert section["customTitle"] == ""
     assert section["layout"] == "list"
     assert section["items"][0]["title"] == "开源贡献"
+
+
+def test_agent_chat_rejects_noncanonical_list_item_content() -> None:
+    edits = _model_edit_suggestions(
+        {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+        [
+            {
+                "title": "新增技能",
+                "target": "sections",
+                "reason": "添加技能分组。",
+                "operation": {
+                    "type": "insert_section",
+                    "section": {
+                        "section_type": "skills",
+                        "layout": "list",
+                        "items": [
+                            {
+                                "title": "前端",
+                                "subtitle": "",
+                                "meta": "",
+                                "period": "",
+                                "description": "",
+                                "highlights": ["React"],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+        locale="zh",
+    )
+
+    assert edits == []
 
 
 def test_agent_chat_plain_message_does_not_return_tools(
@@ -6599,6 +6850,24 @@ def test_import_resume_accepts_json_upload(client: TestClient) -> None:
     resume = response.json()["data"]["resumes"][0]
     assert re.fullmatch(r"[A-Za-z0-9]{16}", resume["id"])
     assert resume["resume"]["basic"]["name"] == "Avery"
+
+
+def test_import_resume_rejects_noncanonical_list_item_content(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/import/resume",
+        files={
+            "file": (
+                "resume.json",
+                json.dumps(noncanonical_list_resume()).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
 
 
 def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:

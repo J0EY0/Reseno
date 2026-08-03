@@ -1284,6 +1284,17 @@ function verifyZhMinimalStructureRegression(
   );
   const resume = buildResumeFromLines(lines, "导入内容");
 
+  for (const section of resume.sections.filter(
+    (candidate) => candidate.layout === "list",
+  )) {
+    for (const item of section.items) {
+      assert.equal(item.meta, "");
+      assert.equal(item.period, "");
+      assert.equal(item.description, "");
+      assert.deepEqual(item.highlights, []);
+    }
+  }
+
   assert.ok(
     lines.some((line) => line.text === "项目经历"),
     "CJK compatibility ideographs in 项⽬经历 should normalize before parsing",

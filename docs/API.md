@@ -216,7 +216,7 @@ type SettingsPageResponse = WorkspacePageTheme & ModelPageContext
 | `GET` | `/api/resumes?status=active\|deleted` | 按状态列出简历；deleted 返回回收站预览 |
 | `POST` | `/api/resumes` | 创建简历及初始版本 |
 | `GET` | `/api/resumes/{resumeId}` | 读取一份有效简历的当前版本 |
-| `PUT` | `/api/resumes/{resumeId}` | 保存完整简历；内容变化时创建新版本 |
+| `PUT` | `/api/resumes/{resumeId}?saveMode=autosave\|checkpoint` | 保存完整简历；默认形成正式检查点，自动保存只保留最新临时快照 |
 | `POST` | `/api/resumes/{resumeId}/duplicate?locale=zh\|en` | 从当前版本创建独立副本，不复制会话和版本历史 |
 | `POST` | `/api/resumes/{resumeId}/trash` | 将有效简历移入回收站，不创建版本 |
 | `POST` | `/api/resumes/{resumeId}/restore` | 恢复已删除简历，不创建版本 |
@@ -243,12 +243,15 @@ type ResumeVersionsResponse = {
 ```
 
 后端按简历 ID 持久化。`versionId` 从 `1` 开始递增；内容 hash 与当前版本相同
-时不会制造新版本，展示时间字段不参与 hash。
+时不会制造新版本，展示时间字段不参与 hash。`saveMode` 默认为
+`checkpoint`，兼容既有调用；`autosave` 最多保留一个临时版本，后续自动保存会
+替换前一个临时版本，手动保存、离开和导出前则将最新快照提升为正式检查点。
+`GET /versions` 只返回正式检查点，因此版本号出现间隔属于正常情况。
 
 ```text
 SQLite:
   resumes(id, locale, current_version_id, title, saved_at, deleted, ...)
-  resume_versions(resume_id, version_id, content_hash, saved_at, ...)
+  resume_versions(resume_id, version_id, content_hash, kind, saved_at, ...)
 
 Storage:
   resumes/{resume_id}/versions/{version_id}.json
@@ -687,6 +690,25 @@ type ResumeSection = {
   items: ResumeSectionItem[]
 }
 ```
+
+### ResumeSectionItem
+
+```ts
+type ResumeSectionItem = {
+  id: string
+  title: string
+  subtitle: string
+  meta: string
+  period: string
+  description: string
+  highlights: string[]
+}
+```
+
+When `ResumeSection.layout` is `"list"`, only `title` and `subtitle` may contain
+content. `meta`, `period`, and `description` must be empty strings, and
+`highlights` must be an empty array. Resume create, update, JSON import, and
+Agent edits reject documents that violate this invariant.
 
 ### ResumeTemplateDefinition
 

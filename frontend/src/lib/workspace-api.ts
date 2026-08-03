@@ -12,6 +12,7 @@ import type {
   ResumeCreateRequest,
   ResumeDeleteResponse,
   ResumeDetailResponse,
+  ResumeSaveMode,
   ResumeSaveRequest,
   ResumeTrashEmptyResponse,
   ResumeTrashResponse,
@@ -96,10 +97,15 @@ export function fetchResumeApi(
   });
 }
 
-export function saveResumeApi(resumeId: string, request: ResumeSaveRequest) {
+export function saveResumeApi(
+  resumeId: string,
+  request: ResumeSaveRequest,
+  saveMode: ResumeSaveMode = "checkpoint",
+) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
     body: request,
     method: "PUT",
+    searchParams: { saveMode },
   });
 }
 

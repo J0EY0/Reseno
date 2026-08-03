@@ -53,6 +53,8 @@ export interface ResumeCreateRequest {
   templateSettings?: ResumeWorkspaceItem["templateSettings"] | null;
 }
 
+export type ResumeSaveMode = "autosave" | "checkpoint";
+
 export type ResumeSaveRequest = ResumeCreateRequest;
 
 export interface ResumeDetailResponse {

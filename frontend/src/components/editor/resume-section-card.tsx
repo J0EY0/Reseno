@@ -270,31 +270,33 @@ export function ResumeSectionCard({
                 </>
               ) : null}
 
-              <FormField label={t.fieldLabels.description} className="md:col-span-2">
-                <Textarea
-                  rows={2}
-                  value={item.description}
-                  className={`${compactFieldClassName} min-h-16 resize-y`}
-                  placeholder={t.placeholders.description}
-                  onChange={(event) =>
-                    onUpdateItem(section.id, item.id, 'description', event.target.value)
-                  }
-                />
-              </FormField>
-
               {section.layout === 'timeline' ? (
-                <div className="grid min-w-0 gap-2 md:col-span-2">
-                  <span className="break-words text-xs font-medium leading-tight text-muted-foreground">
-                    {t.fieldLabels.highlights}
-                  </span>
-                  <Suspense fallback={<RichHighlightsEditorSkeleton />}>
-                    <RichHighlightsEditor
-                      t={t}
-                      value={item.highlights}
-                      onChange={(value) => onUpdateHighlights(section.id, item.id, value)}
+                <>
+                  <FormField label={t.fieldLabels.description} className="md:col-span-2">
+                    <Textarea
+                      rows={2}
+                      value={item.description}
+                      className={`${compactFieldClassName} min-h-16 resize-y`}
+                      placeholder={t.placeholders.description}
+                      onChange={(event) =>
+                        onUpdateItem(section.id, item.id, 'description', event.target.value)
+                      }
                     />
-                  </Suspense>
-                </div>
+                  </FormField>
+
+                  <div className="grid min-w-0 gap-2 md:col-span-2">
+                    <span className="break-words text-xs font-medium leading-tight text-muted-foreground">
+                      {t.fieldLabels.highlights}
+                    </span>
+                    <Suspense fallback={<RichHighlightsEditorSkeleton />}>
+                      <RichHighlightsEditor
+                        t={t}
+                        value={item.highlights}
+                        onChange={(value) => onUpdateHighlights(section.id, item.id, value)}
+                      />
+                    </Suspense>
+                  </div>
+                </>
               ) : null}
             </div>
           </div>

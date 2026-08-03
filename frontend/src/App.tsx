@@ -1,6 +1,5 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import {
-  BrowserRouter,
   Navigate,
   Route,
   Routes,
@@ -240,19 +239,19 @@ function App() {
 
   if (authRequired && !isAuthenticated) {
     return (
-      <BrowserRouter>
+      <>
         <DocumentMetadata locale={locale} messages={messages} />
         <Routes>
           <Route path="/pdf-export" element={renderPdfExport()} />
           <Route path="/login" element={renderLoginPage()} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </BrowserRouter>
+      </>
     );
   }
 
   return (
-    <BrowserRouter>
+    <>
       <DocumentMetadata locale={locale} messages={messages} />
       <Routes>
         <Route path="/pdf-export" element={renderPdfExport()} />
@@ -266,7 +265,7 @@ function App() {
         <Route path="/login" element={<Navigate to="/resume" replace />} />
         <Route path="*" element={<Navigate to="/resume" replace />} />
       </Routes>
-    </BrowserRouter>
+    </>
   );
 }
 
