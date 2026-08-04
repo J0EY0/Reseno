@@ -4,6 +4,10 @@ from enum import StrEnum
 from typing import Any
 
 from app.schemas.agent import AgentChatRequest
+from app.services.resume_document_contract import (
+    ITEM_LIST_FIELDS_BY_KIND,
+    ITEM_STRING_FIELDS_BY_KIND,
+)
 
 from .attachments import AgentAttachmentError, current_request_attachments
 from .intent_patterns import matches_intent_pattern
@@ -298,19 +302,26 @@ def _section_has_item_evidence(section: object) -> bool:
     items = section.get("items")
     if not isinstance(items, list):
         return False
-    return any(_item_has_content(item) for item in items)
+    kind = section.get("kind")
+    section_kind = kind if isinstance(kind, str) else ""
+    return any(_item_has_content(item, section_kind) for item in items)
 
 
-def _item_has_content(item: object) -> bool:
+def _item_has_content(item: object, section_kind: str) -> bool:
     if not isinstance(item, dict):
         return False
-    for key in ("title", "subtitle", "meta", "period", "description"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return True
-    highlights = item.get("highlights")
-    return isinstance(highlights, list) and any(
-        isinstance(value, str) and value.strip() for value in highlights
+    string_fields = ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ())
+    list_fields = ITEM_LIST_FIELDS_BY_KIND.get(section_kind, ())
+    return any(
+        isinstance(item.get(field), str) and bool(item[field].strip())
+        for field in string_fields
+    ) or any(
+        isinstance(item.get(field), list)
+        and any(
+            isinstance(value, str) and value.strip()
+            for value in item[field]
+        )
+        for field in list_fields
     )
 
 

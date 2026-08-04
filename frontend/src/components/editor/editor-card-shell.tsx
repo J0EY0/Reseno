@@ -30,7 +30,7 @@ function getCardScrollCorrection(
 export function EditorCardShell({
   icon: Icon,
   title,
-  summary,
+  titleMeta,
   toggleLabel,
   collapsed,
   onToggle,
@@ -39,7 +39,7 @@ export function EditorCardShell({
 }: {
   icon: LucideIcon
   title: string
-  summary: string
+  titleMeta?: string
   toggleLabel: string
   collapsed: boolean
   onToggle: () => void
@@ -246,14 +246,16 @@ export function EditorCardShell({
             <div className="flex size-9 items-center justify-center rounded-xl bg-primary/8 text-primary">
               <Icon className="size-4" />
             </div>
-            <div className="min-w-0">
-              <h3 className="truncate text-sm font-semibold leading-5 tracking-tight" title={title}>
+            <h3 className="flex min-w-0 items-baseline gap-2 text-sm font-semibold leading-5 tracking-tight">
+              <span className="min-w-0 truncate" title={title}>
                 {title}
-              </h3>
-              <p className="mt-0.5 truncate text-xs leading-4 text-muted-foreground" title={summary}>
-                {summary}
-              </p>
-            </div>
+              </span>
+              {titleMeta ? (
+                <span className="shrink-0 whitespace-nowrap text-xs font-normal leading-4 text-muted-foreground">
+                  {titleMeta}
+                </span>
+              ) : null}
+            </h3>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {headerAction}

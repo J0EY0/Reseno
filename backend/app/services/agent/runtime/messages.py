@@ -14,6 +14,7 @@ from app.services.llm import (
     supports_native_attachment,
 )
 from app.services.llm.common import request_max_output_tokens
+from app.services.resume_document_contract import ITEM_STRING_FIELDS_BY_KIND
 
 from ..attachments import (
     AgentAttachmentError,
@@ -1017,6 +1018,7 @@ def _compact_resume_outline(resume: Any) -> dict[str, Any]:
     sections = sections_value if isinstance(sections_value, list) else []
 
     return {
+        "schemaVersion": resume.get("schemaVersion"),
         "basic": {
             "headline": _string_value(basic_data.get("headline")),
             "hasSummary": bool(_string_value(basic_data.get("summary"))),
@@ -1033,28 +1035,44 @@ def _compact_section_outline(section: Any) -> dict[str, Any]:
 
     items = section.get("items")
     item_list = items if isinstance(items, list) else []
-    title = _string_value(section.get("customTitle")) or _string_value(
-        section.get("title"),
-    )
+    kind = _string_value(section.get("kind"))
 
     return {
         "id": _string_value(section.get("id")),
-        "kind": _string_value(section.get("kind")),
-        "title": title,
+        "kind": kind,
+        "title": _string_value(section.get("title")),
         "itemCount": len(item_list),
-        "items": [_compact_item_outline(item) for item in item_list[:3]],
+        "items": [
+            _compact_item_outline(item, section_kind=kind)
+            for item in item_list[:3]
+        ],
     }
 
 
-def _compact_item_outline(item: Any) -> dict[str, str]:
+def _compact_item_outline(
+    item: Any,
+    *,
+    section_kind: str,
+) -> dict[str, str]:
     if not isinstance(item, dict):
         return {}
 
-    return {
-        "id": _string_value(item.get("id")),
-        "title": _string_value(item.get("title")),
-        "subtitle": _string_value(item.get("subtitle")),
-    }
+    outline = {"id": _string_value(item.get("id"))}
+    visible_field_count = 0
+    for field in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ()):
+        value = _string_value(item.get(field))
+        if not value:
+            continue
+        compact_value = " ".join(value.split())
+        outline[field] = (
+            compact_value
+            if len(compact_value) <= 160
+            else f"{compact_value[:157]}..."
+        )
+        visible_field_count += 1
+        if visible_field_count >= 3:
+            break
+    return outline
 
 
 def _conversation_item_role(item: Any) -> str:

@@ -6,7 +6,10 @@ from uuid import uuid4
 
 from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
 from app.services.resume_document_contract import (
+    ITEM_LIST_FIELDS_BY_KIND,
+    ITEM_STRING_FIELDS_BY_KIND,
     ResumeDocumentContractError,
+    is_resume_item_for_kind,
     validate_resume_document,
 )
 
@@ -46,7 +49,6 @@ BASIC_EDIT_FIELDS = {
     "avatar",
     "summary",
 }
-ITEM_PATCH_FIELDS = {"title", "subtitle", "meta", "period", "description", "highlights"}
 FIELD_ONLY_LABEL_RE = compiled_agent_pattern("editing.field_only_label")
 CONTENT_LABEL_RE = compiled_agent_pattern("editing.content_label")
 MIXED_FIELD_LABEL_RE = compiled_agent_pattern("editing.mixed_field_label")
@@ -97,6 +99,18 @@ def _find_resume_item(
         ),
         None,
     )
+
+
+def _resume_item_ids(resume: dict[str, Any]) -> set[str]:
+    """Return every item ID; V2 item identity is document-wide."""
+
+    return {
+        item_id
+        for section in _resume_sections(resume)
+        for item in section.get("items", [])
+        if isinstance(item, dict)
+        and isinstance((item_id := item.get("id")), str)
+    }
 
 
 def _model_string(value: object) -> str:
@@ -157,27 +171,14 @@ def _section_alias_matches_text(value: str, alias: str) -> bool:
 
 
 def _normalized_section_kind(*values: object) -> str:
-    """Return a standard section kind, falling back to custom."""
+    """Return a canonical section kind, or an empty string when unknown."""
 
     for value in values:
         kind = _section_kind_from_text(value)
-        if kind and kind != "custom":
+        if kind:
             return kind
 
-    return "custom"
-
-
-def _normalized_custom_title(value: object, kind: str) -> str:
-    """Allow free section names only for custom sections."""
-
-    title = _model_string(value)
-    if kind != "custom":
-        return ""
-
-    if _section_kind_from_text(title) and _section_kind_from_text(title) != "custom":
-        return ""
-
-    return title
+    return ""
 
 
 def _clean_generated_text(value: object) -> str:
@@ -203,14 +204,14 @@ def _contains_mixed_field_labels(value: str) -> bool:
     return len(MIXED_FIELD_LABEL_RE.findall(value)) >= 2
 
 
-def _field_values_for_dedupe(item: dict[str, Any]) -> list[str]:
+def _field_values_for_dedupe(item: dict[str, Any], kind: str) -> list[str]:
     """Return fields that should not be repeated in prose or bullets."""
 
+    excluded = {"description", "content", "url"}
     return [
-        _model_string(item.get("title")),
-        _model_string(item.get("subtitle")),
-        _model_string(item.get("meta")),
-        _model_string(item.get("period")),
+        _model_string(item.get(field))
+        for field in ITEM_STRING_FIELDS_BY_KIND.get(kind, ())
+        if field not in excluded
     ]
 
 
@@ -226,14 +227,23 @@ def _has_repeated_field_values(value: str, field_values: list[str]) -> bool:
     return sum(field_key in text_key for field_key in field_keys) >= 2
 
 
-def _clean_resume_item_fields(item: dict[str, Any]) -> dict[str, Any]:
-    """Keep generated resume item fields in their own lanes."""
+def _clean_resume_item_fields(item: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Keep generated semantic item fields in their kind-specific lanes."""
 
     cleaned = {**item}
-    for key in ("title", "subtitle", "meta", "period", "description"):
+    for key in ITEM_STRING_FIELDS_BY_KIND.get(kind, ()):
         cleaned[key] = _clean_generated_text(cleaned.get(key))
 
-    field_values = _field_values_for_dedupe(cleaned)
+    for key in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
+        if key == "highlights":
+            continue
+        cleaned[key] = [
+            text
+            for value in _string_list(cleaned.get(key))
+            if (text := _clean_generated_text(value))
+        ]
+
+    field_values = _field_values_for_dedupe(cleaned, kind)
     description = _model_string(cleaned.get("description"))
     if description and (
         _contains_mixed_field_labels(description)
@@ -258,7 +268,8 @@ def _clean_resume_item_fields(item: dict[str, Any]) -> dict[str, Any]:
                 next_highlights.append(text)
                 seen.add(key)
 
-    cleaned["highlights"] = next_highlights
+    if "highlights" in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
+        cleaned["highlights"] = next_highlights
     return cleaned
 
 
@@ -271,30 +282,65 @@ def _model_int(value: object) -> int | None:
     return None
 
 
-def _normalized_item(value: object) -> dict[str, Any] | None:
-    """Return a safe ResumeSectionItem payload from model JSON."""
+def _normalized_item(value: object, kind: str) -> dict[str, Any] | None:
+    """Return one exact semantic item for the target section kind."""
 
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or kind not in ITEM_STRING_FIELDS_BY_KIND:
+        return None
+    allowed_fields = {
+        "id",
+        *ITEM_STRING_FIELDS_BY_KIND[kind],
+        *ITEM_LIST_FIELDS_BY_KIND[kind],
+    }
+    if not set(value).issubset(allowed_fields):
+        return None
+    if "id" in value and not isinstance(value["id"], str):
+        return None
+    if any(
+        field in value and not isinstance(value[field], str)
+        for field in ITEM_STRING_FIELDS_BY_KIND[kind]
+    ):
+        return None
+    if any(
+        field in value
+        and (
+            not isinstance(value[field], list)
+            or not all(isinstance(item, str) for item in value[field])
+        )
+        for field in ITEM_LIST_FIELDS_BY_KIND[kind]
+    ):
         return None
 
-    item_id = _model_string(value.get("id")) or f"item-agent-{uuid4().hex[:8]}"
-    return _clean_resume_item_fields(
+    item: dict[str, Any] = {
+        "id": _model_string(value.get("id")) or f"item-agent-{uuid4().hex[:8]}"
+    }
+    item.update(
         {
-            "id": item_id,
-            "title": _model_string(value.get("title")),
-            "subtitle": _model_string(value.get("subtitle")),
-            "meta": _model_string(value.get("meta")),
-            "period": _model_string(value.get("period")),
-            "description": _model_string(value.get("description")),
-            "highlights": _string_list(value.get("highlights")),
+            field: _model_string(value.get(field))
+            for field in ITEM_STRING_FIELDS_BY_KIND[kind]
         }
     )
+    item.update(
+        {
+            field: _string_list(value.get(field))
+            for field in ITEM_LIST_FIELDS_BY_KIND[kind]
+        }
+    )
+    return _clean_resume_item_fields(item, kind)
 
 
 def _normalized_section(value: object) -> dict[str, Any] | None:
     """Return a safe ResumeSection payload from model JSON."""
 
     if not isinstance(value, dict):
+        return None
+    if not set(value).issubset(
+        {"id", "section_type", "sectionType", "kind", "title", "items"}
+    ):
+        return None
+    if "id" in value and not isinstance(value["id"], str):
+        return None
+    if "title" in value and not isinstance(value["title"], str):
         return None
     if _section_kind_aliases_conflict(
         value.get("section_type"),
@@ -307,20 +353,21 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
         value.get("section_type"),
         value.get("sectionType"),
         value.get("kind"),
-        value.get("customTitle"),
     )
-    layout = _model_string(value.get("layout"))
     items = value.get("items")
-    normalized_items = (
-        [_normalized_item(item) for item in items] if isinstance(items, list) else []
-    )
+    if not kind or not isinstance(items, list):
+        return None
+    normalized_items = [_normalized_item(item, kind) for item in items]
+    if any(item is None for item in normalized_items):
+        return None
     normalized_items = [item for item in normalized_items if item is not None]
+    if kind == "simple_list" and len(normalized_items) != 1:
+        return None
 
     return {
         "id": _model_string(value.get("id")) or f"section-agent-{uuid4().hex[:8]}",
         "kind": kind,
-        "layout": layout if layout in {"timeline", "list"} else "timeline",
-        "customTitle": _normalized_custom_title(value.get("customTitle"), kind),
+        "title": _model_string(value.get("title")),
         "items": normalized_items,
     }
 
@@ -328,34 +375,40 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
 def _safe_item_patch(
     value: object,
     *,
+    kind: str,
     base_item: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return only frontend-writable item fields from a model patch."""
+    """Return only fields writable by the target section's item contract."""
 
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or kind not in ITEM_STRING_FIELDS_BY_KIND:
+        return {}
+    allowed_fields = {
+        *ITEM_STRING_FIELDS_BY_KIND[kind],
+        *ITEM_LIST_FIELDS_BY_KIND[kind],
+    }
+    if not set(value).issubset(allowed_fields):
         return {}
 
     patch: dict[str, Any] = {}
-    for key in ITEM_PATCH_FIELDS:
+    for key in ITEM_STRING_FIELDS_BY_KIND[kind]:
         field_value = value.get(key)
-        if key == "highlights":
-            highlights = _string_list(field_value)
-            if highlights:
-                patch[key] = highlights
-            continue
-
         if isinstance(field_value, str):
+            patch[key] = field_value
+
+    for key in ITEM_LIST_FIELDS_BY_KIND[kind]:
+        field_value = value.get(key)
+        if isinstance(field_value, list) and all(
+            isinstance(item, str) for item in field_value
+        ):
             patch[key] = field_value
 
     if not patch:
         return {}
 
-    merged = _clean_resume_item_fields({**(base_item or {}), **patch})
+    merged = _clean_resume_item_fields({**(base_item or {}), **patch}, kind)
     cleaned_patch: dict[str, Any] = {}
     for key in patch:
         if key not in merged:
-            continue
-        if key == "highlights" and not merged[key]:
             continue
         cleaned_patch[key] = merged[key]
 
@@ -370,38 +423,13 @@ def _section_kind_aliases_conflict(*values: object) -> bool:
 
 
 def _safe_section_patch(value: object) -> dict[str, Any]:
-    """Return only frontend-writable section fields from a model patch."""
+    """Return the only Agent-writable section field: its display title."""
 
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not set(value).issubset({"title"}):
         return {}
 
-    patch: dict[str, Any] = {}
-    section_type = value.get("section_type")
-    legacy_kind = value.get("kind")
-    if _section_kind_aliases_conflict(section_type, legacy_kind):
-        # A model can still emit the deprecated alias despite the schema.
-        # Reject contradictory values instead of silently choosing one.
-        return {}
-
-    if isinstance(section_type, str) or isinstance(legacy_kind, str):
-        patch["kind"] = _normalized_section_kind(section_type, legacy_kind)
-
-    for key in ("layout", "customTitle"):
-        field_value = value.get(key)
-        if not isinstance(field_value, str):
-            continue
-        if key == "layout" and field_value not in {"timeline", "list"}:
-            continue
-        if key == "customTitle":
-            kind = _normalized_section_kind(
-                value.get("kind"),
-                value.get("section_type"),
-            )
-            patch[key] = _normalized_custom_title(field_value, kind)
-        else:
-            patch[key] = field_value
-
-    return patch
+    title = value.get("title")
+    return {"title": title.strip()} if isinstance(title, str) else {}
 
 
 def _normalize_edit_operation(
@@ -442,7 +470,11 @@ def _normalize_edit_operation(
             for item in section.get("items", [])
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
-        if section["id"] in existing_ids or len(item_ids) != len(set(item_ids)):
+        if (
+            section["id"] in existing_ids
+            or len(item_ids) != len(set(item_ids))
+            or bool(set(item_ids) & _resume_item_ids(resume))
+        ):
             return None
         normalized: dict[str, Any] = {"type": "insert_section", "section": section}
         index = _model_int(operation.get("index"))
@@ -491,13 +523,15 @@ def _normalize_edit_operation(
 
     if operation_type == "insert_item":
         section_id = _model_string(operation.get("sectionId"))
-        item = _normalized_item(operation.get("item"))
         section = _find_resume_section(resume, section_id)
+        kind = _model_string(section.get("kind")) if section else ""
+        item = _normalized_item(operation.get("item"), kind)
         if (
             not section_id
             or not item
             or not section
-            or _find_resume_item(section, item["id"])
+            or kind == "simple_list"
+            or item["id"] in _resume_item_ids(resume)
         ):
             return None
         normalized = {"type": "insert_item", "sectionId": section_id, "item": item}
@@ -511,8 +545,10 @@ def _normalize_edit_operation(
         item_id = _model_string(operation.get("itemId"))
         section = _find_resume_section(resume, section_id)
         item = _find_resume_item(section, item_id) if section else None
+        kind = _model_string(section.get("kind")) if section else ""
         patch = _safe_item_patch(
             operation.get("patch"),
+            kind=kind,
             base_item=item if isinstance(item, dict) else None,
         )
         changed_patch = (
@@ -533,7 +569,12 @@ def _normalize_edit_operation(
         section_id = _model_string(operation.get("sectionId"))
         item_id = _model_string(operation.get("itemId"))
         section = _find_resume_section(resume, section_id)
-        if section and item_id and _find_resume_item(section, item_id):
+        if (
+            section
+            and section.get("kind") != "simple_list"
+            and item_id
+            and _find_resume_item(section, item_id)
+        ):
             return {"type": "delete_item", "sectionId": section_id, "itemId": item_id}
         return None
 
@@ -541,7 +582,7 @@ def _normalize_edit_operation(
         section_id = _model_string(operation.get("sectionId"))
         section = _find_resume_section(resume, section_id)
         item_ids = _string_list(operation.get("itemIds"))
-        if not section or not item_ids:
+        if not section or section.get("kind") == "simple_list" or not item_ids:
             return None
         current_item_ids = [
             str(item.get("id"))
@@ -595,16 +636,25 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
     if operation_type == "update_item":
         patch = operation.get("patch", {})
         if isinstance(patch, dict):
-            description = patch.get("description")
-            if isinstance(description, str):
-                return description
-            highlights = _string_list(patch.get("highlights"))
-            if highlights:
-                return " / ".join(highlights[:2])
+            for field in (
+                "content",
+                "name",
+                "school",
+                "company",
+                "position",
+                "role",
+                "description",
+            ):
+                if value := _model_string(patch.get(field)):
+                    return value
+            for field in ("techStack", "highlights"):
+                values = _string_list(patch.get(field))
+                if values:
+                    return " / ".join(values[:2])
     if operation_type == "insert_section":
         section = operation.get("section", {})
         if isinstance(section, dict):
-            title = _model_string(section.get("customTitle"))
+            title = _model_string(section.get("title"))
             if title:
                 return title
             items = section.get("items")
@@ -671,6 +721,8 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
         ]
         if len(item_ids) != len(set(item_ids)):
             return "insert_section requires unique item ids."
+        if set(item_ids) & _resume_item_ids(resume):
+            return "insert_section item ids must be unique in the resume."
 
     if operation_type == "update_section":
         section_id = _model_string(operation.get("sectionId"))
@@ -704,20 +756,29 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
 
     if operation_type == "insert_item":
         section_id = _model_string(operation.get("sectionId"))
-        if not section_id or not _find_resume_section(resume, section_id):
-            return "insert_item requires an existing sectionId."
-        if not _normalized_item(operation.get("item")):
-            return "insert_item requires a valid item object."
-        item = _normalized_item(operation.get("item"))
         section = _find_resume_section(resume, section_id)
-        if section and item and _find_resume_item(section, item["id"]):
-            return "insert_item requires a unique item id in the target section."
+        if not section_id or not section:
+            return "insert_item requires an existing sectionId."
+        kind = _model_string(section.get("kind"))
+        if kind == "simple_list":
+            return "simple_list has one rich-text item; update its content instead."
+        if not _normalized_item(operation.get("item"), kind):
+            return "insert_item requires a valid item object."
+        item = _normalized_item(operation.get("item"), kind)
+        if item and item["id"] in _resume_item_ids(resume):
+            return "insert_item requires a resume-wide unique item id."
 
     if operation_type in {"update_item", "delete_item", "reorder_items"}:
         section_id = _model_string(operation.get("sectionId"))
         section = _find_resume_section(resume, section_id)
         if not section:
             return f"{operation_type} requires an existing sectionId."
+
+        if (
+            section.get("kind") == "simple_list"
+            and operation_type in {"delete_item", "reorder_items"}
+        ):
+            return "simple_list has one rich-text item; update its content instead."
 
         if operation_type == "reorder_items":
             item_ids = _string_list(operation.get("itemIds"))
@@ -742,11 +803,16 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
             return f"{operation_type} requires an existing itemId."
         if operation_type == "update_item" and not _safe_item_patch(
             operation.get("patch"),
+            kind=_model_string(section.get("kind")),
             base_item=item if isinstance(item, dict) else None,
         ):
             return "update_item requires at least one writable item patch field."
         if operation_type == "update_item":
-            patch = _safe_item_patch(operation.get("patch"), base_item=item)
+            patch = _safe_item_patch(
+                operation.get("patch"),
+                kind=_model_string(section.get("kind")),
+                base_item=item,
+            )
             if all(item.get(key) == value for key, value in patch.items()):
                 return "update_item must change at least one field."
 
@@ -949,22 +1015,35 @@ def _compact_observation_value(value: object) -> object:
     return value
 
 
+def _item_kind_from_shape(item: dict[str, Any]) -> str:
+    """Infer a validated V2 item's kind from its discriminating field names."""
+
+    if "school" in item:
+        return "education"
+    if "company" in item:
+        return "experience"
+    if "techStack" in item:
+        return "project"
+    if "issuer" in item:
+        return "achievement"
+    if "content" in item:
+        return "simple_list"
+    return ""
+
+
 def _resume_item_observation_text(item: object) -> str:
-    """Return a concise user-readable item snapshot."""
+    """Return a concise user-readable semantic item snapshot."""
 
     if not isinstance(item, dict):
         return ""
 
+    kind = _item_kind_from_shape(item)
     fields = [
-        _model_string(item.get("title")),
-        _model_string(item.get("subtitle")),
-        _model_string(item.get("meta")),
-        _model_string(item.get("period")),
-        _model_string(item.get("description")),
+        _model_string(item.get(field))
+        for field in ITEM_STRING_FIELDS_BY_KIND.get(kind, ())
     ]
-    highlights = item.get("highlights")
-    if isinstance(highlights, list):
-        fields.extend(_model_string(highlight) for highlight in highlights)
+    for field in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
+        fields.extend(_string_list(item.get(field)))
 
     return "\n".join(field for field in fields if field)
 
@@ -975,14 +1054,14 @@ def _resume_item_preview(item: object) -> str:
     if not isinstance(item, dict):
         return ""
 
-    for key in ("title", "subtitle", "meta", "period", "description"):
+    kind = _item_kind_from_shape(item)
+    for key in ITEM_STRING_FIELDS_BY_KIND.get(kind, ()):
         if value := _model_string(item.get(key)):
             return value
 
-    highlights = item.get("highlights")
-    if isinstance(highlights, list):
-        for highlight in highlights:
-            if value := _model_string(highlight):
+    for field in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
+        for entry in _string_list(item.get(field)):
+            if value := _model_string(entry):
                 return value
 
     return ""
@@ -994,7 +1073,7 @@ def _resume_section_observation_text(section: object) -> str:
     if not isinstance(section, dict):
         return ""
 
-    fields = [_model_string(section.get("customTitle"))]
+    fields = [_model_string(section.get("title"))]
     items = section.get("items")
     if isinstance(items, list):
         fields.extend(
@@ -1152,18 +1231,36 @@ def _apply_edit_operation(
         items = section["items"]
 
     if operation_type == "insert_item":
+        candidate = operation.get("item")
+        kind = _model_string(section.get("kind"))
+        if (
+            kind == "simple_list"
+            or not is_resume_item_for_kind(candidate, kind)
+            or not isinstance(candidate, dict)
+            or candidate["id"] in _resume_item_ids(resume)
+        ):
+            return
         index = _bounded_index(_model_int(operation.get("index")), len(items))
-        items.insert(index, deepcopy(operation.get("item")))
+        items.insert(index, deepcopy(candidate))
         return
 
     if operation_type == "update_item":
         item = _find_resume_item(section, str(operation.get("itemId", "")))
         patch = operation.get("patch")
         if item and isinstance(patch, dict):
-            item.update(patch)
+            kind = _model_string(section.get("kind"))
+            safe_patch = _safe_item_patch(patch, kind=kind, base_item=item)
+            candidate = {**item, **safe_patch}
+            if set(safe_patch) == set(patch) and is_resume_item_for_kind(
+                candidate,
+                kind,
+            ):
+                item.update(safe_patch)
         return
 
     if operation_type == "delete_item":
+        if section.get("kind") == "simple_list":
+            return
         item_id = str(operation.get("itemId", ""))
         section["items"] = [
             item
@@ -1173,6 +1270,8 @@ def _apply_edit_operation(
         return
 
     if operation_type == "reorder_items":
+        if section.get("kind") == "simple_list":
+            return
         item_ids = _string_list(operation.get("itemIds"))
         indexed_items = {
             str(item.get("id")): item

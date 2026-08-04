@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://resumate.local/schemas/resume-document-v2.json",
+  "title": "ResumeDocumentV2",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "basic": { "$ref": "#/definitions/basic" },
+    "sections": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/section" }
+    }
+  },
+  "required": ["schemaVersion", "basic", "sections"],
+  "additionalProperties": false,
+  "definitions": {
+    "customField": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "enum": ["email", "phone", "url", "text"]
+        },
+        "label": { "type": "string" },
+        "value": { "type": "string" }
+      },
+      "required": ["id", "type", "label", "value"],
+      "additionalProperties": false
+    },
+    "basic": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "headline": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "location": { "type": "string" },
+        "avatar": { "type": "string" },
+        "summary": { "type": "string" },
+        "customFields": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/customField" }
+        }
+      },
+      "required": [
+        "name",
+        "headline",
+        "phone",
+        "email",
+        "location",
+        "avatar",
+        "summary",
+        "customFields"
+      ],
+      "additionalProperties": false
+    },
+    "educationItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "school": { "type": "string" },
+        "degree": { "type": "string" },
+        "major": { "type": "string" },
+        "gpa": { "type": "string" },
+        "location": { "type": "string" },
+        "period": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "id",
+        "school",
+        "degree",
+        "major",
+        "gpa",
+        "location",
+        "period",
+        "description",
+        "highlights"
+      ],
+      "additionalProperties": false
+    },
+    "experienceItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "company": { "type": "string" },
+        "position": { "type": "string" },
+        "location": { "type": "string" },
+        "period": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "id",
+        "company",
+        "position",
+        "location",
+        "period",
+        "description",
+        "highlights"
+      ],
+      "additionalProperties": false
+    },
+    "projectItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "techStack": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "period": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role",
+        "techStack",
+        "period",
+        "url",
+        "description",
+        "highlights"
+      ],
+      "additionalProperties": false
+    },
+    "achievementItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "issuer": { "type": "string" },
+        "date": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["id", "name", "issuer", "date", "url", "description"],
+      "additionalProperties": false
+    },
+    "simpleListItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "content": { "type": "string" }
+      },
+      "required": ["id", "content"],
+      "additionalProperties": false
+    },
+    "educationSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "education" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/educationItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "experienceSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "experience" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/experienceItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "projectSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "project" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/projectItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "achievementSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "achievement" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/achievementItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "simpleListSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "simple_list" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/definitions/simpleListItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "section": {
+      "oneOf": [
+        { "$ref": "#/definitions/educationSection" },
+        { "$ref": "#/definitions/experienceSection" },
+        { "$ref": "#/definitions/projectSection" },
+        { "$ref": "#/definitions/achievementSection" },
+        { "$ref": "#/definitions/simpleListSection" }
+      ]
+    }
+  }
+}

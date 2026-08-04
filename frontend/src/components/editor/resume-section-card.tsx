@@ -2,32 +2,15 @@ import {
   ArrowDown,
   ArrowUp,
   Award,
-  BadgeCheck,
   Briefcase,
   FolderKanban,
   GraduationCap,
-  Languages,
   List,
   Plus,
-  Sparkles,
   Trash2,
-  Wrench,
   type LucideIcon,
 } from 'lucide-react'
-import { Suspense, lazy } from 'react'
 
-import type { AppMessages } from '@/i18n'
-import { getSectionSummary, getSectionTitle } from '@/lib/resume'
-import type {
-  ResumeSection,
-  ResumeSectionItem,
-  SectionKind,
-} from '@/types/resume'
-
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,43 +22,38 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import type { AppMessages } from '@/i18n'
+import type { ResumeSectionMutation } from '@/lib/resume-sections'
+import type { ResumeSection, SectionKind } from '@/types/resume'
 
 import { EditorCardShell } from './editor-card-shell'
 import { FormField } from './form-field'
-
-const RichHighlightsEditor = lazy(() =>
-  import('./rich-highlights-editor').then((module) => ({
-    default: module.RichHighlightsEditor,
-  })),
-)
+import { ResumeSectionItemsEditor } from './resume-section-editors'
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
-  work: Briefcase,
-  internship: Briefcase,
+  experience: Briefcase,
   project: FolderKanban,
-  skills: Wrench,
-  awards: Award,
-  certificates: BadgeCheck,
-  languages: Languages,
-  other: List,
-  custom: Sparkles,
+  achievement: Award,
+  simple_list: List,
 }
 
 const compactFieldClassName =
   'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
 
-function RichHighlightsEditorSkeleton() {
-  return (
-    <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30">
-      <div className="flex items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
-        {Array.from({ length: 8 }, (_, index) => (
-          <Skeleton key={index} className="size-8 rounded-md" />
-        ))}
-      </div>
-      <Skeleton className="h-[120px] rounded-none" />
-    </div>
-  )
+export type ResumeSectionCardProps = {
+  t: AppMessages
+  section: ResumeSection
+  collapsed: boolean
+  onToggle: () => void
+  onMutation: (mutation: ResumeSectionMutation) => void
+  onRemoveSection: (sectionId: string) => void
+  onMoveSectionUp: (sectionId: string) => void
+  onMoveSectionDown: (sectionId: string) => void
+  canMoveUp: boolean
+  canMoveDown: boolean
 }
 
 export function ResumeSectionCard({
@@ -83,48 +61,23 @@ export function ResumeSectionCard({
   section,
   collapsed,
   onToggle,
-  onUpdateSection,
-  onAddItem,
+  onMutation,
   onRemoveSection,
   onMoveSectionDown,
   onMoveSectionUp,
-  onUpdateItem,
-  onUpdateHighlights,
-  onRemoveItem,
   canMoveUp,
   canMoveDown,
-}: {
-  t: AppMessages
-  section: ResumeSection
-  collapsed: boolean
-  onToggle: () => void
-  onUpdateSection: (
-    sectionId: string,
-    patch: Partial<Omit<ResumeSection, 'id' | 'items'>>,
-  ) => void
-  onAddItem: (sectionId: string) => void
-  onRemoveSection: (sectionId: string) => void
-  onMoveSectionUp: (sectionId: string) => void
-  onMoveSectionDown: (sectionId: string) => void
-  onUpdateItem: (
-    sectionId: string,
-    itemId: string,
-    field: keyof Omit<ResumeSectionItem, 'id' | 'highlights'>,
-    value: string,
-  ) => void
-  onUpdateHighlights: (sectionId: string, itemId: string, value: string) => void
-  onRemoveItem: (sectionId: string, itemId: string) => void
-  canMoveUp: boolean
-  canMoveDown: boolean
-}) {
+}: ResumeSectionCardProps) {
   const Icon = sectionIcons[section.kind]
-  const sectionTitle = getSectionTitle(section, t)
+  const sectionTitle = section.title.trim() || t.sectionTitles[section.kind]
+  const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
+  const itemCountLabel = `${section.items.length} ${itemLabel}`
 
   return (
     <EditorCardShell
       icon={Icon}
       title={sectionTitle}
-      summary={getSectionSummary(section, t)}
+      titleMeta={itemCountLabel}
       toggleLabel={`${sectionTitle}: ${t.toggleSection}`}
       collapsed={collapsed}
       onToggle={onToggle}
@@ -135,20 +88,20 @@ export function ResumeSectionCard({
             variant="ghost"
             size="icon"
             disabled={!canMoveUp}
+            aria-label={`${sectionTitle}: ${t.moveSectionUp}`}
             onClick={() => onMoveSectionUp(section.id)}
           >
-            <ArrowUp className="size-4" />
-            <span className="sr-only">{`${sectionTitle}: ${t.moveSectionUp}`}</span>
+            <ArrowUp aria-hidden="true" />
           </Button>
           <Button
             type="button"
             variant="ghost"
             size="icon"
             disabled={!canMoveDown}
+            aria-label={`${sectionTitle}: ${t.moveSectionDown}`}
             onClick={() => onMoveSectionDown(section.id)}
           >
-            <ArrowDown className="size-4" />
-            <span className="sr-only">{`${sectionTitle}: ${t.moveSectionDown}`}</span>
+            <ArrowDown aria-hidden="true" />
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
@@ -156,17 +109,15 @@ export function ResumeSectionCard({
                 type="button"
                 variant="ghost"
                 size="icon"
+                aria-label={`${sectionTitle}: ${t.deleteSection}`}
                 onClick={(event) => event.stopPropagation()}
               >
-                <Trash2 className="size-4" />
-                <span className="sr-only">{`${sectionTitle}: ${t.deleteSection}`}</span>
+                <Trash2 aria-hidden="true" />
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent size="sm">
               <AlertDialogHeader>
-                <AlertDialogTitle>
-                  {t.confirmDeleteSectionTitle}
-                </AlertDialogTitle>
+                <AlertDialogTitle>{t.confirmDeleteSectionTitle}</AlertDialogTitle>
                 <AlertDialogDescription>
                   {t.confirmDeleteSectionDescription}
                 </AlertDialogDescription>
@@ -188,119 +139,40 @@ export function ResumeSectionCard({
       <div className="grid min-w-0 gap-3">
         <FormField label={t.renameSection}>
           <Input
-            value={section.customTitle}
+            value={section.title}
             className={compactFieldClassName}
             placeholder={t.placeholders.sectionName}
             onChange={(event) =>
-              onUpdateSection(section.id, { customTitle: event.target.value })
+              onMutation({
+                type: 'section.rename',
+                sectionId: section.id,
+                title: event.target.value,
+              })
             }
           />
         </FormField>
-        <Button
-          type="button"
-          variant="outline"
-          className="self-start"
-          onClick={() => onAddItem(section.id)}
-        >
-          <Plus className="size-4" />
-          {t.addItem}
-        </Button>
+
+        {section.kind !== 'simple_list' ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="self-start"
+            onClick={() =>
+              onMutation({ type: 'item.add', sectionId: section.id })
+            }
+          >
+            <Plus aria-hidden="true" data-icon="inline-start" />
+            {t.addItem}
+          </Button>
+        ) : null}
       </div>
 
       <div className="grid gap-3">
-        {section.items.map((item, index) => (
-          <div key={item.id} className="grid gap-3 rounded-lg border border-border/60 bg-background/45 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium text-foreground/80">{`${t.addItem} ${index + 1}`}</p>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => onRemoveItem(section.id, item.id)}
-              >
-                <Trash2 className="size-4" />
-                <span className="sr-only">{`${sectionTitle}: ${t.removeItem} ${index + 1}`}</span>
-              </Button>
-            </div>
-
-            <div className="grid min-w-0 gap-3 md:grid-cols-2">
-              <FormField label={t.fieldLabels.title}>
-                <Input
-                  value={item.title}
-                  className={compactFieldClassName}
-                  placeholder={t.placeholders.title}
-                  onChange={(event) =>
-                    onUpdateItem(section.id, item.id, 'title', event.target.value)
-                  }
-                />
-              </FormField>
-              <FormField label={t.fieldLabels.subtitle}>
-                <Input
-                  value={item.subtitle}
-                  className={compactFieldClassName}
-                  placeholder={t.placeholders.subtitle}
-                  onChange={(event) =>
-                    onUpdateItem(section.id, item.id, 'subtitle', event.target.value)
-                  }
-                />
-              </FormField>
-
-              {section.layout === 'timeline' ? (
-                <>
-                  <FormField label={t.fieldLabels.meta}>
-                    <Input
-                      value={item.meta}
-                      className={compactFieldClassName}
-                      placeholder={t.placeholders.meta}
-                      onChange={(event) =>
-                        onUpdateItem(section.id, item.id, 'meta', event.target.value)
-                      }
-                    />
-                  </FormField>
-                  <FormField label={t.fieldLabels.period}>
-                    <Input
-                      value={item.period}
-                      className={compactFieldClassName}
-                      placeholder={t.placeholders.period}
-                      onChange={(event) =>
-                        onUpdateItem(section.id, item.id, 'period', event.target.value)
-                      }
-                    />
-                  </FormField>
-                </>
-              ) : null}
-
-              {section.layout === 'timeline' ? (
-                <>
-                  <FormField label={t.fieldLabels.description} className="md:col-span-2">
-                    <Textarea
-                      rows={2}
-                      value={item.description}
-                      className={`${compactFieldClassName} min-h-16 resize-y`}
-                      placeholder={t.placeholders.description}
-                      onChange={(event) =>
-                        onUpdateItem(section.id, item.id, 'description', event.target.value)
-                      }
-                    />
-                  </FormField>
-
-                  <div className="grid min-w-0 gap-2 md:col-span-2">
-                    <span className="break-words text-xs font-medium leading-tight text-muted-foreground">
-                      {t.fieldLabels.highlights}
-                    </span>
-                    <Suspense fallback={<RichHighlightsEditorSkeleton />}>
-                      <RichHighlightsEditor
-                        t={t}
-                        value={item.highlights}
-                        onChange={(value) => onUpdateHighlights(section.id, item.id, value)}
-                      />
-                    </Suspense>
-                  </div>
-                </>
-              ) : null}
-            </div>
-          </div>
-        ))}
+        <ResumeSectionItemsEditor
+          t={t}
+          section={section}
+          onMutation={onMutation}
+        />
       </div>
     </EditorCardShell>
   )

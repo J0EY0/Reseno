@@ -12,6 +12,10 @@ from app.schemas.agent import (
     AgentSource,
     AgentToolInvocation,
 )
+from app.services.resume_document_contract import (
+    ITEM_LIST_FIELDS_BY_KIND,
+    ITEM_STRING_FIELDS_BY_KIND,
+)
 
 from .attachments import attachment_text, current_request_attachments
 from .editing import _string_list
@@ -36,6 +40,20 @@ OPPORTUNITY_KIND_PATTERN_KEYS: tuple[
     ("graduate_study", "target.kind.graduate_study"),
     ("research", "target.kind.research"),
     ("employment", "target.kind.employment"),
+)
+ALL_ITEM_STRING_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_STRING_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
+)
+ALL_ITEM_LIST_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_LIST_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
 )
 
 
@@ -155,31 +173,51 @@ def _visible_plan_steps(request: AgentChatRequest) -> list[str]:
     return steps[:5]
 
 
-def _has_item_content(item: object) -> bool:
+def _has_item_content(item: object, section_kind: str = "") -> bool:
     """Return whether a resume item contains visible content."""
 
     if not isinstance(item, dict):
         return False
 
-    for key in ("title", "subtitle", "meta", "period", "description"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return True
-
-    highlights = item.get("highlights")
-    return isinstance(highlights, list) and any(
-        isinstance(entry, str) and entry.strip() for entry in highlights
+    string_fields = ITEM_STRING_FIELDS_BY_KIND.get(
+        section_kind,
+        ALL_ITEM_STRING_FIELDS,
+    )
+    list_fields = ITEM_LIST_FIELDS_BY_KIND.get(
+        section_kind,
+        ALL_ITEM_LIST_FIELDS,
+    )
+    return any(
+        isinstance(item.get(field), str) and bool(item[field].strip())
+        for field in string_fields
+    ) or any(
+        isinstance(item.get(field), list)
+        and any(
+            isinstance(entry, str) and entry.strip()
+            for entry in item[field]
+        )
+        for field in list_fields
     )
 
 
 def _section_label(section: dict[str, object], locale: str) -> str:
     """Return a readable section label for response text and edit cards."""
 
-    custom_title = section.get("customTitle")
-    if isinstance(custom_title, str) and custom_title.strip():
-        return custom_title.strip()
+    title = section.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
 
     return section_label(section.get("kind"), locale)
+
+
+def _section_has_content_item(section: dict[str, object]) -> bool:
+    """Return whether a section contains a non-empty canonical item."""
+
+    items = section.get("items")
+    if not isinstance(items, list):
+        return False
+    kind = str(section.get("kind") or "")
+    return any(_has_item_content(item, kind) for item in items)
 
 
 class AgentPlanExecutor:
@@ -555,9 +593,14 @@ class AgentPlanExecutor:
                 continue
 
             normalized_sections.append(section)
+            section_kind = str(section.get("kind") or "")
             items = section.get("items")
             visible_items = (
-                [item for item in items if _has_item_content(item)]
+                [
+                    item
+                    for item in items
+                    if _has_item_content(item, section_kind)
+                ]
                 if isinstance(items, list)
                 else []
             )
@@ -743,9 +786,12 @@ class AgentPlanExecutor:
             (
                 candidate
                 for candidate in analysis.sections
-                if candidate.get("layout") == "timeline"
-                and isinstance(candidate.get("items"), list)
-                and any(_has_item_content(item) for item in candidate["items"])
+                if "highlights"
+                in ITEM_LIST_FIELDS_BY_KIND.get(
+                    str(candidate.get("kind") or ""),
+                    (),
+                )
+                and _section_has_content_item(candidate)
             ),
             None,
         )
@@ -758,7 +804,11 @@ class AgentPlanExecutor:
                 (
                     entry
                     for entry in items
-                    if isinstance(entry, dict) and _has_item_content(entry)
+                    if isinstance(entry, dict)
+                    and _has_item_content(
+                        entry,
+                        str(section.get("kind") or ""),
+                    )
                 ),
                 None,
             )
@@ -808,22 +858,22 @@ class AgentPlanExecutor:
 
         title = agent_text(self.request.locale, "title.add_project_section")
         section_title = section_label("project", self.request.locale)
-        project_title = prompt_project["title"]
+        project_title = prompt_project["name"]
         description = prompt_project["description"]
         highlights = prompt_project["highlights"]
 
         section = {
             "id": section_id,
             "kind": "project",
-            "layout": "timeline",
-            "customTitle": "",
+            "title": section_title,
             "items": [
                 {
                     "id": item_id,
-                    "title": project_title,
-                    "subtitle": prompt_project["subtitle"],
-                    "meta": prompt_project["meta"],
+                    "name": project_title,
+                    "role": prompt_project["role"],
+                    "techStack": prompt_project["techStack"],
                     "period": prompt_project["period"],
+                    "url": prompt_project["url"],
                     "description": description,
                     "highlights": highlights,
                 },
@@ -849,8 +899,8 @@ class AgentPlanExecutor:
 
         text = _compact_text(self.prompt, limit=900)
         title = ""
-        subtitle = ""
-        meta = ""
+        role = ""
+        tech_stack_text = ""
         period = ""
 
         def labeled_value(labels: str, stop_labels: str, limit: int = 80) -> str:
@@ -872,12 +922,16 @@ class AgentPlanExecutor:
                 stop_labels,
                 60,
             )
-        subtitle = labeled_value(
+        role = labeled_value(
             agent_pattern("project.subtitle_labels"),
             stop_labels,
             60,
         )
-        meta = labeled_value(agent_pattern("project.meta_labels"), stop_labels, 120)
+        tech_stack_text = labeled_value(
+            agent_pattern("project.meta_labels"),
+            stop_labels,
+            120,
+        )
 
         period_match = re.search(
             agent_pattern("project.period_range"),
@@ -903,6 +957,13 @@ class AgentPlanExecutor:
             stop_labels,
             120,
         )
+        url_match = re.search(r"https?://[^\s，。；;]+", text, flags=re.IGNORECASE)
+        url = url_match.group(0).rstrip(").,，。") if url_match else ""
+        tech_stack = [
+            value.strip()
+            for value in re.split(r"[,，、;；|]+", tech_stack_text)
+            if value.strip()
+        ]
 
         parts = [
             re.sub(
@@ -914,7 +975,7 @@ class AgentPlanExecutor:
             for part in re.split(r"[。；;\n]+", cleaned)
             if part.strip(" -•\t")
         ]
-        field_values = [title, subtitle, meta, period, description]
+        field_values = [title, role, tech_stack_text, period, url, description]
         field_keys = {
             re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", value).lower()
             for value in field_values
@@ -956,10 +1017,11 @@ class AgentPlanExecutor:
                 break
 
         return {
-            "title": title,
-            "subtitle": subtitle,
-            "meta": meta,
+            "name": title,
+            "role": role,
+            "techStack": tech_stack,
             "period": period,
+            "url": url,
             "description": description,
             "highlights": highlights,
         }
@@ -975,16 +1037,11 @@ class AgentPlanExecutor:
             return None
 
         priority = {
-            "work": 0,
-            "internship": 1,
-            "project": 2,
-            "skills": 3,
-            "awards": 4,
-            "certificates": 5,
-            "languages": 6,
-            "custom": 7,
-            "other": 8,
-            "education": 9,
+            "experience": 0,
+            "project": 1,
+            "simple_list": 2,
+            "achievement": 3,
+            "education": 4,
         }
         ordered_sections = sorted(
             analysis.sections,
@@ -1553,8 +1610,9 @@ class AgentPlanExecutor:
 
         for section in analysis.sections:
             items = section.get("items")
+            section_kind = str(section.get("kind") or "")
             if isinstance(items, list) and any(
-                _has_item_content(item) for item in items
+                _has_item_content(item, section_kind) for item in items
             ):
                 return section
 

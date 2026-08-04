@@ -428,6 +428,17 @@
       "skills|tech stack|framework|tools|database|algorithm"
     ]
   },
+  "material.languages": {
+    "common": [
+      "ielts|toefl|toeic|hsk|cet[- ]?[46]"
+    ],
+    "zh": [
+      "语言|语言能力|英语|中文|日语|法语|德语|西班牙语|熟练度"
+    ],
+    "en": [
+      "languages?|english|chinese|japanese|french|german|spanish|proficiency|fluent"
+    ]
+  },
   "material.education": {
     "common": [
       "gpa"

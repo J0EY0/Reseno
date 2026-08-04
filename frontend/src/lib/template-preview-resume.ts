@@ -1,5 +1,6 @@
 import type { AppMessages } from "@/i18n";
-import type { ResumeData, ResumeSectionItem } from "@/types/resume";
+import { serializeListItemsToHtml } from "@/lib/rich-text";
+import type { ResumeData } from "@/types/resume";
 
 function createAvatarPlaceholder(label: string) {
   const safeLabel = label.replaceAll('"', "&quot;");
@@ -8,34 +9,13 @@ function createAvatarPlaceholder(label: string) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function createPreviewItem(
-  id: string,
-  item: {
-    title: string;
-    subtitle?: string;
-    meta?: string;
-    period?: string;
-    description?: string;
-    highlights?: string[];
-  },
-): ResumeSectionItem {
-  return {
-    id,
-    title: item.title,
-    subtitle: item.subtitle ?? "",
-    meta: item.meta ?? "",
-    period: item.period ?? "",
-    description: item.description ?? "",
-    highlights: item.highlights ?? [],
-  };
-}
-
 export function createTemplatePreviewResume(t: AppMessages): ResumeData {
   const sample = t.templatePreviewSample;
 
   // This fixture is only for template visual QA. It must stay outside template
   // settings and workspace persistence so preview controls never change user data.
   return {
+    schemaVersion: 2,
     basic: {
       name: sample.basic.name,
       headline: sample.basic.headline,
@@ -52,45 +32,76 @@ export function createTemplatePreviewResume(t: AppMessages): ResumeData {
       {
         id: "template-preview-education",
         kind: "education",
-        layout: "timeline",
-        customTitle: "",
+        title: "",
         items: [
-          createPreviewItem("template-preview-education-1", sample.education),
+          {
+            id: "template-preview-education-1",
+            school: sample.education.title,
+            degree: sample.education.subtitle,
+            major: "",
+            gpa: sample.education.meta,
+            location: "",
+            period: sample.education.period,
+            description: "",
+            highlights: sample.education.highlights,
+          },
         ],
       },
       {
         id: "template-preview-internship",
-        kind: "internship",
-        layout: "timeline",
-        customTitle: "",
+        kind: "experience",
+        title: "",
         items: [
-          createPreviewItem(
-            "template-preview-internship-1",
-            sample.internship,
-          ),
+          {
+            id: "template-preview-internship-1",
+            company: sample.internship.title,
+            position: sample.internship.subtitle,
+            location: sample.internship.meta,
+            period: sample.internship.period,
+            description: "",
+            highlights: sample.internship.highlights,
+          },
         ],
       },
       {
         id: "template-preview-project",
         kind: "project",
-        layout: "timeline",
-        customTitle: "",
+        title: "",
         items: [
-          createPreviewItem("template-preview-project-1", sample.projectPrimary),
-          createPreviewItem(
-            "template-preview-project-2",
-            sample.projectSecondary,
-          ),
+          {
+            id: "template-preview-project-1",
+            name: sample.projectPrimary.title,
+            role: sample.projectPrimary.subtitle,
+            techStack: sample.projectPrimary.meta.split(/\s*[/,]\s*/),
+            period: sample.projectPrimary.period,
+            url: "",
+            description: "",
+            highlights: sample.projectPrimary.highlights,
+          },
+          {
+            id: "template-preview-project-2",
+            name: sample.projectSecondary.title,
+            role: sample.projectSecondary.subtitle,
+            techStack: sample.projectSecondary.meta.split(/\s*[/,]\s*/),
+            period: sample.projectSecondary.period,
+            url: "",
+            description: "",
+            highlights: sample.projectSecondary.highlights,
+          },
         ],
       },
       {
         id: "template-preview-skills",
-        kind: "skills",
-        layout: "list",
-        customTitle: "",
-        items: sample.skills.map((item, index) =>
-          createPreviewItem(`template-preview-skill-${index + 1}`, item),
-        ),
+        kind: "simple_list",
+        title: t.defaultOtherSkill,
+        items: [
+          {
+            id: "template-preview-skills-content",
+            content: serializeListItemsToHtml(
+              sample.skills.map((item) => `${item.title}：${item.subtitle}`),
+            ),
+          },
+        ],
       },
     ],
   };

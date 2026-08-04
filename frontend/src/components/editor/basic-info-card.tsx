@@ -60,7 +60,6 @@ export function BasicInfoCard({
     <EditorCardShell
       icon={UserRound}
       title={t.basicInfo}
-      summary={t.basicSummary}
       toggleLabel={`${t.basicInfo}: ${t.toggleSection}`}
       collapsed={collapsed}
       onToggle={onToggle}

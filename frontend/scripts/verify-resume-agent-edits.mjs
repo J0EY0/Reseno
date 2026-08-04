@@ -1,9 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import vm from "node:vm";
-import * as ts from "typescript";
-
-const root = new URL("..", import.meta.url).pathname;
+import { createServer } from "vite";
 
 function assert(condition, message) {
   if (!condition) {
@@ -11,29 +6,9 @@ function assert(condition, message) {
   }
 }
 
-async function loadResumeAgentEdits() {
-  const source = await readFile(
-    join(root, "src", "lib", "resume-agent-edits.ts"),
-    "utf8",
-  );
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
-
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-  });
-
-  return module.exports;
-}
-
 function createResume() {
   return {
+    schemaVersion: 2,
     basic: {
       name: "Original name",
       headline: "Engineer",
@@ -48,19 +23,28 @@ function createResume() {
       {
         id: "education",
         kind: "education",
-        layout: "timeline",
-        customTitle: "Education",
+        title: "Education",
         items: [],
       },
     ],
   };
 }
 
+const server = await createServer({
+  configFile: false,
+  root: process.cwd(),
+  server: { hmr: false, middlewareMode: true, ws: false },
+  resolve: {
+    alias: { "@": new URL("../src", import.meta.url).pathname },
+  },
+});
+
+try {
 const {
   applyAgentEditsToDraft,
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
-} = await loadResumeAgentEdits();
+} = await server.ssrLoadModule("/src/lib/resume-agent-edits.ts");
 
 {
   const baseResume = createResume();
@@ -113,18 +97,12 @@ const {
   const baseResume = createResume();
   baseResume.sections.push({
     id: "skills",
-    kind: "skills",
-    layout: "list",
-    customTitle: "Skills",
+    kind: "simple_list",
+    title: "Skills",
     items: [
       {
         id: "skill-1",
-        title: "Frontend",
-        subtitle: "React, TypeScript",
-        meta: "",
-        period: "",
-        description: "",
-        highlights: [],
+        content: "React, TypeScript",
       },
     ],
   });
@@ -147,8 +125,51 @@ const {
     result.appliedCount === 0 &&
       result.errors.length === 1 &&
       result.errors[0].reason === "invalid_operation" &&
-      result.resume.sections[1].items[0].highlights.length === 0,
-    "List item updates must preserve the canonical title/subtitle-only shape.",
+      result.resume.sections[1].items[0].content === "React, TypeScript",
+    "Simple-list updates must reject fields outside the content contract.",
+  );
+}
+
+for (const operation of [
+  {
+    type: "insert_item",
+    sectionId: "skills",
+    item: { id: "skill-2", content: "TypeScript" },
+  },
+  {
+    type: "delete_item",
+    sectionId: "skills",
+    itemId: "skill-1",
+  },
+  {
+    type: "reorder_items",
+    sectionId: "skills",
+    itemIds: ["skill-1"],
+  },
+]) {
+  const baseResume = createResume();
+  baseResume.sections.push({
+    id: "skills",
+    kind: "simple_list",
+    title: "Skills",
+    items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
+  });
+  const result = applyAgentEditsToDraft(baseResume, [
+    {
+      id: `reject-${operation.type}`,
+      title: "Keep the single rich-text item",
+      target: "sections.skills.items",
+      reason: "Exercise the simple-list cardinality contract.",
+      operation,
+    },
+  ]);
+
+  assert(
+    result.appliedCount === 0 &&
+      result.errors.length === 1 &&
+      result.errors[0].reason === "invalid_operation" &&
+      JSON.stringify(result.resume) === JSON.stringify(baseResume),
+    `Simple-list sections must reject ${operation.type}.`,
   );
 }
 
@@ -164,17 +185,12 @@ const {
         type: "insert_section",
         section: {
           id: "skills",
-          kind: "skills",
-          layout: "list",
-          customTitle: "Skills",
+          kind: "simple_list",
+          title: "Skills",
           items: [
             {
               id: "skill-1",
-              title: "Frontend",
-              subtitle: "",
-              meta: "",
-              period: "",
-              description: "",
+              content: "Frontend",
               highlights: ["React"],
             },
           ],
@@ -187,7 +203,71 @@ const {
     result.appliedCount === 0 &&
       result.errors.length === 1 &&
       result.errors[0].reason === "invalid_operation",
-    "List sections must reject content outside title and subtitle.",
+    "Simple-list sections must reject fields outside id and content.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  baseResume.sections.push({
+    id: "experience",
+    kind: "experience",
+    title: "Experience",
+    items: [
+      {
+        id: "experience-1",
+        company: "Example Inc.",
+        position: "Engineer",
+        location: "Remote",
+        period: "2024 - Present",
+        description: "",
+        highlights: [],
+      },
+    ],
+  });
+  baseResume.sections.push({
+    id: "skills",
+    kind: "simple_list",
+    title: "Skills",
+    items: [{ id: "skill-1", content: "React" }],
+  });
+
+  const result = applyAgentEditsToDraft(baseResume, [
+    {
+      id: "update-position",
+      title: "Clarify the role",
+      target: "sections.experience.items.experience-1.position",
+      reason: "Use the semantic experience field.",
+      operation: {
+        type: "update_item",
+        sectionId: "experience",
+        itemId: "experience-1",
+        patch: { position: "Senior Engineer" },
+      },
+    },
+    {
+      id: "update-skills",
+      title: "Add a skill",
+      target: "sections.skills.items.skill-1.content",
+      reason: "A simple-list item remains a directly editable string.",
+      operation: {
+        type: "update_item",
+        sectionId: "skills",
+        itemId: "skill-1",
+        patch: { content: "React · TypeScript" },
+      },
+    },
+  ]);
+
+  assert(
+    result.errors.length === 0 && result.appliedCount === 2,
+    "Valid semantic item fields must be applied atomically.",
+  );
+  assert(
+    result.resume.sections[1].items[0].position === "Senior Engineer" &&
+      result.resume.sections[1].items[0].company === "Example Inc." &&
+      result.resume.sections[2].items[0].content === "React · TypeScript",
+    "Agent item edits must preserve unrelated fields and support simple-list strings.",
   );
 }
 
@@ -353,8 +433,7 @@ const {
         section: {
           id: "projects",
           kind: "project",
-          layout: "timeline",
-          customTitle: "Projects",
+          title: "Projects",
           items: [],
         },
       },
@@ -374,17 +453,15 @@ const {
   baseResume.sections.push({
     id: "projects",
     kind: "project",
-    layout: "timeline",
-    customTitle: "Projects",
+    title: "Projects",
     items: [],
   });
   const currentResume = structuredClone(baseResume);
   currentResume.sections.push({
     id: "skills",
-    kind: "skills",
-    layout: "list",
-    customTitle: "Skills",
-    items: [],
+    kind: "simple_list",
+    title: "Skills",
+    items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
   });
   const result = applyAgentEditsWithMerge(baseResume, currentResume, [
     {
@@ -415,8 +492,7 @@ const {
   baseResume.sections.push({
     id: "projects",
     kind: "project",
-    layout: "timeline",
-    customTitle: "Projects",
+    title: "Projects",
     items: [],
   });
   const result = applyAgentEditsToDraft(baseResume, [
@@ -531,3 +607,6 @@ const {
 }
 
 console.log("Resume agent edit transaction checks passed.");
+} finally {
+  await server.close();
+}

@@ -1,5 +1,10 @@
 import type { AgentResumeEditSuggestion } from "@/types/api";
 import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
+import {
+  isCanonicalResumeSection,
+  isSectionItemForKind,
+  SECTION_ITEM_FIELDS,
+} from "@/lib/resume-sections";
 import type {
   ResumeData,
   ResumeDraftDiff,
@@ -117,30 +122,15 @@ function clampInsertIndex(index: number | undefined, length: number) {
 }
 
 function sectionLabel(section: ResumeSection) {
-  return section.customTitle.trim() || section.kind;
+  return section.title.trim() || section.kind;
 }
 
 function itemLabel(item: ResumeSectionItem) {
-  return item.title.trim() || item.subtitle.trim() || item.id;
-}
-
-function hasCanonicalListItemContent(item: ResumeSectionItem) {
-  return (
-    typeof item.title === "string" &&
-    typeof item.subtitle === "string" &&
-    item.meta === "" &&
-    item.period === "" &&
-    item.description === "" &&
-    Array.isArray(item.highlights) &&
-    item.highlights.length === 0
-  );
-}
-
-function hasCanonicalSectionContent(section: ResumeSection) {
-  return (
-    section.layout !== "list" ||
-    section.items.every(hasCanonicalListItemContent)
-  );
+  if ("school" in item) return item.school.trim() || item.degree.trim() || item.id;
+  if ("company" in item) return item.company.trim() || item.position.trim() || item.id;
+  if ("role" in item) return item.name.trim() || item.role.trim() || item.id;
+  if ("issuer" in item) return item.name.trim() || item.issuer.trim() || item.id;
+  return item.content.trim() || item.id;
 }
 
 function findSection(resume: ResumeData, sectionId: string) {
@@ -231,14 +221,15 @@ function applyInsertSection(
   edit: AgentResumeEditSuggestion,
   operation: Extract<ResumeEditOperation, { type: "insert_section" }>,
 ): OperationApplyResult {
-  if (!operation.section?.id || !Array.isArray(operation.section.items)) {
+  const sectionId = operation.section?.id;
+  if (!sectionId || !Array.isArray(operation.section.items)) {
     return operationRejected("invalid_operation", edit.target);
   }
 
-  if (!hasCanonicalSectionContent(operation.section)) {
+  if (!isCanonicalResumeSection(operation.section)) {
     return operationRejected(
       "invalid_operation",
-      sectionPath(operation.section.id),
+      sectionPath(sectionId),
     );
   }
 
@@ -277,34 +268,25 @@ function applyUpdateSection(
     );
   }
 
-  const writableFields = ["kind", "layout", "customTitle"] as const;
-  const patchFields = writableFields.filter(
-    (field) => operation.patch && field in operation.patch,
-  );
-
-  if (patchFields.length === 0) {
+  if (!operation.patch || typeof operation.patch.title !== "string") {
     return operationRejected(
       "invalid_operation",
       sectionPath(operation.sectionId),
     );
   }
 
-  if (
-    patchFields.every((field) =>
-      isDeepEqual(match.section[field], operation.patch[field]),
-    )
-  ) {
+  if (match.section.title === operation.patch.title) {
     return operationRejected("no_change", sectionPath(operation.sectionId));
   }
 
   const before = { ...match.section };
   const nextSection = {
     ...match.section,
-    ...operation.patch,
+    title: operation.patch.title,
     id: match.section.id,
-  };
+  } as ResumeSection;
 
-  if (!hasCanonicalSectionContent(nextSection)) {
+  if (!isCanonicalResumeSection(nextSection)) {
     return operationRejected(
       "invalid_operation",
       sectionPath(operation.sectionId),
@@ -423,17 +405,22 @@ function applyInsertItem(
     );
   }
 
-  if (!operation.item?.id) {
+  if (match.section.kind === "simple_list") {
+    return operationRejected(
+      "invalid_operation",
+      `${sectionPath(operation.sectionId)}.items`,
+    );
+  }
+
+  const itemId = operation.item?.id;
+  if (!itemId) {
     return operationRejected("invalid_operation", edit.target);
   }
 
-  if (
-    match.section.layout === "list" &&
-    !hasCanonicalListItemContent(operation.item)
-  ) {
+  if (!isSectionItemForKind(match.section.kind, operation.item)) {
     return operationRejected(
       "invalid_operation",
-      itemPath(operation.sectionId, operation.item.id),
+      itemPath(operation.sectionId, itemId),
     );
   }
 
@@ -445,7 +432,12 @@ function applyInsertItem(
   }
 
   const insertAt = clampInsertIndex(operation.index, match.section.items.length);
-  match.section.items.splice(insertAt, 0, operation.item);
+  const nextItems = [...match.section.items];
+  nextItems.splice(insertAt, 0, operation.item);
+  resume.sections[match.index] = {
+    ...match.section,
+    items: nextItems,
+  } as ResumeSection;
 
   return operationApplied({
     id: `diff-${edit.id}`,
@@ -482,30 +474,27 @@ function applyUpdateItem(
     );
   }
 
-  const writableFields = [
-    "title",
-    "subtitle",
-    "meta",
-    "period",
-    "description",
-    "highlights",
-  ] as const;
-  const patchFields = writableFields.filter(
-    (field) => operation.patch && field in operation.patch,
+  const allowedFields = new Set<string>(
+    SECTION_ITEM_FIELDS[sectionMatch.section.kind],
   );
+  const patchFields = operation.patch && typeof operation.patch === "object"
+    ? Object.keys(operation.patch)
+    : [];
 
-  if (patchFields.length === 0) {
+  if (
+    patchFields.length === 0 ||
+    patchFields.some((field) => !allowedFields.has(field))
+  ) {
     return operationRejected(
       "invalid_operation",
       itemPath(operation.sectionId, operation.itemId),
     );
   }
 
-  if (
-    patchFields.every((field) =>
-      isDeepEqual(itemMatch.item[field], operation.patch[field]),
-    )
-  ) {
+  const currentItem = itemMatch.item as unknown as Record<string, unknown>;
+  const patch = operation.patch as Record<string, unknown>;
+
+  if (patchFields.every((field) => isDeepEqual(currentItem[field], patch[field]))) {
     return operationRejected(
       "no_change",
       itemPath(operation.sectionId, operation.itemId),
@@ -519,17 +508,20 @@ function applyUpdateItem(
     id: itemMatch.item.id,
   };
 
-  if (
-    sectionMatch.section.layout === "list" &&
-    !hasCanonicalListItemContent(nextItem)
-  ) {
+  if (!isSectionItemForKind(sectionMatch.section.kind, nextItem)) {
     return operationRejected(
       "invalid_operation",
       itemPath(operation.sectionId, operation.itemId),
     );
   }
 
-  sectionMatch.section.items[itemMatch.index] = nextItem;
+  const nextItems = sectionMatch.section.items.map((item) =>
+    item.id === operation.itemId ? nextItem : item,
+  );
+  resume.sections[sectionMatch.index] = {
+    ...sectionMatch.section,
+    items: nextItems,
+  } as ResumeSection;
 
   return operationApplied({
     id: `diff-${edit.id}`,
@@ -540,7 +532,7 @@ function applyUpdateItem(
     sectionId: operation.sectionId,
     itemId: operation.itemId,
     before,
-    after: sectionMatch.section.items[itemMatch.index],
+    after: nextItem,
   });
 }
 
@@ -558,6 +550,13 @@ function applyDeleteItem(
     );
   }
 
+  if (sectionMatch.section.kind === "simple_list") {
+    return operationRejected(
+      "invalid_operation",
+      `${sectionPath(operation.sectionId)}.items`,
+    );
+  }
+
   const itemMatch = findItem(sectionMatch.section, operation.itemId);
 
   if (!itemMatch) {
@@ -567,7 +566,13 @@ function applyDeleteItem(
     );
   }
 
-  const [removed] = sectionMatch.section.items.splice(itemMatch.index, 1);
+  const removed = itemMatch.item;
+  resume.sections[sectionMatch.index] = {
+    ...sectionMatch.section,
+    items: sectionMatch.section.items.filter(
+      (item) => item.id !== operation.itemId,
+    ),
+  } as ResumeSection;
 
   return operationApplied({
     id: `diff-${edit.id}`,
@@ -592,6 +597,13 @@ function applyReorderItems(
     return operationRejected(
       "target_not_found",
       sectionPath(operation.sectionId),
+    );
+  }
+
+  if (sectionMatch.section.kind === "simple_list") {
+    return operationRejected(
+      "invalid_operation",
+      `${sectionPath(operation.sectionId)}.items`,
     );
   }
 
@@ -630,11 +642,12 @@ function applyReorderItems(
     );
   }
 
-  const ordered = operation.itemIds
-    .map((itemId) => byId.get(itemId))
-    .filter((item): item is ResumeSectionItem => Boolean(item));
-  sectionMatch.section.items = ordered;
-  const afterIds = sectionMatch.section.items.map((item) => item.id);
+  const ordered = operation.itemIds.map((itemId) => byId.get(itemId)!);
+  resume.sections[sectionMatch.index] = {
+    ...sectionMatch.section,
+    items: ordered,
+  } as ResumeSection;
+  const afterIds = ordered.map((item) => item.id);
 
   if (beforeIds.join("|") === afterIds.join("|")) {
     return operationRejected(
@@ -814,39 +827,14 @@ function applyOperationWithMerge(
         return mergeConflict(sectionPath(operation.sectionId));
       }
 
-      const writableFields = ["kind", "layout", "customTitle"] as const;
-      const pendingFields: Array<(typeof writableFields)[number]> = [];
-
-      for (const field of writableFields) {
-        if (!(field in operation.patch)) {
-          continue;
-        }
-
-        const desiredValue = operation.patch[field];
-        const currentValue = currentMatch.section[field];
-        if (isDeepEqual(currentValue, desiredValue)) {
-          continue;
-        }
-        if (!isDeepEqual(currentValue, baseMatch.section[field])) {
-          return mergeConflict(`${sectionPath(operation.sectionId)}.${field}`);
-        }
-        pendingFields.push(field);
-      }
-
-      if (pendingFields.length === 0) {
+      const desiredValue = operation.patch.title;
+      if (isDeepEqual(currentMatch.section.title, desiredValue)) {
         return { ok: true };
       }
-
-      const pendingPatch = Object.fromEntries(
-        pendingFields.map((field) => [field, operation.patch[field]]),
-      ) as Extract<
-        ResumeEditOperation,
-        { type: "update_section" }
-      >["patch"];
-      return applyMergedOperation(currentResume, edit, {
-        ...operation,
-        patch: pendingPatch,
-      });
+      if (!isDeepEqual(currentMatch.section.title, baseMatch.section.title)) {
+        return mergeConflict(`${sectionPath(operation.sectionId)}.title`);
+      }
+      return applyMergedOperation(currentResume, edit, operation);
     }
 
     case "delete_section": {
@@ -912,27 +900,32 @@ function applyOperationWithMerge(
         return mergeConflict(target);
       }
 
-      const writableFields = [
-        "title",
-        "subtitle",
-        "meta",
-        "period",
-        "description",
-        "highlights",
-      ] as const;
-      const pendingFields: Array<(typeof writableFields)[number]> = [];
+      if (
+        !baseSection ||
+        !currentSection ||
+        baseSection.section.kind !== currentSection.section.kind
+      ) {
+        return mergeConflict(target);
+      }
 
-      for (const field of writableFields) {
-        if (!(field in operation.patch)) {
-          continue;
+      const allowedFields = new Set<string>(
+        SECTION_ITEM_FIELDS[currentSection.section.kind],
+      );
+      const patchRecord = operation.patch as Record<string, unknown>;
+      const pendingFields: string[] = [];
+      const baseRecord = baseItem.item as unknown as Record<string, unknown>;
+      const currentRecord = currentItem.item as unknown as Record<string, unknown>;
+
+      for (const field of Object.keys(patchRecord)) {
+        if (!allowedFields.has(field)) {
+          return mergeConflict(`${target}.${field}`);
         }
-
-        const desiredValue = operation.patch[field];
-        const currentValue = currentItem.item[field];
+        const desiredValue = patchRecord[field];
+        const currentValue = currentRecord[field];
         if (isDeepEqual(currentValue, desiredValue)) {
           continue;
         }
-        if (!isDeepEqual(currentValue, baseItem.item[field])) {
+        if (!isDeepEqual(currentValue, baseRecord[field])) {
           return mergeConflict(`${target}.${field}`);
         }
         pendingFields.push(field);
@@ -943,8 +936,8 @@ function applyOperationWithMerge(
       }
 
       const pendingPatch = Object.fromEntries(
-        pendingFields.map((field) => [field, operation.patch[field]]),
-      ) as Partial<ResumeSectionItem>;
+        pendingFields.map((field) => [field, patchRecord[field]]),
+      ) as Extract<ResumeEditOperation, { type: "update_item" }>["patch"];
       return applyMergedOperation(currentResume, edit, {
         ...operation,
         patch: pendingPatch,

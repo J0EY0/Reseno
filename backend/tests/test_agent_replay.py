@@ -11,6 +11,41 @@ from app.services.agent.tools import registry as tool_registry
 from tests.agent_replay import AgentReplayScenario, ReplayToolCall, run_agent_replay
 
 
+def _v2_basic(**overrides: object) -> dict[str, object]:
+    """Return the exact Resume V2 basic shape required by edit validation."""
+    basic: dict[str, object] = {
+        "name": "",
+        "headline": "",
+        "phone": "",
+        "email": "",
+        "location": "",
+        "avatar": "",
+        "summary": "",
+        "customFields": [],
+    }
+    basic.update(overrides)
+    return basic
+
+
+def _v2_project_item(
+    *,
+    name: str = "ResuMate",
+    description: str = "",
+    highlights: list[str] | None = None,
+) -> dict[str, object]:
+    """Keep project fixtures on the canonical semantic item fields."""
+    return {
+        "id": "project-1",
+        "name": name,
+        "role": "",
+        "techStack": [],
+        "period": "",
+        "url": "",
+        "description": description,
+        "highlights": list(highlights or []),
+    }
+
+
 def event_types(events: list[AgentRunEvent]) -> list[str]:
     return [event.type for event in events]
 
@@ -29,11 +64,11 @@ def test_replay_explain_draft_success() -> None:
             request=AgentChatRequest(
                 prompt="解释刚才的草稿改了什么",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
                 draftState={
                     "id": "draft-current",
                     "status": "pending",
-                    "resume": {"basic": {}, "sections": []},
+                    "resume": {"schemaVersion": 2, "basic": {}, "sections": []},
                     "editCount": 1,
                     "edits": [
                         {
@@ -69,11 +104,11 @@ def test_replay_draft_diff_summary_includes_reference_map() -> None:
             request=AgentChatRequest(
                 prompt="解释刚才第二条修改",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
                 draftState={
                     "id": "draft-current",
                     "status": "pending",
-                    "resume": {"basic": {}, "sections": []},
+                    "resume": {"schemaVersion": 2, "basic": {}, "sections": []},
                     "editCount": 2,
                     "edits": [
                         {
@@ -136,7 +171,11 @@ def test_replay_suggest_only_blocks_draft() -> None:
                 AgentChatRequest(
                     prompt="优化个人简介",
                     locale="zh",
-                    resume={"basic": {"summary": "已有简介"}, "sections": []},
+                    resume={
+                        "schemaVersion": 2,
+                        "basic": {"summary": "已有简介"},
+                        "sections": [],
+                    },
                 ),
                 normalize_agent_settings({"confirmationMode": "suggestOnly"}),
             ),
@@ -177,6 +216,7 @@ def test_replay_pii_write_blocked() -> None:
                 prompt="优化联系方式",
                 locale="zh",
                 resume={
+                    "schemaVersion": 2,
                     "basic": {
                         "email": "xiaoming@example.com",
                         "phone": "13800138000",
@@ -216,7 +256,11 @@ def test_replay_external_evidence_rejects_entire_edit_batch() -> None:
             request=AgentChatRequest(
                 prompt="优化个人简介",
                 locale="zh",
-                resume={"basic": {"summary": "已有简介"}, "sections": []},
+                resume={
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(summary="已有简介"),
+                    "sections": [],
+                },
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -256,7 +300,7 @@ def test_replay_explain_draft_no_pending_blocks_diff_tool() -> None:
             request=AgentChatRequest(
                 prompt="解释刚才的草稿",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[ReplayToolCall("draft_diff_summary")],
         ),
@@ -273,7 +317,7 @@ def test_replay_finish_blocked_records_missing_context() -> None:
             request=AgentChatRequest(
                 prompt="解释刚才的草稿",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -341,17 +385,17 @@ def test_replay_rewrite_project_with_lookup() -> None:
                 prompt="缩短 ResuMate 项目描述",
                 locale="zh",
                 resume={
-                    "basic": {},
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(),
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
+                            "title": "项目经历",
                             "items": [
-                                {
-                                    "id": "project-1",
-                                    "title": "ResuMate",
-                                    "description": "支持多轮 Agent 简历草稿编辑。",
-                                },
+                                _v2_project_item(
+                                    description="支持多轮 Agent 简历草稿编辑。",
+                                ),
                             ],
                         },
                     ],
@@ -404,17 +448,15 @@ def test_replay_reports_draft_quality_issues_without_raw_content() -> None:
                 prompt="优化项目经历",
                 locale="zh",
                 resume={
-                    "basic": {},
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(),
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
+                            "title": "项目经历",
                             "items": [
-                                {
-                                    "id": "project-1",
-                                    "title": "ResuMate",
-                                    "description": "AI 简历编辑器。",
-                                },
+                                _v2_project_item(description="AI 简历编辑器。"),
                             ],
                         },
                     ],
@@ -465,12 +507,14 @@ def test_replay_reports_style_quality_issues() -> None:
                 prompt="优化简介和项目经历",
                 locale="zh",
                 resume={
-                    "basic": {"summary": "已有简介。"},
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(summary="已有简介。"),
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
-                            "items": [{"id": "project-1", "title": "ResuMate"}],
+                            "title": "项目经历",
+                            "items": [_v2_project_item()],
                         },
                     ],
                 },
@@ -525,20 +569,20 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
                 prompt="修改项目标题并生成草稿",
                 locale="zh",
                 resume={
-                    "basic": {},
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(),
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
+                            "title": "项目经历",
                             "items": [
-                                {
-                                    "id": "project-1",
-                                    "title": "ResuMate",
-                                    "highlights": [
+                                _v2_project_item(
+                                    highlights=[
                                         f"Existing highlight {index}"
                                         for index in range(6)
                                     ],
-                                },
+                                ),
                             ],
                         },
                     ],
@@ -556,7 +600,7 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
                                     "type": "update_item",
                                     "sectionId": "project",
                                     "itemId": "project-1",
-                                    "patch": {"title": "ResuMate AI Resume Editor"},
+                                    "patch": {"name": "ResuMate AI Resume Editor"},
                                 },
                             },
                         ],
@@ -593,7 +637,11 @@ def test_replay_material_extract_sanitizes_attachment_candidates() -> None:
                 prompt="根据附件补充项目经历",
                 locale="zh",
                 files=[attachment],
-                resume={"basic": {"name": "王小明"}, "sections": []},
+                resume={
+                    "schemaVersion": 2,
+                    "basic": {"name": "王小明"},
+                    "sections": [],
+                },
                 resume_id=session_id,
             ),
             tool_calls=[
@@ -616,7 +664,7 @@ def test_replay_material_extract_sanitizes_attachment_candidates() -> None:
     assert result.tools[0].title == "material_extract"
     assert output["candidateCount"] >= 2
     assert "project" in candidate_sections
-    assert "skills" in candidate_sections
+    assert "simple_list" in candidate_sections
     assert "王小明" not in encoded_output
     assert "xiaoming@example.com" not in encoded_output
     assert "13800138000" not in encoded_output
@@ -633,17 +681,18 @@ def test_replay_material_extract_does_not_treat_short_prompt_as_material() -> No
                 prompt="根据附件补充项目经历",
                 locale="zh",
                 resume={
+                    "schemaVersion": 2,
                     "basic": {},
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
+                            "title": "项目经历",
                             "items": [
-                                {
-                                    "id": "project-1",
-                                    "title": "已有项目",
-                                    "description": "已有简历事实。",
-                                },
+                                _v2_project_item(
+                                    name="已有项目",
+                                    description="已有简历事实。",
+                                ),
                             ],
                         },
                     ],
@@ -673,7 +722,7 @@ def test_replay_material_extract_keeps_jd_keywords_reference_only() -> None:
                 prompt="根据 JD 分析匹配情况",
                 locale="zh",
                 jobBrief="任职要求: React TypeScript，负责前端性能优化。",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -706,6 +755,7 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
                 prompt="目标岗位是前端工程师，分析匹配情况",
                 locale="zh",
                 resume={
+                    "schemaVersion": 2,
                     "basic": {
                         "headline": "前端工程师",
                         "summary": "有 React 项目经验。",
@@ -714,12 +764,9 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
                         {
                             "id": "project",
                             "kind": "project",
+                            "title": "项目经历",
                             "items": [
-                                {
-                                    "id": "project-1",
-                                    "title": "ResuMate",
-                                    "description": "AI 简历编辑器。",
-                                },
+                                _v2_project_item(description="AI 简历编辑器。"),
                             ],
                         },
                     ],
@@ -769,7 +816,7 @@ def test_replay_explicit_web_fetch_project_reference(monkeypatch) -> None:
             request=AgentChatRequest(
                 prompt="参考这个公开项目链接优化表达：https://example.test/project",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -793,9 +840,12 @@ def test_replay_customfield_github_not_auto_fetched() -> None:
         prompt="优化项目经历",
         locale="zh",
         resume={
+            "schemaVersion": 2,
             "basic": {
                 "customFields": [
                     {
+                        "id": "github",
+                        "type": "url",
                         "label": "GitHub",
                         "value": "https://github.com/example/project",
                     },
@@ -819,7 +869,7 @@ def test_replay_unknown_url_purpose_blocked() -> None:
             request=AgentChatRequest(
                 prompt="参考这个链接：https://example.test/page",
                 locale="zh",
-                resume={"basic": {}, "sections": []},
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -842,12 +892,14 @@ def test_replay_delete_requires_explicit_intent() -> None:
                 prompt="优化项目经历",
                 locale="zh",
                 resume={
+                    "schemaVersion": 2,
                     "basic": {},
                     "sections": [
                         {
                             "id": "project",
                             "kind": "project",
-                            "items": [{"id": "project-1", "title": "ResuMate"}],
+                            "title": "项目经历",
+                            "items": [_v2_project_item()],
                         },
                     ],
                 },
@@ -885,12 +937,17 @@ def test_replay_draft_rewrite_uses_pending_draft() -> None:
             request=AgentChatRequest(
                 prompt="把刚才的草稿再短一点",
                 locale="zh",
-                resume={"basic": {"summary": "正式简历简介"}, "sections": []},
+                resume={
+                    "schemaVersion": 2,
+                    "basic": _v2_basic(summary="正式简历简介"),
+                    "sections": [],
+                },
                 draftState={
                     "id": "draft-current",
                     "status": "pending",
                     "resume": {
-                        "basic": {"summary": "待确认草稿简介"},
+                        "schemaVersion": 2,
+                        "basic": _v2_basic(summary="待确认草稿简介"),
                         "sections": [],
                     },
                     "editCount": 1,

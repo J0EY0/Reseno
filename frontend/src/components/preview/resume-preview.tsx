@@ -16,7 +16,12 @@ import {
   createContactHref,
   normalizeContactFieldType,
 } from '@/lib/contact-links'
-import { getInitials, getSectionTitle, hasItemContent } from '@/lib/resume'
+import { getInitials, getSectionTitle } from '@/lib/resume'
+import {
+  projectResumeSections,
+  type RenderableResumeSection,
+  type RenderableSectionItem,
+} from '@/lib/resume-sections'
 import {
   isRichTextEmpty,
   sanitizeRichTextHtml,
@@ -29,8 +34,6 @@ import type {
   ResumeDraftDiff,
   ResumeFontFamily,
   ResumeListItemLayout,
-  ResumeSection,
-  ResumeSectionItem,
   ResumeTemplateDefinition,
   ResumeTemplateImageElement,
   ResumeTemplateLayout,
@@ -55,7 +58,7 @@ interface ResumePreviewProps {
 }
 
 interface SectionBlockProps {
-  section: ResumeSection
+  section: RenderableResumeSection
   t: AppMessages
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
@@ -65,15 +68,15 @@ interface SectionBlockProps {
 }
 
 interface SectionItemsProps {
-  items: ResumeSectionItem[]
+  items: RenderableSectionItem[]
   t: AppMessages
   settings: ResumeTemplateSettings
   itemDiffById?: Map<string, ResumeDraftDiff>
 }
 
 interface PaginatedResumeSection {
-  section: ResumeSection
-  items: ResumeSectionItem[]
+  section: RenderableResumeSection
+  items: RenderableSectionItem[]
   showTitle: boolean
 }
 
@@ -102,15 +105,28 @@ interface ContactItem {
   href?: string
 }
 
-function getRenderableItems(section: ResumeSection) {
+function hasRenderableItemContent(item: RenderableSectionItem) {
+  return [
+    item.title,
+    item.subtitle,
+    item.meta,
+    item.period,
+    item.description,
+    item.content,
+    item.url,
+    ...item.highlights,
+  ].some((value) => !isRichTextEmpty(value))
+}
+
+function getRenderableItems(section: RenderableResumeSection) {
   return section.items.filter((item) =>
     section.layout === 'list'
-      ? Boolean(item.title.trim() || item.subtitle.trim())
-      : hasItemContent(item),
+      ? !isRichTextEmpty(item.content)
+      : hasRenderableItemContent(item),
   )
 }
 
-function createFullPreviewSections(sections: ResumeSection[]) {
+function createFullPreviewSections(sections: RenderableResumeSection[]) {
   return sections.map((section) => ({
     section,
     items: getRenderableItems(section),
@@ -844,7 +860,7 @@ function TimelineItem({
   diff,
   layout,
 }: {
-  item: ResumeSectionItem
+  item: RenderableSectionItem
   t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
@@ -951,6 +967,15 @@ function TimelineItem({
     >
       {heading}
 
+      {item.url ? (
+        <p
+          className="resume-tone-muted break-all"
+          style={{ fontSize: `${settings.metaScale}em` }}
+        >
+          {item.url}
+        </p>
+      ) : null}
+
       {item.description ? (
         <p
           className="resume-tone-body"
@@ -1006,77 +1031,43 @@ function TimelineItems({
   )
 }
 
-function ListItem({
+function SimpleListContent({
   item,
   t,
   settings,
   diff,
   layout,
 }: {
-  item: ResumeSectionItem
+  item: RenderableSectionItem
   t: AppMessages
   settings: ResumeTemplateSettings
   diff?: ResumeDraftDiff
   layout: ResumeListItemLayout
 }) {
   return (
-    <li
-      className={cn(
-        'resume-item min-w-0',
-        layout === 'inline' &&
-          'flex items-start gap-1.5 before:shrink-0 before:content-["•"]',
-        layout === 'inline' && 'flex-none',
-        getDiffClassName(diff),
-      )}
-      data-resume-item-id={item.id}
-      data-resume-diff-kind={diff?.kind}
-      data-resume-diff-label={getDiffLabel(diff, t)}
-    >
-      <strong style={{ color: settings.bodyColor }}>{item.title}</strong>
-      {item.subtitle ? (
-        <span>
-          {item.title ? '：' : ''}
-          {item.subtitle}
-        </span>
-      ) : null}
-    </li>
-  )
-}
-
-function ListItems({
-  items,
-  t,
-  settings,
-  itemDiffById,
-  layout,
-}: SectionItemsProps & { layout: ResumeListItemLayout }) {
-  return (
-    <ul
-      className={cn(
-        'resume-tone-body',
-        layout === 'list' && 'grid list-disc pl-5',
-        layout === 'columns' &&
-          'grid grid-cols-2 gap-x-6 list-disc pl-5',
-        layout === 'inline' && 'flex flex-wrap items-start gap-x-4 pl-0',
-      )}
+    <div
+      className="resume-tone-body"
       data-resume-items-list="true"
       style={{
-        gap: `${Math.max(0.35, settings.itemGap / 2)}em`,
         fontSize: `${settings.bodyScale}em`,
         lineHeight: settings.bodyLineHeight,
       }}
     >
-      {items.map((item) => (
-        <ListItem
-          key={item.id}
-          item={item}
-          t={t}
-          settings={settings}
-          diff={itemDiffById?.get(item.id)}
-          layout={layout}
-        />
-      ))}
-    </ul>
+      <div
+        className={cn(
+          'resume-item resume-rich-text min-w-0',
+          getDiffClassName(diff),
+        )}
+        data-resume-item-id={item.id}
+        data-resume-diff-kind={diff?.kind}
+        data-resume-diff-label={getDiffLabel(diff, t)}
+        data-resume-list-layout={layout}
+        style={{ color: settings.bodyColor }}
+        dangerouslySetInnerHTML={{
+          __html: sanitizeRichTextHtml(item.content),
+        }}
+      />
+    </div>
   )
 }
 
@@ -1088,22 +1079,27 @@ function SectionItems({
   items,
   itemDiffById,
 }: {
-  section: ResumeSection
+  section: RenderableResumeSection
   t: AppMessages
   settings: ResumeTemplateSettings
   layout: ResumeTemplateLayout
-  items?: ResumeSectionItem[]
+  items?: RenderableSectionItem[]
   itemDiffById?: Map<string, ResumeDraftDiff>
 }) {
   const visibleItems = items ?? getRenderableItems(section)
 
-  if (section.layout === 'list') {
+  if (section.kind === 'simple_list') {
+    const item = visibleItems[0]
+    if (!item) {
+      return null
+    }
+
     return (
-      <ListItems
-        items={visibleItems}
+      <SimpleListContent
+        item={item}
         t={t}
         settings={settings}
-        itemDiffById={itemDiffById}
+        diff={itemDiffById?.get(item.id)}
         layout={layout.listItemLayout}
       />
     )
@@ -1197,7 +1193,7 @@ function SectionBlock({
   diff,
   itemDiffById,
 }: SectionBlockProps & {
-  items?: ResumeSectionItem[]
+  items?: RenderableSectionItem[]
   showTitle?: boolean
   breakBeforeOffset?: number
 }) {
@@ -1386,7 +1382,7 @@ function SectionsList({
 
 function measureSectionBlocks(
   element: HTMLElement,
-  sections: ResumeSection[],
+  sections: RenderableResumeSection[],
 ) {
   const measures = new Map<
     string,
@@ -1426,7 +1422,7 @@ function calculateResumePagination({
   pageHeightMm,
 }: {
   element: HTMLElement
-  sections: ResumeSection[]
+  sections: RenderableResumeSection[]
   contentWidthMm: number
   pageHeightMm: number
 }) {
@@ -1511,12 +1507,16 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
   onPaginationReadyChange,
   onMoveTemplateImage,
 }, ref) {
+  const projectedSections = useMemo(
+    () => projectResumeSections(resume.sections),
+    [resume.sections],
+  )
   const visibleSections = useMemo(
     () =>
-      resume.sections.filter(
+      projectedSections.filter(
         (section) => getRenderableItems(section).length > 0,
       ),
-    [resume.sections],
+    [projectedSections],
   )
   const settings = template.settings
   const layout = template.layout

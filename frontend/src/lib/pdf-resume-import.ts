@@ -1,10 +1,15 @@
 import { apiRoutes, requestApi } from "@/lib/api-client";
+import { serializeListItemsToHtml } from "@/lib/rich-text";
 import { createId } from "@/lib/resume";
+import { hasSectionContent } from "@/lib/resume-sections";
 import { SECTION_KINDS } from "@/types/resume";
 import type {
+  AchievementItem,
+  EducationItem,
+  ExperienceItem,
+  ProjectItem,
   ResumeData,
   ResumeSection,
-  ResumeSectionItem,
   SectionKind,
   SectionLayout,
 } from "@/types/resume";
@@ -104,6 +109,18 @@ type ResumeImportParserConfig = {
 type ExperienceLine = TextLine & {
   isBullet: boolean;
   hasPeriod: boolean;
+};
+
+// PDF parsing first produces a layout-oriented item. A single adapter below
+// maps that intermediate shape into the canonical kind-specific V2 contract.
+type ParsedSectionItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  meta: string;
+  period: string;
+  description: string;
+  highlights: string[];
 };
 
 type PositionedTextItem = {
@@ -954,7 +971,7 @@ export function buildResumeFromPdfLines(
       : [
           {
             rawTitle: fallbackSectionTitle,
-            kind: "other" as const,
+            kind: "simple_list" as const,
             confidence: 0,
             startLineIndex: basicLines.length,
             lines: normalizedLines.slice(basicLines.length).length > 0
@@ -964,16 +981,16 @@ export function buildResumeFromPdfLines(
         ];
 
   return {
+    schemaVersion: 2,
     basic,
     sections: resolvedSections
       .map((section) =>
         sectionCandidateToResumeSection(
           section,
-          registryContext,
           lexiconContext,
         ),
       )
-      .filter((section) => section.items.length > 0),
+      .filter(hasSectionContent),
   };
 }
 
@@ -1579,30 +1596,120 @@ function inferName(
 
 function sectionCandidateToResumeSection(
   candidate: SectionCandidate,
-  registryContext: SectionRegistryContext,
   lexiconContext: ResumeImportLexiconContext,
 ): ResumeSection {
   const kind =
     candidate.confidence >=
     PDF_IMPORT_PROFILE.text.sectionKindConfidenceThreshold
       ? candidate.kind
-      : "other";
-  const items = buildSectionItems(candidate.lines, kind, lexiconContext);
+      : "simple_list";
+  const parsedItems = buildSectionItems(candidate.lines, kind, lexiconContext);
 
-  return {
-    id: createId("section"),
+  return createCanonicalSection(
     kind,
-    layout: registryContext.defaultLayoutByKind.get(kind) ?? "timeline",
-    customTitle: kind === "other" ? candidate.rawTitle : "",
-    items,
-  };
+    kind === "simple_list" ? candidate.rawTitle : "",
+    parsedItems,
+  );
+}
+
+function createCanonicalSection(
+  kind: SectionKind,
+  title: string,
+  items: ParsedSectionItem[],
+): ResumeSection {
+  const id = createId("section");
+
+  switch (kind) {
+    case "education":
+      return {
+        id,
+        kind,
+        title,
+        items: items.map<EducationItem>((item) => ({
+          id: item.id,
+          school: item.title,
+          degree: item.subtitle,
+          major: "",
+          gpa: item.meta,
+          location: "",
+          period: item.period,
+          description: item.description,
+          highlights: item.highlights,
+        })),
+      };
+    case "experience":
+      return {
+        id,
+        kind,
+        title,
+        items: items.map<ExperienceItem>((item) => ({
+          id: item.id,
+          company: item.title,
+          position: item.subtitle,
+          location: item.meta,
+          period: item.period,
+          description: item.description,
+          highlights: item.highlights,
+        })),
+      };
+    case "project":
+      return {
+        id,
+        kind,
+        title,
+        items: items.map<ProjectItem>((item) => ({
+          id: item.id,
+          name: item.title,
+          role: item.subtitle,
+          techStack: splitInlineList(item.meta),
+          period: item.period,
+          url: "",
+          description: item.description,
+          highlights: item.highlights,
+        })),
+      };
+    case "achievement":
+      return {
+        id,
+        kind,
+        title,
+        items: items.map<AchievementItem>((item) => ({
+          id: item.id,
+          name: item.title,
+          issuer: item.subtitle || item.meta,
+          date: item.period,
+          url: "",
+          description: item.description || item.highlights.join(" "),
+        })),
+      };
+    case "simple_list":
+      return {
+        id,
+        kind,
+        title,
+        // Parsing still yields one record per visual line; collapse those lines
+        // at the V2 boundary so the editor receives one rich-text list item.
+        items: [
+          {
+            id: items[0]?.id ?? createId("item"),
+            content: serializeListItemsToHtml(
+              items.map((item) =>
+                item.subtitle
+                  ? `${item.title}：${item.subtitle}`
+                  : item.title || item.description || item.highlights.join(" "),
+              ),
+            ),
+          },
+        ],
+      };
+  }
 }
 
 function buildSectionItems(
   lines: TextLine[],
   kind: SectionKind,
   lexiconContext: ResumeImportLexiconContext,
-): ResumeSectionItem[] {
+): ParsedSectionItem[] {
   if (isListSectionKind(kind)) {
     return buildListSectionItems(lines, kind);
   }
@@ -1614,20 +1721,15 @@ function buildSectionItems(
 }
 
 function isListSectionKind(kind: SectionKind) {
-  return (
-    kind === "skills" ||
-    kind === "languages" ||
-    kind === "certificates" ||
-    kind === "other"
-  );
+  return kind === "simple_list";
 }
 
 function buildListSectionItems(
   lines: TextLine[],
   kind: SectionKind,
-): ResumeSectionItem[] {
-  const items: ResumeSectionItem[] = [];
-  let labeledItem: { item: ResumeSectionItem; line: TextLine } | null = null;
+): ParsedSectionItem[] {
+  const items: ParsedSectionItem[] = [];
+  let labeledItem: { item: ParsedSectionItem; line: TextLine } | null = null;
 
   for (const line of lines) {
     const labeled = splitLabeledListLine(line.text);
@@ -1654,7 +1756,7 @@ function buildListSectionItems(
     }
 
     labeledItem = null;
-    if (kind === "other") {
+    if (kind === "simple_list") {
       items.push(buildItem({ title: line.text }));
       continue;
     }
@@ -1827,7 +1929,7 @@ function groupToItem(
   group: ExperienceLine[],
   kind: SectionKind,
   lexiconContext: ResumeImportLexiconContext,
-): ResumeSectionItem {
+): ParsedSectionItem {
   // Treat early compact lines as the item header and sentence-shaped lines as
   // highlights. This intentionally avoids content dictionaries such as tech
   // names or action verbs; structure is more stable across languages/domains.
@@ -1945,7 +2047,7 @@ function endsSentence(value: string) {
 function headerLinesToItem(
   headerLines: ExperienceLine[],
   kind: SectionKind,
-): Partial<ResumeSectionItem> {
+): Partial<ParsedSectionItem> {
   const visualRows = groupExperienceRows(headerLines);
   if (visualRows.some((row) => row.length > 1)) {
     const firstRow = visualRows[0] ?? [];
@@ -1997,7 +2099,7 @@ function headerLinesToItem(
   };
 }
 
-function buildItem(overrides: Partial<ResumeSectionItem>): ResumeSectionItem {
+function buildItem(overrides: Partial<ParsedSectionItem>): ParsedSectionItem {
   return {
     id: createId("item"),
     title: "",
@@ -2059,7 +2161,7 @@ function classifySectionTitle(
     };
   }
 
-  return { kind: "other", confidence: 0 };
+  return { kind: "simple_list", confidence: 0 };
 }
 
 function normalizeTitle(value: string) {
@@ -2172,7 +2274,7 @@ function titleLineScore(line: string) {
   return score;
 }
 
-function hasItemText(item: ResumeSectionItem) {
+function hasItemText(item: ParsedSectionItem) {
   return [
     item.title,
     item.subtitle,

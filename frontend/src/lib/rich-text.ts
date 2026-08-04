@@ -112,3 +112,15 @@ export function serializeHighlightsToHtml(highlights: string[]) {
     .map((item) => `<li>${sanitizeRichTextHtml(item)}</li>`)
     .join('')}</ul>`
 }
+
+export function serializeListItemsToHtml(items: string[]) {
+  const visibleItems = items.filter((item) => !isRichTextEmpty(item))
+
+  if (visibleItems.length === 0) {
+    return ''
+  }
+
+  return `<ul>${visibleItems
+    .map((item) => `<li>${sanitizeRichTextHtml(item)}</li>`)
+    .join('')}</ul>`
+}

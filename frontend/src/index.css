@@ -464,6 +464,26 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   margin-top: 0.04em;
 }
 
+.resume-rich-text[data-resume-list-layout='columns'] > ul,
+.resume-rich-text[data-resume-list-layout='columns'] > ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 1.5em;
+}
+
+.resume-rich-text[data-resume-list-layout='inline'] > ul,
+.resume-rich-text[data-resume-list-layout='inline'] > ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1em;
+  padding-left: 0;
+}
+
+.resume-rich-text[data-resume-list-layout='inline'] > ul > li,
+.resume-rich-text[data-resume-list-layout='inline'] > ol > li {
+  margin-left: 1em;
+}
+
 .resume-page {
   position: relative;
   width: 210mm;

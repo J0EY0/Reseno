@@ -3,13 +3,29 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.schemas.agent import AgentResumeEditSuggestion
+from app.services.resume_document_contract import (
+    ITEM_LIST_FIELDS_BY_KIND,
+    ITEM_STRING_FIELDS_BY_KIND,
+)
 
 MAX_HIGHLIGHT_CHARS = 180
 MAX_SUMMARY_CHARS = 360
 MAX_DESCRIPTION_CHARS = 220
 MAX_ITEM_HIGHLIGHTS = 5
-ITEM_TEXT_FIELDS = ("title", "subtitle", "meta", "period", "description")
-ITEM_DEDUPE_FIELDS = ("title", "subtitle", "meta", "period")
+ALL_ITEM_STRING_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_STRING_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
+)
+ALL_ITEM_LIST_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_LIST_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
+)
 BLOCKING_QUALITY_SEVERITY = "error"
 OPEN_ENDED_PERIOD_MARKERS = frozenset(
     {"present", "current", "now", "ongoing", "至今", "现在"},
@@ -134,6 +150,7 @@ def draft_quality_issues(
                     section,
                     operation_index,
                 )
+                section_kind = _string_value(section.get("kind"))
                 for item in _section_items(section):
                     _add_item_issues(
                         issues,
@@ -142,6 +159,7 @@ def draft_quality_issues(
                         operation_type,
                         item,
                         operation_index,
+                        section_kind=section_kind,
                     )
             continue
 
@@ -155,6 +173,10 @@ def draft_quality_issues(
                     operation_type,
                     inserted_item,
                     operation_index,
+                    section_kind=_operation_section_kind(
+                        after_resume,
+                        operation,
+                    ),
                 )
             continue
 
@@ -168,6 +190,10 @@ def draft_quality_issues(
                     operation_type,
                     updated_item,
                     operation_index,
+                    section_kind=_operation_section_kind(
+                        after_resume,
+                        operation,
+                    ),
                     touched_fields=_operation_patch_fields(operation),
                 )
 
@@ -364,10 +390,15 @@ def _add_full_resume_period_issues(
 
     for section in _resume_sections(resume):
         section_id = _string_value(section.get("id"))
+        section_kind = _string_value(section.get("kind"))
+        date_field = "date" if section_kind == "achievement" else "period"
+        if date_field not in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ()):
+            continue
+
         previous_item_id = ""
         previous_period: tuple[int, int] | None = None
         for item in _section_items(section):
-            period = _string_value(item.get("period"))
+            period = _string_value(item.get(date_field))
             if not period:
                 continue
 
@@ -378,11 +409,19 @@ def _add_full_resume_period_issues(
                     issues,
                     seen,
                     {
-                        "code": "invalid_item_period",
+                        "code": (
+                            "invalid_item_date"
+                            if date_field == "date"
+                            else "invalid_item_period"
+                        ),
                         "severity": BLOCKING_QUALITY_SEVERITY,
-                        "target": _item_field_target(section_id, item_id, "period"),
+                        "target": _item_field_target(
+                            section_id,
+                            item_id,
+                            date_field,
+                        ),
                         "scope": "resume",
-                        "field": "period",
+                        "field": date_field,
                         "sectionId": section_id,
                         "itemId": item_id,
                     },
@@ -394,11 +433,19 @@ def _add_full_resume_period_issues(
                     issues,
                     seen,
                     {
-                        "code": "inverted_item_period",
+                        "code": (
+                            "inverted_item_date"
+                            if date_field == "date"
+                            else "inverted_item_period"
+                        ),
                         "severity": BLOCKING_QUALITY_SEVERITY,
-                        "target": _item_field_target(section_id, item_id, "period"),
+                        "target": _item_field_target(
+                            section_id,
+                            item_id,
+                            date_field,
+                        ),
                         "scope": "resume",
-                        "field": "period",
+                        "field": date_field,
                         "sectionId": section_id,
                         "itemId": item_id,
                     },
@@ -438,9 +485,9 @@ def _add_full_resume_duplicate_issues(
 ) -> None:
     """Warn when separate resume items make substantially the same claim.
 
-    This deliberately compares only descriptions and highlights from different
-    items. Titles, short labels, and fields within one item often repeat by
-    design and are handled by the existing edit-local checks.
+    This deliberately compares only descriptions, highlights, and simple-list
+    content from different items. Structured labels and fields within one item
+    often repeat by design and are handled by the edit-local checks.
     """
 
     content: list[tuple[str, str, str, str]] = []
@@ -456,6 +503,16 @@ def _add_full_resume_duplicate_issues(
                         section_id,
                         item_id,
                         description,
+                    ),
+                )
+            simple_content = _string_value(item.get("content"))
+            if _is_substantive_duplicate_candidate(simple_content):
+                content.append(
+                    (
+                        _item_field_target(section_id, item_id, "content"),
+                        section_id,
+                        item_id,
+                        simple_content,
                     ),
                 )
             for index, highlight in enumerate(_item_highlights(item)):
@@ -554,6 +611,12 @@ def _add_full_resume_tense_issues(
 
     for section in _resume_sections(resume):
         section_id = _string_value(section.get("id"))
+        section_kind = _string_value(section.get("kind"))
+        if (
+            "period" not in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ())
+            or "highlights" not in ITEM_LIST_FIELDS_BY_KIND.get(section_kind, ())
+        ):
+            continue
         for item in _section_items(section):
             parsed_period = _parse_period(_string_value(item.get("period")))
             if (
@@ -636,9 +699,11 @@ def _add_item_issues(
     operation_type: str,
     item: dict[str, Any],
     operation_index: int,
+    *,
+    section_kind: str,
     touched_fields: set[str] | None = None,
 ) -> None:
-    if not _item_has_visible_content(item):
+    if not _item_has_visible_content(item, section_kind):
         _append_issue(
             issues,
             seen,
@@ -652,7 +717,7 @@ def _add_item_issues(
             },
         )
 
-    field_values = [_string_value(item.get(field)) for field in ITEM_DEDUPE_FIELDS]
+    field_values = _item_dedupe_values(item, section_kind)
     description = _string_value(item.get("description"))
     check_description = _should_check_field(touched_fields, "description")
     if check_description and len(description) > MAX_DESCRIPTION_CHARS:
@@ -790,7 +855,7 @@ def _add_normalization_loss_for_item(
     if raw_item is None or normalized_item is None:
         return
 
-    for field in ITEM_TEXT_FIELDS:
+    for field in ALL_ITEM_STRING_FIELDS:
         raw_text = _string_value(raw_item.get(field))
         normalized_text = _string_value(normalized_item.get(field))
         if (
@@ -809,24 +874,29 @@ def _add_normalization_loss_for_item(
                 },
             )
 
-    raw_highlights = _string_list(raw_item.get("highlights"))
-    normalized_highlights = _string_list(normalized_item.get("highlights"))
-    base_highlights = _string_list((base_item or {}).get("highlights"))
-    if (
-        raw_highlights
-        and len(normalized_highlights) < len(raw_highlights)
-        and not _same_string_list(raw_highlights, base_highlights)
-    ):
-        issues.append(
-            {
-                "code": "normalized_item_highlights_were_dropped",
-                "severity": BLOCKING_QUALITY_SEVERITY,
-                "target": edit.target,
-                "operationType": operation_type,
-                "operationIndex": operation_index,
-                "field": "highlights",
-            },
-        )
+    for field in ALL_ITEM_LIST_FIELDS:
+        raw_values = _string_list(raw_item.get(field))
+        normalized_values = _string_list(normalized_item.get(field))
+        base_values = _string_list((base_item or {}).get(field))
+        if (
+            raw_values
+            and len(normalized_values) < len(raw_values)
+            and not _same_string_list(raw_values, base_values)
+        ):
+            issues.append(
+                {
+                    "code": (
+                        "normalized_item_highlights_were_dropped"
+                        if field == "highlights"
+                        else "normalized_item_list_was_dropped"
+                    ),
+                    "severity": BLOCKING_QUALITY_SEVERITY,
+                    "target": edit.target,
+                    "operationType": operation_type,
+                    "operationIndex": operation_index,
+                    "field": field,
+                },
+            )
 
 
 def _append_issue(
@@ -863,6 +933,16 @@ def _item_after_operation(
         item_id = _string_value(operation.get("itemId"))
 
     return _item_by_id(section, item_id)
+
+
+def _operation_section_kind(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+) -> str:
+    """Return the target section kind for one item operation."""
+
+    section = _section_by_id(resume, _string_value(operation.get("sectionId")))
+    return _string_value(section.get("kind")) if section is not None else ""
 
 
 def _section_by_id(
@@ -910,18 +990,35 @@ def _section_items(section: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _section_has_visible_content(section: dict[str, Any]) -> bool:
-    if _string_value(section.get("customTitle")):
-        return True
+    kind = _string_value(section.get("kind"))
+    return any(
+        _item_has_visible_content(item, kind) for item in _section_items(section)
+    )
 
-    return any(_item_has_visible_content(item) for item in _section_items(section))
 
-
-def _item_has_visible_content(item: dict[str, Any]) -> bool:
-    for field in ITEM_TEXT_FIELDS:
+def _item_has_visible_content(item: dict[str, Any], section_kind: str) -> bool:
+    for field in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ()):
         if _string_value(item.get(field)):
             return True
 
-    return bool(_item_highlights(item))
+    return any(
+        _string_list(item.get(field))
+        for field in ITEM_LIST_FIELDS_BY_KIND.get(section_kind, ())
+    )
+
+
+def _item_dedupe_values(item: dict[str, Any], section_kind: str) -> list[str]:
+    """Return structured values that narrative prose should not repeat."""
+
+    values = [
+        _string_value(item.get(field))
+        for field in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ())
+        if field not in {"content", "description"}
+    ]
+    for field in ITEM_LIST_FIELDS_BY_KIND.get(section_kind, ()):
+        if field != "highlights":
+            values.extend(_string_list(item.get(field)))
+    return values
 
 
 def _item_highlights(item: dict[str, Any]) -> list[str]:
@@ -979,12 +1076,14 @@ def _parse_period_point(value: str) -> int | None:
         return year * 12 + month
 
     year_month_match = re.fullmatch(
-        r"(?P<year>\d{4})(?:[./-](?P<month>\d{1,2}))?",
+        r"(?P<year>\d{4})(?:[./-](?P<month>\d{1,2})"
+        r"(?:[./-](?P<day>\d{1,2}))?)?",
         normalized,
     )
     if year_month_match is None:
         year_month_match = re.fullmatch(
-            r"(?P<year>\d{4})年(?:(?P<month>\d{1,2})月)?",
+            r"(?P<year>\d{4})年(?:(?P<month>\d{1,2})月"
+            r"(?:(?P<day>\d{1,2})日)?)?",
             normalized,
         )
     if year_month_match is None:
@@ -999,7 +1098,9 @@ def _parse_period_point(value: str) -> int | None:
     year = int(year_month_match.group("year"))
     month_text = year_month_match.group("month")
     month = int(month_text) if month_text is not None else 1
-    if year < 1900 or month < 1 or month > 12:
+    day_text = year_month_match.groupdict().get("day")
+    day = int(day_text) if day_text is not None else 1
+    if year < 1900 or month < 1 or month > 12 or day < 1 or day > 31:
         return None
     return year * 12 + month
 
@@ -1026,6 +1127,9 @@ def _resume_narrative_texts(resume: dict[str, Any]) -> list[str]:
             description = _string_value(item.get("description"))
             if description:
                 texts.append(description)
+            content = _string_value(item.get("content"))
+            if content:
+                texts.append(content)
             texts.extend(_item_highlights(item))
     return texts
 
@@ -1048,16 +1152,18 @@ def _resume_searchable_texts(resume: dict[str, Any]) -> list[str]:
                         texts.append(value)
 
     for section in _resume_sections(resume):
-        custom_title = _string_value(section.get("customTitle"))
-        if custom_title:
-            texts.append(custom_title)
+        title = _string_value(section.get("title"))
+        if title:
+            texts.append(title)
+        section_kind = _string_value(section.get("kind"))
         for item in _section_items(section):
             texts.extend(
                 value
-                for field in ITEM_TEXT_FIELDS
+                for field in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ())
                 if (value := _string_value(item.get(field)))
             )
-            texts.extend(_item_highlights(item))
+            for field in ITEM_LIST_FIELDS_BY_KIND.get(section_kind, ()):
+                texts.extend(_string_list(item.get(field)))
     return texts
 
 

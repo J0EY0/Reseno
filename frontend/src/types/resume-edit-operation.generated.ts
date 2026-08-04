@@ -17,9 +17,7 @@ export type ResumeEditOperation =
     type: "update_section";
     sectionId: string;
     patch: {
-      kind?: ResumeSection["kind"];
-      layout?: ResumeSection["layout"];
-      customTitle?: string;
+      title: string;
     };
   }
   | {
@@ -41,12 +39,23 @@ export type ResumeEditOperation =
     sectionId: string;
     itemId: string;
     patch: {
-      title?: string;
-      subtitle?: string;
-      meta?: string;
+      school?: string;
+      degree?: string;
+      major?: string;
+      gpa?: string;
+      location?: string;
       period?: string;
+      company?: string;
+      position?: string;
+      name?: string;
+      role?: string;
+      techStack?: string[];
+      url?: string;
+      issuer?: string;
+      date?: string;
       description?: string;
       highlights?: string[];
+      content?: string;
     };
   }
   | {

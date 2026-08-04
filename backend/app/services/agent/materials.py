@@ -14,28 +14,41 @@ MATERIAL_FOCI = {
     "resume_facts",
     "experience",
     "project",
+    "achievement",
+    "simple_list",
     "work",
     "internship",
     "skills",
+    "languages",
+    "awards",
+    "certificates",
     "education",
     "jd",
     "target_context",
 }
 SECTION_PATTERNS = (
     ("project", "material.project"),
-    ("work", "material.work"),
-    ("internship", "material.internship"),
-    ("skills", "material.skills"),
+    ("experience", "material.work"),
+    ("experience", "material.internship"),
+    ("simple_list", "material.skills"),
+    ("simple_list", "material.languages"),
     ("education", "material.education"),
-    ("awards", "material.awards"),
-    ("certificates", "material.certificates"),
+    ("achievement", "material.awards"),
+    ("achievement", "material.certificates"),
 )
 FOCUS_SECTIONS = {
-    "experience": {"project", "work", "internship"},
+    "experience": {"project", "experience"},
     "project": {"project"},
-    "work": {"work"},
-    "internship": {"internship"},
-    "skills": {"skills"},
+    "achievement": {"achievement"},
+    "simple_list": {"simple_list"},
+    # Legacy/semantic focus names remain accepted at the tool seam while the
+    # observation always reports canonical V2 section kinds.
+    "work": {"experience"},
+    "internship": {"experience"},
+    "skills": {"simple_list"},
+    "languages": {"simple_list"},
+    "awards": {"achievement"},
+    "certificates": {"achievement"},
     "education": {"education"},
 }
 
@@ -286,11 +299,13 @@ def _is_substantive_prompt_material(
 
 
 def _suggested_sections(snippet: str) -> list[str]:
-    return [
-        section
-        for section, pattern_name in SECTION_PATTERNS
-        if matches_agent_pattern(snippet, pattern_name)
-    ]
+    return list(
+        dict.fromkeys(
+            section
+            for section, pattern_name in SECTION_PATTERNS
+            if matches_agent_pattern(snippet, pattern_name)
+        ),
+    )
 
 
 def _is_reference_only(snippet: str) -> bool:

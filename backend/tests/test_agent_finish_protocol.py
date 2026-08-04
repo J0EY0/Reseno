@@ -29,7 +29,17 @@ def _request() -> AgentChatRequest:
         prompt="优化个人简介",
         locale="zh",
         resume={
-            "basic": {"headline": "前端工程师", "summary": "原始简介"},
+            "schemaVersion": 2,
+            "basic": {
+                "name": "",
+                "headline": "前端工程师",
+                "phone": "",
+                "email": "",
+                "location": "",
+                "avatar": "",
+                "summary": "原始简介",
+                "customFields": [],
+            },
             "sections": [],
         },
     )

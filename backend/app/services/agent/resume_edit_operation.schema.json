@@ -2,108 +2,183 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://resumate.local/schemas/resume-edit-operation.json",
   "title": "ResumeEditOperation",
-  "description": "Normalized resume edit operation exchanged by the backend and frontend.",
+  "description": "Normalized Resume V2 edit operation exchanged by the backend and frontend.",
   "definitions": {
-    "resumeSectionItem": {
+    "educationItem": {
       "type": "object",
-      "x-typescript-type": "ResumeSectionItem",
       "properties": {
         "id": { "type": "string", "minLength": 1 },
-        "title": { "type": "string" },
-        "subtitle": { "type": "string" },
-        "meta": { "type": "string" },
+        "school": { "type": "string" },
+        "degree": { "type": "string" },
+        "major": { "type": "string" },
+        "gpa": { "type": "string" },
+        "location": { "type": "string" },
         "period": { "type": "string" },
         "description": { "type": "string" },
-        "highlights": {
+        "highlights": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "school", "degree", "major", "gpa", "location", "period", "description", "highlights"],
+      "additionalProperties": false
+    },
+    "experienceItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "company": { "type": "string" },
+        "position": { "type": "string" },
+        "location": { "type": "string" },
+        "period": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "company", "position", "location", "period", "description", "highlights"],
+      "additionalProperties": false
+    },
+    "projectItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "techStack": { "type": "array", "items": { "type": "string" } },
+        "period": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" },
+        "highlights": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name", "role", "techStack", "period", "url", "description", "highlights"],
+      "additionalProperties": false
+    },
+    "achievementItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "issuer": { "type": "string" },
+        "date": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["id", "name", "issuer", "date", "url", "description"],
+      "additionalProperties": false
+    },
+    "simpleListItem": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "content": { "type": "string" }
+      },
+      "required": ["id", "content"],
+      "additionalProperties": false
+    },
+    "resumeSectionItem": {
+      "x-typescript-type": "ResumeSectionItem",
+      "oneOf": [
+        { "$ref": "#/definitions/educationItem" },
+        { "$ref": "#/definitions/experienceItem" },
+        { "$ref": "#/definitions/projectItem" },
+        { "$ref": "#/definitions/achievementItem" },
+        { "$ref": "#/definitions/simpleListItem" }
+      ]
+    },
+    "educationSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "education" },
+        "title": { "type": "string" },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/educationItem" } }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "experienceSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "experience" },
+        "title": { "type": "string" },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/experienceItem" } }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "projectSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "project" },
+        "title": { "type": "string" },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/projectItem" } }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "achievementSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "achievement" },
+        "title": { "type": "string" },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/achievementItem" } }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
+    "simpleListSection": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "simple_list" },
+        "title": { "type": "string" },
+        "items": {
           "type": "array",
-          "items": { "type": "string" }
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/definitions/simpleListItem" }
         }
       },
-      "required": [
-        "id",
-        "title",
-        "subtitle",
-        "meta",
-        "period",
-        "description",
-        "highlights"
-      ],
+      "required": ["id", "kind", "title", "items"],
       "additionalProperties": false
     },
     "resumeSection": {
-      "type": "object",
       "x-typescript-type": "ResumeSection",
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "education",
-            "work",
-            "internship",
-            "project",
-            "skills",
-            "awards",
-            "certificates",
-            "languages",
-            "other",
-            "custom"
-          ]
-        },
-        "layout": {
-          "type": "string",
-          "enum": ["timeline", "list"]
-        },
-        "customTitle": { "type": "string" },
-        "items": {
-          "type": "array",
-          "items": { "$ref": "#/definitions/resumeSectionItem" }
-        }
-      },
-      "required": ["id", "kind", "layout", "customTitle", "items"],
-      "additionalProperties": false
+      "oneOf": [
+        { "$ref": "#/definitions/educationSection" },
+        { "$ref": "#/definitions/experienceSection" },
+        { "$ref": "#/definitions/projectSection" },
+        { "$ref": "#/definitions/achievementSection" },
+        { "$ref": "#/definitions/simpleListSection" }
+      ]
     },
     "sectionPatch": {
       "type": "object",
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": [
-            "education",
-            "work",
-            "internship",
-            "project",
-            "skills",
-            "awards",
-            "certificates",
-            "languages",
-            "other",
-            "custom"
-          ],
-          "x-typescript-type": "ResumeSection[\"kind\"]"
-        },
-        "layout": {
-          "type": "string",
-          "enum": ["timeline", "list"],
-          "x-typescript-type": "ResumeSection[\"layout\"]"
-        },
-        "customTitle": { "type": "string" }
+        "title": { "type": "string" }
       },
-      "minProperties": 1,
+      "required": ["title"],
       "additionalProperties": false
     },
     "itemPatch": {
       "type": "object",
       "properties": {
-        "title": { "type": "string" },
-        "subtitle": { "type": "string" },
-        "meta": { "type": "string" },
+        "school": { "type": "string" },
+        "degree": { "type": "string" },
+        "major": { "type": "string" },
+        "gpa": { "type": "string" },
+        "location": { "type": "string" },
         "period": { "type": "string" },
+        "company": { "type": "string" },
+        "position": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "techStack": { "type": "array", "items": { "type": "string" } },
+        "url": { "type": "string" },
+        "issuer": { "type": "string" },
+        "date": { "type": "string" },
         "description": { "type": "string" },
-        "highlights": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
+        "highlights": { "type": "array", "items": { "type": "string" } },
+        "content": { "type": "string" }
       },
       "minProperties": 1,
       "additionalProperties": false
@@ -114,10 +189,7 @@
       "type": "object",
       "properties": {
         "type": { "const": "replace_field" },
-        "path": {
-          "type": "string",
-          "enum": ["basic.headline", "basic.location", "basic.summary"]
-        },
+        "path": { "type": "string", "enum": ["basic.headline", "basic.location", "basic.summary"] },
         "value": { "type": "string" }
       },
       "required": ["type", "path", "value"],
@@ -156,12 +228,7 @@
       "type": "object",
       "properties": {
         "type": { "const": "reorder_sections" },
-        "sectionIds": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        }
+        "sectionIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "required": ["type", "sectionIds"],
       "additionalProperties": false
@@ -203,12 +270,7 @@
       "properties": {
         "type": { "const": "reorder_items" },
         "sectionId": { "type": "string", "minLength": 1 },
-        "itemIds": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        }
+        "itemIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "required": ["type", "sectionId", "itemIds"],
       "additionalProperties": false

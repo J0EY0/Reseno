@@ -55,27 +55,53 @@ def _generate_document_id(prefix: str) -> str:
 def _create_empty_resume() -> dict[str, Any]:
     """Create the default editable resume document."""
 
-    def create_item() -> dict[str, Any]:
-        return {
-            "id": _generate_document_id("item"),
-            "title": "",
-            "subtitle": "",
-            "meta": "",
+    item_defaults: dict[str, dict[str, Any]] = {
+        "education": {
+            "school": "",
+            "degree": "",
+            "major": "",
+            "gpa": "",
+            "location": "",
             "period": "",
             "description": "",
             "highlights": [],
-        }
+        },
+        "experience": {
+            "company": "",
+            "position": "",
+            "location": "",
+            "period": "",
+            "description": "",
+            "highlights": [],
+        },
+        "project": {
+            "name": "",
+            "role": "",
+            "techStack": [],
+            "period": "",
+            "url": "",
+            "description": "",
+            "highlights": [],
+        },
+    }
 
     def create_section(kind: str) -> dict[str, Any]:
+        # The title is intentionally empty. Clients localize the default label,
+        # while an explicit non-empty value remains a user-owned override.
         return {
             "id": _generate_document_id("section"),
             "kind": kind,
-            "layout": "timeline",
-            "customTitle": "",
-            "items": [create_item()],
+            "title": "",
+            "items": [
+                {
+                    "id": _generate_document_id("item"),
+                    **item_defaults[kind],
+                }
+            ],
         }
 
     return {
+        "schemaVersion": 2,
         "basic": {
             "name": "",
             "headline": "",
@@ -88,7 +114,7 @@ def _create_empty_resume() -> dict[str, Any]:
         },
         "sections": [
             create_section("education"),
-            create_section("internship"),
+            create_section("experience"),
             create_section("project"),
         ],
     }
@@ -516,6 +542,7 @@ def _deleted_resume_preview(
         "title": row["title"] or _resume_title(resume_item),
         "updatedAt": row["saved_at"],
         "resume": {
+            "schemaVersion": 2,
             "basic": basic if isinstance(basic, dict) else {},
             "sections": [],
         },

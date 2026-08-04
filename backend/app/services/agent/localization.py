@@ -49,11 +49,20 @@ TEXT: dict[str, dict[str, str]] = {
         "error.move_item_missing_sections": (
             "move_item requires existing fromSectionId and toSectionId."
         ),
+        "error.move_item_kind_mismatch": (
+            "move_item can only move an item between sections of the same kind."
+        ),
         "error.skills_classify_empty_groups": (
             "skills_classify requires non-empty groups."
         ),
         "error.skills_classify_empty_items": (
             "skills_classify requires groups with title and skills."
+        ),
+        "error.skills_classify_requires_simple_list": (
+            "skills_classify requires a simple_list target section."
+        ),
+        "error.simple_list_single_item": (
+            "simple_list has one rich-text content item; update its content instead."
         ),
         "error.split_item_missing_args": (
             "split_item requires sectionId, itemId, first, and second."
@@ -178,14 +187,17 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "role.default": "frontend engineer",
         "section.awards": "Awards",
+        "section.achievement": "Certificates & Honors",
         "section.certificates": "Certificates",
         "section.custom": "Custom Section",
         "section.default": "Section",
         "section.education": "Education",
+        "section.experience": "Work / Internship Experience",
         "section.internship": "Internship Experience",
         "section.languages": "Languages",
         "section.other": "Other",
         "section.project": "Projects",
+        "section.simple_list": "Other",
         "section.skills": "Skills",
         "section.work": "Work Experience",
         "highlight.first_item": (
@@ -305,9 +317,16 @@ TEXT: dict[str, dict[str, str]] = {
         "error.move_item_missing_sections": (
             "move_item 需要已存在的 fromSectionId 和 toSectionId。"
         ),
+        "error.move_item_kind_mismatch": "move_item 只能在同类型模块之间移动条目。",
         "error.skills_classify_empty_groups": "skills_classify 需要非空 groups。",
         "error.skills_classify_empty_items": (
             "skills_classify 需要包含 title 和 skills 的分组。"
+        ),
+        "error.skills_classify_requires_simple_list": (
+            "skills_classify 的目标模块必须是 simple_list。"
+        ),
+        "error.simple_list_single_item": (
+            "simple_list 固定只有一个富文本条目，请直接更新其 content。"
         ),
         "error.split_item_missing_args": (
             "split_item 需要 sectionId、itemId、first 和 second。"
@@ -397,14 +416,17 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "role.default": "前端开发工程师",
         "section.awards": "获奖经历",
+        "section.achievement": "证书与荣誉",
         "section.certificates": "证书",
         "section.custom": "自定义模块",
         "section.default": "模块",
         "section.education": "教育经历",
+        "section.experience": "工作 / 实习经历",
         "section.internship": "实习经历",
         "section.languages": "语言能力",
         "section.other": "其他经历",
         "section.project": "项目经历",
+        "section.simple_list": "其他",
         "section.skills": "技能",
         "section.work": "工作经历",
         "highlight.first_item": (
@@ -471,14 +493,17 @@ TEXT: dict[str, dict[str, str]] = {
 }
 
 SECTION_LABEL_KEYS = {
+    "achievement",
     "awards",
     "certificates",
     "custom",
     "education",
+    "experience",
     "internship",
     "languages",
     "other",
     "project",
+    "simple_list",
     "skills",
     "work",
 }

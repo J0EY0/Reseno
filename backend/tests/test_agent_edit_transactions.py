@@ -11,21 +11,39 @@ from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import AgentLlmConfig, LlmAssistantMessage, LlmToolCall
 
 
+def _basic(*, headline: str = "", summary: str = "") -> dict:
+    return {
+        "name": "",
+        "headline": headline,
+        "phone": "",
+        "email": "",
+        "location": "",
+        "avatar": "",
+        "summary": summary,
+        "customFields": [],
+    }
+
+
 def _runner() -> AgentToolRunner:
     request = AgentChatRequest(
         prompt="优化项目经历",
         locale="zh",
         resume={
-            "basic": {"headline": "前端工程师", "summary": "原始简介"},
+            "schemaVersion": 2,
+            "basic": _basic(headline="前端工程师", summary="原始简介"),
             "sections": [
                 {
                     "id": "project",
                     "kind": "project",
-                    "layout": "timeline",
+                    "title": "项目经历",
                     "items": [
                         {
                             "id": "project-1",
-                            "title": "ResuMate",
+                            "name": "ResuMate",
+                            "role": "",
+                            "techStack": [],
+                            "period": "",
+                            "url": "",
                             "description": "原始描述",
                             "highlights": ["原始要点"],
                         },
@@ -148,7 +166,8 @@ def test_finish_stops_later_tool_calls_from_the_same_provider_response(
             prompt="优化个人简介",
             locale="zh",
             resume={
-                "basic": {"headline": "前端工程师", "summary": "原始简介"},
+                "schemaVersion": 2,
+                "basic": _basic(headline="前端工程师", summary="原始简介"),
                 "sections": [],
             },
         )
@@ -218,16 +237,21 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
             prompt="优化项目经历",
             locale="zh",
             resume={
-                "basic": {"headline": "前端工程师", "summary": "原始简介"},
+                "schemaVersion": 2,
+                "basic": _basic(headline="前端工程师", summary="原始简介"),
                 "sections": [
                     {
                         "id": "project",
                         "kind": "project",
-                        "layout": "timeline",
+                        "title": "项目经历",
                         "items": [
                             {
                                 "id": "project-1",
-                                "title": "ResuMate",
+                                "name": "ResuMate",
+                                "role": "",
+                                "techStack": [],
+                                "period": "",
+                                "url": "",
                                 "description": "原始描述",
                                 "highlights": ["原始要点"],
                             },
@@ -268,7 +292,7 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
                                         "sectionId": "project",
                                         "itemId": "project-1",
                                         "patch": {
-                                            "subtitle": "AI 简历编辑器",
+                                            "role": "AI 简历编辑器",
                                             "description": "ResuMate AI 简历编辑器",
                                         },
                                     },
@@ -299,7 +323,7 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
                                     "sectionId": "project",
                                     "itemId": "project-1",
                                     "patch": {
-                                        "subtitle": "AI 简历编辑器",
+                                        "role": "AI 简历编辑器",
                                         "description": (
                                             "面向结构化简历编辑与预览工作流。"
                                         ),
@@ -415,7 +439,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
                         "sectionId": "project",
                         "itemId": "project-1",
                         "patch": {
-                            "subtitle": "AI 简历编辑器",
+                            "role": "AI 简历编辑器",
                             "description": "ResuMate AI 简历编辑器",
                         },
                     },
@@ -431,7 +455,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
         "normalized_item_field_was_dropped"
     )
     assert runner.draft_resume["basic"]["summary"] == "原始简介"
-    assert "subtitle" not in runner.draft_resume["sections"][0]["items"][0]
+    assert runner.draft_resume["sections"][0]["items"][0]["role"] == ""
     assert runner.draft_resume["sections"][0]["items"][0]["description"] == "原始描述"
 
     repaired_tool, _ = runner._run_local_tool(
@@ -447,7 +471,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
                         "sectionId": "project",
                         "itemId": "project-1",
                         "patch": {
-                            "subtitle": "AI 简历编辑器",
+                            "role": "AI 简历编辑器",
                             "description": "面向结构化简历编辑与预览工作流。",
                             "highlights": [
                                 "实现事务化编辑，避免部分修改进入草稿。",
@@ -464,7 +488,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
     assert repaired_tool.state == "output-available"
     assert runner.transaction_state == "committed"
     assert runner.draft_resume["basic"]["summary"] == "聚焦复杂交互与工程质量。"
-    assert runner.draft_resume["sections"][0]["items"][0]["subtitle"] == (
+    assert runner.draft_resume["sections"][0]["items"][0]["role"] == (
         "AI 简历编辑器"
     )
     assert runner.draft_resume["sections"][0]["items"][0]["highlights"] == [
@@ -476,7 +500,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
 def test_duplicate_structured_field_values_do_not_false_block_description() -> None:
     runner = _runner()
     item = runner.draft_resume["sections"][0]["items"][0]
-    item["subtitle"] = "ResuMate"
+    item["role"] = "ResuMate"
 
     tool, _ = runner._run_local_tool(
         _tool_call(
@@ -578,7 +602,7 @@ def test_blocked_finish_rolls_back_edits_but_keeps_blocked_context() -> None:
 
 
 def test_batch_validation_uses_prior_operations_in_the_same_batch() -> None:
-    resume = {"basic": {}, "sections": []}
+    resume = {"schemaVersion": 2, "basic": _basic(), "sections": []}
     edits, rejected = _model_edit_suggestions_with_diagnostics(
         resume,
         [
@@ -590,7 +614,7 @@ def test_batch_validation_uses_prior_operations_in_the_same_batch() -> None:
                     "section": {
                         "id": "project",
                         "kind": "project",
-                        "layout": "timeline",
+                        "title": "项目经历",
                         "items": [],
                     },
                 },
@@ -601,7 +625,7 @@ def test_batch_validation_uses_prior_operations_in_the_same_batch() -> None:
                 "operation": {
                     "type": "insert_item",
                     "sectionId": "project",
-                    "item": {"id": "project-1", "title": "ResuMate"},
+                    "item": {"id": "project-1", "name": "ResuMate"},
                 },
             },
             {
@@ -624,7 +648,7 @@ def test_batch_validation_uses_prior_operations_in_the_same_batch() -> None:
         "insert_item",
         "update_item",
     ]
-    assert resume == {"basic": {}, "sections": []}
+    assert resume == {"schemaVersion": 2, "basic": _basic(), "sections": []}
 
 
 def test_staged_edits_replay_the_complete_server_operation_sequence() -> None:

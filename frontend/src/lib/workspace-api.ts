@@ -101,11 +101,13 @@ export function saveResumeApi(
   resumeId: string,
   request: ResumeSaveRequest,
   saveMode: ResumeSaveMode = "checkpoint",
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resume(resumeId), {
     body: request,
     method: "PUT",
     searchParams: { saveMode },
+    ...options,
   });
 }
 

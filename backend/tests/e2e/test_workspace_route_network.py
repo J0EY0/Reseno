@@ -907,6 +907,73 @@ def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
         context.close()
 
 
+def test_checkpoint_failure_after_autosave_does_not_block_leaving_resume(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    save_urls: list[str] = []
+
+    def fail_checkpoint(route: Route) -> None:
+        if route.request.method != "PUT":
+            route.continue_()
+            return
+
+        save_urls.append(route.request.url)
+        if "saveMode=checkpoint" not in route.request.url:
+            route.continue_()
+            return
+
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 40000,
+                    "message": "RESUME_DOCUMENT_INVALID",
+                    "data": None,
+                }
+            ),
+        )
+
+    page.route(f"**/api/resumes/{resume_id}*", fail_checkpoint)
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        page.locator('input[name="name"]').fill("Autosaved Before Failed Checkpoint")
+
+        deadline = time.monotonic() + 8
+        while len(save_urls) < 1 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+
+        assert len(save_urls) == 1, save_urls
+        assert "saveMode=autosave" in save_urls[0]
+        page.wait_for_load_state("networkidle")
+        page.get_by_role(
+            "button",
+            name="返回简历列表",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/resume", timeout=3_000)
+        page.get_by_text(
+            "内容已自动保存，但未能创建历史版本",
+            exact=True,
+        ).wait_for(state="visible")
+
+        assert len(save_urls) == 2, save_urls
+        assert "saveMode=checkpoint" in save_urls[1]
+        assert page.get_by_text("请求失败，请稍后重试", exact=True).count() == 0
+    finally:
+        context.close()
+
+
 def test_discard_waits_for_active_save_and_restores_persisted_resume(
     browser: Browser,
     workspace_servers: tuple[str, str],

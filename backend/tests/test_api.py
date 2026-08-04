@@ -91,6 +91,27 @@ ASYNC_COMPLETE_CHAT_PATH = "app.services.agent.runtime.streaming.async_complete_
 ASYNC_STREAM_CHAT_PATH = "app.services.agent.runtime.streaming.async_stream_chat"
 
 
+def minimal_resume_document(
+    *,
+    name: str = "Test Resume",
+    summary: str = "",
+) -> dict:
+    return {
+        "schemaVersion": 2,
+        "basic": {
+            "name": name,
+            "headline": "",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": summary,
+            "customFields": [],
+        },
+        "sections": [],
+    }
+
+
 def minimal_resume_item(
     resume_id: str = "resume-test",
     title: str = "Test Resume",
@@ -102,19 +123,7 @@ def minimal_resume_item(
         "jobBrief": "",
         "typography": {"fontFamily": "inter", "fontSize": 16},
         "template": "minimal",
-        "resume": {
-            "basic": {
-                "name": title,
-                "headline": "",
-                "phone": "",
-                "email": "",
-                "location": "",
-                "avatar": "",
-                "summary": "",
-                "customFields": [],
-            },
-            "sections": [],
-        },
+        "resume": minimal_resume_document(name=title),
     }
 
 
@@ -1028,16 +1037,23 @@ def test_resume_create_rejects_noncanonical_list_item_content(
     )
 
     assert response.json()["code"] == 40000
-    assert response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
+    assert response.json()["message"] == "RESUME_DOCUMENT_INVALID"
 
 
 def test_resume_update_rejects_noncanonical_list_content_without_new_version(
     client: TestClient,
 ) -> None:
-    canonical_resume = noncanonical_list_resume()
-    canonical_item = canonical_resume["sections"][0]["items"][0]
-    canonical_item["subtitle"] = "React、TypeScript"
-    canonical_item["highlights"] = []
+    canonical_resume = minimal_resume_item(title="Canonical List Resume")["resume"]
+    canonical_resume["sections"] = [
+        {
+            "id": "skills",
+            "kind": "simple_list",
+            "title": "技能",
+            "items": [
+                {"id": "skill-1", "content": "前端：React、TypeScript"},
+            ],
+        },
+    ]
     create_response = client.post(
         "/api/resumes",
         json={"title": "Canonical List Resume", "resume": canonical_resume},
@@ -1052,12 +1068,11 @@ def test_resume_update_rejects_noncanonical_list_content_without_new_version(
     versions_response = client.get(f"/api/resumes/{created['id']}/versions")
 
     assert update_response.json()["code"] == 40000
-    assert update_response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
+    assert update_response.json()["message"] == "RESUME_DOCUMENT_INVALID"
     current_item = current_response.json()["data"]["resume"]["resume"]["sections"][
         0
     ]["items"][0]
-    assert current_item["subtitle"] == "React、TypeScript"
-    assert current_item["highlights"] == []
+    assert current_item["content"] == "前端：React、TypeScript"
     assert [
         item["versionId"]
         for item in versions_response.json()["data"]["versions"]
@@ -2468,13 +2483,10 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
             "conversation": [],
             "files": [],
             "locale": "en",
-            "resume": {
-                "basic": {
-                    "name": "Avery",
-                    "summary": "Frontend engineer with React project experience.",
-                },
-                "sections": [],
-            },
+                "resume": minimal_resume_document(
+                    name="Avery",
+                    summary="Frontend engineer with React project experience.",
+                ),
             "jobBrief": "React TypeScript",
             "keywordMatch": {
                 "matched": ["React"],
@@ -3072,7 +3084,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         top_p=0.9,
         max_tokens=512,
         timeout_seconds=60,
-        context_window_tokens=12000,
+        context_window_tokens=24000,
     )
     request = AgentChatRequest(
         prompt="帮王小明优化简介，电话 13800138000",
@@ -3191,14 +3203,15 @@ def test_agent_resume_lookup_finds_target_item() -> None:
                 {
                     "id": "project",
                     "kind": "project",
-                    "layout": "timeline",
+                    "title": "项目经历",
                     "items": [
                         {
                             "id": "project-1",
-                            "title": "ResuMate",
-                            "subtitle": "AI 简历编辑器",
-                            "meta": "React",
+                            "name": "ResuMate",
+                            "role": "AI 简历编辑器",
+                            "techStack": ["React"],
                             "period": "2026",
+                            "url": "",
                             "description": (
                                 "支持多轮 Agent 草稿编辑，联系 13800138000。"
                             ),
@@ -3300,13 +3313,12 @@ def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
 
 
 def test_agent_writes_explicit_location_without_observing_old_value() -> None:
+    resume = minimal_resume_item()["resume"]
+    resume["basic"]["location"] = "杭州"
     request = AgentChatRequest(
         prompt="请修改这份简历，只把基本信息中的地点改为远程，并生成待确认草稿。",
         locale="zh",
-        resume={
-            "basic": {"location": "杭州"},
-            "sections": [],
-        },
+        resume=resume,
     )
     runner = AgentToolRunner(AgentPlanExecutor(request))
 
@@ -3338,7 +3350,7 @@ def test_agent_writes_explicit_location_without_observing_old_value() -> None:
     assert "杭州" not in json.dumps(result["output"], ensure_ascii=False)
 
 
-def test_agent_edit_move_item_rejects_cross_layout_content() -> None:
+def test_agent_edit_move_item_rejects_cross_kind_content() -> None:
     request = AgentChatRequest(
         prompt="把项目移动到其他经历",
         locale="zh",
@@ -3348,14 +3360,15 @@ def test_agent_edit_move_item_rejects_cross_layout_content() -> None:
                 {
                     "id": "project",
                     "kind": "project",
-                    "layout": "timeline",
+                    "title": "项目经历",
                     "items": [
                         {
                             "id": "project-1",
-                            "title": "ResuMate",
-                            "subtitle": "前端开发",
-                            "meta": "React",
+                            "name": "ResuMate",
+                            "role": "前端开发",
+                            "techStack": ["React"],
                             "period": "2026",
+                            "url": "",
                             "description": "",
                             "highlights": ["实现 Agent 草稿预览。"],
                         },
@@ -3363,9 +3376,14 @@ def test_agent_edit_move_item_rejects_cross_layout_content() -> None:
                 },
                 {
                     "id": "other",
-                    "kind": "other",
-                    "layout": "list",
-                    "items": [],
+                    "kind": "simple_list",
+                    "title": "其他经历",
+                    "items": [
+                        {
+                            "id": "other-1",
+                            "content": "<ul><li>其他内容</li></ul>",
+                        },
+                    ],
                 },
             ],
         },
@@ -3388,12 +3406,14 @@ def test_agent_edit_move_item_rejects_cross_layout_content() -> None:
     assert tool.title == "edit_move_item"
     assert tool.state == "output-error"
     assert result["output"]["editCount"] == 0
-    assert "RESUME_LIST_ITEM_CONTENT_INVALID" in json.dumps(result["output"])
+    assert "固定只有一个富文本条目" in tool.error_text
     assert runner.edits == []
     project_items = runner.draft_resume["sections"][0]["items"]
     other_items = runner.draft_resume["sections"][1]["items"]
     assert project_items[0]["id"] == "project-1"
-    assert other_items == []
+    assert other_items == [
+        {"id": "other-1", "content": "<ul><li>其他内容</li></ul>"},
+    ]
 
 
 def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -> None:
@@ -3436,20 +3456,30 @@ def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -
 
 
 def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
-    request = AgentChatRequest(
-        prompt="拆分项目经历",
-        locale="zh",
-        resume={
-            "basic": {},
-            "sections": [
+    resume = minimal_resume_item()["resume"]
+    resume["sections"] = [
+        {
+            "id": "project",
+            "kind": "project",
+            "title": "项目经历",
+            "items": [
                 {
-                    "id": "project",
-                    "kind": "project",
-                    "layout": "timeline",
-                    "items": [{"id": "project-1", "title": "ResuMate"}],
+                    "id": "project-1",
+                    "name": "ResuMate",
+                    "role": "",
+                    "techStack": [],
+                    "period": "",
+                    "url": "",
+                    "description": "",
+                    "highlights": [],
                 },
             ],
         },
+    ]
+    request = AgentChatRequest(
+        prompt="拆分项目经历",
+        locale="zh",
+        resume=resume,
     )
     runner = AgentToolRunner(AgentPlanExecutor(request))
 
@@ -3463,7 +3493,7 @@ def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
                 "first": {"description": "负责 Agent 草稿流程。"},
                 "second": {
                     "id": "project-1",
-                    "title": "ResuMate 指标优化",
+                    "name": "ResuMate 指标优化",
                     "highlights": ["优化草稿预览链路。"],
                 },
                 "index": 1,
@@ -3475,7 +3505,7 @@ def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
     assert tool.state == "output-available"
     assert result["output"]["editCount"] == 2
     assert items[0]["description"] == "负责 Agent 草稿流程。"
-    assert items[1]["title"] == "ResuMate 指标优化"
+    assert items[1]["name"] == "ResuMate 指标优化"
     assert items[1]["id"] != "project-1"
 
 
@@ -3560,32 +3590,37 @@ def test_agent_edit_merge_items_rejects_duplicate_item_ids() -> None:
 
 
 def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
+    base_resume = minimal_resume_item()["resume"]
+    base_resume["basic"]["name"] = "王小明"
+    draft_resume = minimal_resume_item()["resume"]
+    draft_resume["basic"]["name"] = "王小明"
+    draft_resume["sections"] = [
+        {
+            "id": "project",
+            "kind": "project",
+            "title": "项目经历",
+            "items": [
+                {
+                    "id": "project-1",
+                    "name": "ResuMate",
+                    "role": "前端开发",
+                    "techStack": [],
+                    "period": "",
+                    "url": "",
+                    "description": "支持复杂的 Agent 草稿编辑流程。",
+                    "highlights": ["实现可预览、可应用、可撤回草稿。"],
+                },
+            ],
+        },
+    ]
     request = AgentChatRequest(
         prompt="把刚才草稿里的项目描述再短一点",
         locale="zh",
-        resume={"basic": {"name": "王小明"}, "sections": []},
+        resume=base_resume,
         draftState={
             "id": "draft-current",
             "status": "pending",
-            "resume": {
-                "basic": {"name": "王小明"},
-                "sections": [
-                    {
-                        "id": "project",
-                        "kind": "project",
-                        "layout": "timeline",
-                        "items": [
-                            {
-                                "id": "project-1",
-                                "title": "ResuMate",
-                                "subtitle": "前端开发",
-                                "description": "支持复杂的 Agent 草稿编辑流程。",
-                                "highlights": ["实现可预览、可应用、可撤回草稿。"],
-                            },
-                        ],
-                    },
-                ],
-            },
+            "resume": draft_resume,
         },
     )
     runner = AgentToolRunner(AgentPlanExecutor(request))
@@ -3720,15 +3755,12 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                     "text": "Find missing keywords and edit my summary",
                 },
             ],
-            "files": [attachment],
-            "locale": "en",
-            "resume": {
-                "basic": {
-                    "name": "Avery",
-                    "summary": "Frontend engineer with React project experience.",
-                },
-                "sections": [],
-            },
+                "files": [attachment],
+                "locale": "en",
+                "resume": minimal_resume_document(
+                    name="Avery",
+                    summary="Frontend engineer with React project experience.",
+                ),
             "jobBrief": "React TypeScript",
             "keywordMatch": {
                 "matched": ["React"],
@@ -3815,6 +3847,26 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             ],
         ),
     )
+    resume = minimal_resume_document(name="王小明")
+    resume["sections"] = [
+        {
+            "id": "project",
+            "kind": "project",
+            "title": "项目经历",
+            "items": [
+                {
+                    "id": "project-1",
+                    "name": "电商推荐系统优化",
+                    "role": "",
+                    "techStack": [],
+                    "period": "2023/06 - 2023/09",
+                    "url": "",
+                    "description": "负责推荐算法迭代。",
+                    "highlights": [],
+                },
+            ],
+        },
+    ]
 
     _, message = post_agent_chat_stream(
         client,
@@ -3832,28 +3884,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             ],
             "files": [],
             "locale": "zh",
-            "resume": {
-                "basic": {"name": "王小明", "summary": ""},
-                "sections": [
-                    {
-                        "id": "project",
-                        "kind": "project",
-                        "layout": "timeline",
-                        "customTitle": "",
-                        "items": [
-                            {
-                                "id": "project-1",
-                                "title": "电商推荐系统优化",
-                                "subtitle": "",
-                                "meta": "",
-                                "period": "2023/06 - 2023/09",
-                                "description": "负责推荐算法迭代。",
-                                "highlights": [],
-                            },
-                        ],
-                    },
-                ],
-            },
+                "resume": resume,
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -3942,8 +3973,8 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
             "messages": [],
             "conversation": [],
             "files": [],
-            "locale": "zh",
-            "resume": {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+                "locale": "zh",
+                "resume": minimal_resume_document(name="姓名"),
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -3963,8 +3994,8 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
     operation = message["edits"][0]["operation"]
     assert operation["type"] == "insert_section"
     assert operation["section"]["kind"] == "project"
-    assert operation["section"]["customTitle"] == ""
-    assert operation["section"]["items"][0]["title"] == "电商后台管理系统"
+    assert operation["section"]["title"] == "项目经历"
+    assert operation["section"]["items"][0]["name"] == "电商后台管理系统"
     assert operation["section"]["items"][0]["period"] == "2023.03 - 2023.06"
     assert operation["section"]["items"][0]["description"] == ""
     assert operation["section"]["items"][0]["highlights"] == [
@@ -4057,19 +4088,22 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
                                 "reason": "移除重复元数据后重新提交完整项目条目。",
                                 "operation": {
                                     "type": "insert_section",
-                                    "section": {
-                                        "section_type": "project",
-                                        "layout": "timeline",
-                                        "customTitle": "",
-                                        "items": [
-                                            {
-                                                "title": "电商后台管理系统",
-                                                "subtitle": "后端开发",
-                                                "meta": (
-                                                    "Spring Boot, MySQL, Redis, Docker"
-                                                ),
-                                                "period": "2023.03 - 2023.06",
-                                                "description": "",
+                                        "section": {
+                                            "section_type": "project",
+                                            "title": "项目经历",
+                                            "items": [
+                                                {
+                                                    "name": "电商后台管理系统",
+                                                    "role": "后端开发",
+                                                    "techStack": [
+                                                        "Spring Boot",
+                                                        "MySQL",
+                                                        "Redis",
+                                                        "Docker",
+                                                    ],
+                                                    "period": "2023.03 - 2023.06",
+                                                    "url": "",
+                                                    "description": "",
                                                 "highlights": [
                                                     (
                                                         "设计并实现订单模块，通过 SQL "
@@ -4107,7 +4141,7 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
             "conversation": [],
             "files": [],
             "locale": "zh",
-            "resume": {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+            "resume": minimal_resume_document(name="姓名"),
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -4120,10 +4154,10 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
     section = operation["section"]
     item = section["items"][0]
     assert section["kind"] == "project"
-    assert section["customTitle"] == ""
-    assert item["title"] == "电商后台管理系统"
-    assert item["subtitle"] == "后端开发"
-    assert item["meta"] == "Spring Boot, MySQL, Redis, Docker"
+    assert section["title"] == "项目经历"
+    assert item["name"] == "电商后台管理系统"
+    assert item["role"] == "后端开发"
+    assert item["techStack"] == ["Spring Boot", "MySQL", "Redis", "Docker"]
     assert item["period"] == "2023.03 - 2023.06"
     assert item["description"] == ""
     assert item["highlights"] == [
@@ -5082,21 +5116,26 @@ def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() 
         prompt="整理技能分组",
         locale="zh",
         resume={
-            "basic": {},
+            "schemaVersion": 2,
+            "basic": {
+                "name": "",
+                "headline": "",
+                "phone": "",
+                "email": "",
+                "location": "",
+                "avatar": "",
+                "summary": "",
+                "customFields": [],
+            },
             "sections": [
                 {
                     "id": "skills",
-                    "kind": "skills",
-                    "layout": "list",
+                    "kind": "simple_list",
+                    "title": "技能",
                     "items": [
                         {
                             "id": "skill-1",
-                            "title": "旧技能",
-                            "subtitle": "HTML",
-                            "meta": "",
-                            "period": "",
-                            "description": "",
-                            "highlights": [],
+                            "content": "旧技能：HTML",
                         },
                     ],
                 },
@@ -5120,10 +5159,11 @@ def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() 
 
     items = runner.draft_resume["sections"][0]["items"]
     assert tool.state == "output-available"
-    assert result["output"]["editCount"] == 3
-    assert [item["title"] for item in items] == ["前端", "后端"]
-    assert [item["subtitle"] for item in items] == ["React、TypeScript", "Python"]
-    assert all(item["highlights"] == [] for item in items)
+    assert result["output"]["editCount"] == 1
+    assert items[0]["id"] == "skill-1"
+    assert [item["content"] for item in items] == [
+        "<ul><li>前端：React、TypeScript</li><li>后端：Python</li></ul>",
+    ]
 
 
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
@@ -5371,26 +5411,26 @@ def test_safe_section_patch_rejects_conflicting_new_and_legacy_kinds() -> None:
     )
 
 
-def test_safe_section_patch_normalizes_equivalent_new_and_legacy_kinds() -> None:
+def test_safe_section_patch_allows_title_only_and_rejects_kind_changes() -> None:
     assert _safe_section_patch(
         {
             "section_type": "work experience",
             "kind": "work",
             "layout": "timeline",
         }
-    ) == {
-        "kind": "work",
-        "layout": "timeline",
+    ) == {}
+    assert _safe_section_patch({"title": " Work Experience "}) == {
+        "title": "Work Experience"
     }
 
 
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("internship experience", "internship"),
-        ("my internship experience section", "internship"),
-        ("other experience details", "other"),
-        ("ＳＫＩＬＬＳ", "skills"),
+        ("internship experience", "experience"),
+        ("my internship experience section", "experience"),
+        ("other experience details", "simple_list"),
+        ("ＳＫＩＬＬＳ", "simple_list"),
         ("networking", ""),
         ("customization", ""),
         ("otherworldly", ""),
@@ -5403,11 +5443,11 @@ def test_section_kind_matching_uses_canonical_specific_aliases(
     assert _section_kind_from_text(value) == expected
 
 
-def test_agent_chat_accepts_other_section_kind() -> None:
-    assert "other" in SECTION_KIND_ENUM
+def test_agent_chat_accepts_simple_list_section_kind() -> None:
+    assert "simple_list" in SECTION_KIND_ENUM
 
     edits = _model_edit_suggestions(
-        {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+        minimal_resume_document(name="姓名"),
         [
             {
                 "title": "新增其他经历",
@@ -5416,17 +5456,11 @@ def test_agent_chat_accepts_other_section_kind() -> None:
                 "operation": {
                     "type": "insert_section",
                     "section": {
-                        "section_type": "other",
-                        "layout": "list",
-                        "customTitle": "其他经历",
+                        "section_type": "simple_list",
+                        "title": "其他经历",
                         "items": [
                             {
-                                "title": "开源贡献",
-                                "subtitle": "维护项目文档",
-                                "meta": "",
-                                "period": "",
-                                "description": "",
-                                "highlights": [],
+                                "content": "开源贡献：维护项目文档",
                             },
                         ],
                     },
@@ -5438,15 +5472,14 @@ def test_agent_chat_accepts_other_section_kind() -> None:
 
     assert edits
     section = edits[0].operation["section"]
-    assert section["kind"] == "other"
-    assert section["customTitle"] == ""
-    assert section["layout"] == "list"
-    assert section["items"][0]["title"] == "开源贡献"
+    assert section["kind"] == "simple_list"
+    assert section["title"] == "其他经历"
+    assert section["items"][0]["content"] == "开源贡献：维护项目文档"
 
 
 def test_agent_chat_rejects_noncanonical_list_item_content() -> None:
     edits = _model_edit_suggestions(
-        {"basic": {"name": "姓名", "summary": ""}, "sections": []},
+        minimal_resume_document(name="姓名"),
         [
             {
                 "title": "新增技能",
@@ -5928,6 +5961,44 @@ def test_agent_chat_uses_provided_jd_url(
             excerpt="React TypeScript responsibilities and requirements.",
         ),
     )
+    resume = minimal_resume_document(name="王小明", summary="前端开发。")
+    resume["sections"] = [
+        {
+            "id": "education",
+            "kind": "education",
+            "title": "教育经历",
+            "items": [
+                {
+                    "id": "edu-1",
+                    "school": "大学",
+                    "degree": "",
+                    "major": "",
+                    "gpa": "",
+                    "location": "",
+                    "period": "",
+                    "description": "",
+                    "highlights": [],
+                },
+            ],
+        },
+        {
+            "id": "project",
+            "kind": "project",
+            "title": "项目经历",
+            "items": [
+                {
+                    "id": "project-1",
+                    "name": "项目",
+                    "role": "",
+                    "techStack": [],
+                    "period": "",
+                    "url": "",
+                    "description": "",
+                    "highlights": [],
+                },
+            ],
+        },
+    ]
 
     _, message = post_agent_chat_stream(
         client,
@@ -5952,45 +6023,7 @@ def test_agent_chat_uses_provided_jd_url(
             ],
             "files": [],
             "locale": "zh",
-            "resume": {
-                "basic": {"name": "王小明", "summary": "前端开发。"},
-                "sections": [
-                    {
-                        "id": "education",
-                        "kind": "education",
-                        "layout": "timeline",
-                        "customTitle": "",
-                        "items": [
-                            {
-                                "id": "edu-1",
-                                "title": "大学",
-                                "subtitle": "",
-                                "meta": "",
-                                "period": "",
-                                "description": "",
-                                "highlights": [],
-                            },
-                        ],
-                    },
-                    {
-                        "id": "project",
-                        "kind": "project",
-                        "layout": "timeline",
-                        "customTitle": "",
-                        "items": [
-                            {
-                                "id": "project-1",
-                                "title": "项目",
-                                "subtitle": "",
-                                "meta": "",
-                                "period": "",
-                                "description": "",
-                                "highlights": [],
-                            },
-                        ],
-                    },
-                ],
-            },
+                "resume": resume,
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -6459,10 +6492,10 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
             "conversation": [{"role": "user", "text": "优化个人简介"}],
             "files": [],
             "locale": "zh",
-            "resume": {
-                "basic": {"name": "王小明", "summary": "有前端项目经验。"},
-                "sections": [],
-            },
+                "resume": minimal_resume_document(
+                    name="王小明",
+                    summary="有前端项目经验。",
+                ),
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -6736,10 +6769,10 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
             "conversation": [{"role": "user", "text": "优化个人简介"}],
             "files": [],
             "locale": "zh",
-            "resume": {
-                "basic": {"name": "王小明", "summary": "有前端项目经验。"},
-                "sections": [],
-            },
+                "resume": minimal_resume_document(
+                    name="王小明",
+                    summary="有前端项目经验。",
+                ),
             "jobBrief": "",
             "keywordMatch": {
                 "matched": ["React"],
@@ -6835,12 +6868,13 @@ def test_agent_chat_streams_plain_model_tokens(
 
 
 def test_import_resume_accepts_json_upload(client: TestClient) -> None:
+    resume_document = minimal_resume_item(title="Avery")["resume"]
     response = client.post(
         "/api/import/resume",
         files={
             "file": (
                 "resume.json",
-                b'{"basic":{"name":"Avery"},"sections":[]}',
+                json.dumps(resume_document).encode("utf-8"),
                 "application/json",
             ),
         },
@@ -6867,7 +6901,7 @@ def test_import_resume_rejects_noncanonical_list_item_content(
     )
 
     assert response.json()["code"] == 40000
-    assert response.json()["message"] == "RESUME_LIST_ITEM_CONTENT_INVALID"
+    assert response.json()["message"] == "RESUME_DOCUMENT_INVALID"
 
 
 def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:

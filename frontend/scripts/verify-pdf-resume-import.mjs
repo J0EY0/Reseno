@@ -90,7 +90,7 @@ axios.defaults.adapter = async (config) => {
       return axiosJsonResponse(config, {
         sections: [
           {
-            kind: "work",
+            kind: "experience",
             defaultLayout: "timeline",
             labels: { en: "Work", zh: "工作经历" },
             aliases: ["Work Experience", " work：experience "],
@@ -113,7 +113,7 @@ axios.defaults.adapter = async (config) => {
     if (parserConfigResponseMode === "registry-incomplete") {
       return axiosJsonResponse(config, {
         sections: sectionRegistry.sections.filter(
-          (section) => section.kind !== "other",
+          (section) => section.kind !== "simple_list",
         ),
       });
     }
@@ -514,7 +514,7 @@ function verifyDisjointTwoColumnReadingOrder(buildResumeFromLines) {
 
   assert.deepEqual(
     resume.sections.map((section) => section.kind),
-    ["work", "skills", "awards", "project", "languages"],
+    ["experience", "simple_list", "achievement", "project", "simple_list"],
     "full-width content between independent column bands must keep its position",
   );
 }
@@ -561,7 +561,7 @@ function verifyProjectItemGrouping(buildResumeFromLines) {
   const project = resume.sections.find((section) => section.kind === "project");
 
   assert.equal(project?.items.length, 1);
-  assert.equal(project?.items[0]?.title, "ResuMate");
+  assert.equal(project?.items[0]?.name, "ResuMate");
   assert.equal(project?.items[0]?.period, "2026.03 - 至今");
   assert.equal(project?.items[0]?.highlights.length, 2);
 }
@@ -581,10 +581,13 @@ function verifyFallbackSectionShape(buildResumeFromLines) {
   );
   const fallback = resume.sections[0];
 
-  assert.equal(fallback?.kind, "other");
-  assert.equal(fallback?.layout, "list");
-  assert.equal(fallback?.customTitle, "一段未识别标题");
-  assert.equal(fallback?.items[0]?.title, "可以被保留的导入内容");
+  assert.equal(fallback?.kind, "simple_list");
+  assert.equal(fallback?.title, "一段未识别标题");
+  assert.equal(fallback?.items.length, 1);
+  assert.equal(
+    fallback?.items[0]?.content,
+    "<ul><li>可以被保留的导入内容</li></ul>",
+  );
 }
 
 function verifyInlineSectionHeading(buildResumeFromLines) {
@@ -596,12 +599,12 @@ function verifyInlineSectionHeading(buildResumeFromLines) {
     ],
     "导入内容",
   );
-  const skills = resume.sections.find((section) => section.kind === "skills");
+  const skills = requiredSection(resume, "skills");
 
-  assert.equal(skills?.layout, "list");
-  assert.deepEqual(
-    skills?.items.map((item) => item.title),
-    ["能力一", "能力二", "能力三"],
+  assert.equal(skills.items.length, 1);
+  assert.equal(
+    skills.items[0].content,
+    "<ul><li>能力一、能力二、能力三</li></ul>",
   );
 }
 
@@ -618,14 +621,10 @@ function verifyWrappedLabeledListContinuation(buildResumeFromLines) {
   );
   const skills = requiredSection(resume, "skills");
 
-  assert.deepEqual(
-    skills.items.map(({ title, subtitle }) => ({ title, subtitle })),
-    [
-      {
-        title: "工程能力",
-        subtitle: "TypeScript、React、Node.js 与复杂状态管理及自动化测试",
-      },
-    ],
+  assert.equal(skills.items.length, 1);
+  assert.equal(
+    skills.items[0].content,
+    "<ul><li>工程能力：TypeScript、React、Node.js 与复杂状态管理及自动化测试</li></ul>",
   );
 }
 
@@ -644,12 +643,12 @@ function verifyShortBulletsAndContinuation(buildResumeFromLines) {
     ],
     "导入内容",
   );
-  const work = resume.sections.find((section) => section.kind === "work");
+  const work = requiredSection(resume, "work");
 
-  assert.equal(work?.items.length, 1);
-  assert.equal(work?.items[0]?.title, "示例公司");
-  assert.equal(work?.items[0]?.subtitle, "示例岗位");
-  assert.deepEqual(work?.items[0]?.highlights, [
+  assert.equal(work.items.length, 1);
+  assert.equal(work.items[0]?.company, "示例公司");
+  assert.equal(work.items[0]?.position, "示例岗位");
+  assert.deepEqual(work.items[0]?.highlights, [
     "负责体验优化覆盖核心使用流程",
     "维护编辑器稳定性",
   ]);
@@ -672,12 +671,12 @@ function verifyAdjacentExperienceItems(buildResumeFromLines) {
     ],
     "导入内容",
   );
-  const work = resume.sections.find((section) => section.kind === "work");
+  const work = requiredSection(resume, "work");
 
-  assert.equal(work?.items.length, 2);
-  assert.equal(work?.items[0]?.title, "第一公司");
-  assert.equal(work?.items[1]?.title, "第二公司");
-  assert.equal(work?.items[1]?.period, "2024.01 - 至今");
+  assert.equal(work.items.length, 2);
+  assert.equal(work.items[0]?.company, "第一公司");
+  assert.equal(work.items[1]?.company, "第二公司");
+  assert.equal(work.items[1]?.period, "2024.01 - 至今");
 }
 
 function verifyLargeExperienceTitleIsNotASection(buildResumeFromLines) {
@@ -697,7 +696,7 @@ function verifyLargeExperienceTitleIsNotASection(buildResumeFromLines) {
   );
 
   assert.deepEqual(
-    requiredSection(resume, "work").items.map((item) => item.title),
+    requiredSection(resume, "work").items.map((item) => item.company),
     ["First Company", "Second Company"],
     "a prominent item title followed by a date remains inside its experience section",
   );
@@ -720,11 +719,12 @@ function verifyOtherSectionAllowsLaterInlineExperience(buildResumeFromLines) {
   const other = requiredSection(resume, "other");
   const work = requiredSection(resume, "work");
 
-  assert.deepEqual(
-    other.items.map(({ title, subtitle }) => ({ title, subtitle })),
-    [{ title: "技能", subtitle: "能力甲、能力乙" }],
+  assert.equal(other.items.length, 1);
+  assert.equal(
+    other.items[0].content,
+    "<ul><li>技能：能力甲、能力乙</li></ul>",
   );
-  assert.equal(work.items[0]?.title, "示例公司");
+  assert.equal(work.items[0]?.company, "示例公司");
 }
 
 function verifyMultilineColumnMetadata(buildResumeFromLines) {
@@ -744,9 +744,9 @@ function verifyMultilineColumnMetadata(buildResumeFromLines) {
   );
   const work = requiredSection(resume, "work");
 
-  assert.equal(work.items[0]?.title, "组织甲");
-  assert.equal(work.items[0]?.subtitle, "岗位甲");
-  assert.equal(work.items[0]?.meta, "元数据甲 · 元数据乙");
+  assert.equal(work.items[0]?.company, "组织甲");
+  assert.equal(work.items[0]?.position, "岗位甲");
+  assert.equal(work.items[0]?.location, "元数据甲 · 元数据乙");
 }
 
 function verifyShortUnmarkedBodySplitsAdjacentExperiences(
@@ -772,10 +772,10 @@ function verifyShortUnmarkedBodySplitsAdjacentExperiences(
 
   assert.equal(work.items.length, 2);
   assert.deepEqual(
-    work.items.map(({ title, period }) => ({ title, period })),
+    work.items.map(({ company, period }) => ({ company, period })),
     [
-      { title: "组织甲", period: "2023.01 - 2023.12" },
-      { title: "组织乙", period: "2024.01 - 2024.12" },
+      { company: "组织甲", period: "2023.01 - 2023.12" },
+      { company: "组织乙", period: "2024.01 - 2024.12" },
     ],
   );
   assert.match(JSON.stringify(work.items[0]), /完成甲项/);
@@ -1038,8 +1038,11 @@ function verifyIndentedSingleColumnReadingOrder(buildResumeFromLines) {
     ],
     "Imported content",
   );
-  const titles = requiredSection(resume, "skills").items.map(
-    (item) => item.title,
+  const section = requiredSection(resume, "skills");
+  assert.equal(section.items.length, 1);
+  const titles = Array.from(
+    section.items[0].content.matchAll(/<li>(.*?)<\/li>/g),
+    (match) => match[1],
   );
 
   assert.deepEqual(titles.slice(0, 4), [
@@ -1285,13 +1288,14 @@ function verifyZhMinimalStructureRegression(
   const resume = buildResumeFromLines(lines, "导入内容");
 
   for (const section of resume.sections.filter(
-    (candidate) => candidate.layout === "list",
+    (candidate) => candidate.kind === "simple_list",
   )) {
     for (const item of section.items) {
-      assert.equal(item.meta, "");
-      assert.equal(item.period, "");
-      assert.equal(item.description, "");
-      assert.deepEqual(item.highlights, []);
+      assert.deepEqual(
+        Object.keys(item).sort(),
+        ["content", "id"],
+        "simple-list imports must use only their semantic content field",
+      );
     }
   }
 
@@ -1348,7 +1352,7 @@ function verifyZhMinimalStructureRegression(
   assert.deepEqual(selectItemFields(project.items[0]), {
     title: "ResuMate",
     subtitle: "AI Agent 简历制作网站",
-    meta: "React + TypeScript + Tailwind + shadcn/ui",
+    meta: "React · TypeScript · Tailwind · shadcn/ui",
     period: "2026.03 - 至今",
     description: "实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。",
     highlights: [
@@ -1358,19 +1362,10 @@ function verifyZhMinimalStructureRegression(
   });
 
   const other = requiredSection(resume, "other");
-  assert.equal(other.items.length, 2);
-  assert.deepEqual(
-    other.items.map(({ title, subtitle }) => ({ title, subtitle })),
-    [
-      {
-        title: "技能",
-        subtitle: "React、TypeScript、Node.js、Prompt Engineering",
-      },
-      {
-        title: "语言",
-        subtitle: "英语 CET-6（544），雅思 6.5",
-      },
-    ],
+  assert.equal(other.items.length, 1);
+  assert.equal(
+    other.items[0].content,
+    "<ul><li>技能：React、TypeScript、Node.js、Prompt Engineering</li><li>语言：英语 CET-6（544），雅思 6.5</li></ul>",
   );
 
   assert.equal(resume.basic.name, "王小明");
@@ -1410,19 +1405,74 @@ function requiredLine(lines, text) {
 }
 
 function requiredSection(resume, kind) {
-  const section = resume.sections.find((candidate) => candidate.kind === kind);
+  const semanticKind = {
+    work: "experience",
+    internship: "experience",
+    skills: "simple_list",
+    languages: "simple_list",
+    other: "simple_list",
+    awards: "achievement",
+  }[kind] ?? kind;
+  const titleMatcher = {
+    internship: /intern|实习/i,
+    skills: /skill|技能|技术栈/i,
+    languages: /language|语言/i,
+    other: /other|其他|自定义/i,
+  }[kind];
+  const candidates = resume.sections.filter(
+    (candidate) => candidate.kind === semanticKind,
+  );
+  const section = candidates.find(
+    (candidate) =>
+      (!titleMatcher || titleMatcher.test(candidate.title)),
+  ) ?? (kind === "internship" && candidates.length === 1
+    ? candidates[0]
+    : undefined);
   assert.ok(section, `Expected imported section kind: ${kind}`);
   return section;
 }
 
 function selectItemFields(item) {
+  if ("school" in item) {
+    return {
+      title: item.school,
+      subtitle: [item.degree, item.major].filter(Boolean).join(" · "),
+      meta: [item.gpa, item.location].filter(Boolean).join(" · "),
+      period: item.period,
+      description: item.description,
+      highlights: item.highlights,
+    };
+  }
+
+  if ("company" in item) {
+    return {
+      title: item.company,
+      subtitle: item.position,
+      meta: item.location,
+      period: item.period,
+      description: item.description,
+      highlights: item.highlights,
+    };
+  }
+
+  if ("techStack" in item) {
+    return {
+      title: item.name,
+      subtitle: item.role,
+      meta: item.techStack.join(" · "),
+      period: item.period,
+      description: item.description,
+      highlights: item.highlights,
+    };
+  }
+
   return {
-    title: item?.title ?? "",
-    subtitle: item?.subtitle ?? "",
-    meta: item?.meta ?? "",
-    period: item?.period ?? "",
+    title: item?.name ?? "",
+    subtitle: item?.issuer ?? "",
+    meta: "",
+    period: item?.date ?? "",
     description: item?.description ?? "",
-    highlights: item?.highlights ?? [],
+    highlights: [],
   };
 }
 

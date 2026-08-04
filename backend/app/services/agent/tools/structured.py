@@ -1,16 +1,39 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from html import escape
 from typing import Any
 from uuid import uuid4
 
 from app.schemas.agent import AgentDraftState, AgentResumeEditSuggestion
+from app.services.resume_document_contract import (
+    ITEM_LIST_FIELDS_BY_KIND,
+    ITEM_STRING_FIELDS_BY_KIND,
+)
 
 from ..editing import _string_list
 from ..localization import agent_text
+from ..section_registry import normalize_section_alias
 
 EDIT_ENTRY = dict[str, Any]
-ITEM_TEXT_FIELDS = ("title", "subtitle", "meta", "period", "description")
+ALL_ITEM_STRING_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_STRING_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
+)
+ALL_ITEM_LIST_FIELDS = tuple(
+    dict.fromkeys(
+        field
+        for fields in ITEM_LIST_FIELDS_BY_KIND.values()
+        for field in fields
+    ),
+)
+SKILL_SECTION_TITLE_ALIASES = frozenset(
+    normalize_section_alias(title)
+    for title in ("Skills", "Skill", "技能", "专业技能", "技术栈")
+)
 
 
 def string_arg(args: dict[str, Any], key: str) -> str:
@@ -85,20 +108,31 @@ def compact_text(value: object, limit: int = 220) -> str:
     return text if len(text) <= limit else f"{text[: limit - 3]}..."
 
 
-def item_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+def item_snapshot(
+    item: dict[str, Any],
+    *,
+    section_kind: str = "",
+) -> dict[str, Any]:
     """Return the fields a model needs to target or rewrite an item."""
 
     snapshot: dict[str, Any] = {"id": str(item.get("id") or "")}
-    for field in ITEM_TEXT_FIELDS:
+    string_fields = ITEM_STRING_FIELDS_BY_KIND.get(
+        section_kind,
+        ALL_ITEM_STRING_FIELDS,
+    )
+    list_fields = ITEM_LIST_FIELDS_BY_KIND.get(
+        section_kind,
+        ALL_ITEM_LIST_FIELDS,
+    )
+    for field in string_fields:
         value = item.get(field)
         if isinstance(value, str) and value.strip():
             snapshot[field] = compact_text(value)
 
-    highlights = _string_list(item.get("highlights"))
-    if highlights:
-        snapshot["highlights"] = [
-            compact_text(highlight) for highlight in highlights[:5]
-        ]
+    for field in list_fields:
+        values = _string_list(item.get(field))
+        if values:
+            snapshot[field] = [compact_text(value) for value in values[:5]]
 
     return snapshot
 
@@ -113,12 +147,15 @@ def section_snapshot(
     snapshot = {
         "id": str(section.get("id") or ""),
         "kind": str(section.get("kind") or ""),
-        "customTitle": str(section.get("customTitle") or ""),
-        "layout": str(section.get("layout") or ""),
+        "title": str(section.get("title") or ""),
         "itemCount": len(section_items(section)),
     }
     if include_items:
-        snapshot["items"] = [item_snapshot(item) for item in section_items(section)[:8]]
+        kind = str(section.get("kind") or "")
+        snapshot["items"] = [
+            item_snapshot(item, section_kind=kind)
+            for item in section_items(section)[:8]
+        ]
 
     return snapshot
 
@@ -141,25 +178,35 @@ def lookup_resume(resume: dict[str, Any], args: dict[str, Any]) -> dict[str, Any
         if section_kind and section.get("kind") != section_kind:
             continue
 
+        kind = str(section.get("kind") or "")
         section_text = " ".join(
             compact_text(section.get(key)).lower()
-            for key in ("id", "kind", "customTitle")
+            for key in ("id", "kind", "title")
         )
-        section_matches = not query or query in section_text
+        section_matches = (not query and not item_id) or query in section_text
 
         item_matches: list[dict[str, Any]] = []
         for item in section_items(section):
             if item_id and item.get("id") != item_id:
                 continue
 
+            string_fields = ITEM_STRING_FIELDS_BY_KIND.get(
+                kind,
+                ALL_ITEM_STRING_FIELDS,
+            )
+            list_fields = ITEM_LIST_FIELDS_BY_KIND.get(
+                kind,
+                ALL_ITEM_LIST_FIELDS,
+            )
             item_text = " ".join(
                 [
                     compact_text(item.get(key)).lower()
-                    for key in ("id", *ITEM_TEXT_FIELDS)
+                    for key in ("id", *string_fields)
                 ]
                 + [
-                    compact_text(highlight).lower()
-                    for highlight in _string_list(item.get("highlights"))
+                    compact_text(value).lower()
+                    for field in list_fields
+                    for value in _string_list(item.get(field))
                 ]
             )
             if query and query not in item_text and not section_matches:
@@ -181,8 +228,8 @@ def lookup_resume(resume: dict[str, Any], args: dict[str, Any]) -> dict[str, Any
                 matched_items.append(
                     {
                         "sectionId": str(section.get("id") or ""),
-                        "sectionKind": str(section.get("kind") or ""),
-                        **item_snapshot(item),
+                        "sectionKind": kind,
+                        **item_snapshot(item, section_kind=kind),
                     },
                 )
 
@@ -306,6 +353,13 @@ def move_item_entries(
     to_section = find_section(resume, to_section_id)
     if not from_section or not to_section:
         return [], agent_text(locale, "error.move_item_missing_sections")
+    if (
+        from_section.get("kind") == "simple_list"
+        or to_section.get("kind") == "simple_list"
+    ):
+        return [], agent_text(locale, "error.simple_list_single_item")
+    if from_section.get("kind") != to_section.get("kind"):
+        return [], agent_text(locale, "error.move_item_kind_mismatch")
 
     item = find_item(from_section, item_id)
     if not item:
@@ -382,6 +436,8 @@ def split_item_entries(
     section = find_section(resume, section_id)
     if not section or not find_item(section, item_id):
         return [], agent_text(locale, "error.split_item_missing_target")
+    if section.get("kind") == "simple_list":
+        return [], agent_text(locale, "error.simple_list_single_item")
 
     reason = string_arg(args, "reason") or agent_text(
         locale,
@@ -442,6 +498,8 @@ def merge_item_entries(
         return [], agent_text(locale, "error.merge_items_missing_targets")
     if any(not find_item(section, item_id) for item_id in unique_item_ids):
         return [], agent_text(locale, "error.merge_items_missing_targets")
+    if section.get("kind") == "simple_list":
+        return [], agent_text(locale, "error.simple_list_single_item")
 
     reason = string_arg(args, "reason") or agent_text(
         locale,
@@ -479,13 +537,13 @@ def classify_skills_entries(
     *,
     locale: str,
 ) -> tuple[list[EDIT_ENTRY], str | None]:
-    """Build edit entries for grouping skills into a skills section."""
+    """Store every skill group inside the sole simple-list rich-text item."""
 
     groups = args.get("groups")
     if not isinstance(groups, list) or not groups:
         return [], agent_text(locale, "error.skills_classify_empty_groups")
 
-    items = []
+    group_lines: list[str] = []
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -495,20 +553,19 @@ def classify_skills_entries(
         )
         if title and skills:
             separator = "、" if locale == "zh" else ", "
-            items.append(
-                {
-                    "id": f"item-agent-skill-{uuid4().hex[:8]}",
-                    "title": title,
-                    "subtitle": separator.join(skills),
-                    "meta": "",
-                    "period": "",
-                    "description": "",
-                    "highlights": [],
-                },
+            label_separator = "：" if locale == "zh" else ": "
+            group_lines.append(
+                f"{title}{label_separator}{separator.join(skills)}",
             )
 
-    if not items:
+    if not group_lines:
         return [], agent_text(locale, "error.skills_classify_empty_items")
+
+    content = (
+        "<ul>"
+        + "".join(f"<li>{escape(line)}</li>" for line in group_lines)
+        + "</ul>"
+    )
 
     reason = string_arg(args, "reason") or agent_text(
         locale,
@@ -516,23 +573,30 @@ def classify_skills_entries(
     )
     section_id = string_arg(args, "sectionId")
     existing_section = find_section(resume, section_id) if section_id else None
+    if existing_section and existing_section.get("kind") != "simple_list":
+        return [], agent_text(locale, "error.skills_classify_requires_simple_list")
     if not existing_section:
         existing_section = next(
             (
                 section
                 for section in resume_sections(resume)
-                if section.get("kind") == "skills"
+                if section.get("kind") == "simple_list"
+                and normalize_section_alias(string_arg(section, "title"))
+                in SKILL_SECTION_TITLE_ALIASES
             ),
             None,
         )
 
     if not existing_section:
+        item = {
+            "id": f"item-agent-skill-{uuid4().hex[:8]}",
+            "content": content,
+        }
         section = {
             "id": f"section-agent-skills-{uuid4().hex[:8]}",
-            "kind": "skills",
-            "layout": "list",
-            "customTitle": "",
-            "items": items,
+            "kind": "simple_list",
+            "title": agent_text(locale, "section.skills"),
+            "items": [item],
         }
         return [
             edit_entry(
@@ -548,26 +612,27 @@ def classify_skills_entries(
         ], None
 
     section_id = str(existing_section.get("id") or "")
-    entries = [
-        edit_entry(
-            agent_text(locale, "structured.title.remove_old_skill_group"),
-            f"sections.{section_id}.items.{item['id']}",
-            reason,
-            {"type": "delete_item", "sectionId": section_id, "itemId": str(item["id"])},
-        )
-        for item in section_items(existing_section)
-        if isinstance(item.get("id"), str)
-    ]
-    entries.extend(
+    existing_items = section_items(existing_section)
+    if len(existing_items) != 1 or not isinstance(
+        existing_items[0].get("id"),
+        str,
+    ):
+        return [], agent_text(locale, "error.simple_list_single_item")
+
+    item_id = str(existing_items[0]["id"])
+    return [
         edit_entry(
             agent_text(locale, "structured.title.add_skill_group"),
-            f"sections.{section_id}.items",
+            f"sections.{section_id}.items.{item_id}",
             reason,
-            {"type": "insert_item", "sectionId": section_id, "item": item},
-        )
-        for item in items
-    )
-    return entries, None
+            {
+                "type": "update_item",
+                "sectionId": section_id,
+                "itemId": item_id,
+                "patch": {"content": content},
+            },
+        ),
+    ], None
 
 
 def edit_entry(

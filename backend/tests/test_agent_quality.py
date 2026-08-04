@@ -19,13 +19,28 @@ def _summary_edit() -> AgentResumeEditSuggestion:
 
 
 def _resume_with_items(*items: dict[str, object]) -> dict[str, object]:
+    normalized_items = [
+        {
+            "id": str(item.get("id") or "experience-item"),
+            "company": "",
+            "position": "",
+            "location": "",
+            "period": "",
+            "description": "",
+            "highlights": [],
+            **item,
+        }
+        for item in items
+    ]
     return {
+        "schemaVersion": 2,
         "basic": {"summary": "Updated summary"},
         "sections": [
             {
                 "id": "work",
-                "kind": "work",
-                "items": list(items),
+                "kind": "experience",
+                "title": "Work Experience",
+                "items": normalized_items,
             },
         ],
     }
@@ -35,7 +50,7 @@ def test_full_resume_quality_blocks_invalid_period_format() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Software Engineer",
+            "position": "Software Engineer",
             "period": "2024.13 - 2025.02",
         },
     )
@@ -51,7 +66,7 @@ def test_full_resume_quality_blocks_inverted_period_range() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Software Engineer",
+            "position": "Software Engineer",
             "period": "2025.02 - 2024.01",
         },
     )
@@ -67,12 +82,12 @@ def test_full_resume_quality_blocks_non_reverse_chronological_items() -> None:
     resume = _resume_with_items(
         {
             "id": "work-older",
-            "title": "Earlier Role",
+            "position": "Earlier Role",
             "period": "2021.01 - 2022.03",
         },
         {
             "id": "work-newer",
-            "title": "Recent Role",
+            "position": "Recent Role",
             "period": "2023.04 - Present",
         },
     )
@@ -102,7 +117,7 @@ def test_full_resume_quality_accepts_common_unambiguous_period_formats(
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Software Engineer",
+            "position": "Software Engineer",
             "period": period,
         },
     )
@@ -121,11 +136,12 @@ def test_full_resume_quality_warns_about_cross_section_semantic_duplicates() -> 
         "sections": [
             {
                 "id": "work",
-                "kind": "work",
+                "kind": "experience",
+                "title": "Work Experience",
                 "items": [
                     {
                         "id": "work-1",
-                        "title": "Engineer",
+                        "position": "Engineer",
                         "highlights": [
                             "Built an automated resume review workflow that reduced "
                             "review time by 30 percent.",
@@ -136,10 +152,11 @@ def test_full_resume_quality_warns_about_cross_section_semantic_duplicates() -> 
             {
                 "id": "project",
                 "kind": "project",
+                "title": "Projects",
                 "items": [
                     {
                         "id": "project-1",
-                        "title": "Resume assistant",
+                        "name": "Resume assistant",
                         "highlights": [
                             "Developed an automated resume review workflow, reducing "
                             "review time by 30 percent.",
@@ -218,6 +235,8 @@ def test_full_resume_quality_warns_about_mixed_substantive_languages() -> None:
         "sections": [
             {
                 "id": "work",
+                "kind": "experience",
+                "title": "Work Experience",
                 "items": [
                     {
                         "id": "work-1",
@@ -230,6 +249,8 @@ def test_full_resume_quality_warns_about_mixed_substantive_languages() -> None:
             },
             {
                 "id": "project",
+                "kind": "project",
+                "title": "Projects",
                 "items": [
                     {
                         "id": "project-1",
@@ -263,7 +284,7 @@ def test_full_resume_quality_warns_about_present_tense_in_ended_role() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Software Engineer",
+            "position": "Software Engineer",
             "period": "2021.01 - 2022.03",
             "highlights": [
                 "Built a deployment workflow that reduced release failures.",
@@ -288,7 +309,7 @@ def test_full_resume_quality_allows_present_tense_in_current_role() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Software Engineer",
+            "position": "Software Engineer",
             "period": "2023.04 - Present",
             "highlights": [
                 "Manage cross-functional delivery for critical customer launches.",
@@ -305,7 +326,7 @@ def test_target_coverage_runs_only_with_explicit_target_context() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Backend Engineer",
+            "position": "Backend Engineer",
             "highlights": [
                 "Built Python APIs and improved service reliability.",
             ],
@@ -351,7 +372,7 @@ def test_target_coverage_does_not_warn_when_requirements_are_covered() -> None:
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Backend Engineer",
+            "position": "Backend Engineer",
             "highlights": [
                 "Built Python services for distributed systems deployed on Kubernetes.",
             ],
@@ -379,7 +400,7 @@ def test_target_coverage_does_not_match_english_requirement_inside_word() -> Non
     resume = _resume_with_items(
         {
             "id": "work-1",
-            "title": "Backend Engineer",
+            "position": "Backend Engineer",
             "highlights": ["Built Pythonic service abstractions."],
         },
     )

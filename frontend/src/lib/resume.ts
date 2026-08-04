@@ -1,53 +1,25 @@
 import type { AppMessages } from '@/i18n'
 import languagePatterns from '@/lib/language-patterns.json'
+import { createId } from '@/lib/resume-id'
+import {
+  createResumeSection,
+  projectResumeSections,
+} from '@/lib/resume-sections'
 import { stripRichText } from '@/lib/rich-text'
 import type {
   KeywordMatch,
   ResumeData,
-  ResumeSection,
-  ResumeSectionItem,
   SectionKind,
-  SectionLayout,
 } from '@/types/resume'
 
 const latinStopWords = new Set(languagePatterns.keywordStopWords.latin)
 const cjkStopWords = new Set(languagePatterns.keywordStopWords.cjk)
 
-export function createId(prefix: string) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-export function createItem(
-  overrides: Partial<ResumeSectionItem> = {},
-): ResumeSectionItem {
-  return {
-    id: createId('item'),
-    title: '',
-    subtitle: '',
-    meta: '',
-    period: '',
-    description: '',
-    highlights: [],
-    ...overrides,
-  }
-}
-
-export function createSection(
-  kind: SectionKind,
-  layout: SectionLayout,
-  items: ResumeSectionItem[],
-): ResumeSection {
-  return {
-    id: createId('section'),
-    kind,
-    layout,
-    customTitle: '',
-    items,
-  }
-}
+export { createId, createResumeSection as createSection }
 
 export function createEmptyResume(): ResumeData {
   return {
+    schemaVersion: 2,
     basic: {
       name: '',
       headline: '',
@@ -59,9 +31,9 @@ export function createEmptyResume(): ResumeData {
       customFields: [],
     },
     sections: [
-      createSection('education', 'timeline', [createItem()]),
-      createSection('internship', 'timeline', [createItem()]),
-      createSection('project', 'timeline', [createItem()]),
+      createResumeSection('education'),
+      createResumeSection('experience'),
+      createResumeSection('project'),
     ],
   }
 }
@@ -76,25 +48,20 @@ export function createCollapsedState(resume: ResumeData) {
   )
 }
 
-export function getSectionTitle(section: ResumeSection, t: AppMessages) {
-  return section.customTitle.trim() || t.sectionTitles[section.kind]
+export function getSectionTitle(
+  section: { kind: SectionKind; title: string },
+  t: AppMessages,
+) {
+  return section.title.trim() || t.sectionTitles[section.kind]
 }
 
-export function getSectionSummary(section: ResumeSection, t: AppMessages) {
+export function getSectionSummary(
+  section: { items: readonly unknown[] },
+  t: AppMessages,
+) {
   const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
 
   return `${section.items.length} ${itemLabel}`
-}
-
-export function hasItemContent(item: ResumeSectionItem) {
-  return [
-    item.title,
-    item.subtitle,
-    item.meta,
-    item.period,
-    item.description,
-    ...item.highlights.map((value) => stripRichText(value)),
-  ].some((value) => value.trim())
 }
 
 export function getInitials(name: string) {
@@ -126,6 +93,8 @@ function extractKeywords(text: string) {
 }
 
 function buildResumeText(resume: ResumeData) {
+  const sections = projectResumeSections(resume.sections)
+
   return [
     resume.basic.name,
     resume.basic.headline,
@@ -134,13 +103,15 @@ function buildResumeText(resume: ResumeData) {
     resume.basic.location,
     resume.basic.summary,
     ...resume.basic.customFields.flatMap((field) => [field.label, field.value]),
-    ...resume.sections.flatMap((section) => [
-      section.customTitle,
+    ...sections.flatMap((section) => [
+      section.title,
       ...section.items.flatMap((item) => [
         item.title,
         item.subtitle,
         item.meta,
         item.period,
+        item.url,
+        stripRichText(item.content),
         item.description,
         ...item.highlights.map((value) => stripRichText(value)),
       ]),
@@ -163,14 +134,16 @@ export function getKeywordMatch(
     resume.basic.phone,
     resume.basic.email,
     resume.sections.some((section) => section.kind === 'education') ? 'education' : '',
-    resume.sections.some((section) => section.kind === 'work') ? 'work' : '',
-    resume.sections.some((section) => section.kind === 'internship') ? 'internship' : '',
+    resume.sections.some((section) => section.kind === 'experience')
+      ? 'experience'
+      : '',
     resume.sections.some((section) => section.kind === 'project') ? 'project' : '',
-    resume.sections.some((section) => section.kind === 'skills') ? 'skills' : '',
-    resume.sections.some((section) => section.kind === 'awards') ? 'awards' : '',
-    resume.sections.some((section) => section.kind === 'certificates') ? 'certificates' : '',
-    resume.sections.some((section) => section.kind === 'languages') ? 'languages' : '',
-    resume.sections.some((section) => section.kind === 'other') ? 'other' : '',
+    resume.sections.some((section) => section.kind === 'achievement')
+      ? 'achievement'
+      : '',
+    resume.sections.some((section) => section.kind === 'simple_list')
+      ? 'simple-list'
+      : '',
   ].filter(Boolean).length
 
   const structureScore = Math.min(42, structureSignals * 6)

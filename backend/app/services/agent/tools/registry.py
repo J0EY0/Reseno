@@ -1,47 +1,114 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.services.resume_document_contract import ITEM_FIELDS_BY_KIND, SECTION_KINDS
+
 from ..models import FINISH_MISSING_ENUM, PLAN_INTENT_ENUM
 from ..operation_contract import assert_model_operation_adapter_compatible
 from ..prompts import EDIT_OPERATION_GUIDE
 from ..section_registry import SECTION_KIND_ENUM
 
+STRING_SCHEMA: dict[str, Any] = {"type": "string"}
+STRING_LIST_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": STRING_SCHEMA,
+}
+
+
+def _item_schema(
+    properties: dict[str, Any],
+    *,
+    identity_field: str,
+) -> dict[str, Any]:
+    """Return one kind-specific model item branch.
+
+    IDs are optional at the model seam because the operation adapter generates
+    them. Requiring the kind's identity field prevents an empty object from
+    looking like a useful inserted item while still allowing the adapter to
+    fill the remaining canonical fields with safe defaults.
+    """
+
+    return {
+        "type": "object",
+        "properties": {"id": STRING_SCHEMA, **properties},
+        "required": [identity_field],
+        "additionalProperties": False,
+    }
+
+
+HIGHLIGHTS_SCHEMA: dict[str, Any] = {
+    **STRING_LIST_SCHEMA,
+    "description": "Concrete actions, solutions, outcomes, and impact.",
+}
+
 ITEM_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "id": {"type": "string"},
-        "title": {
-            "type": "string",
-            "description": (
-                "Project, company, school, certificate, or award name only."
-            ),
-        },
-        "subtitle": {
-            "type": "string",
-            "description": "Role, position, major, degree, or identity only.",
-        },
-        "meta": {
-            "type": "string",
-            "description": "Tech stack, GPA, location, organization, or metadata.",
-        },
-        "period": {
-            "type": "string",
-            "description": "Time range only. Use this for date/date range.",
-        },
-        "description": {
-            "type": "string",
-            "description": "One short background sentence only; may be empty.",
-        },
-        "highlights": {
-            "type": "array",
-            "description": (
-                "Concrete actions, technical solutions, outcomes, and impact. "
-                "Do not repeat title, subtitle, meta, or period."
-            ),
-            "items": {"type": "string"},
-        },
-    },
-    "additionalProperties": False,
+    "description": (
+        "One item matching the target section kind. Do not mix fields from "
+        "different item shapes."
+    ),
+    # `anyOf` intentionally permits the shared minimal {name: ...} shape used
+    # by both projects and achievements. The target section kind is the
+    # discriminator enforced by the operation adapter.
+    "anyOf": [
+        _item_schema(
+            {
+                "school": STRING_SCHEMA,
+                "degree": STRING_SCHEMA,
+                "major": STRING_SCHEMA,
+                "gpa": STRING_SCHEMA,
+                "location": STRING_SCHEMA,
+                "period": STRING_SCHEMA,
+                "description": STRING_SCHEMA,
+                "highlights": HIGHLIGHTS_SCHEMA,
+            },
+            identity_field="school",
+        ),
+        _item_schema(
+            {
+                "company": STRING_SCHEMA,
+                "position": STRING_SCHEMA,
+                "location": STRING_SCHEMA,
+                "period": STRING_SCHEMA,
+                "description": STRING_SCHEMA,
+                "highlights": HIGHLIGHTS_SCHEMA,
+            },
+            identity_field="company",
+        ),
+        _item_schema(
+            {
+                "name": STRING_SCHEMA,
+                "role": STRING_SCHEMA,
+                "techStack": STRING_LIST_SCHEMA,
+                "period": STRING_SCHEMA,
+                "url": STRING_SCHEMA,
+                "description": STRING_SCHEMA,
+                "highlights": HIGHLIGHTS_SCHEMA,
+            },
+            identity_field="name",
+        ),
+        _item_schema(
+            {
+                "name": STRING_SCHEMA,
+                "issuer": STRING_SCHEMA,
+                "date": STRING_SCHEMA,
+                "url": STRING_SCHEMA,
+                "description": STRING_SCHEMA,
+            },
+            identity_field="name",
+        ),
+        _item_schema(
+            {
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "One complete simple-list entry, including labels such "
+                        "as a skill category or proficiency when useful."
+                    ),
+                },
+            },
+            identity_field="content",
+        ),
+    ],
 }
 
 SECTION_SCHEMA: dict[str, Any] = {
@@ -59,16 +126,25 @@ SECTION_SCHEMA: dict[str, Any] = {
         "kind": {
             "type": "string",
             "enum": SECTION_KIND_ENUM,
-            "description": "Backward-compatible alias for section_type.",
+            "description": "Canonical Resume V2 section discriminator.",
         },
-        "layout": {"type": "string", "enum": ["timeline", "list"]},
-        "customTitle": {
+        "title": {
             "type": "string",
-            "description": "Only use for section_type=custom; otherwise leave empty.",
+            "description": (
+                "User-visible section title. Skills, languages, and other custom "
+                "lists use section_type=simple_list with their intended title."
+            ),
         },
-        "items": {"type": "array", "items": ITEM_SCHEMA},
+        "items": {
+            "type": "array",
+            "items": ITEM_SCHEMA,
+            "description": (
+                "Section items. simple_list requires exactly one item whose content "
+                "contains the complete rich-text list."
+            ),
+        },
     },
-    "required": ["layout", "items"],
+    "required": ["title", "items"],
     "anyOf": [
         {"required": ["section_type"]},
         {"required": ["kind"]},
@@ -79,12 +155,23 @@ SECTION_SCHEMA: dict[str, Any] = {
 ITEM_PATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "title": {"type": "string"},
-        "subtitle": {"type": "string"},
-        "meta": {"type": "string"},
-        "period": {"type": "string"},
-        "description": {"type": "string"},
-        "highlights": {"type": "array", "items": {"type": "string"}},
+        "school": STRING_SCHEMA,
+        "degree": STRING_SCHEMA,
+        "major": STRING_SCHEMA,
+        "gpa": STRING_SCHEMA,
+        "company": STRING_SCHEMA,
+        "position": STRING_SCHEMA,
+        "location": STRING_SCHEMA,
+        "name": STRING_SCHEMA,
+        "role": STRING_SCHEMA,
+        "techStack": STRING_LIST_SCHEMA,
+        "period": STRING_SCHEMA,
+        "issuer": STRING_SCHEMA,
+        "date": STRING_SCHEMA,
+        "url": STRING_SCHEMA,
+        "description": STRING_SCHEMA,
+        "highlights": HIGHLIGHTS_SCHEMA,
+        "content": STRING_SCHEMA,
     },
     "minProperties": 1,
     "additionalProperties": False,
@@ -93,14 +180,45 @@ ITEM_PATCH_SCHEMA: dict[str, Any] = {
 SECTION_PATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "kind": {"type": "string", "enum": SECTION_KIND_ENUM},
-        "section_type": {"type": "string", "enum": SECTION_KIND_ENUM},
-        "layout": {"type": "string", "enum": ["timeline", "list"]},
-        "customTitle": {"type": "string"},
+        "title": {"type": "string"},
     },
     "minProperties": 1,
     "additionalProperties": False,
 }
+
+
+def _assert_item_schemas_match_document_contract() -> None:
+    """Fail fast if the model-visible item vocabulary drifts from Resume V2."""
+
+    if tuple(SECTION_KIND_ENUM) != SECTION_KINDS:
+        raise RuntimeError(
+            "Agent section registry kinds drifted from the Resume V2 contract."
+        )
+
+    branches = ITEM_SCHEMA["anyOf"]
+    for kind, branch in zip(SECTION_KINDS, branches, strict=True):
+        expected = set(ITEM_FIELDS_BY_KIND[kind])
+        actual = set(branch["properties"])
+        if actual != expected:
+            raise RuntimeError(
+                f"Agent {kind} item schema fields drifted: "
+                f"expected {sorted(expected)!r}, received {sorted(actual)!r}."
+            )
+
+    expected_patch_fields = {
+        field
+        for fields in ITEM_FIELDS_BY_KIND.values()
+        for field in fields
+        if field != "id"
+    }
+    actual_patch_fields = set(ITEM_PATCH_SCHEMA["properties"])
+    if actual_patch_fields != expected_patch_fields:
+        raise RuntimeError(
+            "Agent item patch fields drifted from the Resume V2 document contract."
+        )
+
+
+_assert_item_schemas_match_document_contract()
 
 
 def _operation_variant(
@@ -334,9 +452,16 @@ MATERIAL_EXTRACT_SCHEMA: dict[str, Any] = {
                         "resume_facts",
                         "experience",
                         "project",
+                        "achievement",
+                        "simple_list",
+                        # Semantic aliases remain useful extraction targets even
+                        # though they persist as canonical V2 section kinds.
                         "work",
                         "internship",
                         "skills",
+                        "languages",
+                        "awards",
+                        "certificates",
                         "education",
                         "jd",
                     ],
@@ -559,8 +684,8 @@ EDIT_MOVE_ITEM_SCHEMA: dict[str, Any] = {
         "name": "edit_move_item",
         "description": (
             "Move one existing resume item within a section or into another "
-            "existing section. Use after resume_lookup/resume_analysis has "
-            "identified sectionId and itemId."
+            "existing section of the same kind. Use after "
+            "resume_lookup/resume_analysis has identified sectionId and itemId."
         ),
         "parameters": {
             "type": "object",
@@ -634,8 +759,9 @@ SKILLS_CLASSIFY_SCHEMA: dict[str, Any] = {
     "function": {
         "name": "skills_classify",
         "description": (
-            "Create or replace grouped skill items in the skills section. Use "
-            "this when the user asks to organize, categorize, or normalize skills."
+            "Create or replace grouped skills in the sole rich-text content item "
+            "of a simple_list section titled Skills/技能. Use this when the user "
+            "asks to organize, categorize, or normalize skills."
         ),
         "parameters": {
             "type": "object",

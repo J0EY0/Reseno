@@ -48,9 +48,45 @@ def test_canonical_contract_rejects_frontend_only_patch_fields() -> None:
     assert resume_edit_operation_error(operation) is not None
 
 
+def test_canonical_contract_requires_one_simple_list_item() -> None:
+    def operation(items: list[dict[str, str]]) -> dict:
+        return {
+            "type": "insert_section",
+            "section": {
+                "id": "skills",
+                "kind": "simple_list",
+                "title": "Skills",
+                "items": items,
+            },
+        }
+
+    assert resume_edit_operation_error(
+        operation([{"id": "skill-1", "content": "React"}]),
+    ) is None
+    assert resume_edit_operation_error(operation([])) is not None
+    assert resume_edit_operation_error(
+        operation(
+            [
+                {"id": "skill-1", "content": "React"},
+                {"id": "skill-2", "content": "TypeScript"},
+            ],
+        ),
+    ) is not None
+
+
 def test_normalized_operations_cross_api_boundary_in_canonical_shape() -> None:
     resume = {
-        "basic": {"headline": "Engineer", "summary": "Original summary"},
+        "schemaVersion": 2,
+        "basic": {
+            "name": "",
+            "headline": "Engineer",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "Original summary",
+            "customFields": [],
+        },
         "sections": [],
     }
     edits, rejected = _model_edit_suggestions_with_diagnostics(
@@ -81,7 +117,7 @@ def test_model_insert_section_accepts_both_documented_kind_aliases() -> None:
             "type": "insert_section",
             "section": {
                 field: section_kind,
-                "layout": "timeline",
+                "title": "Projects",
                 "items": [],
             },
         }
@@ -91,7 +127,7 @@ def test_model_insert_section_accepts_both_documented_kind_aliases() -> None:
     assert not validator.is_valid(
         {
             "type": "insert_section",
-            "section": {"layout": "timeline", "items": []},
+            "section": {"title": "Projects", "items": []},
         },
     )
 
@@ -108,7 +144,7 @@ def test_conflicting_section_kind_aliases_reject_the_operation() -> None:
                     "section": {
                         "section_type": "education",
                         "kind": "project",
-                        "layout": "timeline",
+                        "title": "Projects",
                         "items": [],
                     },
                 },

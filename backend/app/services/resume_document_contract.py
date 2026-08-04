@@ -1,9 +1,82 @@
+import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, cast
 
-RESUME_DOCUMENT_INVALID = "RESUME_DOCUMENT_INVALID"
-RESUME_LIST_ITEM_CONTENT_INVALID = "RESUME_LIST_ITEM_CONTENT_INVALID"
+# jsonschema has no bundled stubs in this environment. Keep suppressions at
+# the dependency boundary so the contract helpers remain fully typed.
+from jsonschema import Draft7Validator  # type: ignore[import-untyped]
+from jsonschema.exceptions import best_match  # type: ignore[import-untyped]
 
-_LIST_ITEM_EMPTY_STRING_FIELDS = ("meta", "period", "description")
+RESUME_DOCUMENT_INVALID = "RESUME_DOCUMENT_INVALID"
+RESUME_DOCUMENT_DUPLICATE_ID = "RESUME_DOCUMENT_DUPLICATE_ID"
+
+_SCHEMA_PATH = Path(__file__).with_name("resume_document.schema.json")
+
+# These tuples are the backend's small semantic vocabulary. Agent adapters use
+# them to remain kind-aware; the JSON Schema remains the authority for exact
+# required fields and wire validation.
+SECTION_KINDS = (
+    "education",
+    "experience",
+    "project",
+    "achievement",
+    "simple_list",
+)
+ITEM_STRING_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "education": (
+        "school",
+        "degree",
+        "major",
+        "gpa",
+        "location",
+        "period",
+        "description",
+    ),
+    "experience": (
+        "company",
+        "position",
+        "location",
+        "period",
+        "description",
+    ),
+    "project": ("name", "role", "period", "url", "description"),
+    "achievement": ("name", "issuer", "date", "url", "description"),
+    "simple_list": ("content",),
+}
+ITEM_LIST_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "education": ("highlights",),
+    "experience": ("highlights",),
+    "project": ("techStack", "highlights"),
+    "achievement": (),
+    "simple_list": (),
+}
+ITEM_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    kind: ("id", *ITEM_STRING_FIELDS_BY_KIND[kind], *ITEM_LIST_FIELDS_BY_KIND[kind])
+    for kind in SECTION_KINDS
+}
+
+
+def is_resume_item_for_kind(value: object, kind: str) -> bool:
+    """Return whether an item exactly matches one V2 section discriminator."""
+
+    if not isinstance(value, dict) or kind not in ITEM_FIELDS_BY_KIND:
+        return False
+    if set(value) != set(ITEM_FIELDS_BY_KIND[kind]):
+        return False
+    item_id = value.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return False
+    if any(
+        not isinstance(value.get(field), str)
+        for field in ITEM_STRING_FIELDS_BY_KIND[kind]
+    ):
+        return False
+    return all(
+        isinstance(entries := value.get(field), list)
+        and all(isinstance(entry, str) for entry in entries)
+        for field in ITEM_LIST_FIELDS_BY_KIND[kind]
+    )
 
 
 class ResumeDocumentContractError(ValueError):
@@ -15,59 +88,63 @@ class ResumeDocumentContractError(ValueError):
         self.path = path
 
 
+@lru_cache(maxsize=1)
+def resume_document_schema() -> dict[str, Any]:
+    """Load the canonical V2 document schema packaged with the backend."""
+
+    payload = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Resume document schema must be a JSON object.")
+    Draft7Validator.check_schema(payload)
+    return payload
+
+
+@lru_cache(maxsize=1)
+def _resume_document_validator() -> Draft7Validator:
+    return Draft7Validator(resume_document_schema())
+
+
+def _validation_path(error: object) -> str:
+    """Translate one jsonschema error path to the stable API path format."""
+
+    absolute_path = getattr(error, "absolute_path", ())
+    suffix = ".".join(str(part) for part in absolute_path)
+    return f"resume.{suffix}" if suffix else "resume"
+
+
 def validate_resume_document(value: Any) -> dict[str, Any]:
-    """Validate the canonical resume shape shared by every write producer."""
+    """Validate the exact V2 shape shared by persistence, imports, and Agent.
 
-    if not isinstance(value, dict):
-        raise ResumeDocumentContractError(RESUME_DOCUMENT_INVALID, "resume")
+    JSON Schema owns field-level discrimination and rejects unknown fields.
+    The explicit ID pass covers the document-wide identity invariant that JSON
+    Schema cannot express for object properties.
+    """
 
-    if not isinstance(value.get("basic"), dict) or not isinstance(
-        value.get("sections"),
-        list,
-    ):
-        raise ResumeDocumentContractError(RESUME_DOCUMENT_INVALID, "resume")
+    error = best_match(_resume_document_validator().iter_errors(value))
+    if error is not None:
+        raise ResumeDocumentContractError(
+            RESUME_DOCUMENT_INVALID,
+            _validation_path(error),
+        )
 
+    section_ids: set[str] = set()
+    item_ids: set[str] = set()
     for section_index, section in enumerate(value["sections"]):
-        section_path = f"resume.sections.{section_index}"
-        if not isinstance(section, dict):
+        section_id = section["id"]
+        if section_id in section_ids:
             raise ResumeDocumentContractError(
-                RESUME_DOCUMENT_INVALID,
-                section_path,
+                RESUME_DOCUMENT_DUPLICATE_ID,
+                f"resume.sections.{section_index}.id",
             )
+        section_ids.add(section_id)
 
-        if section.get("layout") != "list":
-            continue
-
-        items = section.get("items")
-        if not isinstance(items, list):
-            raise ResumeDocumentContractError(
-                RESUME_DOCUMENT_INVALID,
-                f"{section_path}.items",
-            )
-
-        for item_index, item in enumerate(items):
-            item_path = f"{section_path}.items.{item_index}"
-            if not isinstance(item, dict):
+        for item_index, item in enumerate(section["items"]):
+            item_id = item["id"]
+            if item_id in item_ids:
                 raise ResumeDocumentContractError(
-                    RESUME_DOCUMENT_INVALID,
-                    item_path,
+                    RESUME_DOCUMENT_DUPLICATE_ID,
+                    f"resume.sections.{section_index}.items.{item_index}.id",
                 )
-
-            if not isinstance(item.get("title"), str) or not isinstance(
-                item.get("subtitle"),
-                str,
-            ):
-                raise ResumeDocumentContractError(
-                    RESUME_DOCUMENT_INVALID,
-                    item_path,
-                )
-
-            if any(
-                item.get(field) != "" for field in _LIST_ITEM_EMPTY_STRING_FIELDS
-            ) or item.get("highlights") != []:
-                raise ResumeDocumentContractError(
-                    RESUME_LIST_ITEM_CONTENT_INVALID,
-                    item_path,
-                )
+            item_ids.add(item_id)
 
     return cast(dict[str, Any], value)

@@ -13,7 +13,6 @@ import {
   Minimize2,
   Moon,
   Pencil,
-  Plus,
   SlidersHorizontal,
   Sun,
 } from "lucide-react";
@@ -39,6 +38,7 @@ import {
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
+import { AddSectionPopover } from "@/components/editor/add-section-popover";
 import { AvatarCropDialog } from "@/components/editor/avatar-crop-dialog";
 import { BasicInfoCard } from "@/components/editor/basic-info-card";
 import { ResumeSectionCard } from "@/components/editor/resume-section-card";
@@ -100,7 +100,6 @@ import {
 } from "@/components/ui/tooltip";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
-import { normalizeContactFieldType } from "@/lib/contact-links";
 import {
   createDefaultAgentSettings,
   normalizeAgentSettings,
@@ -124,7 +123,12 @@ import {
 } from "@/lib/import-api";
 import { normalizeModelConfigs } from "@/lib/model-config";
 import { importResumeFromPdf } from "@/lib/pdf-resume-import";
-import { isRichTextEmpty } from "@/lib/rich-text";
+import {
+  applySectionMutation,
+  createResumeSection,
+  isCanonicalResumeData,
+  type ResumeSectionMutation,
+} from "@/lib/resume-sections";
 import {
   createTemplateSettings,
   createTemplateLayout,
@@ -141,8 +145,6 @@ import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import {
   createEmptyResume,
   createId,
-  createItem,
-  createSection,
   getKeywordMatch,
 } from "@/lib/resume";
 import { cn } from "@/lib/utils";
@@ -175,6 +177,7 @@ import type {
   AgentDraftState,
   AgentResumeEditSuggestion,
   AgentTransactionState,
+  ApiRequestOptions,
   ResumeSaveMode,
   SaveResponse,
   WorkspaceVersionSummary,
@@ -188,8 +191,6 @@ import type {
   ResumeBasicInfo,
   ResumeData,
   ResumeFontFamily,
-  ResumeSection,
-  ResumeSectionItem,
   ResumeTemplateDefinition,
   ResumeTemplateId,
   ResumeTemplateImageElement,
@@ -733,12 +734,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isResumeData(value: unknown): value is ResumeData {
-  return (
-    isRecord(value) && isRecord(value.basic) && Array.isArray(value.sections)
-  );
-}
-
 function createDefaultResumeTitle(t: AppMessages, index: number) {
   return t.defaultResumeTitle.replace("{index}", String(index));
 }
@@ -1080,7 +1075,7 @@ function normalizeStoredResumeDocument(
   fallbackTemplateId: ResumeTemplateId,
   index: number,
 ): ResumeWorkspaceItem | null {
-  if (!isRecord(value) || !isResumeData(value.resume)) {
+  if (!isRecord(value) || !isCanonicalResumeData(value.resume)) {
     return null;
   }
 
@@ -1099,26 +1094,11 @@ function normalizeStoredResumeDocument(
       typeof value.updatedAt === "string" && value.updatedAt.trim()
         ? value.updatedAt
         : new Date().toISOString(),
-    resume: normalizeResumeContactFields(value.resume),
+    resume: value.resume,
     jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
     typography: normalizeResumeTypography(value.typography),
     template: normalizeResumeTemplateId(value.template, fallbackTemplateId),
     templateSettings: normalizeResumeTemplateSettings(value.templateSettings),
-  };
-}
-
-function normalizeResumeContactFields(resume: ResumeData): ResumeData {
-  // Legacy resume JSON has no contact type. Keep those fields as plain text
-  // instead of guessing from labels such as "GitHub" or "Portfolio".
-  return {
-    ...resume,
-    basic: {
-      ...resume.basic,
-      customFields: resume.basic.customFields.map((field) => ({
-        ...field,
-        type: normalizeContactFieldType(field.type),
-      })),
-    },
   };
 }
 
@@ -1167,7 +1147,7 @@ function normalizeImportedResumeDocuments(
   const importedAt = new Date().toISOString();
 
   function normalizeItem(value: unknown): ResumeWorkspaceItem | null {
-    if (isResumeData(value)) {
+    if (isCanonicalResumeData(value)) {
       return null;
     }
 
@@ -1175,7 +1155,7 @@ function normalizeImportedResumeDocuments(
       return null;
     }
 
-    const rawResume = isResumeData(value.resume) ? value.resume : null;
+    const rawResume = isCanonicalResumeData(value.resume) ? value.resume : null;
 
     if (!rawResume) {
       return null;
@@ -1198,7 +1178,7 @@ function normalizeImportedResumeDocuments(
       ),
       updatedAt:
         typeof value.updatedAt === "string" ? value.updatedAt : importedAt,
-      resume: normalizeResumeContactFields(rawResume),
+      resume: rawResume,
       jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
       typography,
       template,
@@ -1498,6 +1478,7 @@ export function ResumeBuilder({
   } | null>(null);
   const autosaveGenerationRef = useRef(0);
   const workspaceLeaveInFlightRef = useRef(false);
+  const skipCheckpointPromotionOnLeaveRef = useRef(false);
   const handledBlockedNavigationKeyRef = useRef<string | null>(null);
   const versionLoadRequestRef = useRef<string | null>(null);
   const workspaceLoadRequestIdRef = useRef(0);
@@ -1869,6 +1850,7 @@ export function ResumeBuilder({
 
   const saveCurrentWorkspace = useCallback(async (
     saveMode: ResumeSaveMode = "checkpoint",
+    options: Pick<ApiRequestOptions, "notifyOnError"> = {},
   ) => {
     const initialTemplate = activeTemplateDefinitionRef.current;
     const isEditingCustomTemplate =
@@ -2001,6 +1983,7 @@ export function ResumeBuilder({
               templateSettings: nextActiveResume.templateSettings ?? null,
             },
             saveMode,
+            options,
           );
 
           result = {
@@ -2020,6 +2003,7 @@ export function ResumeBuilder({
             completedResumeFingerprints;
           lastPersistedResumeItemRef.current = savedResume.resume;
           lastResumeSaveModeRef.current = saveMode;
+          skipCheckpointPromotionOnLeaveRef.current = false;
           lastLoadedResumeDetailIdRef.current = savedResume.resume.id;
           setResumeDocuments((current) =>
             current.map((item) => {
@@ -2316,14 +2300,15 @@ export function ResumeBuilder({
       if (!hasUnsavedCurrentWorkspaceChanges()) {
         if (
           currentRouteRef.current.kind === "resume-detail" &&
-          lastResumeSaveModeRef.current === "autosave"
+          lastResumeSaveModeRef.current === "autosave" &&
+          !skipCheckpointPromotionOnLeaveRef.current
         ) {
           if (workspaceLeaveInFlightRef.current) {
             return;
           }
 
           workspaceLeaveInFlightRef.current = true;
-          void saveCurrentWorkspace("checkpoint")
+          void saveCurrentWorkspace("checkpoint", { notifyOnError: false })
             .then(() => {
               if (hasUnsavedCurrentWorkspaceChanges()) {
                 setPendingWorkspaceLeaveAction({ run, cancel });
@@ -2333,16 +2318,18 @@ export function ResumeBuilder({
               run();
             })
             .catch((error) => {
-              console.error(
+              console.warn(
                 "Failed to checkpoint autosaved workspace before leaving.",
                 error,
               );
-              if (!isApiErrorToastShown(error)) {
-                toast.error(t.loadError, {
-                  closeButton: true,
-                });
-              }
-              cancel?.();
+              // Autosave already persisted the current editor state. A failed
+              // history promotion must not trap the user on this route.
+              skipCheckpointPromotionOnLeaveRef.current = true;
+              toast.warning(t.checkpointPromotionFailed, {
+                closeButton: true,
+                id: "checkpoint-promotion-failed",
+              });
+              run();
             })
             .finally(() => {
               workspaceLeaveInFlightRef.current = false;
@@ -2356,14 +2343,19 @@ export function ResumeBuilder({
 
       setPendingWorkspaceLeaveAction({ run, cancel });
     },
-    [hasUnsavedCurrentWorkspaceChanges, saveCurrentWorkspace, t.loadError],
+    [
+      hasUnsavedCurrentWorkspaceChanges,
+      saveCurrentWorkspace,
+      t.checkpointPromotionFailed,
+    ],
   );
 
   const shouldBlockWorkspaceNavigation = useCallback(
     () =>
       hasUnsavedCurrentWorkspaceChanges() ||
       (currentRouteRef.current.kind === "resume-detail" &&
-        lastResumeSaveModeRef.current === "autosave"),
+        lastResumeSaveModeRef.current === "autosave" &&
+        !skipCheckpointPromotionOnLeaveRef.current),
     [hasUnsavedCurrentWorkspaceChanges],
   );
   const navigationBlocker = useBlocker(shouldBlockWorkspaceNavigation);
@@ -2528,6 +2520,7 @@ export function ResumeBuilder({
               createResumeFingerprint(firstResume);
             lastPersistedResumeItemRef.current = firstResume;
             lastResumeSaveModeRef.current = "checkpoint";
+            skipCheckpointPromotionOnLeaveRef.current = false;
             break;
           }
           case "resume-detail":
@@ -2611,12 +2604,14 @@ export function ResumeBuilder({
           )
             ? "checkpoint"
             : "autosave";
+          skipCheckpointPromotionOnLeaveRef.current = false;
           lastLoadedResumeDetailIdRef.current = detail.resume.id;
         } else if (route.kind !== "resume-detail") {
           lastLoadedResumeDetailIdRef.current = null;
           setWorkspaceVersions([]);
           setActiveWorkspaceVersionId(null);
           lastResumeSaveModeRef.current = "checkpoint";
+          skipCheckpointPromotionOnLeaveRef.current = false;
         }
 
         setHasLoadError(false);
@@ -2804,6 +2799,7 @@ export function ResumeBuilder({
         createResumeFingerprint(nextActiveResume);
       lastPersistedResumeItemRef.current = nextActiveResume;
       lastResumeSaveModeRef.current = "checkpoint";
+      skipCheckpointPromotionOnLeaveRef.current = false;
       setSaveState("saved");
 
       if (isResumeDetailView) {
@@ -2921,6 +2917,7 @@ export function ResumeBuilder({
         );
         lastPersistedResumeItemRef.current = restoredResume.resume;
         lastResumeSaveModeRef.current = "checkpoint";
+        skipCheckpointPromotionOnLeaveRef.current = false;
         lastLoadedResumeDetailIdRef.current = restoredResume.resume.id;
         setLastSavedAt(restoredResume.savedAt);
         setActiveWorkspaceVersionId(restoredResume.versionId);
@@ -3133,6 +3130,7 @@ export function ResumeBuilder({
       lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
       lastPersistedResumeItemRef.current = nextItem;
       lastResumeSaveModeRef.current = "checkpoint";
+      skipCheckpointPromotionOnLeaveRef.current = false;
       lastLoadedResumeDetailIdRef.current = nextItem.id;
       setLastSavedAt(result.savedAt);
       setActiveWorkspaceVersionId(result.versionId);
@@ -3181,6 +3179,7 @@ export function ResumeBuilder({
       lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
       lastPersistedResumeItemRef.current = nextItem;
       lastResumeSaveModeRef.current = "checkpoint";
+      skipCheckpointPromotionOnLeaveRef.current = false;
       lastLoadedResumeDetailIdRef.current = nextItem.id;
       setLastSavedAt(result.savedAt);
       setActiveWorkspaceVersionId(result.versionId);
@@ -3286,6 +3285,7 @@ export function ResumeBuilder({
         createResumeFingerprint(firstImportedResume);
       lastPersistedResumeItemRef.current = firstImportedResume;
       lastResumeSaveModeRef.current = "checkpoint";
+      skipCheckpointPromotionOnLeaveRef.current = false;
       lastLoadedResumeDetailIdRef.current = firstImportedResume.id;
       setLastSavedAt(savedImports[0].savedAt);
       setActiveWorkspaceVersionId(savedImports[0].versionId);
@@ -4169,16 +4169,18 @@ export function ResumeBuilder({
     }
   }
 
-  function updateSection(
-    sectionId: string,
-    patch: Partial<Omit<ResumeSection, "id" | "items">>,
-  ) {
-    setResume((current) => ({
-      ...current,
-      sections: current.sections.map((section) =>
-        section.id === sectionId ? { ...section, ...patch } : section,
-      ),
-    }));
+  function mutateResumeSection(mutation: ResumeSectionMutation) {
+    setResume((current) => {
+      const result = applySectionMutation(current.sections, mutation);
+
+      // Rejected mutations indicate stale UI state or an invalid caller. They
+      // must never partially modify a resume; the domain function is atomic.
+      if (result.status !== "applied") {
+        return current;
+      }
+
+      return { ...current, sections: result.sections };
+    });
   }
 
   function removeSection(sectionId: string) {
@@ -4225,10 +4227,8 @@ export function ResumeBuilder({
     });
   }
 
-  function addResumeSection(kind: SectionKind = "custom") {
-    const nextSection = ["skills", "certificates", "languages", "other"].includes(kind)
-      ? createSection(kind, "list", [createItem()])
-      : createSection(kind, "timeline", [createItem()]);
+  function addResumeSection(kind: SectionKind) {
+    const nextSection = createResumeSection(kind);
 
     startTransition(() => {
       setResume((current) => ({
@@ -4239,82 +4239,6 @@ export function ResumeBuilder({
 
     setCollapsedState((current) => collapseAllExcept(current, nextSection.id));
   }
-
-  function updateSectionItem(
-    sectionId: string,
-    itemId: string,
-    field: keyof Omit<ResumeSectionItem, "id" | "highlights">,
-    value: string,
-  ) {
-    setResume((current) => ({
-      ...current,
-      sections: current.sections.map((section) =>
-        section.id === sectionId
-          ? {
-              ...section,
-              items: section.items.map((item) =>
-                item.id === itemId ? { ...item, [field]: value } : item,
-              ),
-            }
-          : section,
-      ),
-    }));
-  }
-
-  function updateSectionHighlights(
-    sectionId: string,
-    itemId: string,
-    value: string,
-  ) {
-    setResume((current) => ({
-      ...current,
-      sections: current.sections.map((section) =>
-        section.id === sectionId
-          ? {
-              ...section,
-              items: section.items.map((item) =>
-                item.id === itemId
-                  ? {
-                      ...item,
-                      highlights: isRichTextEmpty(value) ? [] : [value],
-                    }
-                  : item,
-              ),
-            }
-          : section,
-      ),
-    }));
-  }
-
-  function addSectionItem(sectionId: string) {
-    startTransition(() => {
-      setResume((current) => ({
-        ...current,
-        sections: current.sections.map((section) =>
-          section.id === sectionId
-            ? { ...section, items: [...section.items, createItem()] }
-            : section,
-        ),
-      }));
-    });
-  }
-
-  function removeSectionItem(sectionId: string, itemId: string) {
-    startTransition(() => {
-      setResume((current) => ({
-        ...current,
-        sections: current.sections.map((section) =>
-          section.id === sectionId
-            ? {
-                ...section,
-                items: section.items.filter((item) => item.id !== itemId),
-              }
-            : section,
-        ),
-      }));
-    });
-  }
-
   function toggleCollapse(id: string) {
     setCollapsedState((current) => {
       if (current[id] === false) {
@@ -4763,26 +4687,14 @@ export function ResumeBuilder({
                   }
                   collapsed={Boolean(collapsedState[section.id])}
                   onToggle={() => toggleCollapse(section.id)}
-                  onUpdateSection={updateSection}
-                  onAddItem={addSectionItem}
+                  onMutation={mutateResumeSection}
                   onRemoveSection={removeSection}
                   onMoveSectionUp={(sectionId) => moveSection(sectionId, "up")}
                   onMoveSectionDown={(sectionId) => moveSection(sectionId, "down")}
-                  onUpdateItem={updateSectionItem}
-                  onUpdateHighlights={updateSectionHighlights}
-                  onRemoveItem={removeSectionItem}
                 />
               ))}
 
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 rounded-xl border-dashed bg-background/95"
-                onClick={() => addResumeSection("custom")}
-              >
-                <Plus className="size-4" />
-                {t.addSection}
-              </Button>
+              <AddSectionPopover t={t} onSelect={addResumeSection} />
             </>
           )}
         </section>

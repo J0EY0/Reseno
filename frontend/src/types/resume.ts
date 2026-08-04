@@ -1,14 +1,9 @@
 export const SECTION_KINDS = [
   'education',
-  'work',
-  'internship',
+  'experience',
   'project',
-  'skills',
-  'awards',
-  'certificates',
-  'languages',
-  'other',
-  'custom',
+  'achievement',
+  'simple_list',
 ] as const
 export type SectionKind = (typeof SECTION_KINDS)[number]
 export type SectionLayout = 'timeline' | 'list'
@@ -63,27 +58,83 @@ export interface ResumeBasicInfo {
   customFields: CustomField[]
 }
 
-export interface ResumeSectionItem {
+export interface EducationItem {
   id: string
-  title: string
-  subtitle: string
-  // For list sections, only title and subtitle may contain content. The fields
-  // below remain in the wire shape but must be empty.
-  meta: string
+  school: string
+  degree: string
+  major: string
+  gpa: string
+  location: string
   period: string
   description: string
   highlights: string[]
 }
 
-export interface ResumeSection {
+export interface ExperienceItem {
   id: string
-  kind: SectionKind
-  layout: SectionLayout
-  customTitle: string
-  items: ResumeSectionItem[]
+  company: string
+  position: string
+  location: string
+  period: string
+  description: string
+  highlights: string[]
 }
 
+export interface ProjectItem {
+  id: string
+  name: string
+  role: string
+  techStack: string[]
+  period: string
+  url: string
+  description: string
+  highlights: string[]
+}
+
+export interface AchievementItem {
+  id: string
+  name: string
+  issuer: string
+  date: string
+  url: string
+  description: string
+}
+
+export interface SimpleListItem {
+  id: string
+  content: string
+}
+
+export interface SectionItemByKind {
+  education: EducationItem
+  experience: ExperienceItem
+  project: ProjectItem
+  achievement: AchievementItem
+  simple_list: SimpleListItem
+}
+
+export type ResumeSectionItem = SectionItemByKind[SectionKind]
+
+// A simple-list section owns one rich-text document. Its visible bullets live
+// inside `content`, so they keep one stable item ID for autosave and Agent diffs.
+export type SectionItemsByKind<K extends SectionKind> =
+  K extends 'simple_list'
+    ? [SectionItemByKind[K]]
+    : SectionItemByKind[K][]
+
+export type ResumeSectionOf<K extends SectionKind> = {
+  id: string
+  kind: K
+  title: string
+  items: SectionItemsByKind<K>
+}
+
+export type ResumeSection = {
+  [K in SectionKind]: ResumeSectionOf<K>
+}[SectionKind]
+
 export interface ResumeData {
+  schemaVersion: 2
   basic: ResumeBasicInfo
   sections: ResumeSection[]
 }
