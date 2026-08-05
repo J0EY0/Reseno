@@ -346,7 +346,7 @@ const defaultTemplate: ResumeTemplateId = "minimal";
 const A4_WIDTH_PX = (210 / 25.4) * 96;
 const A4_HEIGHT_PX = (297 / 25.4) * 96;
 const PREVIEW_FRAME_GUTTER_PX = 48;
-const MAX_RESUME_TITLE_LENGTH = 20;
+const MAX_RESUME_TITLE_LENGTH = 50;
 const AUTOSAVE_DELAY_MS = 5000;
 // Keep this aligned with the 2xl workspace breakpoint in index.css. Below it,
 // the Agent uses a Sheet so the editor and preview retain usable widths.

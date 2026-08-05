@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
+from app.schemas.resumes import MAX_RESUME_TITLE_LENGTH
 from app.services.agent.attachments import delete_agent_session_attachments
 from app.services.resume_document_contract import (
     ResumeDocumentContractError,
@@ -282,16 +283,17 @@ def _resume_title(resume_item: dict[str, Any]) -> str:
 
     title = resume_item.get("title")
     if isinstance(title, str) and title.strip():
-        return title.strip()
+        return title.strip()[:MAX_RESUME_TITLE_LENGTH]
 
     resume = resume_item.get("resume")
     basic = resume.get("basic") if isinstance(resume, dict) else None
     name = basic.get("name") if isinstance(basic, dict) else None
     if isinstance(name, str) and name.strip():
-        return name.strip()
+        return name.strip()[:MAX_RESUME_TITLE_LENGTH]
 
     resume_id = resume_item.get("id")
-    return resume_id if isinstance(resume_id, str) else "Untitled"
+    fallback = resume_id if isinstance(resume_id, str) else "Untitled"
+    return fallback[:MAX_RESUME_TITLE_LENGTH]
 
 
 def _duplicate_resume_title(
@@ -304,7 +306,6 @@ def _duplicate_resume_title(
 
     copy_label = RESUME_COPY_LABELS[_normalize_locale(locale)]
     base_title = source_title.strip() or "Untitled"
-    first_title = f"{base_title} - {copy_label}"
     existing_titles = {
         str(row["title"])
         for row in conn.execute(
@@ -316,13 +317,22 @@ def _duplicate_resume_title(
             (WORKSPACE_DATA_LOCALE,),
         ).fetchall()
     }
+
+    def copy_title(copy_index: int | None = None) -> str:
+        suffix = f" - {copy_label}"
+        if copy_index is not None:
+            suffix = f"{suffix} {copy_index}"
+        available_base_length = MAX_RESUME_TITLE_LENGTH - len(suffix)
+        return f"{base_title[:available_base_length].rstrip()}{suffix}"
+
+    first_title = copy_title()
     if first_title not in existing_titles:
         return first_title
 
     copy_index = 2
-    while f"{first_title} {copy_index}" in existing_titles:
+    while copy_title(copy_index) in existing_titles:
         copy_index += 1
-    return f"{first_title} {copy_index}"
+    return copy_title(copy_index)
 
 
 def _current_resume_version_row(
@@ -749,7 +759,7 @@ def _normalize_resume_item_payload(
 
     normalized: dict[str, Any] = {
         "id": _validate_resume_id(resume_id.strip()),
-        "title": title.strip()
+        "title": title.strip()[:MAX_RESUME_TITLE_LENGTH]
         if isinstance(title, str) and title.strip()
         else _resume_title({"id": resume_id, "resume": resume_document}),
         "updatedAt": saved_at,

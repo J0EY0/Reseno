@@ -1028,6 +1028,45 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert not attachment_dir.exists()
 
 
+def test_resume_title_length_limit_is_enforced_on_create_and_update(
+    client: TestClient,
+) -> None:
+    accepted_title = "简" * 50
+    created_response = client.post(
+        "/api/resumes",
+        json={"title": accepted_title},
+    )
+
+    assert created_response.json()["code"] == 0
+    created = created_response.json()["data"]["resume"]
+    assert created["title"] == accepted_title
+
+    rejected_create_response = client.post(
+        "/api/resumes",
+        json={"title": "简" * 51},
+    )
+    rejected_update_response = client.put(
+        f"/api/resumes/{created['id']}",
+        json={"title": "简" * 51},
+    )
+    current_response = client.get(f"/api/resumes/{created['id']}")
+
+    assert rejected_create_response.json()["code"] == 40002
+    assert rejected_update_response.json()["code"] == 40002
+    assert current_response.json()["data"]["resume"]["title"] == accepted_title
+
+    derived_title_response = client.put(
+        f"/api/resumes/{created['id']}",
+        json={
+            "title": None,
+            "resume": minimal_resume_document(name="姓" * 80),
+        },
+    )
+
+    assert derived_title_response.json()["code"] == 0
+    assert derived_title_response.json()["data"]["resume"]["title"] == "姓" * 50
+
+
 def test_resume_create_rejects_noncanonical_list_item_content(
     client: TestClient,
 ) -> None:
@@ -1143,6 +1182,28 @@ def test_duplicate_resume_copies_content_without_history_or_agent_context(
             ).fetchall()
         ]
     assert session_resume_ids == [source_id]
+
+
+def test_duplicate_resume_title_keeps_copy_suffix_within_limit(
+    client: TestClient,
+) -> None:
+    source_title = "A" * 50
+    source = client.post(
+        "/api/resumes",
+        json={"title": source_title},
+    ).json()["data"]["resume"]
+
+    first = client.post(
+        f"/api/resumes/{source['id']}/duplicate?locale=en",
+    ).json()["data"]["resume"]
+    second = client.post(
+        f"/api/resumes/{source['id']}/duplicate?locale=en",
+    ).json()["data"]["resume"]
+
+    assert len(first["title"]) == 50
+    assert first["title"].endswith(" - Copy")
+    assert len(second["title"]) == 50
+    assert second["title"].endswith(" - Copy 2")
 
 
 def test_empty_resume_trash_physically_deletes_resumes_and_agent_sessions(

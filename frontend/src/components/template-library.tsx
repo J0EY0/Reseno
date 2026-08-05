@@ -1030,10 +1030,13 @@ export function TemplateLibrary({
                   }
                   className="grid gap-0"
                 >
-                  <TabsList className="grid h-12 w-full grid-cols-[1fr_0.82fr_0.9fr_1.28fr] gap-0 rounded-none border-0 border-b border-border/70 bg-transparent p-0 text-muted-foreground">
+                  <TabsList
+                    variant="line"
+                    className="grid w-full grid-cols-[1fr_0.82fr_0.9fr_1.28fr] gap-0 rounded-none border-0 border-b border-border/70 p-0 text-muted-foreground group-data-[orientation=horizontal]/tabs:h-12"
+                  >
                     <TabsTrigger
                       value="layout"
-                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="h-12 min-w-0 items-center rounded-none border-transparent px-1.5 py-0 text-sm font-semibold after:bottom-[-1px]!"
                     >
                       <TemplateTabLabel icon={LayoutTemplate}>
                         {t.templateLayoutTab}
@@ -1041,7 +1044,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="typography"
-                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="h-12 min-w-0 items-center rounded-none border-transparent px-1.5 py-0 text-sm font-semibold after:bottom-[-1px]!"
                     >
                       <TemplateTabLabel icon={Type}>
                         {t.templateTypographyTab}
@@ -1049,7 +1052,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="visual"
-                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="h-12 min-w-0 items-center rounded-none border-transparent px-1.5 py-0 text-sm font-semibold after:bottom-[-1px]!"
                     >
                       <TemplateTabLabel icon={Palette}>
                         {t.templateVisualTab}
@@ -1057,7 +1060,7 @@ export function TemplateLibrary({
                     </TabsTrigger>
                     <TabsTrigger
                       value="images"
-                      className="relative h-12 min-w-0 items-center rounded-none border-x-0 border-t-0 border-b-[3px] border-transparent bg-transparent px-1.5 py-0 text-sm font-semibold shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground"
+                      className="h-12 min-w-0 items-center rounded-none border-transparent px-1.5 py-0 text-sm font-semibold after:bottom-[-1px]!"
                     >
                       <TemplateTabLabel icon={Sparkles}>
                         {t.templateImagesTab}

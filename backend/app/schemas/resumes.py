@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 JsonObject = dict[str, Any]
+MAX_RESUME_TITLE_LENGTH = 50
 
 
 class ResumeWorkspaceItemResponse(BaseModel):
@@ -32,7 +33,7 @@ class DeletedResumeWorkspaceItemResponse(ResumeWorkspaceItemResponse):
 class ResumeCreateRequest(BaseModel):
     """Optional overrides for a backend-created resume."""
 
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=MAX_RESUME_TITLE_LENGTH)
     resume: JsonObject | None = None
     job_brief: str | None = Field(default=None, alias="jobBrief")
     typography: JsonObject | None = None
@@ -43,7 +44,7 @@ class ResumeCreateRequest(BaseModel):
 class ResumeSaveRequest(BaseModel):
     """Full resume payload persisted by PUT /api/resumes/{id}."""
 
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=MAX_RESUME_TITLE_LENGTH)
     resume: JsonObject | None = None
     job_brief: str | None = Field(default=None, alias="jobBrief")
     typography: JsonObject | None = None
