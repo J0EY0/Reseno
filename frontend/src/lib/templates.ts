@@ -23,6 +23,21 @@ interface BuiltinTemplatePreset {
   settings: ResumeTemplateSettings
 }
 
+const legacyModernTextPalettes = [
+  {
+    headingColor: '#2563eb',
+    bodyColor: '#475569',
+    mutedColor: '#64748b',
+    dividerColor: '#3b82f6',
+  },
+  {
+    headingColor: '#2563eb',
+    bodyColor: '#3f3f46',
+    mutedColor: '#71717a',
+    dividerColor: '#3b82f6',
+  },
+] as const
+
 /**
  * Keep each built-in preset atomic. Adding a template in one registry avoids
  * layout, typography, and visual defaults drifting across separate maps.
@@ -104,8 +119,8 @@ const builtinTemplatePresets = {
       pageBackground: '#ffffff',
       surfaceColor: '#f8fafc',
       headingColor: '#2563eb',
-      bodyColor: '#475569',
-      mutedColor: '#64748b',
+      bodyColor: '#000000',
+      mutedColor: '#71717a',
       dividerColor: '#3b82f6',
       dividerThickness: 1,
     },
@@ -280,7 +295,12 @@ export const builtinTemplateIds = Object.keys(
   builtinTemplatePresets,
 ) as BuiltinResumeTemplateId[]
 
-const supportedFontFamilies: ResumeFontFamily[] = ['inter', 'serif', 'plex']
+const supportedFontFamilies: ResumeFontFamily[] = [
+  'inter',
+  'noto_sans_sc',
+  'serif',
+  'plex',
+]
 export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const
 
 const CSS_POINTS_PER_PIXEL = 72 / 96
@@ -506,6 +526,25 @@ export function createTemplateSettings(
   overrides: Partial<ResumeTemplateSettings> = {},
 ): ResumeTemplateSettings {
   const defaults = builtinTemplatePresets[preset].settings
+  const usesLegacyModernTextPalette =
+    preset === 'modern' &&
+    legacyModernTextPalettes.some(
+      (palette) =>
+        overrides.headingColor === palette.headingColor &&
+        overrides.bodyColor === palette.bodyColor &&
+        overrides.mutedColor === palette.mutedColor &&
+        overrides.dividerColor === palette.dividerColor,
+    )
+
+  // Resume-level settings store the full palette. Upgrade only the exact old
+  // Modern palette so existing resumes receive the current text colors while
+  // any user-customized palette remains untouched.
+  const bodyColor = usesLegacyModernTextPalette
+    ? defaults.bodyColor
+    : normalizeHexColor(overrides.bodyColor, defaults.bodyColor)
+  const mutedColor = usesLegacyModernTextPalette
+    ? defaults.mutedColor
+    : normalizeHexColor(overrides.mutedColor, defaults.mutedColor)
 
   return {
     pagePaddingTop: clampNumber(
@@ -581,8 +620,8 @@ export function createTemplateSettings(
       overrides.headingColor,
       defaults.headingColor,
     ),
-    bodyColor: normalizeHexColor(overrides.bodyColor, defaults.bodyColor),
-    mutedColor: normalizeHexColor(overrides.mutedColor, defaults.mutedColor),
+    bodyColor,
+    mutedColor,
     dividerColor: normalizeHexColor(
       overrides.dividerColor,
       defaults.dividerColor,

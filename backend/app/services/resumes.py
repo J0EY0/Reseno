@@ -26,6 +26,14 @@ from app.services.workspace_state import (
 
 SUPPORTED_LOCALES = {"zh", "en"}
 RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
+RESUME_COPY_LABEL_PATTERN = "|".join(
+    re.escape(label) for label in RESUME_COPY_LABELS.values()
+)
+RESUME_COPY_SUFFIX_PATTERN = re.compile(
+    rf"\s+-\s+(?P<label>{RESUME_COPY_LABEL_PATTERN})"
+    r"(?:\s*\((?P<index>\d+)\)|\s*（(?P<wide_index>\d+)）|"
+    r"\s+(?P<legacy_index>\d+))?$"
+)
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
@@ -296,6 +304,18 @@ def _resume_title(resume_item: dict[str, Any]) -> str:
     return fallback[:MAX_RESUME_TITLE_LENGTH]
 
 
+def _resume_copy_base_title(title: str) -> str:
+    """Remove generated copy suffixes without discarding the whole title."""
+
+    base_title = title.strip()
+    while suffix_match := RESUME_COPY_SUFFIX_PATTERN.search(base_title):
+        next_base_title = base_title[: suffix_match.start()].rstrip()
+        if not next_base_title:
+            break
+        base_title = next_base_title
+    return base_title
+
+
 def _duplicate_resume_title(
     conn: Connection,
     *,
@@ -304,8 +324,11 @@ def _duplicate_resume_title(
 ) -> str:
     """Return the first available localized copy title."""
 
-    copy_label = RESUME_COPY_LABELS[_normalize_locale(locale)]
-    base_title = source_title.strip() or "Untitled"
+    normalized_locale = _normalize_locale(locale)
+    copy_label = RESUME_COPY_LABELS[normalized_locale]
+    normalized_source_title = source_title.strip() or "Untitled"
+    source_suffix_match = RESUME_COPY_SUFFIX_PATTERN.search(normalized_source_title)
+    base_title = _resume_copy_base_title(normalized_source_title) or "Untitled"
     existing_titles = {
         str(row["title"])
         for row in conn.execute(
@@ -318,19 +341,59 @@ def _duplicate_resume_title(
         ).fetchall()
     }
 
-    def copy_title(copy_index: int | None = None) -> str:
-        suffix = f" - {copy_label}"
-        if copy_index is not None:
-            suffix = f"{suffix} {copy_index}"
+    copy_suffix = f" - {copy_label}"
+
+    def title_with_suffix(suffix: str) -> str:
         available_base_length = MAX_RESUME_TITLE_LENGTH - len(suffix)
         return f"{base_title[:available_base_length].rstrip()}{suffix}"
 
+    def copy_title(copy_index: int | None = None) -> str:
+        if copy_index is not None:
+            suffix = (
+                f"{copy_suffix}（{copy_index}）"
+                if normalized_locale == "zh"
+                else f"{copy_suffix}({copy_index})"
+            )
+            return title_with_suffix(suffix)
+        return title_with_suffix(copy_suffix)
+
+    def copy_title_exists(copy_index: int | None = None) -> bool:
+        if copy_index is None:
+            return copy_title() in existing_titles
+
+        # Titles created before the punctuation update still reserve the same
+        # semantic sequence number, including at the 50-character boundary.
+        legacy_suffixes = {
+            f"{copy_suffix}({copy_index})",
+            f"{copy_suffix} ({copy_index})",
+            f"{copy_suffix} {copy_index}",
+            f"{copy_suffix}（{copy_index}）",
+        }
+        return any(
+            title_with_suffix(suffix) in existing_titles
+            for suffix in legacy_suffixes
+        )
+
+    # A longer numbered suffix can shorten a 50-character title. Continue from
+    # the source index so that truncated descendants cannot restart at “Copy”.
+    if source_suffix_match and source_suffix_match.group("label") == copy_label:
+        source_index = int(
+            source_suffix_match.group("index")
+            or source_suffix_match.group("wide_index")
+            or source_suffix_match.group("legacy_index")
+            or 0
+        )
+        copy_index = source_index + 1
+        while copy_title_exists(copy_index):
+            copy_index += 1
+        return copy_title(copy_index)
+
     first_title = copy_title()
-    if first_title not in existing_titles:
+    if not copy_title_exists():
         return first_title
 
-    copy_index = 2
-    while copy_title(copy_index) in existing_titles:
+    copy_index = 1
+    while copy_title_exists(copy_index):
         copy_index += 1
     return copy_title(copy_index)
 
@@ -877,7 +940,9 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
             )
 
         source_item = _read_resume_json(row["id"], current_version_id)
-        conn.execute("BEGIN")
+        # Name allocation and insert must share the write lock; otherwise two
+        # simultaneous duplicate requests can choose the same available title.
+        conn.execute("BEGIN IMMEDIATE")
         duplicate_id = _allocate_resume_id(conn)
         duplicate_title = _duplicate_resume_title(
             conn,

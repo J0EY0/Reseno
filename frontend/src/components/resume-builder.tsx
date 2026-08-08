@@ -13,6 +13,7 @@ import {
   Minimize2,
   Moon,
   Pencil,
+  RotateCcw,
   SlidersHorizontal,
   Sun,
 } from "lucide-react";
@@ -348,6 +349,8 @@ const A4_HEIGHT_PX = (297 / 25.4) * 96;
 const PREVIEW_FRAME_GUTTER_PX = 48;
 const MAX_RESUME_TITLE_LENGTH = 50;
 const AUTOSAVE_DELAY_MS = 5000;
+const AUTOSAVE_MAX_WAIT_MS = 30_000;
+const AUTOSAVE_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 // Keep this aligned with the 2xl workspace breakpoint in index.css. Below it,
 // the Agent uses a Sheet so the editor and preview retain usable widths.
 const AGENT_DOCK_MEDIA_QUERY = "(min-width: 1536px)";
@@ -634,9 +637,10 @@ function collapseAllExcept(
 
 const fontLabels: Record<
   ResumeFontFamily,
-  "fontInter" | "fontSerif" | "fontPlex"
+  "fontInter" | "fontNotoSans" | "fontSerif" | "fontPlex"
 > = {
   inter: "fontInter",
+  noto_sans_sc: "fontNotoSans",
   serif: "fontSerif",
   plex: "fontPlex",
 };
@@ -722,7 +726,12 @@ function getTemplatePath(templateId: string) {
   return `/template/${templateId}`;
 }
 
-const supportedFontFamilies: ResumeFontFamily[] = ["inter", "serif", "plex"];
+const supportedFontFamilies: ResumeFontFamily[] = [
+  "inter",
+  "noto_sans_sc",
+  "serif",
+  "plex",
+];
 
 function normalizeFontSize(value: number) {
   return resumeFontSizeOptions.reduce((closest, current) =>
@@ -738,22 +747,35 @@ function createDefaultResumeTitle(t: AppMessages, index: number) {
   return t.defaultResumeTitle.replace("{index}", String(index));
 }
 
+function truncateResumeTitle(value: string) {
+  return Array.from(value).slice(0, MAX_RESUME_TITLE_LENGTH).join("");
+}
+
 function normalizeResumeTitle(value: unknown, fallback: string) {
   const title = typeof value === "string" ? value.trim() : "";
 
-  return Array.from(title || fallback)
-    .slice(0, MAX_RESUME_TITLE_LENGTH)
-    .join("");
+  return truncateResumeTitle(title || fallback);
 }
 
 function formatResumeTitleForToolbar(value: string) {
-  const characters = Array.from(value);
+  const copySuffix =
+    value.match(
+      /\s+-\s+(?:副本|Copy)(?:\s*\(\d+\)|\s*（\d+）|\s+\d+)?$/,
+    )?.[0] ?? "";
+  const baseTitle = copySuffix
+    ? value.slice(0, -copySuffix.length).trimEnd()
+    : value;
+  const characters = Array.from(baseTitle);
+  const visibleBaseCharacterCount = copySuffix ? 4 : 6;
 
-  if (characters.length <= 6) {
+  if (characters.length <= visibleBaseCharacterCount) {
     return value;
   }
 
-  return `${characters.slice(0, 6).join("").trimEnd()}...`;
+  return `${characters
+    .slice(0, visibleBaseCharacterCount)
+    .join("")
+    .trimEnd()}...${copySuffix}`;
 }
 
 function normalizeResumeTypography(value: unknown): ResumeTypographySettings {
@@ -970,6 +992,8 @@ function FormatSliderField({
   max,
   step,
   suffix,
+  displayMultiplier = 1,
+  displayPrecision,
   onChange,
 }: {
   label: string;
@@ -978,27 +1002,36 @@ function FormatSliderField({
   max: number;
   step: number;
   suffix?: string;
+  displayMultiplier?: number;
+  displayPrecision?: number;
   onChange: (value: number) => void;
 }) {
-  const precision = step < 1 ? 2 : 0;
+  const valuePrecision = step < 1 ? 2 : 0;
+  const presentationPrecision = displayPrecision ?? valuePrecision;
+  // The slider and onChange keep the canonical value; only the text field is
+  // converted for presentation (for example, a unitless line-height to pt).
+  const formatDisplayValue = (nextValue: number) =>
+    formatControlNumber(nextValue * displayMultiplier, presentationPrecision);
   const [inputValue, setInputValue] = useState(() =>
-    formatControlNumber(value, precision),
+    formatControlNumber(value * displayMultiplier, presentationPrecision),
   );
 
   useEffect(() => {
-    setInputValue(formatControlNumber(value, precision));
-  }, [precision, value]);
+    setInputValue(
+      formatControlNumber(value * displayMultiplier, presentationPrecision),
+    );
+  }, [displayMultiplier, presentationPrecision, value]);
 
   function commitInputValue(nextInputValue: string) {
     if (!nextInputValue.trim()) {
-      setInputValue(formatControlNumber(value, precision));
+      setInputValue(formatDisplayValue(value));
       return;
     }
 
-    const parsedValue = Number(nextInputValue);
+    const parsedValue = Number(nextInputValue) / displayMultiplier;
 
     if (!Number.isFinite(parsedValue)) {
-      setInputValue(formatControlNumber(value, precision));
+      setInputValue(formatDisplayValue(value));
       return;
     }
 
@@ -1006,10 +1039,10 @@ function FormatSliderField({
     const steppedValue =
       Math.round((clampedValue - min) / step) * step + min;
     const nextValue = Number(
-      Math.min(max, Math.max(min, steppedValue)).toFixed(precision),
+      Math.min(max, Math.max(min, steppedValue)).toFixed(valuePrecision),
     );
 
-    setInputValue(formatControlNumber(nextValue, precision));
+    setInputValue(formatDisplayValue(nextValue));
     onChange(nextValue);
   }
 
@@ -1022,7 +1055,7 @@ function FormatSliderField({
             aria-label={label}
             inputMode="decimal"
             value={inputValue}
-            className="h-7 w-9 rounded-md border-0 bg-muted/60 px-1.5 py-0 text-center text-sm tabular-nums text-muted-foreground shadow-none focus-visible:border-transparent focus-visible:ring-1"
+            className="h-7 w-14 rounded-md border-0 bg-muted/60 px-1.5 py-0 text-center text-sm tabular-nums text-muted-foreground shadow-none focus-visible:border-transparent focus-visible:ring-1"
             onBlur={(event) => commitInputValue(event.currentTarget.value)}
             onChange={(event) => {
               const nextValue = event.currentTarget.value;
@@ -1041,7 +1074,7 @@ function FormatSliderField({
 
               if (event.key === "Escape") {
                 event.preventDefault();
-                setInputValue(formatControlNumber(value, precision));
+                setInputValue(formatDisplayValue(value));
                 event.currentTarget.blur();
               }
             }}
@@ -1410,6 +1443,7 @@ export function ResumeBuilder({
     useState(false);
   const [hasLoadError, setHasLoadError] = useState(false);
   const [hasWorkspaceLoadError, setHasWorkspaceLoadError] = useState(false);
+  const [workspaceLoadRetryKey, setWorkspaceLoadRetryKey] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isCreatingResume, setIsCreatingResume] = useState(false);
@@ -1477,6 +1511,8 @@ export function ResumeBuilder({
     targetKey: string;
   } | null>(null);
   const autosaveGenerationRef = useRef(0);
+  const autosaveBurstStartedAtRef = useRef<number | null>(null);
+  const autosaveRetryAttemptRef = useRef(0);
   const workspaceLeaveInFlightRef = useRef(false);
   const skipCheckpointPromotionOnLeaveRef = useRef(false);
   const handledBlockedNavigationKeyRef = useRef<string | null>(null);
@@ -1533,6 +1569,13 @@ export function ResumeBuilder({
     }),
     [activeTemplateDefinition, templateSettings],
   );
+  const hasTemplateStyleOverrides =
+    typography.fontFamily !== activeTemplateDefinition.typography.fontFamily ||
+    typography.fontSize !== activeTemplateDefinition.typography.fontSize ||
+    !areTemplateSettingsEqual(
+      activeResumeTemplateDefinition.settings,
+      activeTemplateDefinition.settings,
+    );
   const previewDocument =
     activeView === "templates" ? deferredTemplatePreviewResume : previewResume;
   const currentRouteRef = useRef(currentRoute);
@@ -1570,6 +1613,9 @@ export function ResumeBuilder({
     hasLoadedTemplateRouteData &&
     template === currentRoute.id &&
     templateCatalog.some((item) => item.id === currentRoute.id);
+  const hasRenderableDocumentDetail =
+    (isResumeDetailView && hasRenderableResumeDetail) ||
+    (isTemplateDetailView && hasRenderableTemplateDetail);
   // Keep cached route content mounted while metadata refreshes. Skeletons are
   // reserved for cold loads, unknown targets, and explicit version loading.
   const shouldShowResumeWorkspaceSkeleton =
@@ -1590,6 +1636,12 @@ export function ResumeBuilder({
     !hasWorkspaceLoadError &&
     (isResumeDetailView ||
       (isTemplateDetailView && !activeTemplateDefinition.isBuiltIn));
+  const autosaveTargetKey =
+    currentRoute.kind === "resume-detail"
+      ? `resume:${currentRoute.id}`
+      : currentRoute.kind === "template-detail"
+        ? `template:${currentRoute.id}`
+        : null;
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(AGENT_DOCK_MEDIA_QUERY);
@@ -1652,6 +1704,10 @@ export function ResumeBuilder({
       return;
     }
 
+    if (!hasRenderableDocumentDetail) {
+      return;
+    }
+
     const frameElement = previewScaleFrameRef.current;
 
     if (!frameElement) {
@@ -1661,7 +1717,14 @@ export function ResumeBuilder({
     let animationFrameId = 0;
 
     const syncPreviewScale = () => {
-      const frameWidth = frameElement.clientWidth || A4_WIDTH_PX;
+      // A detail transition can temporarily unmount the preview. Measuring the
+      // detached frame as A4 width would persist an artificial 48px shrink on
+      // the replacement node, so wait for the mounted frame's real width.
+      if (!frameElement.isConnected || frameElement.clientWidth <= 0) {
+        return;
+      }
+
+      const frameWidth = frameElement.clientWidth;
       const availableWidth = Math.max(
         frameWidth - PREVIEW_FRAME_GUTTER_PX,
         frameWidth * 0.88,
@@ -1712,6 +1775,7 @@ export function ResumeBuilder({
       );
     };
   }, [
+    hasRenderableDocumentDetail,
     isAgentPanelCollapsed,
     isLoading,
     isResumeDetailView,
@@ -1824,6 +1888,32 @@ export function ResumeBuilder({
   const buildActiveResumeItemRef = useRef(buildActiveResumeItem);
   buildActiveResumeItemRef.current = buildActiveResumeItem;
 
+  const hasUnsavedCurrentWorkspaceChanges = useCallback(() => {
+    const route = currentRouteRef.current;
+
+    if (route.kind === "resume-detail") {
+      const stableActiveResume = buildActiveResumeItemRef.current(
+        lastSavedAtRef.current ?? "",
+      );
+
+      return Boolean(
+        stableActiveResume &&
+          createResumeFingerprint(stableActiveResume) !==
+            lastPersistedResumeRef.current,
+      );
+    }
+
+    const latestTemplate = activeTemplateDefinitionRef.current;
+    if (route.kind === "template-detail" && !latestTemplate.isBuiltIn) {
+      return (
+        createTemplateFingerprint(latestTemplate) !==
+        lastPersistedTemplateRef.current
+      );
+    }
+
+    return false;
+  }, []);
+
   const unsavedWorkspaceChangeCount = useMemo(() => {
     if (isResumeDetailView) {
       return countResumeChanges(
@@ -1934,6 +2024,7 @@ export function ResumeBuilder({
           const savedTemplate = await saveTemplateApi(
             templateToSave.id,
             templateToSave,
+            options,
           );
           const savedTemplateFingerprint = createTemplateFingerprint(
             savedTemplate.template,
@@ -2102,6 +2193,13 @@ export function ResumeBuilder({
   }, [canSaveCurrentWorkspace, isLoading, saveCurrentWorkspace]);
 
   useEffect(() => {
+    autosaveGenerationRef.current += 1;
+    autosaveBurstStartedAtRef.current = null;
+    autosaveRetryAttemptRef.current = 0;
+    toast.dismiss("autosave-failed");
+  }, [autosaveTargetKey]);
+
+  useEffect(() => {
     if (isLoading || !canSaveCurrentWorkspace) {
       return;
     }
@@ -2118,32 +2216,100 @@ export function ResumeBuilder({
       : lastPersistedResumeRef.current;
 
     if (!activeFingerprint || activeFingerprint === persistedFingerprint) {
+      autosaveBurstStartedAtRef.current = null;
+      autosaveRetryAttemptRef.current = 0;
+      toast.dismiss("autosave-failed");
       return;
     }
 
+    const now = Date.now();
+    const burstStartedAt = autosaveBurstStartedAtRef.current ?? now;
+    autosaveBurstStartedAtRef.current = burstStartedAt;
     const autosaveGeneration = autosaveGenerationRef.current;
-    const timer = window.setTimeout(() => {
-      if (autosaveGeneration !== autosaveGenerationRef.current) {
+    const maxWaitRemaining = Math.max(
+      0,
+      AUTOSAVE_MAX_WAIT_MS - (now - burstStartedAt),
+    );
+    let timer: number | null = null;
+    let cancelled = false;
+
+    const scheduleAutosave = (delay: number): void => {
+      timer = window.setTimeout(() => {
+        void runAutosave();
+      }, delay);
+    };
+
+    const runAutosave = async (): Promise<void> => {
+      if (
+        cancelled ||
+        autosaveGeneration !== autosaveGenerationRef.current ||
+        !hasUnsavedCurrentWorkspaceChanges()
+      ) {
         return;
       }
 
-      void saveCurrentWorkspace("autosave").catch((error) => {
-        console.error("Failed to autosave workspace.", error);
-      });
-    }, AUTOSAVE_DELAY_MS);
+      try {
+        await saveCurrentWorkspace("autosave", { notifyOnError: false });
+
+        if (
+          cancelled ||
+          autosaveGeneration !== autosaveGenerationRef.current
+        ) {
+          return;
+        }
+
+        autosaveBurstStartedAtRef.current = null;
+        autosaveRetryAttemptRef.current = 0;
+        toast.dismiss("autosave-failed");
+      } catch (error) {
+        if (
+          cancelled ||
+          autosaveGeneration !== autosaveGenerationRef.current ||
+          !hasUnsavedCurrentWorkspaceChanges()
+        ) {
+          return;
+        }
+
+        const retryDelay =
+          AUTOSAVE_RETRY_DELAYS_MS[autosaveRetryAttemptRef.current];
+
+        if (typeof retryDelay === "number") {
+          autosaveRetryAttemptRef.current += 1;
+          scheduleAutosave(retryDelay);
+          return;
+        }
+
+        console.warn("Failed to autosave workspace after retries.", error);
+        // Stop this retry cycle. A later user edit starts a fresh idle/maxWait
+        // window instead of inheriting an exhausted retry budget.
+        autosaveBurstStartedAtRef.current = null;
+        autosaveRetryAttemptRef.current = 0;
+        toast.error(t.loadError, {
+          closeButton: true,
+          id: "autosave-failed",
+        });
+      }
+    };
+
+    scheduleAutosave(Math.min(AUTOSAVE_DELAY_MS, maxWaitRemaining));
 
     return () => {
-      window.clearTimeout(timer);
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
   }, [
     activeTemplateDefinition,
     activeView,
     buildActiveResumeItem,
     canSaveCurrentWorkspace,
+    hasUnsavedCurrentWorkspaceChanges,
     isLoading,
     lastSavedAt,
     saveCurrentWorkspace,
     showTemplateGallery,
+    t.loadError,
   ]);
 
   useEffect(() => {
@@ -2227,32 +2393,6 @@ export function ResumeBuilder({
     setTemplateSettings(null);
   }, []);
 
-  const hasUnsavedCurrentWorkspaceChanges = useCallback(() => {
-    const route = currentRouteRef.current;
-
-    if (route.kind === "resume-detail") {
-      const stableActiveResume = buildActiveResumeItemRef.current(
-        lastSavedAtRef.current ?? "",
-      );
-
-      return Boolean(
-        stableActiveResume &&
-          createResumeFingerprint(stableActiveResume) !==
-            lastPersistedResumeRef.current,
-      );
-    }
-
-    const latestTemplate = activeTemplateDefinitionRef.current;
-    if (route.kind === "template-detail" && !latestTemplate.isBuiltIn) {
-      return (
-        createTemplateFingerprint(latestTemplate) !==
-        lastPersistedTemplateRef.current
-      );
-    }
-
-    return false;
-  }, []);
-
   const restorePersistedActiveResume = useCallback(() => {
     const persistedResume = lastPersistedResumeItemRef.current;
 
@@ -2322,6 +2462,14 @@ export function ResumeBuilder({
                 "Failed to checkpoint autosaved workspace before leaving.",
                 error,
               );
+              // The checkpoint can fail after the user has already made a
+              // newer edit. That edit was not part of the failed request and
+              // must go through the normal save/discard confirmation flow.
+              if (hasUnsavedCurrentWorkspaceChanges()) {
+                setPendingWorkspaceLeaveAction({ run, cancel });
+                return;
+              }
+
               // Autosave already persisted the current editor state. A failed
               // history promotion must not trap the user on this route.
               skipCheckpointPromotionOnLeaveRef.current = true;
@@ -2410,6 +2558,7 @@ export function ResumeBuilder({
       setIsLoading(true);
       setHasLoadError(false);
       setHasWorkspaceLoadError(false);
+      toast.dismiss("workspace-load-error");
 
       if (route.kind === "unknown") {
         setIsLoading(false);
@@ -2662,7 +2811,7 @@ export function ResumeBuilder({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadWorkspace]);
+  }, [loadWorkspace, workspaceLoadRetryKey]);
 
   useEffect(() => {
     switch (currentRoute.kind) {
@@ -3170,29 +3319,41 @@ export function ResumeBuilder({
 
     try {
       await saveCurrentWorkspace();
+
+      // The editor stays interactive while the save request is in flight. If
+      // the user changed anything after that request captured its snapshot,
+      // creating a copy now would duplicate stale content.
+      if (hasUnsavedCurrentWorkspaceChanges()) {
+        toast.warning(t.duplicateResumeChangedDuringSave, {
+          closeButton: true,
+        });
+        return;
+      }
+
       const result = await duplicateResumeApi(sourceResumeId, locale);
       const nextItem = result.resume;
 
       setResumeDocuments((current) => [...current, nextItem]);
-      setActiveResumeId(nextItem.id);
-      hydrateResumeWorkspace(nextItem);
-      lastPersistedResumeRef.current = createResumeFingerprint(nextItem);
-      lastPersistedResumeItemRef.current = nextItem;
-      lastResumeSaveModeRef.current = "checkpoint";
-      skipCheckpointPromotionOnLeaveRef.current = false;
-      lastLoadedResumeDetailIdRef.current = nextItem.id;
-      setLastSavedAt(result.savedAt);
-      setActiveWorkspaceVersionId(result.versionId);
-      setWorkspaceVersions([
-        { versionId: result.versionId, savedAt: result.savedAt },
-      ]);
-      setSaveState("saved");
-      runViewTransition(
-        () => navigate(getResumePath(nextItem.id)),
-        "nav-forward",
-      );
       toast.success(t.resumeDuplicated, {
         closeButton: true,
+        duration: 6000,
+        icon: null,
+        description: nextItem.title,
+        classNames: {
+          content: "min-w-0! flex-1!",
+          description: "truncate! opacity-75!",
+          actionButton:
+            "h-8! rounded-md! border! border-current/20! bg-transparent! px-2.5! text-current! shadow-none! transition-colors! duration-200! hover:border-current/35! hover:bg-current/10! focus-visible:ring-2! focus-visible:ring-current! focus-visible:ring-offset-1!",
+        },
+        action: {
+          label: t.viewDuplicateResume,
+          onClick: () => {
+            runViewTransition(
+              () => navigate(getResumePath(nextItem.id)),
+              "nav-forward",
+            );
+          },
+        },
       });
     } catch (error) {
       console.error("Failed to duplicate resume.", error);
@@ -4002,6 +4163,13 @@ export function ResumeBuilder({
     );
   }
 
+  function restoreActiveResumeTemplateDefaults() {
+    setTypography({ ...activeTemplateDefinition.typography });
+    // Clear the resume-level override so the selected template becomes the
+    // single source of truth for spacing, sizing, and color defaults again.
+    setTemplateSettings(null);
+  }
+
   function updateActiveResumeTemplateSettings(
     patch: Partial<ResumeTemplateSettings>,
   ) {
@@ -4519,9 +4687,21 @@ export function ResumeBuilder({
     return (
       <main className="flex flex-1 p-4">
         <Card
-          aria-hidden="true"
-          className="min-h-80 flex-1 rounded-3xl border-border/80 shadow-sm"
-        />
+          className="flex min-h-80 flex-1 items-center justify-center rounded-3xl border-border/80 shadow-sm"
+        >
+          <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t.contentNotLoaded}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setWorkspaceLoadRetryKey((current) => current + 1)}
+            >
+              {t.retry}
+            </Button>
+          </CardContent>
+        </Card>
       </main>
     );
   }
@@ -4884,12 +5064,9 @@ export function ResumeBuilder({
             <Input
               id="resume-title-input"
               value={resumeTitleDraft}
-              maxLength={MAX_RESUME_TITLE_LENGTH}
               autoFocus
               onChange={(event) =>
-                setResumeTitleDraft(
-                  normalizeResumeTitle(event.target.value, ""),
-                )
+                setResumeTitleDraft(truncateResumeTitle(event.target.value))
               }
             />
             <p className="text-right text-xs text-muted-foreground">
@@ -5139,30 +5316,65 @@ export function ResumeBuilder({
                       <span className="text-sm font-medium text-foreground">
                         {t.template}
                       </span>
-                      <Select
-                        value={template}
-                        onValueChange={applyTemplateToActiveResume}
-                      >
-                        <SelectTrigger
-                          aria-label={t.applyTemplate}
-                          className="h-8 min-w-[112px] max-w-[148px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                      <div className="flex min-w-0 items-center gap-1">
+                        <TooltipProvider delayDuration={180}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex"
+                                tabIndex={
+                                  hasTemplateStyleOverrides ? undefined : 0
+                                }
+                                aria-label={
+                                  hasTemplateStyleOverrides
+                                    ? undefined
+                                    : t.templateDefaultsActive
+                                }
+                              >
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label={t.restoreTemplateDefaults}
+                                  disabled={!hasTemplateStyleOverrides}
+                                  onClick={restoreActiveResumeTemplateDefaults}
+                                >
+                                  <RotateCcw data-icon="inline-start" />
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              {hasTemplateStyleOverrides
+                                ? t.restoreTemplateDefaults
+                                : t.templateDefaultsActive}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <Select
+                          value={template}
+                          onValueChange={applyTemplateToActiveResume}
                         >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent
-                          align="end"
-                          position="popper"
-                          sideOffset={6}
-                        >
-                          <SelectGroup>
-                            {templateCatalog.map((item) => (
-                              <SelectItem key={item.id} value={item.id}>
-                                {item.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
+                          <SelectTrigger
+                            aria-label={t.applyTemplate}
+                            className="h-8 min-w-[104px] max-w-[132px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent
+                            align="end"
+                            position="popper"
+                            sideOffset={6}
+                          >
+                            <SelectGroup>
+                              {templateCatalog.map((item) => (
+                                <SelectItem key={item.id} value={item.id}>
+                                  {item.name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
 
                     <Separator />
@@ -5183,18 +5395,20 @@ export function ResumeBuilder({
                         >
                           <SelectTrigger
                             aria-label={t.fontFamily}
-                            className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                            className="h-8 w-[128px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
                           >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {Object.entries(fontLabels).map(
-                              ([value, labelKey]) => (
-                                <SelectItem key={value} value={value}>
-                                  {t[labelKey]}
-                                </SelectItem>
-                              ),
-                            )}
+                            <SelectGroup>
+                              {Object.entries(fontLabels).map(
+                                ([value, labelKey]) => (
+                                  <SelectItem key={value} value={value}>
+                                    {t[labelKey]}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectGroup>
                           </SelectContent>
                         </Select>
                       </div>
@@ -5250,6 +5464,11 @@ export function ResumeBuilder({
                       min={1.4}
                       max={2.2}
                       step={0.05}
+                      suffix="pt"
+                      displayMultiplier={getResumeFontSizeInPoints(
+                        typography.fontSize,
+                      )}
+                      displayPrecision={1}
                       onChange={(value) =>
                         updateActiveResumeTemplateSettings({
                           bodyLineHeight: value,
@@ -5350,46 +5569,50 @@ export function ResumeBuilder({
             ) : null}
 
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Select
-                value={locale}
-                onValueChange={(value) => {
-                  if (value === "zh" || value === "en") {
-                    onLocaleChange(value);
-                  }
-                }}
-              >
-                <SelectTrigger
-                  className="w-28 bg-background font-medium transition-all hover:bg-accent hover:text-accent-foreground"
-                  aria-label={t.language}
-                >
-                  <Languages className="text-foreground" aria-hidden="true" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end" position="popper" sideOffset={4}>
-                  <SelectGroup>
-                    <SelectItem value="zh">{t.languageChinese}</SelectItem>
-                    <SelectItem value="en">{t.languageEnglish}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                title={t.themeToggleLabel}
-                aria-label={t.themeToggleLabel}
-                onClick={() =>
-                  handleSettingsThemeChange(
-                    resolvedTheme === "dark" ? "light" : "dark",
-                  )
-                }
-              >
-                {resolvedTheme === "dark" ? (
-                  <Sun className="size-4" />
-                ) : (
-                  <Moon className="size-4" />
-                )}
-              </Button>
+              {currentRoute.kind !== "settings" ? (
+                <>
+                  <Select
+                    value={locale}
+                    onValueChange={(value) => {
+                      if (value === "zh" || value === "en") {
+                        onLocaleChange(value);
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      className="w-28 bg-background font-medium transition-all hover:bg-accent hover:text-accent-foreground"
+                      aria-label={t.language}
+                    >
+                      <Languages className="text-foreground" aria-hidden="true" />
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end" position="popper" sideOffset={4}>
+                      <SelectGroup>
+                        <SelectItem value="zh">{t.languageChinese}</SelectItem>
+                        <SelectItem value="en">{t.languageEnglish}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    title={t.themeToggleLabel}
+                    aria-label={t.themeToggleLabel}
+                    onClick={() =>
+                      handleSettingsThemeChange(
+                        resolvedTheme === "dark" ? "light" : "dark",
+                      )
+                    }
+                  >
+                    {resolvedTheme === "dark" ? (
+                      <Sun className="size-4" />
+                    ) : (
+                      <Moon className="size-4" />
+                    )}
+                  </Button>
+                </>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"

@@ -9,7 +9,7 @@ export type SectionKind = (typeof SECTION_KINDS)[number]
 export type SectionLayout = 'timeline' | 'list'
 export type ResumeTimelineItemLayout = 'split' | 'stacked' | 'compact'
 export type ResumeListItemLayout = 'list' | 'inline' | 'columns'
-export type ResumeFontFamily = 'inter' | 'serif' | 'plex'
+export type ResumeFontFamily = 'inter' | 'noto_sans_sc' | 'serif' | 'plex'
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type BuiltinResumeTemplateId =
   | 'minimal'

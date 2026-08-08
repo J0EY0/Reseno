@@ -40,6 +40,10 @@ assert.equal(
   en.apiMessages.REQUEST_FAILED,
   "English request failures must use the canonical request failure message.",
 );
+assert.equal(zh.retry, "重试", "Chinese workspace errors need a retry action.");
+assert.equal(en.retry, "Retry", "English workspace errors need a retry action.");
+assert.equal(zh.contentNotLoaded, "当前内容未加载");
+assert.equal(en.contentNotLoaded, "Content isn't loaded");
 assert.doesNotMatch(
   zh.loadError,
   /回退|空白简历/,
@@ -108,6 +112,11 @@ assert.match(
   "Route initialization failures must reuse one stable Toast id.",
 );
 assert.match(
+  loaderSource,
+  /toast\.dismiss\("workspace-load-error"\)/,
+  "Retrying a workspace load must dismiss the stale error Toast.",
+);
+assert.match(
   loaderCatchSource,
   /setHasWorkspaceLoadError\(true\)/,
   "Workspace request failures must enter the route error state.",
@@ -148,18 +157,28 @@ const routeErrorRendererSource = builderSource.slice(
 
 assert.doesNotMatch(
   routeErrorRendererSource,
-  /t\.(?:apiMessages\.REQUEST_FAILED|loadError)/,
-  "The blocked route surface must not duplicate the global request failure Toast.",
+  /t\.loadError/,
+  "The blocked route surface must not duplicate the request failure Toast.",
 );
 assert.doesNotMatch(
   routeErrorRendererSource,
   /role=["']alert["']/,
-  "The blocked route surface must not announce a second request failure alert.",
+  "The recovery surface is not a second error alert.",
 );
 assert.match(
   routeErrorRendererSource,
-  /aria-hidden=["']true["']/,
-  "The empty blocked route surface must stay hidden from assistive technology.",
+  /t\.contentNotLoaded/,
+  "The blocked route surface must describe its neutral recovery state.",
+);
+assert.match(
+  routeErrorRendererSource,
+  /setWorkspaceLoadRetryKey[\s\S]*t\.retry/,
+  "The blocked route surface must provide an explicit retry action.",
+);
+assert.match(
+  builderSource,
+  /\[loadWorkspace, workspaceLoadRetryKey\]/,
+  "Retrying must reuse the abortable workspace loading effect.",
 );
 
 assert.match(

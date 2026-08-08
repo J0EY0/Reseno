@@ -10,6 +10,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
 import {
   AlertDialog,
@@ -25,6 +26,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { AppMessages } from '@/i18n'
+import { createId } from '@/lib/resume-id'
 import type { ResumeSectionMutation } from '@/lib/resume-sections'
 import type { ResumeSection, SectionKind } from '@/types/resume'
 
@@ -68,10 +70,31 @@ export function ResumeSectionCard({
   canMoveUp,
   canMoveDown,
 }: ResumeSectionCardProps) {
+  const [initiallyOpenItemId, setInitiallyOpenItemId] = useState<string | null>(
+    null,
+  )
   const Icon = sectionIcons[section.kind]
   const sectionTitle = section.title.trim() || t.sectionTitles[section.kind]
   const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
   const itemCountLabel = `${section.items.length} ${itemLabel}`
+
+  useEffect(() => {
+    if (
+      initiallyOpenItemId &&
+      section.items.some((item) => item.id === initiallyOpenItemId)
+    ) {
+      // The id only seeds the new child's initial state; clearing it prevents
+      // that entry from reopening whenever the whole section remounts.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setInitiallyOpenItemId(null)
+    }
+  }, [initiallyOpenItemId, section.items])
+
+  function addItem() {
+    const itemId = createId('item')
+    setInitiallyOpenItemId(itemId)
+    onMutation({ type: 'item.add', sectionId: section.id, itemId })
+  }
 
   return (
     <EditorCardShell
@@ -157,9 +180,7 @@ export function ResumeSectionCard({
             type="button"
             variant="outline"
             className="self-start"
-            onClick={() =>
-              onMutation({ type: 'item.add', sectionId: section.id })
-            }
+            onClick={addItem}
           >
             <Plus aria-hidden="true" data-icon="inline-start" />
             {t.addItem}
@@ -171,6 +192,7 @@ export function ResumeSectionCard({
         <ResumeSectionItemsEditor
           t={t}
           section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
           onMutation={onMutation}
         />
       </div>

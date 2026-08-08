@@ -172,10 +172,12 @@ export function createTemplateApi(template: ResumeTemplateDefinition) {
 export function saveTemplateApi(
   templateId: string,
   template: ResumeTemplateDefinition,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
   return requestApi<TemplateDetailResponse>(apiRoutes.template(templateId), {
     body: { template },
     method: "PUT",
+    ...options,
   });
 }
 

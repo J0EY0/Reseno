@@ -1,5 +1,6 @@
-import { ChevronDown, Trash2 } from 'lucide-react'
-import { Suspense, lazy, useState, type ReactNode } from 'react'
+import { ArrowDown, ArrowUp, ChevronDown, Trash2 } from 'lucide-react'
+import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -14,7 +15,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import type { AppMessages } from '@/i18n'
 import { isRichTextEmpty } from '@/lib/rich-text'
-import type { ResumeSectionMutation } from '@/lib/resume-sections'
+import {
+  parseCommaSeparatedItems,
+  type ResumeSectionMutation,
+} from '@/lib/resume-sections'
 import { cn } from '@/lib/utils'
 import type {
   AchievementItem,
@@ -45,14 +49,17 @@ type ItemUpdateMutation = Extract<
 type SectionItemsEditorProps = {
   t: AppMessages
   section: ResumeSection
+  initiallyOpenItemId?: string | null
   onMutation: (mutation: ResumeSectionMutation) => void
 }
 
 type TypedSectionEditorProps<K extends ResumeSection['kind']> = {
   t: AppMessages
   section: ResumeSectionOf<K>
+  initiallyOpenItemId?: string | null
   onUpdateItem: (mutation: ItemUpdateMutation) => void
   onRemoveItem: (itemId: string) => void
+  onMoveItem: (itemId: string, direction: 'up' | 'down') => void
 }
 
 function RichHighlightsEditorSkeleton() {
@@ -71,19 +78,46 @@ function RichHighlightsEditorSkeleton() {
 function ItemEditorShell({
   index,
   itemLabel,
+  initiallyOpen = false,
+  canMoveUp,
+  canMoveDown,
   removeLabel,
+  moveUpLabel,
+  moveDownLabel,
   toggleLabel,
   onRemove,
+  onMoveUp,
+  onMoveDown,
   children,
 }: {
   index: number
   itemLabel: string
+  initiallyOpen?: boolean
+  canMoveUp: boolean
+  canMoveDown: boolean
   removeLabel: string
+  moveUpLabel: string
+  moveDownLabel: string
   toggleLabel: string
   onRemove: () => void
+  onMoveUp: () => void
+  onMoveDown: () => void
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initiallyOpen)
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!initiallyOpen) {
+      return
+    }
+
+    contentRef.current
+      ?.querySelector<HTMLElement>(
+        'input:not([type="hidden"]):not(:disabled), textarea:not(:disabled), [contenteditable="true"]',
+      )
+      ?.focus()
+  }, [initiallyOpen])
 
   return (
     <>
@@ -95,10 +129,30 @@ function ItemEditorShell({
           className="-mx-2 rounded-md bg-muted/35"
         >
           <div className="flex min-h-10 items-center justify-between gap-3 px-2">
-            <h4 className="text-sm font-medium text-foreground/80">
+            <h4 className="shrink-0 text-sm font-medium text-foreground/80">
               {itemLabel} {index + 1}
             </h4>
             <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                disabled={!canMoveUp}
+                aria-label={`${moveUpLabel} ${index + 1}`}
+                onClick={onMoveUp}
+              >
+                <ArrowUp aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                disabled={!canMoveDown}
+                aria-label={`${moveDownLabel} ${index + 1}`}
+                onClick={onMoveDown}
+              >
+                <ArrowDown aria-hidden="true" />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -127,7 +181,10 @@ function ItemEditorShell({
             </div>
           </div>
           <CollapsibleContent className="collapsible-content">
-            <div className="collapsible-content-inner grid gap-3 px-2 pb-2 pt-3">
+            <div
+              ref={contentRef}
+              className="collapsible-content-inner grid gap-3 px-2 pb-2 pt-3"
+            >
               {children}
             </div>
           </CollapsibleContent>
@@ -207,25 +264,52 @@ function CommaSeparatedInput({
   onChange: (value: string[]) => void
 }) {
   const serializedValue = value.join(', ')
+  const [inputState, setInputState] = useState(() => ({
+    draft: serializedValue,
+    publishedValue: serializedValue,
+  }))
+  const displayedValue =
+    inputState.publishedValue === serializedValue
+      ? inputState.draft
+      : serializedValue
 
-  function commitValue(input: HTMLInputElement) {
-    const nextValue = input.value
-      .split(/[,，]/)
-      .map((item) => item.trim())
-      .filter(Boolean)
-
-    input.value = nextValue.join(', ')
+  function publishValue(nextDraft: string) {
+    const nextValue = parseCommaSeparatedItems(nextDraft)
+    setInputState({
+      draft: nextDraft,
+      publishedValue: nextValue.join(', '),
+    })
     onChange(nextValue)
   }
 
   return (
     <Input
       id={id}
-      key={serializedValue}
-      defaultValue={serializedValue}
+      value={displayedValue}
       className={compactFieldClassName}
       placeholder={placeholder}
-      onBlur={(event) => commitValue(event.currentTarget)}
+      onFocus={() => {
+        // Adopt an Agent/version update as the next local draft while keeping
+        // our own canonical publishes from disturbing the caret while typing.
+        if (serializedValue !== inputState.publishedValue) {
+          setInputState({
+            draft: serializedValue,
+            publishedValue: serializedValue,
+          })
+        }
+      }}
+      onChange={(event) => {
+        publishValue(event.target.value)
+      }}
+      onBlur={(event) => {
+        const normalizedValue = parseCommaSeparatedItems(event.currentTarget.value)
+        const normalizedDraft = normalizedValue.join(', ')
+        setInputState({
+          draft: normalizedDraft,
+          publishedValue: normalizedDraft,
+        })
+        onChange(normalizedValue)
+      }}
     />
   )
 }
@@ -233,8 +317,10 @@ function CommaSeparatedInput({
 function EducationSectionEditor({
   t,
   section,
+  initiallyOpenItemId,
   onUpdateItem,
   onRemoveItem,
+  onMoveItem,
 }: TypedSectionEditorProps<'education'>) {
   function updateItem(
     item: EducationItem,
@@ -254,9 +340,16 @@ function EducationSectionEditor({
       key={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      initiallyOpen={item.id === initiallyOpenItemId}
+      canMoveUp={index > 0}
+      canMoveDown={index < section.items.length - 1}
       removeLabel={t.removeItem}
+      moveUpLabel={t.moveItemUp}
+      moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
+      onMoveUp={() => onMoveItem(item.id, 'up')}
+      onMoveDown={() => onMoveItem(item.id, 'down')}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.school}>
@@ -329,8 +422,10 @@ function EducationSectionEditor({
 function ExperienceSectionEditor({
   t,
   section,
+  initiallyOpenItemId,
   onUpdateItem,
   onRemoveItem,
+  onMoveItem,
 }: TypedSectionEditorProps<'experience'>) {
   function updateItem(
     item: ExperienceItem,
@@ -350,9 +445,16 @@ function ExperienceSectionEditor({
       key={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      initiallyOpen={item.id === initiallyOpenItemId}
+      canMoveUp={index > 0}
+      canMoveDown={index < section.items.length - 1}
       removeLabel={t.removeItem}
+      moveUpLabel={t.moveItemUp}
+      moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
+      onMoveUp={() => onMoveItem(item.id, 'up')}
+      onMoveDown={() => onMoveItem(item.id, 'down')}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.company}>
@@ -409,8 +511,10 @@ function ExperienceSectionEditor({
 function ProjectSectionEditor({
   t,
   section,
+  initiallyOpenItemId,
   onUpdateItem,
   onRemoveItem,
+  onMoveItem,
 }: TypedSectionEditorProps<'project'>) {
   function updateItem(
     item: ProjectItem,
@@ -430,9 +534,16 @@ function ProjectSectionEditor({
       key={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      initiallyOpen={item.id === initiallyOpenItemId}
+      canMoveUp={index > 0}
+      canMoveDown={index < section.items.length - 1}
       removeLabel={t.removeItem}
+      moveUpLabel={t.moveItemUp}
+      moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
+      onMoveUp={() => onMoveItem(item.id, 'up')}
+      onMoveDown={() => onMoveItem(item.id, 'down')}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.projectName}>
@@ -498,8 +609,10 @@ function ProjectSectionEditor({
 function AchievementSectionEditor({
   t,
   section,
+  initiallyOpenItemId,
   onUpdateItem,
   onRemoveItem,
+  onMoveItem,
 }: TypedSectionEditorProps<'achievement'>) {
   function updateItem(
     item: AchievementItem,
@@ -519,9 +632,16 @@ function AchievementSectionEditor({
       key={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      initiallyOpen={item.id === initiallyOpenItemId}
+      canMoveUp={index > 0}
+      canMoveDown={index < section.items.length - 1}
       removeLabel={t.removeItem}
+      moveUpLabel={t.moveItemUp}
+      moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
+      onMoveUp={() => onMoveItem(item.id, 'up')}
+      onMoveDown={() => onMoveItem(item.id, 'down')}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.achievementName}>
@@ -576,7 +696,7 @@ function SimpleListSectionEditor({
   t,
   section,
   onUpdateItem,
-}: Omit<TypedSectionEditorProps<'simple_list'>, 'onRemoveItem'>) {
+}: Omit<TypedSectionEditorProps<'simple_list'>, 'onRemoveItem' | 'onMoveItem'>) {
   const item = section.items[0]
 
   function updateItem(
@@ -604,12 +724,70 @@ function SimpleListSectionEditor({
 export function ResumeSectionItemsEditor({
   t,
   section,
+  initiallyOpenItemId,
   onMutation,
 }: SectionItemsEditorProps) {
   const onRemoveItem = (itemId: string) => {
+    const itemIndex = section.items.findIndex((item) => item.id === itemId)
+    if (itemIndex < 0 || section.kind === 'simple_list') {
+      return
+    }
+
+    // Keep the discriminated item type paired with its section kind. A generic
+    // object here would widen `item` and weaken the restore mutation contract.
+    let restoreMutation: ResumeSectionMutation
+    switch (section.kind) {
+      case 'education':
+        restoreMutation = {
+          type: 'item.restore',
+          sectionId: section.id,
+          sectionKind: section.kind,
+          item: section.items[itemIndex],
+          index: itemIndex,
+        }
+        break
+      case 'experience':
+        restoreMutation = {
+          type: 'item.restore',
+          sectionId: section.id,
+          sectionKind: section.kind,
+          item: section.items[itemIndex],
+          index: itemIndex,
+        }
+        break
+      case 'project':
+        restoreMutation = {
+          type: 'item.restore',
+          sectionId: section.id,
+          sectionKind: section.kind,
+          item: section.items[itemIndex],
+          index: itemIndex,
+        }
+        break
+      case 'achievement':
+        restoreMutation = {
+          type: 'item.restore',
+          sectionId: section.id,
+          sectionKind: section.kind,
+          item: section.items[itemIndex],
+          index: itemIndex,
+        }
+        break
+    }
+
     onMutation({ type: 'item.remove', sectionId: section.id, itemId })
+    toast.info(t.itemDeleted, {
+      id: `item-removed-${itemId}`,
+      action: {
+        label: t.undoAction,
+        onClick: () => onMutation(restoreMutation),
+      },
+    })
   }
   const onUpdateItem = (mutation: ItemUpdateMutation) => onMutation(mutation)
+  const onMoveItem = (itemId: string, direction: 'up' | 'down') => {
+    onMutation({ type: 'item.move', sectionId: section.id, itemId, direction })
+  }
 
   switch (section.kind) {
     case 'education':
@@ -617,8 +795,10 @@ export function ResumeSectionItemsEditor({
         <EducationSectionEditor
           t={t}
           section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
+          onMoveItem={onMoveItem}
         />
       )
     case 'experience':
@@ -626,8 +806,10 @@ export function ResumeSectionItemsEditor({
         <ExperienceSectionEditor
           t={t}
           section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
+          onMoveItem={onMoveItem}
         />
       )
     case 'project':
@@ -635,8 +817,10 @@ export function ResumeSectionItemsEditor({
         <ProjectSectionEditor
           t={t}
           section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
+          onMoveItem={onMoveItem}
         />
       )
     case 'achievement':
@@ -644,8 +828,10 @@ export function ResumeSectionItemsEditor({
         <AchievementSectionEditor
           t={t}
           section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
+          onMoveItem={onMoveItem}
         />
       )
     case 'simple_list':

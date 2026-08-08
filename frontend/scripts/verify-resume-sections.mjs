@@ -16,13 +16,152 @@ try {
     createResumeSection,
     isCanonicalResumeData,
     isCanonicalResumeSection,
+    parseCommaSeparatedItems,
     projectResumeSection,
   } = await server.ssrLoadModule("/src/lib/resume-sections.ts");
+
+  assert.deepEqual(
+    parseCommaSeparatedItems("React, TypeScript， FastAPI, "),
+    ["React", "TypeScript", "FastAPI"],
+    "Comma-separated fields must publish canonical values while the user types.",
+  );
 
   const education = createResumeSection("education");
   education.id = "education-1";
   education.title = "Academic background";
   education.items[0].school = "Example University";
+  education.items[0].degree = "B.Sc.";
+  education.items[0].major = "Computer Science";
+
+  const addedEducationItem = applySectionMutation([education], {
+    type: "item.add",
+    sectionId: education.id,
+    itemId: "education-new",
+  });
+  assert.equal(addedEducationItem.status, "applied");
+  assert.equal(
+    addedEducationItem.sections[0].items.at(-1)?.id,
+    "education-new",
+    "An interactive add must retain its caller-generated id so only that item opens.",
+  );
+  const threeEducationItems = applySectionMutation(
+    addedEducationItem.sections,
+    {
+      type: "item.add",
+      sectionId: education.id,
+      itemId: "education-third",
+    },
+  );
+  const movedEducationItem = applySectionMutation(threeEducationItems.sections, {
+    type: "item.move",
+    sectionId: education.id,
+    itemId: "education-third",
+    direction: "up",
+  });
+  assert.equal(movedEducationItem.status, "applied");
+  assert.deepEqual(
+    movedEducationItem.sections[0].items.map((item) => item.id),
+    [education.items[0].id, "education-third", "education-new"],
+    "Entry ordering must be changed atomically within its section.",
+  );
+  const boundaryMove = applySectionMutation(movedEducationItem.sections, {
+    type: "item.move",
+    sectionId: education.id,
+    itemId: education.items[0].id,
+    direction: "up",
+  });
+  assert.equal(boundaryMove.status, "unchanged");
+  assert.equal(boundaryMove.sections, movedEducationItem.sections);
+
+  const duplicateAdd = applySectionMutation(movedEducationItem.sections, {
+    type: "item.add",
+    sectionId: education.id,
+    itemId: education.items[0].id,
+  });
+  assert.equal(duplicateAdd.status, "rejected");
+  assert.equal(duplicateAdd.code, "ITEM_ID_CONFLICT");
+
+  const restoredItem = movedEducationItem.sections[0].items[0];
+  const removedForAutosave = applySectionMutation(movedEducationItem.sections, {
+    type: "item.remove",
+    sectionId: education.id,
+    itemId: restoredItem.id,
+  });
+  const persistedDeletion = structuredClone(removedForAutosave.sections);
+  const restoredAfterAutosave = applySectionMutation(persistedDeletion, {
+    type: "item.restore",
+    sectionId: education.id,
+    sectionKind: "education",
+    item: restoredItem,
+    index: 0,
+  });
+  assert.equal(restoredAfterAutosave.status, "applied");
+  assert.deepEqual(
+    restoredAfterAutosave.sections[0].items.map((item) => item.id),
+    movedEducationItem.sections[0].items.map((item) => item.id),
+    "Undo must restore the original item and position after deletion was autosaved.",
+  );
+  assert.deepEqual(
+    restoredAfterAutosave.sections[0].items[0],
+    restoredItem,
+    "Undo must preserve every field from the deleted item snapshot.",
+  );
+
+  const duplicateRestore = applySectionMutation(
+    restoredAfterAutosave.sections,
+    {
+      type: "item.restore",
+      sectionId: education.id,
+      sectionKind: "education",
+      item: restoredItem,
+      index: 0,
+    },
+  );
+  assert.equal(duplicateRestore.status, "rejected");
+  assert.equal(duplicateRestore.code, "ITEM_ID_CONFLICT");
+
+  const wrongKindRestore = applySectionMutation(persistedDeletion, {
+    type: "item.restore",
+    sectionId: education.id,
+    sectionKind: "project",
+    item: {
+      id: "wrong-kind",
+      name: "Wrong kind",
+      role: "",
+      techStack: [],
+      period: "",
+      url: "",
+      description: "",
+      highlights: [],
+    },
+    index: 0,
+  });
+  assert.equal(wrongKindRestore.status, "rejected");
+  assert.equal(wrongKindRestore.code, "SECTION_KIND_MISMATCH");
+
+  const invalidRestore = applySectionMutation(persistedDeletion, {
+    type: "item.restore",
+    sectionId: education.id,
+    sectionKind: "education",
+    item: { id: "invalid-item" },
+    index: 0,
+  });
+  assert.equal(invalidRestore.status, "rejected");
+  assert.equal(invalidRestore.code, "INVALID_ITEM");
+
+  const clampedRestore = applySectionMutation(persistedDeletion, {
+    type: "item.restore",
+    sectionId: education.id,
+    sectionKind: "education",
+    item: { ...restoredItem, id: "clamped-item" },
+    index: Number.POSITIVE_INFINITY,
+  });
+  assert.equal(clampedRestore.status, "applied");
+  assert.equal(
+    clampedRestore.sections[0].items.at(-1)?.id,
+    "clamped-item",
+    "A non-finite or oversized restore index must clamp to the section end.",
+  );
 
   const educationSections = [education];
   const kindMismatch = applySectionMutation(educationSections, {
@@ -50,6 +189,19 @@ try {
       type: "item.remove",
       sectionId: simpleList.id,
       itemId: simpleList.items[0].id,
+    },
+    {
+      type: "item.move",
+      sectionId: simpleList.id,
+      itemId: simpleList.items[0].id,
+      direction: "up",
+    },
+    {
+      type: "item.restore",
+      sectionId: simpleList.id,
+      sectionKind: "simple_list",
+      item: simpleList.items[0],
+      index: 0,
     },
   ]) {
     const result = applySectionMutation([simpleList], mutation);

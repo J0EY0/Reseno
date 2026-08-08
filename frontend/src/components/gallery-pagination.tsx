@@ -1,5 +1,4 @@
 import type { AppMessages } from "@/i18n";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import {
@@ -8,6 +7,8 @@ import {
   PaginationEllipsis,
   PaginationItem,
   PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
 } from "@/components/ui/pagination";
 import { cn } from "@/lib/utils";
 import { runViewTransition } from "@/lib/view-transition";
@@ -88,14 +89,14 @@ export function GalleryPagination({
 
   return (
     <Pagination className="pt-4">
-      <PaginationContent className="rounded-full border border-border/70 bg-background/80 px-2 py-1 shadow-sm backdrop-blur">
+      <PaginationContent>
         <PaginationItem>
-          <PaginationLink
+          <PaginationPrevious
             href="#"
+            text={t.paginationPrevious}
             aria-label={t.paginationPrevious}
             aria-disabled={disabled || currentPage === 1}
             className={cn(
-              "h-8 gap-1 rounded-full px-2.5 text-xs",
               (disabled || currentPage === 1) &&
                 "pointer-events-none opacity-45",
             )}
@@ -103,27 +104,22 @@ export function GalleryPagination({
               event.preventDefault();
               goToPage(currentPage - 1);
             }}
-          >
-            <ChevronLeftIcon />
-            <span className="hidden sm:block">{t.paginationPrevious}</span>
-          </PaginationLink>
+          />
         </PaginationItem>
 
         {pageItems.map((item, index) =>
           item === "ellipsis" ? (
             <PaginationItem key={`ellipsis-${index}`}>
-              <PaginationEllipsis className="size-8" />
+              <PaginationEllipsis />
             </PaginationItem>
           ) : (
             <PaginationItem key={item}>
               <PaginationLink
                 href="#"
                 isActive={item === currentPage}
+                size="icon-sm"
                 aria-disabled={disabled}
-                className={cn(
-                  "size-8 rounded-full text-xs",
-                  disabled && "pointer-events-none opacity-45",
-                )}
+                className={cn(disabled && "pointer-events-none opacity-45")}
                 onClick={(event) => {
                   event.preventDefault();
                   goToPage(item);
@@ -136,12 +132,12 @@ export function GalleryPagination({
         )}
 
         <PaginationItem>
-          <PaginationLink
+          <PaginationNext
             href="#"
+            text={t.paginationNext}
             aria-label={t.paginationNext}
             aria-disabled={disabled || currentPage === totalPages}
             className={cn(
-              "h-8 gap-1 rounded-full px-2.5 text-xs",
               (disabled || currentPage === totalPages) &&
                 "pointer-events-none opacity-45",
             )}
@@ -149,10 +145,7 @@ export function GalleryPagination({
               event.preventDefault();
               goToPage(currentPage + 1);
             }}
-          >
-            <span className="hidden sm:block">{t.paginationNext}</span>
-            <ChevronRightIcon />
-          </PaginationLink>
+          />
         </PaginationItem>
       </PaginationContent>
     </Pagination>

@@ -96,6 +96,55 @@ const agentApi = await readFile(
   join(srcDir, "lib", "agent-api.ts"),
   "utf8",
 );
+const mainEntry = await readFile(join(srcDir, "main.tsx"), "utf8");
+const resumePreview = await readFile(
+  join(srcDir, "components", "preview", "resume-preview.tsx"),
+  "utf8",
+);
+const resumeBuilder = await readFile(
+  join(srcDir, "components", "resume-builder.tsx"),
+  "utf8",
+);
+const templateLibrary = await readFile(
+  join(srcDir, "components", "template-library.tsx"),
+  "utf8",
+);
+const templates = await readFile(join(srcDir, "lib", "templates.ts"), "utf8");
+const zhMessages = JSON.parse(
+  await readFile(join(srcDir, "i18n", "locales", "zh.json"), "utf8"),
+);
+const enMessages = JSON.parse(
+  await readFile(join(srcDir, "i18n", "locales", "en.json"), "utf8"),
+);
+
+assert(
+  mainEntry.includes("@fontsource-variable/noto-sans-sc/wght.css"),
+  "The Noto Sans SC webfont must be loaded by the application entrypoint.",
+);
+assert(
+  /ResumeFontFamily\s*=\s*[^\n]*'noto_sans_sc'/.test(resumeTypes),
+  "ResumeFontFamily must include the persisted Noto Sans SC value.",
+);
+assert(
+  /noto_sans_sc:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview) &&
+    /inter:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview) &&
+    /plex:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview),
+  "Noto Sans SC must render directly and provide deterministic Chinese fallbacks for Inter and IBM Plex.",
+);
+assert(
+  /noto_sans_sc:\s*"fontNotoSans"/.test(resumeBuilder) &&
+    /supportedFontFamilies[\s\S]*?"noto_sans_sc"/.test(resumeBuilder) &&
+    /supportedFontFamilies[\s\S]*?'noto_sans_sc'/.test(templates),
+  "Resume and template normalization must preserve Noto Sans SC.",
+);
+assert(
+  /<SelectItem value="noto_sans_sc">/.test(templateLibrary) &&
+    zhMessages.fontNotoSans === "思源黑体" &&
+    enMessages.fontNotoSans === "Noto Sans SC" &&
+    zhMessages.fontSerif === "思源宋体" &&
+    enMessages.fontSerif === "Noto Serif SC",
+  "Both font selectors must expose the localized Noto Sans SC option.",
+);
 
 assert(
   !/interface ModelConfig[\s\S]*apiKey:\s*string/.test(resumeTypes),

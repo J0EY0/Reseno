@@ -275,6 +275,8 @@ export function ResumeGallery({
             defaultTemplateId,
           );
           const isSelected = selectedIdSet.has(item.id);
+          const showCardDeleteAction =
+            isSelecting && isSelected && selectedResumeIds.length === 1;
           const resumeLabel =
             item.title || item.resume.basic.name || t.untitledResume;
 
@@ -384,7 +386,7 @@ export function ResumeGallery({
                     </div>
                   </div>
                 </Link>
-                {isSelecting && isSelected ? (
+                {showCardDeleteAction ? (
                   <Button
                     type="button"
                     variant="destructive"

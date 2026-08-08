@@ -1149,16 +1149,24 @@ def test_duplicate_resume_copies_content_without_history_or_agent_context(
         )
 
     first_response = client.post(f"/api/resumes/{source_id}/duplicate?locale=en")
-    second_response = client.post(f"/api/resumes/{source_id}/duplicate?locale=en")
-
     assert first_response.status_code == 200
-    assert second_response.status_code == 200
     first = first_response.json()["data"]
+    second_response = client.post(
+        f"/api/resumes/{first['resume']['id']}/duplicate?locale=en"
+    )
+    assert second_response.status_code == 200
     second = second_response.json()["data"]
+    third_response = client.post(
+        f"/api/resumes/{second['resume']['id']}/duplicate?locale=en"
+    )
+
+    assert third_response.status_code == 200
+    third = third_response.json()["data"]
     assert re.fullmatch(r"[A-Za-z0-9]{16}", first["resume"]["id"])
     assert first["resume"]["id"] not in {source_id, second["resume"]["id"]}
     assert first["resume"]["title"] == "Platform Resume - Copy"
-    assert second["resume"]["title"] == "Platform Resume - Copy 2"
+    assert second["resume"]["title"] == "Platform Resume - Copy(1)"
+    assert third["resume"]["title"] == "Platform Resume - Copy(2)"
     assert first["resume"]["resume"] == saved_source["resume"]
     assert first["resume"]["typography"] == saved_source["typography"]
     assert first["resume"]["template"] == saved_source["template"]
@@ -1194,16 +1202,107 @@ def test_duplicate_resume_title_keeps_copy_suffix_within_limit(
     ).json()["data"]["resume"]
 
     first = client.post(
-        f"/api/resumes/{source['id']}/duplicate?locale=en",
+        f"/api/resumes/{source['id']}/duplicate?locale=zh",
     ).json()["data"]["resume"]
     second = client.post(
-        f"/api/resumes/{source['id']}/duplicate?locale=en",
+        f"/api/resumes/{first['id']}/duplicate?locale=zh",
+    ).json()["data"]["resume"]
+    third = client.post(
+        f"/api/resumes/{second['id']}/duplicate?locale=zh",
     ).json()["data"]["resume"]
 
     assert len(first["title"]) == 50
-    assert first["title"].endswith(" - Copy")
+    assert first["title"].endswith(" - 副本")
     assert len(second["title"]) == 50
-    assert second["title"].endswith(" - Copy 2")
+    assert second["title"].endswith(" - 副本（1）")
+    assert len(third["title"]) == 50
+    assert third["title"].endswith(" - 副本（2）")
+
+
+def test_concurrent_duplicate_resume_requests_allocate_distinct_titles(
+    client: TestClient,
+) -> None:
+    source = client.post(
+        "/api/resumes",
+        json={"title": "Concurrent Resume"},
+    ).json()["data"]["resume"]
+    start_together = Barrier(2)
+
+    def duplicate_from(test_client: TestClient):
+        start_together.wait(timeout=2)
+        return test_client.post(f"/api/resumes/{source['id']}/duplicate?locale=en")
+
+    with TestClient(client.app) as second_client:
+        second_client.headers.update(client.headers)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = [
+                future.result()
+                for future in (
+                    executor.submit(duplicate_from, client),
+                    executor.submit(duplicate_from, second_client),
+                )
+            ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert sorted(
+        response.json()["data"]["resume"]["title"] for response in responses
+    ) == ["Concurrent Resume - Copy", "Concurrent Resume - Copy(1)"]
+
+
+def test_duplicate_resume_keeps_prefix_related_copy_families_separate(
+    client: TestClient,
+) -> None:
+    longer_source = client.post(
+        "/api/resumes",
+        json={"title": "Backend Engineer"},
+    ).json()["data"]["resume"]
+    longer_copy = client.post(
+        f"/api/resumes/{longer_source['id']}/duplicate?locale=en"
+    ).json()["data"]["resume"]
+    shorter_source = client.post(
+        "/api/resumes",
+        json={"title": "Backend"},
+    ).json()["data"]["resume"]
+    shorter_copy = client.post(
+        f"/api/resumes/{shorter_source['id']}/duplicate?locale=en"
+    ).json()["data"]["resume"]
+    shorter_copy_1 = client.post(
+        f"/api/resumes/{shorter_copy['id']}/duplicate?locale=en"
+    ).json()["data"]["resume"]
+    shorter_copy_2 = client.post(
+        f"/api/resumes/{shorter_copy_1['id']}/duplicate?locale=en"
+    ).json()["data"]["resume"]
+
+    assert longer_copy["title"] == "Backend Engineer - Copy"
+    assert shorter_copy_2["title"] == "Backend - Copy(2)"
+
+
+def test_duplicate_resume_skips_legacy_copy_title_punctuation(
+    client: TestClient,
+) -> None:
+    english_source = client.post(
+        "/api/resumes",
+        json={"title": "Legacy"},
+    ).json()["data"]["resume"]
+    for title in ("Legacy - Copy", "Legacy - Copy (1)", "Legacy - Copy 2"):
+        client.post("/api/resumes", json={"title": title})
+
+    chinese_source = client.post(
+        "/api/resumes",
+        json={"title": "旧标题"},
+    ).json()["data"]["resume"]
+    for title in ("旧标题 - 副本", "旧标题 - 副本(1)", "旧标题 - 副本 2"):
+        client.post("/api/resumes", json={"title": title})
+
+    english_copy = client.post(
+        f"/api/resumes/{english_source['id']}/duplicate?locale=en"
+    ).json()["data"]["resume"]
+    chinese_copy = client.post(
+        f"/api/resumes/{chinese_source['id']}/duplicate?locale=zh"
+    ).json()["data"]["resume"]
+
+    assert english_copy["title"] == "Legacy - Copy(3)"
+    assert chinese_copy["title"] == "旧标题 - 副本（3）"
 
 
 def test_empty_resume_trash_physically_deletes_resumes_and_agent_sessions(

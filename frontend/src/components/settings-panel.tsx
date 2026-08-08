@@ -1,10 +1,16 @@
 import {
-  Globe,
   Bot,
+  Gauge,
+  KeyRound,
+  Languages,
   Moon,
   Monitor,
+  Palette,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
   Sun,
-  KeyRound,
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -15,7 +21,6 @@ import {
   type PasswordUpdateFormErrors,
 } from "@/lib/auth-validation";
 import { updateAuthPassword } from "@/lib/auth";
-import { cn } from "@/lib/utils";
 import type {
   AgentBehaviorMode,
   AgentConfirmationMode,
@@ -32,6 +37,7 @@ import {
   Card,
   CardContent,
   CardHeader,
+  CardTitle,
 } from "@/components/ui/card";
 import {
   Dialog,
@@ -51,14 +57,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldGroup,
-  FieldSeparator,
-  FieldTitle,
-} from "@/components/ui/field";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ToggleGroup,
@@ -66,29 +65,72 @@ import {
 } from "@/components/ui/toggle-group";
 
 function SettingsRow({
+  icon,
   label,
   description,
   children,
 }: {
+  icon: ReactNode;
   label: string;
   description?: string;
   children: ReactNode;
 }) {
   return (
-    <Field
-      className={cn(
-        "min-h-16 gap-3 px-5 py-4 @2xl/field-group:grid @2xl/field-group:grid-cols-[minmax(0,1fr)_20rem] @2xl/field-group:items-center @2xl/field-group:gap-6",
-        description && "min-h-[76px]",
-      )}
+    <div
+      role="group"
+      aria-label={label}
+      className="grid min-h-20 gap-4 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center sm:gap-6 sm:px-6"
     >
-      <FieldContent className="gap-1">
-        <FieldTitle>{label}</FieldTitle>
-        {description ? (
-          <FieldDescription>{description}</FieldDescription>
-        ) : null}
-      </FieldContent>
-      <div className="w-full">{children}</div>
-    </Field>
+      <div className="flex min-w-0 items-start gap-3">
+        <span
+          className="mt-0.5 flex size-8 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-5"
+          aria-hidden="true"
+        >
+          {icon}
+        </span>
+        <div className="min-w-0 space-y-0.5">
+          <div className="text-sm font-medium text-foreground">{label}</div>
+          {description ? (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {description}
+            </p>
+          ) : null}
+        </div>
+      </div>
+      <div className="w-full sm:justify-self-end">{children}</div>
+    </div>
+  );
+}
+
+function SettingsSection({
+  icon,
+  title,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-xs">
+      <CardHeader className="px-5 py-4 sm:px-6 sm:py-5">
+        <CardTitle
+          role="heading"
+          aria-level={2}
+          className="flex items-center gap-2.5 text-base"
+        >
+          <span
+            className="flex size-7 items-center justify-center text-muted-foreground [&_svg]:size-[18px]"
+            aria-hidden="true"
+          >
+            {icon}
+          </span>
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <Separator />
+      <CardContent className="p-0">{children}</CardContent>
+    </Card>
   );
 }
 
@@ -119,7 +161,7 @@ function OptionToggleGroup<T extends string>({
           key={item.value}
           value={item.value}
           aria-label={item.label}
-          className="min-w-0 flex-auto shrink px-2"
+          className="min-w-0 flex-auto shrink px-2 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
         >
           {item.icon}
           <span className="min-w-0 truncate">{item.label}</span>
@@ -160,11 +202,6 @@ export function SettingsPanel({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isPasswordSubmitting, setIsPasswordSubmitting] = useState(false);
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
-  const languageItems: Array<{ value: Locale; label: string }> = [
-    { value: "zh", label: t.languageChinese },
-    { value: "en", label: t.languageEnglish },
-  ];
-
   const themeItems: Array<{
     value: ThemeMode;
     label: string;
@@ -268,7 +305,7 @@ export function SettingsPanel({
   }
 
   return (
-    <main className="flex flex-1 items-start p-4">
+    <main className="flex flex-1 items-start p-4 sm:p-6 lg:p-8">
       <Tabs
         value={activeTab}
         onValueChange={(value) => {
@@ -284,257 +321,293 @@ export function SettingsPanel({
             return next;
           });
         }}
-        className="w-full gap-0"
+        className="mx-auto w-full max-w-6xl gap-0"
       >
-        <Card className="w-full gap-0 overflow-hidden rounded-(--radius-workspace) border-border py-4 shadow-none">
-          <CardHeader className="mx-4 gap-0 border-b border-border/70 px-0 py-0 pb-0!">
-            <TabsList
-              variant="line"
-              className="w-full justify-start gap-6 p-0 group-data-[orientation=horizontal]/tabs:h-9"
+        <TabsList
+          aria-label={t.settings}
+          className="h-auto w-full justify-start gap-2 bg-transparent p-0"
+        >
+          <TabsTrigger
+            value="site"
+            className="h-10 flex-none rounded-lg border border-transparent px-4 data-[state=active]:border-border data-[state=active]:bg-accent data-[state=active]:shadow-none"
+          >
+            <Settings2 />
+            {t.siteSettingsTitle}
+          </TabsTrigger>
+          <TabsTrigger
+            value="agent"
+            className="h-10 flex-none rounded-lg border border-transparent px-4 data-[state=active]:border-border data-[state=active]:bg-accent data-[state=active]:shadow-none"
+          >
+            <Sparkles />
+            {t.agentSettingsTitle}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="site" className="mt-5 space-y-5">
+          <SettingsSection icon={<SlidersHorizontal />} title={t.generalSettingsTitle}>
+            <SettingsRow
+              icon={<Languages />}
+              label={t.language}
+              description={t.languageSettingsDescription}
             >
-              <TabsTrigger
-                value="site"
-                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]!"
+              <Select
+                value={locale}
+                onValueChange={(value) => {
+                  if (value === "zh" || value === "en") {
+                    onLocaleChange(value);
+                  }
+                }}
               >
-                <Globe />
-                {t.siteSettingsTitle}
-              </TabsTrigger>
-              <TabsTrigger
-                value="agent"
-                className="h-9 flex-none rounded-none border-transparent px-1 py-0 after:bottom-[-1px]!"
-              >
-                <Bot />
-                {t.agentSettingsTitle}
-              </TabsTrigger>
-            </TabsList>
-          </CardHeader>
-          <CardContent className="p-0">
-            <TabsContent value="site" className="m-0">
-              <FieldGroup className="gap-0">
-                <SettingsRow label={t.language}>
-                  <OptionToggleGroup
-                    items={languageItems}
-                    value={locale}
-                    onChange={onLocaleChange}
-                  />
-                </SettingsRow>
-                <FieldSeparator className="m-0 h-px" />
+                <SelectTrigger aria-label={t.language} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectGroup>
+                    <SelectItem value="zh">{t.languageChinese}</SelectItem>
+                    <SelectItem value="en">{t.languageEnglish}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+          </SettingsSection>
 
-                <SettingsRow label={t.theme}>
-                  <OptionToggleGroup
-                    items={themeItems}
-                    value={theme}
-                    onChange={onThemeChange}
-                  />
-                </SettingsRow>
-                <FieldSeparator className="m-0 h-px" />
+          <SettingsSection icon={<Palette />} title={t.appearanceSettingsTitle}>
+            <SettingsRow
+              icon={<Moon />}
+              label={t.theme}
+              description={t.themeSettingsDescription}
+            >
+              <OptionToggleGroup
+                items={themeItems}
+                value={theme}
+                onChange={onThemeChange}
+              />
+            </SettingsRow>
+          </SettingsSection>
 
-                <SettingsRow label={t.passwordSettingsTitle}>
-                  <div className="flex justify-end">
-                    <Dialog
-                      open={isPasswordDialogOpen}
-                      onOpenChange={handlePasswordDialogOpenChange}
+          <SettingsSection icon={<ShieldCheck />} title={t.accountSecuritySettingsTitle}>
+            <SettingsRow
+              icon={<KeyRound />}
+              label={t.passwordSettingsTitle}
+              description={t.passwordSettingsDescription}
+            >
+              <div className="flex justify-end">
+                <Dialog
+                  open={isPasswordDialogOpen}
+                  onOpenChange={handlePasswordDialogOpenChange}
+                >
+                  <DialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full sm:w-auto"
                     >
-                      <DialogTrigger asChild>
-                        <Button type="button" variant="outline">
-                          <KeyRound data-icon="inline-start" />
-                          {t.updatePassword}
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent
-                        showCloseButton
-                        closeLabel={t.close}
-                        aria-describedby={undefined}
-                        className="w-[min(420px,calc(100vw-2rem))]"
-                      >
-                        <form
-                          className="grid gap-4"
-                          onSubmit={handlePasswordSubmit}
-                        >
-                          <DialogHeader>
-                            <DialogTitle>{t.passwordSettingsTitle}</DialogTitle>
-                          </DialogHeader>
-                          <div className="grid gap-3">
-                            <PasswordField
-                              id="current-password"
-                              label={t.currentPassword}
-                              autoComplete="current-password"
-                              value={currentPassword}
-                              placeholder={t.currentPassword}
-                              error={passwordFormErrors.currentPassword}
-                              showPasswordLabel={t.loginShowPassword}
-                              hidePasswordLabel={t.loginHidePassword}
-                              onChange={(value) => {
-                                setCurrentPassword(value);
-                                setPasswordFormErrors((current) => ({
-                                  ...current,
-                                  currentPassword: undefined,
-                                }));
-                              }}
-                            />
-                            <PasswordField
-                              id="new-password"
-                              label={t.newPassword}
-                              autoComplete="new-password"
-                              value={newPassword}
-                              placeholder={t.newPassword}
-                              error={passwordFormErrors.newPassword}
-                              showPasswordLabel={t.loginShowPassword}
-                              hidePasswordLabel={t.loginHidePassword}
-                              onChange={(value) => {
-                                setNewPassword(value);
-                                setPasswordFormErrors((current) => ({
-                                  ...current,
-                                  newPassword: undefined,
-                                  confirmPassword: undefined,
-                                }));
-                              }}
-                            />
-                            <PasswordField
-                              id="confirm-password"
-                              label={t.confirmPassword}
-                              autoComplete="new-password"
-                              value={confirmPassword}
-                              placeholder={t.confirmPassword}
-                              error={passwordFormErrors.confirmPassword}
-                              showPasswordLabel={t.loginShowPassword}
-                              hidePasswordLabel={t.loginHidePassword}
-                              onChange={(value) => {
-                                setConfirmPassword(value);
-                                setPasswordFormErrors((current) => ({
-                                  ...current,
-                                  confirmPassword: undefined,
-                                }));
-                              }}
-                            />
-                            {passwordError ? (
-                              <p className="text-sm text-destructive">
-                                {passwordError}
-                              </p>
-                            ) : null}
-                          </div>
-                          <DialogFooter>
-                            <DialogClose asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                disabled={isPasswordSubmitting}
-                              >
-                                {t.cancel}
-                              </Button>
-                            </DialogClose>
-                            <Button
-                              type="submit"
-                              disabled={isPasswordSubmitting}
-                            >
-                              {isPasswordSubmitting ? (
-                                <Spinner
-                                  data-icon="inline-start"
-                                  aria-label={t.passwordUpdating}
-                                />
-                              ) : null}
-                              {isPasswordSubmitting
-                                ? t.passwordUpdating
-                                : t.updatePassword}
-                            </Button>
-                          </DialogFooter>
-                        </form>
-                      </DialogContent>
-                    </Dialog>
-                  </div>
-                </SettingsRow>
-              </FieldGroup>
-            </TabsContent>
-
-            <TabsContent value="agent" className="m-0">
-              <FieldGroup className="gap-0">
-                <SettingsRow
-                  label={t.defaultAgentModel}
-                  description={t.defaultAgentModelHint}
-                >
-                  <Select
-                    value={selectedDefaultModel?.id}
-                    disabled={modelConfigs.length === 0}
-                    onValueChange={(value) =>
-                      onAgentSettingsChange({
-                        ...agentSettings,
-                        defaultModelId: value,
-                      })
-                    }
+                      {t.updatePassword}
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent
+                    showCloseButton
+                    closeLabel={t.close}
+                    aria-describedby={undefined}
+                    className="w-[min(420px,calc(100vw-2rem))]"
                   >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder={t.agentModelNotConfigured}>
-                        {selectedDefaultModel
-                          ? renderModelOption(selectedDefaultModel)
-                          : t.agentModelNotConfigured}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent className="min-w-[20rem]">
-                      <SelectGroup>
-                        {modelConfigs.map((config) => (
-                          <SelectItem key={config.id} value={config.id}>
-                            {renderModelOption(config)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </SettingsRow>
-                <FieldSeparator className="m-0 h-px" />
+                    <form
+                      className="grid gap-4"
+                      onSubmit={handlePasswordSubmit}
+                    >
+                      <DialogHeader>
+                        <DialogTitle>{t.passwordSettingsTitle}</DialogTitle>
+                      </DialogHeader>
+                      <div className="grid gap-3">
+                        <PasswordField
+                          id="current-password"
+                          label={t.currentPassword}
+                          autoComplete="current-password"
+                          value={currentPassword}
+                          placeholder={t.currentPassword}
+                          error={passwordFormErrors.currentPassword}
+                          showPasswordLabel={t.loginShowPassword}
+                          hidePasswordLabel={t.loginHidePassword}
+                          onChange={(value) => {
+                            setCurrentPassword(value);
+                            setPasswordFormErrors((current) => ({
+                              ...current,
+                              currentPassword: undefined,
+                            }));
+                          }}
+                        />
+                        <PasswordField
+                          id="new-password"
+                          label={t.newPassword}
+                          autoComplete="new-password"
+                          value={newPassword}
+                          placeholder={t.newPassword}
+                          error={passwordFormErrors.newPassword}
+                          showPasswordLabel={t.loginShowPassword}
+                          hidePasswordLabel={t.loginHidePassword}
+                          onChange={(value) => {
+                            setNewPassword(value);
+                            setPasswordFormErrors((current) => ({
+                              ...current,
+                              newPassword: undefined,
+                              confirmPassword: undefined,
+                            }));
+                          }}
+                        />
+                        <PasswordField
+                          id="confirm-password"
+                          label={t.confirmPassword}
+                          autoComplete="new-password"
+                          value={confirmPassword}
+                          placeholder={t.confirmPassword}
+                          error={passwordFormErrors.confirmPassword}
+                          showPasswordLabel={t.loginShowPassword}
+                          hidePasswordLabel={t.loginHidePassword}
+                          onChange={(value) => {
+                            setConfirmPassword(value);
+                            setPasswordFormErrors((current) => ({
+                              ...current,
+                              confirmPassword: undefined,
+                            }));
+                          }}
+                        />
+                        {passwordError ? (
+                          <p className="text-sm text-destructive">
+                            {passwordError}
+                          </p>
+                        ) : null}
+                      </div>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={isPasswordSubmitting}
+                          >
+                            {t.cancel}
+                          </Button>
+                        </DialogClose>
+                        <Button
+                          type="submit"
+                          disabled={isPasswordSubmitting}
+                        >
+                          {isPasswordSubmitting ? (
+                            <Spinner
+                              data-icon="inline-start"
+                              aria-label={t.passwordUpdating}
+                            />
+                          ) : null}
+                          {isPasswordSubmitting
+                            ? t.passwordUpdating
+                            : t.updatePassword}
+                        </Button>
+                      </DialogFooter>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </SettingsRow>
+          </SettingsSection>
+        </TabsContent>
 
-                <SettingsRow
-                  label={t.agentResponseLanguage}
-                  description={t.agentResponseLanguageHint}
+        <TabsContent value="agent" className="mt-5 space-y-5">
+          <SettingsSection icon={<Bot />} title={t.agentModelSettingsTitle}>
+            <SettingsRow
+              icon={<Bot />}
+              label={t.defaultAgentModel}
+              description={t.defaultAgentModelHint}
+            >
+              <Select
+                value={selectedDefaultModel?.id}
+                disabled={modelConfigs.length === 0}
+                onValueChange={(value) =>
+                  onAgentSettingsChange({
+                    ...agentSettings,
+                    defaultModelId: value,
+                  })
+                }
+              >
+                <SelectTrigger
+                  aria-label={t.defaultAgentModel}
+                  className="w-full"
                 >
-                  <OptionToggleGroup
-                    items={responseLanguageItems}
-                    value={agentSettings.responseLanguage}
-                    onChange={(value) =>
-                      onAgentSettingsChange({
-                        ...agentSettings,
-                        responseLanguage: value,
-                      })
-                    }
-                  />
-                </SettingsRow>
-                <FieldSeparator className="m-0 h-px" />
+                  <SelectValue placeholder={t.agentModelNotConfigured}>
+                    {selectedDefaultModel
+                      ? renderModelOption(selectedDefaultModel)
+                      : t.agentModelNotConfigured}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="min-w-[20rem]">
+                  <SelectGroup>
+                    {modelConfigs.map((config) => (
+                      <SelectItem key={config.id} value={config.id}>
+                        {renderModelOption(config)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+          </SettingsSection>
 
-                <SettingsRow
-                  label={t.agentBehavior}
-                  description={t.agentBehaviorHint}
-                >
-                  <OptionToggleGroup
-                    items={behaviorItems}
-                    value={agentSettings.behaviorMode}
-                    onChange={(value) =>
-                      onAgentSettingsChange({
-                        ...agentSettings,
-                        behaviorMode: value,
-                      })
-                    }
-                  />
-                </SettingsRow>
-                <FieldSeparator className="m-0 h-px" />
+          <SettingsSection
+            icon={<SlidersHorizontal />}
+            title={t.agentInteractionSettingsTitle}
+          >
+            <SettingsRow
+              icon={<Languages />}
+              label={t.agentResponseLanguage}
+              description={t.agentResponseLanguageHint}
+            >
+              <OptionToggleGroup
+                items={responseLanguageItems}
+                value={agentSettings.responseLanguage}
+                onChange={(value) =>
+                  onAgentSettingsChange({
+                    ...agentSettings,
+                    responseLanguage: value,
+                  })
+                }
+              />
+            </SettingsRow>
+            <Separator className="mx-5 w-auto sm:mx-6" />
 
-                <SettingsRow
-                  label={t.agentConfirmationMode}
-                  description={t.agentConfirmationModeHint}
-                >
-                  <OptionToggleGroup
-                    items={confirmationItems}
-                    value={agentSettings.confirmationMode}
-                    onChange={(value) =>
-                      onAgentSettingsChange({
-                        ...agentSettings,
-                        confirmationMode: value,
-                      })
-                    }
-                  />
-                </SettingsRow>
-              </FieldGroup>
-            </TabsContent>
-          </CardContent>
-        </Card>
+            <SettingsRow
+              icon={<Gauge />}
+              label={t.agentBehavior}
+              description={t.agentBehaviorHint}
+            >
+              <OptionToggleGroup
+                items={behaviorItems}
+                value={agentSettings.behaviorMode}
+                onChange={(value) =>
+                  onAgentSettingsChange({
+                    ...agentSettings,
+                    behaviorMode: value,
+                  })
+                }
+              />
+            </SettingsRow>
+            <Separator className="mx-5 w-auto sm:mx-6" />
+
+            <SettingsRow
+              icon={<ShieldCheck />}
+              label={t.agentConfirmationMode}
+              description={t.agentConfirmationModeHint}
+            >
+              <OptionToggleGroup
+                items={confirmationItems}
+                value={agentSettings.confirmationMode}
+                onChange={(value) =>
+                  onAgentSettingsChange({
+                    ...agentSettings,
+                    confirmationMode: value,
+                  })
+                }
+              />
+            </SettingsRow>
+          </SettingsSection>
+        </TabsContent>
       </Tabs>
     </main>
   );

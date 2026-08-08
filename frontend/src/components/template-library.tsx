@@ -66,6 +66,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -1371,9 +1372,20 @@ export function TemplateLibrary({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="inter">{t.fontInter}</SelectItem>
-                              <SelectItem value="serif">{t.fontSerif}</SelectItem>
-                              <SelectItem value="plex">{t.fontPlex}</SelectItem>
+                              <SelectGroup>
+                                <SelectItem value="inter">
+                                  {t.fontInter}
+                                </SelectItem>
+                                <SelectItem value="noto_sans_sc">
+                                  {t.fontNotoSans}
+                                </SelectItem>
+                                <SelectItem value="serif">
+                                  {t.fontSerif}
+                                </SelectItem>
+                                <SelectItem value="plex">
+                                  {t.fontPlex}
+                                </SelectItem>
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                         </label>

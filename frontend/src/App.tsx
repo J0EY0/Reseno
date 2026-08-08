@@ -136,6 +136,9 @@ function App() {
   const [messages, setMessages] = useState<AppMessages>(() =>
     getMessagesSync(getInitialLocale(isAuthenticated)),
   );
+  // Its identity changes when Vite replaces a locale JSON module, which lets
+  // the loading effect refresh state that Fast Refresh intentionally preserves.
+  const currentLocaleMessages = getMessagesSync(locale);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -181,7 +184,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [locale]);
+  }, [currentLocaleMessages, locale]);
 
   async function handleLogin(credentials: {
     username: string;
