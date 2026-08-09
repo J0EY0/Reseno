@@ -127,7 +127,6 @@ import { importResumeFromPdf } from "@/lib/pdf-resume-import";
 import {
   applySectionMutation,
   createResumeSection,
-  isCanonicalResumeData,
   type ResumeSectionMutation,
 } from "@/lib/resume-sections";
 import {
@@ -137,8 +136,6 @@ import {
   getResumeFontSizeInPoints,
   getTemplateById,
   getTemplateCatalog,
-  normalizeCustomTemplates,
-  normalizeDeletedTemplates,
   resumeFontSizeOptions,
 } from "@/lib/templates";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
@@ -196,6 +193,7 @@ import type {
   ResumeTemplateId,
   ResumeTemplateImageElement,
   ResumeTemplateSettings,
+  ResumeTemplateSettingsOverrides,
   ResumeTypographySettings,
   ResumeWorkspaceItem,
   SectionKind,
@@ -404,7 +402,7 @@ const SMART_ONE_PAGE_LAYOUT_LEVELS = [
 
 type SmartOnePageStyleSnapshot = {
   typography: ResumeTypographySettings;
-  templateSettings: ResumeTemplateSettings | null;
+  templateSettings: ResumeTemplateSettingsOverrides | null;
 };
 
 function WorkspacePanelSkeleton() {
@@ -673,10 +671,7 @@ function getWorkspaceRoute(pathname: string): WorkspaceRoute {
     return { kind: "template-detail", id: templateDetailMatch.params.id };
   }
 
-  if (
-    matchPath({ path: "/resume", end: true }, pathname) ||
-    matchPath({ path: "/dashboard", end: true }, pathname)
-  ) {
+  if (matchPath({ path: "/resume", end: true }, pathname)) {
     return { kind: "resume-gallery" };
   }
 
@@ -726,19 +721,6 @@ function getTemplatePath(templateId: string) {
   return `/template/${templateId}`;
 }
 
-const supportedFontFamilies: ResumeFontFamily[] = [
-  "inter",
-  "noto_sans_sc",
-  "serif",
-  "plex",
-];
-
-function normalizeFontSize(value: number) {
-  return resumeFontSizeOptions.reduce((closest, current) =>
-    Math.abs(current - value) < Math.abs(closest - value) ? current : closest,
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -776,41 +758,6 @@ function formatResumeTitleForToolbar(value: string) {
     .slice(0, visibleBaseCharacterCount)
     .join("")
     .trimEnd()}...${copySuffix}`;
-}
-
-function normalizeResumeTypography(value: unknown): ResumeTypographySettings {
-  if (!isRecord(value)) {
-    return defaultTypography;
-  }
-
-  const fontFamily = supportedFontFamilies.includes(
-    value.fontFamily as ResumeFontFamily,
-  )
-    ? (value.fontFamily as ResumeFontFamily)
-    : defaultTypography.fontFamily;
-  const fontSize =
-    typeof value.fontSize === "number" && Number.isFinite(value.fontSize)
-      ? normalizeFontSize(value.fontSize)
-      : defaultTypography.fontSize;
-
-  return {
-    fontFamily,
-    fontSize,
-  };
-}
-
-function normalizeResumeTemplateSettings(
-  value: unknown,
-): ResumeTemplateSettings | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  // Stored overrides can be partial. The selected template is not known at
-  // this boundary, so filling missing values with Minimal defaults here would
-  // silently change resumes based on another preset. Rendering normalizes the
-  // overrides against the resolved template instead.
-  return { ...value } as unknown as ResumeTemplateSettings;
 }
 
 function getPreviewPageCount(element: HTMLElement | null) {
@@ -894,8 +841,8 @@ function createSmartOnePageSettingsCandidate(
 }
 
 function areTemplateSettingsEqual(
-  left: ResumeTemplateSettings,
-  right: ResumeTemplateSettings,
+  left: ResumeTemplateSettingsOverrides,
+  right: ResumeTemplateSettingsOverrides,
 ) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -966,15 +913,6 @@ function createSmartOnePageCandidates(
 
     return firstMatchingIndex === index;
   });
-}
-
-function normalizeResumeTemplateId(
-  value: unknown,
-  fallbackTemplateId: ResumeTemplateId,
-) {
-  return typeof value === "string" && value.trim()
-    ? value
-    : fallbackTemplateId;
 }
 
 function formatControlNumber(value: number, precision: number) {
@@ -1100,188 +1038,6 @@ function FormatSliderField({
       />
     </div>
   );
-}
-
-function normalizeStoredResumeDocument(
-  value: unknown,
-  locale: Locale,
-  fallbackTemplateId: ResumeTemplateId,
-  index: number,
-): ResumeWorkspaceItem | null {
-  if (!isRecord(value) || !isCanonicalResumeData(value.resume)) {
-    return null;
-  }
-
-  const fallbackTitle =
-    value.resume.basic.name || createDefaultResumeTitle(getMessagesSync(locale), index);
-  const id = typeof value.id === "string" ? value.id.trim() : "";
-
-  if (!id) {
-    return null;
-  }
-
-  return {
-    id,
-    title: normalizeResumeTitle(value.title, fallbackTitle),
-    updatedAt:
-      typeof value.updatedAt === "string" && value.updatedAt.trim()
-        ? value.updatedAt
-        : new Date().toISOString(),
-    resume: value.resume,
-    jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
-    typography: normalizeResumeTypography(value.typography),
-    template: normalizeResumeTemplateId(value.template, fallbackTemplateId),
-    templateSettings: normalizeResumeTemplateSettings(value.templateSettings),
-  };
-}
-
-function normalizeResumeDocuments(
-  source: unknown,
-  locale: Locale,
-  fallbackTemplateId: ResumeTemplateId = defaultTemplate,
-) {
-  if (
-    source &&
-    typeof source === "object" &&
-    "resumes" in source &&
-    Array.isArray((source as { resumes?: unknown[] }).resumes) &&
-    (source as { resumes: unknown[] }).resumes.length > 0
-  ) {
-    const normalized = (source as { resumes: unknown[] }).resumes
-      .map((item, index) =>
-        normalizeStoredResumeDocument(
-          item,
-          locale,
-          fallbackTemplateId,
-          index + 1,
-        ),
-      )
-      .filter((item): item is ResumeWorkspaceItem => Boolean(item));
-
-    return normalized;
-  }
-
-  if (
-    source &&
-    typeof source === "object" &&
-    "resume" in source &&
-    (source as { resume?: ResumeData }).resume
-  ) {
-    return [];
-  }
-
-  return [];
-}
-
-function normalizeImportedResumeDocuments(
-  source: unknown,
-  fallbackTemplateId: ResumeTemplateId = defaultTemplate,
-) {
-  const importedAt = new Date().toISOString();
-
-  function normalizeItem(value: unknown): ResumeWorkspaceItem | null {
-    if (isCanonicalResumeData(value)) {
-      return null;
-    }
-
-    if (!isRecord(value)) {
-      return null;
-    }
-
-    const rawResume = isCanonicalResumeData(value.resume) ? value.resume : null;
-
-    if (!rawResume) {
-      return null;
-    }
-
-    const id = typeof value.id === "string" ? value.id.trim() : "";
-
-    if (!id) {
-      return null;
-    }
-
-    const typography = normalizeResumeTypography(value.typography);
-    const template = normalizeResumeTemplateId(value.template, fallbackTemplateId);
-
-    return {
-      id,
-      title: normalizeResumeTitle(
-        value.title,
-        rawResume.basic.name || "Resume",
-      ),
-      updatedAt:
-        typeof value.updatedAt === "string" ? value.updatedAt : importedAt,
-      resume: rawResume,
-      jobBrief: typeof value.jobBrief === "string" ? value.jobBrief : "",
-      typography,
-      template,
-      templateSettings: normalizeResumeTemplateSettings(value.templateSettings),
-    };
-  }
-
-  if (Array.isArray(source)) {
-    return source
-      .map(normalizeItem)
-      .filter((item): item is ResumeWorkspaceItem => Boolean(item));
-  }
-
-  if (isRecord(source) && Array.isArray(source.resumes)) {
-    return source.resumes
-      .map(normalizeItem)
-      .filter((item): item is ResumeWorkspaceItem => Boolean(item));
-  }
-
-  const single = normalizeItem(source);
-  return single ? [single] : [];
-}
-
-function normalizeDeletedResumeDocuments(
-  source: unknown,
-  fallbackTemplateId: ResumeTemplateId = defaultTemplate,
-): DeletedResumeWorkspaceItem[] {
-  if (
-    !source ||
-    typeof source !== "object" ||
-    !("deletedResumes" in source) ||
-    !Array.isArray((source as { deletedResumes?: unknown[] }).deletedResumes)
-  ) {
-    return [];
-  }
-
-  const normalizedItems: DeletedResumeWorkspaceItem[] = [];
-
-  for (const item of (source as { deletedResumes: unknown[] }).deletedResumes) {
-    if (!isRecord(item) || !("resume" in item)) {
-      continue;
-    }
-
-    const normalized = normalizeImportedResumeDocuments(
-      item,
-      fallbackTemplateId,
-    )[0];
-
-    if (!normalized) {
-      continue;
-    }
-
-    normalizedItems.push({
-      ...normalized,
-      deletedAt:
-        typeof item.deletedAt === "string" && item.deletedAt.trim()
-          ? item.deletedAt
-          : new Date().toISOString(),
-      updatedAt:
-        typeof item.updatedAt === "string" && item.updatedAt.trim()
-          ? item.updatedAt
-          : normalized.updatedAt,
-      template:
-        typeof item.template === "string" && item.template.trim()
-          ? item.template
-          : normalized.template,
-    });
-  }
-
-  return normalizedItems;
 }
 
 function stripWorkspaceVolatileFields(value: unknown): unknown {
@@ -1419,7 +1175,7 @@ export function ResumeBuilder({
     useState<ResumeTypographySettings>(defaultTypography);
   const [template, setTemplate] = useState<ResumeTemplateId>(defaultTemplate);
   const [templateSettings, setTemplateSettings] =
-    useState<ResumeTemplateSettings | null>(null);
+    useState<ResumeTemplateSettingsOverrides | null>(null);
   const [defaultTemplateId, setDefaultTemplateId] =
     useState<ResumeTemplateId>(defaultTemplate);
   const [customTemplates, setCustomTemplates] = useState<
@@ -1544,19 +1300,11 @@ export function ResumeBuilder({
   );
   const deferredTemplatePreviewResume = useDeferredValue(templatePreviewResume);
   const deferredJobBrief = useDeferredValue(jobBrief);
-  const deletedTemplateIds = useMemo(
-    () => deletedTemplates.map((item) => item.id),
-    [deletedTemplates],
-  );
   const templateCatalog = useMemo(
-    () => getTemplateCatalog(t, customTemplates, deletedTemplateIds),
-    [customTemplates, deletedTemplateIds, t],
+    () => getTemplateCatalog(t, customTemplates),
+    [customTemplates, t],
   );
-  const activeTemplateDefinition = getTemplateById(
-    templateCatalog,
-    template,
-    defaultTemplateId,
-  );
+  const activeTemplateDefinition = getTemplateById(templateCatalog, template);
   const activeTemplateDefinitionRef = useRef(activeTemplateDefinition);
   activeTemplateDefinitionRef.current = activeTemplateDefinition;
   const activeResumeTemplateDefinition = useMemo<ResumeTemplateDefinition>(
@@ -1825,15 +1573,15 @@ export function ResumeBuilder({
 
         const nextTypography = typography;
         const nextTemplate = template;
-        const nextTemplateSettings = templateSettings ?? undefined;
+        const nextTemplateSettings = templateSettings;
 
         if (
           item.resume === resume &&
           item.jobBrief === jobBrief &&
           item.template === nextTemplate &&
           item.templateSettings === nextTemplateSettings &&
-          item.typography?.fontFamily === nextTypography.fontFamily &&
-          item.typography?.fontSize === nextTypography.fontSize
+          item.typography.fontFamily === nextTypography.fontFamily &&
+          item.typography.fontSize === nextTypography.fontSize
         ) {
           return item;
         }
@@ -1870,7 +1618,7 @@ export function ResumeBuilder({
         resume,
         jobBrief,
         template,
-        templateSettings: templateSettings ?? undefined,
+        templateSettings,
         typography,
         updatedAt,
       };
@@ -2374,9 +2122,9 @@ export function ResumeBuilder({
     setResume(item.resume);
     setCollapsedState(createEditorCollapsedState(item.resume));
     setJobBrief(item.jobBrief);
-    setTypography(item.typography ?? defaultTypography);
-    setTemplate(item.template ?? defaultTemplateIdRef.current);
-    setTemplateSettings(item.templateSettings ?? null);
+    setTypography(item.typography);
+    setTemplate(item.template);
+    setTemplateSettings(item.templateSettings);
   }, []);
 
   const resetResumeWorkspace = useCallback(() => {
@@ -2604,13 +2352,11 @@ export function ResumeBuilder({
         const applyTemplateRouteData = (
           source: WorkspaceTemplateRouteData,
         ) => {
-          const requestedDefaultTemplateId =
-            source.defaultTemplateId.trim() || defaultTemplateIdRef.current;
-          const nextCustomTemplates = normalizeCustomTemplates(source);
+          const requestedDefaultTemplateId = source.defaultTemplateId;
 
           defaultTemplateIdRef.current = requestedDefaultTemplateId;
           setDefaultTemplateId(requestedDefaultTemplateId);
-          setCustomTemplates(nextCustomTemplates);
+          setCustomTemplates(source.customTemplates);
           setHasLoadedTemplateRouteData(true);
           lastPersistedTemplateRef.current = null;
           lastPersistedTemplateItemRef.current = null;
@@ -2648,13 +2394,8 @@ export function ResumeBuilder({
         switch (workspaceSource.kind) {
           case "resume-gallery": {
             const source = workspaceSource.data;
-            const requestedDefaultTemplateId =
-              applyTemplateRouteData(source);
-            const nextDocuments = normalizeResumeDocuments(
-              source,
-              initialLocaleRef.current,
-              requestedDefaultTemplateId,
-            );
+            applyTemplateRouteData(source);
+            const nextDocuments = source.resumes;
             const firstResume = nextDocuments[0] ?? null;
 
             setResumeDocuments(nextDocuments);
@@ -2684,16 +2425,9 @@ export function ResumeBuilder({
             break;
           case "trash": {
             const source = workspaceSource.data;
-            const requestedDefaultTemplateId =
-              applyTemplateRouteData(source);
-
-            setDeletedResumeDocuments(
-              normalizeDeletedResumeDocuments(
-                source,
-                requestedDefaultTemplateId,
-              ),
-            );
-            setDeletedTemplates(normalizeDeletedTemplates(source));
+            applyTemplateRouteData(source);
+            setDeletedResumeDocuments(source.deletedResumes);
+            setDeletedTemplates(source.deletedTemplates);
             setHasLoadedTrashRouteData(true);
             break;
           }
@@ -3381,29 +3115,28 @@ export function ResumeBuilder({
     try {
       const isPdfImport =
         file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      const importedDocuments = isPdfImport
-        ? [
-            {
-              id: createId("import"),
-              title: normalizeResumeTitle(
-                file.name.replace(/\.pdf$/i, ""),
-                createDefaultResumeTitle(t, resumeDocuments.length + 1),
-              ),
-              updatedAt: new Date().toISOString(),
-              resume: await importResumeFromPdf(
-                file,
-                t.importedResumeFallbackSection,
-              ),
-              jobBrief: "",
-              typography: defaultTypography,
-              template: defaultTemplateId,
-              templateSettings: undefined,
-            },
-          ]
-        : normalizeImportedResumeDocuments(
-            await importResumePayload(file),
-            defaultTemplateId,
-          );
+      const importedBundle = isPdfImport
+        ? {
+            templates: [],
+            resumes: [
+              {
+                title: normalizeResumeTitle(
+                  file.name.replace(/\.pdf$/i, ""),
+                  createDefaultResumeTitle(t, resumeDocuments.length + 1),
+                ),
+                resume: await importResumeFromPdf(
+                  file,
+                  t.importedResumeFallbackSection,
+                ),
+                jobBrief: "",
+                typography: defaultTypography,
+                template: defaultTemplateId,
+                templateSettings: null,
+              },
+            ],
+          }
+        : await importResumePayload(file);
+      const importedDocuments = importedBundle.resumes;
 
       if (importedDocuments.length === 0) {
         throw new Error(
@@ -3413,18 +3146,30 @@ export function ResumeBuilder({
 
       await saveCurrentWorkspace();
 
+      const templateIdByArtifactRef = new Map<string, string>();
+      const savedTemplates: ResumeTemplateDefinition[] = [];
+      for (const embeddedTemplate of importedBundle.templates) {
+        const result = await createTemplateApi(embeddedTemplate.definition);
+        templateIdByArtifactRef.set(embeddedTemplate.ref, result.template.id);
+        savedTemplates.push(result.template);
+      }
+
       const savedImports: Array<{
         resume: ResumeWorkspaceItem;
         savedAt: string;
         versionId: string;
       }> = [];
       for (const item of importedDocuments) {
+        const mappedTemplateId = templateIdByArtifactRef.get(item.template);
+        if (item.template.startsWith("custom:") && !mappedTemplateId) {
+          throw new Error("Imported resume references an unknown template.");
+        }
         const result = await createResumeApi({
           title: item.title,
           resume: item.resume,
           jobBrief: item.jobBrief,
           typography: item.typography,
-          template: item.template,
+          template: mappedTemplateId ?? item.template,
           templateSettings: item.templateSettings ?? null,
         });
         savedImports.push(result);
@@ -3440,6 +3185,9 @@ export function ResumeBuilder({
         ...current,
         ...savedImports.map((item) => item.resume),
       ]);
+      if (savedTemplates.length > 0) {
+        setCustomTemplates((current) => [...current, ...savedTemplates]);
+      }
       setActiveResumeId(firstImportedResume.id);
       hydrateResumeWorkspace(firstImportedResume);
       lastPersistedResumeRef.current =
@@ -3850,17 +3598,7 @@ export function ResumeBuilder({
 
     try {
       const payload = await importTemplatePayload(file);
-      const importedTemplates = normalizeCustomTemplates(payload).map(
-        (item, index) => ({
-          ...item,
-          id: createId("template"),
-          name:
-            item.name.trim() ||
-            `${t.customTemplate} ${customTemplates.length + index + 1}`,
-          updatedAt: new Date().toISOString(),
-          isBuiltIn: false,
-        }),
-      );
+      const importedTemplates = payload.templates;
 
       if (importedTemplates.length === 0) {
         throw new Error("No valid templates found in imported file.");
@@ -3949,7 +3687,7 @@ export function ResumeBuilder({
     updateCustomTemplate(activeTemplateDefinition.id, {
       layout: {
         ...activeTemplateDefinition.layout,
-        images: (activeTemplateDefinition.layout.images ?? []).map((image) =>
+        images: activeTemplateDefinition.layout.images.map((image) =>
           image.id === imageId ? { ...image, ...patch } : image,
         ),
       },
@@ -3990,20 +3728,28 @@ export function ResumeBuilder({
       current.filter((item) => !customTemplateIds.includes(item.id)),
     );
     setDeletedTemplates((current) => [...deletedItems, ...current]);
+    const fallbackTemplateId = customTemplateIds.includes(defaultTemplateId)
+      ? defaultTemplate
+      : defaultTemplateId;
+    const rebindDeletedTemplate = <T extends ResumeWorkspaceItem>(item: T) =>
+      customTemplateIds.includes(item.template)
+        ? { ...item, template: fallbackTemplateId }
+        : item;
+    setResumeDocuments((current) => current.map(rebindDeletedTemplate));
+    setDeletedResumeDocuments((current) =>
+      current.map(rebindDeletedTemplate),
+    );
 
     if (customTemplateIds.includes(defaultTemplateId)) {
       setDefaultTemplateId(defaultTemplate);
     }
 
-      if (customTemplateIds.includes(template)) {
-        const fallbackTemplateId = customTemplateIds.includes(defaultTemplateId)
-          ? defaultTemplate
-          : defaultTemplateId;
-        setTemplate(fallbackTemplateId);
-        lastPersistedTemplateRef.current = null;
-        lastPersistedTemplateItemRef.current = null;
-        lastOpenedTemplateIdRef.current = null;
-      }
+    if (customTemplateIds.includes(template)) {
+      setTemplate(fallbackTemplateId);
+      lastPersistedTemplateRef.current = null;
+      lastPersistedTemplateItemRef.current = null;
+      lastOpenedTemplateIdRef.current = null;
+    }
 
     toast.success(
       customTemplateIds.length > 1 ? t.templatesDeleted : t.templateDeleted,
@@ -4510,7 +4256,7 @@ export function ResumeBuilder({
         throw new Error("No active resume is available for JSON export.");
       }
 
-      downloadResumeJson(activeResume);
+      downloadResumeJson(activeResume, activeTemplateDefinition);
       toast.success(t.exportJsonSuccess, {
         closeButton: true,
       });
@@ -4593,6 +4339,9 @@ export function ResumeBuilder({
                     activeView === "templates" &&
                     !activeTemplateDefinition.isBuiltIn
                   }
+                  showEmptyTemplateImagePlaceholders={
+                    activeView === "templates"
+                  }
                   onMoveTemplateImage={moveTemplateImage}
                 />
               </div>
@@ -4667,7 +4416,6 @@ export function ResumeBuilder({
             t={t}
             resumes={resumeDocuments}
             templates={templateCatalog}
-            defaultTemplateId={defaultTemplateId}
             isImporting={isImporting}
             isCreating={isCreatingResume}
             onOpenResume={openResumeEditor}
@@ -4756,7 +4504,6 @@ export function ResumeBuilder({
           deletedResumes={deletedResumeDocuments}
           deletedTemplates={deletedTemplates}
           templates={templateCatalog}
-          defaultTemplateId={defaultTemplateId}
           templatePreviewResume={deferredTemplatePreviewResume}
           onRestoreResume={restoreResumes}
           onDeleteResumeForever={permanentlyDeleteResumes}

@@ -2,12 +2,21 @@ import json
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
+from pydantic import ValidationError
 
+from app.schemas.imports import (
+    ResumeArtifactV1,
+    TemplateArtifactItem,
+    TemplateArtifactV1,
+)
 from app.services.resume_document_contract import (
     ResumeDocumentContractError,
     validate_resume_document,
 )
-from app.services.resumes import generate_resume_id
+
+ARTIFACT_FORMAT_VERSION = 1
+RESUME_ARTIFACT_FORMAT = "resumate.resume"
+TEMPLATE_ARTIFACT_FORMAT = "resumate.template"
 
 
 async def load_json_upload(file: UploadFile) -> Any:
@@ -20,79 +29,70 @@ async def load_json_upload(file: UploadFile) -> Any:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file must be valid UTF-8 JSON.",
+            detail="JSON_UPLOAD_INVALID",
         ) from exc
 
 
-def unwrap_api_payload(payload: Any) -> Any:
-    """Unwrap a successful ApiResponse payload when a file contains one."""
+def _validate_artifact_version(
+    payload: Any,
+    *,
+    artifact_format: str,
+    unsupported_version_detail: str,
+) -> None:
+    if (
+        isinstance(payload, dict)
+        and payload.get("format") == artifact_format
+        and type(payload.get("formatVersion")) is int
+        and payload["formatVersion"] != ARTIFACT_FORMAT_VERSION
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=unsupported_version_detail,
+        )
 
-    if isinstance(payload, dict) and payload.get("code") == 0 and "data" in payload:
-        return payload["data"]
 
-    return payload
+def parse_resume_artifact(payload: Any) -> ResumeArtifactV1:
+    """Validate and return a portable ResumeArtifactV1 bundle."""
 
+    _validate_artifact_version(
+        payload,
+        artifact_format=RESUME_ARTIFACT_FORMAT,
+        unsupported_version_detail="RESUME_ARTIFACT_VERSION_UNSUPPORTED",
+    )
+    try:
+        artifact = ResumeArtifactV1.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_ARTIFACT_INVALID",
+        ) from exc
 
-def coerce_resume_import(payload: Any) -> list[dict[str, Any]]:
-    """Normalize supported resume import JSON shapes into resume items."""
-
-    data = unwrap_api_payload(payload)
-    items: list[dict[str, Any]]
-
-    if isinstance(data, dict) and isinstance(data.get("resumes"), list):
-        items = [
-            _with_resume_id(item) for item in data["resumes"] if isinstance(item, dict)
-        ]
-    elif isinstance(data, list):
-        items = [_with_resume_id(item) for item in data if isinstance(item, dict)]
-    elif isinstance(data, dict):
-        items = [_with_resume_id(data)]
-    else:
-        return []
-
-    for item in items:
+    for item in artifact.resumes:
         try:
-            validate_resume_document(item.get("resume"))
+            validate_resume_document(item.resume)
         except ResumeDocumentContractError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=exc.code,
             ) from exc
 
-    return items
+    return artifact
 
 
-def _with_resume_id(item: dict[str, Any]) -> dict[str, Any]:
-    """Return an imported resume item with a backend-generated id."""
+def parse_template_artifact(payload: Any) -> list[TemplateArtifactItem]:
+    """Validate and return the portable entries from a TemplateArtifactV1."""
 
-    if _looks_like_resume_data(item):
-        return {"id": generate_resume_id(), "resume": item}
-
-    return {**item, "id": generate_resume_id()}
-
-
-def _looks_like_resume_data(item: dict[str, Any]) -> bool:
-    return isinstance(item.get("basic"), dict) and isinstance(
-        item.get("sections"),
-        list,
+    _validate_artifact_version(
+        payload,
+        artifact_format=TEMPLATE_ARTIFACT_FORMAT,
+        unsupported_version_detail="TEMPLATE_ARTIFACT_VERSION_UNSUPPORTED",
     )
+    try:
+        artifact = TemplateArtifactV1.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="TEMPLATE_ARTIFACT_INVALID",
+        ) from exc
 
-
-def coerce_template_import(payload: Any) -> list[dict[str, Any]]:
-    """Normalize supported template import JSON shapes into templates."""
-
-    data = unwrap_api_payload(payload)
-
-    if isinstance(data, dict) and isinstance(data.get("templates"), list):
-        return [item for item in data["templates"] if isinstance(item, dict)]
-
-    if isinstance(data, dict) and isinstance(data.get("customTemplates"), list):
-        return [item for item in data["customTemplates"] if isinstance(item, dict)]
-
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-
-    if isinstance(data, dict):
-        return [data]
-
-    return []
+    return artifact.templates

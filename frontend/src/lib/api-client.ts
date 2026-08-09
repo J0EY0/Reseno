@@ -61,13 +61,11 @@ export const apiRoutes = {
   resumeVersions: (resumeId: string) => `/api/resumes/${resumeId}/versions`,
   resumeVersion: (resumeId: string, versionId: string) =>
     `/api/resumes/${resumeId}/versions/${versionId}`,
-  resumeTrashEmpty: "/api/resumes/trash",
   templates: "/api/templates",
   template: (templateId: string) => `/api/templates/${templateId}`,
   templateTrash: (templateId: string) => `/api/templates/${templateId}/trash`,
   templateRestore: (templateId: string) =>
     `/api/templates/${templateId}/restore`,
-  templateTrashEmpty: "/api/templates/trash",
   modelConfigs: "/api/model-configs",
   modelProviders: "/api/model-providers",
   modelProviderDiscovery: "/api/model-providers/discover-models",

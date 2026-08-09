@@ -42,7 +42,9 @@ def post_template(request: TemplateSaveRequest) -> ApiResponse[TemplateResponse]
     """Create a backend-owned custom template."""
 
     return ok_response(
-        TemplateResponse.model_validate(create_template(request.template))
+        TemplateResponse.model_validate(
+            create_template(request.template.model_dump(by_alias=True))
+        )
     )
 
 
@@ -63,7 +65,12 @@ def put_template(
     """Replace one active custom template."""
 
     return ok_response(
-        TemplateResponse.model_validate(update_template(template_id, request.template))
+        TemplateResponse.model_validate(
+            update_template(
+                template_id,
+                request.template.model_dump(by_alias=True),
+            )
+        )
     )
 
 

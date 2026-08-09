@@ -2,6 +2,7 @@ import type { Locale } from "@/i18n";
 import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
   AgentSettings,
+  BuiltinResumeTemplateId,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   KeywordMatch,
@@ -9,6 +10,7 @@ import type {
   ResumeData,
   ResumeDraftDiff,
   ResumeTemplateDefinition,
+  ResumeTemplateSettings,
   ResumeWorkspaceItem,
   ThemeMode,
 } from "@/types/resume";
@@ -50,12 +52,19 @@ export interface ResumeCreateRequest {
   jobBrief?: string;
   typography?: ResumeWorkspaceItem["typography"];
   template?: ResumeWorkspaceItem["template"];
-  templateSettings?: ResumeWorkspaceItem["templateSettings"] | null;
+  templateSettings?: Partial<ResumeTemplateSettings> | null;
 }
 
 export type ResumeSaveMode = "autosave" | "checkpoint";
 
-export type ResumeSaveRequest = ResumeCreateRequest;
+export interface ResumeSaveRequest {
+  title: string;
+  resume: ResumeData;
+  jobBrief: string;
+  typography: ResumeWorkspaceItem["typography"];
+  template: ResumeWorkspaceItem["template"];
+  templateSettings: Partial<ResumeTemplateSettings> | null;
+}
 
 export interface ResumeDetailResponse {
   resume: ResumeWorkspaceItem;
@@ -79,14 +88,6 @@ export interface ResumeDeleteResponse {
   id: string;
 }
 
-export interface ResumeTrashEmptyResponse {
-  deletedCount: number;
-}
-
-export interface DefaultTemplateSaveRequest {
-  templateId: string;
-}
-
 export interface DefaultTemplateSaveResponse {
   defaultTemplateId: string;
 }
@@ -97,20 +98,8 @@ export interface UserSettingsSaveResponse {
   agentSettings?: AgentSettings;
 }
 
-export interface TemplateSaveRequest {
-  template: ResumeTemplateDefinition;
-}
-
 export interface TemplateDetailResponse {
   template: ResumeTemplateDefinition;
-}
-
-export interface TemplateListResponse {
-  templates: ResumeTemplateDefinition[];
-}
-
-export interface DeletedTemplateListResponse {
-  templates: DeletedResumeTemplateDefinition[];
 }
 
 export interface TemplateTrashResponse {
@@ -121,17 +110,42 @@ export interface TemplateDeleteResponse {
   id: string;
 }
 
-export interface TemplateTrashEmptyResponse {
-  deletedCount: number;
-}
-
 export interface ImportResumeResponse {
-  resumes: ResumeWorkspaceItem[];
+  templates: EmbeddedTemplateArtifact[];
+  resumes: ResumeArtifactItem[];
 }
 
 export interface ImportTemplatesResponse {
-  templates: ResumeTemplateDefinition[];
+  templates: TemplateArtifactItem[];
 }
+
+export type CustomTemplateArtifactRef = `custom:${number}`;
+
+export interface ResumeArtifactItem {
+  title: string;
+  resume: ResumeData;
+  jobBrief: string;
+  typography: NonNullable<ResumeWorkspaceItem["typography"]>;
+  template: BuiltinResumeTemplateId | CustomTemplateArtifactRef;
+  templateSettings: Partial<ResumeTemplateSettings> | null;
+}
+
+export interface EmbeddedTemplateArtifact {
+  ref: CustomTemplateArtifactRef;
+  definition: TemplateArtifactItem;
+}
+
+export interface ResumeArtifactV1 {
+  format: "resumate.resume";
+  formatVersion: 1;
+  templates: EmbeddedTemplateArtifact[];
+  resumes: ResumeArtifactItem[];
+}
+
+export type TemplateArtifactItem = Omit<
+  ResumeTemplateDefinition,
+  "id" | "updatedAt" | "isBuiltIn"
+>;
 
 export interface ExportResumePdfRequest {
   resumeId: string;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { ResumePreview } from "@/components/preview/resume-preview";
@@ -13,8 +13,6 @@ import {
   createTemplateSettings,
   getTemplateById,
   getTemplateCatalog,
-  normalizeCustomTemplates,
-  normalizeDeletedTemplates,
 } from "@/lib/templates";
 import { isAbortError } from "@/lib/api-client";
 import {
@@ -36,6 +34,7 @@ declare global {
 }
 
 interface PdfExportState {
+  loadKey: string;
   messages: AppMessages;
   locale: Locale;
   resumeItem: ResumeWorkspaceItem;
@@ -43,26 +42,13 @@ interface PdfExportState {
   typography: ResumeTypographySettings;
 }
 
-const defaultTypography: ResumeTypographySettings = {
-  fontFamily: "inter",
-  fontSize: 16,
-};
+interface PdfExportError {
+  loadKey: string;
+  message: string;
+}
 
 function resolveLocale(value: string | null): Locale {
   return value === "en" || value === "zh" ? value : "zh";
-}
-
-function getResumeTemplateId(
-  item: ResumeWorkspaceItem,
-  defaultTemplateId: unknown,
-) {
-  if (typeof item.template === "string" && item.template.trim()) {
-    return item.template;
-  }
-
-  return typeof defaultTemplateId === "string" && defaultTemplateId.trim()
-    ? defaultTemplateId
-    : "minimal";
 }
 
 async function waitForRenderAssets() {
@@ -99,17 +85,41 @@ export function PdfExportRenderer() {
   const locale = resolveLocale(searchParams.get("locale"));
   const resumeId = searchParams.get("resumeId") ?? "";
   const versionId = searchParams.get("versionId");
+  const loadKey = `${locale}:${resumeId}:${versionId ?? "current"}`;
   const [state, setState] = useState<PdfExportState | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [areAssetsReady, setAreAssetsReady] = useState(false);
-  const [isPaginationReady, setIsPaginationReady] = useState(false);
+  const [error, setError] = useState<PdfExportError | null>(null);
+  const [assetsReadyLoadKey, setAssetsReadyLoadKey] = useState<string | null>(
+    null,
+  );
+  const [paginationReadyLoadKey, setPaginationReadyLoadKey] = useState<
+    string | null
+  >(null);
   const initialMessages = useMemo(() => getMessagesSync(locale), [locale]);
-  const isReady = Boolean(state && areAssetsReady && isPaginationReady);
+  const activeState = state?.loadKey === loadKey ? state : null;
+  const activeError = error?.loadKey === loadKey ? error.message : null;
+  const isReady = Boolean(
+    activeState &&
+      assetsReadyLoadKey === loadKey &&
+      paginationReadyLoadKey === loadKey,
+  );
+
+  const handlePaginationReadyChange = useCallback(
+    (ready: boolean) => {
+      setPaginationReadyLoadKey((current) => {
+        if (ready) {
+          return loadKey;
+        }
+
+        return current === loadKey ? null : current;
+      });
+    },
+    [loadKey],
+  );
 
   useEffect(() => {
     window.__RESUMATE_PDF_READY__ = false;
     window.__RESUMATE_PDF_ERROR__ = undefined;
-  }, []);
+  }, [loadKey]);
 
   useEffect(() => {
     window.__RESUMATE_PDF_READY__ = isReady;
@@ -118,9 +128,6 @@ export function PdfExportRenderer() {
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
-
-    setAreAssetsReady(false);
-    setIsPaginationReady(false);
 
     async function loadExportData() {
       try {
@@ -138,24 +145,14 @@ export function PdfExportRenderer() {
         const workspace = result.data;
         const resumeItem = resumeResult.resume;
 
-        const deletedTemplates = normalizeDeletedTemplates(workspace);
         const templateCatalog = getTemplateCatalog(
           messages,
-          normalizeCustomTemplates(workspace),
-          deletedTemplates.map((item) => item.id),
+          workspace.customTemplates,
         );
         const resolvedTemplate = getTemplateById(
           templateCatalog,
-          getResumeTemplateId(resumeItem, workspace.defaultTemplateId),
-          getResumeTemplateId(
-            { ...resumeItem, template: undefined },
-            workspace.defaultTemplateId,
-          ),
+          resumeItem.template,
         );
-
-        if (!resolvedTemplate) {
-          throw new Error("Template not found.");
-        }
         const template = {
           ...resolvedTemplate,
           // Export must resolve the same resume-level overrides as the editor;
@@ -168,12 +165,12 @@ export function PdfExportRenderer() {
 
         if (!cancelled) {
           setState({
+            loadKey,
             messages,
             locale,
             resumeItem,
             template,
-            typography:
-              resumeItem.typography ?? template.typography ?? defaultTypography,
+            typography: resumeItem.typography,
           });
         }
       } catch (loadError) {
@@ -188,7 +185,7 @@ export function PdfExportRenderer() {
 
         if (!cancelled) {
           window.__RESUMATE_PDF_ERROR__ = message;
-          setError(message);
+          setError({ loadKey, message });
         }
       }
     }
@@ -206,41 +203,38 @@ export function PdfExportRenderer() {
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [locale, resumeId, versionId]);
+  }, [loadKey, locale, resumeId, versionId]);
 
   useEffect(() => {
-    if (!state) {
-      setAreAssetsReady(false);
+    if (!activeState) {
       return;
     }
 
     let cancelled = false;
 
-    setAreAssetsReady(false);
-
     void waitForRenderAssets().then(() => {
       if (!cancelled) {
-        setAreAssetsReady(true);
+        setAssetsReadyLoadKey(activeState.loadKey);
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [state]);
+  }, [activeState]);
 
-  if (error) {
+  if (activeError) {
     return (
       <main
         className="pdf-export-page flex min-h-svh items-center justify-center bg-white p-8 text-sm text-red-600"
         data-pdf-ready="false"
       >
-        {error}
+        {activeError}
       </main>
     );
   }
 
-  if (!state) {
+  if (!activeState) {
     return (
       <main
         className="pdf-export-page flex min-h-svh items-center justify-center bg-white p-8 text-sm text-muted-foreground"
@@ -257,12 +251,12 @@ export function PdfExportRenderer() {
       data-pdf-ready={isReady ? "true" : "false"}
     >
       <ResumePreview
-        t={state.messages}
-        resume={state.resumeItem.resume}
-        fontFamily={state.typography.fontFamily}
-        fontSize={state.typography.fontSize}
-        template={state.template}
-        onPaginationReadyChange={setIsPaginationReady}
+        t={activeState.messages}
+        resume={activeState.resumeItem.resume}
+        fontFamily={activeState.typography.fontFamily}
+        fontSize={activeState.typography.fontSize}
+        template={activeState.template}
+        onPaginationReadyChange={handlePaginationReadyChange}
       />
     </main>
   );

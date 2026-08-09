@@ -74,12 +74,14 @@ function PreviewThumbnail({
   template,
   fontFamily,
   fontSize,
+  showEmptyTemplateImagePlaceholders = false,
 }: {
   t: AppMessages;
   resume: ResumeData;
   template: ResumeTemplateDefinition;
   fontFamily: ResumeTemplateDefinition["typography"]["fontFamily"];
   fontSize: number;
+  showEmptyTemplateImagePlaceholders?: boolean;
 }) {
   return (
     <div
@@ -97,6 +99,9 @@ function PreviewThumbnail({
           fontSize={fontSize}
           template={template}
           variant="thumbnail"
+          showEmptyTemplateImagePlaceholders={
+            showEmptyTemplateImagePlaceholders
+          }
         />
       </div>
     </div>
@@ -279,7 +284,6 @@ export function RecycleBinPanel({
   deletedResumes,
   deletedTemplates,
   templates,
-  defaultTemplateId,
   templatePreviewResume,
   onRestoreResume,
   onDeleteResumeForever,
@@ -291,7 +295,6 @@ export function RecycleBinPanel({
   deletedResumes: DeletedResumeWorkspaceItem[];
   deletedTemplates: DeletedResumeTemplateDefinition[];
   templates: ResumeTemplateDefinition[];
-  defaultTemplateId: string;
   templatePreviewResume: ResumeData;
   onRestoreResume: (resumeIds: string[]) => Promise<boolean>;
   onDeleteResumeForever: (resumeIds: string[]) => Promise<boolean>;
@@ -691,7 +694,6 @@ export function RecycleBinPanel({
                     const template = getTemplateById(
                       previewTemplates,
                       item.template,
-                      defaultTemplateId,
                     );
                     const restoreActionKey =
                       `resume-restore:${item.id}` as const;
@@ -709,8 +711,8 @@ export function RecycleBinPanel({
                               t={t}
                               resume={item.resume}
                               template={template}
-                              fontFamily={item.typography?.fontFamily ?? "inter"}
-                              fontSize={item.typography?.fontSize ?? 15}
+                              fontFamily={item.typography.fontFamily}
+                              fontSize={item.typography.fontSize}
                             />
                           }
                           title={title}
@@ -805,6 +807,7 @@ export function RecycleBinPanel({
                               template={item}
                               fontFamily={item.typography.fontFamily}
                               fontSize={item.typography.fontSize}
+                              showEmptyTemplateImagePlaceholders
                             />
                           }
                           title={item.name}

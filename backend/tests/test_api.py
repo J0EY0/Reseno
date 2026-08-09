@@ -18,6 +18,8 @@ from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.agent_settings import normalize_agent_settings
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
+from app.services import resumes as resume_service
+from app.services import templates as template_service
 from app.services import user_preferences, workspace_pages
 from app.services.agent import WebReference, WebSearchReference, WebSearchResult
 from app.services.agent import section_registry as section_registry_module
@@ -127,6 +129,20 @@ def minimal_resume_item(
     }
 
 
+def resume_artifact_item(title: str = "Test Resume") -> dict:
+    """Return the portable V1 fields accepted by the resume importer."""
+
+    item = minimal_resume_item(title=title)
+    return {
+        "title": item["title"],
+        "resume": item["resume"],
+        "jobBrief": item["jobBrief"],
+        "typography": item["typography"],
+        "template": item["template"],
+        "templateSettings": None,
+    }
+
+
 def noncanonical_list_resume() -> dict:
     resume = minimal_resume_item(title="Invalid List Resume")["resume"]
     resume["sections"] = [
@@ -151,18 +167,18 @@ def noncanonical_list_resume() -> dict:
     return resume
 
 
-def minimal_template_definition(
-    template_id: str = "template-client-id",
-    name: str = "Custom Template",
-) -> dict:
+def template_artifact_item(name: str = "Custom Template") -> dict:
+    """Return the portable V1 fields accepted by template write APIs."""
+
     return {
-        "id": template_id,
         "preset": "minimal",
         "name": name,
         "description": "Custom template",
         "layout": {
             "basicInfo": "centered",
             "section": "plain",
+            "timelineItemLayout": "split",
+            "listItemLayout": "list",
             "avatarPosition": "right",
             "avatarShape": "rounded",
             "avatarWidth": 25,
@@ -194,8 +210,37 @@ def minimal_template_definition(
             "dividerColor": "#202020",
             "dividerThickness": 1,
         },
-        "updatedAt": "2026-05-16T02:00:00.000Z",
-        "isBuiltIn": False,
+    }
+
+
+def resume_save_payload(resume_item: dict, **overrides: object) -> dict:
+    """Return the client-owned fields accepted by the resume save command."""
+
+    payload = {
+        key: resume_item.get(key)
+        for key in (
+            "title",
+            "resume",
+            "jobBrief",
+            "typography",
+            "template",
+            "templateSettings",
+        )
+    }
+    payload.update(overrides)
+    return payload
+
+
+def portable_template_definition(template: dict) -> dict:
+    """Strip backend-owned lifecycle fields from a template API payload."""
+
+    return {
+        "preset": template["preset"],
+        "name": template["name"],
+        "description": template["description"],
+        "layout": template["layout"],
+        "typography": template["typography"],
+        "settings": template["settings"],
     }
 
 
@@ -944,6 +989,57 @@ def test_workspace_page_openapi_uses_typed_collection_items(
     assert schemas[item_schema_name]["additionalProperties"] is False
 
 
+def test_resume_workspace_contract_requires_current_appearance_fields(
+    client: TestClient,
+) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    workspace_required = set(schemas["ResumeWorkspaceItemResponse"]["required"])
+    save_required = set(schemas["ResumeSaveRequest"]["required"])
+
+    assert {"typography", "template", "templateSettings"} <= workspace_required
+    assert save_required == {
+        "title",
+        "resume",
+        "jobBrief",
+        "typography",
+        "template",
+        "templateSettings",
+    }
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "title",
+        "resume",
+        "jobBrief",
+        "typography",
+        "template",
+        "templateSettings",
+    ],
+)
+def test_resume_save_rejects_incomplete_current_contract_without_new_version(
+    client: TestClient,
+    missing_field: str,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Strict save contract"},
+    ).json()["data"]["resume"]
+    payload = resume_save_payload(created)
+    del payload[missing_field]
+
+    rejected = client.put(f"/api/resumes/{created['id']}", json=payload)
+    versions = client.get(f"/api/resumes/{created['id']}/versions").json()[
+        "data"
+    ]["versions"]
+
+    assert rejected.status_code == 200
+    assert rejected.json()["code"] == 40002
+    assert rejected.json()["message"] == "VALIDATION_ERROR"
+    assert [item["versionId"] for item in versions] == ["1"]
+
+
 def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     client: TestClient,
 ) -> None:
@@ -967,18 +1063,18 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert created["versionId"] == "1"
     assert attachment_dir.exists()
 
-    save_payload = {
-        **created["resume"],
-        "title": "Backend Managed Resume",
-        "resume": {
+    save_payload = resume_save_payload(
+        created["resume"],
+        title="Backend Managed Resume",
+        resume={
             **created["resume"]["resume"],
             "basic": {
                 **created["resume"]["resume"]["basic"],
                 "name": "Backend Managed",
             },
         },
-        "templateSettings": None,
-    }
+        templateSettings=None,
+    )
     first_save = client.put(f"/api/resumes/{resume_id}", json=save_payload)
     second_save = client.put(f"/api/resumes/{resume_id}", json=save_payload)
     versions_response = client.get(f"/api/resumes/{resume_id}/versions")
@@ -1001,7 +1097,7 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert trash_response.status_code == 200
     assert trash_response.json()["data"]["resume"]["deletedAt"]
     assert trash_response.json()["data"]["resume"]["resume"]["sections"] == []
-    assert "templateSettings" not in trash_response.json()["data"]["resume"]
+    assert trash_response.json()["data"]["resume"]["templateSettings"] is None
     assert deleted_list_response.json()["data"]["resumes"][0]["id"] == resume_id
     assert save_deleted_response.json()["code"] != 0
     assert current_deleted_response.json()["code"] != 0
@@ -1057,10 +1153,11 @@ def test_resume_title_length_limit_is_enforced_on_create_and_update(
 
     derived_title_response = client.put(
         f"/api/resumes/{created['id']}",
-        json={
-            "title": None,
-            "resume": minimal_resume_document(name="姓" * 80),
-        },
+        json=resume_save_payload(
+            created,
+            title="",
+            resume=minimal_resume_document(name="姓" * 80),
+        ),
     )
 
     assert derived_title_response.json()["code"] == 0
@@ -1101,20 +1198,22 @@ def test_resume_update_rejects_noncanonical_list_content_without_new_version(
 
     update_response = client.put(
         f"/api/resumes/{created['id']}",
-        json={**created, "resume": noncanonical_list_resume()},
+        json=resume_save_payload(
+            created,
+            resume=noncanonical_list_resume(),
+        ),
     )
     current_response = client.get(f"/api/resumes/{created['id']}")
     versions_response = client.get(f"/api/resumes/{created['id']}/versions")
 
     assert update_response.json()["code"] == 40000
     assert update_response.json()["message"] == "RESUME_DOCUMENT_INVALID"
-    current_item = current_response.json()["data"]["resume"]["resume"]["sections"][
-        0
-    ]["items"][0]
+    current_item = current_response.json()["data"]["resume"]["resume"]["sections"][0][
+        "items"
+    ][0]
     assert current_item["content"] == "前端：React、TypeScript"
     assert [
-        item["versionId"]
-        for item in versions_response.json()["data"]["versions"]
+        item["versionId"] for item in versions_response.json()["data"]["versions"]
     ] == ["1"]
 
 
@@ -1137,7 +1236,7 @@ def test_duplicate_resume_copies_content_without_history_or_agent_context(
     source["resume"]["basic"]["headline"] = "Current source content"
     saved_source = client.put(
         f"/api/resumes/{source_id}",
-        json=source,
+        json=resume_save_payload(source),
     ).json()["data"]["resume"]
     with connect() as conn:
         conn.execute(
@@ -1190,6 +1289,181 @@ def test_duplicate_resume_copies_content_without_history_or_agent_context(
             ).fetchall()
         ]
     assert session_resume_ids == [source_id]
+
+
+def test_resume_commands_reject_invalid_template_references_and_rebind_copies(
+    client: TestClient,
+) -> None:
+    unknown_create = client.post(
+        "/api/resumes",
+        json={"title": "Unknown template", "template": "template-missing"},
+    )
+    assert unknown_create.json()["message"] == "TEMPLATE_NOT_FOUND"
+
+    template_response = client.post(
+        "/api/templates",
+        json={"template": template_artifact_item(name="Disposable template")},
+    )
+    template_id = template_response.json()["data"]["template"]["id"]
+    source_response = client.post(
+        "/api/resumes",
+        json={"title": "Custom source", "template": template_id},
+    )
+    source = source_response.json()["data"]["resume"]
+    source_id = source["id"]
+    deleted_source = client.post(
+        "/api/resumes",
+        json={"title": "Deleted custom source", "template": template_id},
+    ).json()["data"]["resume"]
+    client.post(f"/api/resumes/{deleted_source['id']}/trash")
+
+    client.post(f"/api/templates/{template_id}/trash")
+    rebound_source = client.get(f"/api/resumes/{source_id}").json()["data"][
+        "resume"
+    ]
+    deleted_resumes = client.get("/api/resumes?status=deleted").json()["data"][
+        "resumes"
+    ]
+    rebound_deleted_source = next(
+        item for item in deleted_resumes if item["id"] == deleted_source["id"]
+    )
+    deleted_create = client.post(
+        "/api/resumes",
+        json={"title": "Deleted template", "template": template_id},
+    )
+    rejected_save = client.put(
+        f"/api/resumes/{source_id}",
+        json=resume_save_payload(source, template=template_id),
+    )
+    versions_after_rejection = client.get(
+        f"/api/resumes/{source_id}/versions"
+    ).json()["data"]["versions"]
+    accepted_save = client.put(
+        f"/api/resumes/{source_id}",
+        json=resume_save_payload(rebound_source),
+    )
+    duplicate = client.post(f"/api/resumes/{source_id}/duplicate?locale=en")
+
+    assert rebound_source["template"] == "minimal"
+    assert rebound_deleted_source["template"] == "minimal"
+    assert deleted_create.json()["message"] == "TEMPLATE_NOT_FOUND"
+    assert rejected_save.json()["message"] == "TEMPLATE_NOT_FOUND"
+    assert accepted_save.json()["code"] == 0
+    assert [item["versionId"] for item in versions_after_rejection] == ["2", "1"]
+    assert duplicate.json()["data"]["resume"]["template"] == "minimal"
+
+
+def test_trash_template_rolls_back_rebind_files_when_a_resume_write_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template_id = client.post(
+        "/api/templates",
+        json={"template": template_artifact_item(name="Rollback template")},
+    ).json()["data"]["template"]["id"]
+    resume_ids = [
+        client.post(
+            "/api/resumes",
+            json={"title": title, "template": template_id},
+        ).json()["data"]["resume"]["id"]
+        for title in ("First rollback resume", "Second rollback resume")
+    ]
+    original_write = resume_service._write_resume_json
+    write_count = 0
+
+    def fail_second_write(
+        resume_id: str,
+        version_id: int,
+        resume_item: dict,
+    ) -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("simulated rebind write failure")
+        original_write(resume_id, version_id, resume_item)
+
+    monkeypatch.setattr(resume_service, "_write_resume_json", fail_second_write)
+
+    with pytest.raises(OSError, match="simulated rebind write failure"):
+        template_service.trash_template(template_id)
+
+    with connect() as conn:
+        template_row = conn.execute(
+            "SELECT deleted FROM templates WHERE id = ?",
+            (template_id,),
+        ).fetchone()
+        resume_rows = conn.execute(
+            "SELECT id, current_version_id FROM resumes ORDER BY id"
+        ).fetchall()
+    assert template_row["deleted"] == 0
+    assert {
+        row["id"]: row["current_version_id"] for row in resume_rows
+    } == {resume_id: 1 for resume_id in resume_ids}
+    for resume_id in resume_ids:
+        version_path = (
+            get_settings().storage_dir
+            / "resumes"
+            / resume_id
+            / "versions"
+            / "2.json"
+        )
+        assert not version_path.exists()
+        stored = client.get(f"/api/resumes/{resume_id}").json()["data"]["resume"]
+        assert stored["template"] == template_id
+
+
+def test_trash_template_cleans_rebind_files_when_default_update_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template_id = client.post(
+        "/api/templates",
+        json={"template": template_artifact_item(name="Default rollback template")},
+    ).json()["data"]["template"]["id"]
+    client.put(
+        "/api/workspace/default-template",
+        json={"templateId": template_id},
+    )
+    resume_id = client.post(
+        "/api/resumes",
+        json={"title": "Default rollback resume", "template": template_id},
+    ).json()["data"]["resume"]["id"]
+
+    def fail_default_update(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated default update failure")
+
+    monkeypatch.setattr(
+        template_service,
+        "store_default_template_id",
+        fail_default_update,
+    )
+
+    with pytest.raises(OSError, match="simulated default update failure"):
+        template_service.trash_template(template_id)
+
+    with connect() as conn:
+        template_row = conn.execute(
+            "SELECT deleted FROM templates WHERE id = ?",
+            (template_id,),
+        ).fetchone()
+        resume_row = conn.execute(
+            "SELECT current_version_id FROM resumes WHERE id = ?",
+            (resume_id,),
+        ).fetchone()
+        default_template_id = template_service.load_default_template_id(conn)
+    assert template_row["deleted"] == 0
+    assert resume_row["current_version_id"] == 1
+    assert default_template_id == template_id
+    version_path = (
+        get_settings().storage_dir
+        / "resumes"
+        / resume_id
+        / "versions"
+        / "2.json"
+    )
+    assert not version_path.exists()
+    stored = client.get(f"/api/resumes/{resume_id}").json()["data"]["resume"]
+    assert stored["template"] == template_id
 
 
 def test_duplicate_resume_title_keeps_copy_suffix_within_limit(
@@ -1275,34 +1549,6 @@ def test_duplicate_resume_keeps_prefix_related_copy_families_separate(
 
     assert longer_copy["title"] == "Backend Engineer - Copy"
     assert shorter_copy_2["title"] == "Backend - Copy(2)"
-
-
-def test_duplicate_resume_skips_legacy_copy_title_punctuation(
-    client: TestClient,
-) -> None:
-    english_source = client.post(
-        "/api/resumes",
-        json={"title": "Legacy"},
-    ).json()["data"]["resume"]
-    for title in ("Legacy - Copy", "Legacy - Copy (1)", "Legacy - Copy 2"):
-        client.post("/api/resumes", json={"title": title})
-
-    chinese_source = client.post(
-        "/api/resumes",
-        json={"title": "旧标题"},
-    ).json()["data"]["resume"]
-    for title in ("旧标题 - 副本", "旧标题 - 副本(1)", "旧标题 - 副本 2"):
-        client.post("/api/resumes", json={"title": title})
-
-    english_copy = client.post(
-        f"/api/resumes/{english_source['id']}/duplicate?locale=en"
-    ).json()["data"]["resume"]
-    chinese_copy = client.post(
-        f"/api/resumes/{chinese_source['id']}/duplicate?locale=zh"
-    ).json()["data"]["resume"]
-
-    assert english_copy["title"] == "Legacy - Copy(3)"
-    assert chinese_copy["title"] == "旧标题 - 副本（3）"
 
 
 def test_empty_resume_trash_physically_deletes_resumes_and_agent_sessions(
@@ -1577,17 +1823,20 @@ def test_template_command_flow_owns_identity_and_lifecycle(
 ) -> None:
     create_response = client.post(
         "/api/templates",
-        json={"template": minimal_template_definition()},
+        json={"template": template_artifact_item()},
     )
 
     assert create_response.status_code == 200
     created = create_response.json()["data"]["template"]
     template_id = created["id"]
-    assert template_id != "template-client-id"
     assert re.fullmatch(r"template-[A-Za-z0-9]{16}", template_id)
+    assert created["updatedAt"]
     assert created["isBuiltIn"] is False
 
-    update_payload = {**created, "name": "Backend Template"}
+    update_payload = {
+        **portable_template_definition(created),
+        "name": "Backend Template",
+    }
     update_response = client.put(
         f"/api/templates/{template_id}",
         json={"template": update_payload},
@@ -1632,12 +1881,133 @@ def test_template_command_flow_owns_identity_and_lifecycle(
     assert not template_dir.exists()
 
 
+def test_template_image_sources_require_uploaded_data_urls(
+    client: TestClient,
+) -> None:
+    template = template_artifact_item(name="Template image sources")
+    image = {
+        "id": "image-1",
+        "name": "Image 1",
+        "src": "https://images.example.invalid/remote.png",
+        "alt": "",
+        "x": 14,
+        "y": 18,
+        "width": 30,
+        "height": 20,
+        "opacity": 1,
+        "borderWidth": 0,
+        "borderColor": "#d4d4d8",
+        "borderRadius": 8,
+        "objectFit": "contain",
+        "visible": True,
+    }
+    template["layout"]["images"] = [image]
+
+    remote_response = client.post(
+        "/api/templates",
+        json={"template": template},
+    )
+
+    assert remote_response.status_code == 200
+    assert remote_response.json()["code"] == 40002
+    assert remote_response.json()["message"] == "VALIDATION_ERROR"
+    assert remote_response.json()["data"]["errors"][0]["loc"][-1] == "src"
+
+    template["layout"]["images"] = [
+        {
+            **image,
+            "src": "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+        }
+    ]
+    upload_response = client.post(
+        "/api/templates",
+        json={"template": template},
+    )
+
+    assert upload_response.status_code == 200
+    images = upload_response.json()["data"]["template"]["layout"]["images"]
+    assert images[0]["src"] == "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "width", "height", "message_fragment"),
+    [
+        (181, 18, 30, 20, "page width"),
+        (14, 278, 30, 20, "page height"),
+    ],
+)
+def test_template_images_must_fit_within_the_a4_page(
+    client: TestClient,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    message_fragment: str,
+) -> None:
+    template = template_artifact_item(name="Bounded template image")
+    template["layout"]["images"] = [
+        {
+            "id": "image-1",
+            "name": "Image 1",
+            "src": "",
+            "alt": "",
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "opacity": 1,
+            "borderWidth": 0,
+            "borderColor": "#d4d4d8",
+            "borderRadius": 8,
+            "objectFit": "contain",
+            "visible": True,
+        }
+    ]
+
+    response = client.post("/api/templates", json={"template": template})
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 40002
+    error = response.json()["data"]["errors"][0]
+    assert error["loc"][-3:] == ["layout", "images", 0]
+    assert message_fragment in error["msg"]
+
+
+def test_template_images_accept_the_exact_a4_page_edge(
+    client: TestClient,
+) -> None:
+    template = template_artifact_item(name="Edge aligned template image")
+    template["layout"]["images"] = [
+        {
+            "id": "image-1",
+            "name": "Image 1",
+            "src": "",
+            "alt": "",
+            "x": 180,
+            "y": 277,
+            "width": 30,
+            "height": 20,
+            "opacity": 1,
+            "borderWidth": 0,
+            "borderColor": "#d4d4d8",
+            "borderRadius": 8,
+            "objectFit": "contain",
+            "visible": True,
+        }
+    ]
+
+    response = client.post("/api/templates", json={"template": template})
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+
+
 def test_template_save_does_not_create_resume_versions(
     client: TestClient,
 ) -> None:
     create_response = client.post(
         "/api/templates",
-        json={"template": minimal_template_definition(name="Versionless Template")},
+        json={"template": template_artifact_item(name="Versionless Template")},
     )
 
     assert create_response.status_code == 200
@@ -1645,7 +2015,7 @@ def test_template_save_does_not_create_resume_versions(
     template_id = created["id"]
 
     update_payload = {
-        **created,
+        **portable_template_definition(created),
         "name": "Versionless Template Updated",
         "settings": {
             **created["settings"],
@@ -1684,11 +2054,11 @@ def test_empty_template_trash_physically_deletes_templates(
 ) -> None:
     first_id = client.post(
         "/api/templates",
-        json={"template": minimal_template_definition(name="First")},
+        json={"template": template_artifact_item(name="First")},
     ).json()["data"]["template"]["id"]
     second_id = client.post(
         "/api/templates",
-        json={"template": minimal_template_definition(name="Second")},
+        json={"template": template_artifact_item(name="Second")},
     ).json()["data"]["template"]["id"]
 
     client.post(f"/api/templates/{first_id}/trash")
@@ -1836,11 +2206,7 @@ def test_identical_resume_hash_does_not_create_new_version(
     )
     resume = create_response.json()["data"]["resume"]
     resume_id = resume["id"]
-    save_payload = {
-        **resume,
-        "updatedAt": "2026-05-17T01:00:00.000Z",
-        "templateSettings": None,
-    }
+    save_payload = resume_save_payload(resume, templateSettings=None)
 
     first_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
     second_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
@@ -1877,17 +2243,17 @@ def test_resume_autosave_persists_without_creating_history_version(
     created = create_response.json()["data"]
     resume = created["resume"]
     resume_id = resume["id"]
-    autosave_payload = {
-        **resume,
-        "resume": {
+    autosave_payload = resume_save_payload(
+        resume,
+        resume={
             **resume["resume"],
             "basic": {
                 **resume["resume"]["basic"],
                 "name": "Latest Autosaved Name",
             },
         },
-        "templateSettings": None,
-    }
+        templateSettings=None,
+    )
 
     autosave_response = client.put(
         f"/api/resumes/{resume_id}?saveMode=autosave",
@@ -1903,8 +2269,7 @@ def test_resume_autosave_persists_without_creating_history_version(
         == "Latest Autosaved Name"
     )
     assert [
-        item["versionId"]
-        for item in versions_after_autosave.json()["data"]["versions"]
+        item["versionId"] for item in versions_after_autosave.json()["data"]["versions"]
     ] == ["1"]
 
     latest_autosave_payload = {
@@ -1921,12 +2286,8 @@ def test_resume_autosave_persists_without_creating_history_version(
         f"/api/resumes/{resume_id}?saveMode=autosave",
         json=latest_autosave_payload,
     )
-    latest_autosave_version_id = latest_autosave_response.json()["data"][
-        "versionId"
-    ]
-    versions_after_latest_autosave = client.get(
-        f"/api/resumes/{resume_id}/versions"
-    )
+    latest_autosave_version_id = latest_autosave_response.json()["data"]["versionId"]
+    versions_after_latest_autosave = client.get(f"/api/resumes/{resume_id}/versions")
     versions_dir = get_settings().storage_dir / "resumes" / resume_id / "versions"
 
     assert latest_autosave_version_id != autosave_version_id
@@ -1948,10 +2309,7 @@ def test_resume_autosave_persists_without_creating_history_version(
         item["versionId"]
         for item in versions_after_checkpoint.json()["data"]["versions"]
     ] == [latest_autosave_version_id, "1"]
-    assert (
-        checkpoint_response.json()["data"]["versionId"]
-        == latest_autosave_version_id
-    )
+    assert checkpoint_response.json()["data"]["versionId"] == latest_autosave_version_id
 
 
 def test_master_key_generated_once(client: TestClient) -> None:
@@ -2074,11 +2432,181 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
     assert row["enabled"] == 0
 
 
-def test_migrate_db_rebuilds_legacy_llm_configs_table(
+def test_ensure_database_schema_initializes_fresh_database_idempotently_as_v1(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from app.db.migrations import LLM_CONFIG_REQUIRED_COLUMNS, migrate_db
+    from app.db.schema import CURRENT_SCHEMA_VERSION, ensure_database_schema
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+
+    ensure_database_schema()
+    ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+        resume_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(resumes)")
+        }
+        template_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(templates)")
+        }
+
+    assert user_version == CURRENT_SCHEMA_VERSION == 1
+    assert {"workspace_state", "resumes", "templates", "llm_configs"} <= tables
+    assert resume_columns == {
+        "id",
+        "current_version_id",
+        "title",
+        "saved_at",
+        "deleted",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    }
+    assert template_columns == {
+        "id",
+        "name",
+        "saved_at",
+        "deleted",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    }
+    get_settings.cache_clear()
+
+
+def test_ensure_database_schema_rejects_unversioned_nonempty_database(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.schema import (
+        UnsupportedDatabaseSchemaError,
+        ensure_database_schema,
+    )
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 0")
+        conn.execute(
+            """
+            INSERT INTO workspace_state (id, default_template_id)
+            VALUES (1, 'classic')
+            """
+        )
+
+    with pytest.raises(UnsupportedDatabaseSchemaError) as exc_info:
+        ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        default_template_id = conn.execute(
+            "SELECT default_template_id FROM workspace_state WHERE id = 1"
+        ).fetchone()[0]
+
+    assert str(db_path) in str(exc_info.value)
+    assert "move or delete" in str(exc_info.value).lower()
+    assert user_version == 0
+    assert default_template_id == "classic"
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("initial_user_version", [0, 1])
+def test_ensure_database_schema_rejects_modified_index_without_repairing_it(
+    tmp_path: Path,
+    monkeypatch,
+    initial_user_version: int,
+) -> None:
+    from app.db.schema import (
+        UnsupportedDatabaseSchemaError,
+        ensure_database_schema,
+    )
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        if initial_user_version == 0:
+            conn.execute("PRAGMA user_version = 0")
+        conn.execute("DROP INDEX idx_resumes_status")
+        conn.execute("CREATE INDEX idx_resumes_status ON resumes(title)")
+
+    with pytest.raises(UnsupportedDatabaseSchemaError):
+        ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        indexed_columns = [
+            row[2]
+            for row in conn.execute("PRAGMA index_info(idx_resumes_status)")
+        ]
+        stored_user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    assert indexed_columns == ["title"]
+    assert stored_user_version == initial_user_version
+    get_settings.cache_clear()
+
+
+def test_ensure_database_schema_rejects_future_schema_without_changing_version(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.schema import (
+        UnsupportedDatabaseSchemaError,
+        ensure_database_schema,
+    )
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(UnsupportedDatabaseSchemaError):
+        ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    assert user_version == 2
+    get_settings.cache_clear()
+
+
+def test_ensure_database_schema_rejects_legacy_llm_configs_without_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.schema import (
+        UnsupportedDatabaseSchemaError,
+        ensure_database_schema,
+    )
 
     db_path = tmp_path / "app.db"
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
@@ -2105,22 +2633,28 @@ def test_migrate_db_rebuilds_legacy_llm_configs_table(
             """,
         )
 
-    migrate_db()
+    with pytest.raises(UnsupportedDatabaseSchemaError):
+        ensure_database_schema()
 
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_configs)")}
         row_count = conn.execute("SELECT COUNT(*) FROM llm_configs").fetchone()[0]
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
 
-    assert LLM_CONFIG_REQUIRED_COLUMNS.issubset(columns)
-    assert row_count == 0
+    assert columns == {"id", "client_id", "name", "provider", "model"}
+    assert row_count == 1
+    assert user_version == 0
     get_settings.cache_clear()
 
 
-def test_migrate_db_marks_legacy_resume_versions_as_checkpoints(
+def test_ensure_database_schema_rejects_legacy_resume_versions_without_mutation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from app.db.migrations import migrate_db
+    from app.db.schema import (
+        UnsupportedDatabaseSchemaError,
+        ensure_database_schema,
+    )
 
     db_path = tmp_path / "app.db"
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
@@ -2153,22 +2687,23 @@ def test_migrate_db_marks_legacy_resume_versions_as_checkpoints(
             """
         )
 
-    migrate_db()
+    with pytest.raises(UnsupportedDatabaseSchemaError):
+        ensure_database_schema()
 
     with sqlite3.connect(db_path) as conn:
-        columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(resume_versions)")
-        }
-        version_kind = conn.execute(
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(resume_versions)")}
+        stored_version = conn.execute(
             """
-            SELECT kind
+            SELECT content_hash
             FROM resume_versions
             WHERE resume_id = 'resume-legacy' AND version_id = 1
             """
         ).fetchone()[0]
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
 
-    assert "kind" in columns
-    assert version_kind == "checkpoint"
+    assert "kind" not in columns
+    assert stored_version == "hash"
+    assert user_version == 0
     get_settings.cache_clear()
 
 
@@ -2643,10 +3178,10 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
             "conversation": [],
             "files": [],
             "locale": "en",
-                "resume": minimal_resume_document(
-                    name="Avery",
-                    summary="Frontend engineer with React project experience.",
-                ),
+            "resume": minimal_resume_document(
+                name="Avery",
+                summary="Frontend engineer with React project experience.",
+            ),
             "jobBrief": "React TypeScript",
             "keywordMatch": {
                 "matched": ["React"],
@@ -3915,12 +4450,12 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                     "text": "Find missing keywords and edit my summary",
                 },
             ],
-                "files": [attachment],
-                "locale": "en",
-                "resume": minimal_resume_document(
-                    name="Avery",
-                    summary="Frontend engineer with React project experience.",
-                ),
+            "files": [attachment],
+            "locale": "en",
+            "resume": minimal_resume_document(
+                name="Avery",
+                summary="Frontend engineer with React project experience.",
+            ),
             "jobBrief": "React TypeScript",
             "keywordMatch": {
                 "matched": ["React"],
@@ -4044,7 +4579,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             ],
             "files": [],
             "locale": "zh",
-                "resume": resume,
+            "resume": resume,
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -4133,8 +4668,8 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
             "messages": [],
             "conversation": [],
             "files": [],
-                "locale": "zh",
-                "resume": minimal_resume_document(name="姓名"),
+            "locale": "zh",
+            "resume": minimal_resume_document(name="姓名"),
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -4248,22 +4783,22 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
                                 "reason": "移除重复元数据后重新提交完整项目条目。",
                                 "operation": {
                                     "type": "insert_section",
-                                        "section": {
-                                            "section_type": "project",
-                                            "title": "项目经历",
-                                            "items": [
-                                                {
-                                                    "name": "电商后台管理系统",
-                                                    "role": "后端开发",
-                                                    "techStack": [
-                                                        "Spring Boot",
-                                                        "MySQL",
-                                                        "Redis",
-                                                        "Docker",
-                                                    ],
-                                                    "period": "2023.03 - 2023.06",
-                                                    "url": "",
-                                                    "description": "",
+                                    "section": {
+                                        "section_type": "project",
+                                        "title": "项目经历",
+                                        "items": [
+                                            {
+                                                "name": "电商后台管理系统",
+                                                "role": "后端开发",
+                                                "techStack": [
+                                                    "Spring Boot",
+                                                    "MySQL",
+                                                    "Redis",
+                                                    "Docker",
+                                                ],
+                                                "period": "2023.03 - 2023.06",
+                                                "url": "",
+                                                "description": "",
                                                 "highlights": [
                                                     (
                                                         "设计并实现订单模块，通过 SQL "
@@ -5572,13 +6107,16 @@ def test_safe_section_patch_rejects_conflicting_new_and_legacy_kinds() -> None:
 
 
 def test_safe_section_patch_allows_title_only_and_rejects_kind_changes() -> None:
-    assert _safe_section_patch(
-        {
-            "section_type": "work experience",
-            "kind": "work",
-            "layout": "timeline",
-        }
-    ) == {}
+    assert (
+        _safe_section_patch(
+            {
+                "section_type": "work experience",
+                "kind": "work",
+                "layout": "timeline",
+            }
+        )
+        == {}
+    )
     assert _safe_section_patch({"title": " Work Experience "}) == {
         "title": "Work Experience"
     }
@@ -6183,7 +6721,7 @@ def test_agent_chat_uses_provided_jd_url(
             ],
             "files": [],
             "locale": "zh",
-                "resume": resume,
+            "resume": resume,
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -6652,10 +7190,10 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
             "conversation": [{"role": "user", "text": "优化个人简介"}],
             "files": [],
             "locale": "zh",
-                "resume": minimal_resume_document(
-                    name="王小明",
-                    summary="有前端项目经验。",
-                ),
+            "resume": minimal_resume_document(
+                name="王小明",
+                summary="有前端项目经验。",
+            ),
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -6929,10 +7467,10 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
             "conversation": [{"role": "user", "text": "优化个人简介"}],
             "files": [],
             "locale": "zh",
-                "resume": minimal_resume_document(
-                    name="王小明",
-                    summary="有前端项目经验。",
-                ),
+            "resume": minimal_resume_document(
+                name="王小明",
+                summary="有前端项目经验。",
+            ),
             "jobBrief": "",
             "keywordMatch": {
                 "matched": ["React"],
@@ -7027,34 +7565,174 @@ def test_agent_chat_streams_plain_model_tokens(
     assert "event: tools" not in body
 
 
-def test_import_resume_accepts_json_upload(client: TestClient) -> None:
-    resume_document = minimal_resume_item(title="Avery")["resume"]
+@pytest.mark.parametrize("body", [b"{not-json", b"\xff"])
+def test_import_rejects_invalid_json_upload(
+    client: TestClient,
+    body: bytes,
+) -> None:
+    for endpoint in ("/api/import/resume", "/api/import/templates"):
+        response = client.post(
+            endpoint,
+            files={
+                "file": ("artifact.json", body, "application/json"),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["code"] == 40000
+        assert response.json()["message"] == "JSON_UPLOAD_INVALID"
+
+
+def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
+    resume_item = resume_artifact_item(title="Avery")
     response = client.post(
         "/api/import/resume",
         files={
             "file": (
                 "resume.json",
-                json.dumps(resume_document).encode("utf-8"),
+                json.dumps(
+                    {
+                        "format": "resumate.resume",
+                        "formatVersion": 1,
+                        "templates": [],
+                        "resumes": [resume_item],
+                    }
+                ).encode("utf-8"),
                 "application/json",
             ),
         },
     )
 
     assert response.status_code == 200
+    assert response.json()["data"]["templates"] == []
     resume = response.json()["data"]["resumes"][0]
-    assert re.fullmatch(r"[A-Za-z0-9]{16}", resume["id"])
+    assert set(resume) == {
+        "title",
+        "resume",
+        "jobBrief",
+        "typography",
+        "template",
+        "templateSettings",
+    }
     assert resume["resume"]["basic"]["name"] == "Avery"
+    assert resume["templateSettings"] is None
 
 
-def test_import_resume_rejects_noncanonical_list_item_content(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        minimal_resume_item(title="Legacy")["resume"],
+        {"resumes": [resume_artifact_item(title="Legacy")]},
+        {
+            "format": "resumate.resume",
+            "format_version": 1,
+            "templates": [],
+            "resumes": [resume_artifact_item(title="Snake case")],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 2,
+            "templates": [],
+            "resumes": [resume_artifact_item(title="Future")],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [{**resume_artifact_item(), "id": "legacy-id"}],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [
+                {
+                    key: value
+                    for key, value in resume_artifact_item().items()
+                    if key != "templateSettings"
+                }
+            ],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [
+                {
+                    **resume_artifact_item(),
+                    "typography": {"fontFamily": "inter", "fontSize": 13},
+                }
+            ],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [
+                {
+                    **resume_artifact_item(),
+                    "templateSettings": {"unknownSetting": 1},
+                }
+            ],
+        },
+        {
+            "format": "resumate.resume",
+            "formatVersion": 1,
+            "templates": [],
+            "resumes": [
+                {
+                    **resume_artifact_item(),
+                    "templateSettings": {"pagePaddingX": None},
+                }
+            ],
+        },
+    ],
+)
+def test_import_resume_rejects_non_v1_artifacts(
     client: TestClient,
+    payload: object,
 ) -> None:
     response = client.post(
         "/api/import/resume",
         files={
             "file": (
                 "resume.json",
-                json.dumps(noncanonical_list_resume()).encode("utf-8"),
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] in {
+        "RESUME_ARTIFACT_INVALID",
+        "RESUME_ARTIFACT_VERSION_UNSUPPORTED",
+    }
+
+
+def test_import_resume_rejects_noncanonical_list_item_content(
+    client: TestClient,
+) -> None:
+    artifact_item = resume_artifact_item(title="Invalid List Resume")
+    payload = {
+        "format": "resumate.resume",
+        "formatVersion": 1,
+        "templates": [],
+        "resumes": [{**artifact_item, "resume": noncanonical_list_resume()}],
+    }
+    response = client.post(
+        "/api/import/resume",
+        files={
+            "file": (
+                "resume.json",
+                json.dumps(payload).encode("utf-8"),
                 "application/json",
             ),
         },
@@ -7062,6 +7740,248 @@ def test_import_resume_rejects_noncanonical_list_item_content(
 
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "RESUME_DOCUMENT_INVALID"
+
+
+def test_import_resume_accepts_embedded_custom_template_bundle(
+    client: TestClient,
+) -> None:
+    template = template_artifact_item(name="Portable custom template")
+    resume = {
+        **resume_artifact_item(title="Portable resume"),
+        "template": "custom:0",
+        "templateSettings": {"pagePaddingX": 10},
+    }
+    payload = {
+        "format": "resumate.resume",
+        "formatVersion": 1,
+        "templates": [{"ref": "custom:0", "definition": template}],
+        "resumes": [resume],
+    }
+
+    response = client.post(
+        "/api/import/resume",
+        files={
+            "file": (
+                "resume.json",
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+    assert response.json()["data"] == {
+        "templates": [{"ref": "custom:0", "definition": template}],
+        "resumes": [resume],
+    }
+
+
+def test_import_resume_accepts_multiple_resumes_sharing_embedded_template(
+    client: TestClient,
+) -> None:
+    template = template_artifact_item(name="Shared portable template")
+    resumes = [
+        {
+            **resume_artifact_item(title="First portable resume"),
+            "template": "custom:0",
+            "templateSettings": {"pagePaddingX": 10},
+        },
+        {
+            **resume_artifact_item(title="Second portable resume"),
+            "template": "custom:0",
+            "templateSettings": None,
+        },
+    ]
+    payload = {
+        "format": "resumate.resume",
+        "formatVersion": 1,
+        "templates": [{"ref": "custom:0", "definition": template}],
+        "resumes": resumes,
+    }
+
+    response = client.post(
+        "/api/import/resume",
+        files={
+            "file": (
+                "resume.json",
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+    assert response.json()["data"] == {
+        "templates": [{"ref": "custom:0", "definition": template}],
+        "resumes": resumes,
+    }
+
+
+@pytest.mark.parametrize(
+    "templates, template_id",
+    [
+        ([], "custom:0"),
+        (
+            [{"ref": "custom:01", "definition": template_artifact_item()}],
+            "custom:01",
+        ),
+        ([{"ref": "custom:0", "definition": template_artifact_item()}], "minimal"),
+        (
+            [
+                {"ref": "custom:0", "definition": template_artifact_item()},
+                {"ref": "custom:0", "definition": template_artifact_item()},
+            ],
+            "custom:0",
+        ),
+        ([], "template-local-id"),
+    ],
+)
+def test_import_resume_rejects_invalid_custom_template_references(
+    client: TestClient,
+    templates: list[dict],
+    template_id: str,
+) -> None:
+    payload = {
+        "format": "resumate.resume",
+        "formatVersion": 1,
+        "templates": templates,
+        "resumes": [{**resume_artifact_item(), "template": template_id}],
+    }
+
+    response = client.post(
+        "/api/import/resume",
+        files={
+            "file": (
+                "resume.json",
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == "RESUME_ARTIFACT_INVALID"
+
+
+def test_import_templates_accepts_only_v1_artifact(client: TestClient) -> None:
+    template = template_artifact_item(name="Imported template")
+    payload = {
+        "format": "resumate.template",
+        "formatVersion": 1,
+        "templates": [template],
+    }
+
+    response = client.post(
+        "/api/import/templates",
+        files={
+            "file": (
+                "template.json",
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+    legacy_response = client.post(
+        "/api/import/templates",
+        files={
+            "file": (
+                "legacy-template.json",
+                json.dumps({"customTemplates": [template]}).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["templates"] == [template]
+    assert legacy_response.status_code == 200
+    assert legacy_response.json()["message"] == "TEMPLATE_ARTIFACT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "payload, expected_message",
+    [
+        (
+            {
+                "format": "resumate.template",
+                "formatVersion": 2,
+                "templates": [template_artifact_item()],
+            },
+            "TEMPLATE_ARTIFACT_VERSION_UNSUPPORTED",
+        ),
+        (
+            {
+                "format": "resumate.template",
+                "formatVersion": 1,
+                "templates": [],
+            },
+            "TEMPLATE_ARTIFACT_INVALID",
+        ),
+        (
+            {
+                "format": "resumate.template",
+                "formatVersion": 1,
+                "templates": [{**template_artifact_item(), "updatedAt": "legacy"}],
+            },
+            "TEMPLATE_ARTIFACT_INVALID",
+        ),
+        (
+            {
+                "format": "resumate.template",
+                "formatVersion": 1,
+                "templates": [
+                    {
+                        **template_artifact_item(),
+                        "layout": {
+                            key: value
+                            for key, value in template_artifact_item()["layout"].items()
+                            if key != "timelineItemLayout"
+                        },
+                    }
+                ],
+            },
+            "TEMPLATE_ARTIFACT_INVALID",
+        ),
+        (
+            {
+                "format": "resumate.template",
+                "formatVersion": 1,
+                "templates": [
+                    {
+                        **template_artifact_item(),
+                        "settings": {
+                            **template_artifact_item()["settings"],
+                            "bodyColor": "not-a-color",
+                        },
+                    }
+                ],
+            },
+            "TEMPLATE_ARTIFACT_INVALID",
+        ),
+    ],
+)
+def test_import_templates_rejects_non_v1_artifacts(
+    client: TestClient,
+    payload: object,
+    expected_message: str,
+) -> None:
+    response = client.post(
+        "/api/import/templates",
+        files={
+            "file": (
+                "template.json",
+                json.dumps(payload).encode("utf-8"),
+                "application/json",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == expected_message
 
 
 def test_export_pdf_creates_download(client: TestClient, monkeypatch) -> None:

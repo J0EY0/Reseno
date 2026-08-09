@@ -14,7 +14,6 @@ from app.config import get_settings
 from app.db.connection import connect
 from app.services.workspace_state import (
     DEFAULT_TEMPLATE_ID,
-    WORKSPACE_DATA_LOCALE,
     load_default_template_id,
     store_default_template_id,
 )
@@ -30,9 +29,6 @@ BUILT_IN_TEMPLATE_IDS = {
     "executive",
     "academic",
 }
-DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
-
-
 @dataclass(frozen=True)
 class TemplateCatalog:
     """Active templates together with the currently selected default."""
@@ -138,27 +134,22 @@ def _save_template_item(
         """
         INSERT INTO templates (
             id,
-            locale,
             name,
             saved_at,
             deleted,
             deleted_at,
-            purged,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
-            locale = excluded.locale,
             name = excluded.name,
             saved_at = excluded.saved_at,
             deleted = excluded.deleted,
             deleted_at = excluded.deleted_at,
-            purged = 0,
             updated_at = CURRENT_TIMESTAMP
         """,
         (
             template_id,
-            WORKSPACE_DATA_LOCALE,
             _template_name(template_item),
             saved_at,
             int(deleted),
@@ -178,10 +169,10 @@ def _load_template_items(
         """
         SELECT id, deleted_at, saved_at
         FROM templates
-        WHERE locale = ? AND deleted = ? AND purged = 0
+        WHERE deleted = ?
         ORDER BY saved_at DESC, updated_at DESC
         """,
-        (WORKSPACE_DATA_LOCALE, int(deleted)),
+        (int(deleted),),
     ).fetchall()
 
     items: list[dict[str, Any]] = []
@@ -227,7 +218,7 @@ def _template_row(
             f"""
             SELECT id, name, saved_at, deleted, deleted_at
             FROM templates
-            WHERE id = ? AND purged = 0 {deleted_clause}
+            WHERE id = ? {deleted_clause}
             """,
             (safe_template_id,),
         ).fetchone(),
@@ -257,7 +248,9 @@ def _require_custom_template_row(
     return row
 
 
-def _is_visible_template(conn: Connection, template_id: str) -> bool:
+def is_visible_template(conn: Connection, template_id: str) -> bool:
+    """Return whether a template can be selected by a resume."""
+
     safe_template_id = _validate_template_id(template_id.strip())
     if safe_template_id in BUILT_IN_TEMPLATE_IDS:
         return True
@@ -265,31 +258,26 @@ def _is_visible_template(conn: Connection, template_id: str) -> bool:
     return _template_row(conn, safe_template_id) is not None
 
 
-def _normalize_template_payload(
+def is_deleted_template(conn: Connection, template_id: str) -> bool:
+    """Return whether a custom template exists in the recycle bin."""
+
+    safe_template_id = _validate_template_id(template_id.strip())
+    if safe_template_id in BUILT_IN_TEMPLATE_IDS:
+        return False
+
+    row = _template_row(conn, safe_template_id, include_deleted=True)
+    return row is not None and bool(row["deleted"])
+
+
+def _build_template_item(
     *,
     template_id: str,
     payload: dict[str, Any],
     saved_at: str,
 ) -> dict[str, Any]:
-    preset = payload.get("preset")
-    name = payload.get("name")
-    description = payload.get("description")
-    layout = payload.get("layout")
-    typography = payload.get("typography")
-    settings = payload.get("settings")
-
     return {
+        **payload,
         "id": _validate_template_id(template_id.strip()),
-        "preset": preset if isinstance(preset, str) and preset.strip() else "minimal",
-        "name": name.strip()
-        if isinstance(name, str) and name.strip()
-        else "Custom Template",
-        "description": description.strip() if isinstance(description, str) else "",
-        "layout": layout if isinstance(layout, dict) else {"images": []},
-        "typography": (
-            typography if isinstance(typography, dict) else DEFAULT_TYPOGRAPHY
-        ),
-        "settings": settings if isinstance(settings, dict) else {},
         "updatedAt": saved_at,
         "isBuiltIn": False,
     }
@@ -330,7 +318,7 @@ def create_template(payload: dict[str, Any]) -> dict[str, Any]:
     with connect() as conn:
         conn.execute("BEGIN")
         template_id = _allocate_template_id(conn)
-        template_item = _normalize_template_payload(
+        template_item = _build_template_item(
             template_id=template_id,
             payload=payload,
             saved_at=saved_at,
@@ -353,7 +341,7 @@ def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]
     saved_at = _utc_now()
     with connect() as conn:
         row = _require_custom_template_row(conn, template_id)
-        template_item = _normalize_template_payload(
+        template_item = _build_template_item(
             template_id=row["id"],
             payload=payload,
             saved_at=saved_at,
@@ -375,27 +363,53 @@ def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]
 def trash_template(template_id: str) -> dict[str, Any]:
     """Move a custom template into the recycle bin."""
 
+    # Imported locally because resume commands validate templates through this
+    # module. The lifecycle command owns both updates in one SQLite transaction.
+    from app.services.resumes import (
+        cleanup_resume_version_files,
+        rebind_current_resume_template_references,
+    )
+
     deleted_at = _utc_now()
-    with connect() as conn:
-        row = _require_custom_template_row(conn, template_id)
-        template_item = _read_template_json(row["id"])
-        default_template_id = load_default_template_id(conn)
+    rebind_result = None
+    try:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _require_custom_template_row(conn, template_id)
+            template_item = _read_template_json(row["id"])
+            default_template_id = load_default_template_id(conn)
+            fallback_template_id = (
+                DEFAULT_TEMPLATE_ID
+                if default_template_id == row["id"]
+                else default_template_id
+            )
 
-        conn.execute("BEGIN")
-        if default_template_id == row["id"]:
-            store_default_template_id(conn, DEFAULT_TEMPLATE_ID)
-        conn.execute(
-            """
-            UPDATE templates
-            SET deleted = 1,
-                deleted_at = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (deleted_at, row["id"]),
-        )
-        conn.execute("COMMIT")
+            rebind_result = rebind_current_resume_template_references(
+                conn,
+                source_template_id=row["id"],
+                target_template_id=fallback_template_id,
+                saved_at=deleted_at,
+            )
+            if default_template_id == row["id"]:
+                store_default_template_id(conn, DEFAULT_TEMPLATE_ID)
+            conn.execute(
+                """
+                UPDATE templates
+                SET deleted = 1,
+                    deleted_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (deleted_at, row["id"]),
+            )
+            conn.execute("COMMIT")
+    except Exception:
+        if rebind_result is not None:
+            cleanup_resume_version_files(rebind_result.created_versions)
+        raise
 
+    assert rebind_result is not None
+    cleanup_resume_version_files(rebind_result.obsolete_autosaves)
     return {
         "template": {
             **template_item,
@@ -463,9 +477,8 @@ def empty_template_trash() -> dict[str, Any]:
             """
             SELECT id
             FROM templates
-            WHERE locale = ? AND deleted = 1 AND purged = 0
+            WHERE deleted = 1
             """,
-            (WORKSPACE_DATA_LOCALE,),
         ).fetchall()
         template_ids = [row["id"] for row in rows]
         if template_ids:
@@ -487,7 +500,7 @@ def save_default_template(template_id: str) -> dict[str, Any]:
 
     safe_template_id = _validate_template_id(template_id.strip())
     with connect() as conn:
-        if not _is_visible_template(conn, safe_template_id):
+        if not is_visible_template(conn, safe_template_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Template not found.",

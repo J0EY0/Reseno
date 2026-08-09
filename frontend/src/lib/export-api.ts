@@ -1,11 +1,17 @@
 import { apiRoutes, fetchApiResource, requestApi } from "@/lib/api-client";
+import { isBuiltinTemplateId } from "@/lib/templates";
 import type {
   ExportResumeImagesRequest,
   ExportResumeImagesResponse,
   ExportResumePdfRequest,
   ExportResumePdfResponse,
+  ResumeArtifactItem,
+  ResumeArtifactV1,
 } from "@/types/api";
-import type { ResumeWorkspaceItem } from "@/types/resume";
+import type {
+  ResumeTemplateDefinition,
+  ResumeWorkspaceItem,
+} from "@/types/resume";
 
 interface DownloadableExport {
   downloadUrl: string;
@@ -54,16 +60,59 @@ export async function downloadExportedPdf(result: ExportResumePdfResponse) {
   await downloadExportedFile(result);
 }
 
-export function downloadResumeJson(resume: ResumeWorkspaceItem) {
-  const exportDocument = {
-    id: resume.id,
-    title: resume.title,
-    updatedAt: resume.updatedAt,
-    resume: resume.resume,
-    typography: resume.typography,
-    template: resume.template,
-    templateSettings: resume.templateSettings,
+function createTemplateArtifactDefinition(
+  template: ResumeTemplateDefinition,
+) {
+  return {
+    preset: template.preset,
+    name: template.name,
+    description: template.description,
+    layout: template.layout,
+    typography: template.typography,
+    settings: template.settings,
   };
+}
+
+export function createResumeArtifact(
+  resume: ResumeWorkspaceItem,
+  templateDefinition: ResumeTemplateDefinition,
+): ResumeArtifactV1 {
+  const templateId = resume.template;
+  const isBuiltInTemplate = isBuiltinTemplateId(templateId);
+
+  if (!isBuiltInTemplate && templateDefinition.id !== templateId) {
+    throw new Error("The resume's custom template definition is unavailable.");
+  }
+
+  const exportDocument: ResumeArtifactItem = {
+    title: resume.title,
+    resume: resume.resume,
+    jobBrief: resume.jobBrief,
+    typography: resume.typography,
+    template: isBuiltInTemplate ? templateId : "custom:0",
+    templateSettings: resume.templateSettings ?? null,
+  };
+
+  return {
+    format: "resumate.resume",
+    formatVersion: 1,
+    templates: isBuiltInTemplate
+      ? []
+      : [
+          {
+            ref: "custom:0",
+            definition: createTemplateArtifactDefinition(templateDefinition),
+          },
+        ],
+    resumes: [exportDocument],
+  };
+}
+
+export function downloadResumeJson(
+  resume: ResumeWorkspaceItem,
+  templateDefinition: ResumeTemplateDefinition,
+) {
+  const artifact = createResumeArtifact(resume, templateDefinition);
   const normalizedName = resume.title
     .trim()
     .replace(/[\\/:*?"<>|]+/g, "-")
@@ -72,7 +121,7 @@ export function downloadResumeJson(resume: ResumeWorkspaceItem) {
     .join("")
     .replace(/^[ ._-]+|[ ._-]+$/g, "");
   const fileName = `${normalizedName || "resume"}.json`;
-  const json = `${JSON.stringify({ resumes: [exportDocument] }, null, 2)}\n`;
+  const json = `${JSON.stringify(artifact, null, 2)}\n`;
 
   downloadBlob(
     new Blob([json], { type: "application/json;charset=utf-8" }),

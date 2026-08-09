@@ -61,7 +61,6 @@ export function ResumeGallery({
   t,
   resumes,
   templates,
-  defaultTemplateId,
   isImporting,
   isCreating,
   onOpenResume,
@@ -74,7 +73,6 @@ export function ResumeGallery({
   t: AppMessages;
   resumes: ResumeWorkspaceItem[];
   templates: ResumeTemplateDefinition[];
-  defaultTemplateId: string;
   isImporting: boolean;
   isCreating: boolean;
   onOpenResume: (resumeId: string) => void;
@@ -269,11 +267,7 @@ export function ResumeGallery({
         ) : null}
 
         {paginatedResumes.map((item) => {
-          const template = getTemplateById(
-            templates,
-            item.template,
-            defaultTemplateId,
-          );
+          const template = getTemplateById(templates, item.template);
           const isSelected = selectedIdSet.has(item.id);
           const showCardDeleteAction =
             isSelecting && isSelected && selectedResumeIds.length === 1;
@@ -354,8 +348,8 @@ export function ResumeGallery({
                             <ResumePreview
                               t={t}
                               resume={item.resume}
-                              fontFamily={item.typography?.fontFamily ?? "inter"}
-                              fontSize={item.typography?.fontSize ?? 15}
+                              fontFamily={item.typography.fontFamily}
+                              fontSize={item.typography.fontSize}
                               template={template}
                               variant="thumbnail"
                             />

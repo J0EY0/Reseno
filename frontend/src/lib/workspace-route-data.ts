@@ -89,11 +89,7 @@ const workspaceRouteDataPathByKind = {
 } as const satisfies Record<LoadableWorkspaceRouteDataKind, string>;
 
 export function getWorkspaceRouteDataPath(
-  routeKind: WorkspaceRouteDataKind,
-): string | null {
-  if (routeKind === "unknown") {
-    return null;
-  }
-
+  routeKind: LoadableWorkspaceRouteDataKind,
+): string {
   return workspaceRouteDataPathByKind[routeKind];
 }

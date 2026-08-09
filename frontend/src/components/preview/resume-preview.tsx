@@ -49,6 +49,7 @@ interface ResumePreviewProps {
   template: ResumeTemplateDefinition
   variant?: 'default' | 'thumbnail'
   editableTemplateImages?: boolean
+  showEmptyTemplateImagePlaceholders?: boolean
   diffs?: ResumeDraftDiff[]
   onPaginationReadyChange?: (ready: boolean) => void
   onMoveTemplateImage?: (
@@ -363,37 +364,15 @@ function AvatarPreview({
   )
 }
 
-function isDefaultTemplateImagePlaceholder(image: ResumeTemplateImageElement) {
-  return !image.src && /^Image \d+$/.test(image.name)
-}
-
-function getSafeTemplateImageFrame(
-  image: ResumeTemplateImageElement,
-  layout: ResumeTemplateLayout,
-) {
-  const isLegacyTopLeftDefault =
-    isDefaultTemplateImagePlaceholder(image) && image.x <= 16 && image.y <= 20
-
-  if (!isLegacyTopLeftDefault || layout.avatarPosition === 'right') {
-    return image
-  }
-
-  return {
-    ...image,
-    x: 166,
-    y: 18,
-  }
-}
-
 function TemplateImages({
   images,
-  layout,
   editable = false,
+  showEmptyPlaceholders = false,
   onMoveImage,
 }: {
-  images?: ResumeTemplateImageElement[]
-  layout: ResumeTemplateLayout
+  images: ResumeTemplateImageElement[]
   editable?: boolean
+  showEmptyPlaceholders?: boolean
   onMoveImage?: (
     imageId: string,
     patch: Pick<ResumeTemplateImageElement, 'x' | 'y'>,
@@ -410,7 +389,11 @@ function TemplateImages({
     height: number
     pxPerMm: number
   } | null>(null)
-  const visibleImages = (images ?? []).filter((image) => image.visible)
+  const visibleImages = images.filter(
+    (image) =>
+      image.visible &&
+      (showEmptyPlaceholders || image.src.trim().length > 0),
+  )
 
   if (visibleImages.length === 0) {
     return null
@@ -497,12 +480,11 @@ function TemplateImages({
         editable ? 'z-20' : 'z-0',
       )}
     >
-      {visibleImages.map((image) => {
-        const frame = getSafeTemplateImageFrame(image, layout)
-
+      {visibleImages.map((frame) => {
         return (
           <div
-            key={image.id}
+            key={frame.id}
+            data-template-image-frame="true"
             className={cn(
               'absolute flex min-h-6 min-w-6 items-center justify-center overflow-hidden text-center text-[9px] font-medium text-slate-400',
               !frame.src && 'bg-white/10',
@@ -623,7 +605,7 @@ function StandardBasicInfo({
   const avatarPosition = layout.avatarPosition
   const hasAvatar = avatarPosition !== 'none' && Boolean(basic.avatar.trim())
   const shouldFloatSideAvatar =
-    hasAvatar && !isProfile && avatarPosition !== 'center'
+    hasAvatar && layout.basicInfo === 'centered' && avatarPosition !== 'center'
   const contactItems = getContactItems(basic)
   const avatar = hasAvatar ? (
     <AvatarPreview
@@ -682,6 +664,30 @@ function StandardBasicInfo({
       {contactContent}
     </>
   )
+  const basicInfoContent = isSplit ? (
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-end gap-8">
+      <div className="text-left">{identityContent}</div>
+      <div className="min-w-0">
+        <ContactLine
+          items={contactItems}
+          enableLinks={enableContactLinks}
+          className="resume-tone-body mt-0 justify-end text-right"
+        />
+      </div>
+    </div>
+  ) : (
+    <div
+      className={cn(
+        'min-w-0',
+        isLeftAligned ||
+          (isProfile && hasAvatar && avatarPosition === 'left')
+          ? 'text-left'
+          : 'mx-auto text-center',
+      )}
+    >
+      {infoContent}
+    </div>
+  )
 
   return (
     <header
@@ -700,12 +706,12 @@ function StandardBasicInfo({
       {avatar && avatarPosition === 'center' ? (
         <div className="grid justify-items-center gap-3 text-center">
           {avatar}
-          <div>{infoContent}</div>
+          {basicInfoContent}
         </div>
       ) : shouldFloatSideAvatar ? (
         <>
           {avatar}
-          <div className="mx-auto text-center">{infoContent}</div>
+          {basicInfoContent}
         </>
       ) : avatar ? (
         <div
@@ -717,30 +723,11 @@ function StandardBasicInfo({
           )}
         >
           {avatarPosition === 'left' ? avatar : null}
-          <div
-            className={cn(
-              avatarPosition === 'left' ? 'text-left' : 'mx-auto text-center',
-            )}
-          >
-            {infoContent}
-          </div>
+          <div className="min-w-0">{basicInfoContent}</div>
           {avatarPosition !== 'left' ? avatar : null}
         </div>
-      ) : isSplit ? (
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-end gap-8">
-          <div className="text-left">{identityContent}</div>
-          <div className="min-w-0">
-            <ContactLine
-              items={contactItems}
-              enableLinks={enableContactLinks}
-              className="resume-tone-body mt-0 justify-end text-right"
-            />
-          </div>
-        </div>
-      ) : isLeftAligned ? (
-        <div className="text-left">{infoContent}</div>
       ) : (
-        <div className="mx-auto text-center">{infoContent}</div>
+        basicInfoContent
       )}
 
       {basic.summary ? (
@@ -1505,6 +1492,7 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
   template,
   variant = 'default',
   editableTemplateImages = false,
+  showEmptyTemplateImagePlaceholders = false,
   diffs = [],
   onPaginationReadyChange,
   onMoveTemplateImage,
@@ -1725,8 +1713,8 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
         <>
           <TemplateImages
             images={layout.images}
-            layout={layout}
             editable={editableImages}
+            showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
             onMoveImage={onMoveTemplateImage}
           />
           <div
@@ -1768,8 +1756,8 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
       <>
         <TemplateImages
           images={layout.images}
-          layout={layout}
           editable={editableImages}
+          showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
           onMoveImage={onMoveTemplateImage}
         />
         {renderStandardFlowContent(
@@ -1832,8 +1820,8 @@ export const ResumePreview = forwardRef<HTMLElement, ResumePreviewProps>(functio
             >
               <TemplateImages
                 images={layout.images}
-                layout={layout}
                 editable={editableTemplateImages}
+                showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
                 onMoveImage={onMoveTemplateImage}
               />
               <div

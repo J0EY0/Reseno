@@ -2,7 +2,6 @@ import type { AppMessages } from '@/i18n'
 import { createId } from '@/lib/resume'
 import type {
   BuiltinResumeTemplateId,
-  DeletedResumeTemplateDefinition,
   ResumeAvatarPosition,
   ResumeAvatarShape,
   ResumeFontFamily,
@@ -23,21 +22,6 @@ interface BuiltinTemplatePreset {
   settings: ResumeTemplateSettings
 }
 
-const legacyModernTextPalettes = [
-  {
-    headingColor: '#2563eb',
-    bodyColor: '#475569',
-    mutedColor: '#64748b',
-    dividerColor: '#3b82f6',
-  },
-  {
-    headingColor: '#2563eb',
-    bodyColor: '#3f3f46',
-    mutedColor: '#71717a',
-    dividerColor: '#3b82f6',
-  },
-] as const
-
 /**
  * Keep each built-in preset atomic. Adding a template in one registry avoids
  * layout, typography, and visual defaults drifting across separate maps.
@@ -49,7 +33,7 @@ const builtinTemplatePresets = {
       section: 'ruled',
       timelineItemLayout: 'split',
       listItemLayout: 'list',
-      avatarPosition: 'none',
+      avatarPosition: 'center',
       avatarShape: 'rounded',
       avatarWidth: 25,
       avatarHeight: 32,
@@ -172,7 +156,7 @@ const builtinTemplatePresets = {
       section: 'ruled',
       timelineItemLayout: 'split',
       listItemLayout: 'list',
-      avatarPosition: 'none',
+      avatarPosition: 'right',
       avatarShape: 'rounded',
       avatarWidth: 25,
       avatarHeight: 32,
@@ -213,7 +197,7 @@ const builtinTemplatePresets = {
       section: 'band',
       timelineItemLayout: 'split',
       listItemLayout: 'list',
-      avatarPosition: 'none',
+      avatarPosition: 'right',
       avatarShape: 'square',
       avatarWidth: 25,
       avatarHeight: 32,
@@ -254,7 +238,7 @@ const builtinTemplatePresets = {
       section: 'plain',
       timelineItemLayout: 'split',
       listItemLayout: 'list',
-      avatarPosition: 'none',
+      avatarPosition: 'right',
       avatarShape: 'rounded',
       avatarWidth: 25,
       avatarHeight: 32,
@@ -363,6 +347,15 @@ function normalizeTemplateImageFit(value: unknown): ResumeTemplateImageFit {
   return value === 'cover' ? 'cover' : 'contain'
 }
 
+function normalizeTemplateImageSource(value: unknown) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const source = value.trim()
+  return source.startsWith('data:image/') ? source : ''
+}
+
 function normalizeTimelineItemLayout(
   value: unknown,
   fallback: ResumeTimelineItemLayout,
@@ -399,7 +392,7 @@ function normalizeTemplateImages(value: unknown): ResumeTemplateImageElement[] {
         typeof item.name === 'string' && item.name.trim()
           ? item.name.trim()
           : 'Image',
-      src: typeof item.src === 'string' ? item.src.trim() : '',
+      src: normalizeTemplateImageSource(item.src),
       alt: typeof item.alt === 'string' ? item.alt.trim() : '',
       x: clampNumber(Number(item.x), 0, 210, 0.5),
       y: clampNumber(Number(item.y), 0, 297, 0.5),
@@ -526,25 +519,6 @@ export function createTemplateSettings(
   overrides: Partial<ResumeTemplateSettings> = {},
 ): ResumeTemplateSettings {
   const defaults = builtinTemplatePresets[preset].settings
-  const usesLegacyModernTextPalette =
-    preset === 'modern' &&
-    legacyModernTextPalettes.some(
-      (palette) =>
-        overrides.headingColor === palette.headingColor &&
-        overrides.bodyColor === palette.bodyColor &&
-        overrides.mutedColor === palette.mutedColor &&
-        overrides.dividerColor === palette.dividerColor,
-    )
-
-  // Resume-level settings store the full palette. Upgrade only the exact old
-  // Modern palette so existing resumes receive the current text colors while
-  // any user-customized palette remains untouched.
-  const bodyColor = usesLegacyModernTextPalette
-    ? defaults.bodyColor
-    : normalizeHexColor(overrides.bodyColor, defaults.bodyColor)
-  const mutedColor = usesLegacyModernTextPalette
-    ? defaults.mutedColor
-    : normalizeHexColor(overrides.mutedColor, defaults.mutedColor)
 
   return {
     pagePaddingTop: clampNumber(
@@ -620,8 +594,8 @@ export function createTemplateSettings(
       overrides.headingColor,
       defaults.headingColor,
     ),
-    bodyColor,
-    mutedColor,
+    bodyColor: normalizeHexColor(overrides.bodyColor, defaults.bodyColor),
+    mutedColor: normalizeHexColor(overrides.mutedColor, defaults.mutedColor),
     dividerColor: normalizeHexColor(
       overrides.dividerColor,
       defaults.dividerColor,
@@ -649,137 +623,26 @@ export function getBuiltInTemplates(t: AppMessages): ResumeTemplateDefinition[] 
   }))
 }
 
-export function normalizeTemplateDefinition(
-  value: unknown,
-): ResumeTemplateDefinition | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  const raw = value as Partial<ResumeTemplateDefinition> & {
-    settings?: Partial<ResumeTemplateSettings>
-    layout?: Partial<ResumeTemplateLayout>
-    typography?: Partial<ResumeTypographySettings>
-  }
-
-  const preset = isBuiltinTemplateId(String(raw.preset))
-    ? (raw.preset as BuiltinResumeTemplateId)
-    : 'minimal'
-  const isBuiltIn =
-    typeof raw.isBuiltIn === 'boolean'
-      ? raw.isBuiltIn
-      : typeof raw.id === 'string' && isBuiltinTemplateId(raw.id)
-
-  return {
-    id:
-      typeof raw.id === 'string' &&
-      raw.id.trim() &&
-      (isBuiltIn || !isBuiltinTemplateId(raw.id))
-        ? raw.id
-        : createId('template'),
-    preset,
-    name:
-      typeof raw.name === 'string' && raw.name.trim()
-        ? raw.name.trim()
-        : 'Custom Template',
-    description:
-      typeof raw.description === 'string' ? raw.description.trim() : '',
-    layout: createTemplateLayout(preset, raw.layout ?? {}),
-    typography: createTemplateTypography(preset, raw.typography ?? {}),
-    settings: createTemplateSettings(preset, raw.settings ?? {}),
-    updatedAt:
-      typeof raw.updatedAt === 'string' && raw.updatedAt.trim()
-        ? raw.updatedAt
-        : new Date().toISOString(),
-    isBuiltIn,
-  }
-}
-
-export function normalizeCustomTemplates(source: unknown) {
-  const rawTemplates =
-    source &&
-    typeof source === 'object' &&
-    'customTemplates' in source &&
-    Array.isArray((source as { customTemplates?: unknown[] }).customTemplates)
-      ? (source as { customTemplates: unknown[] }).customTemplates
-      : source &&
-          typeof source === 'object' &&
-          'templates' in source &&
-          Array.isArray((source as { templates?: unknown[] }).templates)
-        ? (source as { templates: unknown[] }).templates
-      : Array.isArray(source)
-        ? source
-        : source && typeof source === 'object'
-          ? [source]
-        : []
-
-  return rawTemplates
-    .map((item) => normalizeTemplateDefinition(item))
-    .filter((item): item is ResumeTemplateDefinition => Boolean(item))
-}
-
-export function normalizeDeletedTemplates(source: unknown) {
-  const rawTemplates =
-    source &&
-    typeof source === 'object' &&
-    'deletedTemplates' in source &&
-    Array.isArray((source as { deletedTemplates?: unknown[] }).deletedTemplates)
-      ? (source as { deletedTemplates: unknown[] }).deletedTemplates
-      : []
-
-  const deletedTemplates: DeletedResumeTemplateDefinition[] = []
-
-  for (const value of rawTemplates) {
-    if (!value || typeof value !== 'object') {
-      continue
-    }
-
-    const deletedAt =
-      typeof (value as { deletedAt?: string }).deletedAt === 'string' &&
-      (value as { deletedAt?: string }).deletedAt?.trim()
-        ? (value as { deletedAt: string }).deletedAt
-        : new Date().toISOString()
-    const normalized = normalizeTemplateDefinition(value)
-
-    if (!normalized) {
-      continue
-    }
-
-    deletedTemplates.push({
-      ...normalized,
-      isBuiltIn:
-        typeof (value as { isBuiltIn?: unknown }).isBuiltIn === 'boolean'
-          ? Boolean((value as { isBuiltIn: boolean }).isBuiltIn)
-          : false,
-      deletedAt,
-    })
-  }
-
-  return deletedTemplates
-}
-
 export function getTemplateCatalog(
   t: AppMessages,
   customTemplates: ResumeTemplateDefinition[],
-  hiddenTemplateIds: string[] = [],
 ) {
-  const hiddenSet = new Set(hiddenTemplateIds)
-  return [...getBuiltInTemplates(t), ...customTemplates].filter(
-    (item) => !hiddenSet.has(item.id),
-  )
+  return [...getBuiltInTemplates(t), ...customTemplates]
 }
 
 export function getTemplateById(
   templates: ResumeTemplateDefinition[],
   templateId: ResumeTemplateId | null | undefined,
-  fallbackTemplateId?: ResumeTemplateId | null,
 ) {
-  return (
+  const template =
     templates.find((item) => item.id === templateId) ??
-    templates.find((item) => item.id === fallbackTemplateId) ??
-    templates.find((item) => item.id === 'minimal') ??
-    templates[0]
-  )
+    templates.find((item) => item.id === 'minimal')
+
+  if (!template) {
+    throw new Error('The built-in Minimal template is missing.')
+  }
+
+  return template
 }
 
 export function createCustomTemplateFromBase(

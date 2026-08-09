@@ -32,11 +32,13 @@ assert(
   "Final page count must not hide real overflow behind the orphan tolerance.",
 );
 assert(
-  /onPaginationReadyChange=\{setIsPaginationReady\}/.test(pdfExportRenderer),
+  /onPaginationReadyChange=\{handlePaginationReadyChange\}/.test(
+    pdfExportRenderer,
+  ),
   "PDF export must consume ResumePreview pagination readiness.",
 );
 assert(
-  /const isReady\s*=\s*Boolean\(state\s*&&\s*areAssetsReady\s*&&\s*isPaginationReady\)/.test(
+  /const isReady\s*=\s*Boolean\([\s\S]*?activeState[\s\S]*?assetsReadyLoadKey\s*===\s*loadKey[\s\S]*?paginationReadyLoadKey\s*===\s*loadKey[\s\S]*?\)/.test(
     pdfExportRenderer,
   ),
   "PDF export readiness must wait for both assets and stable pagination.",

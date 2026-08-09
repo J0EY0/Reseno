@@ -14,11 +14,10 @@ import type {
   ResumeDetailResponse,
   ResumeSaveMode,
   ResumeSaveRequest,
-  ResumeTrashEmptyResponse,
   ResumeTrashResponse,
   TemplateDeleteResponse,
   TemplateDetailResponse,
-  TemplateTrashEmptyResponse,
+  TemplateArtifactItem,
   TemplateTrashResponse,
   UserSettingsSaveResponse,
   WorkspaceVersionsResponse,
@@ -36,10 +35,6 @@ export async function fetchWorkspaceRouteData<
   options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
 ): Promise<WorkspaceRouteDataResult<Kind>> {
   const path = getWorkspaceRouteDataPath(routeKind);
-
-  if (!path) {
-    throw new Error("Unknown workspace route.");
-  }
 
   const data = await requestApi<WorkspaceRouteDataMap[Kind]>(path, {
     cacheTtlMs: 3000,
@@ -129,12 +124,6 @@ export function deleteResumeForeverApi(resumeId: string) {
   });
 }
 
-export function emptyResumeTrashApi() {
-  return requestApi<ResumeTrashEmptyResponse>(apiRoutes.resumeTrashEmpty, {
-    method: "DELETE",
-  });
-}
-
 export function fetchResumeVersionsApi(
   resumeId: string,
   options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
@@ -162,9 +151,11 @@ export function fetchResumeVersionApi(
   );
 }
 
-export function createTemplateApi(template: ResumeTemplateDefinition) {
+export function createTemplateApi(
+  template: ResumeTemplateDefinition | TemplateArtifactItem,
+) {
   return requestApi<TemplateDetailResponse>(apiRoutes.templates, {
-    body: { template },
+    body: { template: createTemplateSavePayload(template) },
     method: "POST",
   });
 }
@@ -175,10 +166,23 @@ export function saveTemplateApi(
   options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
   return requestApi<TemplateDetailResponse>(apiRoutes.template(templateId), {
-    body: { template },
+    body: { template: createTemplateSavePayload(template) },
     method: "PUT",
     ...options,
   });
+}
+
+function createTemplateSavePayload(
+  template: ResumeTemplateDefinition | TemplateArtifactItem,
+): TemplateArtifactItem {
+  return {
+    preset: template.preset,
+    name: template.name,
+    description: template.description,
+    layout: template.layout,
+    typography: template.typography,
+    settings: template.settings,
+  };
 }
 
 export function moveTemplateToTrashApi(templateId: string) {
@@ -198,12 +202,6 @@ export function restoreTemplateApi(templateId: string) {
 
 export function deleteTemplateForeverApi(templateId: string) {
   return requestApi<TemplateDeleteResponse>(apiRoutes.template(templateId), {
-    method: "DELETE",
-  });
-}
-
-export function emptyTemplateTrashApi() {
-  return requestApi<TemplateTrashEmptyResponse>(apiRoutes.templateTrashEmpty, {
     method: "DELETE",
   });
 }

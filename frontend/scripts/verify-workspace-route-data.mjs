@@ -31,7 +31,6 @@ const expectedPaths = {
   models: "/api/workspace/pages/models",
   settings: "/api/workspace/pages/settings",
   "pdf-export": "/api/workspace/pages/templates",
-  unknown: null,
 };
 
 for (const [routeKind, expectedPath] of Object.entries(expectedPaths)) {
@@ -87,6 +86,14 @@ if (/hasWorkspaceField|keyof WorkspacePayload/.test(builderSource)) {
 
 if (!/interface WorkspaceRouteDataMap/.test(source)) {
   throw new Error("Workspace route kinds must map to explicit response DTOs.");
+}
+
+if (
+  !/getWorkspaceRouteDataPath\(\s*routeKind:\s*LoadableWorkspaceRouteDataKind/.test(
+    source,
+  )
+) {
+  throw new Error("Only loadable workspace routes may resolve API paths.");
 }
 
 for (const requiredContract of [

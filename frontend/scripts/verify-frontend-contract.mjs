@@ -133,7 +133,6 @@ assert(
 );
 assert(
   /noto_sans_sc:\s*"fontNotoSans"/.test(resumeBuilder) &&
-    /supportedFontFamilies[\s\S]*?"noto_sans_sc"/.test(resumeBuilder) &&
     /supportedFontFamilies[\s\S]*?'noto_sans_sc'/.test(templates),
   "Resume and template normalization must preserve Noto Sans SC.",
 );

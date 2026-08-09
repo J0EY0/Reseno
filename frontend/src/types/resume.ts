@@ -186,6 +186,8 @@ export interface ResumeTemplateSettings {
   dividerThickness: number
 }
 
+export type ResumeTemplateSettingsOverrides = Partial<ResumeTemplateSettings>
+
 export interface ResumeTemplateImageElement {
   id: string
   name: string
@@ -230,7 +232,7 @@ export interface ResumeTemplateDefinition {
   typography: ResumeTypographySettings
   settings: ResumeTemplateSettings
   updatedAt: string
-  isBuiltIn?: boolean
+  isBuiltIn: boolean
 }
 
 export interface ModelConfig {
@@ -295,9 +297,9 @@ export interface ResumeWorkspaceItem {
   updatedAt: string
   resume: ResumeData
   jobBrief: string
-  typography?: ResumeTypographySettings
-  template?: ResumeTemplateId
-  templateSettings?: ResumeTemplateSettings
+  typography: ResumeTypographySettings
+  template: ResumeTemplateId
+  templateSettings: ResumeTemplateSettingsOverrides | null
 }
 
 export interface DeletedResumeWorkspaceItem extends ResumeWorkspaceItem {

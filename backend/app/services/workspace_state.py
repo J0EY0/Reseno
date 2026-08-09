@@ -3,7 +3,6 @@
 from sqlite3 import Connection
 
 DEFAULT_TEMPLATE_ID = "minimal"
-WORKSPACE_DATA_LOCALE = "__workspace__"
 
 
 def load_default_template_id(conn: Connection) -> str:

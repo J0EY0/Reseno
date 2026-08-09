@@ -3,36 +3,32 @@ import json
 import re
 import secrets
 import shutil
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
 from app.config import get_settings
 from app.db.connection import connect
-from app.schemas.resumes import MAX_RESUME_TITLE_LENGTH
+from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
+from app.schemas.resumes import MAX_RESUME_TITLE_LENGTH, ResumeWorkspaceItemResponse
 from app.services.agent.attachments import delete_agent_session_attachments
 from app.services.resume_document_contract import (
     ResumeDocumentContractError,
     validate_resume_document,
 )
-from app.services.workspace_state import (
-    DEFAULT_TEMPLATE_ID,
-    WORKSPACE_DATA_LOCALE,
-    load_default_template_id,
-)
+from app.services.templates import is_deleted_template, is_visible_template
+from app.services.workspace_state import load_default_template_id
 
 SUPPORTED_LOCALES = {"zh", "en"}
 RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
-RESUME_COPY_LABEL_PATTERN = "|".join(
-    re.escape(label) for label in RESUME_COPY_LABELS.values()
-)
 RESUME_COPY_SUFFIX_PATTERN = re.compile(
-    rf"\s+-\s+(?P<label>{RESUME_COPY_LABEL_PATTERN})"
-    r"(?:\s*\((?P<index>\d+)\)|\s*（(?P<wide_index>\d+)）|"
-    r"\s+(?P<legacy_index>\d+))?$"
+    r"\s+-\s+(?:(?P<en_label>Copy)(?:\((?P<en_index>\d+)\))?"
+    r"|(?P<zh_label>副本)(?:（(?P<zh_index>\d+)）)?)$"
 )
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -41,6 +37,14 @@ DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
 ResumeVersionKind = Literal["autosave", "checkpoint"]
+ResumeVersionFile = tuple[str, int]
+
+
+class ResumeTemplateRebindResult(NamedTuple):
+    """Version files created or superseded by one template rebind command."""
+
+    created_versions: tuple[ResumeVersionFile, ...]
+    obsolete_autosaves: tuple[ResumeVersionFile, ...]
 
 
 def _normalize_locale(locale: str) -> str:
@@ -250,6 +254,29 @@ def _ensure_resume_document(value: Any) -> dict[str, Any]:
         ) from exc
 
 
+def _validate_stored_resume_item(value: Any) -> dict[str, Any]:
+    """Validate one persisted item against the only supported V1/V2 contract."""
+
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_DOCUMENT_INVALID",
+        )
+
+    resume_document = _ensure_resume_document(value.get("resume"))
+    try:
+        item = ResumeWorkspaceItemResponse.model_validate(
+            {**value, "resume": resume_document}
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_DOCUMENT_INVALID",
+        ) from exc
+
+    return item.model_dump(mode="json", by_alias=True)
+
+
 def _write_resume_json(
     resume_id: str, version_id: int, resume_item: dict[str, Any]
 ) -> None:
@@ -259,17 +286,24 @@ def _write_resume_json(
     path.parent.mkdir(parents=True, exist_ok=True)
     content = _canonical_json(resume_item)
     temp_path = path.with_suffix(".json.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _delete_resume_json(resume_id: str, version_id: int) -> None:
-    """Best-effort cleanup for a superseded autosave snapshot."""
+    """Best-effort cleanup for one resume version file."""
 
     try:
         _resume_version_path(resume_id, version_id).unlink(missing_ok=True)
     except OSError:
-        # A stale autosave file is harmless and can be removed with the resume.
+        # A stale version file is harmless and can be removed with the resume.
         pass
 
 
@@ -283,7 +317,9 @@ def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
             detail="Resume version JSON is missing.",
         )
 
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    return _validate_stored_resume_item(
+        cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    )
 
 
 def _resume_title(resume_item: dict[str, Any]) -> str:
@@ -335,9 +371,7 @@ def _duplicate_resume_title(
             """
             SELECT title
             FROM resumes
-            WHERE locale = ? AND purged = 0
-            """,
-            (WORKSPACE_DATA_LOCALE,),
+            """
         ).fetchall()
     }
 
@@ -358,29 +392,19 @@ def _duplicate_resume_title(
         return title_with_suffix(copy_suffix)
 
     def copy_title_exists(copy_index: int | None = None) -> bool:
-        if copy_index is None:
-            return copy_title() in existing_titles
-
-        # Titles created before the punctuation update still reserve the same
-        # semantic sequence number, including at the 50-character boundary.
-        legacy_suffixes = {
-            f"{copy_suffix}({copy_index})",
-            f"{copy_suffix} ({copy_index})",
-            f"{copy_suffix} {copy_index}",
-            f"{copy_suffix}（{copy_index}）",
-        }
-        return any(
-            title_with_suffix(suffix) in existing_titles
-            for suffix in legacy_suffixes
-        )
+        return copy_title(copy_index) in existing_titles
 
     # A longer numbered suffix can shorten a 50-character title. Continue from
     # the source index so that truncated descendants cannot restart at “Copy”.
-    if source_suffix_match and source_suffix_match.group("label") == copy_label:
+    source_copy_label = None
+    if source_suffix_match:
+        source_copy_label = source_suffix_match.group(
+            "en_label"
+        ) or source_suffix_match.group("zh_label")
+    if source_suffix_match and source_copy_label == copy_label:
         source_index = int(
-            source_suffix_match.group("index")
-            or source_suffix_match.group("wide_index")
-            or source_suffix_match.group("legacy_index")
+            source_suffix_match.group("en_index")
+            or source_suffix_match.group("zh_index")
             or 0
         )
         copy_index = source_index + 1
@@ -424,7 +448,6 @@ def _current_resume_version_row(
 def _save_resume_item(
     conn: Connection,
     *,
-    locale: str,
     resume_item: dict[str, Any],
     saved_at: str,
     deleted: bool,
@@ -456,19 +479,16 @@ def _save_resume_item(
             """
             INSERT INTO resumes (
                 id,
-                locale,
                 current_version_id,
                 title,
                 saved_at,
                 deleted,
-                deleted_at,
-                purged
+                deleted_at
             )
-            VALUES (?, ?, 0, ?, ?, ?, ?, 0)
+            VALUES (?, 0, ?, ?, ?, ?)
             """,
             (
                 resume_id,
-                locale,
                 _resume_title(resume_item),
                 saved_at,
                 int(deleted),
@@ -540,29 +560,24 @@ def _save_resume_item(
         """
         INSERT INTO resumes (
             id,
-            locale,
             current_version_id,
             title,
             saved_at,
             deleted,
             deleted_at,
-            purged,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
-            locale = excluded.locale,
             current_version_id = excluded.current_version_id,
             title = excluded.title,
             saved_at = excluded.saved_at,
             deleted = excluded.deleted,
             deleted_at = excluded.deleted_at,
-            purged = 0,
             updated_at = CURRENT_TIMESTAMP
         """,
         (
             resume_id,
-            locale,
             next_version_id,
             _resume_title(resume_item),
             saved_at,
@@ -572,6 +587,76 @@ def _save_resume_item(
     )
 
     return resume_id, next_version_id, obsolete_autosave_version_id
+
+
+def rebind_current_resume_template_references(
+    conn: Connection,
+    *,
+    source_template_id: str,
+    target_template_id: str,
+    saved_at: str,
+) -> ResumeTemplateRebindResult:
+    """Rebind current resume snapshots while the caller owns the transaction."""
+
+    if source_template_id == target_template_id:
+        return ResumeTemplateRebindResult((), ())
+    if not is_visible_template(conn, target_template_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="TEMPLATE_NOT_FOUND",
+        )
+
+    rows = conn.execute(
+        """
+        SELECT id, current_version_id, deleted, deleted_at
+        FROM resumes
+        WHERE current_version_id > 0
+        """
+    ).fetchall()
+    created_versions: list[ResumeVersionFile] = []
+    obsolete_autosaves: list[ResumeVersionFile] = []
+
+    try:
+        for row in rows:
+            current_version_id = int(row["current_version_id"])
+            resume_item = _read_resume_json(row["id"], current_version_id)
+            if resume_item["template"] != source_template_id:
+                continue
+
+            # A template change necessarily changes the content hash, so the
+            # command owns the next version file until the transaction commits.
+            created_versions.append((row["id"], current_version_id + 1))
+            _, _, obsolete_autosave_version_id = _save_resume_item(
+                conn,
+                resume_item={
+                    **resume_item,
+                    "template": target_template_id,
+                    "updatedAt": saved_at,
+                },
+                saved_at=saved_at,
+                deleted=bool(row["deleted"]),
+                deleted_at=row["deleted_at"],
+                version_kind="checkpoint",
+            )
+            if obsolete_autosave_version_id is not None:
+                obsolete_autosaves.append(
+                    (row["id"], obsolete_autosave_version_id)
+                )
+    except Exception:
+        cleanup_resume_version_files(created_versions)
+        raise
+
+    return ResumeTemplateRebindResult(
+        tuple(created_versions),
+        tuple(obsolete_autosaves),
+    )
+
+
+def cleanup_resume_version_files(version_files: Iterable[ResumeVersionFile]) -> None:
+    """Best-effort cleanup after a multi-resume command succeeds or rolls back."""
+
+    for resume_id, version_id in version_files:
+        _delete_resume_json(resume_id, version_id)
 
 
 def _version_for_resume(
@@ -606,55 +691,42 @@ def _deleted_resume_preview(
 ) -> dict[str, Any]:
     """Build the limited payload shown in the recycle bin."""
 
-    resume = resume_item.get("resume") if isinstance(resume_item, dict) else None
-    basic = resume.get("basic") if isinstance(resume, dict) else None
+    resume = resume_item["resume"]
     deleted_at = row["deleted_at"] or row["saved_at"]
 
-    preview: dict[str, Any] = {
+    return {
         "id": row["id"],
-        "title": row["title"] or _resume_title(resume_item),
+        "title": resume_item["title"],
         "updatedAt": row["saved_at"],
         "resume": {
             "schemaVersion": 2,
-            "basic": basic if isinstance(basic, dict) else {},
+            "basic": resume["basic"],
             "sections": [],
         },
         "jobBrief": "",
+        "typography": resume_item["typography"],
+        "template": resume_item["template"],
+        "templateSettings": resume_item["templateSettings"],
         "deletedAt": deleted_at,
     }
-
-    typography = resume_item.get("typography")
-    if isinstance(typography, dict):
-        preview["typography"] = typography
-
-    template_id = resume_item.get("template")
-    if isinstance(template_id, str) and template_id:
-        preview["template"] = template_id
-
-    template_settings = resume_item.get("templateSettings")
-    if isinstance(template_settings, dict):
-        preview["templateSettings"] = template_settings
-
-    return preview
 
 
 def _load_resume_items(
     conn: Connection,
     *,
-    locale: str,
     deleted: bool,
     requested_version: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Load active or deleted resume items for a locale and optional version."""
+    """Load active or deleted resume items for an optional version."""
 
     rows = conn.execute(
         """
         SELECT id, current_version_id, title, saved_at, deleted_at
         FROM resumes
-        WHERE locale = ? AND deleted = ? AND purged = 0
+        WHERE deleted = ?
         ORDER BY saved_at DESC, updated_at DESC
         """,
-        (locale, int(deleted)),
+        (int(deleted),),
     ).fetchall()
     items: list[dict[str, Any]] = []
 
@@ -677,7 +749,7 @@ def _load_resume_items(
 
 
 def _resume_row(conn: Connection, resume_id: str) -> Row | None:
-    """Fetch a non-purged resume row."""
+    """Fetch one resume row."""
 
     safe_resume_id = _validate_resume_id(resume_id.strip())
     return cast(
@@ -686,14 +758,13 @@ def _resume_row(conn: Connection, resume_id: str) -> Row | None:
             """
             SELECT
                 id,
-                locale,
                 current_version_id,
                 title,
                 saved_at,
                 deleted,
                 deleted_at
             FROM resumes
-            WHERE id = ? AND purged = 0
+            WHERE id = ?
             """,
             (safe_resume_id,),
         ).fetchone(),
@@ -808,17 +879,51 @@ def _normalize_resume_item_payload(
     resume_id: str,
     payload: dict[str, Any],
     saved_at: str,
-    fallback_item: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize an API payload into the versioned resume item shape."""
 
-    fallback_item = fallback_item or {}
-    raw_resume = payload.get("resume", fallback_item.get("resume"))
+    raw_resume = payload.get("resume")
     resume_document = _ensure_resume_document(raw_resume)
-    title = payload.get("title", fallback_item.get("title"))
-    job_brief = payload.get("jobBrief", fallback_item.get("jobBrief", ""))
-    typography = payload.get("typography", fallback_item.get("typography"))
-    template_id = payload.get("template", fallback_item.get("template"))
+    title = payload.get("title")
+    job_brief = payload.get("jobBrief")
+    typography = payload.get("typography")
+    template_id = payload.get("template")
+
+    if not isinstance(template_id, str) or not template_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_DOCUMENT_INVALID",
+        )
+
+    try:
+        normalized_typography = TypographySettings.model_validate(
+            typography
+        ).model_dump(by_alias=True)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_DOCUMENT_INVALID",
+        ) from exc
+
+    if "templateSettings" not in payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RESUME_DOCUMENT_INVALID",
+        )
+    template_settings = payload.get("templateSettings")
+
+    if template_settings is None:
+        normalized_template_settings = None
+    else:
+        try:
+            normalized_template_settings = TemplateSettingsOverrides.model_validate(
+                template_settings
+            ).model_dump(by_alias=True, exclude_unset=True)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="RESUME_DOCUMENT_INVALID",
+            ) from exc
 
     normalized: dict[str, Any] = {
         "id": _validate_resume_id(resume_id.strip()),
@@ -828,22 +933,10 @@ def _normalize_resume_item_payload(
         "updatedAt": saved_at,
         "resume": resume_document,
         "jobBrief": job_brief if isinstance(job_brief, str) else "",
-        "typography": (
-            typography if isinstance(typography, dict) else DEFAULT_TYPOGRAPHY
-        ),
-        "template": template_id.strip()
-        if isinstance(template_id, str) and template_id.strip()
-        else DEFAULT_TEMPLATE_ID,
+        "typography": normalized_typography,
+        "template": template_id.strip(),
+        "templateSettings": normalized_template_settings,
     }
-
-    if "templateSettings" in payload:
-        template_settings = payload.get("templateSettings")
-        if isinstance(template_settings, dict):
-            normalized["templateSettings"] = template_settings
-    else:
-        template_settings = fallback_item.get("templateSettings")
-        if isinstance(template_settings, dict):
-            normalized["templateSettings"] = template_settings
 
     return normalized
 
@@ -858,12 +951,10 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
             detail="Unsupported resume status filter.",
         )
 
-    data_locale = WORKSPACE_DATA_LOCALE
     with connect() as conn:
         return {
             "resumes": _load_resume_items(
                 conn,
-                locale=data_locale,
                 deleted=deleted,
             )
         }
@@ -872,7 +963,6 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
 def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a backend-owned empty resume and initial version."""
 
-    data_locale = WORKSPACE_DATA_LOCALE
     saved_at = _utc_now()
 
     with connect() as conn:
@@ -882,14 +972,19 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
             """
             SELECT COUNT(*) AS resume_count
             FROM resumes
-            WHERE locale = ? AND purged = 0 AND deleted = 0
+            WHERE deleted = 0
             """,
-            (data_locale,),
         ).fetchone()
         default_title = f"Untitled Resume {int(count_row['resume_count']) + 1}"
         template_id = payload.get("template")
         if not isinstance(template_id, str) or not template_id.strip():
             template_id = load_default_template_id(conn)
+        template_id = template_id.strip()
+        if not is_visible_template(conn, template_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="TEMPLATE_NOT_FOUND",
+            )
 
         resume_item = _normalize_resume_item_payload(
             resume_id=resume_id,
@@ -905,7 +1000,6 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
         )
         _, version_id, _ = _save_resume_item(
             conn,
-            locale=data_locale,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=False,
@@ -950,6 +1044,23 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
             locale=locale,
         )
 
+        source_template_id = source_item.get("template")
+        if not isinstance(source_template_id, str) or not source_template_id.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="RESUME_DOCUMENT_INVALID",
+            )
+        source_template_id = source_template_id.strip()
+        if not is_visible_template(conn, source_template_id):
+            if not is_deleted_template(conn, source_template_id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="TEMPLATE_NOT_FOUND",
+                )
+            # A template in the recycle bin is no longer selectable. A copy is
+            # a new resume, so bind it to the current visible workspace default.
+            source_template_id = load_default_template_id(conn)
+
         # Keep this whitelist explicit: job context, Agent sessions, drafts, and
         # version history belong to the source resume and must not cross IDs.
         duplicate_item = _normalize_resume_item_payload(
@@ -959,14 +1070,13 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
                 "resume": source_item.get("resume"),
                 "jobBrief": "",
                 "typography": source_item.get("typography"),
-                "template": source_item.get("template"),
+                "template": source_template_id,
                 "templateSettings": source_item.get("templateSettings"),
             },
             saved_at=saved_at,
         )
         _, version_id, _ = _save_resume_item(
             conn,
-            locale=WORKSPACE_DATA_LOCALE,
             resume_item=duplicate_item,
             saved_at=saved_at,
             deleted=False,
@@ -1007,22 +1117,20 @@ def save_resume(
                 detail="Deleted resumes cannot be saved.",
             )
 
-        current_version_id = int(row["current_version_id"])
-        fallback_item = (
-            _read_resume_json(row["id"], current_version_id)
-            if current_version_id > 0
-            else None
-        )
+        submitted_template_id = payload["template"]
+        if not is_visible_template(conn, submitted_template_id.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="TEMPLATE_NOT_FOUND",
+            )
         resume_item = _normalize_resume_item_payload(
             resume_id=row["id"],
             payload=payload,
             saved_at=saved_at,
-            fallback_item=fallback_item,
         )
 
         _, version_id, obsolete_autosave_version_id = _save_resume_item(
             conn,
-            locale=WORKSPACE_DATA_LOCALE,
             resume_item=resume_item,
             saved_at=saved_at,
             deleted=False,
@@ -1178,15 +1286,13 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
 def empty_resume_trash() -> dict[str, Any]:
     """Physically delete every resume currently in the recycle bin."""
 
-    data_locale = WORKSPACE_DATA_LOCALE
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT id
             FROM resumes
-            WHERE locale = ? AND deleted = 1 AND purged = 0
-            """,
-            (data_locale,),
+            WHERE deleted = 1
+            """
         ).fetchall()
         resume_ids = [row["id"] for row in rows]
         if resume_ids:

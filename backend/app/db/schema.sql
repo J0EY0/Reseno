@@ -7,19 +7,17 @@ CREATE TABLE IF NOT EXISTS workspace_state (
 
 CREATE TABLE IF NOT EXISTS resumes (
     id TEXT PRIMARY KEY,
-    locale TEXT NOT NULL,
     current_version_id INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',
     saved_at TEXT NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TEXT,
-    purged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_resumes_locale_status
-ON resumes (locale, purged, deleted, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_resumes_status
+ON resumes (deleted, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS resume_versions (
     resume_id TEXT NOT NULL,
@@ -38,18 +36,16 @@ ON resume_versions (saved_at DESC);
 
 CREATE TABLE IF NOT EXISTS templates (
     id TEXT PRIMARY KEY,
-    locale TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     saved_at TEXT NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TEXT,
-    purged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_templates_locale_status
-ON templates (locale, purged, deleted, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_templates_status
+ON templates (deleted, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS llm_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

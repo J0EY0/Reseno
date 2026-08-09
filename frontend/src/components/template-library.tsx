@@ -9,6 +9,7 @@ import {
   LayoutTemplate,
   ListMinus,
   Palette,
+  PencilLine,
   SlidersHorizontal,
   SquareDashed,
   Sparkles,
@@ -63,6 +64,20 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+  FieldTitle,
+} from "@/components/ui/field";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupText,
+} from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -318,6 +333,319 @@ function TemplateSliderField({
   );
 }
 
+function clampTemplateImageValue(
+  value: number,
+  min: number,
+  max: number,
+  step: number,
+) {
+  const clamped = Math.min(Math.max(value, min), max);
+  const stepped = min + Math.round((clamped - min) / step) * step;
+
+  return Number(Math.min(Math.max(stepped, min), max).toFixed(4));
+}
+
+function formatTemplateImageValue(value: number) {
+  return String(Number(value.toFixed(4)));
+}
+
+function TemplateImageNumberField({
+  id,
+  label,
+  orientation = "vertical",
+  min,
+  max,
+  step,
+  value,
+  unit,
+  onChange,
+  disabled = false,
+}: {
+  id: string;
+  label: string;
+  orientation?: "vertical" | "horizontal";
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  unit: string;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const unitId = `${id}-unit`;
+  const inputValue = draft ?? formatTemplateImageValue(value);
+  const parsedDraft = Number(inputValue);
+  const isDraftValid =
+    inputValue.trim() !== "" &&
+    Number.isFinite(parsedDraft) &&
+    parsedDraft >= min &&
+    parsedDraft <= max;
+
+  function updateDraft(nextDraft: string) {
+    setDraft(nextDraft);
+    const parsed = Number(nextDraft);
+
+    // Keep the preview and autosave state current while preserving the
+    // user's temporary input string until the field is committed.
+    if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
+      onChange(clampTemplateImageValue(parsed, min, max, step));
+    }
+  }
+
+  function commitDraft() {
+    const currentDraft = draft ?? formatTemplateImageValue(value);
+    const parsed = Number(currentDraft);
+    const nextValue =
+      currentDraft.trim() !== "" && Number.isFinite(parsed)
+        ? clampTemplateImageValue(parsed, min, max, step)
+        : value;
+
+    onChange(nextValue);
+    setDraft(null);
+  }
+
+  return (
+    <Field
+      orientation={orientation}
+      className={cn(
+        "gap-1.5",
+        orientation === "horizontal" && "min-w-0 gap-2",
+      )}
+      data-disabled={disabled || undefined}
+    >
+      <FieldLabel
+        htmlFor={id}
+        className={cn(
+          "text-xs",
+          orientation === "horizontal"
+            ? "min-w-0 leading-tight"
+            : "whitespace-nowrap",
+        )}
+      >
+        {label}
+      </FieldLabel>
+      <InputGroup
+        className={orientation === "horizontal" ? "w-28 shrink-0" : undefined}
+        data-disabled={disabled || undefined}
+      >
+        <InputGroupInput
+          id={id}
+          type="number"
+          inputMode="decimal"
+          min={min}
+          max={max}
+          step={step}
+          value={inputValue}
+          onFocus={() => setDraft(formatTemplateImageValue(value))}
+          onChange={(event) => updateDraft(event.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setDraft(null);
+            }
+          }}
+          aria-describedby={unitId}
+          aria-invalid={!isDraftValid || undefined}
+          disabled={disabled}
+          className="text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <InputGroupAddon align="inline-end">
+          <InputGroupText id={unitId} translate="no">
+            {unit}
+          </InputGroupText>
+        </InputGroupAddon>
+      </InputGroup>
+    </Field>
+  );
+}
+
+function TemplateImageSliderField({
+  id,
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  disabled = false,
+}: {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const unitId = `${id}-unit`;
+  const minPercent = min * 100;
+  const maxPercent = max * 100;
+  const stepPercent = step * 100;
+  const percentValue = Math.round(value * 100);
+  const inputValue = draft ?? String(percentValue);
+  const parsedDraft = Number(inputValue);
+  const isDraftValid =
+    inputValue.trim() !== "" &&
+    Number.isFinite(parsedDraft) &&
+    parsedDraft >= minPercent &&
+    parsedDraft <= maxPercent;
+  const displayValue = `${percentValue}%`;
+
+  function updateDraft(nextDraft: string) {
+    setDraft(nextDraft);
+    const parsed = Number(nextDraft);
+
+    if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
+      onChange(
+        clampTemplateImageValue(
+          parsed,
+          minPercent,
+          maxPercent,
+          stepPercent,
+        ) / 100,
+      );
+    }
+  }
+
+  function commitDraft() {
+    const currentDraft = draft ?? String(percentValue);
+    const parsed = Number(currentDraft);
+    const nextPercent =
+      currentDraft.trim() !== "" && Number.isFinite(parsed)
+        ? clampTemplateImageValue(
+            parsed,
+            minPercent,
+            maxPercent,
+            stepPercent,
+          )
+        : percentValue;
+
+    onChange(nextPercent / 100);
+    setDraft(null);
+  }
+
+  return (
+    <Field
+      orientation="horizontal"
+      data-slot="template-image-slider-field"
+      className="grid grid-cols-[5.5rem_minmax(0,1fr)_7rem] items-center gap-3"
+      data-disabled={disabled || undefined}
+    >
+      <FieldLabel htmlFor={id} className="w-auto text-xs">
+        {label}
+      </FieldLabel>
+      <Slider
+        min={min}
+        max={max}
+        step={step}
+        value={[value]}
+        onValueChange={(next) => {
+          setDraft(null);
+          onChange(next[0] ?? value);
+        }}
+        disabled={disabled}
+        thumbProps={{
+          "aria-label": label,
+          "aria-valuetext": displayValue,
+        }}
+        className={cn("min-w-0", disabled && "cursor-not-allowed")}
+      />
+      <InputGroup
+        data-template-image-slider-value="true"
+        className="w-28 shrink-0"
+        data-disabled={disabled || undefined}
+      >
+        <InputGroupInput
+          id={id}
+          type="number"
+          inputMode="decimal"
+          min={minPercent}
+          max={maxPercent}
+          step={stepPercent}
+          value={inputValue}
+          onFocus={() => setDraft(String(percentValue))}
+          onChange={(event) => updateDraft(event.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setDraft(null);
+            }
+          }}
+          aria-describedby={unitId}
+          aria-invalid={!isDraftValid || undefined}
+          disabled={disabled}
+          className="text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <InputGroupAddon align="inline-end">
+          <InputGroupText id={unitId} translate="no">
+            %
+          </InputGroupText>
+        </InputGroupAddon>
+      </InputGroup>
+    </Field>
+  );
+}
+
+function TemplateImageColorField({
+  id,
+  label,
+  value,
+  onChange,
+  disabled = false,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Field
+      orientation="horizontal"
+      className="min-w-0 gap-2"
+      data-disabled={disabled || undefined}
+    >
+      <FieldLabel htmlFor={id} className="min-w-0 text-xs leading-tight">
+        {label}
+      </FieldLabel>
+      <InputGroup
+        className="w-28 shrink-0"
+        data-disabled={disabled || undefined}
+      >
+        <InputGroupInput
+          id={id}
+          type="color"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+          className={cn(
+            "m-1 size-7 flex-none cursor-pointer rounded-sm p-0",
+            disabled && readonlyDisabledControlClassName,
+          )}
+        />
+        <InputGroupAddon align="inline-end" className="min-w-0 pl-1 pr-2">
+          <InputGroupText className="truncate font-mono text-[10px] uppercase tracking-[0.04em]">
+            {value}
+          </InputGroupText>
+        </InputGroupAddon>
+      </InputGroup>
+    </Field>
+  );
+}
+
 function TemplateColorField({
   label,
   value,
@@ -379,13 +707,14 @@ function matchesTemplateQuery(
 
 function createTemplateImageElement(
   index: number,
+  defaultName: string,
   layout?: ResumeTemplateLayout,
 ): ResumeTemplateImageElement {
   const placeOnLeft = layout?.avatarPosition === "right";
 
   return {
     id: createId("image"),
-    name: `Image ${index}`,
+    name: `${defaultName} ${index}`,
     src: "",
     alt: "",
     x: placeOnLeft ? 14 : 166,
@@ -445,6 +774,13 @@ export function TemplateLibrary({
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [editorTab, setEditorTab] = useState<TemplateEditorTab>("layout");
+  // Expansion belongs to the editor UI and must not leak into saved template data.
+  const [expandedImageIdByTemplate, setExpandedImageIdByTemplate] =
+    useState<Partial<Record<string, string>>>({});
+  const [imageNameDraft, setImageNameDraft] = useState<{
+    imageKey: string;
+    value: string;
+  } | null>(null);
   const { currentPage, searchQuery, setCurrentPage, setSearchQuery } =
     useGalleryUrlState();
   const { gridRef, pageSize } = useGalleryGridPageSize({ fixedItems: 0 });
@@ -567,14 +903,26 @@ export function TemplateLibrary({
       return;
     }
 
+    const currentImages = activeTemplate.layout.images;
+    const currentImageNames = new Set(currentImages.map((image) => image.name));
+    let nextImageIndex = 1;
+
+    while (currentImageNames.has(`${t.imageDefaultName} ${nextImageIndex}`)) {
+      nextImageIndex += 1;
+    }
+
+    const nextImage = createTemplateImageElement(
+      nextImageIndex,
+      t.imageDefaultName,
+      activeTemplate.layout,
+    );
+
+    setExpandedImageIdByTemplate((current) => ({
+      ...current,
+      [activeTemplate.id]: nextImage.id,
+    }));
     updateLayout({
-      images: [
-        ...(activeTemplate.layout.images ?? []),
-        createTemplateImageElement(
-          (activeTemplate.layout.images ?? []).length + 1,
-          activeTemplate.layout,
-        ),
-      ],
+      images: [...currentImages, nextImage],
     });
   }
 
@@ -587,10 +935,19 @@ export function TemplateLibrary({
     }
 
     updateLayout({
-      images: (activeTemplate.layout.images ?? []).map((image) =>
+      images: activeTemplate.layout.images.map((image) =>
         image.id === imageId ? { ...image, ...patch } : image,
       ),
     });
+  }
+
+  function commitTemplateImageName(imageId: string, imageKey: string) {
+    if (imageNameDraft?.imageKey !== imageKey) {
+      return;
+    }
+
+    updateTemplateImage(imageId, { name: imageNameDraft.value });
+    setImageNameDraft(null);
   }
 
   function removeTemplateImage(imageId: string) {
@@ -598,8 +955,45 @@ export function TemplateLibrary({
       return;
     }
 
+    const imageKey = `${activeTemplate.id}:${imageId}`;
+
+    setExpandedImageIdByTemplate((current) => {
+      if (current[activeTemplate.id] !== imageId) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[activeTemplate.id];
+      return next;
+    });
+    setImageNameDraft((current) =>
+      current?.imageKey === imageKey ? null : current,
+    );
     updateLayout({
-      images: (activeTemplate.layout.images ?? []).filter((image) => image.id !== imageId),
+      images: activeTemplate.layout.images.filter((image) => image.id !== imageId),
+    });
+  }
+
+  function setTemplateImageExpanded(imageId: string, open: boolean) {
+    if (!activeTemplate) {
+      return;
+    }
+
+    setExpandedImageIdByTemplate((current) => {
+      if (open) {
+        return {
+          ...current,
+          [activeTemplate.id]: imageId,
+        };
+      }
+
+      if (current[activeTemplate.id] !== imageId) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[activeTemplate.id];
+      return next;
     });
   }
 
@@ -784,6 +1178,7 @@ export function TemplateLibrary({
                                 fontSize={item.typography.fontSize}
                                 template={item}
                                 variant="thumbnail"
+                                showEmptyTemplateImagePlaceholders
                               />
                             </div>
 
@@ -1084,7 +1479,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1120,7 +1515,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1157,7 +1552,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1187,7 +1582,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1217,7 +1612,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1252,7 +1647,7 @@ export function TemplateLibrary({
                               )
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1288,7 +1683,7 @@ export function TemplateLibrary({
                               );
                             }}
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1324,7 +1719,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1368,7 +1763,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1406,7 +1801,7 @@ export function TemplateLibrary({
                               })
                             }
                           >
-                            <SelectTrigger className="h-10 w-full rounded-xl bg-background">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1571,21 +1966,50 @@ export function TemplateLibrary({
                         onClick={addTemplateImage}
                         disabled={isTemplateReadonly}
                       >
-                        <ImagePlus className="size-4" />
+                        <ImagePlus data-icon="inline-start" />
                         {t.addTemplateImage}
                       </Button>
 
-                      {(activeTemplate.layout.images ?? []).map((image, index) => {
+                      {activeTemplate.layout.images.map((image, index) => {
+                        const imageKey = `${activeTemplate.id}:${image.id}`;
+                        const isImageExpanded =
+                          expandedImageIdByTemplate[activeTemplate.id] ===
+                          image.id;
+                        const isEditingImageName =
+                          imageNameDraft?.imageKey === imageKey;
+                        const hasImageBorder = image.borderWidth > 0;
                         const fileInputId = `template-image-${image.id}`;
+                        const imageNameInputId = `${fileInputId}-name`;
+                        const imageFitInputId = `${fileInputId}-fit`;
+                        const positionXMax = Math.max(0, 210 - image.width);
+                        const positionYMax = Math.max(0, 297 - image.height);
+                        const widthMax = Math.max(
+                          6,
+                          Math.min(120, 210 - image.x),
+                        );
+                        const heightMax = Math.max(
+                          6,
+                          Math.min(120, 297 - image.y),
+                        );
 
                         return (
-                          <div
-                            key={image.id}
-                            className="grid gap-4 rounded-[22px] bg-background/80 p-4 shadow-[0_16px_48px_-42px_rgba(15,23,42,0.8),inset_0_0_0_1px_hsl(var(--border)/0.35)]"
+                          <Collapsible
+                            key={`${activeTemplate.id}:${image.id}`}
+                            open={isImageExpanded}
+                            onOpenChange={(open) =>
+                              setTemplateImageExpanded(image.id, open)
+                            }
+                            role="group"
+                            aria-label={`${t.templateImageControls} ${index + 1}`}
+                            className="@container/image-card overflow-hidden rounded-lg bg-muted/35 shadow-xs"
                           >
-                            <div className="flex items-start gap-3">
+                            <div
+                              data-slot="template-image-card-header"
+                              className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-3 p-3"
+                            >
                               <div
-                                className="flex h-16 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-gradient-to-br from-background via-muted/30 to-muted/60 text-center text-[10px] font-medium text-muted-foreground"
+                                data-slot="template-image-thumbnail"
+                                className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-background text-muted-foreground"
                                 style={{
                                   borderColor: image.borderColor,
                                   borderWidth: image.borderWidth,
@@ -1601,228 +2025,400 @@ export function TemplateLibrary({
                                     draggable={false}
                                   />
                                 ) : (
-                                  <div className="grid place-items-center gap-1 px-2">
-                                    <ImagePlus className="size-4 opacity-70" />
-                                    <span className="max-w-16 truncate">
-                                      {image.name || t.imagePlaceholder}
-                                    </span>
-                                  </div>
+                                  <ImagePlus className="size-4 opacity-70" />
                                 )}
                               </div>
 
-                              <div className="grid min-w-0 flex-1 gap-2">
-                                <Input
-                                  value={image.name}
-                                  onChange={(event) =>
-                                    updateTemplateImage(image.id, {
-                                      name: event.target.value,
-                                    })
-                                  }
-                                  placeholder={`${t.imageName} ${index + 1}`}
-                                  disabled={isTemplateReadonly}
-                                  className={
-                                    isTemplateReadonly
-                                      ? readonlyDisabledControlClassName
-                                      : undefined
-                                  }
-                                />
-                                <Input
-                                  value={image.src}
-                                  onChange={(event) =>
-                                    updateTemplateImage(image.id, {
-                                      src: event.target.value,
-                                    })
-                                  }
-                                  placeholder={t.imageUrl}
-                                  disabled={isTemplateReadonly}
-                                  className={
-                                    isTemplateReadonly
-                                      ? readonlyDisabledControlClassName
-                                      : undefined
-                                  }
-                                />
-                              </div>
+                              {isEditingImageName ? (
+                                <Field className="min-w-0 gap-1.5">
+                                  <FieldLabel
+                                    htmlFor={imageNameInputId}
+                                    className="sr-only"
+                                  >
+                                    {t.imageName}
+                                  </FieldLabel>
+                                  <Input
+                                    id={imageNameInputId}
+                                    value={imageNameDraft.value}
+                                    onChange={(event) =>
+                                      setImageNameDraft((current) =>
+                                        current?.imageKey === imageKey
+                                          ? {
+                                              ...current,
+                                              value: event.target.value,
+                                            }
+                                          : current,
+                                      )
+                                    }
+                                    onBlur={() =>
+                                      commitTemplateImageName(
+                                        image.id,
+                                        imageKey,
+                                      )
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.currentTarget.blur();
+                                      }
 
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className={cn(
-                                  "shrink-0 text-muted-foreground hover:text-destructive",
-                                  readonlyDisabledControlClassName,
-                                )}
-                                onClick={() => removeTemplateImage(image.id)}
-                                aria-label={t.removeImage}
-                                disabled={isTemplateReadonly}
-                              >
-                                <Trash2 className="size-4" />
-                              </Button>
-                            </div>
+                                      if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        setImageNameDraft(null);
+                                      }
+                                    }}
+                                    placeholder={`${t.imageName} ${index + 1}`}
+                                    autoFocus
+                                    className="font-medium"
+                                  />
+                                </Field>
+                              ) : (
+                                <div className="flex min-w-0 items-center gap-1">
+                                  <p
+                                    className="min-w-0 truncate text-sm font-semibold"
+                                    title={image.name}
+                                  >
+                                    {image.name || `${t.imageName} ${index + 1}`}
+                                  </p>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="shrink-0 text-muted-foreground"
+                                    onClick={() =>
+                                      setImageNameDraft({
+                                        imageKey,
+                                        value: image.name,
+                                      })
+                                    }
+                                    aria-label={t.editImageName}
+                                    disabled={isTemplateReadonly}
+                                  >
+                                    <PencilLine data-icon="icon-only" />
+                                  </Button>
+                                </div>
+                              )}
 
-                            <div className="flex flex-wrap gap-2">
-                              <Input
-                                id={fileInputId}
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                disabled={isTemplateReadonly}
-                                onChange={(event) => {
-                                  void handleTemplateImageUpload(
-                                    image.id,
-                                    event.target.files?.[0],
-                                  );
-                                  event.target.value = "";
-                                }}
-                              />
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className={cn(
-                                  "rounded-full bg-background",
-                                  readonlyDisabledControlClassName,
-                                )}
-                                asChild
-                              >
-                                <label
-                                  htmlFor={
-                                    isTemplateReadonly ? undefined : fileInputId
-                                  }
-                                  aria-disabled={isTemplateReadonly}
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
                                   className={cn(
-                                    isTemplateReadonly
-                                      ? "cursor-not-allowed"
-                                      : "cursor-pointer",
+                                    "shrink-0 text-muted-foreground hover:text-destructive",
+                                    readonlyDisabledControlClassName,
                                   )}
+                                  onClick={() => removeTemplateImage(image.id)}
+                                  aria-label={t.removeImage}
+                                  disabled={isTemplateReadonly}
                                 >
-                                  <FileUp className="size-4" />
-                                  {t.uploadImage}
-                                </label>
-                              </Button>
-                              <Select
-                                value={image.objectFit}
-                                disabled={isTemplateReadonly}
-                                onValueChange={(value) =>
-                                  updateTemplateImage(image.id, {
-                                    objectFit: value as ResumeTemplateImageFit,
-                                  })
-                                }
-                              >
-                                <SelectTrigger className="h-8 w-[126px] rounded-full bg-background text-xs">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="contain">
-                                    {t.imageFitContain}
-                                  </SelectItem>
-                                  <SelectItem value="cover">
-                                    {t.imageFitCover}
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
+                                  <Trash2 data-icon="icon-only" />
+                                </Button>
+                                <CollapsibleTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="group shrink-0 text-muted-foreground"
+                                  >
+                                    <ChevronDown
+                                      data-icon="icon-only"
+                                      aria-hidden="true"
+                                      className="transition-transform group-data-[state=open]:rotate-180"
+                                    />
+                                    <span className="sr-only group-data-[state=open]:hidden">
+                                      {t.expandImageSettings}
+                                    </span>
+                                    <span className="sr-only hidden group-data-[state=open]:inline">
+                                      {t.collapseImageSettings}
+                                    </span>
+                                  </Button>
+                                </CollapsibleTrigger>
+                              </div>
                             </div>
 
-                            <div className="grid gap-3 md:grid-cols-2">
-                              <TemplateSliderField
-                                label={t.imagePositionX}
-                                min={0}
-                                max={210}
-                                step={0.5}
-                                value={image.x}
-                                displayValue={`${image.x}mm`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, { x: value })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imagePositionY}
-                                min={0}
-                                max={297}
-                                step={0.5}
-                                value={image.y}
-                                displayValue={`${image.y}mm`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, { y: value })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imageWidth}
-                                min={6}
-                                max={120}
-                                step={0.5}
-                                value={image.width}
-                                displayValue={`${image.width}mm`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, { width: value })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imageHeight}
-                                min={6}
-                                max={120}
-                                step={0.5}
-                                value={image.height}
-                                displayValue={`${image.height}mm`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, { height: value })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imageOpacity}
-                                min={0.05}
-                                max={1}
-                                step={0.05}
-                                value={image.opacity}
-                                displayValue={image.opacity.toFixed(2)}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, { opacity: value })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imageBorderWidth}
-                                min={0}
-                                max={8}
-                                step={0.5}
-                                value={image.borderWidth}
-                                displayValue={`${image.borderWidth.toFixed(1)}px`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, {
-                                    borderWidth: value,
-                                  })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateSliderField
-                                label={t.imageBorderRadius}
-                                min={0}
-                                max={32}
-                                step={1}
-                                value={image.borderRadius}
-                                displayValue={`${image.borderRadius}px`}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, {
-                                    borderRadius: value,
-                                  })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                              <TemplateColorField
-                                label={t.imageBorderColor}
-                                value={image.borderColor}
-                                onChange={(value) =>
-                                  updateTemplateImage(image.id, {
-                                    borderColor: value,
-                                  })
-                                }
-                                disabled={isTemplateReadonly}
-                              />
-                            </div>
-                          </div>
+                            <CollapsibleContent className="collapsible-content">
+                              <FieldGroup
+                                data-slot="template-image-card-content"
+                                className="collapsible-content-inner gap-5 p-3"
+                              >
+                                <div className="grid gap-3">
+                                  <Field
+                                    orientation="horizontal"
+                                    role="group"
+                                    aria-label={t.imageSourceLabel}
+                                    className="min-w-0 gap-3"
+                                  >
+                                    <FieldTitle className="shrink-0 text-xs">
+                                      {t.imageSourceLabel}
+                                    </FieldTitle>
+                                    <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
+                                      <Input
+                                        id={fileInputId}
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        disabled={isTemplateReadonly}
+                                        onChange={(event) => {
+                                          void handleTemplateImageUpload(
+                                            image.id,
+                                            event.target.files?.[0],
+                                          );
+                                          event.target.value = "";
+                                        }}
+                                      />
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() =>
+                                          document
+                                            .getElementById(fileInputId)
+                                            ?.click()
+                                        }
+                                        className={cn(
+                                          "justify-center bg-background",
+                                          readonlyDisabledControlClassName,
+                                        )}
+                                        disabled={isTemplateReadonly}
+                                      >
+                                        <FileUp data-icon="inline-start" />
+                                        {image.src
+                                          ? t.replaceImage
+                                          : t.uploadImage}
+                                      </Button>
+                                    </div>
+                                  </Field>
+                                  <Field
+                                    orientation="horizontal"
+                                    className="min-w-0 gap-3"
+                                  >
+                                    <FieldLabel
+                                      htmlFor={imageFitInputId}
+                                      className="shrink-0 text-xs"
+                                    >
+                                      {t.imageFitLabel}
+                                    </FieldLabel>
+                                    <Select
+                                      value={image.objectFit}
+                                      disabled={isTemplateReadonly}
+                                      onValueChange={(value) =>
+                                        updateTemplateImage(image.id, {
+                                          objectFit:
+                                            value as ResumeTemplateImageFit,
+                                        })
+                                      }
+                                    >
+                                      <SelectTrigger
+                                        id={imageFitInputId}
+                                        size="sm"
+                                        className="ml-auto w-40 max-w-full"
+                                      >
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          <SelectItem value="contain">
+                                            {t.imageFitContain}
+                                          </SelectItem>
+                                          <SelectItem value="cover">
+                                            {t.imageFitCover}
+                                          </SelectItem>
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                  </Field>
+                                </div>
+
+                            <FieldSet className="gap-3">
+                              <FieldLegend
+                                variant="label"
+                                className="mb-0"
+                              >
+                                {t.imagePositionAndSize}
+                              </FieldLegend>
+                              <FieldGroup className="gap-3">
+                                <FieldGroup className="grid grid-cols-1 gap-3 @min-[360px]/image-card:grid-cols-2">
+                                  <TemplateImageNumberField
+                                    id={`${fileInputId}-x`}
+                                    label={t.imagePositionX}
+                                    orientation="horizontal"
+                                    min={0}
+                                    max={positionXMax}
+                                    step={0.5}
+                                    value={image.x}
+                                    unit="mm"
+                                    onChange={(value) =>
+                                      updateTemplateImage(image.id, {
+                                        x: value,
+                                      })
+                                    }
+                                    disabled={isTemplateReadonly}
+                                  />
+                                  <TemplateImageNumberField
+                                    id={`${fileInputId}-y`}
+                                    label={t.imagePositionY}
+                                    orientation="horizontal"
+                                    min={0}
+                                    max={positionYMax}
+                                    step={0.5}
+                                    value={image.y}
+                                    unit="mm"
+                                    onChange={(value) =>
+                                      updateTemplateImage(image.id, {
+                                        y: value,
+                                      })
+                                    }
+                                    disabled={isTemplateReadonly}
+                                  />
+                                </FieldGroup>
+
+                                <FieldGroup className="grid grid-cols-1 gap-3 @min-[360px]/image-card:grid-cols-2">
+                                  <TemplateImageNumberField
+                                    id={`${fileInputId}-width`}
+                                    label={t.imageWidth}
+                                    orientation="horizontal"
+                                    min={6}
+                                    max={widthMax}
+                                    step={0.5}
+                                    value={image.width}
+                                    unit="mm"
+                                    onChange={(value) =>
+                                      updateTemplateImage(image.id, {
+                                        width: value,
+                                      })
+                                    }
+                                    disabled={isTemplateReadonly}
+                                  />
+                                  <TemplateImageNumberField
+                                    id={`${fileInputId}-height`}
+                                    label={t.imageHeight}
+                                    orientation="horizontal"
+                                    min={6}
+                                    max={heightMax}
+                                    step={0.5}
+                                    value={image.height}
+                                    unit="mm"
+                                    onChange={(value) =>
+                                      updateTemplateImage(image.id, {
+                                        height: value,
+                                      })
+                                    }
+                                    disabled={isTemplateReadonly}
+                                  />
+                                </FieldGroup>
+                              </FieldGroup>
+                            </FieldSet>
+
+                            <FieldSet className="gap-3">
+                              <FieldLegend variant="label" className="mb-0">
+                                {t.imageAppearance}
+                              </FieldLegend>
+                              <FieldGroup className="gap-3">
+                                <TemplateImageSliderField
+                                  id={`${fileInputId}-opacity`}
+                                  label={t.imageOpacity}
+                                  min={0.05}
+                                  max={1}
+                                  step={0.05}
+                                  value={image.opacity}
+                                  onChange={(value) =>
+                                    updateTemplateImage(image.id, {
+                                      opacity: value,
+                                    })
+                                  }
+                                  disabled={isTemplateReadonly}
+                                />
+                                <FieldGroup className="grid grid-cols-1 gap-3 @min-[360px]/image-card:grid-cols-2">
+                                  <TemplateImageNumberField
+                                    id={`${fileInputId}-border-radius`}
+                                    label={t.imageBorderRadius}
+                                    orientation="horizontal"
+                                    min={0}
+                                    max={32}
+                                    step={1}
+                                    value={image.borderRadius}
+                                    unit="px"
+                                    onChange={(value) =>
+                                      updateTemplateImage(image.id, {
+                                        borderRadius: value,
+                                      })
+                                    }
+                                    disabled={isTemplateReadonly}
+                                  />
+                                  {hasImageBorder ? (
+                                    <TemplateImageNumberField
+                                      id={`${fileInputId}-border-width`}
+                                      label={t.imageBorderWidth}
+                                      orientation="horizontal"
+                                      min={0.5}
+                                      max={8}
+                                      step={0.5}
+                                      value={image.borderWidth}
+                                      unit="px"
+                                      onChange={(value) =>
+                                        updateTemplateImage(image.id, {
+                                          borderWidth: value,
+                                        })
+                                      }
+                                      disabled={isTemplateReadonly}
+                                    />
+                                  ) : null}
+                                </FieldGroup>
+                                <FieldGroup className="grid grid-cols-1 gap-3 @min-[360px]/image-card:grid-cols-2">
+                                  <Field orientation="horizontal">
+                                    <FieldTitle className="text-xs">
+                                      {t.imageBorder}
+                                    </FieldTitle>
+                                    <Button
+                                      type="button"
+                                      role="switch"
+                                      variant="ghost"
+                                      size="sm"
+                                      data-state={
+                                        hasImageBorder
+                                          ? "checked"
+                                          : "unchecked"
+                                      }
+                                      aria-label={t.imageBorder}
+                                      aria-checked={hasImageBorder}
+                                      className={cn(
+                                        "group ml-auto h-6 w-11 justify-start rounded-full p-0 shadow-none transition-colors",
+                                        hasImageBorder
+                                          ? "bg-primary hover:bg-primary/90"
+                                          : "bg-muted-foreground/30 hover:bg-muted-foreground/40",
+                                      )}
+                                      onClick={() =>
+                                        updateTemplateImage(image.id, {
+                                          borderWidth: hasImageBorder ? 0 : 1,
+                                        })
+                                      }
+                                      disabled={isTemplateReadonly}
+                                    >
+                                      <span
+                                        aria-hidden="true"
+                                        className="ml-0.5 size-5 rounded-full bg-background shadow-xs transition-transform group-data-[state=checked]:translate-x-5"
+                                      />
+                                    </Button>
+                                  </Field>
+                                  {hasImageBorder ? (
+                                    <TemplateImageColorField
+                                      id={`${fileInputId}-border-color`}
+                                      label={t.imageBorderColor}
+                                      value={image.borderColor}
+                                      onChange={(value) =>
+                                        updateTemplateImage(image.id, {
+                                          borderColor: value,
+                                        })
+                                      }
+                                      disabled={isTemplateReadonly}
+                                    />
+                                  ) : null}
+                                </FieldGroup>
+                              </FieldGroup>
+                            </FieldSet>
+                              </FieldGroup>
+                            </CollapsibleContent>
+                          </Collapsible>
                         );
                       })}
                     </TabsContent>

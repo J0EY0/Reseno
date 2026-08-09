@@ -1,13 +1,13 @@
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, UploadFile
 
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.imports import ImportResumeResponse, ImportTemplatesResponse
 from app.services.imports import (
-    coerce_resume_import,
-    coerce_template_import,
     load_json_upload,
+    parse_resume_artifact,
+    parse_template_artifact,
 )
 
 router = APIRouter(prefix="/api/import", tags=["import"])
@@ -20,15 +20,14 @@ async def import_resume(
     """Import resume items from an uploaded JSON file."""
 
     payload = await load_json_upload(file)
-    resumes = coerce_resume_import(payload)
+    artifact = parse_resume_artifact(payload)
 
-    if not resumes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No resume data found in the uploaded JSON.",
+    return ok_response(
+        ImportResumeResponse(
+            templates=artifact.templates,
+            resumes=artifact.resumes,
         )
-
-    return ok_response(ImportResumeResponse(resumes=resumes))
+    )
 
 
 @router.post("/templates", response_model=ApiResponse[ImportTemplatesResponse])
@@ -38,12 +37,6 @@ async def import_templates(
     """Import resume templates from an uploaded JSON file."""
 
     payload = await load_json_upload(file)
-    templates = coerce_template_import(payload)
-
-    if not templates:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No template data found in the uploaded JSON.",
-        )
+    templates = parse_template_artifact(payload)
 
     return ok_response(ImportTemplatesResponse(templates=templates))

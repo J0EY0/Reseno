@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
+
 JsonObject = dict[str, Any]
 MAX_RESUME_TITLE_LENGTH = 50
 
@@ -9,17 +11,16 @@ MAX_RESUME_TITLE_LENGTH = 50
 class ResumeWorkspaceItemResponse(BaseModel):
     """Stable top-level shape of a resume returned to workspace clients."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
     title: str
     updated_at: str = Field(alias="updatedAt")
     resume: JsonObject
     job_brief: str = Field(alias="jobBrief")
-    typography: JsonObject | None = None
-    template: str | None = None
-    template_settings: JsonObject | None = Field(
-        default=None,
+    typography: TypographySettings
+    template: str = Field(min_length=1)
+    template_settings: TemplateSettingsOverrides | None = Field(
         alias="templateSettings",
     )
 
@@ -33,29 +34,38 @@ class DeletedResumeWorkspaceItemResponse(ResumeWorkspaceItemResponse):
 class ResumeCreateRequest(BaseModel):
     """Optional overrides for a backend-created resume."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     title: str | None = Field(default=None, max_length=MAX_RESUME_TITLE_LENGTH)
     resume: JsonObject | None = None
     job_brief: str | None = Field(default=None, alias="jobBrief")
-    typography: JsonObject | None = None
-    template: str | None = None
-    template_settings: JsonObject | None = Field(default=None, alias="templateSettings")
+    typography: TypographySettings | None = None
+    template: str | None = Field(default=None, min_length=1)
+    template_settings: TemplateSettingsOverrides | None = Field(
+        default=None,
+        alias="templateSettings",
+    )
 
 
 class ResumeSaveRequest(BaseModel):
     """Full resume payload persisted by PUT /api/resumes/{id}."""
 
-    title: str | None = Field(default=None, max_length=MAX_RESUME_TITLE_LENGTH)
-    resume: JsonObject | None = None
-    job_brief: str | None = Field(default=None, alias="jobBrief")
-    typography: JsonObject | None = None
-    template: str | None = None
-    template_settings: JsonObject | None = Field(default=None, alias="templateSettings")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(max_length=MAX_RESUME_TITLE_LENGTH)
+    resume: JsonObject
+    job_brief: str = Field(alias="jobBrief")
+    typography: TypographySettings
+    template: str = Field(min_length=1)
+    template_settings: TemplateSettingsOverrides | None = Field(
+        alias="templateSettings",
+    )
 
 
 class ResumeDetailResponse(BaseModel):
     """Saved resume item plus version metadata."""
 
-    resume: JsonObject
+    resume: ResumeWorkspaceItemResponse
     saved_at: str = Field(alias="savedAt")
     version_id: str = Field(alias="versionId")
 
@@ -63,7 +73,7 @@ class ResumeDetailResponse(BaseModel):
 class ResumeListResponse(BaseModel):
     """Collection response for active or deleted resumes."""
 
-    resumes: list[JsonObject]
+    resumes: list[ResumeWorkspaceItemResponse | DeletedResumeWorkspaceItemResponse]
 
 
 class ResumeDeleteResponse(BaseModel):

@@ -1,24 +1,14 @@
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
-JsonObject = dict[str, Any]
+from app.schemas.imports import TemplateArtifactItem
 
 
-class TemplateDefinitionResponse(BaseModel):
+class TemplateDefinitionResponse(TemplateArtifactItem):
     """Stable top-level shape of a custom resume template."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
-
     id: str
-    preset: str
-    name: str
-    description: str
-    layout: JsonObject
-    typography: JsonObject
-    settings: JsonObject
     updated_at: str = Field(alias="updatedAt")
-    is_built_in: bool | None = Field(default=None, alias="isBuiltIn")
+    is_built_in: bool = Field(alias="isBuiltIn")
 
 
 class DeletedTemplateDefinitionResponse(TemplateDefinitionResponse):
@@ -30,19 +20,21 @@ class DeletedTemplateDefinitionResponse(TemplateDefinitionResponse):
 class TemplateSaveRequest(BaseModel):
     """Custom template payload saved through template commands."""
 
-    template: JsonObject
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    template: TemplateArtifactItem
 
 
 class TemplateResponse(BaseModel):
     """Response body for one custom template."""
 
-    template: JsonObject
+    template: TemplateDefinitionResponse | DeletedTemplateDefinitionResponse
 
 
 class TemplateListResponse(BaseModel):
     """Collection response for custom templates."""
 
-    templates: list[JsonObject]
+    templates: list[TemplateDefinitionResponse | DeletedTemplateDefinitionResponse]
 
 
 class TemplateDeleteResponse(BaseModel):

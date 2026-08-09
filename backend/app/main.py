@@ -9,7 +9,7 @@ from fastapi.responses import Response
 
 from app.config import get_settings
 from app.db.connection import connect
-from app.db.migrations import migrate_db
+from app.db.schema import ensure_database_schema
 from app.exceptions import (
     http_exception_handler,
     unhandled_exception_handler,
@@ -39,9 +39,9 @@ ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run startup database migrations before serving requests."""
+    """Initialize or verify the current database before serving requests."""
 
-    migrate_db()
+    ensure_database_schema()
     with closing(connect()) as conn:
         fail_interrupted_agent_turn_executions(conn)
     ensure_model_metadata_cache()
