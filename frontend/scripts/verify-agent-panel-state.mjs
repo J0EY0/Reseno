@@ -33,16 +33,14 @@ async function loadTypeScriptModule(path) {
 const panelState = await loadTypeScriptModule(
   join(frontendRoot, "src", "lib", "agent-panel-state.ts"),
 );
-const panelSource = await readFile(
-  join(
-    frontendRoot,
-    "src",
-    "components",
-    "copilot",
-    "copilot-panel.tsx",
-  ),
-  "utf8",
-);
+const copilotRoot = join(frontendRoot, "src", "components", "copilot");
+const [panelSource, conversationViewSource, promptActionsSource, sendSource] =
+  await Promise.all([
+    readFile(join(copilotRoot, "copilot-panel.tsx"), "utf8"),
+    readFile(join(copilotRoot, "copilot-conversation-view.tsx"), "utf8"),
+    readFile(join(copilotRoot, "use-agent-prompt-actions.ts"), "utf8"),
+    readFile(join(copilotRoot, "use-agent-send-controller.ts"), "utf8"),
+  ]);
 
 const committedResponse = {
   edits: [{ id: "edit-1" }],
@@ -126,24 +124,23 @@ assert(
   "Only completed tool outputs may contribute quality warnings.",
 );
 assert(
-  panelSource.includes("shouldShowAgentDraftActions({"),
-  "The Agent panel must bind draft actions to the draft source message.",
+  conversationViewSource.includes("shouldShowAgentDraftActions({"),
+  "The conversation view must bind draft actions to the draft source message.",
 );
 assert(
-  !panelSource.includes("edits.slice(0, 4)"),
+  !`${panelSource}\n${conversationViewSource}`.includes("edits.slice(0, 4)"),
   "The confirmation panel must not silently hide edit operations.",
 );
 assert(
-  panelSource.includes("activeUploadAbortRef.current.abort()"),
+  promptActionsSource.includes("activeUploadAbortRef.current.abort()"),
   "The stop action must cancel an in-flight attachment upload.",
 );
 assert(
-  panelSource.includes("revision: sessionRevisionRef.current") ||
-    panelSource.includes("revision,"),
+  sendSource.includes("revision,"),
   "Edited history replacement must carry the loaded session revision.",
 );
 assert(
-  panelSource.includes('"AGENT_SESSION_REVISION_CONFLICT"'),
+  sendSource.includes("'AGENT_SESSION_REVISION_CONFLICT'"),
   "A stale history edit must reconcile with the authoritative session.",
 );
 

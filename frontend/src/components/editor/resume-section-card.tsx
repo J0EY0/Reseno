@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { AppMessages } from '@/i18n'
 import { createId } from '@/lib/resume-id'
-import type { ResumeSectionMutation } from '@/lib/resume-sections'
+import type { ResumeSectionMutation } from '@/lib/resume-section-mutations'
 import type { ResumeSection, SectionKind } from '@/types/resume'
 
 import { EditorCardShell } from './editor-card-shell'

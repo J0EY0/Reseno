@@ -43,16 +43,29 @@ for (const [routeKind, expectedPath] of Object.entries(expectedPaths)) {
   }
 }
 
-const [apiClientSource, workspaceApiSource, builderSource, resumeTypesSource] =
+const [apiClientSource, workspaceApiSource, resumeTypesSource] =
   await Promise.all([
     readFile(new URL("src/lib/api-client.ts", frontendRoot), "utf8"),
     readFile(new URL("src/lib/workspace-api.ts", frontendRoot), "utf8"),
-    readFile(
-      new URL("src/components/resume-builder.tsx", frontendRoot),
-      "utf8",
-    ),
     readFile(new URL("src/types/resume.ts", frontendRoot), "utf8"),
   ]);
+const routeOwnerSources = new Map(
+  await Promise.all(
+    [
+      ["resume-gallery", "src/components/workspace/use-resume-gallery-workspace.ts"],
+      ["resume-detail", "src/components/workspace/use-resume-detail-loader.ts"],
+      ["template-gallery", "src/components/workspace/use-template-gallery-workspace.ts"],
+      ["template-detail", "src/components/workspace/use-template-detail-workspace.ts"],
+      ["trash", "src/components/workspace/use-trash-workspace.ts"],
+      ["models", "src/components/workspace/use-workspace-preferences-route.ts"],
+      ["settings", "src/components/workspace/use-workspace-preferences-route.ts"],
+    ].map(async ([kind, path]) => [
+      kind,
+      await readFile(new URL(path, frontendRoot), "utf8"),
+    ]),
+  ),
+);
+const routeOwnerSource = [...routeOwnerSources.values()].join("\n");
 
 if (apiClientSource.includes('workspaceBootstrap: "/api/workspace/bootstrap"')) {
   throw new Error("The generic workspace bootstrap endpoint must be removed.");
@@ -78,9 +91,9 @@ if (/interface WorkspacePayload/.test(resumeTypesSource)) {
   );
 }
 
-if (/hasWorkspaceField|keyof WorkspacePayload/.test(builderSource)) {
+if (/hasWorkspaceField|keyof WorkspacePayload/.test(routeOwnerSource)) {
   throw new Error(
-    "ResumeBuilder must apply a discriminated route result, not probe optional fields.",
+    "Route owners must apply discriminated results, not probe optional fields.",
   );
 }
 
@@ -115,20 +128,26 @@ if (!/Promise<WorkspaceRouteDataResult<Kind>>/.test(workspaceApiSource)) {
   );
 }
 
-if (!/switch\s*\(workspaceSource\.kind\)/.test(builderSource)) {
-  throw new Error("ResumeBuilder must exhaustively switch on the route data kind.");
+for (const [kind, ownerSource] of routeOwnerSources) {
+  const expectedCall = new RegExp(
+    `fetchWorkspaceRouteData\\(${kind === "models" || kind === "settings" ? "kind" : `"${kind}"`}`,
+  );
+
+  if (!expectedCall.test(ownerSource)) {
+    throw new Error(`Workspace route ${kind} must be read by its owning controller.`);
+  }
 }
 
 if (!/signal:\s*options\.signal/.test(apiClientSource)) {
-  throw new Error("requestApi must forward AbortSignal to Axios.");
+  throw new Error("requestApi must forward its owning AbortSignal to fetch.");
 }
 
 if (
-  !/if \(isAbortError\(error\)\) \{\s*return Promise\.reject\(error\)/.test(
+  !/if \(isAbortError\(error\)[\s\S]{0,80}\) \{\s*throw error;/.test(
     apiClientSource,
   )
 ) {
-  throw new Error("Axios cancellation must bypass API error conversion and Toasts.");
+  throw new Error("Request cancellation must bypass API error conversion and Toasts.");
 }
 
 console.log("Workspace route data endpoints verified.");

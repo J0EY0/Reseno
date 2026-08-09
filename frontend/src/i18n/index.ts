@@ -1,35 +1,50 @@
 import enMessages from './locales/en.json'
-import zhMessages from './locales/zh.json'
 
 export const locales = ['zh', 'en'] as const
 export type Locale = (typeof locales)[number]
-export type AppMessages = typeof zhMessages
+export type AppMessages = typeof enMessages
 
 export const defaultLocale: Locale = 'en'
 export const defaultMessages: AppMessages = enMessages
 
 const messageCache: Partial<Record<Locale, AppMessages>> = {
   en: enMessages,
-  zh: zhMessages,
 }
+const messageLoadPromises: Partial<Record<Locale, Promise<AppMessages>>> = {}
 
 const localeLoaders: Record<Locale, () => Promise<AppMessages>> = {
-  en: async () => enMessages,
-  zh: async () => zhMessages,
+  en: () => Promise.resolve(enMessages),
+  zh: () => import('./locales/zh.json').then((module) => module.default),
 }
 
 export function getMessagesSync(locale: Locale) {
+  // Non-default callers must await loadMessages first; this synchronous API is
+  // intentionally limited to the bootstrap catalog and an error fallback.
   return messageCache[locale] ?? defaultMessages
 }
 
-export async function loadMessages(locale: Locale) {
-  if (messageCache[locale]) {
-    return messageCache[locale]
+export function loadMessages(locale: Locale): Promise<AppMessages> {
+  const cachedMessages = messageCache[locale]
+  if (cachedMessages) {
+    return Promise.resolve(cachedMessages)
   }
 
-  const messages = await localeLoaders[locale]()
-  messageCache[locale] = messages
-  return messages
+  const pendingLoad = messageLoadPromises[locale]
+  if (pendingLoad) {
+    return pendingLoad
+  }
+
+  const nextLoad = localeLoaders[locale]()
+    .then((messages) => {
+      messageCache[locale] = messages
+      return messages
+    })
+    .finally(() => {
+      delete messageLoadPromises[locale]
+    })
+
+  messageLoadPromises[locale] = nextLoad
+  return nextLoad
 }
 
 export function resolveSupportedLocale(value: string | null | undefined): Locale | null {

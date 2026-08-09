@@ -8,9 +8,10 @@ async function readText(path) {
   return readFile(new URL(path, frontendRoot), "utf8");
 }
 
-const [builderSource, rendererSource, exportApiSource, appSource, zhSource, enSource] =
+const [exportSource, saveSource, rendererSource, exportApiSource, appSource, zhSource, enSource] =
   await Promise.all([
-    readText("src/components/resume-builder.tsx"),
+    readText("src/components/workspace/use-resume-detail-export.ts"),
+    readText("src/components/workspace/use-resume-detail-save.ts"),
     readText("src/components/pdf-export-renderer.tsx"),
     readText("src/lib/export-api.ts"),
     readText("src/App.tsx"),
@@ -18,27 +19,37 @@ const [builderSource, rendererSource, exportApiSource, appSource, zhSource, enSo
     readText("src/i18n/locales/en.json"),
   ]);
 
-const builderFile = ts.createSourceFile(
-  "resume-builder.tsx",
-  builderSource,
+const exportFile = ts.createSourceFile(
+  "use-resume-detail-export.ts",
+  exportSource,
   ts.ScriptTarget.Latest,
   true,
   ts.ScriptKind.TSX,
 );
 
-function findFunctionDeclaration(name) {
+function findCallbackDeclaration(name) {
   let match;
 
   function visit(node) {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
-      match = node;
-      return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      node.initializer.expression.getText(exportFile) === "useCallback"
+    ) {
+      const callback = node.initializer.arguments[0];
+      if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
+        match = callback;
+        return;
+      }
     }
 
     ts.forEachChild(node, visit);
   }
 
-  visit(builderFile);
+  visit(exportFile);
   return match;
 }
 
@@ -50,7 +61,7 @@ function findCalls(root, name) {
       ts.isCallExpression(node) &&
       ((ts.isIdentifier(node.expression) && node.expression.text === name) ||
         (ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.getText(builderFile) === name))
+          node.expression.getText(exportFile) === name))
     ) {
       calls.push(node);
     }
@@ -62,11 +73,14 @@ function findCalls(root, name) {
   return calls;
 }
 
-const exportPdf = findFunctionDeclaration("exportPdf");
-assert.ok(exportPdf, "ResumeBuilder must define its PDF export action.");
+const runExport = findCallbackDeclaration("runExport");
+const exportPdf = findCallbackDeclaration("exportPdf");
+assert.ok(runExport, "The resume detail export hook must define its serialized export action.");
+assert.ok(exportPdf, "The resume detail export hook must define its PDF export action.");
 
-const exportPdfSource = exportPdf.getText(builderFile);
-const saveCalls = findCalls(exportPdf, "saveCurrentWorkspace");
+const exportPdfSource = exportPdf.getText(exportFile);
+const saveCalls = findCalls(runExport, "save");
+const operationCalls = findCalls(runExport, "operation");
 const requestCalls = findCalls(exportPdf, "requestResumePdfExport");
 const downloadCalls = findCalls(exportPdf, "downloadExportedPdf");
 const successToastCalls = findCalls(exportPdf, "toast.success");
@@ -77,9 +91,22 @@ assert.equal(
   1,
   "PDF export must persist the current resume before requesting an artifact.",
 );
+assert.equal(
+  operationCalls.length,
+  1,
+  "The export transaction must run exactly one operation after saving.",
+);
 assert.ok(
   saveCalls[0].parent && ts.isAwaitExpression(saveCalls[0].parent),
   "PDF export must wait for the current resume save to finish.",
+);
+assert.ok(
+  operationCalls[0].parent && ts.isAwaitExpression(operationCalls[0].parent),
+  "The export transaction must wait for the artifact operation to finish.",
+);
+assert.ok(
+  saveCalls[0].getStart(exportFile) < operationCalls[0].getStart(exportFile),
+  "The export transaction must save before starting the artifact operation.",
 );
 assert.equal(
   requestCalls.length,
@@ -100,9 +127,8 @@ assert.ok(
   "PDF download must finish before reporting success.",
 );
 assert.ok(
-  saveCalls[0].getStart(builderFile) < requestCalls[0].getStart(builderFile) &&
-    requestCalls[0].getStart(builderFile) < downloadCalls[0].getStart(builderFile),
-  "PDF save, generation, and download must run in order.",
+  requestCalls[0].getStart(exportFile) < downloadCalls[0].getStart(exportFile),
+  "PDF generation and download must run in order.",
 );
 assert.equal(
   successToastCalls.length,
@@ -110,8 +136,8 @@ assert.equal(
   "The PDF action must report one successful download.",
 );
 assert.ok(
-  downloadCalls[0].getStart(builderFile) <
-    successToastCalls[0].getStart(builderFile),
+  downloadCalls[0].getStart(exportFile) <
+    successToastCalls[0].getStart(exportFile),
   "PDF export must report success only after the download completes.",
 );
 
@@ -126,7 +152,7 @@ const requestFields = new Map(
       return [[property.name.text, property.name.text]];
     }
     if (ts.isPropertyAssignment(property)) {
-      return [[property.name.getText(builderFile), property.initializer.getText(builderFile)]];
+      return [[property.name.getText(exportFile), property.initializer.getText(exportFile)]];
     }
     return [];
   }),
@@ -138,32 +164,19 @@ assert.equal(requestFields.get("fileNameSeed"), "activeResume.title");
 assert.equal(requestFields.get("savedAt"), "savedVersion.savedAt");
 assert.equal(requestFields.get("versionId"), "savedVersion.versionId");
 
-const saveWorkspaceStart = builderSource.indexOf(
-  "  const saveCurrentWorkspace = useCallback(",
-);
-const saveWorkspaceEnd = builderSource.indexOf(
-  "\n  useEffect(() => {",
-  saveWorkspaceStart,
-);
-assert.notEqual(saveWorkspaceStart, -1, "Workspace save action was not found.");
-assert.notEqual(saveWorkspaceEnd, -1, "Workspace save action boundary was not found.");
-const saveWorkspaceSource = builderSource.slice(
-  saveWorkspaceStart,
-  saveWorkspaceEnd,
-);
 assert.match(
-  saveWorkspaceSource,
-  /while \(saveRequestRef\.current\) \{[\s\S]*?await activeRequest\.promise[\s\S]*?activeRequest\.targetKey === saveTargetKey[\s\S]*?latestCompletedSave = completedSave/,
+  saveSource,
+  /while \(activeRequestRef\.current\) \{[\s\S]*?latestCompletedSave = await activeRequest\.promise[\s\S]*?const effectiveLastSavedAt =\s*latestCompletedSave\?\.savedAt/,
   "A new save or export must wait for an active save and reuse its matching version.",
 );
 
 assert.doesNotMatch(
-  builderSource,
+  exportSource,
   /createPdfExportFrame|buildPdfExportUrl|createElement\(["']iframe["']\)/,
   "The editor must not create a hidden iframe for PDF export.",
 );
 assert.doesNotMatch(
-  builderSource,
+  exportSource,
   /window\.print\s*\(/,
   "The editor must not invoke the browser print dialog.",
 );

@@ -1,8 +1,3 @@
-import axios, {
-  AxiosHeaders,
-  type AxiosRequestConfig,
-  type InternalAxiosRequestConfig,
-} from "axios";
 import { toast } from "sonner";
 
 import type { ApiRequestOptions, ApiResponse } from "@/types/api";
@@ -19,17 +14,6 @@ interface ApiCacheEntry {
   promise: Promise<unknown>;
 }
 
-interface ResuMateAxiosRequestConfig extends AxiosRequestConfig {
-  notifyOnError?: boolean;
-  skipAuth?: boolean;
-}
-
-interface ResuMateInternalAxiosRequestConfig
-  extends InternalAxiosRequestConfig {
-  notifyOnError?: boolean;
-  skipAuth?: boolean;
-}
-
 // GET responses are cached briefly and invalidated by every mutation. This
 // keeps route changes and PDF render reloads fast without serving stale writes.
 const getRequestCache = new Map<string, ApiCacheEntry>();
@@ -42,9 +26,7 @@ type ResuMateApiError = Error & {
   status?: number;
 };
 
-const apiClient = axios.create({
-  responseType: "json",
-});
+const DEFAULT_ACCEPT_HEADER = "application/json, text/plain, */*";
 
 export const apiRoutes = {
   authLogin: "/api/auth/login",
@@ -194,11 +176,11 @@ export function getApiErrorStatus(error: unknown) {
 
 export function isAbortError(error: unknown) {
   return Boolean(
-    axios.isCancel(error) ||
-      (error &&
-        typeof error === "object" &&
-        "name" in error &&
-        (error.name === "AbortError" || error.name === "CanceledError")),
+    error &&
+      typeof error === "object" &&
+      (("__CANCEL__" in error && Boolean(error.__CANCEL__)) ||
+        ("name" in error &&
+          (error.name === "AbortError" || error.name === "CanceledError"))),
   );
 }
 
@@ -296,6 +278,7 @@ function redirectToLogin() {
 function getAuthHeaders(
   options: Pick<ApiRequestOptions, "auth"> = {},
   baseHeaders?: HeadersInit,
+  notifyOnError = true,
 ) {
   const headers = new Headers(baseHeaders);
   const shouldAuthenticate = options.auth !== false && isAuthRequired();
@@ -307,7 +290,7 @@ function getAuthHeaders(
   const token = getAccessToken();
   if (!token || isTokenLocallyInvalidated(token)) {
     redirectToLogin();
-    throw createApiError("AUTHENTICATION_REQUIRED");
+    throw createApiError("AUTHENTICATION_REQUIRED", {}, notifyOnError);
   }
 
   headers.set("Authorization", `Bearer ${token}`);
@@ -315,110 +298,133 @@ function getAuthHeaders(
   return headers;
 }
 
-apiClient.interceptors.request.use((config: ResuMateInternalAxiosRequestConfig) => {
-  const headers = AxiosHeaders.from(config.headers as AxiosHeaders | undefined);
+function getPayloadDetailCode(payload: unknown) {
+  const detail =
+    payload &&
+    typeof payload === "object" &&
+    "detail" in payload &&
+    payload.detail &&
+    typeof payload.detail === "object"
+      ? payload.detail
+      : null;
 
-  if (!headers.has("Accept")) {
-    headers.set("Accept", "application/json");
+  return detail && "code" in detail && typeof detail.code === "string"
+    ? detail.code
+    : null;
+}
+
+function createHttpResponseError(
+  payload: unknown,
+  status: number,
+  notifyOnError: boolean,
+) {
+  if (isApiResponse<unknown>(payload)) {
+    return createPayloadApiError(payload, status, notifyOnError);
   }
 
-  if (!config.skipAuth && isAuthRequired()) {
-    const token = getAccessToken();
-    if (!token || isTokenLocallyInvalidated(token)) {
-      redirectToLogin();
-      return Promise.reject(
-        createApiError(
-          "AUTHENTICATION_REQUIRED",
-          {},
-          config.notifyOnError !== false,
-        ),
-      );
-    }
-
-    headers.set("Authorization", `Bearer ${token}`);
+  const code = getPayloadDetailCode(payload);
+  if (code) {
+    return createApiError(
+      code,
+      { apiCode: code, status },
+      notifyOnError,
+    );
   }
 
-  config.headers = headers;
+  // Axios did not expose the status for generic failures through the public
+  // helpers. Keep that observable contract while changing only the transport.
+  return createApiError("REQUEST_FAILED", {}, notifyOnError);
+}
 
-  return config;
-});
+async function readJsonPayload(response: Response) {
+  const body = await response.text();
+  if (!body) {
+    return body;
+  }
 
-apiClient.interceptors.response.use(
-  (response) => {
-    if (isApiResponse<unknown>(response.data) && response.data.code !== 0) {
-      return Promise.reject(
-        createPayloadApiError(
-          response.data,
-          response.status,
-          (
-            response.config as ResuMateInternalAxiosRequestConfig
-          ).notifyOnError !== false,
-        ),
-      );
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    // Axios uses silent JSON parsing. The envelope validator below converts a
+    // malformed successful payload into INVALID_API_RESPONSE.
+    return body;
+  }
+}
+
+function createJsonRequestBody(body: unknown) {
+  if (typeof body === "undefined") {
+    return undefined;
+  }
+
+  if (typeof body === "string") {
+    try {
+      JSON.parse(body);
+      return body;
+    } catch {
+      return JSON.stringify(body);
     }
+  }
 
-    return response;
-  },
-  (error) => {
-    if (isAbortError(error)) {
-      return Promise.reject(error);
+  return JSON.stringify(body);
+}
+
+async function fetchApiEnvelope(
+  route: string,
+  options: ApiRequestOptions,
+  method: NonNullable<ApiRequestOptions["method"]>,
+) {
+  const baseHeaders = new Headers();
+  baseHeaders.set("Accept", DEFAULT_ACCEPT_HEADER);
+  if (options.body) {
+    baseHeaders.set("Content-Type", "application/json");
+  }
+
+  let headers: Headers;
+  try {
+    headers = getAuthHeaders(options, baseHeaders, false);
+  } catch (error) {
+    // The former Axios response interceptor converted an unnotified request
+    // interceptor rejection into the canonical request failure.
+    if (isAbortError(error) || isApiErrorNotified(error)) {
+      throw error;
     }
+    throw createApiError("REQUEST_FAILED");
+  }
 
-    if (isApiErrorNotified(error)) {
-      return Promise.reject(error);
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(route, options), {
+      body: createJsonRequestBody(options.body),
+      headers,
+      method,
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error) || isApiErrorNotified(error)) {
+      throw error;
     }
+    throw createApiError("REQUEST_FAILED", {}, false);
+  }
 
-    if (axios.isAxiosError(error)) {
-      const payload = error.response?.data;
-      const notifyOnError =
-        (
-          error.config as ResuMateInternalAxiosRequestConfig | undefined
-        )?.notifyOnError !== false;
-
-      if (isApiResponse<unknown>(payload)) {
-        return Promise.reject(
-          createPayloadApiError(
-            payload,
-            error.response?.status,
-            notifyOnError,
-          ),
-        );
-      }
-
-      const detail =
-        payload &&
-        typeof payload === "object" &&
-        "detail" in payload &&
-        payload.detail &&
-        typeof payload.detail === "object"
-          ? payload.detail
-          : null;
-      const code =
-        detail && "code" in detail && typeof detail.code === "string"
-          ? detail.code
-          : null;
-
-      if (code) {
-        return Promise.reject(
-          createApiError(
-            code,
-            {
-              apiCode: code,
-              status: error.response?.status,
-            },
-            notifyOnError,
-          ),
-        );
-      }
-
-      return Promise.reject(
-        createApiError("REQUEST_FAILED", {}, notifyOnError),
-      );
+  let payload: unknown;
+  try {
+    payload = await readJsonPayload(response);
+  } catch (error) {
+    if (isAbortError(error) || isApiErrorNotified(error)) {
+      throw error;
     }
+    throw createApiError("REQUEST_FAILED", {}, false);
+  }
 
-    return Promise.reject(createApiError("REQUEST_FAILED"));
-  },
-);
+  if (!response.ok) {
+    throw createHttpResponseError(payload, response.status, false);
+  }
+  if (isApiResponse<unknown>(payload) && payload.code !== 0) {
+    throw createPayloadApiError(payload, response.status, false);
+  }
+
+  return unwrapApiResponse<unknown>(payload, { notifyOnError: false });
+}
 
 async function rejectApiEnvelopeResource(response: Response) {
   const contentType = response.headers.get("Content-Type") ?? "";
@@ -451,26 +457,14 @@ export async function requestApi<T>(
     cached && cached.expiresAt > now
       ? (cached.promise as Promise<T>)
       : (async () => {
-          const requestConfig: ResuMateAxiosRequestConfig = {
-            data: options.body,
-            headers: options.body
-              ? {
-                  "Content-Type": "application/json",
-                }
-              : undefined,
+          // Error notification belongs to the caller awaiting this promise,
+          // not the shared transport. Otherwise the first cached GET caller
+          // would decide whether every other caller sees an error toast.
+          const data = (await fetchApiEnvelope(
+            route,
+            options,
             method,
-            // Error notification belongs to the caller awaiting this promise,
-            // not the shared transport. Otherwise the first cached GET caller
-            // would decide whether every other caller sees an error toast.
-            notifyOnError: false,
-            signal: options.signal,
-            skipAuth: options.auth === false,
-            url: resolveApiUrl(route, options),
-          };
-          const response = await apiClient.request<unknown>(requestConfig);
-          const data = unwrapApiResponse<T>(response.data, {
-            notifyOnError: false,
-          });
+          )) as T;
 
           if (method !== "GET") {
             clearApiCache();
@@ -508,19 +502,45 @@ export async function uploadApi<T>(
     timeoutMs?: number;
   } = {},
 ) {
-  const requestConfig: ResuMateAxiosRequestConfig = {
-    onUploadProgress: options.onProgress
-      ? ({ loaded, total }) => options.onProgress?.({ loaded, total })
-      : undefined,
-    signal: options.signal,
-    skipAuth: options.auth === false,
-    timeout: options.timeoutMs,
-  };
-  const response = await apiClient.post<unknown>(
-    resolveApiUrl(route, options),
-    body,
-    requestConfig,
+  const headers = getAuthHeaders(
+    options,
+    { Accept: DEFAULT_ACCEPT_HEADER },
   );
+  // XMLHttpRequest upload progress and timeout behavior are not available
+  // through fetch. Keep Axios behind this feature-only boundary so imports and
+  // Agent attachments retain their existing transport semantics.
+  const { default: axios } = await import("axios");
+  let response;
+
+  try {
+    response = await axios.post<unknown>(resolveApiUrl(route, options), body, {
+      headers: Object.fromEntries(headers.entries()),
+      onUploadProgress: options.onProgress
+        ? ({ loaded, total }) => options.onProgress?.({ loaded, total })
+        : undefined,
+      responseType: "json",
+      signal: options.signal,
+      timeout: options.timeoutMs,
+    });
+  } catch (error) {
+    if (isAbortError(error) || isApiErrorNotified(error)) {
+      throw error;
+    }
+
+    if (axios.isAxiosError(error)) {
+      throw createHttpResponseError(
+        error.response?.data,
+        error.response?.status ?? 0,
+        true,
+      );
+    }
+
+    throw createApiError("REQUEST_FAILED");
+  }
+
+  if (isApiResponse<unknown>(response.data) && response.data.code !== 0) {
+    throw createPayloadApiError(response.data, response.status);
+  }
 
   clearApiCache();
 

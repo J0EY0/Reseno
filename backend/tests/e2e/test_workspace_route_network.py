@@ -1206,6 +1206,102 @@ def test_workspace_load_error_can_retry_same_route(
         context.close()
 
 
+def test_resume_route_failure_blocks_seed_checkpoint_and_autosave(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    resume_put_requests = 0
+
+    def count_resume_put(request: Request) -> None:
+        nonlocal resume_put_requests
+        if (
+            request.method == "PUT"
+            and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+        ):
+            resume_put_requests += 1
+
+    def fail_route_calibration(route: Route) -> None:
+        # The typed handoff is interactive before calibration settles.
+        time.sleep(1)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 50000,
+                    "message": "INTERNAL_SERVER_ERROR",
+                    "data": None,
+                }
+            ),
+        )
+
+    page.on("request", count_resume_put)
+    page.route(
+        "**/api/workspace/pages/resume-editor",
+        fail_route_calibration,
+    )
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate(
+            f"""
+            () => {{
+              const deadline = performance.now() + 800;
+              let openedBasicInfo = false;
+              const editSeed = () => {{
+                const input = document.querySelector('input[name="name"]');
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  input instanceof HTMLInputElement
+                ) {{
+                  const valueSetter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    "value",
+                  )?.set;
+                  valueSetter?.call(input, "Must Not Persist After Load Error");
+                  input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                  return;
+                }}
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  !openedBasicInfo
+                ) {{
+                  const trigger = [...document.querySelectorAll("button")]
+                    .find((candidate) =>
+                      candidate.getAttribute("aria-label") ===
+                      "基本信息: 展开或收起模块",
+                    );
+                  if (trigger instanceof HTMLButtonElement) {{
+                    openedBasicInfo = true;
+                    trigger.click();
+                  }}
+                }}
+                if (performance.now() < deadline) {{
+                  requestAnimationFrame(editSeed);
+                }}
+              }};
+              requestAnimationFrame(editSeed);
+            }}
+            """
+        )
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.get_by_role("button", name="重试", exact=True).wait_for(
+            state="visible"
+        )
+
+        page.keyboard.press("Control+S")
+        # Also cross the autosave delay: neither persistence path may write an
+        # uncalibrated navigation seed after the route read failed.
+        page.wait_for_timeout(5_500)
+        assert resume_put_requests == 0
+    finally:
+        context.close()
+
+
 def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -1289,6 +1385,197 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         context.close()
 
 
+@pytest.mark.parametrize(
+    "edit_before_checkpoint",
+    [False, True],
+    ids=["same-content-checkpoint", "edited-checkpoint"],
+)
+def test_resume_calibration_does_not_rollback_handoff_checkpoint(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    edit_before_checkpoint: bool,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    resume_id: str | None = None
+    calibration_requests = 0
+    checkpoint_responses = 0
+    checkpoint_saved_at: str | None = None
+
+    def capture_checkpoint(response) -> None:
+        nonlocal checkpoint_responses, checkpoint_saved_at
+        if (
+            resume_id
+            and response.request.method == "PUT"
+            and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+        ):
+            checkpoint_responses += 1
+            checkpoint_saved_at = response.json()["data"]["savedAt"]
+
+    def capture_calibration(request: Request) -> None:
+        nonlocal calibration_requests
+        if (
+            resume_id
+            and request.method == "GET"
+            and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+        ):
+            calibration_requests += 1
+
+    page.on("response", capture_checkpoint)
+    page.on("request", capture_calibration)
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Calibration checkpoint regression"},
+        )
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+        # Keep the original and new checkpoint labels distinct to make the
+        # version-list assertion deterministic at second precision.
+        page.wait_for_timeout(1_100)
+
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate(
+            f"""
+            () => {{
+              window.__resumeCalibrationCheckpointSent = false;
+              window.__resumeCalibrationReleased = false;
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = async (input, init) => {{
+                const request = new Request(input, init);
+                const response = await originalFetch(input, init);
+                if (
+                  request.method === "GET" &&
+                  new URL(request.url).pathname ===
+                    "/api/resumes/{resume_id}"
+                ) {{
+                  // Capture the old response, but yield the browser event loop
+                  // so the handoff-owned PUT can complete first.
+                  await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+                  window.__resumeCalibrationReleased = true;
+                }}
+                return response;
+              }};
+              const editBeforeCheckpoint = {str(edit_before_checkpoint).lower()};
+              const deadline = performance.now() + 8_000;
+              let openedBasicInfo = false;
+              const saveWhenReady = () => {{
+                const input = document.querySelector('input[name="name"]');
+                const saveButton = document.querySelector(
+                  'button[aria-label="保存状态"]',
+                );
+                const valueSetter = Object.getOwnPropertyDescriptor(
+                  HTMLInputElement.prototype,
+                  "value",
+                )?.set;
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  saveButton instanceof HTMLButtonElement &&
+                  (!editBeforeCheckpoint ||
+                    (input instanceof HTMLInputElement && valueSetter))
+                ) {{
+                  if (
+                    editBeforeCheckpoint &&
+                    input instanceof HTMLInputElement &&
+                    valueSetter
+                  ) {{
+                    valueSetter.call(
+                      input,
+                      "Saved Before Calibration Returned",
+                    );
+                    input.dispatchEvent(
+                      new Event("input", {{ bubbles: true }}),
+                    );
+                  }}
+                  window.setTimeout(() => {{
+                    saveButton.click();
+                    window.__resumeCalibrationCheckpointSent = true;
+                  }}, 100);
+                  return;
+                }}
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  editBeforeCheckpoint &&
+                  !openedBasicInfo
+                ) {{
+                  const trigger = [...document.querySelectorAll("button")]
+                    .find((candidate) =>
+                      candidate.getAttribute("aria-label") ===
+                      "基本信息: 展开或收起模块",
+                    );
+                  if (trigger instanceof HTMLButtonElement) {{
+                    openedBasicInfo = true;
+                    trigger.click();
+                  }}
+                }}
+                if (performance.now() < deadline) {{
+                  requestAnimationFrame(saveWhenReady);
+                }}
+              }};
+              requestAnimationFrame(saveWhenReady);
+            }}
+            """
+        )
+
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        deadline = time.monotonic() + 8
+        while (
+            (calibration_requests < 1 or checkpoint_responses < 1)
+            and time.monotonic() < deadline
+        ):
+            page.wait_for_timeout(50)
+        page.wait_for_timeout(150)
+
+        assert calibration_requests == 1
+        assert checkpoint_responses == 1
+        assert checkpoint_saved_at is not None
+        assert page.evaluate("window.__resumeCalibrationCheckpointSent") is True
+        page.wait_for_function("window.__resumeCalibrationReleased === true")
+        page.wait_for_timeout(100)
+        if edit_before_checkpoint:
+            assert page.locator('input[name="name"]').input_value() == (
+                "Saved Before Calibration Returned"
+            )
+        page.get_by_role("button", name="保存状态", exact=True).hover()
+        page.get_by_text("有未保存更改", exact=True).wait_for(
+            state="detached"
+        )
+        checkpoint_label = page.evaluate(
+            """
+            (savedAt) => new Intl.DateTimeFormat("zh-CN", {
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }).format(new Date(savedAt))
+            """,
+            checkpoint_saved_at,
+        )
+        page.get_by_text(checkpoint_label, exact=False).first.wait_for(
+            state="visible"
+        )
+        persisted_response = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        )
+        assert persisted_response.ok
+        if edit_before_checkpoint:
+            assert persisted_response.json()["data"]["resume"]["resume"][
+                "basic"
+            ]["name"] == "Saved Before Calibration Returned"
+    finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_template_navigation_keeps_cached_views_mounted(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -1342,6 +1629,110 @@ def test_template_navigation_keeps_cached_views_mounted(
         _assert_visible_once_mounted(
             routed_gallery_frames,
             "hasTemplateGallery",
+        )
+    finally:
+        context.close()
+
+
+def test_template_calibration_preserves_handoff_edit(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    calibration_requests = 0
+
+    try:
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        template_id = page.url.rsplit("/", maxsplit=1)[-1]
+        page.get_by_role(
+            "button",
+            name="返回模板列表",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/templates")
+        page.wait_for_load_state("networkidle")
+
+        # Expire the shared template-catalog cache so detail performs its
+        # route-owned calibration while the handoff draft is already visible.
+        page.wait_for_timeout(3_200)
+
+        def delay_calibration(route: Route) -> None:
+            nonlocal calibration_requests
+            calibration_requests += 1
+            time.sleep(1)
+            route.continue_()
+
+        page.route("**/api/workspace/pages/templates", delay_calibration)
+        page.evaluate(
+            f"""
+            () => {{
+              window.__templateCalibrationDraftEdited = false;
+              const deadline = performance.now() + 5_000;
+              let openedTemplateInfo = false;
+              const editWhenReady = () => {{
+                const labels = [...document.querySelectorAll("label")];
+                const label = labels.find((candidate) =>
+                  candidate.textContent?.includes("模板名称"),
+                );
+                const input = label?.querySelector("input");
+                const valueSetter = Object.getOwnPropertyDescriptor(
+                  HTMLInputElement.prototype,
+                  "value",
+                )?.set;
+                if (
+                  window.location.pathname === "/template/{template_id}" &&
+                  input instanceof HTMLInputElement &&
+                  valueSetter
+                ) {{
+                  valueSetter.call(input, "Local Edit During Calibration");
+                  input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                  window.__templateCalibrationDraftEdited = true;
+                  return;
+                }}
+                if (
+                  window.location.pathname === "/template/{template_id}" &&
+                  !openedTemplateInfo
+                ) {{
+                  const trigger = [
+                    ...document.querySelectorAll(
+                      '[data-slot="collapsible-trigger"]',
+                    ),
+                  ].find((candidate) =>
+                    candidate.textContent?.includes("模板信息"),
+                  );
+                  if (trigger instanceof HTMLElement) {{
+                    openedTemplateInfo = true;
+                    trigger.click();
+                  }}
+                }}
+                if (performance.now() < deadline) {{
+                  requestAnimationFrame(editWhenReady);
+                }}
+              }};
+              requestAnimationFrame(editWhenReady);
+            }}
+            """
+        )
+
+        page.locator(f'a[href="/template/{template_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/template/{template_id}")
+        deadline = time.monotonic() + 5
+        while calibration_requests < 1 and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+        page.wait_for_timeout(100)
+
+        assert calibration_requests == 1
+        assert page.evaluate("window.__templateCalibrationDraftEdited") is True
+        assert page.get_by_label("模板名称", exact=True).input_value() == (
+            "Local Edit During Calibration"
         )
     finally:
         context.close()
@@ -3289,4 +3680,125 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
         ).click()
         assert page.url == f"{frontend_url}/resume/{resume_id}"
     finally:
+        context.close()
+
+
+def test_browser_back_does_not_restore_consumed_resume_handoff(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    resume_id: str | None = None
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Consumed history handoff"},
+        )
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        name_input = page.locator('input[name="name"]')
+        name_input.fill("Saved After Initial Handoff")
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path
+                == f"/api/resumes/{resume_id}"
+            )
+        ):
+            page.get_by_role("button", name="保存状态", exact=True).click()
+        page.get_by_role("button", name="保存状态", exact=True).hover()
+        page.get_by_text("有未保存更改", exact=True).wait_for(
+            state="detached"
+        )
+
+        page.locator('a[href="/templates"]').first.click()
+        page.wait_for_url(f"{frontend_url}/templates")
+        page.wait_for_load_state("networkidle")
+
+        def delay_back_calibration(route: Route) -> None:
+            current_response = route.fetch()
+            time.sleep(2)
+            route.fulfill(response=current_response)
+
+        page.route(
+            f"**/api/resumes/{resume_id}",
+            delay_back_calibration,
+        )
+        page.evaluate(
+            f"""
+            () => {{
+              window.__staleResumeHandoffEdited = false;
+              const deadline = performance.now() + 1_200;
+              let openedBasicInfo = false;
+              const editOnlyAnImmediateSeed = () => {{
+                const input = document.querySelector('input[name="name"]');
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  input instanceof HTMLInputElement
+                ) {{
+                  const valueSetter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    "value",
+                  )?.set;
+                  valueSetter?.call(input, "Stale History Handoff");
+                  input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                  window.__staleResumeHandoffEdited = true;
+                  return;
+                }}
+                if (
+                  window.location.pathname === "/resume/{resume_id}" &&
+                  !openedBasicInfo
+                ) {{
+                  const trigger = [...document.querySelectorAll("button")]
+                    .find((candidate) =>
+                      candidate.getAttribute("aria-label") ===
+                      "基本信息: 展开或收起模块",
+                    );
+                  if (trigger instanceof HTMLButtonElement) {{
+                    openedBasicInfo = true;
+                    trigger.click();
+                  }}
+                }}
+                if (performance.now() < deadline) {{
+                  requestAnimationFrame(editOnlyAnImmediateSeed);
+                }}
+              }};
+              requestAnimationFrame(editOnlyAnImmediateSeed);
+            }}
+            """
+        )
+
+        page.go_back(wait_until="commit")
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.wait_for_load_state("networkidle")
+        if not page.locator('input[name="name"]').is_visible():
+            page.get_by_role(
+                "button",
+                name="基本信息: 展开或收起模块",
+                exact=True,
+            ).click()
+
+        assert page.evaluate("window.__staleResumeHandoffEdited") is False
+        assert page.locator('input[name="name"]').input_value() == (
+            "Saved After Initial Handoff"
+        )
+    finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
         context.close()

@@ -11,14 +11,18 @@ const server = await createServer({
 });
 
 try {
+  const [sectionModule, sectionMutationModule] = await Promise.all([
+    server.ssrLoadModule("/src/lib/resume-sections.ts"),
+    server.ssrLoadModule("/src/lib/resume-section-mutations.ts"),
+  ]);
   const {
-    applySectionMutation,
     createResumeSection,
     isCanonicalResumeData,
     isCanonicalResumeSection,
     parseCommaSeparatedItems,
     projectResumeSection,
-  } = await server.ssrLoadModule("/src/lib/resume-sections.ts");
+  } = sectionModule;
+  const { applySectionMutation } = sectionMutationModule;
 
   assert.deepEqual(
     parseCommaSeparatedItems("React, TypeScript， FastAPI, "),

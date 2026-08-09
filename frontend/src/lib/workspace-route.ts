@@ -1,13 +1,206 @@
-import type { WorkspaceView } from "@/types/resume";
+import { matchPath } from "react-router-dom";
 
-const workspacePathByView: Record<WorkspaceView, string> = {
-  resume: "/resume",
-  templates: "/templates",
+import type { ResumeWorkspaceItem, WorkspaceView } from "@/types/resume";
+import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
+
+export type WorkspaceRoute =
+  | { kind: "resume-gallery" }
+  | { kind: "resume-detail"; id: string }
+  | { kind: "template-gallery" }
+  | { kind: "template-detail"; id: string }
+  | { kind: "trash" }
+  | { kind: "models" }
+  | { kind: "settings" }
+  | { kind: "unknown" };
+
+export interface TemplateDetailRouteHandoff {
+  data: WorkspaceTemplateRouteData;
+  kind: "template-detail-handoff";
+  templateId: string;
+}
+
+export interface ResumeDetailRouteHandoff {
+  data: WorkspaceTemplateRouteData;
+  kind: "resume-detail-handoff";
+  resume: ResumeWorkspaceItem;
+  resumeCount: number;
+  resumeId: string;
+  resumeOrdinal: number;
+  savedAt?: string;
+  versionId?: string;
+}
+
+export function createResumeDetailRouteHandoff(
+  resume: ResumeWorkspaceItem,
+  data: WorkspaceTemplateRouteData,
+  resumeOrdinal: number,
+  resumeCount: number,
+  checkpoint?: { savedAt: string; versionId: string },
+): ResumeDetailRouteHandoff {
+  return {
+    data,
+    kind: "resume-detail-handoff",
+    resume,
+    resumeCount,
+    resumeId: resume.id,
+    resumeOrdinal,
+    ...checkpoint,
+  };
+}
+
+export function getResumeDetailRouteHandoff(
+  state: unknown,
+  resumeId: string,
+): ResumeDetailRouteHandoff | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+
+  const candidate = state as Partial<ResumeDetailRouteHandoff>;
+  const hasCheckpoint =
+    typeof candidate.savedAt === "string" &&
+    typeof candidate.versionId === "string";
+  if (
+    candidate.kind !== "resume-detail-handoff" ||
+    candidate.resumeId !== resumeId ||
+    !candidate.resume ||
+    candidate.resume.id !== resumeId ||
+    !Number.isInteger(candidate.resumeCount) ||
+    !Number.isInteger(candidate.resumeOrdinal) ||
+    Number(candidate.resumeOrdinal) < 1 ||
+    Number(candidate.resumeCount) < Number(candidate.resumeOrdinal) ||
+    !candidate.data ||
+    typeof candidate.data.defaultTemplateId !== "string" ||
+    !Array.isArray(candidate.data.customTemplates) ||
+    ((candidate.savedAt !== undefined || candidate.versionId !== undefined) &&
+      !hasCheckpoint)
+  ) {
+    return null;
+  }
+
+  return candidate as ResumeDetailRouteHandoff;
+}
+
+export function createTemplateDetailRouteHandoff(
+  templateId: string,
+  data: WorkspaceTemplateRouteData,
+): TemplateDetailRouteHandoff {
+  return { data, kind: "template-detail-handoff", templateId };
+}
+
+export function getTemplateDetailRouteHandoff(
+  state: unknown,
+  templateId: string,
+): TemplateDetailRouteHandoff | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+
+  const candidate = state as Partial<TemplateDetailRouteHandoff>;
+  if (
+    candidate.kind !== "template-detail-handoff" ||
+    candidate.templateId !== templateId ||
+    !candidate.data ||
+    typeof candidate.data.defaultTemplateId !== "string" ||
+    !Array.isArray(candidate.data.customTemplates)
+  ) {
+    return null;
+  }
+
+  return candidate as TemplateDetailRouteHandoff;
+}
+
+export const workspaceRoutePaths = {
+  resumeGallery: "/resume",
+  resumeDetail: "/resume/:id",
+  templateGallery: "/templates",
+  templateDetail: "/template/:id",
   trash: "/trash",
   models: "/models",
   settings: "/settings",
+} as const;
+
+export const workspaceAppRoutePaths = Object.values(workspaceRoutePaths);
+
+const workspacePathByView: Record<WorkspaceView, string> = {
+  resume: workspaceRoutePaths.resumeGallery,
+  templates: workspaceRoutePaths.templateGallery,
+  trash: workspaceRoutePaths.trash,
+  models: workspaceRoutePaths.models,
+  settings: workspaceRoutePaths.settings,
 };
 
 export function getWorkspacePath(view: WorkspaceView) {
   return workspacePathByView[view];
+}
+
+export function getWorkspaceRoute(pathname: string): WorkspaceRoute {
+  const resumeDetailMatch = matchPath(workspaceRoutePaths.resumeDetail, pathname);
+
+  if (resumeDetailMatch?.params.id) {
+    return { kind: "resume-detail", id: resumeDetailMatch.params.id };
+  }
+
+  const templateDetailMatch = matchPath(
+    workspaceRoutePaths.templateDetail,
+    pathname,
+  );
+
+  if (templateDetailMatch?.params.id) {
+    return { kind: "template-detail", id: templateDetailMatch.params.id };
+  }
+
+  if (
+    matchPath(
+      { path: workspaceRoutePaths.resumeGallery, end: true },
+      pathname,
+    )
+  ) {
+    return { kind: "resume-gallery" };
+  }
+
+  if (matchPath(workspaceRoutePaths.templateGallery, pathname)) {
+    return { kind: "template-gallery" };
+  }
+
+  if (matchPath(workspaceRoutePaths.trash, pathname)) {
+    return { kind: "trash" };
+  }
+
+  if (matchPath(workspaceRoutePaths.models, pathname)) {
+    return { kind: "models" };
+  }
+
+  if (matchPath(workspaceRoutePaths.settings, pathname)) {
+    return { kind: "settings" };
+  }
+
+  return { kind: "unknown" };
+}
+
+export function getWorkspaceViewFromRoute(route: WorkspaceRoute): WorkspaceView {
+  switch (route.kind) {
+    case "template-gallery":
+    case "template-detail":
+      return "templates";
+    case "trash":
+      return "trash";
+    case "models":
+      return "models";
+    case "settings":
+      return "settings";
+    case "resume-gallery":
+    case "resume-detail":
+    case "unknown":
+    default:
+      return "resume";
+  }
+}
+
+export function getResumePath(resumeId: string) {
+  return `/resume/${resumeId}`;
+}
+
+export function getTemplatePath(templateId: string) {
+  return `/template/${templateId}`;
 }

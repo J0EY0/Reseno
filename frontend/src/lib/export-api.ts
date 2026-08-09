@@ -1,5 +1,5 @@
 import { apiRoutes, fetchApiResource, requestApi } from "@/lib/api-client";
-import { isBuiltinTemplateId } from "@/lib/templates";
+import { isBuiltinTemplateId } from "@/lib/template-presets";
 import type {
   ExportResumeImagesRequest,
   ExportResumeImagesResponse,

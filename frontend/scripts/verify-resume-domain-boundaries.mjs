@@ -1,0 +1,330 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
+
+const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
+const sourceRoot = path.join(frontendRoot, "src");
+const domainModules = new Map([
+  [
+    "lib/template-presets.ts",
+    [
+      "builtinTemplateIds",
+      "getBuiltinTemplatePreset",
+      "isBuiltinTemplateId",
+    ],
+  ],
+  [
+    "lib/templates.ts",
+    [
+      "createCustomTemplateFromBase",
+      "createTemplateLayout",
+      "createTemplateSettings",
+      "getBuiltInTemplates",
+      "getResumeFontSizeInPoints",
+      "getTemplateById",
+      "getTemplateCatalog",
+      "resumeFontSizeOptions",
+    ],
+  ],
+  [
+    "lib/resume-sections.ts",
+    [
+      "RenderableResumeSection",
+      "RenderableSectionItem",
+      "SECTION_ITEM_FIELDS",
+      "SECTION_RENDER_FAMILY",
+      "createResumeSection",
+      "createSectionItem",
+      "hasSectionContent",
+      "hasSectionItemContent",
+      "isCanonicalResumeData",
+      "isCanonicalResumeSection",
+      "isSectionItemForKind",
+      "parseCommaSeparatedItems",
+      "projectResumeSection",
+      "projectResumeSections",
+    ],
+  ],
+  [
+    "lib/resume-section-mutations.ts",
+    [
+      "ResumeSectionMutation",
+      "ResumeSectionMutationResult",
+      "applySectionMutation",
+    ],
+  ],
+]);
+
+function countLines(source) {
+  if (!source) {
+    return 0;
+  }
+
+  const lines = source.split(/\r\n|\n|\r/).length;
+  return /(?:\r\n|\n|\r)$/.test(source) ? lines - 1 : lines;
+}
+
+function hasExportModifier(node) {
+  return node.modifiers?.some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+  );
+}
+
+function collectExportedNames(sourceFile) {
+  const names = new Set();
+
+  for (const statement of sourceFile.statements) {
+    assert.equal(
+      ts.isExportDeclaration(statement),
+      false,
+      `${sourceFile.fileName} must not become a barrel or compatibility facade.`,
+    );
+
+    if (!hasExportModifier(statement)) {
+      continue;
+    }
+
+    if (
+      (ts.isFunctionDeclaration(statement) ||
+        ts.isClassDeclaration(statement) ||
+        ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement) ||
+        ts.isEnumDeclaration(statement)) &&
+      statement.name
+    ) {
+      names.add(statement.name.text);
+      continue;
+    }
+
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        assert(
+          ts.isIdentifier(declaration.name),
+          `${sourceFile.fileName} must use named domain exports.`,
+        );
+        names.add(declaration.name.text);
+      }
+    }
+  }
+
+  return [...names].sort();
+}
+
+function resolveDomainImport(modulePath, specifier) {
+  let resolved;
+
+  if (specifier.startsWith("@/")) {
+    resolved = specifier.slice(2);
+  } else if (specifier.startsWith(".")) {
+    resolved = path.posix.normalize(
+      path.posix.join(path.posix.dirname(modulePath), specifier),
+    );
+  } else {
+    return null;
+  }
+
+  const withExtension = resolved.endsWith(".ts") ? resolved : `${resolved}.ts`;
+  return domainModules.has(withExtension) ? withExtension : null;
+}
+
+function collectDomainDependencies(sourceFile, modulePath) {
+  const dependencies = new Set();
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) {
+      continue;
+    }
+
+    const specifier = statement.moduleSpecifier.text;
+    const dependency = resolveDomainImport(modulePath, specifier);
+    if (dependency) {
+      dependencies.add(dependency);
+    }
+  }
+
+  return dependencies;
+}
+
+function assertAcyclic(graph) {
+  const visiting = new Set();
+  const visited = new Set();
+
+  function visit(modulePath, trail) {
+    if (visiting.has(modulePath)) {
+      throw new Error(
+        `Resume domain modules must remain acyclic: ${[
+          ...trail,
+          modulePath,
+        ].join(" -> ")}`,
+      );
+    }
+    if (visited.has(modulePath)) {
+      return;
+    }
+
+    visiting.add(modulePath);
+    for (const dependency of graph.get(modulePath) ?? []) {
+      visit(dependency, [...trail, modulePath]);
+    }
+    visiting.delete(modulePath);
+    visited.add(modulePath);
+  }
+
+  for (const modulePath of graph.keys()) {
+    visit(modulePath, []);
+  }
+}
+
+const graph = new Map();
+const productExports = new Set();
+
+for (const [modulePath, expectedExports] of domainModules) {
+  const absolutePath = path.join(sourceRoot, modulePath);
+  const source = await readFile(absolutePath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    modulePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+
+  assert(
+    countLines(source) <= 600,
+    `${modulePath} must stay within the default 600-line TypeScript budget.`,
+  );
+  assert.deepEqual(
+    collectExportedNames(sourceFile),
+    [...expectedExports].sort(),
+    `${modulePath} changed its deliberate domain interface.`,
+  );
+
+  graph.set(modulePath, collectDomainDependencies(sourceFile, modulePath));
+  for (const exportedName of expectedExports) {
+    if (exportedName !== "getBuiltinTemplatePreset") {
+      assert.equal(
+        productExports.has(exportedName),
+        false,
+        `${exportedName} must have a single owning module.`,
+      );
+      productExports.add(exportedName);
+    }
+  }
+}
+
+assertAcyclic(graph);
+assert.deepEqual(
+  [...graph.get("lib/templates.ts")],
+  ["lib/template-presets.ts"],
+  "Template normalization/factories must depend one-way on the preset registry.",
+);
+assert.deepEqual(
+  [...graph.get("lib/template-presets.ts")],
+  [],
+  "The preset registry must not depend on template normalization or catalog code.",
+);
+assert.deepEqual(
+  [...graph.get("lib/resume-section-mutations.ts")],
+  ["lib/resume-sections.ts"],
+  "Immutable mutations must consume the canonical section schema one-way.",
+);
+assert.deepEqual(
+  [...graph.get("lib/resume-sections.ts")],
+  [],
+  "The canonical section schema must not depend on editor mutations.",
+);
+
+const [
+  exportApi,
+  editorPane,
+  editorCard,
+  sectionEditors,
+  sectionEditorFields,
+  ...typedSectionEditors
+] = await Promise.all([
+  readFile(path.join(sourceRoot, "lib/export-api.ts"), "utf8"),
+  readFile(
+    path.join(sourceRoot, "components/editor/resume-editor-pane.tsx"),
+    "utf8",
+  ),
+  readFile(
+    path.join(sourceRoot, "components/editor/resume-section-card.tsx"),
+    "utf8",
+  ),
+  readFile(
+    path.join(sourceRoot, "components/editor/resume-section-editors.tsx"),
+    "utf8",
+  ),
+  readFile(
+    path.join(sourceRoot, "components/editor/resume-section-editor-fields.tsx"),
+    "utf8",
+  ),
+  ...[
+    "education-section-editor.tsx",
+    "experience-section-editor.tsx",
+    "project-section-editor.tsx",
+    "achievement-section-editor.tsx",
+    "simple-list-section-editor.tsx",
+  ].map((moduleName) =>
+    readFile(path.join(sourceRoot, "components/editor", moduleName), "utf8"),
+  ),
+]);
+
+assert(
+  exportApi.includes('from "@/lib/template-presets"') &&
+    !exportApi.includes('from "@/lib/templates"'),
+  "Built-in template identity checks must import the preset registry directly.",
+);
+for (const source of [editorPane, editorCard, sectionEditors]) {
+  assert(
+    source.includes("@/lib/resume-section-mutations"),
+    "Editor mutation callers must import the immutable mutation module directly.",
+  );
+}
+assert.deepEqual(
+  [
+    "education-section-editor",
+    "experience-section-editor",
+    "project-section-editor",
+    "achievement-section-editor",
+    "simple-list-section-editor",
+  ].filter((moduleName) => sectionEditors.includes(`./${moduleName}`)),
+  [
+    "education-section-editor",
+    "experience-section-editor",
+    "project-section-editor",
+    "achievement-section-editor",
+    "simple-list-section-editor",
+  ],
+  "The section dispatcher must import each typed editor through its narrow module.",
+);
+assert(
+  sectionEditors.includes("toast.info") &&
+    sectionEditors.includes("type: 'item.restore'") &&
+    sectionEditors.includes("type: 'item.remove'"),
+  "The section dispatcher must retain snapshot-based delete and undo ownership.",
+);
+assert(
+  sectionEditorFields.includes("lazy(() =>") &&
+    sectionEditorFields.includes("import('./rich-highlights-editor')") &&
+    sectionEditorFields.includes("inputState.publishedValue === serializedValue") &&
+    sectionEditorFields.includes("serializedValue !== inputState.publishedValue"),
+  "Shared section fields must retain the rich-editor lazy boundary and external draft adoption.",
+);
+for (const [index, sectionKind] of [
+  "education",
+  "experience",
+  "project",
+  "achievement",
+  "simple_list",
+].entries()) {
+  assert(
+    typedSectionEditors[index].includes(`sectionKind: '${sectionKind}'`),
+    `The ${sectionKind} editor must publish its own discriminated update mutation.`,
+  );
+}
+
+console.log(
+  "Resume template/section module interfaces, dependencies, and size limits verified.",
+);

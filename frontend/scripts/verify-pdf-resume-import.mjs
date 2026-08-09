@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import axios from "axios";
 import { createServer } from "vite";
 
 const require = createRequire(import.meta.url);
@@ -16,6 +15,12 @@ const pdfWorkerFileUrl = pathToFileURL(
   require.resolve("pdfjs-dist/build/pdf.worker.min.mjs"),
 ).href;
 const pdfWorkerUrlModuleId = "\0resumate-pdf-worker-url";
+const parserModuleDirectory = new URL(
+  "../src/lib/pdf-resume-import/",
+  import.meta.url,
+);
+
+verifyAcyclicParserModules(parserModuleDirectory);
 
 // Browser PDF.js receives these geometry primitives from the DOM. Its own
 // Node dependency provides equivalent implementations for this integration
@@ -56,20 +61,20 @@ const zhMinimalStructureFixture = JSON.parse(
     "utf8",
   ),
 );
-const originalAxiosAdapter = axios.defaults.adapter;
+const originalFetch = globalThis.fetch;
 let parserConfigResponseMode = "failure";
 const parserConfigRequestCounts = {
   lexicon: 0,
   registry: 0,
 };
 
-axios.defaults.adapter = async (config) => {
-  const route = String(config.url ?? "");
+globalThis.fetch = async (input) => {
+  const route = String(input);
 
   if (route.endsWith("/api/section-registry")) {
     parserConfigRequestCounts.registry += 1;
     if (parserConfigResponseMode === "registry-conflict") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         sections: [
           {
             kind: "page",
@@ -87,7 +92,7 @@ axios.defaults.adapter = async (config) => {
       });
     }
     if (parserConfigResponseMode === "registry-duplicate") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         sections: [
           {
             kind: "experience",
@@ -99,7 +104,7 @@ axios.defaults.adapter = async (config) => {
       });
     }
     if (parserConfigResponseMode === "registry-unknown") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         sections: [
           {
             kind: "bogus",
@@ -111,13 +116,13 @@ axios.defaults.adapter = async (config) => {
       });
     }
     if (parserConfigResponseMode === "registry-incomplete") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         sections: sectionRegistry.sections.filter(
           (section) => section.kind !== "simple_list",
         ),
       });
     }
-    return axiosJsonResponse(config, sectionRegistry);
+    return jsonResponse(sectionRegistry);
   }
 
   if (route.endsWith("/api/resume-import-lexicon")) {
@@ -126,7 +131,7 @@ axios.defaults.adapter = async (config) => {
       throw new Error("Synthetic parser-config request failure.");
     }
     if (parserConfigResponseMode === "malformed") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         locales: {
           en: {
             documentTitleTerms: ["resume"],
@@ -135,7 +140,7 @@ axios.defaults.adapter = async (config) => {
       });
     }
     if (parserConfigResponseMode === "empty-term") {
-      return axiosJsonResponse(config, {
+      return jsonResponse({
         locales: {
           ...resumeImportLexicon.locales,
           en: {
@@ -145,7 +150,7 @@ axios.defaults.adapter = async (config) => {
         },
       });
     }
-    return axiosJsonResponse(config, resumeImportLexicon);
+    return jsonResponse(resumeImportLexicon);
   }
 
   throw new Error(`Unexpected PDF import test request: ${route}`);
@@ -183,12 +188,24 @@ const server = await createServer({
 });
 
 try {
-  const {
-    buildResumeFromPdfLines,
-    countTextGraphemes,
-    importResumeFromPdf,
-    textContentToLinesForResumeImport,
-  } = await server.ssrLoadModule("/src/lib/pdf-resume-import.ts");
+  const [productEntry, parser, pdfTextExtraction, textHeuristics] =
+    await Promise.all([
+      server.ssrLoadModule("/src/lib/pdf-resume-import.ts"),
+      server.ssrLoadModule("/src/lib/pdf-resume-import/parser.ts"),
+      server.ssrLoadModule(
+        "/src/lib/pdf-resume-import/pdf-text-extraction.ts",
+      ),
+      server.ssrLoadModule("/src/lib/pdf-resume-import/text-heuristics.ts"),
+    ]);
+  assert.deepEqual(
+    Object.keys(productEntry).sort(),
+    ["importResumeFromPdf"],
+    "the product PDF importer must keep one deep public interface",
+  );
+  const { importResumeFromPdf } = productEntry;
+  const { buildResumeFromPdfLines } = parser;
+  const { textContentToLinesForResumeImport } = pdfTextExtraction;
+  const { countTextGraphemes } = textHeuristics;
   const buildResumeFromLines = (
     lines,
     fallbackSectionTitle,
@@ -254,8 +271,50 @@ try {
 
   console.log("PDF resume import fixtures verified.");
 } finally {
-  axios.defaults.adapter = originalAxiosAdapter;
+  globalThis.fetch = originalFetch;
   await server.close();
+}
+
+function verifyAcyclicParserModules(directory) {
+  const moduleNames = readdirSync(directory)
+    .filter((name) => name.endsWith(".ts"))
+    .sort();
+  const graph = new Map(
+    moduleNames.map((name) => {
+      const source = readFileSync(new URL(name, directory), "utf8");
+      const dependencies = Array.from(
+        source.matchAll(/from\s+["']\.\/([^"']+)["']/g),
+        (match) => `${match[1]}.ts`,
+      ).filter((dependency) => moduleNames.includes(dependency));
+      return [name, dependencies];
+    }),
+  );
+  const visiting = new Set();
+  const visited = new Set();
+
+  function visit(moduleName, trail) {
+    assert.ok(
+      !visiting.has(moduleName),
+      `PDF parser modules must stay acyclic: ${[
+        ...trail,
+        moduleName,
+      ].join(" -> ")}`,
+    );
+    if (visited.has(moduleName)) {
+      return;
+    }
+
+    visiting.add(moduleName);
+    for (const dependency of graph.get(moduleName) ?? []) {
+      visit(dependency, [...trail, moduleName]);
+    }
+    visiting.delete(moduleName);
+    visited.add(moduleName);
+  }
+
+  for (const moduleName of moduleNames) {
+    visit(moduleName, []);
+  }
 }
 
 async function verifyPublicPdfImportEntry(importResumeFromPdf) {
@@ -1476,18 +1535,15 @@ function selectItemFields(item) {
   };
 }
 
-function axiosJsonResponse(config, data) {
-  return {
-    config,
-    data: {
+function jsonResponse(data) {
+  return new Response(
+    JSON.stringify({
       code: 0,
       data,
       message: "SUCCESS",
-    },
-    headers: {},
-    status: 200,
-    statusText: "OK",
-  };
+    }),
+    { headers: { "Content-Type": "application/json" }, status: 200 },
+  );
 }
 
 function createPdfFile(pages) {

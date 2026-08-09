@@ -6,12 +6,15 @@ import * as ts from "typescript";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 let activeFetch;
+const clearedRoutes = [];
 
 const apiClient = {
   apiRoutes: {
+    agentChat: "/api/agent/chat",
+    agentResumeSession: (resumeId) => `/api/agent/resumes/${resumeId}/session`,
     agentRunEvents: (runId) => `/api/agent/runs/${runId}/events`,
   },
-  clearApiCache: () => {},
+  clearApiCache: (route) => clearedRoutes.push(route),
   fetchApiResource: (...args) => activeFetch(...args),
   getApiErrorStatus: () => undefined,
   requestApi: () => {
@@ -29,9 +32,9 @@ const apiClient = {
   },
 };
 
-function createEventStream(body = "") {
+function createEventStream(body = "", headers = {}) {
   return new Response(body, {
-    headers: { "Content-Type": "text/event-stream" },
+    headers: { "Content-Type": "text/event-stream", ...headers },
     status: 200,
   });
 }
@@ -48,9 +51,9 @@ function createActiveRun() {
   };
 }
 
-async function loadAgentApi() {
+async function loadTypeScriptModule(fileName, imports = {}) {
   const source = await readFile(
-    join(frontendRoot, "src", "lib", "agent-api.ts"),
+    join(frontendRoot, "src", "lib", fileName),
     "utf8",
   );
   const compiled = ts.transpileModule(source, {
@@ -71,8 +74,8 @@ async function loadAgentApi() {
     exports: module.exports,
     module,
     require: (specifier) => {
-      if (specifier === "@/lib/api-client") {
-        return apiClient;
+      if (Object.hasOwn(imports, specifier)) {
+        return imports[specifier];
       }
       throw new Error(`Unexpected import: ${specifier}`);
     },
@@ -94,7 +97,14 @@ async function captureError(action) {
   throw new Error("Expected Agent stream consumption to fail.");
 }
 
-const agentApi = await loadAgentApi();
+const messageCodec = await loadTypeScriptModule("agent-message-codec.ts");
+const agentStreamClient = await loadTypeScriptModule(
+  "agent-stream-client.ts",
+  {
+    "@/lib/agent-message-codec": messageCodec,
+    "@/lib/api-client": apiClient,
+  },
+);
 
 {
   const requestedUrls = [];
@@ -111,7 +121,7 @@ const agentApi = await loadAgentApi();
   };
 
   const error = await captureError(() =>
-    agentApi.connectAgentRun(createActiveRun()),
+    agentStreamClient.connectAgentRun(createActiveRun()),
   );
 
   assert.equal(
@@ -146,7 +156,7 @@ const agentApi = await loadAgentApi();
   };
 
   const error = await captureError(() =>
-    agentApi.connectAgentRun(createActiveRun()),
+    agentStreamClient.connectAgentRun(createActiveRun()),
   );
 
   assert.equal(
@@ -175,7 +185,7 @@ const agentApi = await loadAgentApi();
     );
   };
 
-  const result = await agentApi.connectAgentRun(createActiveRun());
+  const result = await agentStreamClient.connectAgentRun(createActiveRun());
 
   assert.equal(
     requestCount,
@@ -186,5 +196,71 @@ const agentApi = await loadAgentApi();
   assert.equal(result.lastEventId, 9);
   assert.equal(result.message.text, "done");
 }
+
+{
+  const controller = new AbortController();
+  const request = {
+    message: "Improve the summary",
+    resume: { basics: { name: "Test User" } },
+    resumeId: "resume-send-test",
+  };
+  let capturedRequest;
+  activeFetch = async (...args) => {
+    capturedRequest = args;
+    return createEventStream(
+      [
+        'id: 1\nevent: message_done\ndata: {"message":{"id":"message-send-test","text":"done"}}',
+        'id: 2\nevent: run_done\ndata: {"status":"completed","executionState":"succeeded"}',
+        "",
+      ].join("\n\n"),
+      { "X-Agent-Run-Id": "run-send-test" },
+    );
+  };
+
+  const result = await agentStreamClient.sendAgentChatMessage(request, {
+    signal: controller.signal,
+  });
+  const [url, init] = capturedRequest;
+
+  assert.equal(url, "http://agent.test/api/agent/chat");
+  assert.equal(init.method, "POST");
+  assert.equal(init.cache, "no-store");
+  assert.equal(init.headers.Accept, "text/event-stream");
+  assert.equal(init.headers["Content-Type"], "application/json");
+  assert.equal(init.signal, controller.signal);
+  assert.deepEqual(JSON.parse(init.body), { ...request, stream: true });
+  assert.equal(result.runId, "run-send-test");
+  assert.equal(result.messageDone, true);
+  assert.equal(
+    clearedRoutes.at(-1),
+    "/api/agent/resumes/resume-send-test/session",
+    "A completed persisted run must invalidate the owning Agent session cache.",
+  );
+}
+
+{
+  const controller = new AbortController();
+  controller.abort();
+  let requestCount = 0;
+  activeFetch = async () => {
+    requestCount += 1;
+    return createEventStream();
+  };
+
+  const error = await captureError(() =>
+    agentStreamClient.connectAgentRun(createActiveRun(), {
+      signal: controller.signal,
+    }),
+  );
+
+  assert.equal(error.name, "AbortError");
+  assert.equal(
+    requestCount,
+    0,
+    "An already-aborted stream subscription must not start a request.",
+  );
+}
+
+await import("./verify-agent-client-boundaries.mjs");
 
 console.log("Agent SSE reconnect budget checks passed.");

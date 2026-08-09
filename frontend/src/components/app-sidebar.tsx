@@ -18,11 +18,13 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
+} from "@/components/ui/sidebar-layout";
+import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
-} from "@/components/ui/sidebar";
+} from "@/components/ui/sidebar-menu";
+import { useSidebar } from "@/components/ui/sidebar";
 
 const navigationIcons: Record<WorkspaceView, typeof FolderOpen> = {
   resume: FolderOpen,

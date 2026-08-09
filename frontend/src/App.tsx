@@ -15,36 +15,65 @@ import {
 } from "@/lib/auth";
 import { isApiErrorToastShown } from "@/lib/api-client";
 import {
-  defaultMessages,
-  getMessagesSync,
   getSystemLocale,
-  loadMessages,
   type AppMessages,
   type Locale,
 } from "@/i18n";
+import { useLocaleMessages } from "@/i18n/use-locale-messages";
 import {
   loadLocalePreferenceApi,
   saveLocalePreferenceApi,
 } from "@/lib/preference-api";
+import { createWorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import { runViewTransition } from "@/lib/view-transition";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ViewTransitionBoundary } from "@/components/view-transition";
 
-const LoginPage = lazy(() =>
+const loadLoginPage = () =>
   import("@/components/auth/login-page").then((module) => ({
     default: module.LoginPage,
-  })),
-);
-const ResumeBuilder = lazy(() =>
-  import("@/components/resume-builder").then((module) => ({
-    default: module.ResumeBuilder,
-  })),
-);
-const PdfExportRenderer = lazy(() =>
+  }));
+const loadResumeGalleryWorkspacePage = () =>
+  import("@/components/workspace/resume-gallery-workspace-page").then(
+    (module) => ({ default: module.ResumeGalleryWorkspacePage }),
+  );
+const loadResumeDetailWorkspacePage = () =>
+  import("@/components/workspace/resume-detail-workspace-page").then(
+    (module) => ({ default: module.ResumeDetailWorkspacePage }),
+  );
+const loadModelsWorkspacePage = () =>
+  import("@/components/workspace/models-workspace-page").then((module) => ({
+    default: module.ModelsWorkspacePage,
+  }));
+const loadSettingsWorkspacePage = () =>
+  import("@/components/workspace/settings-workspace-page").then((module) => ({
+    default: module.SettingsWorkspacePage,
+  }));
+const loadTemplateGalleryWorkspacePage = () =>
+  import("@/components/workspace/template-gallery-workspace-page").then(
+    (module) => ({ default: module.TemplateGalleryWorkspacePage }),
+  );
+const loadTemplateDetailWorkspacePage = () =>
+  import("@/components/workspace/template-detail-workspace-page").then(
+    (module) => ({ default: module.TemplateDetailWorkspacePage }),
+  );
+const loadTrashWorkspacePage = () =>
+  import("@/components/workspace/trash-workspace-page").then((module) => ({
+    default: module.TrashWorkspacePage,
+  }));
+const loadPdfExportRenderer = () =>
   import("@/components/pdf-export-renderer").then((module) => ({
     default: module.PdfExportRenderer,
-  })),
-);
+  }));
+const LoginPage = lazy(loadLoginPage);
+const ResumeGalleryWorkspacePage = lazy(loadResumeGalleryWorkspacePage);
+const ResumeDetailWorkspacePage = lazy(loadResumeDetailWorkspacePage);
+const ModelsWorkspacePage = lazy(loadModelsWorkspacePage);
+const SettingsWorkspacePage = lazy(loadSettingsWorkspacePage);
+const TemplateGalleryWorkspacePage = lazy(loadTemplateGalleryWorkspacePage);
+const TemplateDetailWorkspacePage = lazy(loadTemplateDetailWorkspacePage);
+const TrashWorkspacePage = lazy(loadTrashWorkspacePage);
+const PdfExportRenderer = lazy(loadPdfExportRenderer);
 
 function getInitialLocale(isAuthenticated: boolean) {
   return isAuthenticated
@@ -126,27 +155,63 @@ function DocumentMetadata({
 }
 
 function App() {
+  const { pathname } = useLocation();
   const authRequired = isAuthRequired();
   const [isAuthenticated, setIsAuthenticated] = useState(() =>
     authRequired ? loadAuthSession() : true,
   );
-  const [locale, setLocale] = useState<Locale>(() =>
-    getInitialLocale(isAuthenticated),
+  const [initialLocale] = useState(() => getInitialLocale(isAuthenticated));
+  const [preferencesPersistence] = useState(() =>
+    createWorkspacePreferencesPersistence(),
   );
-  const [messages, setMessages] = useState<AppMessages>(() =>
-    getMessagesSync(getInitialLocale(isAuthenticated)),
-  );
-  // Its identity changes when Vite replaces a locale JSON module, which lets
-  // the loading effect refresh state that Fast Refresh intentionally preserves.
-  const currentLocaleMessages = getMessagesSync(locale);
+  const {
+    canPersistLocale,
+    changeLocale,
+    isMessagesReady,
+    locale,
+    messages,
+  } = useLocaleMessages(initialLocale);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (isMessagesReady) {
+      return;
+    }
+
+    const routeRequest =
+      pathname === "/pdf-export"
+        ? loadPdfExportRenderer
+        : authRequired && !isAuthenticated
+          ? loadLoginPage
+          : pathname === "/models"
+            ? loadModelsWorkspacePage
+            : pathname === "/settings"
+              ? loadSettingsWorkspacePage
+              : pathname === "/templates"
+                ? loadTemplateGalleryWorkspacePage
+                : pathname.startsWith("/template/")
+                  ? loadTemplateDetailWorkspacePage
+                : pathname === "/trash"
+                  ? loadTrashWorkspacePage
+                  : pathname === "/resume"
+                    ? loadResumeGalleryWorkspacePage
+                    : pathname.startsWith("/resume/")
+                      ? loadResumeDetailWorkspacePage
+                      : loadResumeGalleryWorkspacePage;
+
+    // Start the route request in the same commit as the locale request so a
+    // saved non-default language never creates a locale-to-route waterfall.
+    void routeRequest().catch((error: unknown) => {
+      console.error("Failed to preload the current application route.", error);
+    });
+  }, [authRequired, isAuthenticated, isMessagesReady, pathname]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !canPersistLocale) {
       return;
     }
 
     saveLocalePreferenceApi(locale);
-  }, [isAuthenticated, locale]);
+  }, [canPersistLocale, isAuthenticated, locale]);
 
   useEffect(() => {
     if (!authRequired || !isAuthenticated) {
@@ -166,26 +231,6 @@ function App() {
     };
   }, [authRequired, isAuthenticated]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    void loadMessages(locale)
-      .then((nextMessages) => {
-        if (!cancelled) {
-          setMessages(nextMessages);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMessages(defaultMessages);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentLocaleMessages, locale]);
-
   async function handleLogin(credentials: {
     username: string;
     password: string;
@@ -194,7 +239,7 @@ function App() {
       await loginWithCredentials(credentials.username, credentials.password);
 
       runViewTransition(() => {
-        setLocale(loadLocalePreferenceApi() ?? getSystemLocale());
+        changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
         setIsAuthenticated(true);
       }, "nav-forward");
 
@@ -213,7 +258,7 @@ function App() {
   function handleLogout() {
     clearAuthSession();
     runViewTransition(() => {
-      setLocale(getSystemLocale());
+      changeLocale(getSystemLocale());
       setIsAuthenticated(!authRequired);
     }, "nav-back");
   }
@@ -224,13 +269,80 @@ function App() {
     </AppRouteSuspense>
   );
 
-  const renderResumeBuilder = () => (
+  const renderResumeGalleryWorkspace = () => (
     <AppRouteSuspense>
-      <ResumeBuilder
+      <ResumeGalleryWorkspacePage
         locale={locale}
         messages={messages}
-        onLocaleChange={setLocale}
+        onLocaleChange={changeLocale}
         onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderResumeDetailWorkspace = () => (
+    <AppRouteSuspense>
+      <ResumeDetailWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderModelsWorkspace = () => (
+    <AppRouteSuspense>
+      <ModelsWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderSettingsWorkspace = () => (
+    <AppRouteSuspense>
+      <SettingsWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderTemplateGalleryWorkspace = () => (
+    <AppRouteSuspense>
+      <TemplateGalleryWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderTemplateDetailWorkspace = () => (
+    <AppRouteSuspense>
+      <TemplateDetailWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderTrashWorkspace = () => (
+    <AppRouteSuspense>
+      <TrashWorkspacePage
+        locale={locale}
+        messages={messages}
+        onLocaleChange={changeLocale}
+        onLogout={handleLogout}
+        persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
   );
@@ -239,6 +351,10 @@ function App() {
       <PdfExportRenderer />
     </AppRouteSuspense>
   );
+
+  if (!isMessagesReady) {
+    return <AppRouteFallback />;
+  }
 
   if (authRequired && !isAuthenticated) {
     return (
@@ -258,13 +374,13 @@ function App() {
       <DocumentMetadata locale={locale} messages={messages} />
       <Routes>
         <Route path="/pdf-export" element={renderPdfExport()} />
-        <Route path="/resume" element={renderResumeBuilder()} />
-        <Route path="/resume/:id" element={renderResumeBuilder()} />
-        <Route path="/templates" element={renderResumeBuilder()} />
-        <Route path="/template/:id" element={renderResumeBuilder()} />
-        <Route path="/trash" element={renderResumeBuilder()} />
-        <Route path="/models" element={renderResumeBuilder()} />
-        <Route path="/settings" element={renderResumeBuilder()} />
+        <Route path="/resume" element={renderResumeGalleryWorkspace()} />
+        <Route path="/resume/:id" element={renderResumeDetailWorkspace()} />
+        <Route path="/models" element={renderModelsWorkspace()} />
+        <Route path="/settings" element={renderSettingsWorkspace()} />
+        <Route path="/templates" element={renderTemplateGalleryWorkspace()} />
+        <Route path="/template/:id" element={renderTemplateDetailWorkspace()} />
+        <Route path="/trash" element={renderTrashWorkspace()} />
         <Route path="/login" element={<Navigate to="/resume" replace />} />
         <Route path="*" element={<Navigate to="/resume" replace />} />
       </Routes>

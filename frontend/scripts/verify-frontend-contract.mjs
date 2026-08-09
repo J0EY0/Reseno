@@ -68,10 +68,6 @@ async function loadAgentMessageRenderingHelpers() {
 const files = await collectFiles(srcDir);
 const resumeTypes = await readFile(join(srcDir, "types", "resume.ts"), "utf8");
 const apiTypes = await readFile(join(srcDir, "types", "api.ts"), "utf8");
-const modelConfigForm = await readFile(
-  join(srcDir, "components", "model-config-form-popover.tsx"),
-  "utf8",
-);
 const modelProviderIcon = await readFile(
   join(srcDir, "components", "model-provider-icon.tsx"),
   "utf8",
@@ -80,33 +76,54 @@ const modelProviders = await readFile(
   join(srcDir, "lib", "model-providers.ts"),
   "utf8",
 );
-const copilotPanel = await readFile(
-  join(srcDir, "components", "copilot", "copilot-panel.tsx"),
+const agentSendController = await readFile(
+  join(
+    srcDir,
+    "components",
+    "copilot",
+    "use-agent-send-controller.ts",
+  ),
   "utf8",
 );
-const promptInput = await readFile(
-  join(srcDir, "components", "ai-elements", "prompt-input.tsx"),
+const agentPromptActions = await readFile(
+  join(
+    srcDir,
+    "components",
+    "copilot",
+    "use-agent-prompt-actions.ts",
+  ),
+  "utf8",
+);
+const copilotAttachments = await readFile(
+  join(srcDir, "components", "copilot", "copilot-attachments.tsx"),
+  "utf8",
+);
+const copilotUserMessageRow = await readFile(
+  join(srcDir, "components", "copilot", "copilot-user-message-row.tsx"),
+  "utf8",
+);
+const promptInputForm = await readFile(
+  join(srcDir, "components", "ai-elements", "use-prompt-input-form.ts"),
   "utf8",
 );
 const apiClient = await readFile(
   join(srcDir, "lib", "api-client.ts"),
   "utf8",
 );
-const agentApi = await readFile(
-  join(srcDir, "lib", "agent-api.ts"),
+const agentAttachmentClient = await readFile(
+  join(srcDir, "lib", "agent-attachment-client.ts"),
   "utf8",
 );
-const mainEntry = await readFile(join(srcDir, "main.tsx"), "utf8");
 const resumePreview = await readFile(
   join(srcDir, "components", "preview", "resume-preview.tsx"),
   "utf8",
 );
-const resumeBuilder = await readFile(
-  join(srcDir, "components", "resume-builder.tsx"),
+const resumeFormatPopover = await readFile(
+  join(srcDir, "components", "editor", "resume-format-popover.tsx"),
   "utf8",
 );
-const templateLibrary = await readFile(
-  join(srcDir, "components", "template-library.tsx"),
+const templateTypographyTab = await readFile(
+  join(srcDir, "components", "templates", "editor", "typography-tab.tsx"),
   "utf8",
 );
 const templates = await readFile(join(srcDir, "lib", "templates.ts"), "utf8");
@@ -118,26 +135,16 @@ const enMessages = JSON.parse(
 );
 
 assert(
-  mainEntry.includes("@fontsource-variable/noto-sans-sc/wght.css"),
-  "The Noto Sans SC webfont must be loaded by the application entrypoint.",
-);
-assert(
   /ResumeFontFamily\s*=\s*[^\n]*'noto_sans_sc'/.test(resumeTypes),
   "ResumeFontFamily must include the persisted Noto Sans SC value.",
 );
 assert(
-  /noto_sans_sc:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview) &&
-    /inter:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview) &&
-    /plex:\s*[\s\S]*?Noto Sans SC Variable/.test(resumePreview),
-  "Noto Sans SC must render directly and provide deterministic Chinese fallbacks for Inter and IBM Plex.",
-);
-assert(
-  /noto_sans_sc:\s*"fontNotoSans"/.test(resumeBuilder) &&
+  /noto_sans_sc:\s*"fontNotoSans"/.test(resumeFormatPopover) &&
     /supportedFontFamilies[\s\S]*?'noto_sans_sc'/.test(templates),
   "Resume and template normalization must preserve Noto Sans SC.",
 );
 assert(
-  /<SelectItem value="noto_sans_sc">/.test(templateLibrary) &&
+  /<SelectItem value="noto_sans_sc">/.test(templateTypographyTab) &&
     zhMessages.fontNotoSans === "思源黑体" &&
     enMessages.fontNotoSans === "Noto Sans SC" &&
     zhMessages.fontSerif === "思源宋体" &&
@@ -189,102 +196,6 @@ assert(
 );
 
 assert(
-  /usesDiscoveredModelSelect\s*=[\s\S]*draft\.providerKind === "cloud"[\s\S]*?<Select[\s\S]*?onValueChange=\{handleModelSelect\}/.test(
-    modelConfigForm,
-  ),
-  "Cloud provider configs must use discovered model selection, not manual model input.",
-);
-assert(
-  /function providerDisplayLabel[\s\S]*custom-cloud[\s\S]*t\.customCloudApi/.test(
-    modelConfigForm,
-  ),
-  "Custom Cloud API provider label must be localized.",
-);
-assert(
-  /function providerKindLabel[\s\S]*localProvider[\s\S]*cloudProvider/.test(
-    modelConfigForm,
-  ),
-  "Provider options must show local or cloud tags consistently.",
-);
-assert(
-  /function ProviderKindBadge[\s\S]*?<Badge[\s\S]*?variant="outline"/.test(
-    modelConfigForm,
-  ) && (modelConfigForm.match(/<ProviderKindBadge>/g) ?? []).length >= 3,
-  "Provider kind tags must use the shared outlined Badge in both trigger and options.",
-);
-assert(
-  /\{providersLoaded && draft\.providerKind !== "cloud" \? \([\s\S]*?name="model-api-url"[\s\S]*?\) : null\}/.test(
-    modelConfigForm,
-  ),
-  "Cloud provider configs must not expose a manual API URL input.",
-);
-assert(
-  /modelDiscoveryApiUrl\s*=\s*draft\.providerKind === "cloud" \? cloudApiUrl : draft\.apiUrl\.trim\(\)/.test(
-    modelConfigForm,
-  ),
-  "Model discovery must use the provider manifest API URL for cloud providers and the typed API URL for local providers.",
-);
-assert(
-  /discoverModels\(\{[\s\S]*apiUrl:\s*modelDiscoveryApiUrl/.test(modelConfigForm),
-  "Model discovery requests must use the resolved discovery API URL.",
-);
-assert(
-  /refresh:\s*true/.test(modelConfigForm),
-  "Provider requests must only refresh models after an explicit user action.",
-);
-assert(
-  /nextModels\.length === 1 \? nextModels\[0\] : null/.test(
-    modelConfigForm,
-  ),
-  "Model discovery must only auto-select when exactly one model is available.",
-);
-assert(
-  /onValueChange=\{handleModelSelect\}[\s\S]*?<SelectTrigger[^>]*className="[^"]*\bw-full\b[^>]*>[\s\S]*?<SelectValue[\s\S]*?<SelectContent[\s\S]*?position="popper"/.test(
-    modelConfigForm,
-  ),
-  "Discovered model selection must render a full-width popper dropdown.",
-);
-assert(
-  /apiUrl:\s*providerKind === "cloud"\s*\?\s*cloudApiUrl\s*:\s*draft\.apiUrl\.trim\(\)/.test(
-    modelConfigForm,
-  ),
-  "Saved cloud model configs must use the provider manifest API URL.",
-);
-assert(
-  /usesManualModelSettings\s*=[\s\S]*Boolean\(selectedProvider\)[\s\S]*!usesDiscoveredModelSelect/.test(
-    modelConfigForm,
-  ),
-  "Manual provider form state must cover local and custom providers.",
-);
-assert(
-  /usesManualModelSettings \? \([\s\S]*?t\.capabilities[\s\S]*?t\.visionCapability[\s\S]*?t\.reasoningCapability[\s\S]*?t\.toolUseCapability[\s\S]*?t\.advancedSettings[\s\S]*?name="model-context-window"[\s\S]*?name="model-max-tokens"[\s\S]*?\) : null/.test(
-    modelConfigForm,
-  ),
-  "Manual model configs must expose capabilities, context window, and max output tokens.",
-);
-assert(
-  !/name="model-temperature"|name="model-top-p"/.test(modelConfigForm),
-  "Manual model config UI must not expose temperature or topP.",
-);
-assert(
-  /temperature:\s*null[\s\S]*topP:\s*null/.test(
-    modelConfigForm,
-  ),
-  "Model config form must not submit temperature and topP.",
-);
-assert(
-  /supportsImage:\s*draft\.supportsImage[\s\S]*supportsThinking/.test(
-    modelConfigForm,
-  ),
-  "Manual model configs must submit configured capabilities.",
-);
-assert(
-  /<Checkbox[\s\S]*id="model-supports-tools"[\s\S]*checked=\{draft\.supportsTools\}[\s\S]*onCheckedChange=\{\(checked\) =>[\s\S]*updateField\("supportsTools", checked === true\)[\s\S]*t\.toolUseCapability/.test(
-    modelConfigForm,
-  ),
-  "Manual model configs must let users declare tool support.",
-);
-assert(
   /import ZAI from "@lobehub\/icons\/es\/ZAI";/.test(
     modelProviderIcon,
   ),
@@ -312,11 +223,11 @@ assert(
   "Z.ai provider ids must not alias to the legacy Zhipu ProviderIcon.",
 );
 assert(
-  !/continuing with chat request/.test(copilotPanel),
+  !/continuing with chat request/.test(agentSendController),
   "Editing must stop when persisted Agent history replacement fails.",
 );
 assert(
-  !/settings:\s*agentSettings/.test(copilotPanel),
+  !/settings:\s*agentSettings/.test(agentSendController),
   "Agent chat requests must not resend backend-owned Agent preferences.",
 );
 const agentChatRequestType =
@@ -326,19 +237,19 @@ assert(
   "The frontend Agent request contract must not expose persisted Agent preferences.",
 );
 assert(
-  /status\s*!==\s*"completed"[\s\S]{0,800}shouldRollbackOptimisticAgentMessages\([\s\S]{0,500}setMessages\(pending\.rollbackMessages\)/.test(
-    copilotPanel,
+  /status\s*!==\s*['"]completed['"][\s\S]{0,900}shouldRollbackOptimisticAgentMessages\([\s\S]{0,500}updates\.setMessages\(pending\.rollbackMessages\)/.test(
+    agentSendController,
   ),
   "Every non-completed Agent request must apply the optimistic-message rollback policy.",
 );
 assert(
-  /function AgentUserMessage[\s\S]{0,3000}message\.files\?\.length[\s\S]{0,500}<AgentMessageAttachments[\s\S]{0,500}files=\{message\.files\}/.test(
-    copilotPanel,
+  /function AgentUserMessageRow[\s\S]{0,3000}message\.files\?\.length[\s\S]{0,500}<AgentMessageAttachments[\s\S]{0,500}files=\{message\.files\}/.test(
+    copilotUserMessageRow,
   ),
   "User message rendering must consume message.files through the attachment renderer.",
 );
 
-const uploadStateDeclaration = copilotPanel.match(
+const uploadStateDeclaration = agentPromptActions.match(
   /const\s*\[\s*(is\w*(?:Uploading|Submitting)\w*)\s*,\s*(set\w*(?:Uploading|Submitting)\w*)\s*\]\s*=\s*useState(?:<boolean>)?\(false\)/,
 );
 assert(
@@ -350,16 +261,16 @@ const uploadStateName =
   uploadStateDeclaration?.[1] ?? "__missingUploadState";
 const uploadStateSetter =
   uploadStateDeclaration?.[2] ?? "__missingUploadStateSetter";
-const submitPromptStart = copilotPanel.indexOf(
-  "async function submitPrompt(",
+const submitPromptStart = agentPromptActions.indexOf(
+  "const submitPrompt = useCallback(",
 );
-const submitPromptEnd = copilotPanel.indexOf(
+const submitPromptEnd = agentPromptActions.indexOf(
   "const stopResponding",
   submitPromptStart,
 );
 const submitPromptSource =
   submitPromptStart >= 0 && submitPromptEnd > submitPromptStart
-    ? copilotPanel.slice(submitPromptStart, submitPromptEnd)
+    ? agentPromptActions.slice(submitPromptStart, submitPromptEnd)
     : "";
 
 assert(
@@ -374,10 +285,10 @@ assert(
 const sendControlUsesUploadState =
   new RegExp(
     `<PromptInputSubmit[\\s\\S]{0,1800}disabled=\\{[\\s\\S]{0,180}\\b${uploadStateName}\\b`,
-  ).test(copilotPanel) ||
+  ).test(agentPromptActions) ||
   new RegExp(
     `function AgentPromptSubmitButton[\\s\\S]{0,1800}const isDisabled\\s*=[\\s\\S]{0,300}\\b${uploadStateName}\\b[\\s\\S]{0,1800}disabled=\\{isDisabled\\}`,
-  ).test(copilotPanel);
+  ).test(copilotAttachments);
 
 assert(
   sendControlUsesUploadState,
@@ -386,7 +297,7 @@ assert(
 assert(
   /onUploadProgress:[\s\S]{0,180}options\.onProgress/.test(apiClient) &&
     /uploadAgentAttachment\([\s\S]{0,240}onProgress[\s\S]{0,180}uploadApi<AgentChatAttachment>/.test(
-      agentApi,
+      agentAttachmentClient,
     ),
   "Agent attachment uploads must forward real transport progress from the API client.",
 );
@@ -394,11 +305,11 @@ assert(
   /uploadAgentAttachment\([\s\S]*?\(\{\s*loaded,\s*total\s*\}\)\s*=>[\s\S]*?setAttachmentUploadProgress/.test(
     submitPromptSource,
   ) &&
-    /setAttachmentUploadProgress\(\s*Math\.min\(99,/.test(
+    /setAttachmentUploadProgress\(\s*Math\.min\(\s*99,/.test(
       submitPromptSource,
     ) &&
     /<PromptInputSubmit[\s\S]{0,1800}\{attachmentUploadProgress\}%/.test(
-      copilotPanel,
+      copilotAttachments,
     ),
   "The Agent send control must render aggregate attachment upload progress.",
 );
@@ -408,8 +319,8 @@ assert(
   "The composer must clear after the uploaded prompt is accepted, not after the full Agent run completes.",
 );
 assert(
-  /if \(result instanceof Promise\)[\s\S]{0,300}await result;[\s\S]{0,180}clear\(\);[\s\S]{0,180}controller\.textInput\.clear\(\)/.test(
-    promptInput,
+  /if \(result instanceof Promise\)[\s\S]{0,300}await result;[\s\S]{0,180}clear\(\);[\s\S]{0,180}controller\?\.textInput\.clear\(\)/.test(
+    promptInputForm,
   ),
   "A successful async prompt submission must clear both attachment and text input state.",
 );

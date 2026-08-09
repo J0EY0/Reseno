@@ -62,14 +62,14 @@ const vite = await createServer({
 });
 
 try {
-  const { ResumePreview } = await vite.ssrLoadModule(
-    "/src/components/preview/resume-preview.tsx",
+  const { ResumeThumbnail } = await vite.ssrLoadModule(
+    "/src/components/preview/resume-thumbnail.tsx",
   );
   const thumbnailMarkup = renderToStaticMarkup(
     React.createElement(
       "a",
       { href: "/resume/example" },
-      React.createElement(ResumePreview, {
+      React.createElement(ResumeThumbnail, {
         t: {},
         resume: {
           basic: {
@@ -131,7 +131,6 @@ try {
             dividerThickness: 1,
           },
         },
-        variant: "thumbnail",
       }),
     ),
   );

@@ -4,17 +4,22 @@ import vm from "node:vm";
 import * as ts from "typescript";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
-const panelPath = join(
+const copilotRoot = join(
   frontendRoot,
   "src",
   "components",
   "copilot",
-  "copilot-panel.tsx",
 );
-const panelSource = await readFile(panelPath, "utf8");
+const runtimePath = join(copilotRoot, "agent-conversation-runtime.ts");
+const [runtimeSource, conversationSource, sendControllerSource] =
+  await Promise.all([
+    readFile(runtimePath, "utf8"),
+    readFile(join(copilotRoot, "use-agent-conversation.ts"), "utf8"),
+    readFile(join(copilotRoot, "use-agent-send-controller.ts"), "utf8"),
+  ]);
 const sourceFile = ts.createSourceFile(
-  panelPath,
-  panelSource,
+  runtimePath,
+  runtimeSource,
   ts.ScriptTarget.Latest,
   true,
   ts.ScriptKind.TSX,
@@ -44,12 +49,12 @@ function findFunctionDeclaration(name) {
   return match;
 }
 
-function extractBetween(start, end) {
-  const startIndex = panelSource.indexOf(start);
-  const endIndex = panelSource.indexOf(end, startIndex + start.length);
+function extractBetween(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
 
   assert(startIndex >= 0 && endIndex > startIndex, `Missing source range: ${start}`);
-  return panelSource.slice(startIndex, endIndex);
+  return source.slice(startIndex, endIndex);
 }
 
 const ownershipDeclaration = findFunctionDeclaration("isPendingSendOwner");
@@ -93,17 +98,19 @@ assert(
 );
 
 const refreshSource = extractBetween(
+  conversationSource,
   "const refreshAgentSession = useCallback(",
-  "useLayoutEffect(() => {",
+  "const consumeRunStream = useAgentRunStream(",
 );
 assert(
-  refreshSource.includes("optimisticMessageOwnerRef.current = null"),
+  refreshSource.includes("runtime.optimisticMessageOwner = null"),
   "Replacing messages from the server must revoke provisional ownership.",
 );
 
 const cancelSource = extractBetween(
+  sendControllerSource,
   "const cancelScheduledSend = useCallback(",
-  "const refreshAgentSession = useCallback(",
+  "const stopResponding = useCallback(",
 );
 assert(
   cancelSource.includes("isPendingSendOwner("),
@@ -111,8 +118,9 @@ assert(
 );
 
 const stopSource = extractBetween(
+  sendControllerSource,
   "const stopResponding = useCallback(",
-  "async function submitEditedUserMessage",
+  "const sendPrompt:",
 );
 assert(
   stopSource.includes("cancelScheduledSend(true)"),
@@ -120,11 +128,12 @@ assert(
 );
 
 const sendSource = extractBetween(
-  "async function sendPrompt(",
-  "\n  return (\n",
+  sendControllerSource,
+  "const sendPrompt:",
+  "\n  useEffect(() => {",
 );
 assert(
-  sendSource.includes("optimisticMessageOwnerRef.current = userMessage.id"),
+  sendSource.includes("runtime.optimisticMessageOwner = userMessage.id"),
   "Publishing a provisional user message must claim rollback ownership.",
 );
 assert(

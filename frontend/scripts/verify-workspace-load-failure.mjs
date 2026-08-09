@@ -10,22 +10,30 @@ async function readText(path) {
 const [
   zhSource,
   enSource,
-  builderSource,
+  resumeDetailLoaderSource,
+  resumeDetailViewSource,
+  workspaceRouteErrorSource,
+  templateDetailRouteSource,
   modelConfigPanelSource,
-  modelConfigFormSource,
+  modelConfigPopoverSource,
+  modelConfigDialogControllerSource,
   modelConfigApiSource,
-  agentApiSource,
-  copilotPanelSource,
+  agentSessionRunClientSource,
+  agentSessionHydrationSource,
 ] =
   await Promise.all([
     readText("src/i18n/locales/zh.json"),
     readText("src/i18n/locales/en.json"),
-    readText("src/components/resume-builder.tsx"),
+    readText("src/components/workspace/use-resume-detail-loader.ts"),
+    readText("src/components/workspace/resume-detail-workspace-view.tsx"),
+    readText("src/components/workspace/workspace-route-error.tsx"),
+    readText("src/components/workspace/use-template-detail-workspace.ts"),
     readText("src/components/model-config-panel.tsx"),
     readText("src/components/model-config-form-popover.tsx"),
+    readText("src/components/models/use-model-config-dialog.ts"),
     readText("src/lib/model-config-api.ts"),
-    readText("src/lib/agent-api.ts"),
-    readText("src/components/copilot/copilot-panel.tsx"),
+    readText("src/lib/agent-session-run-client.ts"),
+    readText("src/components/copilot/use-agent-session-hydration.ts"),
   ]);
 const zh = JSON.parse(zhSource);
 const en = JSON.parse(enSource);
@@ -56,38 +64,52 @@ assert.doesNotMatch(
 );
 
 assert.match(
-  builderSource,
-  /const \[hasWorkspaceLoadError, setHasWorkspaceLoadError\] = useState\(false\)/,
+  resumeDetailLoaderSource,
+  /const \[hasLoadError, setHasLoadError\] = useState\(false\)/,
   "Route initialization failures must be tracked separately from action failures.",
 );
 assert.match(
-  builderSource,
-  /hasWorkspaceLoadError\s*\?[\s\S]{0,40}renderWorkspaceLoadError\(\)/,
+  templateDetailRouteSource,
+  /const \[hasLoadError, setHasLoadError\] = useState\(false\)/,
+  "Template-detail initialization failures must remain route-owned.",
+);
+assert.match(
+  templateDetailRouteSource,
+  /fetchWorkspaceRouteData\("template-detail",\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal/,
+  "Template detail must defer Toast handling to its route loader.",
+);
+assert.match(
+  templateDetailRouteSource,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*apiMessages[\s\S]*REQUEST_FAILED[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  "Template detail must ignore cancelled and stale reads before one canonical failure Toast.",
+);
+assert.match(
+  templateDetailRouteSource,
+  /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/,
+  "Template detail must suppress StrictMode preflight and abort stale reads.",
+);
+assert.match(
+  resumeDetailViewSource,
+  /state\.hasLoadError\s*\?[\s\S]{0,160}<WorkspaceRouteError/,
   "A failed route initialization must render an error state instead of workspace content.",
 );
 assert.match(
-  builderSource,
-  /fetchWorkspaceRouteData\([\s\S]{0,120}notifyOnError:\s*false/,
+  resumeDetailLoaderSource,
+  /fetchWorkspaceRouteData\("resume-detail",[\s\S]{0,120}notifyOnError:\s*false/,
   "Workspace route data must defer Toast handling to the route loader.",
 );
 assert.match(
-  builderSource,
-  /fetchResumeApi\(\s*route\.id,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
+  resumeDetailLoaderSource,
+  /fetchResumeApi\(\s*resumeId,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
   "Resume detail initialization must defer Toast handling to the route loader.",
 );
 assert.match(
-  builderSource,
-  /fetchResumeVersionsApi\(\s*route\.id,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
+  resumeDetailLoaderSource,
+  /fetchResumeVersionsApi\(\s*resumeId,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
   "Resume version initialization must defer Toast handling to the route loader.",
 );
 
-const loaderStart = builderSource.indexOf("  const loadWorkspace = useCallback(");
-const loaderEnd = builderSource.indexOf("\n  useEffect(() => {", loaderStart);
-
-assert.notEqual(loaderStart, -1, "Workspace loader was not found.");
-assert.notEqual(loaderEnd, -1, "Workspace loader boundary was not found.");
-
-const loaderSource = builderSource.slice(loaderStart, loaderEnd);
+const loaderSource = resumeDetailLoaderSource;
 const loaderCatchStart = loaderSource.indexOf("      } catch (error) {");
 const loaderCatchEnd = loaderSource.indexOf("      } finally {", loaderCatchStart);
 
@@ -98,12 +120,12 @@ const loaderCatchSource = loaderSource.slice(loaderCatchStart, loaderCatchEnd);
 
 assert.match(
   loaderCatchSource,
-  /isAbortError\(error\)[\s\S]*return;[\s\S]*workspaceLoadRequestIdRef/,
+  /isAbortError\(error\)[\s\S]*requestIdRef\.current !== requestId[\s\S]*return;/,
   "Cancelled route requests must exit before stale checks and Toast handling.",
 );
 assert.match(
   loaderCatchSource,
-  /workspaceLoadRequestIdRef\.current !== requestId[\s\S]*toast\.error/,
+  /requestIdRef\.current !== requestId[\s\S]*toast\.error/,
   "Stale route requests must be ignored before any Toast is shown.",
 );
 assert.match(
@@ -118,7 +140,7 @@ assert.match(
 );
 assert.match(
   loaderCatchSource,
-  /setHasWorkspaceLoadError\(true\)/,
+  /setHasLoadError\(true\)/,
   "Workspace request failures must enter the route error state.",
 );
 assert.match(
@@ -133,51 +155,39 @@ assert.doesNotMatch(
 );
 
 assert.match(
-  builderSource,
-  /const controller = new AbortController\(\);[\s\S]{0,600}window\.setTimeout[\s\S]{0,200}loadWorkspace\(controller\.signal\)[\s\S]{0,300}clearTimeout\(loadTimer\)[\s\S]{0,100}controller\.abort\(\)/,
+  resumeDetailLoaderSource,
+  /const controller = new AbortController\(\);[\s\S]{0,600}window\.setTimeout[\s\S]{0,200}load\(controller\.signal\)[\s\S]{0,300}clearTimeout\(loadTimer\)[\s\S]{0,100}controller\.abort\(\)/,
   "Every route load effect must suppress the StrictMode preflight and abort requests during cleanup.",
 );
 assert.doesNotMatch(
   loaderCatchSource,
-  /resetResumeWorkspace|hydrateResumeWorkspace|setResume\(|setResumeDocuments\(/,
+  /onLoadRef\.current\(|setResume\(|setResumeDocuments\(/,
   "Workspace request failures must not synthesize or replace resume content.",
 );
 
-const routeErrorRendererStart = builderSource.indexOf(
-  "  function renderWorkspaceLoadError()",
-);
-const routeErrorRendererEnd = builderSource.indexOf(
-  "\n  function renderTemplateGalleryWorkspace()",
-  routeErrorRendererStart,
-);
-const routeErrorRendererSource = builderSource.slice(
-  routeErrorRendererStart,
-  routeErrorRendererEnd,
-);
-
 assert.doesNotMatch(
-  routeErrorRendererSource,
-  /t\.loadError/,
+  workspaceRouteErrorSource,
+  /messages\.loadError/,
   "The blocked route surface must not duplicate the request failure Toast.",
 );
 assert.doesNotMatch(
-  routeErrorRendererSource,
+  workspaceRouteErrorSource,
   /role=["']alert["']/,
   "The recovery surface is not a second error alert.",
 );
 assert.match(
-  routeErrorRendererSource,
-  /t\.contentNotLoaded/,
+  workspaceRouteErrorSource,
+  /messages\.contentNotLoaded/,
   "The blocked route surface must describe its neutral recovery state.",
 );
 assert.match(
-  routeErrorRendererSource,
-  /setWorkspaceLoadRetryKey[\s\S]*t\.retry/,
+  workspaceRouteErrorSource,
+  /onRetry[\s\S]*messages\.retry/,
   "The blocked route surface must provide an explicit retry action.",
 );
 assert.match(
-  builderSource,
-  /\[loadWorkspace, workspaceLoadRetryKey\]/,
+  resumeDetailLoaderSource,
+  /\[load, retryKey\]/,
   "Retrying must reuse the abortable workspace loading effect.",
 );
 
@@ -187,39 +197,20 @@ assert.match(
   "Model deletion must not show a second Toast after the API client handled the error.",
 );
 
-const providerLoadEffectStart = modelConfigFormSource.indexOf(
-  "    void getModelProviders()",
-);
-const providerLoadEffectEnd = modelConfigFormSource.indexOf(
-  "\n  useEffect(() => {",
-  providerLoadEffectStart,
-);
-
-assert.notEqual(
-  providerLoadEffectStart,
-  -1,
-  "Model provider metadata loader was not found.",
-);
-assert.notEqual(
-  providerLoadEffectEnd,
-  -1,
-  "Model provider metadata loader boundary was not found.",
-);
-
-const providerLoadEffectSource = modelConfigFormSource.slice(
-  modelConfigFormSource.lastIndexOf("  useEffect(() => {", providerLoadEffectStart),
-  providerLoadEffectEnd,
-);
-
 assert.match(
-  providerLoadEffectSource,
-  /if \(!open\b[^)]*\)\s*\{\s*return;/,
-  "/models must not request provider metadata before the create/edit dialog opens.",
+  modelConfigPopoverSource,
+  /import\("@\/components\/models\/model-config-dialog"\)/,
+  "/models must keep the provider-backed dialog behind a dynamic import.",
 );
 assert.match(
-  providerLoadEffectSource,
-  /\}, \[[^\]]*\bopen\b[^\]]*\]\);/,
-  "Opening the model dialog must trigger the deferred provider metadata request.",
+  modelConfigPopoverSource,
+  /\{open \? \([\s\S]*?<LazyModelConfigDialog/,
+  "/models must not mount the provider loader before the dialog opens.",
+);
+assert.match(
+  modelConfigDialogControllerSource,
+  /useEffect\(\(\) => \{[\s\S]*void getModelProviders\(\)/,
+  "The mounted dialog controller must request provider metadata.",
 );
 assert.match(
   modelConfigApiSource,
@@ -227,9 +218,11 @@ assert.match(
   "Model provider metadata failures must stay inside the dialog instead of showing a second global Toast.",
 );
 
-const agentSessionLoaderSource = agentApiSource.slice(
-  agentApiSource.indexOf("export async function loadAgentSession"),
-  agentApiSource.indexOf("export async function replaceAgentSession"),
+const agentSessionLoaderSource = agentSessionRunClientSource.slice(
+  agentSessionRunClientSource.indexOf("export async function loadAgentSession"),
+  agentSessionRunClientSource.indexOf(
+    "export async function replaceAgentSession",
+  ),
 );
 
 assert.match(
@@ -238,7 +231,7 @@ assert.match(
   "Agent session reads must accept the owning panel's cancellation signal.",
 );
 assert.match(
-  copilotPanelSource,
+  agentSessionHydrationSource,
   /loadAgentSession\(resumeId,\s*\{\s*signal: abortController\.signal,?\s*\}\)/,
   "Copilot cleanup must cancel StrictMode's stale session read.",
 );

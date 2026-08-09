@@ -1,0 +1,198 @@
+import { loadMessages, locales } from "@/i18n";
+import { createId } from "@/lib/resume";
+import type {
+  AgentChatAttachment,
+  AgentChatMessage,
+  AgentConversationMessage,
+  AgentResumeEditSuggestion,
+  AgentSessionResponse,
+  AgentSource,
+  AgentStoredMessage,
+  AgentTurnExecution,
+} from "@/types/api";
+
+export interface AgentPanelMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  files?: AgentChatAttachment[];
+  response?: AgentChatMessage;
+  execution?: AgentTurnExecution;
+}
+
+export function toConversationMessage(
+  message: AgentPanelMessage,
+): AgentConversationMessage {
+  return {
+    files: message.files,
+    id: message.id,
+    response:
+      message.role === "assistant" && message.response
+        ? toConversationResponse(message.response)
+        : undefined,
+    role: message.role,
+    text: message.text,
+  };
+}
+
+function toConversationResponse(
+  response: AgentChatMessage,
+): AgentConversationMessage["response"] {
+  return {
+    actions: response.actions,
+    edits: response.edits?.map((edit) => ({
+      evidenceRefs: edit.evidenceRefs,
+      id: edit.id,
+      operation: edit.operation,
+      reason: edit.reason,
+      replacement: edit.replacement,
+      status: edit.status,
+      target: edit.target,
+      title: edit.title,
+    })),
+    finishMissing: response.finishMissing,
+    id: response.id,
+    role: "assistant",
+    sources: response.sources?.map((source) => ({
+      id: source.id,
+      sourceType: source.sourceType,
+      title: source.title,
+      url: source.url,
+    })),
+    text: response.text,
+    timeline: response.timeline,
+    transactionState: response.transactionState,
+    tools: response.tools?.map((tool) => ({
+      id: tool.id,
+      state: tool.state,
+      title: tool.title,
+      type: tool.type,
+    })),
+  };
+}
+
+function isCitationSource(source: AgentSource) {
+  if (source.id === "source-jd-search-query") {
+    return false;
+  }
+
+  if (source.sourceType === "web" && !source.url) {
+    return false;
+  }
+
+  return (
+    source.sourceType === "web" ||
+    source.sourceType === "jobBrief" ||
+    source.sourceType === "attachment"
+  );
+}
+
+function stripTransientModelStatus(
+  text: string,
+  transientStatusTexts: readonly string[],
+) {
+  const trimmed = text.trim();
+
+  return transientStatusTexts.some((statusText) => statusText.trim() === trimmed)
+    ? ""
+    : text;
+}
+
+function sanitizeAgentResponse(
+  message: AgentChatMessage,
+  transientStatusTexts: readonly string[],
+): AgentChatMessage {
+  return {
+    ...message,
+    text: stripTransientModelStatus(message.text, transientStatusTexts),
+    updates: [],
+    sources: message.sources?.filter(isCitationSource),
+  };
+}
+
+export function toAssistantPanelMessage(
+  message: AgentChatMessage,
+  transientStatusTexts: readonly string[],
+): AgentPanelMessage {
+  const response = sanitizeAgentResponse(message, transientStatusTexts);
+
+  return {
+    id: message.id,
+    role: "assistant",
+    text: response.text,
+    response,
+  };
+}
+
+function toPanelMessage(
+  message: AgentStoredMessage,
+  transientStatusTexts: readonly string[],
+): AgentPanelMessage {
+  const messageId = message.id ?? createId("agent-stored");
+  const text = stripTransientModelStatus(message.text, transientStatusTexts);
+  const fallbackResponse: AgentChatMessage | undefined =
+    message.role === "assistant"
+      ? {
+          id: messageId,
+          role: "assistant",
+          text,
+        }
+      : undefined;
+
+  return {
+    files: message.files,
+    id: messageId,
+    role: message.role,
+    text,
+    response: message.response
+      ? sanitizeAgentResponse(message.response, transientStatusTexts)
+      : fallbackResponse,
+  };
+}
+
+export function toPanelMessages(
+  session: AgentSessionResponse,
+  transientStatusTexts: readonly string[],
+) {
+  const latestExecutionByTurn = new Map<string, AgentTurnExecution>();
+  for (const execution of session.executions) {
+    latestExecutionByTurn.set(execution.turnId, execution);
+  }
+
+  return session.messages.map((message) => ({
+    ...toPanelMessage(message, transientStatusTexts),
+    execution:
+      message.role === "user"
+        ? latestExecutionByTurn.get(message.id)
+        : undefined,
+  }));
+}
+
+export async function hydrateAgentSession(
+  sessionRequest: Promise<AgentSessionResponse>,
+) {
+  const [session, localeMessages] = await Promise.all([
+    sessionRequest,
+    Promise.all(locales.map(loadMessages)),
+  ]);
+  const transientStatusTexts = localeMessages.flatMap(
+    (messages) => messages.agentTransientModelStatusTexts,
+  );
+
+  return {
+    panelMessages: toPanelMessages(session, transientStatusTexts),
+    session,
+  };
+}
+
+export function getEditsPreviewKey(edits: AgentResumeEditSuggestion[]) {
+  return JSON.stringify(
+    edits.map((edit) => ({
+      id: edit.id,
+      operation: edit.operation,
+      replacement: edit.replacement,
+      status: edit.status,
+      target: edit.target,
+    })),
+  );
+}

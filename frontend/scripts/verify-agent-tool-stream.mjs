@@ -41,8 +41,8 @@ function tool(name, state, overrides = {}) {
   };
 }
 
-const agentApi = await loadTypeScriptModule(
-  join(frontendRoot, "src", "lib", "agent-api.ts"),
+const messageCodec = await loadTypeScriptModule(
+  join(frontendRoot, "src", "lib", "agent-message-codec.ts"),
 );
 const toolDisplay = await loadTypeScriptModule(
   join(frontendRoot, "src", "lib", "agent-tool-display.ts"),
@@ -66,10 +66,10 @@ const toolDisplay = await loadTypeScriptModule(
     output: { score: 90 },
   });
 
-  message = agentApi.applyAgentToolStreamEvent(message, { tool: started });
-  message = agentApi.applyAgentToolStreamEvent(message, { tool: progressed });
-  message = agentApi.applyAgentToolStreamEvent(message, { tool: completed });
-  message = agentApi.applyAgentToolStreamEvent(message, { tool: completed });
+  message = messageCodec.applyAgentToolStreamEvent(message, { tool: started });
+  message = messageCodec.applyAgentToolStreamEvent(message, { tool: progressed });
+  message = messageCodec.applyAgentToolStreamEvent(message, { tool: completed });
+  message = messageCodec.applyAgentToolStreamEvent(message, { tool: completed });
 
   assert(
     message.tools.length === 1,
@@ -81,10 +81,10 @@ const toolDisplay = await loadTypeScriptModule(
     "tool_done must preserve the terminal state and output.",
   );
 
-  message = agentApi.applyAgentToolStreamEvent(message, {
+  message = messageCodec.applyAgentToolStreamEvent(message, {
     tool: tool("edit_plan", "input-streaming"),
   });
-  const reconciled = agentApi.mergeAgentToolInvocations(message.tools, [
+  const reconciled = messageCodec.mergeAgentToolInvocations(message.tools, [
     tool("edit_plan", "output-available", { output: { editCount: 2 } }),
     tool("resume_analysis", "input-available"),
   ]);

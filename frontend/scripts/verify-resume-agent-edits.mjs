@@ -1,8 +1,84 @@
+import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "vite";
+import ts from "typescript";
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function countLines(source) {
+  if (source.length === 0) {
+    return 0;
+  }
+
+  const lines = source.split(/\r\n|\n|\r/).length;
+  return /(?:\r\n|\n|\r)$/.test(source) ? lines - 1 : lines;
+}
+
+function collectModuleDependencies(moduleUrl, source, modulePaths) {
+  const dependencies = [];
+  const sourceFile = ts.createSourceFile(
+    moduleUrl.pathname,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  for (const statement of sourceFile.statements) {
+    if (
+      !(
+        ts.isImportDeclaration(statement) ||
+        ts.isExportDeclaration(statement)
+      ) ||
+      !statement.moduleSpecifier ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith(".")) {
+      continue;
+    }
+
+    const resolvedPath = new URL(
+      specifier.endsWith(".ts") ? specifier : `${specifier}.ts`,
+      moduleUrl,
+    ).pathname;
+    if (modulePaths.has(resolvedPath)) {
+      dependencies.push(resolvedPath);
+    }
+  }
+
+  return dependencies;
+}
+
+function assertAcyclicModuleGraph(graph) {
+  const visiting = new Set();
+  const visited = new Set();
+
+  function visit(modulePath) {
+    assert(
+      !visiting.has(modulePath),
+      `Resume Agent edit modules must remain acyclic; cycle includes ${modulePath}.`,
+    );
+    if (visited.has(modulePath)) {
+      return;
+    }
+
+    visiting.add(modulePath);
+    for (const dependency of graph.get(modulePath) ?? []) {
+      visit(dependency);
+    }
+    visiting.delete(modulePath);
+    visited.add(modulePath);
+  }
+
+  for (const modulePath of graph.keys()) {
+    visit(modulePath);
   }
 }
 
@@ -30,6 +106,149 @@ function createResume() {
   };
 }
 
+const agentEditModuleUrls = [
+  new URL("../src/lib/resume-agent-edits.ts", import.meta.url),
+  new URL("../src/lib/resume-agent-edits/transaction-core.ts", import.meta.url),
+  new URL("../src/lib/resume-agent-edits/apply-operations.ts", import.meta.url),
+  new URL("../src/lib/resume-agent-edits/three-way-merge.ts", import.meta.url),
+];
+const [sessionSource, draftHookSource, agentEditModuleSources, moduleEntries] = await Promise.all([
+  readFile(
+    new URL(
+      "../src/components/workspace/use-resume-detail-session.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+  readFile(
+    new URL("../src/hooks/use-resume-agent-draft.ts", import.meta.url),
+    "utf8",
+  ),
+  Promise.all(agentEditModuleUrls.map((moduleUrl) => readFile(moduleUrl, "utf8"))),
+  readdir(new URL("../src/lib/resume-agent-edits/", import.meta.url)),
+]);
+
+assert(
+  JSON.stringify(moduleEntries.filter((entry) => entry.endsWith(".ts")).sort()) ===
+    JSON.stringify([
+      "apply-operations.ts",
+      "three-way-merge.ts",
+      "transaction-core.ts",
+    ]),
+  "Resume Agent edits must keep one focused implementation module per transaction responsibility.",
+);
+agentEditModuleSources.forEach((source, index) => {
+  assert(
+    countLines(source) <= 600,
+    `${agentEditModuleUrls[index].pathname} must stay within the 600-line TypeScript budget.`,
+  );
+});
+
+const agentEditModulePaths = new Set(agentEditModuleUrls.map((moduleUrl) => moduleUrl.pathname));
+const agentEditGraph = new Map(
+  agentEditModuleUrls.map((moduleUrl, index) => [
+    moduleUrl.pathname,
+    collectModuleDependencies(
+      moduleUrl,
+      agentEditModuleSources[index],
+      agentEditModulePaths,
+    ),
+  ]),
+);
+assertAcyclicModuleGraph(agentEditGraph);
+
+const [entryPath, transactionCorePath, operationApplyPath, mergePath] =
+  agentEditModuleUrls.map((moduleUrl) => moduleUrl.pathname);
+const expectedAgentEditGraph = new Map([
+  [entryPath, [operationApplyPath, mergePath, transactionCorePath]],
+  [transactionCorePath, []],
+  [operationApplyPath, [transactionCorePath]],
+  [mergePath, [operationApplyPath, transactionCorePath]],
+]);
+for (const [modulePath, expectedDependencies] of expectedAgentEditGraph) {
+  assert(
+    JSON.stringify([...(agentEditGraph.get(modulePath) ?? [])].sort()) ===
+      JSON.stringify([...expectedDependencies].sort()),
+    `${modulePath} must preserve the one-way Resume Agent edit dependency graph.`,
+  );
+}
+
+const [agentEditEntrySource, transactionCoreSource] = agentEditModuleSources;
+assert(
+  /export type \{\s*AgentDraftApplyError,\s*AgentDraftApplyErrorReason,\s*AgentDraftApplyResult,?\s*\}/.test(
+    agentEditEntrySource,
+  ) &&
+    !/export\s+(?:type\s+)?\*\s+from/.test(agentEditEntrySource) &&
+    !/^export\s+(?:async\s+)?function\s+(?!createAgentDraftBaseSnapshot|applyAgentEditsToDraft|applyAgentEditsWithMerge)/m.test(
+      agentEditEntrySource,
+    ),
+  "The Resume Agent edit entry must expose only the three product APIs and their result types.",
+);
+assert(
+  !/createAgentDraftBaseSnapshot|applyAgentEditsToDraft|applyAgentEditsWithMerge/.test(
+    transactionCoreSource,
+  ),
+  "Product orchestration must remain in the public entry instead of becoming a shallow facade.",
+);
+
+assert(
+    /import\s*\{\s*useResumeAgentDraft\s*\}\s*from\s*["']@\/hooks\/use-resume-agent-draft["']/.test(
+    sessionSource,
+  ) &&
+    /useResumeAgentDraft\(\{[\s\S]*?messages,[\s\S]*?onApplyResume:\s*applyAgentDraftResume[\s\S]*?resume,[\s\S]*?\}\)/.test(
+      sessionSource,
+    ) &&
+    !/agentDraftBaseRef|currentResumeRef|createAgentDraftBaseSnapshot|applyAgentEditsWithMerge/.test(
+      sessionSource,
+    ),
+  "The resume detail session must consume the Agent draft transaction through one hook seam.",
+);
+assert(
+  !/createContext|useContext/.test(draftHookSource) &&
+    !/useEffect/.test(draftHookSource) &&
+    /applyAgentEditsWithMerge\(\s*draftBase,\s*resume,\s*edits,?\s*\)/.test(
+      draftHookSource,
+    ) &&
+    /applyAgentEditsWithMerge\(\s*draftBase\.resume,\s*resume,\s*agentDraft\.edits,?\s*\)/.test(
+      draftHookSource,
+    ),
+  "The Agent draft hook must read the latest editor resume without introducing Context.",
+);
+assert(
+  /createdAt:\s*agentDraft\?\.id\s*===\s*draftId\s*\?\s*agentDraft\.createdAt\s*:\s*now/.test(
+    draftHookSource,
+  ),
+  "Replacement batches from one Agent message must retain their original creation time.",
+);
+assert(
+  /if \(result\.errors\.length > 0\) \{\s*if \(transactionState === "committed"\) \{[\s\S]*?clearRejectedAgentDraft\(sourceMessageId\)[\s\S]*?toast\.error/.test(
+    draftHookSource,
+  ) &&
+    /if \(result\.appliedCount === 0\) \{\s*if \(transactionState === "committed"\) \{\s*clearRejectedAgentDraft\(sourceMessageId\)/.test(
+      draftHookSource,
+    ),
+  "Only a committed Agent batch may clear and report a rejected provisional draft.",
+);
+assert(
+  /if \(!agentDraft \|\| agentDraft\.transactionState !== "committed"\) \{\s*return;\s*\}[\s\S]*?draftBase\.resume,[\s\S]*?resume,[\s\S]*?agentDraft\.edits/.test(
+    draftHookSource,
+  ) &&
+    /onApplyResume\(result\.resume\)[\s\S]*?status:\s*"applied"[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
+      draftHookSource,
+    ) &&
+    /status:\s*"discarded"[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
+      draftHookSource,
+    ),
+  "Apply and discard must stay committed-only and close the stored merge transaction.",
+);
+assert(
+  (sessionSource.match(/resetAgentDraft\(\)/g) ?? []).length === 1 &&
+    /const resetAgentDraft = useCallback\(\(\) => \{[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)[\s\S]*?setLastAgentDraft\(null\)/.test(
+      draftHookSource,
+    ),
+  "Hydrating a resume detail session must reset the complete Agent draft transaction.",
+);
+
 const server = await createServer({
   configFile: false,
   root: process.cwd(),
@@ -40,11 +259,23 @@ const server = await createServer({
 });
 
 try {
+const agentEditModule = await server.ssrLoadModule(
+  "/src/lib/resume-agent-edits.ts",
+);
+assert(
+  JSON.stringify(Object.keys(agentEditModule).sort()) ===
+    JSON.stringify([
+      "applyAgentEditsToDraft",
+      "applyAgentEditsWithMerge",
+      "createAgentDraftBaseSnapshot",
+    ]),
+  "The Resume Agent edit runtime entry must expose exactly the three product APIs.",
+);
 const {
   applyAgentEditsToDraft,
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
-} = await server.ssrLoadModule("/src/lib/resume-agent-edits.ts");
+} = agentEditModule;
 
 {
   const baseResume = createResume();
