@@ -23,6 +23,35 @@ import type {
 import type { AgentMessageActions } from './use-agent-message-actions'
 import type { AgentPromptActions } from './use-agent-prompt-actions'
 
+function AgentSessionLoadError({
+  onRetry,
+  t,
+}: {
+  onRetry: () => void
+  t: AppMessages
+}) {
+  return (
+    <div
+      className="flex items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2"
+      role="alert"
+    >
+      <p className="text-xs leading-5 text-destructive">
+        {t.agentHistoryLoadFailed}
+      </p>
+      <Button
+        className="h-8 shrink-0 rounded-xl px-3 text-xs"
+        onClick={onRetry}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        <RotateCcw data-icon="inline-start" />
+        {t.agentRetry}
+      </Button>
+    </div>
+  )
+}
+
 export function CopilotConversationView({
   conversation,
   conversationContextRef,
@@ -72,37 +101,37 @@ export function CopilotConversationView({
       >
         {visibleMessages.length === 0 ? (
           <ConversationEmptyState className="px-6 py-10">
-            <div className="mx-auto grid max-w-[260px] justify-items-center gap-3 text-center">
-              <p className="text-sm leading-6 text-muted-foreground">
-                {sessionLoadError
-                  ? t.agentHistoryLoadFailed
-                  : t.agentEmptyPrompt}
-              </p>
-              {sessionLoadError ? (
-                <Button
-                  className="h-8 rounded-xl px-3 text-xs"
-                  onClick={conversation.retrySession}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <RotateCcw className="mr-1.5 size-3.5" />
-                  {t.agentRetry}
-                </Button>
-              ) : !hasConfiguredModel ? (
-                <Button
-                  className="h-8 rounded-xl px-3 text-xs"
-                  onClick={onOpenModelSettings}
-                  size="sm"
-                  type="button"
-                >
-                  {t.openModelSettings}
-                </Button>
-              ) : null}
-            </div>
+            {sessionLoadError ? (
+              <AgentSessionLoadError
+                onRetry={conversation.retrySession}
+                t={t}
+              />
+            ) : (
+              <div className="mx-auto grid max-w-[260px] justify-items-center gap-3 text-center">
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {t.agentEmptyPrompt}
+                </p>
+                {!hasConfiguredModel ? (
+                  <Button
+                    className="h-8 rounded-xl px-3 text-xs"
+                    onClick={onOpenModelSettings}
+                    size="sm"
+                    type="button"
+                  >
+                    {t.openModelSettings}
+                  </Button>
+                ) : null}
+              </div>
+            )}
           </ConversationEmptyState>
         ) : (
           <div className="grid gap-3">
+            {sessionLoadError ? (
+              <AgentSessionLoadError
+                onRetry={conversation.retrySession}
+                t={t}
+              />
+            ) : null}
             {visibleMessages.map((message) => {
               if (message.role === 'user') {
                 const isEditing =

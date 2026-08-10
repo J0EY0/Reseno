@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.schemas.agent_settings import (
     AgentBehaviorMode,
     AgentConfirmationMode,
@@ -38,7 +38,11 @@ def _config() -> AgentLlmConfig:
 
 def _request(*, locale: str = "zh") -> AgentChatRequest:
     return AgentChatRequest(
-        prompt="优化个人简介",
+        message=AgentConversationItem(
+            id=f"turn-agent-preferences-{locale}",
+            role="user",
+            text="优化个人简介",
+        ),
         locale=locale,
         resume={
             "basic": {"summary": "已有简介"},
@@ -188,7 +192,11 @@ def test_chat_route_freezes_persisted_settings_for_each_turn(
     first_response = client.post(
         "/api/agent/chat",
         json={
-            "prompt": "优化个人简介",
+            "message": {
+                "id": "turn-agent-preferences-route-first",
+                "role": "user",
+                "text": "优化个人简介",
+            },
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
             # Legacy client values must not override persisted preferences.
@@ -208,7 +216,11 @@ def test_chat_route_freezes_persisted_settings_for_each_turn(
     second_response = client.post(
         "/api/agent/chat",
         json={
-            "prompt": "优化个人简介",
+            "message": {
+                "id": "turn-agent-preferences-route-second",
+                "role": "user",
+                "text": "优化个人简介",
+            },
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
         },

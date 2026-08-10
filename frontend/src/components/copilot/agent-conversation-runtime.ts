@@ -9,6 +9,7 @@ import {
 import type { AppMessages } from '@/i18n'
 import type {
   AgentResumeEditSuggestion,
+  AgentDraftSnapshot,
   AgentRunResponse,
   AgentRunStatus,
   AgentTransactionState,
@@ -35,6 +36,7 @@ export interface AgentConversationRuntime {
     sourceMessageId?: string,
     transactionState?: AgentTransactionState,
   ) => void
+  onReconcileAgentDraft: (snapshot: AgentDraftSnapshot | null) => void
   onRollbackAgentDraft: (sourceMessageId?: string) => void
   optimisticMessageOwner: string | null
   pendingSend: PendingAgentSend | null
@@ -42,6 +44,7 @@ export interface AgentConversationRuntime {
   replyTimer: number | null
   requestFailedText: string
   requestResume: ResumeData
+  sessionReady: boolean
   sessionReadyPromise: Promise<void> | null
   sessionRevision: string | null
   stopRequested: boolean
@@ -55,6 +58,7 @@ export interface AgentConversationUpdates {
   setIsResponding: (value: boolean) => void
   setMessages: Dispatch<SetStateAction<AgentPanelMessage[]>>
   setSessionLoadError: (value: boolean) => void
+  setSessionReady: (value: boolean) => void
   setStreamingMessage: Dispatch<SetStateAction<AgentPanelMessage | null>>
 }
 
@@ -74,6 +78,7 @@ export function isPendingSendOwner(
 export function useAgentConversationRuntime({
   isResponding,
   onPreviewAgentEdits,
+  onReconcileAgentDraft,
   onRollbackAgentDraft,
   resume,
   resumeId,
@@ -81,6 +86,7 @@ export function useAgentConversationRuntime({
 }: {
   isResponding: boolean
   onPreviewAgentEdits: AgentConversationRuntime['onPreviewAgentEdits']
+  onReconcileAgentDraft: AgentConversationRuntime['onReconcileAgentDraft']
   onRollbackAgentDraft: AgentConversationRuntime['onRollbackAgentDraft']
   resume: ResumeData
   resumeId?: string
@@ -92,6 +98,7 @@ export function useAgentConversationRuntime({
     currentResumeId: resumeId,
     isResponding,
     onPreviewAgentEdits,
+    onReconcileAgentDraft,
     onRollbackAgentDraft,
     optimisticMessageOwner: null,
     pendingSend: null,
@@ -99,6 +106,7 @@ export function useAgentConversationRuntime({
     replyTimer: null,
     requestFailedText: t.agentRequestFailed,
     requestResume: resume,
+    sessionReady: false,
     sessionReadyPromise: null,
     sessionRevision: null,
     stopRequested: false,
@@ -110,12 +118,14 @@ export function useAgentConversationRuntime({
     runtime.currentResumeId = resumeId
     runtime.isResponding = isResponding
     runtime.onPreviewAgentEdits = onPreviewAgentEdits
+    runtime.onReconcileAgentDraft = onReconcileAgentDraft
     runtime.onRollbackAgentDraft = onRollbackAgentDraft
     runtime.requestFailedText = t.agentRequestFailed
     runtime.transientStatusTexts = t.agentTransientModelStatusTexts
   }, [
     isResponding,
     onPreviewAgentEdits,
+    onReconcileAgentDraft,
     onRollbackAgentDraft,
     resumeId,
     t.agentRequestFailed,

@@ -38,7 +38,7 @@ export function useAgentSessionHydration({
     const sessionReadyPromise = new Promise<void>((resolve) => {
       resolveSessionReady = resolve
     })
-    const markSessionReady = () => {
+    const releaseSessionWaiters = () => {
       if (sessionReadyResolved) {
         return
       }
@@ -48,6 +48,7 @@ export function useAgentSessionHydration({
 
     runtime.activeRequestAbort?.abort()
     runtime.activeRequestAbort = abortController
+    runtime.sessionReady = false
     runtime.sessionReadyPromise = sessionReadyPromise
     runtime.activeRun = null
     runtime.stopRequested = false
@@ -59,11 +60,14 @@ export function useAgentSessionHydration({
     updates.setStreamingMessage(null)
     updates.setIsResponding(false)
     updates.setSessionLoadError(false)
+    updates.setSessionReady(false)
     runtime.sessionRevision = null
     runtime.optimisticMessageOwner = null
 
     if (!resumeId) {
-      markSessionReady()
+      runtime.sessionReady = true
+      updates.setSessionReady(true)
+      releaseSessionWaiters()
       runtime.sessionReadyPromise = null
       runtime.activeRequestAbort = null
       return () => {
@@ -85,7 +89,7 @@ export function useAgentSessionHydration({
           (run) => ({ status: 'fulfilled' as const, run }),
           (error: unknown) => ({ status: 'rejected' as const, error }),
         )
-        const { panelMessages, session } =
+        const { draftSnapshot, panelMessages, session } =
           await hydrateAgentSession(sessionRequest)
         if (cancelled || runtime.activeRequestAbort !== abortController) {
           return
@@ -93,19 +97,20 @@ export function useAgentSessionHydration({
 
         updates.setMessages(panelMessages)
         runtime.sessionRevision = session.revision
+        runtime.onReconcileAgentDraft(draftSnapshot)
 
         const activeRunResult = await activeRunRequest
         if (activeRunResult.status === 'rejected') {
           throw activeRunResult.error
         }
         const { run } = activeRunResult
-        if (
-          cancelled ||
-          runtime.activeRequestAbort !== abortController ||
-          !run ||
-          run.status !== 'active'
-        ) {
-          markSessionReady()
+        if (cancelled || runtime.activeRequestAbort !== abortController) {
+          return
+        }
+        runtime.sessionReady = true
+        updates.setSessionReady(true)
+        releaseSessionWaiters()
+        if (!run || run.status !== 'active') {
           if (runtime.activeRequestAbort === abortController) {
             runtime.activeRequestAbort = null
           }
@@ -116,13 +121,12 @@ export function useAgentSessionHydration({
         runtime.activeRun = run
         runtime.isResponding = true
         updates.setIsResponding(true)
-        markSessionReady()
         await consumeRunStream(
           (options) => connectAgentRun(run, options),
           abortController,
         )
       } catch (error) {
-        markSessionReady()
+        releaseSessionWaiters()
         if (
           !cancelled &&
           runtime.activeRequestAbort === abortController &&
@@ -135,7 +139,7 @@ export function useAgentSessionHydration({
           runtime.activeRequestAbort = null
         }
       } finally {
-        markSessionReady()
+        releaseSessionWaiters()
         if (runtime.sessionReadyPromise === sessionReadyPromise) {
           runtime.sessionReadyPromise = null
         }
@@ -144,7 +148,7 @@ export function useAgentSessionHydration({
 
     return () => {
       cancelled = true
-      markSessionReady()
+      releaseSessionWaiters()
       abortController.abort()
       if (runtime.sessionReadyPromise === sessionReadyPromise) {
         runtime.sessionReadyPromise = null

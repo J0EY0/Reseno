@@ -1,7 +1,6 @@
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
 from app.schemas.agent import AgentChatRequest
 from app.services.resume_document_contract import (
@@ -13,6 +12,7 @@ from .attachments import AgentAttachmentError, current_request_attachments
 from .intent_patterns import matches_intent_pattern
 from .materials import extract_resume_materials
 from .preferences import execution_profile_for_request
+from .request_context import active_resume
 from .tools.registry import (
     ALL_KNOWN_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
@@ -65,6 +65,16 @@ def capability_policy_for_request(
             reason="suggest_only",
         )
 
+    # A user's explicit no-edit instruction is a hard capability constraint,
+    # not a hint for the keyword classifier. It must win over edit keywords.
+    if _matches_intent(prompt, "explicit_read_only"):
+        return AgentCapabilityPolicy(
+            intent=intent,
+            mode=AgentCapabilityMode.READ_ONLY,
+            allowed_tools=_read_tools_for_request(request, intent),
+            reason="explicit_read_only",
+        )
+
     if intent == AgentTaskIntent.EXPLAIN_DRAFT:
         if _has_pending_draft(request):
             return AgentCapabilityPolicy(
@@ -100,6 +110,15 @@ def capability_policy_for_request(
         AgentTaskIntent.RESEARCH_ROLE,
         AgentTaskIntent.DIAGNOSE_JD_GAP,
     }:
+        return AgentCapabilityPolicy(
+            intent=intent,
+            mode=AgentCapabilityMode.READ_ONLY,
+            allowed_tools=_read_tools_for_request(request, intent),
+        )
+
+    if not _matches_intent(prompt, "edit_resume"):
+        # Classification is not authorization: job context and any future task
+        # intent stay read-only unless this turn contains an affirmative edit.
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.READ_ONLY,
@@ -224,14 +243,7 @@ def _read_tools_for_request(
 
 
 def _current_prompt(request: AgentChatRequest) -> str:
-    if request.message and request.message.text.strip():
-        return request.message.text.strip()
-    if request.prompt.strip():
-        return request.prompt.strip()
-    for message in reversed(request.messages or request.conversation):
-        if message.role == "user" and message.text.strip():
-            return message.text.strip()
-    return ""
+    return request.message.text.strip()
 
 
 def _has_pending_draft(request: AgentChatRequest) -> bool:
@@ -288,7 +300,7 @@ def _has_user_resume_material(request: AgentChatRequest) -> bool:
 
 
 def _has_resume_item_evidence(request: AgentChatRequest) -> bool:
-    resume = _policy_resume(request)
+    resume = active_resume(request)
     sections = resume.get("sections") if isinstance(resume, dict) else None
     if not isinstance(sections, list):
         return False
@@ -317,19 +329,9 @@ def _item_has_content(item: object, section_kind: str) -> bool:
         for field in string_fields
     ) or any(
         isinstance(item.get(field), list)
-        and any(
-            isinstance(value, str) and value.strip()
-            for value in item[field]
-        )
+        and any(isinstance(value, str) and value.strip() for value in item[field])
         for field in list_fields
     )
-
-
-def _policy_resume(request: AgentChatRequest) -> dict[str, Any]:
-    draft = request.draft_state
-    if draft and draft.status == "pending" and draft.resume:
-        return draft.resume
-    return request.resume
 
 
 def _confirmation_mode(request: AgentChatRequest) -> str:

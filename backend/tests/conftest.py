@@ -37,17 +37,21 @@ def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("AUTH_USERNAME", "admin")
-    monkeypatch.setenv("AUTH_PASSWORD", "ResuMate@2026")
     get_settings.cache_clear()
 
-    with TestClient(create_app()) as test_client:
-        login_response = test_client.post(
-            "/api/auth/login",
-            json={"username": "admin", "password": "ResuMate@2026"},
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as test_client:
+        setup_response = test_client.post(
+            "/api/auth/setup",
+            json={
+                "username": "admin",
+                "password": "TestPassword2026",
+                "confirmPassword": "TestPassword2026",
+            },
         )
-        access_token = login_response.json()["data"]["accessToken"]
+        access_token = setup_response.json()["data"]["accessToken"]
         test_client.headers.update({"Authorization": f"Bearer {access_token}"})
         yield test_client
 
@@ -66,12 +70,43 @@ def unauthenticated_client(tmp_path, monkeypatch) -> Iterator[TestClient]:
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("AUTH_USERNAME", "admin")
-    monkeypatch.setenv("AUTH_PASSWORD", "ResuMate@2026")
     get_settings.cache_clear()
 
-    with TestClient(create_app()) as test_client:
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as test_client:
+        test_client.post(
+            "/api/auth/setup",
+            json={
+                "username": "admin",
+                "password": "TestPassword2026",
+                "confirmPassword": "TestPassword2026",
+            },
+        )
+        yield test_client
+
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def uninitialized_client(tmp_path, monkeypatch) -> Iterator[TestClient]:
+    from app.config import get_settings
+    from app.main import create_app
+
+    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    monkeypatch.delenv("APP_USER_SETTINGS_PATH", raising=False)
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as test_client:
         yield test_client
 
     get_settings.cache_clear()

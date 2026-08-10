@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent.editing.operations import (
     _model_edit_suggestions_with_diagnostics,
 )
@@ -26,7 +26,11 @@ def _basic(*, headline: str = "", summary: str = "") -> dict:
 
 def _runner() -> AgentToolRunner:
     request = AgentChatRequest(
-        prompt="优化项目经历",
+        message=AgentConversationItem(
+            id="turn-edit-transaction-runner",
+            role="user",
+            text="优化项目经历",
+        ),
         locale="zh",
         resume={
             "schemaVersion": 2,
@@ -163,7 +167,11 @@ def test_finish_stops_later_tool_calls_from_the_same_provider_response(
 ) -> None:
     async def scenario() -> None:
         request = AgentChatRequest(
-            prompt="优化个人简介",
+            message=AgentConversationItem(
+                id="turn-edit-transaction-finish",
+                role="user",
+                text="优化个人简介",
+            ),
             locale="zh",
             resume={
                 "schemaVersion": 2,
@@ -234,7 +242,11 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
 ) -> None:
     async def scenario() -> None:
         request = AgentChatRequest(
-            prompt="优化项目经历",
+            message=AgentConversationItem(
+                id="turn-edit-transaction-quality",
+                role="user",
+                text="优化项目经历",
+            ),
             locale="zh",
             resume={
                 "schemaVersion": 2,
@@ -488,9 +500,7 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
     assert repaired_tool.state == "output-available"
     assert runner.transaction_state == "committed"
     assert runner.draft_resume["basic"]["summary"] == "聚焦复杂交互与工程质量。"
-    assert runner.draft_resume["sections"][0]["items"][0]["role"] == (
-        "AI 简历编辑器"
-    )
+    assert runner.draft_resume["sections"][0]["items"][0]["role"] == ("AI 简历编辑器")
     assert runner.draft_resume["sections"][0]["items"][0]["highlights"] == [
         "实现事务化编辑，避免部分修改进入草稿。",
         "提供失败诊断，支持模型修复完整批次。",

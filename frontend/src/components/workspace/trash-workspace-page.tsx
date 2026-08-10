@@ -1,6 +1,7 @@
 import { RecycleBinPanel } from "@/components/recycle-bin-panel";
 import { WorkspaceRouteSkeleton } from "@/components/workspace-skeletons";
 import { useTrashWorkspace } from "@/components/workspace/use-trash-workspace";
+import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 import type { AppMessages, Locale } from "@/i18n";
@@ -25,6 +26,10 @@ export function TrashWorkspacePage({
     onLocaleChange,
     persistence,
   });
+  useRememberWorkspaceLateralRouteData(
+    "trash",
+    trash.hasLoaded ? trash.routeData : null,
+  );
 
   return (
     <WorkspaceShell
@@ -33,6 +38,7 @@ export function TrashWorkspacePage({
       messages={messages}
       theme={trash.theme}
       resolvedTheme={trash.resolvedTheme}
+      persistence={persistence}
       onLocaleChange={onLocaleChange}
       onThemeChange={trash.changeTheme}
       onLogout={onLogout}

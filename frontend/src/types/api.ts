@@ -159,7 +159,7 @@ export interface ExportResumePdfResponse {
   exportId: string;
   downloadUrl: string;
   fileName: string;
-  expiresAt?: string;
+  expiresAt: string;
 }
 
 export type ExportResumeImagesRequest = ExportResumePdfRequest;
@@ -187,7 +187,16 @@ export interface AgentConversationMessage {
   response?: Partial<AgentChatMessage>;
 }
 
+export interface AgentChatUserMessage {
+  id: string;
+  role: "user";
+  text: string;
+  files?: AgentChatAttachment[];
+  createdAt?: string;
+}
+
 export type AgentDraftStatus = "pending" | "applied" | "discarded";
+export type AgentDraftDecisionStatus = Exclude<AgentDraftStatus, "pending">;
 export type AgentTransactionState =
   | "none"
   | "provisional"
@@ -219,15 +228,22 @@ export interface AgentDraftState {
   transactionState?: AgentTransactionState;
 }
 
+export interface AgentCommittedDraft {
+  baseResume: ResumeData;
+  status: AgentDraftStatus;
+}
+
+export interface AgentDraftSnapshot extends AgentCommittedDraft {
+  edits: AgentResumeEditSuggestion[];
+  sourceMessageId: string;
+  transactionState: "committed";
+}
+
 export interface AgentChatRequest {
   resumeId?: string;
   expectedRevision?: string;
-  clientTurnId?: string;
-  prompt: string;
-  message?: AgentConversationMessage;
-  messages?: AgentConversationMessage[];
-  conversation: AgentConversationMessage[];
-  files: AgentChatAttachment[];
+  message: AgentChatUserMessage;
+  messages: AgentConversationMessage[];
   locale: Locale;
   resume: ResumeData;
   jobBrief: string;
@@ -320,6 +336,7 @@ export interface AgentChatMessage {
   tools?: AgentToolInvocation[];
   sources?: AgentSource[];
   edits?: AgentResumeEditSuggestion[];
+  draft?: AgentCommittedDraft;
   transactionState?: AgentTransactionState;
   finishMissing?: AgentFinishMissing[];
   quickReplies?: string[];
@@ -372,6 +389,11 @@ export interface AgentSessionReplaceRequest {
   locale: Locale;
   revision: string;
   messages: AgentConversationMessage[];
+}
+
+export interface AgentDraftDecisionRequest {
+  revision: string;
+  status: AgentDraftDecisionStatus;
 }
 
 export type AgentChatStreamEvent =

@@ -18,7 +18,7 @@ export function RecycleBinPanel(props: RecycleBinPanelProps) {
   const controller = useRecycleBinController(props);
 
   return (
-    <main className="flex-1 p-4">
+    <div className="flex-1 p-4">
       <RecycleBinDeleteDialog
         t={t}
         pendingAction={controller.dialog.pendingAction}
@@ -73,6 +73,6 @@ export function RecycleBinPanel(props: RecycleBinPanelProps) {
           />
         </Tabs>
       </section>
-    </main>
+    </div>
   );
 }

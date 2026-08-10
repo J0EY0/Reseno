@@ -11,10 +11,6 @@ export interface AuthSession {
 
 type InvalidatedTokenCache = Record<string, number>
 
-export function isAuthRequired() {
-  return import.meta.env.PROD
-}
-
 function readInvalidatedTokenCache(): InvalidatedTokenCache {
   if (typeof window === 'undefined') {
     return {}

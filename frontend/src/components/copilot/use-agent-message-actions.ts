@@ -152,11 +152,15 @@ export function useAgentMessageActions({
       }
 
       cancelEditingUserMessage()
-      await sendPrompt(nextText, message.files ?? [], {
-        baseMessages: messages.slice(0, messageIndex),
-        messageId: message.id,
-        replaceSessionBeforeSend: true,
-      })
+      await sendPrompt(
+        nextText,
+        message.files ?? [],
+        {
+          baseMessages: messages.slice(0, messageIndex),
+          messageId: message.id,
+          replaceSessionBeforeSend: true,
+        },
+      ).completion
     },
     [
       cancelEditingUserMessage,
@@ -175,10 +179,14 @@ export function useAgentMessageActions({
         return
       }
 
-      await sendPrompt(message.text, message.files ?? [], {
-        baseMessages: messages.slice(0, messageIndex),
-        messageId: message.id,
-      })
+      await sendPrompt(
+        message.text,
+        message.files ?? [],
+        {
+          baseMessages: messages.slice(0, messageIndex),
+          messageId: message.id,
+        },
+      ).completion
     },
     [isResponding, messages, sendPrompt],
   )

@@ -4,10 +4,9 @@ from typing import Any
 
 PII_BASIC_FIELDS = frozenset({"name", "phone", "email", "location", "avatar"})
 HIDDEN_BASIC_VALUE = "[hidden]"
-# Location is intentionally write-only for the Agent: it may set a value that
-# the user explicitly supplied, while the existing value remains redacted from
-# model context and tool observations.
-AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "location", "summary"})
+# Model-hidden PII is never writable by Agent tools. Headline and summary are
+# professional content even though they live beside personal fields.
+AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "summary"})
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")
@@ -26,11 +25,16 @@ def resume_hidden_terms(resume: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(basic, dict):
         return ()
 
-    name = basic.get("name")
-    if isinstance(name, str) and len(name.strip()) >= 2:
-        return (name.strip(),)
-
-    return ()
+    # Direct fields are replaced below, while this shared set also removes
+    # copies embedded in summaries, attachments, tool output, and web queries.
+    terms: list[str] = []
+    for field in ("name", "location"):
+        value = basic.get(field)
+        if isinstance(value, str) and len(value.strip()) >= 2:
+            normalized = value.strip()
+            if normalized not in terms:
+                terms.append(normalized)
+    return tuple(terms)
 
 
 def sanitize_agent_text(
@@ -58,9 +62,7 @@ def sanitize_agent_value(
         return sanitize_agent_text(value, hidden_terms=hidden_terms)
 
     if isinstance(value, list):
-        return [
-            sanitize_agent_value(item, hidden_terms=hidden_terms) for item in value
-        ]
+        return [sanitize_agent_value(item, hidden_terms=hidden_terms) for item in value]
 
     if isinstance(value, dict):
         return {
@@ -93,9 +95,7 @@ def sanitize_agent_resume(
             # values. An empty replacement makes models report that populated
             # personal fields are missing, while this marker reveals no value.
             basic[field] = (
-                ""
-                if field_status.get(field) == "missing"
-                else HIDDEN_BASIC_VALUE
+                "" if field_status.get(field) == "missing" else HIDDEN_BASIC_VALUE
             )
 
     sanitized["basicFieldStatus"] = field_status

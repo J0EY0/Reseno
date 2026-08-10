@@ -133,6 +133,24 @@ const [attachmentClient, sessionRunClient] = await Promise.all([
     "/api/agent/resumes/resume-attachment/attachments/attachment-delete",
   );
   assert.equal(call.options.method, "DELETE");
+  assert.equal(
+    call.options.notifyOnError,
+    undefined,
+    "User-initiated pending attachment deletion must keep default error notification semantics.",
+  );
+
+  await attachmentClient.deletePendingAgentAttachment(
+    "resume-attachment",
+    "attachment-cleanup",
+    { notifyOnError: false },
+  );
+  call = takeLastCall("request");
+  assert.equal(call.options.method, "DELETE");
+  assert.equal(
+    call.options.notifyOnError,
+    false,
+    "Best-effort pending attachment cleanup must be able to suppress transport toasts.",
+  );
 }
 
 const moduleNames = [
@@ -220,6 +238,11 @@ assert.doesNotMatch(
   "The CopilotPanel orchestration entry must not own transport details.",
 );
 assert.match(promptActionsSource, /@\/lib\/agent-attachment-client/);
+assert.match(
+  attachmentPolicySource,
+  /deletePendingAgentAttachment\(resumeId,\s*id,\s*\{\s*notifyOnError:\s*false,?\s*\}\)/,
+  "Only best-effort pending upload cleanup should opt out of transport error notifications.",
+);
 assert.match(messageActionsSource, /@\/lib\/agent-attachment-client/);
 assert.match(
   `${conversationSource}\n${sessionHydrationSource}\n${runStreamSource}\n${sendControllerSource}`,

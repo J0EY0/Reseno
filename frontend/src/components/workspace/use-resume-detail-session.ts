@@ -73,6 +73,7 @@ export function useResumeDetailSession({
     messages,
     onApplyResume: applyAgentDraftResume,
     resume,
+    resumeId: resumeItem?.id,
   });
   const { agentDraft, resetAgentDraft } = agent;
   const latestRef = useRef({

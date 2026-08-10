@@ -17,12 +17,18 @@ from app.services.resume_document_contract import (
 ARTIFACT_FORMAT_VERSION = 1
 RESUME_ARTIFACT_FORMAT = "resumate.resume"
 TEMPLATE_ARTIFACT_FORMAT = "resumate.template"
+MAX_JSON_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 async def load_json_upload(file: UploadFile) -> Any:
     """Read an uploaded file as UTF-8 JSON."""
 
-    raw_body = await file.read()
+    raw_body = await file.read(MAX_JSON_UPLOAD_BYTES + 1)
+    if len(raw_body) > MAX_JSON_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="JSON_UPLOAD_TOO_LARGE",
+        )
 
     try:
         return json.loads(raw_body.decode("utf-8"))

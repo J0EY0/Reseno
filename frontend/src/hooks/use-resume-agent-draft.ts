@@ -2,6 +2,8 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
+import { isApiErrorToastShown } from "@/lib/api-client";
+import { resolveAgentDraftDecision } from "@/lib/agent-session-run-client";
 import {
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
@@ -10,6 +12,7 @@ import {
 import { createId } from "@/lib/resume";
 import type {
   AgentDraftState,
+  AgentDraftSnapshot,
   AgentResumeEditSuggestion,
   AgentTransactionState,
 } from "@/types/api";
@@ -51,10 +54,12 @@ export function useResumeAgentDraft({
   messages,
   onApplyResume,
   resume,
+  resumeId,
 }: {
   messages: AppMessages;
   onApplyResume: (resume: ResumeData) => void;
   resume: ResumeData;
+  resumeId?: string;
 }) {
   const [agentDraft, setAgentDraft] = useState<AgentDraftState | null>(null);
   const [lastAgentDraft, setLastAgentDraft] =
@@ -63,8 +68,14 @@ export function useResumeAgentDraft({
     draftId: string;
     resume: ResumeData;
   } | null>(null);
+  const agentDraftRef = useRef(agentDraft);
+  const currentResumeRef = useRef(resume);
+  const draftDecisionTokenRef = useRef<symbol | null>(null);
+  agentDraftRef.current = agentDraft;
+  currentResumeRef.current = resume;
 
   const resetAgentDraft = useCallback(() => {
+    draftDecisionTokenRef.current = null;
     agentDraftBaseRef.current = null;
     setAgentDraft(null);
     setLastAgentDraft(null);
@@ -170,7 +181,52 @@ export function useResumeAgentDraft({
     setLastAgentDraft((draft) => (shouldRollback(draft) ? null : draft));
   }, []);
 
-  const applyAgentDraft = useCallback(() => {
+  const reconcileAgentDraft = useCallback(
+    (snapshot: AgentDraftSnapshot | null) => {
+      if (snapshot?.status === "pending") {
+        previewAgentEdits(
+          snapshot.edits,
+          snapshot.baseResume,
+          snapshot.sourceMessageId,
+          snapshot.transactionState,
+        );
+        return;
+      }
+
+      draftDecisionTokenRef.current = null;
+      agentDraftBaseRef.current = null;
+      setAgentDraft((draft) =>
+        draft?.transactionState === "committed" ? null : draft,
+      );
+      setLastAgentDraft((draft) =>
+        draft?.transactionState === "committed" ? null : draft,
+      );
+    },
+    [previewAgentEdits],
+  );
+
+  const mergeCommittedAgentDraft = useCallback(
+    (draft: AgentDraftState, baseResume: ResumeData) => {
+      const result = applyAgentEditsWithMerge(
+        baseResume,
+        currentResumeRef.current,
+        draft.edits,
+      );
+
+      if (result.errors.length > 0) {
+        toast.error(messages.agentDraftBatchRejected, {
+          description: formatAgentDraftErrors(result.errors, messages),
+          closeButton: true,
+        });
+        return null;
+      }
+
+      return result;
+    },
+    [messages],
+  );
+
+  const applyAgentDraft = useCallback(async () => {
     if (!agentDraft || agentDraft.transactionState !== "committed") {
       return;
     }
@@ -180,50 +236,169 @@ export function useResumeAgentDraft({
       return;
     }
 
-    const result = applyAgentEditsWithMerge(
-      draftBase.resume,
-      resume,
-      agentDraft.edits,
-    );
-
-    if (result.errors.length > 0) {
-      toast.error(messages.agentDraftBatchRejected, {
-        description: formatAgentDraftErrors(result.errors, messages),
-        closeButton: true,
-      });
+    if (!mergeCommittedAgentDraft(agentDraft, draftBase.resume)) {
       return;
     }
 
-    onApplyResume(result.resume);
-    setLastAgentDraft({
-      ...agentDraft,
-      status: "applied",
-      updatedAt: new Date().toISOString(),
-      resume: result.resume,
-    });
-    agentDraftBaseRef.current = null;
-    setAgentDraft(null);
-    toast.success(messages.agentDraftApplied, {
-      closeButton: true,
-    });
-  }, [agentDraft, messages, onApplyResume, resume]);
+    if (!resumeId || !agentDraft.sourceMessageId) {
+      toast.error(messages.agentRequestFailed, { closeButton: true });
+      return;
+    }
 
-  const discardAgentDraft = useCallback(() => {
+    if (draftDecisionTokenRef.current) {
+      return;
+    }
+    const decisionToken = Symbol("agent-draft-decision");
+    draftDecisionTokenRef.current = decisionToken;
+
+    try {
+      const resolution = await resolveAgentDraftDecision(
+        resumeId,
+        agentDraft.sourceMessageId,
+        "applied",
+      );
+      if (
+        draftDecisionTokenRef.current !== decisionToken ||
+        agentDraftRef.current?.id !== agentDraft.id
+      ) {
+        return;
+      }
+
+      if (resolution.status === "pending") {
+        return;
+      }
+      let resolvedResume = agentDraft.resume;
+      if (resolution.status === "applied") {
+        const result = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
+        if (!result) {
+          return;
+        }
+        onApplyResume(result.resume);
+        resolvedResume = result.resume;
+      }
+      if (!resolution.status) {
+        agentDraftBaseRef.current = null;
+        setAgentDraft(null);
+        setLastAgentDraft(null);
+        return;
+      }
+
+      setLastAgentDraft({
+        ...agentDraft,
+        status: resolution.status,
+        updatedAt: new Date().toISOString(),
+        resume: resolvedResume,
+      });
+      agentDraftBaseRef.current = null;
+      setAgentDraft(null);
+      toast.success(
+        resolution.status === "applied"
+          ? messages.agentDraftApplied
+          : messages.agentDraftDiscarded,
+        { closeButton: true },
+      );
+    } catch (error) {
+      console.error("Failed to persist the Agent draft decision.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(messages.agentRequestFailed, { closeButton: true });
+      }
+    } finally {
+      if (draftDecisionTokenRef.current === decisionToken) {
+        draftDecisionTokenRef.current = null;
+      }
+    }
+  }, [
+    agentDraft,
+    mergeCommittedAgentDraft,
+    messages,
+    onApplyResume,
+    resumeId,
+  ]);
+
+  const discardAgentDraft = useCallback(async () => {
     if (!agentDraft || agentDraft.transactionState !== "committed") {
       return;
     }
 
-    setLastAgentDraft({
-      ...agentDraft,
-      status: "discarded",
-      updatedAt: new Date().toISOString(),
-    });
-    agentDraftBaseRef.current = null;
-    setAgentDraft(null);
-    toast.success(messages.agentDraftDiscarded, {
-      closeButton: true,
-    });
-  }, [agentDraft, messages]);
+    const draftBase = agentDraftBaseRef.current;
+    if (!draftBase || draftBase.draftId !== agentDraft.id) {
+      return;
+    }
+
+    if (!resumeId || !agentDraft.sourceMessageId) {
+      toast.error(messages.agentRequestFailed, { closeButton: true });
+      return;
+    }
+    if (draftDecisionTokenRef.current) {
+      return;
+    }
+    const decisionToken = Symbol("agent-draft-decision");
+    draftDecisionTokenRef.current = decisionToken;
+
+    try {
+      const resolution = await resolveAgentDraftDecision(
+        resumeId,
+        agentDraft.sourceMessageId,
+        "discarded",
+      );
+      if (
+        draftDecisionTokenRef.current !== decisionToken ||
+        agentDraftRef.current?.id !== agentDraft.id
+      ) {
+        return;
+      }
+
+      if (resolution.status === "pending") {
+        return;
+      }
+      if (!resolution.status) {
+        agentDraftBaseRef.current = null;
+        setAgentDraft(null);
+        setLastAgentDraft(null);
+        return;
+      }
+
+      let resolvedResume = agentDraft.resume;
+      if (resolution.status === "applied") {
+        const result = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
+        if (!result) {
+          return;
+        }
+        onApplyResume(result.resume);
+        resolvedResume = result.resume;
+      }
+
+      setLastAgentDraft({
+        ...agentDraft,
+        status: resolution.status,
+        updatedAt: new Date().toISOString(),
+        resume: resolvedResume,
+      });
+      agentDraftBaseRef.current = null;
+      setAgentDraft(null);
+      toast.success(
+        resolution.status === "applied"
+          ? messages.agentDraftApplied
+          : messages.agentDraftDiscarded,
+        { closeButton: true },
+      );
+    } catch (error) {
+      console.error("Failed to persist the Agent draft decision.", error);
+      if (!isApiErrorToastShown(error)) {
+        toast.error(messages.agentRequestFailed, { closeButton: true });
+      }
+    } finally {
+      if (draftDecisionTokenRef.current === decisionToken) {
+        draftDecisionTokenRef.current = null;
+      }
+    }
+  }, [
+    agentDraft,
+    mergeCommittedAgentDraft,
+    messages,
+    onApplyResume,
+    resumeId,
+  ]);
 
   return {
     agentDraft,
@@ -231,6 +406,7 @@ export function useResumeAgentDraft({
     applyAgentDraft,
     discardAgentDraft,
     previewAgentEdits,
+    reconcileAgentDraft,
     resetAgentDraft,
     rollbackAgentDraft,
   };

@@ -34,6 +34,7 @@ export function useAgentConversation({
   onBeforeSend,
   onJobBriefChange,
   onPreviewAgentEdits,
+  onReconcileAgentDraft,
   onRollbackAgentDraft,
   resume,
   resumeId,
@@ -47,6 +48,7 @@ export function useAgentConversation({
   onBeforeSend?: () => Promise<void>
   onJobBriefChange: CopilotPanelProps['onJobBriefChange']
   onPreviewAgentEdits: CopilotPanelProps['onPreviewAgentEdits']
+  onReconcileAgentDraft: CopilotPanelProps['onReconcileAgentDraft']
   onRollbackAgentDraft: CopilotPanelProps['onRollbackAgentDraft']
   resume: ResumeData
   resumeId?: string
@@ -57,6 +59,7 @@ export function useAgentConversation({
   const [streamingMessage, setStreamingMessage] =
     useState<AgentPanelMessage | null>(null)
   const [isResponding, setIsResponding] = useState(false)
+  const [isSessionReady, setSessionReady] = useState(false)
   const [sessionLoadError, setSessionLoadError] = useState(false)
   const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0)
   const updates = useMemo<AgentConversationUpdates>(
@@ -64,6 +67,7 @@ export function useAgentConversation({
       setIsResponding,
       setMessages,
       setSessionLoadError,
+      setSessionReady,
       setStreamingMessage,
     }),
     [],
@@ -71,6 +75,7 @@ export function useAgentConversation({
   const runtimeRef = useAgentConversationRuntime({
     isResponding,
     onPreviewAgentEdits,
+    onReconcileAgentDraft,
     onRollbackAgentDraft,
     resume,
     resumeId,
@@ -80,7 +85,7 @@ export function useAgentConversation({
   const refreshAgentSession = useCallback(
     async (expectedResumeId: string, replaceMessages = false) => {
       const runtime = runtimeRef.current
-      const { panelMessages, session } = await hydrateAgentSession(
+      const { draftSnapshot, panelMessages, session } = await hydrateAgentSession(
         loadAgentSession(expectedResumeId),
       )
       if (expectedResumeId !== runtime.currentResumeId) {
@@ -88,6 +93,7 @@ export function useAgentConversation({
       }
 
       runtime.sessionRevision = session.revision
+      runtime.onReconcileAgentDraft(draftSnapshot)
       if (replaceMessages) {
         runtime.optimisticMessageOwner = null
         setMessages(panelMessages)
@@ -139,6 +145,7 @@ export function useAgentConversation({
 
   return {
     isResponding,
+    isSessionReady,
     messages,
     retrySession,
     sendPrompt,

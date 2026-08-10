@@ -1,4 +1,4 @@
-name: Frontend quality
+name: Quality
 
 on:
   push:
@@ -8,6 +8,31 @@ permissions:
   contents: read
 
 jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          version: "0.11.14"
+          working-directory: backend
+      - name: Install locked backend dependencies
+        run: uv sync --locked --all-groups
+      - name: Lint backend
+        run: uv run --locked ruff check .
+      - name: Type-check backend
+        run: uv run --locked mypy app
+      - name: Test backend
+        run: uv run --locked pytest -q
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10

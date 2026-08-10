@@ -261,29 +261,6 @@ export interface ModelConfig {
   thinkingEnabled: boolean
 }
 
-export interface LegacyModelConfig {
-  provider?: string
-  providerLabel?: string
-  iconProvider?: string
-  nickname?: string
-  apiKey?: string
-  apiKeyPreview?: string
-  model?: string
-  apiUrl?: string
-  providerKind?: 'cloud' | 'local' | 'custom'
-  apiFamily?: ModelConfig['apiFamily']
-  temperature?: number
-  topP?: number
-  topK?: number
-  maxTokens?: number | null
-  contextWindowTokens?: number | null
-  supportsImage?: boolean
-  supportsThinking?: boolean
-  supportsTools?: boolean
-  supportsStreaming?: boolean
-  thinkingEnabled?: boolean
-}
-
 export interface AgentSettings {
   defaultModelId: string
   responseLanguage: AgentResponseLanguage

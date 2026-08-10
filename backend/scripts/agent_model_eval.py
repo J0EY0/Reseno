@@ -28,11 +28,23 @@ from app.schemas.agent import AgentChatRequest, AgentTransactionState
 from app.services.llm import AgentLlmConfig
 from app.services.llm.config import resolve_agent_llm_config
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 DEFAULT_FIXTURE = (
     Path(__file__).resolve().parents[1] / "tests" / "model_eval" / "scenarios.json"
 )
 MAX_ERROR_CHARS = 800
+AUTHORIZATION_CREDENTIAL_RE = re.compile(
+    r"\b(authorization)(\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^\s,;]+",
+    flags=re.IGNORECASE,
+)
+BEARER_CREDENTIAL_RE = re.compile(
+    r"\b(bearer)(?:\s*[:=]\s*|\s+)[^\s,;]+",
+    flags=re.IGNORECASE,
+)
+API_KEY_CREDENTIAL_RE = re.compile(
+    r"\b(api[_-]?key)(\s*[:=]\s*)[^\s,;]+",
+    flags=re.IGNORECASE,
+)
 
 
 class AttachmentFixture(BaseModel):
@@ -55,30 +67,54 @@ class CaseExpectation(BaseModel):
         default=None,
         alias="transactionState",
     )
+    runner_transaction_state: AgentTransactionState | None = Field(
+        default=None,
+        alias="runnerTransactionState",
+    )
+    finish_status: Literal["ready", "blocked"] | None = Field(
+        default=None,
+        alias="finishStatus",
+    )
     min_response_chars: int = Field(default=0, alias="minResponseChars", ge=0)
     min_tool_errors: int = Field(default=0, alias="minToolErrors", ge=0)
     require_no_rejected_edits: bool = Field(
         default=True,
         alias="requireNoRejectedEdits",
     )
-    required_strings: list[str] = Field(
+    required_edit_targets: list[str] = Field(
         default_factory=list,
-        alias="requiredStrings",
+        alias="requiredEditTargets",
     )
-    required_regex: list[str] = Field(
+    required_tool_sequence: list[str] = Field(
         default_factory=list,
-        alias="requiredRegex",
+        alias="requiredToolSequence",
     )
-    forbidden_strings: list[str] = Field(
+    required_response_regex: list[str] = Field(
         default_factory=list,
-        alias="forbiddenStrings",
+        alias="requiredResponseRegex",
     )
-    forbidden_regex: list[str] = Field(
+    required_edit_strings: list[str] = Field(
         default_factory=list,
-        alias="forbiddenRegex",
+        alias="requiredEditStrings",
+    )
+    required_edit_regex: list[str] = Field(
+        default_factory=list,
+        alias="requiredEditRegex",
+    )
+    forbidden_response_strings: list[str] = Field(
+        default_factory=list,
+        alias="forbiddenResponseStrings",
+    )
+    forbidden_edit_strings: list[str] = Field(
+        default_factory=list,
+        alias="forbiddenEditStrings",
+    )
+    forbidden_edit_regex: list[str] = Field(
+        default_factory=list,
+        alias="forbiddenEditRegex",
     )
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class ModelEvalCase(BaseModel):
@@ -106,6 +142,7 @@ class EvaluationObservation:
 
     response_text: str
     edit_payloads: tuple[str, ...]
+    edit_targets: tuple[str, ...]
     edit_count: int
     rejected_edit_count: int
     transaction_state: AgentTransactionState
@@ -113,10 +150,6 @@ class EvaluationObservation:
     tool_names: tuple[str, ...]
     tool_error_count: int
     finish_status: str
-
-    @property
-    def searchable_text(self) -> str:
-        return "\n".join((self.response_text, *self.edit_payloads))
 
 
 CaseExecutor = Callable[
@@ -172,9 +205,6 @@ async def execute_real_agent(
     edit_payloads = tuple(
         json.dumps(
             {
-                "title": edit.title,
-                "target": edit.target,
-                "reason": edit.reason,
                 "replacement": edit.replacement,
                 "operation": edit.operation,
             },
@@ -187,6 +217,12 @@ async def execute_real_agent(
     tool_error_count = sum(
         tool.state in {"output-error", "output-denied"} for tool in runner.tools
     )
+    tool_names = [tool.type.removeprefix("tool-") for tool in runner.tools]
+    # `finish` is a control boundary and is intentionally absent from the
+    # user-visible tool timeline. The evaluation sequence must still record it
+    # so a repaired transaction cannot pass without an explicit terminal call.
+    if runner.finished:
+        tool_names.append("finish")
     if runner.transaction_failed:
         public_transaction_state = "rolled_back"
     elif runner.edits and public_transaction_state == "none":
@@ -197,11 +233,12 @@ async def execute_real_agent(
     return EvaluationObservation(
         response_text="\n".join(response_parts).strip(),
         edit_payloads=edit_payloads,
+        edit_targets=tuple(edit.target for edit in runner.edits),
         edit_count=len(runner.edits),
         rejected_edit_count=rejected_edit_count,
         transaction_state=public_transaction_state,
         runner_transaction_state=runner.transaction_state,
-        tool_names=tuple(tool.type.removeprefix("tool-") for tool in runner.tools),
+        tool_names=tuple(tool_names),
         tool_error_count=tool_error_count,
         finish_status=runner.finish_status,
     )
@@ -215,9 +252,8 @@ def prepared_request(
     """Materialize current/history attachments and always remove them."""
 
     request_data = dict(case.request)
-    prompt = str(request_data.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError(f"Evaluation case {case.id!r} has an empty prompt.")
+    message_data = dict(request_data.get("message") or {})
+    message_text = str(message_data.get("text") or "")
 
     session_id = f"model-eval-{uuid4().hex}"
     stored_ids: list[str] = []
@@ -258,15 +294,26 @@ def prepared_request(
                 )
 
         request_data["resumeId"] = session_id if case.attachments else None
+        # The eval calls the tool loop directly rather than persisting a chat
+        # turn, but attachment ownership still gives the request a session id.
+        # Supply a synthetic revision so the production request invariant stays
+        # enforced instead of adding an eval-only exception to the schema.
+        request_data["expectedRevision"] = (
+            f"model-eval-{uuid4().hex}" if case.attachments else None
+        )
         request_data["modelConfig"] = {"id": config.client_id}
-        request_data["files"] = current_files
         request_data["messages"] = history_messages
-        request_data["message"] = {
-            "id": f"{case.id}-current",
-            "role": "user",
-            "text": prompt,
-            "files": current_files,
-        }
+        configured_files = message_data.get("files") or []
+        if not isinstance(configured_files, list):
+            raise ValueError(
+                f"Evaluation case {case.id!r} has invalid current files.",
+            )
+        message_data["files"] = [*configured_files, *current_files]
+        if not message_text.strip() and not message_data["files"]:
+            raise ValueError(
+                f"Evaluation case {case.id!r} has an empty current message.",
+            )
+        request_data["message"] = message_data
         yield AgentChatRequest.model_validate(request_data)
     finally:
         if delete_attachment is not None:
@@ -366,6 +413,27 @@ def evaluate_observation(
                 f"{observation.transaction_state}.",
             ),
         )
+    if (
+        expect.runner_transaction_state is not None
+        and observation.runner_transaction_state != expect.runner_transaction_state
+    ):
+        failures.append(
+            _failure(
+                "runner_transaction_state_mismatch",
+                f"Expected {expect.runner_transaction_state}; got "
+                f"{observation.runner_transaction_state}.",
+            ),
+        )
+    if (
+        expect.finish_status is not None
+        and observation.finish_status != expect.finish_status
+    ):
+        failures.append(
+            _failure(
+                "finish_status_mismatch",
+                f"Expected {expect.finish_status}; got {observation.finish_status}.",
+            ),
+        )
     if len(observation.response_text) < expect.min_response_chars:
         failures.append(
             _failure(
@@ -389,39 +457,76 @@ def evaluate_observation(
                 f"Observed {observation.rejected_edit_count} rejected edits.",
             ),
         )
+    observed_targets = set(observation.edit_targets)
+    for required_target in expect.required_edit_targets:
+        if required_target not in observed_targets:
+            failures.append(
+                _failure(
+                    "required_edit_target_missing",
+                    f"Missing required edit target: {required_target!r}.",
+                ),
+            )
+    if (
+        expect.required_tool_sequence
+        and tuple(expect.required_tool_sequence) != observation.tool_names
+    ):
+        failures.append(
+            _failure(
+                "tool_sequence_mismatch",
+                f"Expected tool sequence {expect.required_tool_sequence!r}; got "
+                f"{list(observation.tool_names)!r}.",
+            ),
+        )
 
-    searchable = observation.searchable_text
-    searchable_folded = searchable.casefold()
-    for required in expect.required_strings:
-        if required.casefold() not in searchable_folded:
+    for pattern in expect.required_response_regex:
+        if re.search(pattern, observation.response_text, flags=re.IGNORECASE) is None:
             failures.append(
                 _failure(
-                    "required_string_missing",
-                    f"Missing required string: {required!r}.",
+                    "required_response_pattern_missing",
+                    f"Missing required response pattern: {pattern!r}.",
                 ),
             )
-    for pattern in expect.required_regex:
-        if re.search(pattern, searchable, flags=re.IGNORECASE) is None:
+    response_text_folded = observation.response_text.casefold()
+    for forbidden in expect.forbidden_response_strings:
+        if forbidden.casefold() in response_text_folded:
             failures.append(
                 _failure(
-                    "required_pattern_missing",
-                    f"Missing required pattern: {pattern!r}.",
+                    "forbidden_response_string_present",
+                    f"Observed forbidden response string: {forbidden!r}.",
                 ),
             )
-    for forbidden in expect.forbidden_strings:
-        if forbidden.casefold() in searchable_folded:
+    edit_text = "\n".join(observation.edit_payloads)
+    edit_text_folded = edit_text.casefold()
+    for required in expect.required_edit_strings:
+        if required.casefold() not in edit_text_folded:
             failures.append(
                 _failure(
-                    "forbidden_string_present",
-                    f"Observed forbidden string: {forbidden!r}.",
+                    "required_edit_string_missing",
+                    f"Missing required edit string: {required!r}.",
                 ),
             )
-    for pattern in expect.forbidden_regex:
-        if re.search(pattern, searchable, flags=re.IGNORECASE) is not None:
+    for pattern in expect.required_edit_regex:
+        if re.search(pattern, edit_text, flags=re.IGNORECASE) is None:
             failures.append(
                 _failure(
-                    "forbidden_pattern_present",
-                    f"Observed forbidden pattern: {pattern!r}.",
+                    "required_edit_pattern_missing",
+                    f"Missing required edit pattern: {pattern!r}.",
+                ),
+            )
+    for forbidden in expect.forbidden_edit_strings:
+        if forbidden.casefold() in edit_text_folded:
+            failures.append(
+                _failure(
+                    "forbidden_edit_string_present",
+                    f"Observed forbidden edit string: {forbidden!r}.",
+                ),
+            )
+    for pattern in expect.forbidden_edit_regex:
+        if re.search(pattern, edit_text, flags=re.IGNORECASE) is not None:
+            failures.append(
+                _failure(
+                    "forbidden_edit_pattern_present",
+                    f"Observed forbidden edit pattern: {pattern!r}.",
                 ),
             )
     return failures
@@ -448,8 +553,17 @@ def redact_error(error: Exception, api_key: str) -> str:
     text = str(error).strip() or error.__class__.__name__
     if api_key:
         text = text.replace(api_key, "[REDACTED]")
-    text = re.sub(
-        r"(?i)(api[_-]?key|authorization|bearer)(\s*[:=]\s*)\S+",
+    # Authorization must be handled as a whole before the standalone Bearer
+    # form; otherwise only the scheme is removed and its token remains.
+    text = AUTHORIZATION_CREDENTIAL_RE.sub(
+        r"\1\2[REDACTED]",
+        text,
+    )
+    text = BEARER_CREDENTIAL_RE.sub(
+        r"\1 [REDACTED]",
+        text,
+    )
+    text = API_KEY_CREDENTIAL_RE.sub(
         r"\1\2[REDACTED]",
         text,
     )

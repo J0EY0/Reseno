@@ -11,11 +11,85 @@ const copilotRoot = join(
   "copilot",
 );
 const runtimePath = join(copilotRoot, "agent-conversation-runtime.ts");
-const [runtimeSource, conversationSource, sendControllerSource] =
+const sendControllerPath = join(copilotRoot, "use-agent-send-controller.ts");
+const promptFormPath = join(
+  frontendRoot,
+  "src",
+  "components",
+  "ai-elements",
+  "use-prompt-input-form.ts",
+);
+const [
+  runtimeSource,
+  conversationSource,
+  sendControllerSource,
+  runStreamSource,
+  promptFormSource,
+  promptActionsSource,
+  hydrationSource,
+  conversationViewSource,
+  composerSource,
+  panelSource,
+  panelTypesSource,
+  agentHostSource,
+  agentLayoutSource,
+  workspaceViewSource,
+  workspaceHeaderSource,
+  appStylesSource,
+] =
   await Promise.all([
     readFile(runtimePath, "utf8"),
     readFile(join(copilotRoot, "use-agent-conversation.ts"), "utf8"),
-    readFile(join(copilotRoot, "use-agent-send-controller.ts"), "utf8"),
+    readFile(sendControllerPath, "utf8"),
+    readFile(join(copilotRoot, "use-agent-run-stream.ts"), "utf8"),
+    readFile(promptFormPath, "utf8"),
+    readFile(join(copilotRoot, "use-agent-prompt-actions.ts"), "utf8"),
+    readFile(join(copilotRoot, "use-agent-session-hydration.ts"), "utf8"),
+    readFile(join(copilotRoot, "copilot-conversation-view.tsx"), "utf8"),
+    readFile(join(copilotRoot, "copilot-composer.tsx"), "utf8"),
+    readFile(join(copilotRoot, "copilot-panel.tsx"), "utf8"),
+    readFile(join(copilotRoot, "copilot-panel-types.ts"), "utf8"),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "resume-detail-agent-host.tsx",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "use-resume-detail-agent-layout.ts",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "resume-detail-workspace-view.tsx",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "resume-detail-workspace-header.tsx",
+      ),
+      "utf8",
+    ),
+    readFile(join(frontendRoot, "src", "index.css"), "utf8"),
   ]);
 const sourceFile = ts.createSourceFile(
   runtimePath,
@@ -24,6 +98,20 @@ const sourceFile = ts.createSourceFile(
   true,
   ts.ScriptKind.TSX,
 );
+const promptFormSourceFile = ts.createSourceFile(
+  promptFormPath,
+  promptFormSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+const sendControllerSourceFile = ts.createSourceFile(
+  sendControllerPath,
+  sendControllerSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
 
 function assert(condition, message) {
   if (!condition) {
@@ -31,7 +119,7 @@ function assert(condition, message) {
   }
 }
 
-function findFunctionDeclaration(name) {
+function findFunctionDeclaration(source, name) {
   let match;
 
   function visit(node) {
@@ -45,8 +133,29 @@ function findFunctionDeclaration(name) {
     ts.forEachChild(node, visit);
   }
 
-  visit(sourceFile);
+  visit(source);
   return match;
+}
+
+function compileFunctions(source, declarations, names) {
+  for (const declaration of declarations) {
+    assert(declaration, `Missing behavior function: ${names.join(", ")}`);
+  }
+  const compiled = ts.transpileModule(
+    `${declarations.map((declaration) => declaration.getText(source)).join("\n")}\nmodule.exports = { ${names.join(", ")} };`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const behaviorModule = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: behaviorModule.exports,
+    module: behaviorModule,
+  });
+  return behaviorModule.exports;
 }
 
 function extractBetween(source, start, end) {
@@ -57,7 +166,10 @@ function extractBetween(source, start, end) {
   return source.slice(startIndex, endIndex);
 }
 
-const ownershipDeclaration = findFunctionDeclaration("isPendingSendOwner");
+const ownershipDeclaration = findFunctionDeclaration(
+  sourceFile,
+  "isPendingSendOwner",
+);
 assert(
   ownershipDeclaration,
   "The Agent panel must define a single ownership check for provisional messages.",
@@ -79,6 +191,94 @@ vm.runInNewContext(compiledOwnership, {
   module: ownershipModule,
 });
 const { isPendingSendOwner } = ownershipModule.exports;
+
+const promptBehaviorNames = [
+  "selectActivePromptSubmissionFiles",
+  "shouldClearPromptSubmissionText",
+];
+const promptBehavior = compileFunctions(
+  promptFormSourceFile,
+  promptBehaviorNames.map((name) =>
+    findFunctionDeclaration(promptFormSourceFile, name),
+  ),
+  promptBehaviorNames,
+);
+const preflightBehaviorNames = [
+  "waitForAgentSendPreflight",
+  "ownsAgentSendPreflight",
+];
+const preflightBehavior = compileFunctions(
+  sendControllerSourceFile,
+  preflightBehaviorNames.map((name) =>
+    findFunctionDeclaration(sendControllerSourceFile, name),
+  ),
+  preflightBehaviorNames,
+);
+
+let finishPreferenceFlush;
+const preferenceFlush = new Promise((resolve) => {
+  finishPreferenceFlush = resolve;
+});
+const cancelledPreflight = new AbortController();
+let activePreflight = cancelledPreflight;
+const preflightResult = preflightBehavior.waitForAgentSendPreflight(
+  preferenceFlush,
+  cancelledPreflight.signal,
+);
+cancelledPreflight.abort();
+activePreflight = null;
+const canPostAfterStop =
+  (await preflightResult) &&
+  preflightBehavior.ownsAgentSendPreflight(
+    activePreflight,
+    cancelledPreflight,
+  );
+let postCount = 0;
+if (canPostAfterStop) {
+  postCount += 1;
+}
+finishPreferenceFlush();
+await preferenceFlush;
+assert(
+  !canPostAfterStop && postCount === 0,
+  "Stopping during preference flush must settle preflight as cancelled and prevent the POST.",
+);
+
+const completedPreflight = new AbortController();
+assert(
+  (await preflightBehavior.waitForAgentSendPreflight(
+    Promise.resolve(),
+    completedPreflight.signal,
+  )) &&
+    preflightBehavior.ownsAgentSendPreflight(
+      completedPreflight,
+      completedPreflight,
+    ),
+  "A completed preference flush may proceed only while it still owns preflight.",
+);
+const capturedFiles = [
+  { id: "removed", filename: "removed.pdf" },
+  { id: "captured", filename: "captured.pdf" },
+];
+const currentFiles = [
+  { id: "captured", filename: "captured.pdf" },
+  { id: "new", filename: "new.pdf" },
+];
+assert(
+  promptBehavior
+    .selectActivePromptSubmissionFiles(capturedFiles, currentFiles)
+    .map((file) => file.id)
+    .join(",") === "captured",
+  "Submission must exclude a removed file and must not absorb a newly added file.",
+);
+assert(
+  promptBehavior.shouldClearPromptSubmissionText("captured", "captured"),
+  "An accepted submission may clear the exact text snapshot it sent.",
+);
+assert(
+  !promptBehavior.shouldClearPromptSubmissionText("captured", "new text"),
+  "An accepted submission must preserve text typed after the snapshot.",
+);
 
 assert(
   isPendingSendOwner("user-1", "user-1", "resume-1", "resume-1"),
@@ -123,8 +323,9 @@ const stopSource = extractBetween(
   "const sendPrompt:",
 );
 assert(
-  stopSource.includes("cancelScheduledSend(true)"),
-  "Stopping during debounce must remove the provisional user message.",
+  stopSource.includes("cancelAgentSendPreflight()") &&
+    stopSource.includes("cancelScheduledSend(true)"),
+  "Stopping must cancel preference preflight before handling a debounced send.",
 );
 
 const sendSource = extractBetween(
@@ -139,6 +340,177 @@ assert(
 assert(
   sendSource.includes("isPendingSendOwner("),
   "A failed send must verify ownership before restoring old messages.",
+);
+assert(
+  sendControllerSource.includes("accepted: acceptedPromise"),
+  "The send interface must expose server acceptance separately from completion.",
+);
+assert(
+  /preflightAbortRef\.current\s*=\s*preflightAbortController[\s\S]{0,500}await waitForAgentSendPreflight\([\s\S]{0,500}ownsAgentSendPreflight\(/.test(
+    sendSource,
+  ) &&
+    /await runtime\.sessionReadyPromise\s*\n\s*if \(\s*!ownsAgentSendPreflight\(/.test(
+      sendSource,
+    ) &&
+    /await refreshAgentSession\(resumeId, true\)[\s\S]{0,240}!ownsAgentSendPreflight\(/.test(
+      sendSource,
+    ) &&
+    /return \(\) => \{[\s\S]*cancelAgentSendPreflight\(\)[\s\S]*runtime\.activeRequestAbort\?\.abort\(\)/.test(
+      sendControllerSource,
+    ),
+  "Preference preflight ownership must be registered before awaits and rechecked until debounce owns cancellation.",
+);
+assert(
+  sendControllerSource.includes("throwOnFailure: true") &&
+    runStreamSource.includes("if (throwOnFailure)") &&
+    runStreamSource.includes("throw error"),
+  "Chat-start errors must reach the send controller so 409 reconciliation is behavioral.",
+);
+assert(
+  sendControllerSource.includes("if (resumeId && !expectedRevision)"),
+  "Every resume-scoped Agent request must load a revision before sending.",
+);
+assert(
+  !sendControllerSource.includes("runtime.sessionRevision ?? undefined"),
+  "A resume-scoped Agent request must never fall back to an undefined revision.",
+);
+assert(
+  promptActionsSource.includes("await sendOperation.accepted"),
+  "The composer must remain populated until the server accepts the run.",
+);
+assert(
+  promptFormSource.includes("selectActivePromptSubmissionFiles("),
+  "Prompt submission must reconcile its captured files with current attachments.",
+);
+assert(
+  promptFormSource.includes("shouldClearPromptSubmissionText("),
+  "Prompt submission must clear only the text snapshot that was accepted.",
+);
+assert(
+  /const mountedRef = useRef\(false\)/.test(promptFormSource) &&
+    /useEffect\(\(\) => \{\s*mountedRef\.current = true;\s*return \(\) => \{\s*mountedRef\.current = false;\s*\};\s*\}, \[\]\)/.test(
+      promptFormSource,
+    ) &&
+    /const convertedFiles = await Promise\.all\([\s\S]*?if \(!mountedRef\.current\) \{\s*return;\s*\}[\s\S]*?const result = onSubmit\(/.test(
+      promptFormSource,
+    ) &&
+    /if \(result instanceof Promise\) \{\s*await result;\s*\}\s*for \(const \{ id \} of activeFiles\)/.test(
+      promptFormSource,
+    ) &&
+    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(
+      promptFormSource,
+    ),
+  "Unmounting must block a stale submit before request start but preserve captured cleanup after server acceptance.",
+);
+assert(
+  hydrationSource.includes("setSessionReady(false)"),
+  "Agent bootstrap must close the send gate before loading session state.",
+);
+assert(
+  hydrationSource.includes("runtime.sessionReady = true"),
+  "Agent bootstrap must open the send gate only after all bootstrap reads succeed.",
+);
+assert(
+  /catch \(error\) \{\s*if \(!isAbortError\(error\)\) \{[\s\S]{0,500}if \(runtime\.currentResumeId === expectedResumeId\) \{[\s\S]{0,300}runtime\.sessionRevision = null[\s\S]{0,180}runtime\.sessionReady = false[\s\S]{0,180}updates\.setSessionReady\(false\)[\s\S]{0,180}updates\.setSessionLoadError\(true\)/.test(
+    runStreamSource,
+  ),
+  "A terminal refresh failure must invalidate only the still-current resume session and expose its load error.",
+);
+assert(
+  conversationViewSource.includes("AgentSessionLoadError"),
+  "Bootstrap failures must remain visible even when history is non-empty.",
+);
+assert(
+  composerSource.includes("isSessionReady"),
+  "Composer controls must be disabled while Agent bootstrap is not ready.",
+);
+assert(
+  /<PromptInputTextarea[\s\S]{0,700}aria-label=\{t\.agentPromptPlaceholderShort\}/.test(
+    composerSource,
+  ),
+  "The Agent composer textarea must keep a localized accessible name even when its placeholder is empty.",
+);
+assert(
+  panelSource.includes("inert={!shouldDockAgent}"),
+  "A retained hidden dock must be inert.",
+);
+assert(
+  panelSource.includes("const globalDropActive = shouldDockAgent"),
+  "A retained hidden dock must not register a global file-drop target.",
+);
+assert(
+  agentHostSource.includes("hasMountedAgent"),
+  "The Agent controller must remain mounted after its first inline presentation.",
+);
+assert(
+  !agentHostSource.includes("-${mode}"),
+  "Collapsing the inline panel must not key-remount the Agent controller.",
+);
+assert(
+  !workspaceHeaderSource.includes("messages.agentExpandPanel"),
+  "Compact layouts must not move the Agent trigger into the workspace header.",
+);
+assert(
+  agentHostSource.includes("commands.agent.setPanelCollapsed(") &&
+    !agentHostSource.includes('"hidden 2xl:flex"') &&
+    agentHostSource.includes("aria-expanded={") &&
+    !agentHostSource.includes("aria-haspopup") &&
+    agentHostSource.includes("onFocus={() => void loadCopilotPanelModule()}") &&
+    agentHostSource.includes(
+      "onPointerEnter={() => void loadCopilotPanelModule()}",
+    ),
+  "Every desktop width must toggle the same accessible inline Agent rail.",
+);
+assert(
+  !panelSource.includes("Sheet") &&
+    !panelSource.includes("isSheetOpen") &&
+    !panelTypesSource.includes("isSheetOpen") &&
+    !agentHostSource.includes("setSheetOpen") &&
+    !agentLayoutSource.includes("isSheetOpen") &&
+    !appStylesSource.includes("agent-seam-rail--sheet"),
+  "Agent presentation must not retain a Sheet or overlay state branch.",
+);
+assert(
+  agentLayoutSource.includes(
+    'const AGENT_AUTO_EXPAND_MEDIA_QUERY = "(min-width: 1536px)"',
+  ) &&
+    /useState\(\s*\(\)\s*=>\s*!window\.matchMedia\(AGENT_AUTO_EXPAND_MEDIA_QUERY\)\.matches,?\s*\)/.test(
+      agentLayoutSource,
+    ) &&
+    !agentLayoutSource.includes("isDockLayout") &&
+    !agentLayoutSource.includes("useEffect"),
+  "Widths below 1536px must start collapsed without later overriding the user's choice.",
+);
+assert(
+  workspaceViewSource.includes(
+    "const shouldDockAgent = !state.agent.isPanelCollapsed",
+  ) &&
+    /@media \(min-width: 1280px\) \{[\s\S]{0,2400}\.resume-workspace\s*\{[\s\S]{0,400}grid-template-columns:\s*var\(\s*--resume-workspace-columns/.test(
+      appStylesSource,
+    ),
+  "The four-track inline Agent grid must be active throughout desktop layouts.",
+);
+assert(
+  appStylesSource.includes(
+    "grid-template-columns: minmax(0, 1fr) 18px;",
+  ) &&
+    appStylesSource.includes(
+      ".resume-workspace > .agent-seam-rail {\n    grid-column: 2;\n    grid-row: 1;",
+    ) &&
+    appStylesSource.includes(
+      ".resume-workspace > .agent-panel-dock {\n    grid-column: 1 / -1;\n    grid-row: 2;",
+    ) &&
+    appStylesSource.includes(
+      ".resume-workspace > .resume-preview-card {\n    grid-column: 1 / -1;\n    grid-row: 2;",
+    ) &&
+    appStylesSource.includes(
+      '.resume-workspace[data-agent-expanded="true"] > .resume-preview-card {\n    grid-row: 3;',
+    ),
+  "Sub-1280 layouts must keep the inline rail in the first viewport and place the expanded Agent before the preview.",
+);
+assert(
+  !panelSource.includes("data-mode="),
+  "A single Agent presentation must not retain a mode discriminator.",
 );
 
 let owner = "user-1";

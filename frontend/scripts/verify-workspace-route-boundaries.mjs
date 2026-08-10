@@ -28,8 +28,12 @@ const [
   trashRouteSource,
   shellSource,
   preferencesRouteSource,
+  lateralRouteDataSource,
   persistenceSource,
+  preparedNavigationSource,
+  workspaceRoutePreparationSource,
   workspaceRouteSource,
+  workspaceRouteMemorySource,
 ] = await Promise.all([
   readText("src/App.tsx"),
   readText("src/components/workspace/resume-gallery-workspace-page.tsx"),
@@ -52,8 +56,14 @@ const [
   readText("src/components/workspace/use-trash-workspace.ts"),
   readText("src/components/workspace/workspace-shell.tsx"),
   readText("src/components/workspace/use-workspace-preferences-route.ts"),
+  readText("src/components/workspace/use-workspace-lateral-route-data.ts"),
   readText("src/lib/workspace-preferences-persistence.ts"),
+  readText(
+    "src/components/workspace/use-prepared-workspace-navigation.ts",
+  ),
+  readText("src/components/workspace/workspace-route-preparation.ts"),
   readText("src/lib/workspace-route.ts"),
+  readText("src/lib/workspace-route-memory.ts"),
 ]);
 const resumeDetailCommandsSource = await readText(
   "src/components/workspace/use-resume-detail-commands.ts",
@@ -98,29 +108,100 @@ assert.doesNotMatch(
   "Independent workspace pages must not statically depend on the retired ResumeBuilder.",
 );
 assert.match(
-  resumeDetailRouteSource,
-  /import\("@\/components\/workspace\/resume-gallery-workspace-page"\)/,
-  "Resume detail navigation must preload the independent resume gallery route entry.",
+  workspaceRoutePreparationSource,
+  /case "resume":\s*return import\(\s*"@\/components\/workspace\/resume-gallery-workspace-page"\s*\)/,
+  "Prepared workspace navigation must preload the independent resume gallery route entry.",
 );
 assert.match(
-  resumeDetailRouteSource,
-  /view === "models"[\s\S]{0,120}import\("@\/components\/workspace\/models-workspace-page"\)/,
-  "Resume detail navigation must preload the models route entry.",
+  workspaceRoutePreparationSource,
+  /case "models":\s*return import\(\s*"@\/components\/workspace\/models-workspace-page"\s*\)/,
+  "Prepared workspace navigation must preload the models route entry.",
 );
 assert.match(
-  resumeDetailRouteSource,
-  /import\("@\/components\/workspace\/settings-workspace-page"\)/,
-  "Resume detail navigation must preload the settings route entry.",
+  workspaceRoutePreparationSource,
+  /case "settings":\s*return import\(\s*"@\/components\/workspace\/settings-workspace-page"\s*\)/,
+  "Prepared workspace navigation must preload the settings route entry.",
 );
 assert.match(
-  resumeDetailRouteSource,
-  /import\("@\/components\/workspace\/template-gallery-workspace-page"\)/,
-  "Resume detail navigation must preload the template gallery route entry.",
+  workspaceRoutePreparationSource,
+  /case "templates":\s*return import\(\s*"@\/components\/workspace\/template-gallery-workspace-page"\s*\)/,
+  "Prepared workspace navigation must preload the template gallery route entry.",
 );
 assert.match(
-  resumeDetailRouteSource,
-  /import\("@\/components\/workspace\/trash-workspace-page"\)/,
-  "Resume detail navigation must preload the trash route entry.",
+  workspaceRoutePreparationSource,
+  /case "trash":\s*return import\(\s*"@\/components\/workspace\/trash-workspace-page"\s*\)/,
+  "Prepared workspace navigation must preload the trash route entry.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
+  /Promise\.all\(\[\s*loadWorkspaceRouteModule\(view\),\s*loadWorkspaceRouteData\(view, persistence\),\s*\]\)/,
+  "Workspace preparation must load the route module and flushed route data in parallel.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
+  /await persistence\.flush\(\)[\s\S]{0,1800}fetchWorkspaceRouteData\("settings",\s*\{\s*notifyOnError:\s*false,?\s*\}\)/,
+  "Prepared route reads must wait for queued preference writes and suppress duplicate error Toasts.",
+);
+assert.doesNotMatch(
+  workspaceRoutePreparationSource,
+  /fetchWorkspaceRouteData\([\s\S]{0,100}signal\s*:/,
+  "Prepared GETs must stay uncancelled so requestApi can share its three-second cache.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
+  /Promise<PreparedWorkspaceRoute>[\s\S]*return \{ data: source\.data, view \}/,
+  "Preparation must return typed data without allocating a history token.",
+);
+assert.doesNotMatch(
+  workspaceRoutePreparationSource,
+  /createWorkspaceLateralRouteHandoff/,
+  "Hover preparation must not retain route data in the token registry.",
+);
+assert.match(
+  workspaceRouteMemorySource,
+  /WorkspaceLateralRouteHandoffState[\s\S]{0,300}token:\s*string[\s\S]*routeDataByToken = new Map[\s\S]*latestRouteDataByView = new Map[\s\S]*rememberWorkspaceLateralRoute[\s\S]*Object\.prototype\.hasOwnProperty\.call\(candidate, "data"\)/,
+  "Lateral history must contain only a token while validated one-time and per-view data stay in bounded memory.",
+);
+const lateralHistoryStateSource = workspaceRouteMemorySource.slice(
+  workspaceRouteMemorySource.indexOf(
+    "export type WorkspaceLateralRouteHandoffState",
+  ),
+  workspaceRouteMemorySource.indexOf(
+    "export interface WorkspaceLateralRouteResolution",
+  ),
+);
+assert.doesNotMatch(
+  lateralHistoryStateSource,
+  /data\s*:/,
+  "The browser-cloned lateral state must never contain route payload data.",
+);
+assert.match(
+  lateralRouteDataSource,
+  /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceLateralRouteHandoff\(resolution\.tokenToDelete\)[\s\S]{0,300}replace:\s*true, state:\s*null[\s\S]*return resolution\.data/,
+  "The consumer must freeze its first frame from handoff or latest view memory and scrub one-time or dead tokens before paint.",
+);
+assert.match(
+  lateralRouteDataSource,
+  /useRememberWorkspaceLateralRouteData[\s\S]{0,500}useLayoutEffect[\s\S]{0,300}rememberWorkspaceLateralRoute/,
+  "Only committed usable route data may refresh the bounded per-view memory.",
+);
+for (const pageSource of [
+  resumeGalleryPageSource,
+  templateGalleryPageSource,
+  trashPageSource,
+  modelsPageSource,
+  settingsPageSource,
+]) {
+  assert.match(
+    pageSource,
+    /useRememberWorkspaceLateralRouteData\([\s\S]{0,160}\.hasLoaded\s*\?\s*[^:]+\.routeData\s*:\s*null/,
+    "Every lateral route page must publish only loaded controller state.",
+  );
+}
+assert.match(
+  appSource,
+  /authGate\.phase !== "app"[\s\S]{0,100}clearWorkspaceLateralRouteMemory\(\)/,
+  "Leaving the authenticated app must clear all per-view snapshots and one-time handoffs.",
 );
 try {
   await access(new URL("src/components/resume-builder.tsx", frontendRoot));
@@ -140,28 +221,92 @@ assert.doesNotMatch(
 );
 assert.match(
   shellSource,
-  /import\("@\/components\/workspace\/resume-gallery-workspace-page"\)/,
-  "The shared shell must warm the resume gallery through its literal route entry.",
+  /prepareWorkspaceRoute\(view, persistence\)\.catch\(\(\) => undefined\)/,
+  "Sidebar hover and focus preparation must never create an unhandled rejection.",
 );
 assert.match(
   shellSource,
-  /import\("@\/components\/workspace\/template-gallery-workspace-page"\)/,
-  "The shared shell must warm the template gallery through its literal route entry.",
+  /await prepareWorkspaceRoute\(view, persistence\)[\s\S]{0,300}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,160}navigate\(path, \{ state \}\)[\s\S]{0,160}catch[\s\S]{0,180}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,180}navigate\(path\)/,
+  "Sidebar clicks must await preparation and fall back to ordinary target-owned loading without stale state.",
 );
 assert.match(
   shellSource,
-  /import\("@\/components\/workspace\/trash-workspace-page"\)/,
-  "The shared shell must warm trash through its literal route entry.",
+  /navigationIntentRef[\s\S]{0,500}view === activeView[\s\S]{0,500}navigationIntentRef\.current !== intentId/,
+  "Only the latest non-active sidebar intent may commit an asynchronous navigation.",
 );
+assert.match(
+  preparedNavigationSource,
+  /prepareWorkspaceRoute\(view, persistence\)\.catch\(\(\) => undefined\)/,
+  "Detail hover and focus preparation must never create an unhandled rejection.",
+);
+assert.match(
+  preparedNavigationSource,
+  /requestLeave\(\(\) => \{\s*void prepareWorkspaceRoute\(view, persistence\)\.then\(\s*finishPreparation,\s*\(\) => finishPreparation\(null\)/,
+  "Detail preparation failures must hand ordinary target-owned loading to the destination.",
+);
+assert.equal(
+  (preparedNavigationSource.match(/requestLeave\(\(\) =>/g) ?? []).length,
+  2,
+  "Detail routes must guard immediately and again after preparation.",
+);
+assert.match(
+  preparedNavigationSource,
+  /finishPreparation[\s\S]{0,300}requestLeave\(\(\) =>[\s\S]{0,500}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,220}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,120}navigate\(path\)/,
+  "A detail route may allocate its token only inside the final guarded commit and must clean up before fallback.",
+);
+assert.match(
+  preparedNavigationSource,
+  /cancelPending[\s\S]{0,240}useEffect\([\s\S]{0,160}cancelPending\(\)[\s\S]*navigationIntentRef\.current !== intentId/,
+  "Superseded and unmounted detail navigation intents must not commit late.",
+);
+for (const detailRouteSource of [
+  resumeDetailRouteSource,
+  templateDetailRouteSource,
+]) {
+  assert.match(
+    detailRouteSource,
+    /usePreparedWorkspaceNavigation\(\{ persistence, requestLeave \}\)/,
+    "Both editable detail routes must share the guarded prepared-navigation owner.",
+  );
+}
+for (const [routeSource, expectedMutationCommands] of [
+  [resumeGalleryRouteSource, 4],
+  [templateGalleryRouteSource, 5],
+  [trashRouteSource, 5],
+  [preferencesRouteSource, 4],
+]) {
+  assert.match(
+    routeSource,
+    /hasLoaded, setHasLoaded\] = useState\(Boolean\(preparedRouteData\)\)[\s\S]{0,180}isLoading, setIsLoading\] = useState\(!preparedRouteData\)/,
+    "A prepared route must keep its first-frame content interactive during background calibration.",
+  );
+  assert.match(
+    routeSource,
+    /isPreparedCalibration\s*\? \{ notifyOnError: false \}\s*:\s*\{ notifyOnError: false, signal \}/,
+    "Prepared calibration must reuse the uncancelled shared GET while direct loads remain abortable.",
+  );
+  assert.equal(
+    (routeSource.match(
+      /isPreparedCalibration &&\s*routeMutationEpochRef\.current !== mutationEpoch\s*\) \{\s*continue;/g,
+    ) ?? []).length,
+    3,
+    "Prepared calibration must retry pre-GET, post-GET, and failed results after local mutation ownership changes.",
+  );
+  assert.match(
+    routeSource,
+    /if \(!isPreparedCalibration\) \{\s*setHasLoaded\(false\);\s*setHasLoadError\(true\);\s*\}/,
+    "A failed background calibration must retain valid handoff content while direct loads keep retry UI.",
+  );
+  assert.equal(
+    (routeSource.match(/markRouteMutation\(\);/g) ?? []).length,
+    expectedMutationCommands,
+    "Every current route-local mutation command must advance calibration ownership.",
+  );
+}
 assert.match(
   preferencesRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\(kind/,
+  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*kind/,
   "A route must wait for queued settings writes before reading server state.",
-);
-assert.match(
-  preferencesRouteSource,
-  /fetchWorkspaceRouteData\(kind,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal/,
-  "Preference route loaders must own one canonical failure Toast.",
 );
 assert.match(
   preferencesRouteSource,
@@ -185,7 +330,7 @@ assert.match(
 );
 assert.match(
   templateGalleryRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("template-gallery"/,
+  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"template-gallery"/,
   "The template gallery must flush queued preferences before reading route data.",
 );
 assert.match(
@@ -235,7 +380,7 @@ assert.match(
 );
 assert.match(
   resumeGalleryRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("resume-gallery"/,
+  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"resume-gallery"/,
   "The resume gallery must flush queued preferences before reading route data.",
 );
 assert.ok(
@@ -376,7 +521,7 @@ assert.match(
 );
 assert.match(
   trashRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("trash"/,
+  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"trash"/,
   "Trash must flush queued preferences before reading route data.",
 );
 assert.match(

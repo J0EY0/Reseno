@@ -1,6 +1,7 @@
 import { TemplateGallery } from "@/components/templates/template-gallery";
 import { GalleryRouteSkeleton } from "@/components/workspace-skeletons";
 import { useTemplateGalleryWorkspace } from "@/components/workspace/use-template-gallery-workspace";
+import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 import type { AppMessages, Locale } from "@/i18n";
@@ -25,6 +26,10 @@ export function TemplateGalleryWorkspacePage({
     onLocaleChange,
     persistence,
   });
+  useRememberWorkspaceLateralRouteData(
+    "templates",
+    gallery.hasLoaded ? gallery.routeData : null,
+  );
 
   return (
     <WorkspaceShell
@@ -33,6 +38,7 @@ export function TemplateGalleryWorkspacePage({
       messages={messages}
       theme={gallery.theme}
       resolvedTheme={gallery.resolvedTheme}
+      persistence={persistence}
       onLocaleChange={onLocaleChange}
       onThemeChange={gallery.changeTheme}
       onLogout={onLogout}
@@ -47,7 +53,7 @@ export function TemplateGalleryWorkspacePage({
           itemCount={Math.max(1, gallery.templateCatalog.length)}
         />
       ) : (
-        <main className="flex-1 p-4">
+        <div className="flex-1 p-4">
           <TemplateGallery
             t={messages}
             previewResume={gallery.previewResume}
@@ -64,7 +70,7 @@ export function TemplateGalleryWorkspacePage({
             onImportTemplates={(file) => void gallery.importTemplates(file)}
             onDeleteTemplates={(ids) => void gallery.deleteTemplates(ids)}
           />
-        </main>
+        </div>
       )}
     </WorkspaceShell>
   );

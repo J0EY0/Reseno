@@ -48,7 +48,9 @@ def async_openai_client(config: Any) -> AsyncOpenAI:
 async def close_async_stream(stream: object) -> None:
     """Close provider streams regardless of sync or async close semantics."""
 
-    close = getattr(stream, "close", None)
+    close = getattr(stream, "aclose", None)
+    if not callable(close):
+        close = getattr(stream, "close", None)
     if not callable(close):
         return
 
@@ -57,14 +59,62 @@ async def close_async_stream(stream: object) -> None:
         await result
 
 
-def provider_error_excerpt(error: APIStatusError) -> str:
-    """Build a bounded provider error message without headers or secrets."""
+async def close_async_client(client: object) -> None:
+    """Deterministically release one request-scoped provider SDK client.
 
-    response_text = error.response.text.strip()
-    if not response_text:
-        return f"Model provider returned HTTP {error.status_code}."
+    SDK implementations expose either synchronous or asynchronous ``close``;
+    both must finish before the request returns so transports are not leaked.
+    """
 
-    return f"Model provider returned HTTP {error.status_code}: {response_text[:240]}"
+    await close_async_stream(client)
+
+
+def provider_status_error_message(error: APIStatusError) -> str:
+    """Return an SDK HTTP failure without provider-controlled response text."""
+
+    return _provider_http_error_message(
+        error.status_code,
+        error.response.text,
+    )
+
+
+def _provider_http_error_message(status_code: int, response_text: str) -> str:
+    """Reduce a raw HTTP failure to a small public classification."""
+
+    if status_code in {400, 415} and _is_unsupported_attachment_response(
+        response_text,
+    ):
+        # Preserve the local text-extraction fallback signal without retaining
+        # or returning any provider-controlled response content.
+        return f"Model provider returned HTTP {status_code}: unsupported attachment."
+    return f"Model provider returned HTTP {status_code}."
+
+
+def _is_unsupported_attachment_response(response_text: str) -> bool:
+    message = response_text.casefold()
+    subjects = (
+        "attachment",
+        "document",
+        "file_data",
+        "input_file",
+        "application/pdf",
+        "media type",
+        "mime",
+        "pdf",
+    )
+    rejections = (
+        "unsupported",
+        "not supported",
+        "not allowed",
+        "invalid content",
+        "invalid media",
+        "invalid type",
+        "unknown type",
+        "unrecognized",
+    )
+    return any(subject in message for subject in subjects) and any(
+        rejection in message for rejection in rejections
+    )
 
 
 def raise_openai_error(error: Exception) -> None:
@@ -72,15 +122,15 @@ def raise_openai_error(error: Exception) -> None:
 
     if isinstance(error, APIStatusError):
         raise LlmRequestError(
-            provider_error_excerpt(error),
+            provider_status_error_message(error),
             status_code=error.status_code,
         ) from error
     if isinstance(error, APITimeoutError):
         raise LlmRequestError("Model provider request timed out.") from error
     if isinstance(error, APIConnectionError):
-        raise LlmRequestError(f"Model provider request failed: {error}") from error
+        raise LlmRequestError("Model provider request failed.") from error
     if isinstance(error, APIError):
-        raise LlmRequestError(f"Model provider request failed: {error}") from error
+        raise LlmRequestError("Model provider request failed.") from error
     raise error
 
 
@@ -243,11 +293,12 @@ def request_max_output_tokens(config: Any) -> int:
 
 
 def http_error_message(exc: httpx.HTTPStatusError) -> str:
-    text = exc.response.text.strip()
-    if not text:
-        return f"Model provider returned HTTP {exc.response.status_code}."
+    """Return an HTTP failure without provider-controlled response text."""
 
-    return f"Model provider returned HTTP {exc.response.status_code}: {text[:240]}"
+    return _provider_http_error_message(
+        exc.response.status_code,
+        exc.response.text,
+    )
 
 
 async def async_post_json(
@@ -272,7 +323,7 @@ async def async_post_json(
     except httpx.TimeoutException as exc:
         raise LlmRequestError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
-        raise LlmRequestError(f"Model provider request failed: {exc}") from exc
+        raise LlmRequestError("Model provider request failed.") from exc
     except ValueError as exc:
         raise LlmRequestError("Model provider returned invalid JSON.") from exc
 
@@ -310,7 +361,7 @@ async def async_stream_json(
     except httpx.TimeoutException as exc:
         raise LlmRequestError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
-        raise LlmRequestError(f"Model provider request failed: {exc}") from exc
+        raise LlmRequestError("Model provider request failed.") from exc
 
 
 async def _aiter_sse_json(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:

@@ -153,7 +153,7 @@ function AgentPromptAttachment({
   onRemove,
 }: {
   attachment: AttachmentData;
-  onRemove: () => void;
+  onRemove?: () => void;
 }) {
   const label = getAttachmentLabel(attachment);
   const mediaCategory = getMediaCategory(attachment);
@@ -167,10 +167,17 @@ function AgentPromptAttachment({
           onRemove={onRemove}
         >
           <div className="relative size-5 shrink-0">
-            <div className="absolute inset-0 transition-opacity group-hover:opacity-0">
+            <div
+              className={cn(
+                "absolute inset-0",
+                onRemove && "transition-opacity group-hover:opacity-0",
+              )}
+            >
               <AttachmentPreview />
             </div>
-            <AttachmentRemove className="absolute inset-0" />
+            {onRemove ? (
+              <AttachmentRemove className="absolute inset-0" />
+            ) : null}
           </div>
           <AttachmentInfo />
         </Attachment>
@@ -200,11 +207,13 @@ function AgentPromptAttachment({
 }
 
 export function AgentPromptAttachmentsDisplay({
+  disableRemoval,
   fallbackLabel,
   onLocalCountChange,
   onRemoveReferenced,
   referencedFiles,
 }: {
+  disableRemoval: boolean;
   fallbackLabel: string;
   onLocalCountChange: (count: number) => void;
   onRemoveReferenced: (id: string) => void;
@@ -229,7 +238,11 @@ export function AgentPromptAttachmentsDisplay({
         <AgentPromptAttachment
           attachment={attachment}
           key={`local-${attachment.id}`}
-          onRemove={() => attachments.remove(attachment.id)}
+          onRemove={
+            disableRemoval
+              ? undefined
+              : () => attachments.remove(attachment.id)
+          }
         />
       ))}
       {referencedFiles.map((file, index) => {
@@ -239,11 +252,15 @@ export function AgentPromptAttachmentsDisplay({
           <AgentPromptAttachment
             attachment={attachment}
             key={`referenced-${attachment.id}`}
-            onRemove={() => {
-              if (file.id) {
-                onRemoveReferenced(file.id);
-              }
-            }}
+            onRemove={
+              disableRemoval
+                ? undefined
+                : () => {
+                    if (file.id) {
+                      onRemoveReferenced(file.id);
+                    }
+                  }
+            }
           />
         );
       })}
@@ -278,6 +295,7 @@ export function AgentPromptSubmitButton({
   hasConfiguredModel,
   hasReferencedAttachments,
   isResponding,
+  isSessionReady,
   isSubmittingPrompt,
   onStop,
   t,
@@ -286,6 +304,7 @@ export function AgentPromptSubmitButton({
   hasConfiguredModel: boolean;
   hasReferencedAttachments: boolean;
   isResponding: boolean;
+  isSessionReady: boolean;
   isSubmittingPrompt: boolean;
   onStop: () => void;
   t: AppMessages;
@@ -297,8 +316,9 @@ export function AgentPromptSubmitButton({
     attachments.files.length > 0 ||
     hasReferencedAttachments;
   const isDisabled =
-    !hasConfiguredModel ||
-    (!isResponding && !isSubmittingPrompt && !hasPromptContent);
+    !isResponding &&
+    !isSubmittingPrompt &&
+    (!hasConfiguredModel || !isSessionReady || !hasPromptContent);
 
   return (
     <PromptInputSubmit

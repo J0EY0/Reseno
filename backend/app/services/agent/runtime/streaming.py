@@ -199,13 +199,27 @@ def _model_error_message(
 
 
 def _llm_error_detail(error: LlmRequestError) -> str:
-    """Return a bounded provider error excerpt safe for user-facing messages."""
+    """Return a stable error without exposing provider-controlled text."""
 
-    detail = str(error).replace("\n", " ").strip()
-    if not detail:
-        return ""
+    if isinstance(error.status_code, int):
+        return f"Model provider returned HTTP {error.status_code}."
 
-    return detail[:320]
+    detail = str(error).casefold()
+    if "timed out" in detail:
+        return "Model provider request timed out."
+    if "empty response" in detail or "empty stream" in detail:
+        return "Model provider returned an empty response."
+    if "invalid json" in detail or "unsupported response" in detail:
+        return "Model provider returned an invalid response."
+    return "Model provider request failed."
+
+
+def _llm_error_code(error: LlmRequestError) -> str:
+    """Return the durable public classification for one provider failure."""
+
+    if error.status_code in {401, 403}:
+        return "AGENT_PROVIDER_AUTH_ERROR"
+    return "AGENT_PROVIDER_ERROR"
 
 
 def _sse_event(event_name: str, payload: dict[str, object]) -> str:
@@ -745,6 +759,7 @@ async def async_stream_agent_response(
             {
                 "type": "error",
                 "error": _llm_error_detail(exc) or "Agent request failed.",
+                "errorCode": _llm_error_code(exc),
             },
         )
         yield _sse_event(

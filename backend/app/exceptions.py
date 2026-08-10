@@ -1,8 +1,11 @@
+import logging
+from collections.abc import Mapping
 from typing import Any
 
-from fastapi import HTTPException, Request, status
+from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from app.schemas.common import (
     APP_CODE_BAD_REQUEST,
@@ -17,6 +20,8 @@ from app.schemas.common import (
     APP_MESSAGE_VALIDATION_ERROR,
     error_response,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def app_error_payload(
@@ -35,22 +40,25 @@ def app_error_payload(
 
 def app_error_response(
     *,
+    status_code: int,
     code: int,
     message: str,
     data: object | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
-    """Return an HTTP 200 response carrying the business error payload."""
+    """Return an HTTP error response carrying the business error payload."""
 
     return JSONResponse(
-        status_code=status.HTTP_200_OK,
+        status_code=status_code,
         content=app_error_payload(code=code, message=message, data=data),
+        headers=headers,
     )
 
 
 def _http_status_to_app_code(status_code: int) -> int:
-    """Map FastAPI HTTP exceptions onto stable application error codes."""
+    """Map HTTP exceptions onto stable application error codes."""
 
-    if status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+    if status_code == status.HTTP_401_UNAUTHORIZED:
         return APP_CODE_UNAUTHORIZED
 
     if status_code == status.HTTP_404_NOT_FOUND:
@@ -91,10 +99,14 @@ async def http_exception_handler(
 
     code = _http_status_to_app_code(exc.status_code)
     if code == APP_CODE_UNAUTHORIZED:
+        headers = dict(exc.headers or {})
+        headers.setdefault("WWW-Authenticate", "Bearer")
         return app_error_response(
+            status_code=exc.status_code,
             code=APP_CODE_UNAUTHORIZED,
             message=_detail_to_message_key(exc.detail, APP_MESSAGE_UNAUTHORIZED),
             data={"loginUrl": "/login"},
+            headers=headers,
         )
 
     fallback_message = {
@@ -104,9 +116,11 @@ async def http_exception_handler(
     }.get(code, APP_MESSAGE_BAD_REQUEST)
 
     return app_error_response(
+        status_code=exc.status_code,
         code=code,
         message=_detail_to_message_key(exc.detail, fallback_message),
         data=None,
+        headers=exc.headers,
     )
 
 
@@ -118,11 +132,12 @@ async def validation_exception_handler(
 
     if not request.url.path.startswith("/api/"):
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"detail": exc.errors()},
         )
 
     return app_error_response(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         code=APP_CODE_VALIDATION_ERROR,
         message=APP_MESSAGE_VALIDATION_ERROR,
         data={"errors": exc.errors()},
@@ -138,7 +153,14 @@ async def unhandled_exception_handler(
     if not request.url.path.startswith("/api/"):
         raise exc
 
+    logger.exception(
+        "Unhandled API exception for %s %s",
+        request.method,
+        request.url.path,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     return app_error_response(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         code=APP_CODE_INTERNAL_ERROR,
         message=APP_MESSAGE_INTERNAL_ERROR,
         data=None,

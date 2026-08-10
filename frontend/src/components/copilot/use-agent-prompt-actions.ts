@@ -17,6 +17,7 @@ import type { SendAgentPrompt } from './copilot-panel-types'
 export function useAgentPromptActions({
   hasConfiguredModel,
   isResponding,
+  isSessionReady,
   resumeId,
   sessionResetVersion,
   sendPrompt,
@@ -25,6 +26,7 @@ export function useAgentPromptActions({
 }: {
   hasConfiguredModel: boolean
   isResponding: boolean
+  isSessionReady: boolean
   resumeId?: string
   sessionResetVersion: number
   sendPrompt: SendAgentPrompt
@@ -108,8 +110,16 @@ export function useAgentPromptActions({
         throw new Error('An Agent model must be configured before sending.')
       }
 
+      if (!isSessionReady) {
+        throw new Error('The Agent session is not ready for a new prompt.')
+      }
+
+      const referencedSnapshot = referencedAttachmentsRef.current.map(
+        (attachment) => ({ ...attachment }),
+      )
+
       if (
-        message.files.length + referencedAttachments.length >
+        message.files.length + referencedSnapshot.length >
         MAX_AGENT_ATTACHMENTS
       ) {
         toast.info(t.agentAttachmentLimitReached, {
@@ -134,6 +144,7 @@ export function useAgentPromptActions({
       activeUploadAbortRef.current?.abort()
       activeUploadAbortRef.current = uploadAbortController
       let requestAccepted = false
+      let requestStarted = false
 
       try {
         if (resumeId) {
@@ -191,17 +202,42 @@ export function useAgentPromptActions({
           )
         }
 
-        const completion = sendPrompt(message.text, [
-          ...referencedAttachments,
+        const currentReferencedIds = new Set(
+          referencedAttachmentsRef.current.map((attachment) => attachment.id),
+        )
+        const activeReferencedAttachments = referencedSnapshot.filter(
+          (attachment) =>
+            Boolean(
+              attachment.id && currentReferencedIds.has(attachment.id),
+            ),
+        )
+        if (activeUploadAbortRef.current === uploadAbortController) {
+          activeUploadAbortRef.current = null
+        }
+        requestStarted = true
+        const sendOperation = sendPrompt(message.text, [
+          ...activeReferencedAttachments,
           ...uploadedFiles,
         ])
-        requestAccepted = true
-        referencedAttachmentsRef.current = []
-        setReferencedAttachments([])
+        requestAccepted = await sendOperation.accepted
+        if (!requestAccepted) {
+          await sendOperation.completion
+          throw new Error('The Agent request was not accepted by the server.')
+        }
+
+        const acceptedReferenceIds = new Set(
+          activeReferencedAttachments.map((attachment) => attachment.id),
+        )
+        const remainingReferencedAttachments =
+          referencedAttachmentsRef.current.filter(
+            (attachment) => !acceptedReferenceIds.has(attachment.id),
+          )
+        referencedAttachmentsRef.current = remainingReferencedAttachments
+        setReferencedAttachments(remainingReferencedAttachments)
 
         // PromptInput clears as soon as the uploaded snapshot is accepted. The
         // run continues independently and cleans up only unprotected uploads.
-        void completion
+        void sendOperation.completion
           .then(async (status) => {
             if (
               status !== 'completed' &&
@@ -229,9 +265,18 @@ export function useAgentPromptActions({
         }
 
         if (!isAbortError(error)) {
-          console.error('Failed to upload agent attachment.', error)
+          console.error(
+            requestStarted
+              ? 'Failed to start the Agent request.'
+              : 'Failed to upload agent attachment.',
+            error,
+          )
         }
-        if (!isAbortError(error) && !isApiErrorToastShown(error)) {
+        if (
+          !requestStarted &&
+          !isAbortError(error) &&
+          !isApiErrorToastShown(error)
+        ) {
           toast.error(t.agentAttachmentUploadFailed, {
             closeButton: true,
           })
@@ -252,7 +297,7 @@ export function useAgentPromptActions({
       hasConfiguredModel,
       isResponding,
       isSubmittingPrompt,
-      referencedAttachments,
+      isSessionReady,
       resumeId,
       sendPrompt,
       t.agentAttachmentLimitReached,

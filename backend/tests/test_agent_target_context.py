@@ -1,6 +1,6 @@
 import pytest
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent import (
     JobReference,
     TargetReference,
@@ -15,7 +15,11 @@ from app.services.agent.tools.runner import AgentToolRunner
 def _executor(*, prompt: str, job_brief: str = "") -> AgentPlanExecutor:
     return AgentPlanExecutor(
         AgentChatRequest(
-            prompt=prompt,
+            message=AgentConversationItem(
+                id=f"turn-target-context-{prompt}",
+                role="user",
+                text=prompt,
+            ),
             jobBrief=job_brief,
             locale="zh",
             resume={

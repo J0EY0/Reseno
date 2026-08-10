@@ -171,6 +171,16 @@ assert.ok(
 
 const enMessages = JSON.parse(enSource);
 const zhMessages = JSON.parse(zhSource);
+assert.equal(
+  enMessages.apiMessages.AGENT_DRAFT_DECISION_CONFLICT,
+  "This draft was already resolved elsewhere.",
+  "English must localize durable draft decision conflicts.",
+);
+assert.equal(
+  zhMessages.apiMessages.AGENT_DRAFT_DECISION_CONFLICT,
+  "该草稿已在其他位置处理。",
+  "Chinese must localize durable draft decision conflicts.",
+);
 const enTransient = enMessages.agentTransientModelStatusTexts[0];
 const zhTransient = zhMessages.agentTransientModelStatusTexts[0];
 const session = {

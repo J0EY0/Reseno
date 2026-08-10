@@ -32,12 +32,13 @@ def _request(
     prompt: str,
     messages: list[dict[str, object]] | None = None,
 ) -> AgentChatRequest:
-    conversation = messages or []
     return AgentChatRequest(
-        prompt=prompt,
-        messages=conversation,
-        conversation=conversation,
-        files=[],
+        message={
+            "id": "agent-user-current-context",
+            "role": "user",
+            "text": prompt,
+        },
+        messages=messages or [],
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
         jobBrief="",
@@ -46,6 +47,31 @@ def _request(
         modelConfig=None,
         settings={},
     )
+
+
+def test_agent_context_keeps_repeated_text_as_a_distinct_current_turn() -> None:
+    request = _request(
+        prompt="Repeat this request.",
+        messages=[
+            {
+                "id": "agent-user-earlier-context",
+                "role": "user",
+                "text": "Repeat this request.",
+            },
+        ],
+    )
+
+    messages = build_agent_messages(
+        request,
+        _config(context_window_tokens=16_000, max_tokens=2_048),
+        mode="final",
+    )
+    payload = json.loads(messages[1]["content"])
+
+    assert [item["content"] for item in payload["conversation"]] == [
+        "Repeat this request.",
+        "Repeat this request.",
+    ]
 
 
 def test_agent_context_budget_reserves_output_tools_and_safety_margin() -> None:
@@ -170,7 +196,8 @@ def test_agent_compression_builds_structured_memory_and_keeps_recent_turns() -> 
 
     assert context["compression"]["applied"] is True
     assert [item["content"] for item in payload["conversation"]] == [
-        item["text"] for item in recent_messages
+        *[item["text"] for item in recent_messages[1:]],
+        request.message.text,
     ]
     assert memory["userGoals"] == ["目标：申请分布式系统方向的研究生项目。"]
     assert memory["factsAndMaterials"] == [

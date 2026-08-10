@@ -1,3 +1,4 @@
+import { PromptInputProvider } from '@/components/ai-elements/prompt-input-context'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useMemo } from 'react'
@@ -11,11 +12,11 @@ import { useAgentMessageActions } from './use-agent-message-actions'
 import { useAgentPromptActions } from './use-agent-prompt-actions'
 
 /**
- * Stable dock/sheet entrypoint. Conversation, history actions, attachments,
+ * Stable inline-dock entrypoint. Conversation, history actions, attachments,
  * and rendering each live behind their own behavioral seam.
  */
 export function CopilotPanel({
-  mode = 'docked',
+  isPanelCollapsed,
   resumeId,
   t,
   locale,
@@ -29,6 +30,7 @@ export function CopilotPanel({
   hasAgentDraft,
   agentDraftState,
   onPreviewAgentEdits,
+  onReconcileAgentDraft,
   onRollbackAgentDraft,
   onApplyAgentDraft,
   onDiscardAgentDraft,
@@ -50,6 +52,7 @@ export function CopilotPanel({
     onBeforeSend,
     onJobBriefChange,
     onPreviewAgentEdits,
+    onReconcileAgentDraft,
     onRollbackAgentDraft,
     resume,
     resumeId,
@@ -59,6 +62,7 @@ export function CopilotPanel({
   const promptActions = useAgentPromptActions({
     hasConfiguredModel: Boolean(selectedModel),
     isResponding: conversation.isResponding,
+    isSessionReady: conversation.isSessionReady,
     resumeId,
     sessionResetVersion: conversation.sessionResetVersion,
     sendPrompt: conversation.sendPrompt,
@@ -75,15 +79,16 @@ export function CopilotPanel({
   })
   const { composerRef, conversationContextRef, conversationLayoutRef } =
     useAgentComposerLayout()
+  const shouldDockAgent = !isPanelCollapsed
+  const globalDropActive = shouldDockAgent
 
-  return (
+  const panelSurface = (
     <TooltipProvider>
-      <aside
+      <section
         className={cn(
           'agent-panel-card flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm print:hidden',
-          mode === 'docked' ? 'h-full xl:self-start' : 'h-full',
+          'h-full xl:self-start',
         )}
-        data-mode={mode}
       >
         <div className="px-4 pb-2 pt-3">
           <h3 className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -117,7 +122,9 @@ export function CopilotPanel({
             >
               <div className="pointer-events-auto relative">
                 <CopilotComposer
+                  globalDropActive={globalDropActive}
                   isResponding={conversation.isResponding}
+                  isSessionReady={conversation.isSessionReady}
                   modelConfigs={modelConfigs}
                   onOpenModelSettings={onOpenModelSettings}
                   onSelectedModelChange={onSelectedModelChange}
@@ -130,7 +137,23 @@ export function CopilotPanel({
             </section>
           </div>
         </div>
-      </aside>
+      </section>
     </TooltipProvider>
+  )
+
+  return (
+    <PromptInputProvider>
+      <aside
+        aria-hidden={!shouldDockAgent}
+        className={cn(
+          'agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden',
+          'transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          !shouldDockAgent && 'pointer-events-none opacity-0',
+        )}
+        inert={!shouldDockAgent}
+      >
+        {panelSurface}
+      </aside>
+    </PromptInputProvider>
   )
 }

@@ -20,6 +20,7 @@ from app.db.connection import connect
 from app.schemas.agent import (
     AgentAttachmentResponse,
     AgentChatRequest,
+    AgentDraftDecisionRequest,
     AgentRunResponse,
     AgentSessionReplaceRequest,
     AgentSessionResponse,
@@ -31,24 +32,55 @@ from app.services.agent.attachments import (
     cleanup_expired_pending_attachments,
     delete_pending_agent_attachment,
     load_agent_attachment,
-    store_agent_attachment,
+    store_resume_agent_attachment,
 )
 from app.services.agent.preferences import prepare_agent_request
+from app.services.agent.resume_owner import (
+    AgentResumeUnavailableError,
+)
 from app.services.agent_runs import (
+    AgentRunCapacityError,
     AgentRunConflictError,
     AgentRunManager,
     AgentRunNotFoundError,
 )
 from app.services.agent_sessions import (
+    AgentDraftDecisionConflictError,
+    AgentDraftUnavailableConflictError,
+    AgentSessionActiveRunConflictError,
+    AgentSessionDataError,
     AgentSessionRevisionConflictError,
     AgentSessionTurnReplayError,
     is_valid_resume_id,
     load_agent_session,
     replace_agent_session_messages,
+    update_agent_draft_decision,
 )
 from app.services.user_preferences import load_agent_settings
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+
+def _agent_transport_error(
+    status_code: int,
+    code: str,
+    **details: str,
+) -> JSONResponse:
+    """Keep Agent protocol failures outside the HTTP-200 business envelope."""
+
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": {"code": code, **details}},
+    )
+
+
+def _agent_session_data_error() -> JSONResponse:
+    """Hide corrupt stored message identifiers and contents from clients."""
+
+    return _agent_transport_error(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        "AGENT_SESSION_DATA_INVALID",
+    )
 
 
 @router.post(
@@ -72,13 +104,15 @@ async def post_agent_attachment(
         payload = await file.read(MAX_AGENT_ATTACHMENT_BYTES + 1)
         attachment = await anyio.to_thread.run_sync(
             partial(
-                store_agent_attachment,
-                session_id=resume_id,
+                store_resume_agent_attachment,
+                resume_id=resume_id,
                 filename=file.filename or "attachment",
                 media_type=file.content_type or "",
                 payload=payload,
             ),
         )
+    except AgentResumeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     except AgentAttachmentError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -106,7 +140,7 @@ def _run_manager(request: Request) -> AgentRunManager:
 def get_agent_resume_session(
     resume_id: str,
     background_tasks: BackgroundTasks,
-) -> ApiResponse[AgentSessionResponse]:
+) -> ApiResponse[AgentSessionResponse] | JSONResponse:
     """Return persisted Agent messages attached to one resume."""
 
     if not is_valid_resume_id(resume_id):
@@ -115,8 +149,11 @@ def get_agent_resume_session(
             detail=APP_MESSAGE_BAD_REQUEST,
         )
 
-    with closing(connect()) as conn:
-        session = load_agent_session(conn, resume_id)
+    try:
+        with closing(connect()) as conn:
+            session = load_agent_session(conn, resume_id)
+    except AgentSessionDataError:
+        return _agent_session_data_error()
 
     # Session entry is a convenient non-blocking maintenance point for uploads
     # abandoned before the user sends a message.
@@ -187,21 +224,93 @@ def put_agent_resume_session(
                 messages=request.messages,
                 revision=request.revision,
             )
+    except AgentResumeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     except AgentSessionRevisionConflictError as exc:
         # The application-wide HTTPException handler intentionally converts
         # business failures to HTTP 200. Concurrency conflicts must remain a
         # transport-level 409 so clients cannot mistake a stale save for one
         # that committed.
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "detail": {
-                    "code": "AGENT_SESSION_REVISION_CONFLICT",
-                    "revision": exc.current_revision,
-                },
-            },
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_SESSION_REVISION_CONFLICT",
+            revision=exc.current_revision,
+        )
+    except AgentSessionTurnReplayError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_SESSION_TURN_CONFLICT",
+            revision=exc.current_revision,
+        )
+    except AgentSessionActiveRunConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_RUN_CONFLICT",
+            revision=exc.current_revision,
+            runId=exc.run_id,
+        )
+    except AgentSessionDataError:
+        return _agent_session_data_error()
+
+    return ok_response(session)
+
+
+@router.patch(
+    "/resumes/{resume_id}/session/messages/{message_id}/draft",
+    response_model=ApiResponse[AgentSessionResponse],
+)
+def patch_agent_resume_draft(
+    resume_id: str,
+    message_id: str,
+    request: AgentDraftDecisionRequest,
+) -> ApiResponse[AgentSessionResponse] | JSONResponse:
+    """Durably apply or discard one committed Agent draft."""
+
+    if not is_valid_resume_id(resume_id) or not message_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=APP_MESSAGE_BAD_REQUEST,
         )
 
+    try:
+        with closing(connect()) as conn:
+            session = update_agent_draft_decision(
+                conn,
+                resume_id,
+                message_id=message_id,
+                status=request.status,
+                revision=request.revision,
+            )
+    except AgentResumeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
+    except AgentSessionRevisionConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_SESSION_REVISION_CONFLICT",
+            revision=exc.current_revision,
+        )
+    except AgentSessionActiveRunConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_RUN_CONFLICT",
+            revision=exc.current_revision,
+            runId=exc.run_id,
+        )
+    except AgentDraftDecisionConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_DRAFT_DECISION_CONFLICT",
+            revision=exc.current_revision,
+            status=exc.current_status,
+        )
+    except AgentDraftUnavailableConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_DRAFT_DECISION_CONFLICT",
+            revision=exc.current_revision,
+        )
+    except AgentSessionDataError:
+        return _agent_session_data_error()
     return ok_response(session)
 
 
@@ -224,31 +333,37 @@ async def post_agent_chat(
     manager = _run_manager(http_request)
     try:
         run = await manager.start(prepared_request)
+    except AgentResumeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     except AgentSessionRevisionConflictError as exc:
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "detail": {
-                    "code": "AGENT_SESSION_REVISION_CONFLICT",
-                    "revision": exc.current_revision,
-                },
-            },
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_SESSION_REVISION_CONFLICT",
+            revision=exc.current_revision,
         )
     except AgentSessionTurnReplayError as exc:
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "detail": {
-                    "code": "AGENT_SESSION_TURN_CONFLICT",
-                    "revision": exc.current_revision,
-                },
-            },
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_SESSION_TURN_CONFLICT",
+            revision=exc.current_revision,
         )
-    except AgentRunConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=APP_MESSAGE_BAD_REQUEST,
-        ) from exc
+    except AgentRunCapacityError:
+        return _agent_transport_error(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "AGENT_RUN_CAPACITY_EXCEEDED",
+        )
+    except AgentRunConflictError:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "AGENT_RUN_CONFLICT",
+        )
+    except AgentAttachmentError:
+        return _agent_transport_error(
+            status.HTTP_400_BAD_REQUEST,
+            "AGENT_ATTACHMENT_INVALID",
+        )
+    except AgentSessionDataError:
+        return _agent_session_data_error()
 
     return StreamingResponse(
         manager.subscribe(run.id),

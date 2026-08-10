@@ -20,11 +20,18 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from socket import AF_INET, SOCK_STREAM, socket
-from typing import TextIO
+from typing import Any, TextIO
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from playwright.sync_api import Browser, Page, Request, Route, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Request,
+    Route,
+    sync_playwright,
+)
 from playwright.sync_api import Error as PlaywrightError
 
 pytestmark = pytest.mark.skipif(
@@ -35,6 +42,7 @@ pytestmark = pytest.mark.skipif(
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = REPOSITORY_ROOT / "backend"
 FRONTEND_ROOT = REPOSITORY_ROOT / "frontend"
+_BROWSER_AUTH_SESSION: dict[str, str] | None = None
 
 
 def _unused_port() -> int:
@@ -93,6 +101,8 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
 def workspace_servers() -> Iterator[tuple[str, str]]:
     """Start isolated backend/frontend servers and seed one resume."""
 
+    global _BROWSER_AUTH_SESSION
+
     node = shutil.which("node")
     vite_cli = FRONTEND_ROOT / "node_modules" / "vite" / "bin" / "vite.js"
     if node is None or not vite_cli.exists():
@@ -113,12 +123,12 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
             "APP_DB_PATH": str(data_path / "app.db"),
             "APP_STORAGE_DIR": str(data_path / "storage"),
             "APP_ENV_FILE": str(data_path / ".env"),
-            "APP_ENV": "development",
             "FRONTEND_RENDER_BASE_URL": frontend_url,
             "BACKEND_CORS_ORIGINS": frontend_url,
         }
         frontend_env = {
             **os.environ,
+            "RESUMATE_VITE_CACHE_DIR": str(data_path / "vite-cache"),
             "VITE_DEV_API_TARGET": backend_url,
         }
 
@@ -145,6 +155,28 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
             processes.append(backend_process)
             _wait_for_url(f"{backend_url}/health", backend_process, backend_log)
 
+            setup_request = urllib.request.Request(
+                f"{backend_url}/api/auth/setup",
+                data=json.dumps(
+                    {
+                        "username": "e2e-owner",
+                        "password": "E2ePassword2026",
+                        "confirmPassword": "E2ePassword2026",
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(setup_request, timeout=10) as response:
+                setup_payload = json.load(response)["data"]
+            access_token = str(setup_payload["accessToken"])
+            _BROWSER_AUTH_SESSION = {
+                "username": str(setup_payload["username"]),
+                "authenticatedAt": "2026-08-09T00:00:00.000Z",
+                "accessToken": access_token,
+                "expiresAt": str(setup_payload["expiresAt"]),
+            }
+
             frontend_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             logs.append(frontend_log)
             frontend_process = subprocess.Popen(
@@ -169,7 +201,10 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
             create_request = urllib.request.Request(
                 f"{backend_url}/api/resumes",
                 data=b"{}",
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
                 method="POST",
             )
             with urllib.request.urlopen(create_request, timeout=10) as response:
@@ -182,6 +217,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
                 _stop_process(process)
             for log in logs:
                 log.close()
+            _BROWSER_AUTH_SESSION = None
 
 
 @pytest.fixture(scope="module")
@@ -199,7 +235,31 @@ def browser() -> Iterator[Browser]:
             instance.close()
 
 
+def _authenticated_context(
+    browser: Browser,
+    **kwargs: Any,
+) -> BrowserContext:
+    session = _BROWSER_AUTH_SESSION
+    if session is None:
+        raise RuntimeError("Browser auth session has not been initialized.")
+
+    context = browser.new_context(
+        extra_http_headers={"Authorization": f"Bearer {session['accessToken']}"},
+        **kwargs,
+    )
+    session_json = json.dumps(session)
+    context.add_init_script(
+        script=(
+            "window.sessionStorage.setItem("
+            "'resumate-auth-session', "
+            f"{json.dumps(session_json)});"
+        )
+    )
+    return context
+
+
 ApiRequest = tuple[str, str]
+AUTH_SETUP_STATUS_REQUEST: ApiRequest = ("GET", "/api/auth/setup")
 
 
 def _api_request(request: Request) -> ApiRequest | None:
@@ -210,7 +270,7 @@ def _api_request(request: Request) -> ApiRequest | None:
 
 
 def _observe_api_requests(browser: Browser, url: str) -> list[ApiRequest]:
-    context = browser.new_context()
+    context = _authenticated_context(browser)
     page = context.new_page()
     requests: list[ApiRequest] = []
     page.on(
@@ -255,8 +315,12 @@ def _install_workspace_frame_recorder(page: Page) -> None:
           const capture = (now) => {
             if (window.__recordWorkspaceFrames) {
               const resumeGallery = visibleElement(
-                'main main a[href^="/resume/"]',
+                'input[name="resume-search"]',
               );
+              const routeSpinner = visibleElement(
+                '#root > .min-h-svh > svg[role="status"][aria-label="Loading"]',
+              );
+              const sidebar = visibleElement('[data-slot="sidebar-container"]');
               const resumeDetail = visibleElement(
                 ".resume-workspace .resume-preview-card article.resume-page",
               );
@@ -288,6 +352,8 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 time: now,
                 path: window.location.pathname,
                 hasResumeGallery: Boolean(resumeGallery),
+                hasRouteSpinner: Boolean(routeSpinner),
+                hasSidebar: Boolean(sidebar),
                 hasResumeDetail: Boolean(resumeDetail),
                 resumePreviewFits,
                 resumePreviewWidth: resumeDetail?.rect.width ?? null,
@@ -355,12 +421,30 @@ def _assert_visible_once_mounted(
 @pytest.mark.parametrize(
     ("route", "expected_paths"),
     [
-        ("/resume", [("GET", "/api/workspace/pages/resumes")]),
-        ("/templates", [("GET", "/api/workspace/pages/templates")]),
-        ("/template/minimal", [("GET", "/api/workspace/pages/templates")]),
-        ("/trash", [("GET", "/api/workspace/pages/trash")]),
-        ("/models", [("GET", "/api/workspace/pages/models")]),
-        ("/settings", [("GET", "/api/workspace/pages/settings")]),
+        (
+            "/resume",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/resumes")],
+        ),
+        (
+            "/templates",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/templates")],
+        ),
+        (
+            "/template/minimal",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/templates")],
+        ),
+        (
+            "/trash",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/trash")],
+        ),
+        (
+            "/models",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/models")],
+        ),
+        (
+            "/settings",
+            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/settings")],
+        ),
     ],
 )
 def test_workspace_route_request_allowlist(
@@ -381,6 +465,7 @@ def test_resume_editor_route_request_allowlist(
 ) -> None:
     frontend_url, resume_id = workspace_servers
     expected_paths = [
+        AUTH_SETUP_STATUS_REQUEST,
         ("GET", "/api/workspace/pages/resume-editor"),
         ("GET", f"/api/resumes/{resume_id}"),
         ("GET", f"/api/resumes/{resume_id}/versions"),
@@ -393,17 +478,221 @@ def test_resume_editor_route_request_allowlist(
     assert Counter(actual_paths) == Counter(expected_paths)
 
 
+def test_compact_resume_agent_expands_inline_from_right_rail(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        header = page.locator("header")
+        workspace = page.locator("main.resume-workspace")
+        workspace.wait_for(state="visible")
+
+        assert header.get_by_text("ResuMate AI", exact=True).count() == 0
+        assert (
+            page.locator(
+                '[data-slot="sheet-content"], [data-slot="sheet-overlay"]'
+            ).count()
+            == 0
+        )
+        assert page.get_by_role("dialog").count() == 0
+
+        trigger = page.get_by_role(
+            "button",
+            name="展开 Agent 对话栏",
+            exact=True,
+        )
+        trigger.wait_for(state="visible")
+        assert trigger.count() == 1
+        assert trigger.get_attribute("aria-expanded") == "false"
+
+        trigger_box = trigger.bounding_box()
+        viewport_width = page.evaluate("window.innerWidth")
+        assert trigger_box is not None
+        assert trigger_box["width"] >= 44
+        assert 0 <= viewport_width - (trigger_box["x"] + trigger_box["width"]) <= 26
+
+        panel = workspace.locator("section.agent-panel-card")
+        assert not panel.is_visible()
+
+        def layout_metrics() -> dict[str, Any]:
+            return workspace.evaluate(
+                """
+                element => {
+                  const editor = element.querySelector(".resume-editor-panel");
+                  const preview = element.querySelector(".resume-preview-card");
+                  const rail = element.querySelector(".agent-seam-rail");
+                  const panel = element.querySelector(".agent-panel-card");
+                  if (!(editor instanceof HTMLElement) ||
+                      !(preview instanceof HTMLElement) ||
+                      !(rail instanceof HTMLElement)) {
+                    throw new Error("Missing resume workspace panes.");
+                  }
+
+                  const editorRect = editor.getBoundingClientRect();
+                  const previewRect = preview.getBoundingClientRect();
+                  const railRect = rail.getBoundingClientRect();
+                  const panelRect = panel?.getBoundingClientRect();
+                  return {
+                    columns: getComputedStyle(element)
+                      .gridTemplateColumns
+                      .split(/\\s+/)
+                      .map(value => Number.parseFloat(value)),
+                    editorPreviewSpan: previewRect.right - editorRect.left,
+                    editorWidth: editorRect.width,
+                    previewWidth: previewRect.width,
+                    preview: {
+                      left: previewRect.left,
+                      right: previewRect.right,
+                    },
+                    rail: {
+                      left: railRect.left,
+                      right: railRect.right,
+                    },
+                    panel: panelRect ? {
+                      left: panelRect.left,
+                      right: panelRect.right,
+                      width: panelRect.width,
+                    } : null,
+                  };
+                }
+                """
+            )
+
+        collapsed = layout_metrics()
+        assert len(collapsed["columns"]) == 4
+        assert collapsed["columns"][3] <= 1
+        assert collapsed["editorWidth"] > 0
+        assert collapsed["previewWidth"] > 0
+
+        trigger.click()
+
+        collapse_trigger = page.get_by_role(
+            "button",
+            name="收起 Agent 对话栏",
+            exact=True,
+        )
+        collapse_trigger.wait_for(state="visible")
+        assert collapse_trigger.get_attribute("aria-expanded") == "true"
+
+        workspace.evaluate(
+            """element => Promise.all(
+              element.getAnimations().map(animation => animation.finished)
+            )"""
+        )
+
+        page.wait_for_function(
+            """
+            () => {
+              const workspace = document.querySelector("main.resume-workspace");
+              if (!(workspace instanceof HTMLElement)) return false;
+              const columns = getComputedStyle(workspace)
+                .gridTemplateColumns
+                .split(/\\s+/)
+                .map(value => Number.parseFloat(value));
+              return columns.length === 4 && columns[3] > 350;
+            }
+            """
+        )
+
+        panel.wait_for(state="visible")
+
+        assert (
+            page.locator(
+                '[data-slot="sheet-content"], [data-slot="sheet-overlay"]'
+            ).count()
+            == 0
+        )
+        assert page.get_by_role("dialog").count() == 0
+
+        expanded = layout_metrics()
+        assert len(expanded["columns"]) == 4
+        assert expanded["columns"][3] > 350
+        assert collapsed["editorPreviewSpan"] - expanded["editorPreviewSpan"] > 300
+        assert collapsed["previewWidth"] - expanded["previewWidth"] > 300
+        assert expanded["panel"] is not None
+        assert expanded["preview"]["right"] <= expanded["rail"]["left"]
+        assert expanded["rail"]["right"] <= expanded["panel"]["left"]
+        assert abs(expanded["panel"]["width"] - expanded["columns"][3]) <= 1
+
+        collapse_trigger.click()
+        trigger.wait_for(state="visible")
+        page.set_viewport_size({"width": 1200, "height": 900})
+
+        narrow_layout = workspace.evaluate(
+            """
+            element => {
+              const editor = element.querySelector(".resume-editor-panel");
+              const preview = element.querySelector(".resume-preview-card");
+              const rail = element.querySelector(".agent-seam-rail");
+              if (!(editor instanceof HTMLElement) ||
+                  !(preview instanceof HTMLElement) ||
+                  !(rail instanceof HTMLElement)) {
+                throw new Error("Missing narrow resume workspace panes.");
+              }
+              const editorRect = editor.getBoundingClientRect();
+              const previewRect = preview.getBoundingClientRect();
+              const railRect = rail.getBoundingClientRect();
+              return {
+                editorTop: editorRect.top,
+                previewTop: previewRect.top,
+                railTop: railRect.top,
+              };
+            }
+            """
+        )
+        assert abs(narrow_layout["railTop"] - narrow_layout["editorTop"]) <= 1
+        assert narrow_layout["previewTop"] > narrow_layout["editorTop"]
+
+        trigger.click()
+        panel.wait_for(state="visible")
+        narrow_expanded = workspace.evaluate(
+            """
+            element => {
+              const preview = element.querySelector(".resume-preview-card");
+              const panel = element.querySelector(".agent-panel-card");
+              if (!(preview instanceof HTMLElement) ||
+                  !(panel instanceof HTMLElement)) {
+                throw new Error("Missing narrow inline Agent panel.");
+              }
+              const previewRect = preview.getBoundingClientRect();
+              const panelRect = panel.getBoundingClientRect();
+              return {
+                panelBottom: panelRect.bottom,
+                panelTop: panelRect.top,
+                previewTop: previewRect.top,
+              };
+            }
+            """
+        )
+        assert narrow_expanded["panelTop"] < narrow_expanded["previewTop"]
+        assert narrow_expanded["panelBottom"] <= narrow_expanded["previewTop"]
+        assert page.get_by_role("dialog").count() == 0
+    finally:
+        context.close()
+
+
 def test_builtin_templates_render_optional_avatars_without_layout_regressions(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 960})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 960})
     page = context.new_page()
     resume_ids: list[str] = []
     avatar_data_url = (
-        "data:image/gif;base64,"
-        "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
     )
 
     try:
@@ -468,12 +757,8 @@ def test_builtin_templates_render_optional_avatars_without_layout_regressions(
             preview_page = page.locator(
                 '[data-export-root="resume-page"]:visible'
             ).first
-            avatar_frame = preview_page.locator(
-                '[data-avatar-frame="true"]'
-            )
-            avatar_image = preview_page.locator(
-                'img[data-avatar-image="true"]'
-            )
+            avatar_frame = preview_page.locator('[data-avatar-frame="true"]')
+            avatar_image = preview_page.locator('img[data-avatar-image="true"]')
             assert avatar_frame.count() == 1
             assert avatar_image.count() == 1
             assert avatar_image.evaluate(
@@ -562,15 +847,13 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 960})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 960})
     page = context.new_page()
     template_id: str | None = None
     resume_id: str | None = None
 
     def read_header_text_layout() -> list[dict[str, float | str]]:
-        preview_page = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).first
+        preview_page = page.locator('[data-export-root="resume-page"]:visible').first
         preview_page.wait_for(state="visible")
         return preview_page.evaluate(
             """
@@ -612,9 +895,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
 
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        page.get_by_role(
-            "button", name="创建可编辑副本", exact=True
-        ).click()
+        page.get_by_role("button", name="创建可编辑副本", exact=True).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
 
@@ -626,25 +907,16 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         avatar_position.click()
         page.get_by_role("option", name="右侧", exact=True).click()
 
-        template_preview = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).last
-        template_avatar = template_preview.locator(
-            '[data-avatar-frame="true"]'
-        )
+        template_preview = page.locator('[data-export-root="resume-page"]:visible').last
+        template_avatar = template_preview.locator('[data-avatar-frame="true"]')
         assert template_avatar.count() == 1
-        assert template_avatar.locator(
-            '[data-avatar-placeholder="true"]'
-        ).count() == 1
-        assert template_avatar.locator(
-            'img[data-avatar-image="true"]'
-        ).count() == 0
+        assert template_avatar.locator('[data-avatar-placeholder="true"]').count() == 1
+        assert template_avatar.locator('img[data-avatar-image="true"]').count() == 0
 
         with page.expect_response(
             lambda response: (
                 response.request.method == "PUT"
-                and urlparse(response.url).path
-                == f"/api/templates/{template_id}"
+                and urlparse(response.url).path == f"/api/templates/{template_id}"
             )
         ) as save_response_info:
             page.keyboard.press("Control+S")
@@ -664,9 +936,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         resume_id = create_response.json()["data"]["resume"]["id"]
 
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        preview_page = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).first
+        preview_page = page.locator('[data-export-root="resume-page"]:visible').first
         assert preview_page.locator('[data-avatar-frame="true"]').count() == 0
         right_position_layout = read_header_text_layout()
         assert right_position_layout
@@ -676,10 +946,12 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
             wait_until="networkidle",
         )
         page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
-        assert page.locator(
-            '[data-export-root="resume-page"]:visible '
-            '[data-avatar-frame="true"]'
-        ).count() == 0
+        assert (
+            page.locator(
+                '[data-export-root="resume-page"]:visible [data-avatar-frame="true"]'
+            ).count()
+            == 0
+        )
 
         saved_template_payload["template"]["layout"]["avatarPosition"] = "none"
         update_response = page.request.put(
@@ -696,10 +968,10 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         ):
             assert right_rect["text"] == hidden_rect["text"]
             for dimension in ("left", "top", "width", "height"):
-                assert abs(
-                    float(right_rect[dimension])
-                    - float(hidden_rect[dimension])
-                ) <= 1.0, (right_rect, hidden_rect)
+                assert (
+                    abs(float(right_rect[dimension]) - float(hidden_rect[dimension]))
+                    <= 1.0
+                ), (right_rect, hidden_rect)
     finally:
         if resume_id:
             trash_response = context.request.post(
@@ -712,9 +984,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
                 f"{frontend_url}/api/templates/{template_id}/trash"
             )
             if trash_response.ok:
-                context.request.delete(
-                    f"{frontend_url}/api/templates/{template_id}"
-                )
+                context.request.delete(f"{frontend_url}/api/templates/{template_id}")
         context.close()
 
 
@@ -723,7 +993,7 @@ def test_format_reset_restores_current_template_defaults_and_persists(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     resume_id: str | None = None
 
@@ -772,10 +1042,7 @@ def test_format_reset_restores_current_template_defaults_and_persists(
         template_select_bounds = template_select.bounding_box()
         assert reset_bounds is not None
         assert template_select_bounds is not None
-        assert (
-            reset_bounds["x"] + reset_bounds["width"]
-            <= template_select_bounds["x"]
-        )
+        assert reset_bounds["x"] + reset_bounds["width"] <= template_select_bounds["x"]
 
         reset_button.click()
 
@@ -819,8 +1086,7 @@ def test_format_reset_restores_current_template_defaults_and_persists(
         )
         assert tooltip_geometry["rect"]["top"] >= 0, tooltip_geometry
         assert (
-            tooltip_geometry["rect"]["right"]
-            <= tooltip_geometry["viewport"]["width"]
+            tooltip_geometry["rect"]["right"] <= tooltip_geometry["viewport"]["width"]
         ), tooltip_geometry
         assert tooltip_geometry["isTopmost"], tooltip_geometry
 
@@ -848,16 +1114,22 @@ def test_format_reset_restores_current_template_defaults_and_persists(
             name="恢复当前模板的默认设置",
             exact=True,
         ).is_disabled()
-        assert "思源宋体" in page.get_by_role(
-            "combobox",
-            name="字体",
-            exact=True,
-        ).inner_text()
-        assert page.get_by_role(
-            "textbox",
-            name="页边距",
-            exact=True,
-        ).input_value() == "14"
+        assert (
+            "思源宋体"
+            in page.get_by_role(
+                "combobox",
+                name="字体",
+                exact=True,
+            ).inner_text()
+        )
+        assert (
+            page.get_by_role(
+                "textbox",
+                name="页边距",
+                exact=True,
+            ).input_value()
+            == "14"
+        )
     finally:
         if resume_id:
             trash_response = page.request.post(
@@ -873,7 +1145,7 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 2048, "height": 1226})
+    context = _authenticated_context(browser, viewport={"width": 2048, "height": 1226})
     page = context.new_page()
     _install_workspace_frame_recorder(page)
     resume_id: str | None = None
@@ -893,9 +1165,7 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={
-                "title": "王小明-zh-minimal（1）-frontend-fullstack-resume-2026"
-            },
+            data={"title": "王小明-zh-minimal（1）-frontend-fullstack-resume-2026"},
         )
         assert create_response.ok
         create_payload = create_response.json()
@@ -952,42 +1222,61 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
             exact=True,
         )
         open_copy_action.wait_for(state="visible")
-        success_toast = page.locator(
-            '[data-sonner-toast][data-type="success"]'
-        ).filter(has_text="副本已创建")
+        success_toast = page.locator('[data-sonner-toast][data-type="success"]').filter(
+            has_text="副本已创建"
+        )
         toast_description = success_toast.locator("[data-description]")
         assert toast_description.inner_text() == duplicate_title
-        assert toast_description.evaluate(
-            "(description) => getComputedStyle(description).whiteSpace"
-        ) == "nowrap"
-        assert toast_description.evaluate(
-            "(description) => getComputedStyle(description).overflow"
-        ) == "hidden"
-        assert toast_description.evaluate(
-            "(description) => getComputedStyle(description).textOverflow"
-        ) == "ellipsis"
+        assert (
+            toast_description.evaluate(
+                "(description) => getComputedStyle(description).whiteSpace"
+            )
+            == "nowrap"
+        )
+        assert (
+            toast_description.evaluate(
+                "(description) => getComputedStyle(description).overflow"
+            )
+            == "hidden"
+        )
+        assert (
+            toast_description.evaluate(
+                "(description) => getComputedStyle(description).textOverflow"
+            )
+            == "ellipsis"
+        )
         assert toast_description.evaluate(
             "(description) => description.scrollWidth > description.clientWidth"
         )
         assert success_toast.locator("[data-icon]").count() == 0
-        assert open_copy_action.evaluate(
-            "(button) => getComputedStyle(button).backgroundColor"
-        ) == "rgba(0, 0, 0, 0)"
-        assert open_copy_action.evaluate(
-            "(button) => getComputedStyle(button).borderTopWidth"
-        ) == "1px"
-        assert open_copy_action.evaluate(
-            "(button) => getComputedStyle(button).borderTopStyle"
-        ) == "solid"
+        assert (
+            open_copy_action.evaluate(
+                "(button) => getComputedStyle(button).backgroundColor"
+            )
+            == "rgba(0, 0, 0, 0)"
+        )
+        assert (
+            open_copy_action.evaluate(
+                "(button) => getComputedStyle(button).borderTopWidth"
+            )
+            == "1px"
+        )
+        assert (
+            open_copy_action.evaluate(
+                "(button) => getComputedStyle(button).borderTopStyle"
+            )
+            == "solid"
+        )
         assert open_copy_action.locator("svg").count() == 0
         close_button = success_toast.locator("[data-close-button]")
         close_shadow_before_hover = close_button.evaluate(
             "(button) => getComputedStyle(button).boxShadow"
         )
         close_button.hover()
-        assert close_button.evaluate(
-            "(button) => getComputedStyle(button).boxShadow"
-        ) == close_shadow_before_hover
+        assert (
+            close_button.evaluate("(button) => getComputedStyle(button).boxShadow")
+            == close_shadow_before_hover
+        )
         action_bounds = open_copy_action.bounding_box()
         close_bounds = close_button.bounding_box()
         assert action_bounds is not None
@@ -1064,7 +1353,7 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 2048, "height": 1226})
+    context = _authenticated_context(browser, viewport={"width": 2048, "height": 1226})
     page = context.new_page()
     resume_id: str | None = None
     duplicate_request_count = 0
@@ -1163,7 +1452,7 @@ def test_workspace_load_error_can_retry_same_route(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
     page = context.new_page()
     request_count = 0
 
@@ -1199,9 +1488,7 @@ def test_workspace_load_error_can_retry_same_route(
 
         assert request_count == 2
         assert retry_button.count() == 0
-        page.get_by_role("button", name="新建", exact=True).wait_for(
-            state="visible"
-        )
+        page.get_by_role("button", name="新建", exact=True).wait_for(state="visible")
     finally:
         context.close()
 
@@ -1211,7 +1498,7 @@ def test_resume_route_failure_blocks_seed_checkpoint_and_autosave(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     resume_put_requests = 0
 
@@ -1289,9 +1576,7 @@ def test_resume_route_failure_blocks_seed_checkpoint_and_autosave(
         )
         page.locator(f'a[href="/resume/{resume_id}"]').click()
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
-        page.get_by_role("button", name="重试", exact=True).wait_for(
-            state="visible"
-        )
+        page.get_by_role("button", name="重试", exact=True).wait_for(state="visible")
 
         page.keyboard.press("Control+S")
         # Also cross the autosave delay: neither persistence path may write an
@@ -1307,7 +1592,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -1348,9 +1633,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         assert agent_box is not None
         assert agent_box["width"] > 0
         routed_frames = [
-            frame
-            for frame in detail_frames
-            if frame["path"] == f"/resume/{resume_id}"
+            frame for frame in detail_frames if frame["path"] == f"/resume/{resume_id}"
         ]
         assert len(routed_frames) >= 2
         _assert_visible_once_mounted(routed_frames, "hasResumeDetail")
@@ -1396,7 +1679,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
     edit_before_checkpoint: bool,
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     resume_id: str | None = None
     calibration_requests = 0
@@ -1523,9 +1806,8 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
         deadline = time.monotonic() + 8
         while (
-            (calibration_requests < 1 or checkpoint_responses < 1)
-            and time.monotonic() < deadline
-        ):
+            calibration_requests < 1 or checkpoint_responses < 1
+        ) and time.monotonic() < deadline:
             page.wait_for_timeout(50)
         page.wait_for_timeout(150)
 
@@ -1540,9 +1822,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
                 "Saved Before Calibration Returned"
             )
         page.get_by_role("button", name="保存状态", exact=True).hover()
-        page.get_by_text("有未保存更改", exact=True).wait_for(
-            state="detached"
-        )
+        page.get_by_text("有未保存更改", exact=True).wait_for(state="detached")
         checkpoint_label = page.evaluate(
             """
             (savedAt) => new Intl.DateTimeFormat("zh-CN", {
@@ -1555,17 +1835,14 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
             """,
             checkpoint_saved_at,
         )
-        page.get_by_text(checkpoint_label, exact=False).first.wait_for(
-            state="visible"
-        )
-        persisted_response = page.request.get(
-            f"{frontend_url}/api/resumes/{resume_id}"
-        )
+        page.get_by_text(checkpoint_label, exact=False).first.wait_for(state="visible")
+        persisted_response = page.request.get(f"{frontend_url}/api/resumes/{resume_id}")
         assert persisted_response.ok
         if edit_before_checkpoint:
-            assert persisted_response.json()["data"]["resume"]["resume"][
-                "basic"
-            ]["name"] == "Saved Before Calibration Returned"
+            assert (
+                persisted_response.json()["data"]["resume"]["resume"]["basic"]["name"]
+                == "Saved Before Calibration Returned"
+            )
     finally:
         if resume_id:
             trash_response = context.request.post(
@@ -1581,7 +1858,7 @@ def test_template_navigation_keeps_cached_views_mounted(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -1603,9 +1880,7 @@ def test_template_navigation_keeps_cached_views_mounted(
         page.wait_for_timeout(600)
         detail_frames = _stop_workspace_frame_recording(page)
         routed_detail_frames = [
-            frame
-            for frame in detail_frames
-            if frame["path"] == "/template/minimal"
+            frame for frame in detail_frames if frame["path"] == "/template/minimal"
         ]
         assert len(routed_detail_frames) >= 2
         _assert_visible_once_mounted(routed_detail_frames, "hasTemplateDetail")
@@ -1639,7 +1914,7 @@ def test_template_calibration_preserves_handoff_edit(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     calibration_requests = 0
 
@@ -1763,7 +2038,7 @@ def test_lateral_navigation_keeps_target_content_mounted(
     frame_key: str,
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -1786,12 +2061,89 @@ def test_lateral_navigation_keeps_target_content_mounted(
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(600)
         frames = _stop_workspace_frame_recording(page)
-        routed_frames = [
-            frame for frame in frames if frame["path"] == target_route
-        ]
+        routed_frames = [frame for frame in frames if frame["path"] == target_route]
 
         assert len(routed_frames) >= 2
         _assert_visible_once_mounted(routed_frames, frame_key)
+        handoff_states = [
+            bool(frame["hasResumeGallery"]) or bool(frame[frame_key])
+            for frame in routed_frames
+        ]
+        spinner_states = [bool(frame["hasRouteSpinner"]) for frame in routed_frames]
+        sidebar_states = [bool(frame["hasSidebar"]) for frame in routed_frames]
+
+        assert all(handoff_states), _boolean_runs(handoff_states)
+        assert not any(spinner_states), _boolean_runs(spinner_states)
+        assert all(sidebar_states), _boolean_runs(sidebar_states)
+    finally:
+        context.close()
+
+
+def test_lateral_history_uses_latest_view_snapshot_without_blank_frame(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    _install_workspace_frame_recorder(page)
+
+    def continue_after_delay(route: Route) -> None:
+        time.sleep(0.2)
+        route.continue_()
+
+    page.route("**/api/workspace/pages/resumes", continue_after_delay)
+    page.route("**/api/workspace/pages/settings", continue_after_delay)
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.locator('a[href="/settings"]').click()
+        page.wait_for_url(f"{frontend_url}/settings")
+        page.wait_for_load_state("networkidle")
+        # Expire requestApi's short GET cache so the first POP frame is proven
+        # to come from route memory rather than an already-resolved request.
+        page.wait_for_timeout(3200)
+
+        _start_workspace_frame_recording(page)
+        page.go_back(wait_until="commit")
+        page.wait_for_url(f"{frontend_url}/resume")
+        page.wait_for_timeout(600)
+        back_frames = _stop_workspace_frame_recording(page)
+        routed_back_frames = [
+            frame for frame in back_frames if frame["path"] == "/resume"
+        ]
+
+        assert len(routed_back_frames) >= 2
+        _assert_visible_once_mounted(routed_back_frames, "hasResumeGallery")
+        assert all(
+            bool(frame["hasSettingsContent"]) or bool(frame["hasResumeGallery"])
+            for frame in routed_back_frames
+        )
+        assert not any(bool(frame["hasRouteSpinner"]) for frame in routed_back_frames)
+        assert all(bool(frame["hasSidebar"]) for frame in routed_back_frames)
+
+        _start_workspace_frame_recording(page)
+        page.go_forward(wait_until="commit")
+        page.wait_for_url(f"{frontend_url}/settings")
+        page.wait_for_timeout(600)
+        forward_frames = _stop_workspace_frame_recording(page)
+        routed_forward_frames = [
+            frame for frame in forward_frames if frame["path"] == "/settings"
+        ]
+
+        assert len(routed_forward_frames) >= 2
+        _assert_visible_once_mounted(
+            routed_forward_frames,
+            "hasSettingsContent",
+        )
+        assert all(
+            bool(frame["hasResumeGallery"]) or bool(frame["hasSettingsContent"])
+            for frame in routed_forward_frames
+        )
+        assert not any(
+            bool(frame["hasRouteSpinner"]) for frame in routed_forward_frames
+        )
+        assert all(bool(frame["hasSidebar"]) for frame in routed_forward_frames)
     finally:
         context.close()
 
@@ -1802,6 +2154,7 @@ def test_pdf_export_route_request_allowlist(
 ) -> None:
     frontend_url, resume_id = workspace_servers
     expected_paths = [
+        AUTH_SETUP_STATUS_REQUEST,
         ("GET", "/api/workspace/pages/templates"),
         ("GET", f"/api/resumes/{resume_id}"),
     ]
@@ -1818,7 +2171,7 @@ def test_resume_autosave_persists_edit_made_during_active_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_payloads: list[dict[str, object]] = []
     save_urls: list[str] = []
@@ -1937,9 +2290,7 @@ def test_resume_autosave_persists_edit_made_during_active_save(
         )
 
         page.wait_for_load_state("networkidle")
-        persisted_response = page.request.get(
-            f"{frontend_url}/api/resumes/{resume_id}"
-        )
+        persisted_response = page.request.get(f"{frontend_url}/api/resumes/{resume_id}")
         persisted = persisted_response.json()["data"]["resume"]
         assert persisted["title"] == "Latest Title During"
         assert persisted["resume"]["basic"]["name"] == "Latest Edit During Save"
@@ -1952,7 +2303,7 @@ def test_resume_title_preserves_draft_and_normalizes_on_commit(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_payloads: list[dict[str, object]] = []
 
@@ -1967,12 +2318,10 @@ def test_resume_title_preserves_draft_and_normalizes_on_commit(
 
     try:
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        persisted_response = page.request.get(
-            f"{frontend_url}/api/resumes/{resume_id}"
-        )
-        fallback_title = persisted_response.json()["data"]["resume"]["resume"][
-            "basic"
-        ]["name"]
+        persisted_response = page.request.get(f"{frontend_url}/api/resumes/{resume_id}")
+        fallback_title = persisted_response.json()["data"]["resume"]["resume"]["basic"][
+            "name"
+        ]
 
         page.get_by_role("button", name="修改简历标题", exact=True).click()
         title_input = page.locator("#resume-title-input")
@@ -2015,7 +2364,8 @@ def test_project_tech_stack_is_saved_without_blurring_the_input(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(
+    context = _authenticated_context(
+        browser,
         viewport={"width": 1672, "height": 870},
         locale="zh-CN",
     )
@@ -2081,7 +2431,7 @@ def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     extra_resume_id: str | None = None
 
@@ -2117,9 +2467,7 @@ def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
                 f"{frontend_url}/api/resumes/{extra_resume_id}/trash"
             )
             if trash_response.ok:
-                page.request.delete(
-                    f"{frontend_url}/api/resumes/{extra_resume_id}"
-                )
+                page.request.delete(f"{frontend_url}/api/resumes/{extra_resume_id}")
         context.close()
 
 
@@ -2128,7 +2476,7 @@ def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 800, "height": 900})
+    context = _authenticated_context(browser, viewport={"width": 800, "height": 900})
     page = context.new_page()
     extra_resume_ids: list[str] = []
 
@@ -2248,7 +2596,7 @@ def test_autosave_max_wait_retries_with_backoff_without_toast_storm(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_urls: list[str] = []
     active_saves = 0
@@ -2324,9 +2672,7 @@ def test_autosave_max_wait_retries_with_backoff_without_toast_storm(
         while len(save_urls) < 3 and time.monotonic() < deadline:
             page.wait_for_timeout(25)
         assert len(save_urls) == 3, save_urls
-        page.get_by_text("请求失败，请稍后重试", exact=True).wait_for(
-            state="visible"
-        )
+        page.get_by_text("请求失败，请稍后重试", exact=True).wait_for(state="visible")
 
         page.clock.fast_forward(60_000)
         assert len(save_urls) == 3, save_urls
@@ -2341,7 +2687,7 @@ def test_template_autosave_preserves_edit_made_during_active_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
 
     try:
@@ -2404,9 +2750,7 @@ def test_template_autosave_preserves_edit_made_during_active_save(
             page.wait_for_timeout(50)
 
         assert len(save_payloads) >= 2, save_payloads
-        assert save_payloads[-1]["template"]["name"] == (
-            "Latest Template During Save"
-        )
+        assert save_payloads[-1]["template"]["name"] == ("Latest Template During Save")
     finally:
         context.close()
 
@@ -2416,17 +2760,13 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 2048, "height": 1226})
+    context = _authenticated_context(browser, viewport={"width": 2048, "height": 1226})
     page = context.new_page()
     template_id: str | None = None
 
     def get_image_frame():
-        preview_page = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).last
-        image_frame = preview_page.locator(
-            '[data-template-image-frame="true"]'
-        ).first
+        preview_page = page.locator('[data-export-root="resume-page"]:visible').last
+        image_frame = preview_page.locator('[data-template-image-frame="true"]').first
         image_frame.wait_for(state="visible")
         return image_frame
 
@@ -2463,9 +2803,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         page.mouse.up()
 
     def assert_x_control_value(expected: float) -> None:
-        x_input = page.get_by_role(
-            "spinbutton", name="横向位置", exact=True
-        )
+        x_input = page.get_by_role("spinbutton", name="横向位置", exact=True)
         assert float(x_input.input_value()) == expected
 
     try:
@@ -2485,15 +2823,12 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             exact=True,
         ).click()
 
-        image_editor = page.get_by_role(
-            "group", name="图片元素 1", exact=True
+        image_editor = page.get_by_role("group", name="图片元素 1", exact=True)
+        image_editor.get_by_text("图片 1", exact=True).wait_for(state="visible")
+        assert (
+            image_editor.get_by_role("textbox", name="图片名称", exact=True).count()
+            == 0
         )
-        image_editor.get_by_text("图片 1", exact=True).wait_for(
-            state="visible"
-        )
-        assert image_editor.get_by_role(
-            "textbox", name="图片名称", exact=True
-        ).count() == 0
         edit_name_button = image_editor.get_by_role(
             "button", name="编辑图片名称", exact=True
         )
@@ -2505,9 +2840,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         image_name_input.fill("临时名称")
         image_name_input.press("Escape")
         image_name_input.wait_for(state="hidden")
-        image_editor.get_by_text("图片 1", exact=True).wait_for(
-            state="visible"
-        )
+        image_editor.get_by_text("图片 1", exact=True).wait_for(state="visible")
         edit_name_button.click()
         image_name_input = image_editor.get_by_role(
             "textbox", name="图片名称", exact=True
@@ -2515,12 +2848,13 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         image_name_input.fill("头像")
         image_name_input.press("Enter")
         image_name_input.wait_for(state="hidden")
-        image_editor.get_by_text("头像", exact=True).wait_for(
-            state="visible"
+        image_editor.get_by_text("头像", exact=True).wait_for(state="visible")
+        assert (
+            image_editor.locator('[data-slot="template-image-thumbnail"]')
+            .inner_text()
+            .strip()
+            == ""
         )
-        assert image_editor.locator(
-            '[data-slot="template-image-thumbnail"]'
-        ).inner_text().strip() == ""
         editor_widths = image_editor.evaluate(
             """
             (element) => ({
@@ -2530,21 +2864,13 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             """
         )
         assert editor_widths["scrollWidth"] <= editor_widths["clientWidth"] + 1
-        upload_button = page.get_by_role(
-            "button", name="上传图片", exact=True
-        )
+        upload_button = page.get_by_role("button", name="上传图片", exact=True)
         upload_button.wait_for(state="visible")
-        source_label = image_editor.get_by_text(
-            "图片来源", exact=True
-        )
+        source_label = image_editor.get_by_text("图片来源", exact=True)
         source_label.wait_for(state="visible")
-        fit_label = image_editor.get_by_text(
-            "适配方式", exact=True
-        )
+        fit_label = image_editor.get_by_text("适配方式", exact=True)
         fit_label.wait_for(state="visible")
-        fit_select = page.get_by_role(
-            "combobox", name="适配方式", exact=True
-        )
+        fit_select = page.get_by_role("combobox", name="适配方式", exact=True)
         fit_select.wait_for(state="visible")
         source_label_box = source_label.bounding_box()
         fit_label_box = fit_label.bounding_box()
@@ -2554,47 +2880,51 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         assert fit_label_box is not None
         assert upload_button_box is not None
         assert fit_select_box is not None
-        assert image_editor.get_by_role(
-            "button", name="图片 URL", exact=True
-        ).count() == 0
-        assert page.get_by_role(
-            "dialog", name="图片 URL", exact=True
-        ).count() == 0
+        assert (
+            image_editor.get_by_role("button", name="图片 URL", exact=True).count() == 0
+        )
+        assert page.get_by_role("dialog", name="图片 URL", exact=True).count() == 0
         assert source_label_box["x"] + source_label_box["width"] <= (
             upload_button_box["x"] + 1
         )
-        assert fit_label_box["x"] + fit_label_box["width"] <= (
-            fit_select_box["x"] + 1
+        assert fit_label_box["x"] + fit_label_box["width"] <= (fit_select_box["x"] + 1)
+        assert (
+            abs(
+                source_label_box["y"]
+                + source_label_box["height"] / 2
+                - upload_button_box["y"]
+                - upload_button_box["height"] / 2
+            )
+            <= 2
         )
-        assert abs(
-            source_label_box["y"]
-            + source_label_box["height"] / 2
-            - upload_button_box["y"]
-            - upload_button_box["height"] / 2
-        ) <= 2
-        assert abs(
-            fit_label_box["y"]
-            + fit_label_box["height"] / 2
-            - fit_select_box["y"]
-            - fit_select_box["height"] / 2
-        ) <= 2
+        assert (
+            abs(
+                fit_label_box["y"]
+                + fit_label_box["height"] / 2
+                - fit_select_box["y"]
+                - fit_select_box["height"] / 2
+            )
+            <= 2
+        )
         assert fit_label_box["y"] >= (
             source_label_box["y"] + source_label_box["height"]
         )
-        assert abs(
-            upload_button_box["x"]
-            + upload_button_box["width"]
-            - fit_select_box["x"]
-            - fit_select_box["width"]
-        ) <= 2
+        assert (
+            abs(
+                upload_button_box["x"]
+                + upload_button_box["width"]
+                - fit_select_box["x"]
+                - fit_select_box["width"]
+            )
+            <= 2
+        )
 
         image_editor.locator('input[type="file"]').set_input_files(
             {
                 "name": "头像.svg",
                 "mimeType": "image/svg+xml",
                 "buffer": (
-                    b'<svg xmlns="http://www.w3.org/2000/svg" '
-                    b'width="1" height="1"/>'
+                    b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
                 ),
             }
         )
@@ -2605,22 +2935,14 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         assert uploaded_thumbnail.get_attribute("src").startswith(
             "data:image/svg+xml;base64,"
         )
-        image_editor.get_by_role(
-            "button", name="替换图片", exact=True
-        ).wait_for(state="visible")
+        image_editor.get_by_role("button", name="替换图片", exact=True).wait_for(
+            state="visible"
+        )
 
-        x_input = page.get_by_role(
-            "spinbutton", name="横向位置", exact=True
-        )
-        y_input = page.get_by_role(
-            "spinbutton", name="纵向位置", exact=True
-        )
-        width_input = page.get_by_role(
-            "spinbutton", name="宽度", exact=True
-        )
-        height_input = page.get_by_role(
-            "spinbutton", name="高度", exact=True
-        )
+        x_input = page.get_by_role("spinbutton", name="横向位置", exact=True)
+        y_input = page.get_by_role("spinbutton", name="纵向位置", exact=True)
+        width_input = page.get_by_role("spinbutton", name="宽度", exact=True)
+        height_input = page.get_by_role("spinbutton", name="高度", exact=True)
 
         for field_label in (
             "横向位置",
@@ -2628,9 +2950,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             "宽度",
             "高度",
         ):
-            image_editor.get_by_text(field_label, exact=True).wait_for(
-                state="visible"
-            )
+            image_editor.get_by_text(field_label, exact=True).wait_for(state="visible")
 
         assert image_editor.get_by_text("图片宽度", exact=True).count() == 0
         assert image_editor.get_by_text("图片高度", exact=True).count() == 0
@@ -2644,9 +2964,12 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             width_input,
             height_input,
         ):
-            assert numeric_input.evaluate(
-                "(element) => getComputedStyle(element).appearance"
-            ) == "textfield"
+            assert (
+                numeric_input.evaluate(
+                    "(element) => getComputedStyle(element).appearance"
+                )
+                == "textfield"
+            )
             inline_field_geometry = numeric_input.evaluate(
                 """
                 (element) => {
@@ -2675,10 +2998,13 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             assert inline_field_geometry["labelRight"] <= (
                 inline_field_geometry["inputLeft"] + 1
             )
-            assert abs(
-                inline_field_geometry["labelCenterY"]
-                - inline_field_geometry["inputCenterY"]
-            ) <= 2
+            assert (
+                abs(
+                    inline_field_geometry["labelCenterY"]
+                    - inline_field_geometry["inputCenterY"]
+                )
+                <= 2
+            )
             assert inline_field_geometry["inputWidth"] <= 120
 
         for upper, lower in (
@@ -2700,12 +3026,16 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         assert width_input.get_attribute("max") == "44"
         assert height_input.get_attribute("max") == "120"
 
-        assert image_editor.get_by_role(
-            "button", name="锁定宽高比", exact=True
-        ).count() == 0
-        assert image_editor.get_by_role(
-            "button", name="解除宽高比锁定", exact=True
-        ).count() == 0
+        assert (
+            image_editor.get_by_role("button", name="锁定宽高比", exact=True).count()
+            == 0
+        )
+        assert (
+            image_editor.get_by_role(
+                "button", name="解除宽高比锁定", exact=True
+            ).count()
+            == 0
+        )
         width_input.fill("36")
         width_input.press("Enter")
         assert float(width_input.input_value()) == 36
@@ -2716,15 +3046,9 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
 
         assert image_editor.locator('[data-slot="separator"]').count() == 0
 
-        assert image_editor.get_by_role(
-            "button", name="外观", exact=True
-        ).count() == 0
-        image_editor.get_by_text("外观", exact=True).wait_for(
-            state="visible"
-        )
-        opacity_slider = page.get_by_role(
-            "slider", name="透明度", exact=True
-        )
+        assert image_editor.get_by_role("button", name="外观", exact=True).count() == 0
+        image_editor.get_by_text("外观", exact=True).wait_for(state="visible")
+        opacity_slider = page.get_by_role("slider", name="透明度", exact=True)
         opacity_slider.wait_for(state="visible")
         assert opacity_slider.get_attribute("aria-valuetext") == "100%"
         opacity_input = image_editor.get_by_role(
@@ -2732,9 +3056,10 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         )
         opacity_input.wait_for(state="visible")
         assert opacity_input.input_value() == "100"
-        assert opacity_input.evaluate(
-            "(element) => getComputedStyle(element).appearance"
-        ) == "textfield"
+        assert (
+            opacity_input.evaluate("(element) => getComputedStyle(element).appearance")
+            == "textfield"
+        )
         opacity_input.fill("")
         assert opacity_input.input_value() == ""
         opacity_input.type("75")
@@ -2773,20 +3098,22 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             }
             """
         )
-        assert opacity_row_geometry["labelRight"] < (
-            opacity_row_geometry["sliderLeft"]
+        assert opacity_row_geometry["labelRight"] < (opacity_row_geometry["sliderLeft"])
+        assert opacity_row_geometry["sliderRight"] < (opacity_row_geometry["valueLeft"])
+        assert (
+            abs(
+                opacity_row_geometry["labelCenterY"]
+                - opacity_row_geometry["sliderCenterY"]
+            )
+            <= 2
         )
-        assert opacity_row_geometry["sliderRight"] < (
-            opacity_row_geometry["valueLeft"]
+        assert (
+            abs(
+                opacity_row_geometry["sliderCenterY"]
+                - opacity_row_geometry["valueCenterY"]
+            )
+            <= 2
         )
-        assert abs(
-            opacity_row_geometry["labelCenterY"]
-            - opacity_row_geometry["sliderCenterY"]
-        ) <= 2
-        assert abs(
-            opacity_row_geometry["sliderCenterY"]
-            - opacity_row_geometry["valueCenterY"]
-        ) <= 2
         assert opacity_row_geometry["valueWidth"] <= 120
         assert opacity_row_geometry["valueText"] == "75"
 
@@ -2814,27 +3141,25 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             }
             """
         )
-        assert radius_row_geometry["labelRight"] < (
-            radius_row_geometry["inputLeft"]
+        assert radius_row_geometry["labelRight"] < (radius_row_geometry["inputLeft"])
+        assert (
+            abs(
+                radius_row_geometry["labelCenterY"]
+                - radius_row_geometry["inputCenterY"]
+            )
+            <= 2
         )
-        assert abs(
-            radius_row_geometry["labelCenterY"]
-            - radius_row_geometry["inputCenterY"]
-        ) <= 2
         assert radius_row_geometry["inputWidth"] <= 120
 
-        border_switch = image_editor.get_by_role(
-            "switch", name="边框", exact=True
-        )
+        border_switch = image_editor.get_by_role("switch", name="边框", exact=True)
         assert border_switch.get_attribute("aria-checked") == "true"
         border_width_input = image_editor.get_by_role(
             "spinbutton", name="边框粗细", exact=True
         )
-        border_color_input = image_editor.get_by_label(
-            "边框颜色", exact=True
-        )
+        border_color_input = image_editor.get_by_label("边框颜色", exact=True)
         border_width_input.wait_for(state="visible")
         border_color_input.wait_for(state="visible")
+
         def field_geometry(control):
             return control.evaluate(
                 """
@@ -2851,13 +3176,9 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         border_width_geometry = field_geometry(border_width_input)
         border_geometry = field_geometry(border_switch)
         border_color_geometry = field_geometry(border_color_input)
-        assert abs(
-            radius_geometry["top"] - border_width_geometry["top"]
-        ) <= 1
+        assert abs(radius_geometry["top"] - border_width_geometry["top"]) <= 1
         assert radius_geometry["left"] < border_width_geometry["left"]
-        assert abs(
-            border_geometry["top"] - border_color_geometry["top"]
-        ) <= 1
+        assert abs(border_geometry["top"] - border_color_geometry["top"]) <= 1
         assert border_geometry["left"] < border_color_geometry["left"]
         border_switch.click()
         assert border_switch.get_attribute("aria-checked") == "false"
@@ -2877,9 +3198,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             <= expanded_editor_widths["clientWidth"] + 1
         )
 
-        x_label_box = page.get_by_text(
-            "横向位置", exact=True
-        ).bounding_box()
+        x_label_box = page.get_by_text("横向位置", exact=True).bounding_box()
         assert x_label_box is not None
         assert x_label_box["width"] >= 50
         assert x_label_box["height"] <= 24
@@ -2923,12 +3242,8 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         page.get_by_role("tab", name="装饰", exact=True).click()
         assert get_rendered_left_mm() == 15.5
 
-        first_image_editor = page.get_by_role(
-            "group", name="图片元素 1", exact=True
-        )
-        first_image_editor.get_by_text("头像", exact=True).wait_for(
-            state="visible"
-        )
+        first_image_editor = page.get_by_role("group", name="图片元素 1", exact=True)
+        first_image_editor.get_by_text("头像", exact=True).wait_for(state="visible")
         single_expand_button = first_image_editor.get_by_role(
             "button", name="展开图片设置", exact=True
         )
@@ -2942,15 +3257,17 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             "spinbutton", name="横向位置", exact=True
         ).wait_for(state="visible")
         assert_x_control_value(15.5)
-        assert first_image_editor.get_by_role(
-            "button", name="外观", exact=True
-        ).count() == 0
-        first_image_editor.get_by_text("外观", exact=True).wait_for(
-            state="visible"
+        assert (
+            first_image_editor.get_by_role("button", name="外观", exact=True).count()
+            == 0
         )
-        assert first_image_editor.get_by_role(
-            "spinbutton", name="透明度", exact=True
-        ).input_value() == "75"
+        first_image_editor.get_by_text("外观", exact=True).wait_for(state="visible")
+        assert (
+            first_image_editor.get_by_role(
+                "spinbutton", name="透明度", exact=True
+            ).input_value()
+            == "75"
+        )
         persisted_border_switch = first_image_editor.get_by_role(
             "switch", name="边框", exact=True
         )
@@ -2958,9 +3275,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         first_image_editor.get_by_role(
             "spinbutton", name="边框粗细", exact=True
         ).wait_for(state="hidden")
-        first_image_editor.get_by_label(
-            "边框颜色", exact=True
-        ).wait_for(state="hidden")
+        first_image_editor.get_by_label("边框颜色", exact=True).wait_for(state="hidden")
         first_image_editor.evaluate(
             """
             (element) => Promise.all(
@@ -3032,18 +3347,9 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             """
         )
         assert set(card_style["borderWidths"]) == {"0px"}
-        assert (
-            card_style["backgroundColor"]
-            == card_style["expectedBackgroundColor"]
-        )
-        assert (
-            card_style["borderRadius"]
-            == card_style["expectedBorderRadius"]
-        )
-        assert (
-            card_style["boxShadow"]
-            == card_style["expectedBoxShadow"]
-        )
+        assert card_style["backgroundColor"] == card_style["expectedBackgroundColor"]
+        assert card_style["borderRadius"] == card_style["expectedBorderRadius"]
+        assert card_style["boxShadow"] == card_style["expectedBoxShadow"]
         assert card_style["boxShadow"] != "none"
         assert (
             card_style["headerBackgroundColor"]
@@ -3076,18 +3382,10 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             "spinbutton", name="横向位置", exact=True
         ).wait_for(state="visible")
 
-        page.get_by_role(
-            "button", name="添加图片占位符", exact=True
-        ).click()
-        first_image_editor = page.get_by_role(
-            "group", name="图片元素 1", exact=True
-        )
-        second_image_editor = page.get_by_role(
-            "group", name="图片元素 2", exact=True
-        )
-        second_image_editor.get_by_text("图片 1", exact=True).wait_for(
-            state="visible"
-        )
+        page.get_by_role("button", name="添加图片占位符", exact=True).click()
+        first_image_editor = page.get_by_role("group", name="图片元素 1", exact=True)
+        second_image_editor = page.get_by_role("group", name="图片元素 2", exact=True)
+        second_image_editor.get_by_text("图片 1", exact=True).wait_for(state="visible")
         first_expand_button = first_image_editor.get_by_role(
             "button", name="展开图片设置", exact=True
         )
@@ -3108,9 +3406,12 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         first_image_editor.get_by_role(
             "spinbutton", name="横向位置", exact=True
         ).wait_for(state="visible")
-        assert first_image_editor.get_by_role(
-            "button", name="收起图片设置", exact=True
-        ).get_attribute("aria-expanded") == "true"
+        assert (
+            first_image_editor.get_by_role(
+                "button", name="收起图片设置", exact=True
+            ).get_attribute("aria-expanded")
+            == "true"
+        )
         second_image_editor.get_by_role(
             "spinbutton", name="横向位置", exact=True
         ).wait_for(state="hidden")
@@ -3128,9 +3429,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             "spinbutton", name="横向位置", exact=True
         ).wait_for(state="visible")
 
-        second_image_editor.get_by_role(
-            "button", name="删除图片", exact=True
-        ).click()
+        second_image_editor.get_by_role("button", name="删除图片", exact=True).click()
         remaining_expand_button = first_image_editor.get_by_role(
             "button", name="展开图片设置", exact=True
         )
@@ -3146,9 +3445,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
                 f"{frontend_url}/api/templates/{template_id}/trash"
             )
             if trash_response.ok:
-                context.request.delete(
-                    f"{frontend_url}/api/templates/{template_id}"
-                )
+                context.request.delete(f"{frontend_url}/api/templates/{template_id}")
         context.close()
 
 
@@ -3157,7 +3454,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 960})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 960})
     page = context.new_page()
     template_id: str | None = None
     resume_id: str | None = None
@@ -3190,17 +3487,13 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         save_response = save_response_info.value
         assert save_response.ok
         saved_template_payload = save_response.request.post_data_json
-        template_preview = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).last
+        template_preview = page.locator('[data-export-root="resume-page"]:visible').last
         template_placeholder = template_preview.locator(
             '[data-template-image-frame="true"]'
         )
         assert template_placeholder.count() == 1
         assert template_placeholder.locator("img").count() == 0
-        assert template_placeholder.get_by_text(
-            "图片 1", exact=True
-        ).count() == 1
+        assert template_placeholder.get_by_text("图片 1", exact=True).count() == 1
 
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
@@ -3213,9 +3506,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         resume_id = create_response.json()["data"]["resume"]["id"]
 
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        resume_preview = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).first
+        resume_preview = page.locator('[data-export-root="resume-page"]:visible').first
         resume_preview.wait_for(state="visible")
         empty_resume_frame_count = resume_preview.locator(
             '[data-template-image-frame="true"]'
@@ -3236,39 +3527,10 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
 
         saved_images = saved_template_payload["template"]["layout"]["images"]
         assert len(saved_images) == 1
-        saved_template_payload["template"]["layout"]["images"] = [
-            {
-                **saved_images[0],
-                "src": "https://images.example.invalid/legacy.png",
-            }
-        ]
-        update_response = page.request.put(
-            f"{frontend_url}/api/templates/{template_id}",
-            data=saved_template_payload,
-        )
-        assert update_response.ok
-
-        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        resume_preview = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).first
-        assert resume_preview.locator(
-            '[data-template-image-frame="true"]'
-        ).count() == 0
-
-        page.goto(
-            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
-            wait_until="networkidle",
-        )
-        page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
-        assert page.locator(
-            '[data-export-root="resume-page"]:visible '
-            '[data-template-image-frame="true"]'
-        ).count() == 0
+        assert saved_images[0]["src"] == ""
 
         image_data_url = (
-            "data:image/gif;base64,"
-            "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
         )
         saved_template_payload["template"]["layout"]["images"] = [
             {**saved_images[0], "src": image_data_url}
@@ -3280,9 +3542,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         assert update_response.ok
 
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        resume_preview = page.locator(
-            '[data-export-root="resume-page"]:visible'
-        ).first
+        resume_preview = page.locator('[data-export-root="resume-page"]:visible').first
         rendered_image_frame = resume_preview.locator(
             '[data-template-image-frame="true"]'
         )
@@ -3314,17 +3574,13 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
                 f"{frontend_url}/api/resumes/{resume_id}/trash"
             )
             if trash_response.ok:
-                context.request.delete(
-                    f"{frontend_url}/api/resumes/{resume_id}"
-                )
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
         if template_id:
             trash_response = context.request.post(
                 f"{frontend_url}/api/templates/{template_id}/trash"
             )
             if trash_response.ok:
-                context.request.delete(
-                    f"{frontend_url}/api/templates/{template_id}"
-                )
+                context.request.delete(f"{frontend_url}/api/templates/{template_id}")
         context.close()
 
 
@@ -3333,7 +3589,7 @@ def test_template_return_checks_unsaved_changes_before_navigation(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
 
     try:
@@ -3347,9 +3603,7 @@ def test_template_return_checks_unsaved_changes_before_navigation(
         page.locator('[data-slot="collapsible-trigger"]').filter(
             has_text="模板信息"
         ).click()
-        page.get_by_label("模板名称", exact=True).fill(
-            "Template Saved Before Return"
-        )
+        page.get_by_label("模板名称", exact=True).fill("Template Saved Before Return")
         page.get_by_role(
             "button",
             name="返回模板列表",
@@ -3357,11 +3611,14 @@ def test_template_return_checks_unsaved_changes_before_navigation(
         ).click()
 
         assert page.url.startswith(f"{frontend_url}/template/template-")
-        assert page.get_by_role(
-            "heading",
-            name="有未保存的更改",
-            exact=True,
-        ).count() == 1
+        assert (
+            page.get_by_role(
+                "heading",
+                name="有未保存的更改",
+                exact=True,
+            ).count()
+            == 1
+        )
 
         page.get_by_role(
             "button",
@@ -3378,7 +3635,7 @@ def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -3423,7 +3680,7 @@ def test_checkpoint_failure_after_autosave_does_not_block_leaving_resume(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -3490,7 +3747,7 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -3580,7 +3837,7 @@ def test_discard_waits_for_active_save_and_restores_persisted_resume(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     save_count = 0
 
@@ -3635,9 +3892,7 @@ def test_discard_waits_for_active_save_and_restores_persisted_resume(
         page.wait_for_url(f"{frontend_url}/resume")
         page.wait_for_load_state("networkidle")
 
-        persisted_response = page.request.get(
-            f"{frontend_url}/api/resumes/{resume_id}"
-        )
+        persisted_response = page.request.get(f"{frontend_url}/api/resumes/{resume_id}")
         persisted = persisted_response.json()["data"]["resume"]
         assert persisted["resume"]["basic"]["name"] == original_name
         assert save_count == 2
@@ -3650,7 +3905,7 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
 
     try:
@@ -3667,11 +3922,14 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
         page.wait_for_timeout(250)
 
         assert page.url == f"{frontend_url}/resume/{resume_id}"
-        assert page.get_by_role(
-            "heading",
-            name="有未保存的更改",
-            exact=True,
-        ).count() == 1
+        assert (
+            page.get_by_role(
+                "heading",
+                name="有未保存的更改",
+                exact=True,
+            ).count()
+            == 1
+        )
 
         page.get_by_role(
             "button",
@@ -3688,7 +3946,7 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = browser.new_context(viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     resume_id: str | None = None
 
@@ -3713,15 +3971,12 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
         with page.expect_response(
             lambda response: (
                 response.request.method == "PUT"
-                and urlparse(response.url).path
-                == f"/api/resumes/{resume_id}"
+                and urlparse(response.url).path == f"/api/resumes/{resume_id}"
             )
         ):
             page.get_by_role("button", name="保存状态", exact=True).click()
         page.get_by_role("button", name="保存状态", exact=True).hover()
-        page.get_by_text("有未保存更改", exact=True).wait_for(
-            state="detached"
-        )
+        page.get_by_text("有未保存更改", exact=True).wait_for(state="detached")
 
         page.locator('a[href="/templates"]').first.click()
         page.wait_for_url(f"{frontend_url}/templates")

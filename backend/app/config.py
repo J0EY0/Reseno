@@ -10,30 +10,12 @@ from cryptography.fernet import Fernet
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = Path("~/.resumate")
 DEFAULT_ENV_EXAMPLE_PATH = BASE_DIR / ".env.example"
-LEGACY_ENV_PATH = BASE_DIR / ".env"
 MASTER_KEY_ENV_NAME = "RESUMATE_MASTER_KEY"
 MASTER_KEY_COMMENT = (
     "# DO NOT CHANGE: RESUMATE_MASTER_KEY decrypts API keys stored in SQLite."
 )
 JWT_SECRET_ENV_NAME = "RESUMATE_JWT_SECRET"
 JWT_SECRET_COMMENT = "# DO NOT CHANGE: RESUMATE_JWT_SECRET signs browser JWTs."
-AUTH_PASSWORD_ENV_NAME = "AUTH_PASSWORD"
-DEFAULT_AUTH_PASSWORD = "ResuMate@2026"
-AUTH_PASSWORD_COMMENT = (
-    "# Login password used by /api/auth/login. You may change this value."
-)
-SECRET_ENV_COMMENTS = {
-    MASTER_KEY_ENV_NAME: MASTER_KEY_COMMENT,
-    JWT_SECRET_ENV_NAME: JWT_SECRET_COMMENT,
-}
-
-
-@dataclass(frozen=True)
-class AuthCredential:
-    """Store one configured username and password pair."""
-
-    username: str
-    password: str
 
 
 @dataclass(frozen=True)
@@ -42,7 +24,6 @@ class Settings:
 
     app_name: str
     app_version: str
-    app_env: str
     data_dir: Path
     db_path: Path
     storage_dir: Path
@@ -54,8 +35,6 @@ class Settings:
     frontend_render_base_url: str
     pdf_render_timeout_ms: int
     cors_origins: tuple[str, ...]
-    auth_credentials: tuple[AuthCredential, ...]
-    auth_required: bool
 
 
 def expand_path(value: str | Path) -> Path:
@@ -132,85 +111,25 @@ def load_env_file(path: Path) -> None:
         os.environ[env_name] = _parse_env_value(value)
 
 
-def _read_env_file_values(path: Path) -> dict[str, str]:
-    """Read all key-value pairs from a .env file without changing os.environ."""
-
-    if not path.exists() or not path.is_file():
-        return {}
-
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-
-        key, value = stripped.split("=", 1)
-        env_name = key.strip()
-        if env_name:
-            values[env_name] = _parse_env_value(value)
-
-    return values
-
-
-def _write_env_from_example(path: Path, overrides: dict[str, str]) -> None:
-    """Create a runtime .env from the template and optional migrated values."""
+def _write_env_from_example(path: Path) -> None:
+    """Create a runtime .env from the project template."""
 
     if not DEFAULT_ENV_EXAMPLE_PATH.exists():
         path.touch()
         return
 
-    output: list[str] = []
-    seen: set[str] = set()
-    secret_overrides = {name for name in SECRET_ENV_COMMENTS if overrides.get(name)}
-
-    for line in DEFAULT_ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            replacement_comment = next(
-                (
-                    SECRET_ENV_COMMENTS[name]
-                    for name in secret_overrides
-                    if name in stripped
-                ),
-                None,
-            )
-            if replacement_comment:
-                output.append(replacement_comment)
-                continue
-
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            output.append(line)
-            continue
-
-        key, _ = stripped.split("=", 1)
-        env_name = key.strip()
-        seen.add(env_name)
-        if overrides.get(env_name):
-            output.append(f"{env_name}={overrides[env_name]}")
-        else:
-            output.append(line)
-
-    extras = [key for key in overrides if key not in seen and overrides[key]]
-    if extras:
-        output.extend(["", "# Local-only values preserved from the previous .env."])
-        output.extend(f"{key}={overrides[key]}" for key in extras)
-
-    path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    template = DEFAULT_ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    path.write_text(template.rstrip() + "\n", encoding="utf-8")
 
 
-def _ensure_env_file(path: Path, *, allow_legacy_migration: bool) -> None:
+def _ensure_env_file(path: Path) -> None:
     """Create the runtime .env once; never overwrite an existing file."""
 
     if path.exists():
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_values = (
-        _read_env_file_values(LEGACY_ENV_PATH)
-        if allow_legacy_migration and LEGACY_ENV_PATH != path
-        else {}
-    )
-    _write_env_from_example(path, legacy_values)
+    _write_env_from_example(path)
 
 
 def _append_env_value(path: Path, key: str, value: str, comment: str) -> None:
@@ -351,22 +270,6 @@ def ensure_jwt_secret(path: Path) -> str:
     return generated
 
 
-def ensure_auth_password(path: Path) -> str:
-    """Load or create the login password stored in the runtime .env file."""
-
-    persisted_password = _read_env_file_value(path, AUTH_PASSWORD_ENV_NAME)
-    if persisted_password:
-        os.environ[AUTH_PASSWORD_ENV_NAME] = persisted_password
-        return persisted_password
-
-    environment_password = os.getenv(AUTH_PASSWORD_ENV_NAME)
-    password = environment_password if environment_password else DEFAULT_AUTH_PASSWORD
-    _write_env_value(path, AUTH_PASSWORD_ENV_NAME, password, AUTH_PASSWORD_COMMENT)
-    os.environ[AUTH_PASSWORD_ENV_NAME] = password
-
-    return password
-
-
 def _parse_origins(value: str | None) -> tuple[str, ...]:
     """Parse the comma-separated CORS origin list."""
 
@@ -379,24 +282,6 @@ def _parse_origins(value: str | None) -> tuple[str, ...]:
         )
 
     return tuple(origin.strip() for origin in value.split(",") if origin.strip())
-
-
-def _parse_auth_credentials() -> tuple[AuthCredential, ...]:
-    """Build configured login credentials from the environment."""
-
-    username = os.getenv("AUTH_USERNAME", "").strip()
-    password = os.getenv("AUTH_PASSWORD", "")
-
-    if not username or not password:
-        return ()
-
-    return (AuthCredential(username=username, password=password),)
-
-
-def _is_production(app_env: str) -> bool:
-    """Return whether the app should run production-only protections."""
-
-    return app_env.strip().lower() == "production"
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -418,28 +303,22 @@ def get_settings() -> Settings:
     explicit_env_file_path = os.getenv("APP_ENV_FILE")
     if explicit_env_file_path:
         env_file_path = expand_path(explicit_env_file_path)
-        allow_legacy_migration = False
     else:
         env_file_path = _path_from_env("APP_DATA_DIR", DEFAULT_DATA_DIR) / ".env"
-        allow_legacy_migration = True
 
-    _ensure_env_file(env_file_path, allow_legacy_migration=allow_legacy_migration)
+    _ensure_env_file(env_file_path)
     load_env_file(env_file_path)
     ensure_master_key(env_file_path)
     ensure_jwt_secret(env_file_path)
-    ensure_auth_password(env_file_path)
 
     # Runtime data defaults outside the repository so project updates do not
     # overwrite user databases, uploads, or exports.
     data_dir = _path_from_env("APP_DATA_DIR", DEFAULT_DATA_DIR)
     storage_dir = _path_from_env("APP_STORAGE_DIR", data_dir / "storage")
 
-    app_env = os.getenv("APP_ENV", "development")
-
     return Settings(
         app_name="ResuMate Backend",
         app_version="0.1.0",
-        app_env=app_env,
         data_dir=data_dir,
         db_path=_path_from_env("APP_DB_PATH", data_dir / "app.db"),
         storage_dir=storage_dir,
@@ -457,23 +336,4 @@ def get_settings() -> Settings:
         ).rstrip("/"),
         pdf_render_timeout_ms=_parse_int(os.getenv("PDF_RENDER_TIMEOUT_MS"), 30000),
         cors_origins=_parse_origins(os.getenv("BACKEND_CORS_ORIGINS")),
-        auth_credentials=_parse_auth_credentials(),
-        auth_required=_is_production(app_env),
     )
-
-
-def update_auth_password(env_file_path: Path, password: str) -> None:
-    """Persist a new login password and clear cached settings."""
-
-    value = password.strip()
-    if not value:
-        raise ValueError("Password is required.")
-
-    _write_env_value(
-        env_file_path,
-        AUTH_PASSWORD_ENV_NAME,
-        value,
-        AUTH_PASSWORD_COMMENT,
-    )
-    os.environ[AUTH_PASSWORD_ENV_NAME] = value
-    get_settings.cache_clear()

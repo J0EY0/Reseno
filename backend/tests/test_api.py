@@ -11,7 +11,6 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from app import config as app_config
 from app.agent_locales import DEFAULT_AGENT_LOCALE, SUPPORTED_AGENT_LOCALES
 from app.config import get_settings
 from app.db.connection import connect
@@ -70,7 +69,8 @@ from app.services.agent.section_registry import (
 )
 from app.services.agent.tools import registry as tool_registry
 from app.services.agent.tools.runner import AgentToolRunner
-from app.services.auth_tokens import create_access_token
+from app.services.auth_accounts import get_auth_db_path
+from app.services.auth_tokens import create_access_token, decode_access_token
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -322,7 +322,7 @@ def test_local_model_provider_does_not_offer_model_discovery(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     payload = response.json()
     assert payload["code"] == 40000
     assert payload["message"] == "MODEL_DISCOVERY_FAILED"
@@ -860,6 +860,45 @@ def test_workspace_bootstrap_endpoint_is_removed(client: TestClient) -> None:
     response = client.get("/api/workspace/bootstrap?locale=zh&scope=models")
 
     assert response.status_code == 404
+    assert response.json() == {
+        "code": 40004,
+        "message": "NOT_FOUND",
+        "data": None,
+        "requestId": None,
+    }
+
+
+def test_unhandled_api_exception_returns_500_envelope_and_is_logged(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_unhandled_error() -> None:
+        raise RuntimeError("unhandled-error-sentinel")
+
+    client.app.add_api_route(
+        "/api/test/unhandled-error",
+        raise_unhandled_error,
+        methods=["GET"],
+    )
+    monkeypatch.setattr(client._transport, "raise_server_exceptions", False)
+
+    response = client.get("/api/test/unhandled-error")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": 50000,
+        "message": "INTERNAL_SERVER_ERROR",
+        "data": None,
+        "requestId": None,
+    }
+    assert "unhandled-error-sentinel" not in response.text
+    assert any(
+        record.name == "app.exceptions"
+        and record.exc_info is not None
+        and str(record.exc_info[1]) == "unhandled-error-sentinel"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize(
@@ -1030,11 +1069,11 @@ def test_resume_save_rejects_incomplete_current_contract_without_new_version(
     del payload[missing_field]
 
     rejected = client.put(f"/api/resumes/{created['id']}", json=payload)
-    versions = client.get(f"/api/resumes/{created['id']}/versions").json()[
-        "data"
-    ]["versions"]
+    versions = client.get(f"/api/resumes/{created['id']}/versions").json()["data"][
+        "versions"
+    ]
 
-    assert rejected.status_code == 200
+    assert rejected.status_code == 422
     assert rejected.json()["code"] == 40002
     assert rejected.json()["message"] == "VALIDATION_ERROR"
     assert [item["versionId"] for item in versions] == ["1"]
@@ -1318,9 +1357,7 @@ def test_resume_commands_reject_invalid_template_references_and_rebind_copies(
     client.post(f"/api/resumes/{deleted_source['id']}/trash")
 
     client.post(f"/api/templates/{template_id}/trash")
-    rebound_source = client.get(f"/api/resumes/{source_id}").json()["data"][
-        "resume"
-    ]
+    rebound_source = client.get(f"/api/resumes/{source_id}").json()["data"]["resume"]
     deleted_resumes = client.get("/api/resumes?status=deleted").json()["data"][
         "resumes"
     ]
@@ -1335,9 +1372,9 @@ def test_resume_commands_reject_invalid_template_references_and_rebind_copies(
         f"/api/resumes/{source_id}",
         json=resume_save_payload(source, template=template_id),
     )
-    versions_after_rejection = client.get(
-        f"/api/resumes/{source_id}/versions"
-    ).json()["data"]["versions"]
+    versions_after_rejection = client.get(f"/api/resumes/{source_id}/versions").json()[
+        "data"
+    ]["versions"]
     accepted_save = client.put(
         f"/api/resumes/{source_id}",
         json=resume_save_payload(rebound_source),
@@ -1396,16 +1433,12 @@ def test_trash_template_rolls_back_rebind_files_when_a_resume_write_fails(
             "SELECT id, current_version_id FROM resumes ORDER BY id"
         ).fetchall()
     assert template_row["deleted"] == 0
-    assert {
-        row["id"]: row["current_version_id"] for row in resume_rows
-    } == {resume_id: 1 for resume_id in resume_ids}
+    assert {row["id"]: row["current_version_id"] for row in resume_rows} == {
+        resume_id: 1 for resume_id in resume_ids
+    }
     for resume_id in resume_ids:
         version_path = (
-            get_settings().storage_dir
-            / "resumes"
-            / resume_id
-            / "versions"
-            / "2.json"
+            get_settings().storage_dir / "resumes" / resume_id / "versions" / "2.json"
         )
         assert not version_path.exists()
         stored = client.get(f"/api/resumes/{resume_id}").json()["data"]["resume"]
@@ -1455,11 +1488,7 @@ def test_trash_template_cleans_rebind_files_when_default_update_fails(
     assert resume_row["current_version_id"] == 1
     assert default_template_id == template_id
     version_path = (
-        get_settings().storage_dir
-        / "resumes"
-        / resume_id
-        / "versions"
-        / "2.json"
+        get_settings().storage_dir / "resumes" / resume_id / "versions" / "2.json"
     )
     assert not version_path.exists()
     stored = client.get(f"/api/resumes/{resume_id}").json()["data"]["resume"]
@@ -1597,7 +1626,7 @@ def test_auth_login_does_not_return_credentials(
 ) -> None:
     login_response = unauthenticated_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "ResuMate@2026"},
+        json={"username": "admin", "password": "TestPassword2026"},
     )
     invalid_response = unauthenticated_client.post(
         "/api/auth/login",
@@ -1605,13 +1634,13 @@ def test_auth_login_does_not_return_credentials(
     )
 
     assert login_response.status_code == 200
-    assert "ResuMate@2026" not in login_response.text
+    assert "TestPassword2026" not in login_response.text
     login_data = login_response.json()["data"]
     assert login_data["username"] == "admin"
     assert login_data["tokenType"] == "bearer"
     assert login_data["accessToken"]
     assert login_data["expiresAt"]
-    assert invalid_response.status_code == 200
+    assert invalid_response.status_code == 401
     assert invalid_response.json()["code"] == 40001
     assert invalid_response.json()["message"] == "INVALID_CREDENTIALS"
 
@@ -1619,7 +1648,8 @@ def test_auth_login_does_not_return_credentials(
 def test_protected_api_requires_jwt(unauthenticated_client: TestClient) -> None:
     response = unauthenticated_client.get("/api/workspace/pages/settings")
 
-    assert response.status_code == 200
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
     assert response.json()["code"] == 40001
     assert response.json()["message"] == "UNAUTHORIZED_REQUEST"
     assert response.json()["data"]["loginUrl"] == "/login"
@@ -1628,71 +1658,383 @@ def test_protected_api_requires_jwt(unauthenticated_client: TestClient) -> None:
 def test_public_api_paths_only_include_login() -> None:
     from app.middleware.auth import PUBLIC_API_PATHS
 
-    assert PUBLIC_API_PATHS == {"/api/auth/login"}
+    assert PUBLIC_API_PATHS == {"/api/auth/login", "/api/auth/setup"}
 
 
-def test_protected_api_requires_jwt_with_default_initialized_password(
-    tmp_path,
-    monkeypatch,
+def test_auth_setup_creates_hashed_owner_and_signs_in(
+    uninitialized_client: TestClient,
 ) -> None:
-    from app.config import get_settings
-    from app.main import create_app
+    status_before = uninitialized_client.get("/api/auth/setup")
+    setup_response = uninitialized_client.post(
+        "/api/auth/setup",
+        json={
+            "username": " owner_1 ",
+            "password": "OwnerPassword1",
+            "confirmPassword": "OwnerPassword1",
+        },
+    )
+    status_after = uninitialized_client.get("/api/auth/setup")
+    token = setup_response.json()["data"]["accessToken"]
+    protected_response = uninitialized_client.get(
+        "/api/workspace/pages/settings",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with sqlite3.connect(get_auth_db_path()) as conn:
+        owner = conn.execute(
+            """
+            SELECT username, password_hash, auth_revision
+            FROM auth_owner
+            WHERE id = 1
+            """
+        ).fetchone()
 
-    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
-    monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
-    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
-    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
-    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("AUTH_USERNAME", "admin")
-    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
-    get_settings.cache_clear()
+    env_content = get_settings().env_file_path.read_text(encoding="utf-8")
 
-    with TestClient(create_app()) as test_client:
-        response = test_client.get("/api/workspace/pages/settings")
+    assert status_before.json()["data"] == {"setupRequired": True}
+    assert status_before.headers["Cache-Control"] == "no-store"
+    assert setup_response.json()["code"] == 0
+    assert setup_response.json()["data"]["username"] == "owner_1"
+    assert "OwnerPassword1" not in setup_response.text
+    assert status_after.json()["data"] == {"setupRequired": False}
+    assert protected_response.json()["code"] == 0
+    assert get_auth_db_path() == get_settings().data_dir / "auth.db"
+    assert get_auth_db_path().stat().st_mode & 0o777 == 0o600
+    assert owner[0] == "owner_1"
+    assert owner[1].startswith("$argon2id$")
+    assert "OwnerPassword1" not in owner[1]
+    assert owner[2]
+    with connect() as conn:
+        business_tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+    assert "auth_owner" not in business_tables
+    assert "AUTH_USERNAME" not in env_content
+    assert "AUTH_PASSWORD" not in env_content
 
-    env_content = (tmp_path / ".env").read_text(encoding="utf-8")
-    get_settings.cache_clear()
 
-    assert "AUTH_PASSWORD=ResuMate@2026" in env_content
-    assert response.status_code == 200
+def test_all_environments_require_authentication(
+    uninitialized_client: TestClient,
+) -> None:
+    response = uninitialized_client.get("/api/workspace/pages/settings")
+
+    assert response.status_code == 401
     assert response.json()["code"] == 40001
     assert response.json()["message"] == "UNAUTHORIZED_REQUEST"
 
 
-def test_development_app_env_skips_jwt_middleware(tmp_path, monkeypatch) -> None:
-    from app.config import get_settings
+def test_auth_setup_can_only_run_once(uninitialized_client: TestClient) -> None:
+    first_response = uninitialized_client.post(
+        "/api/auth/setup",
+        json={
+            "username": "first-owner",
+            "password": "FirstPassword1",
+            "confirmPassword": "FirstPassword1",
+        },
+    )
+    second_response = uninitialized_client.post(
+        "/api/auth/setup",
+        json={
+            "username": "second-owner",
+            "password": "SecondPassword2",
+            "confirmPassword": "SecondPassword2",
+        },
+    )
+    second_login = uninitialized_client.post(
+        "/api/auth/login",
+        json={"username": "second-owner", "password": "SecondPassword2"},
+    )
+
+    assert first_response.json()["code"] == 0
+    assert second_response.status_code == 409
+    assert second_response.json()["code"] == 40000
+    assert second_response.json()["message"] == "SETUP_ALREADY_COMPLETED"
+    assert second_login.status_code == 401
+    assert second_login.json()["message"] == "INVALID_CREDENTIALS"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_message"),
+    [
+        (
+            {
+                "username": " ",
+                "password": "ValidPassword1",
+                "confirmPassword": "ValidPassword1",
+            },
+            "USERNAME_REQUIRED",
+        ),
+        (
+            {
+                "username": "a!",
+                "password": "ValidPassword1",
+                "confirmPassword": "ValidPassword1",
+            },
+            "USERNAME_INVALID",
+        ),
+        (
+            {"username": "owner", "password": "", "confirmPassword": ""},
+            "PASSWORD_REQUIRED",
+        ),
+        (
+            {
+                "username": "owner",
+                "password": "Pass1",
+                "confirmPassword": "Pass1",
+            },
+            "PASSWORD_TOO_SHORT",
+        ),
+        (
+            {
+                "username": "owner",
+                "password": "OnlyLetters",
+                "confirmPassword": "OnlyLetters",
+            },
+            "PASSWORD_COMPLEXITY_REQUIRED",
+        ),
+        (
+            {
+                "username": "owner",
+                "password": "ValidPassword1",
+                "confirmPassword": "DifferentPassword2",
+            },
+            "PASSWORD_CONFIRMATION_MISMATCH",
+        ),
+    ],
+)
+def test_auth_setup_validates_owner_credentials(
+    uninitialized_client: TestClient,
+    payload: dict[str, str],
+    expected_message: str,
+) -> None:
+    response = uninitialized_client.post("/api/auth/setup", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == expected_message
+    assert uninitialized_client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": True
+    }
+
+
+def test_auth_setup_rejects_non_loopback_client(
+    uninitialized_client: TestClient,
+) -> None:
+    remote_client = TestClient(
+        uninitialized_client.app,
+        client=("192.168.1.20", 50000),
+    )
+    try:
+        response = remote_client.post(
+            "/api/auth/setup",
+            json={
+                "username": "owner",
+                "password": "OwnerPassword1",
+                "confirmPassword": "OwnerPassword1",
+            },
+        )
+    finally:
+        remote_client.close()
+
+    assert response.status_code == 403
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == "SETUP_LOCAL_ONLY"
+    assert uninitialized_client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": True
+    }
+
+
+def test_auth_database_must_not_share_the_business_database_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     from app.main import create_app
 
-    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
-    monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    shared_db_path = tmp_path / "auth.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(shared_db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+
+    with pytest.raises(
+        RuntimeError,
+        match="APP_DB_PATH must not point to APP_DATA_DIR/auth.db",
+    ):
+        with TestClient(
+            create_app(),
+            client=("127.0.0.1", 50000),
+        ):
+            pass
+
+    get_settings.cache_clear()
+    assert not shared_db_path.exists()
+
+
+def test_auth_setup_preserves_password_whitespace(
+    uninitialized_client: TestClient,
+) -> None:
+    password = " OwnerPassword1 "
+    uninitialized_client.post(
+        "/api/auth/setup",
+        json={
+            "username": "owner",
+            "password": password,
+            "confirmPassword": password,
+        },
+    )
+
+    exact_login = uninitialized_client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": password},
+    )
+    trimmed_login = uninitialized_client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": password.strip()},
+    )
+
+    assert exact_login.json()["code"] == 0
+    assert trimmed_login.json()["message"] == "INVALID_CREDENTIALS"
+
+
+def test_auth_service_initializes_fresh_database_without_app_lifespan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.services.auth_accounts import (
+        OwnerAlreadyExistsError,
+        create_owner,
+    )
+
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
-    monkeypatch.setenv("APP_ENV", "development")
-    monkeypatch.setenv("AUTH_USERNAME", "admin")
-    monkeypatch.setenv("AUTH_PASSWORD", "ResuMate@2026")
+    get_settings.cache_clear()
+    get_settings()
+    barrier = Barrier(2)
+
+    def create(username: str) -> str:
+        barrier.wait()
+        try:
+            return create_owner(username, "ServicePassword1").username
+        except OwnerAlreadyExistsError:
+            return "already-exists"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(create, ("service-one", "service-two")))
+
+    get_settings.cache_clear()
+    assert get_auth_db_path().exists()
+    assert results.count("already-exists") == 1
+
+
+@pytest.mark.parametrize("_round", range(20))
+def test_auth_setup_is_atomic_under_concurrent_requests(
+    uninitialized_client: TestClient,
+    _round: int,
+) -> None:
+    barrier = Barrier(2)
+
+    def submit_setup(username: str) -> dict:
+        barrier.wait()
+        return uninitialized_client.post(
+            "/api/auth/setup",
+            json={
+                "username": username,
+                "password": "ConcurrentPassword1",
+                "confirmPassword": "ConcurrentPassword1",
+            },
+        ).json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(submit_setup, ("owner-one", "owner-two")))
+
+    with sqlite3.connect(get_auth_db_path()) as conn:
+        owner_count = conn.execute("SELECT COUNT(*) FROM auth_owner").fetchone()[0]
+
+    assert sorted(response["code"] for response in responses) == [0, 40000]
+    assert {response["message"] for response in responses if response["code"] != 0} == {
+        "SETUP_ALREADY_COMPLETED"
+    }
+    assert owner_count == 1
+
+
+def test_old_jwt_cannot_authenticate_against_replaced_auth_database(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.main import create_app
+
+    env_file = tmp_path / ".env"
+    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    first_data_dir = tmp_path / "first-data"
+    replacement_data_dir = tmp_path / "replacement-data"
+    business_db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(first_data_dir))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(first_data_dir / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(env_file))
+    monkeypatch.setenv("APP_DB_PATH", str(business_db_path))
     get_settings.cache_clear()
 
-    with TestClient(create_app()) as test_client:
-        response = test_client.get("/api/workspace/pages/settings")
-        password_response = test_client.post(
-            "/api/auth/password",
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as first_client:
+        first_setup = first_client.post(
+            "/api/auth/setup",
             json={
-                "currentPassword": "ResuMate@2026",
-                "newPassword": "Changed@2026",
-                "confirmPassword": "Changed@2026",
+                "username": "first-owner",
+                "password": "FirstPassword1",
+                "confirmPassword": "FirstPassword1",
             },
+        )
+        old_token = first_setup.json()["data"]["accessToken"]
+
+    monkeypatch.setenv("APP_DATA_DIR", str(replacement_data_dir))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(replacement_data_dir / "storage"))
+    get_settings.cache_clear()
+
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as replacement_client:
+        old_token_response = replacement_client.get(
+            "/api/workspace/pages/settings",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        setup_status = replacement_client.get("/api/auth/setup")
+        replacement_setup = replacement_client.post(
+            "/api/auth/setup",
+            json={
+                "username": "first-owner",
+                "password": "FirstPassword1",
+                "confirmPassword": "FirstPassword1",
+            },
+        )
+        replacement_token = replacement_setup.json()["data"]["accessToken"]
+        old_token_after_setup = replacement_client.get(
+            "/api/workspace/pages/settings",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        replacement_token_response = replacement_client.get(
+            "/api/workspace/pages/settings",
+            headers={"Authorization": f"Bearer {replacement_token}"},
         )
 
     get_settings.cache_clear()
 
-    assert response.status_code == 200
-    assert response.json()["code"] == 0
-    assert password_response.status_code == 200
-    assert password_response.json()["code"] == 0
+    assert old_token_response.json()["code"] == 40001
+    assert setup_status.json()["data"] == {"setupRequired": True}
+    assert old_token_after_setup.json()["code"] == 40001
+    assert replacement_token_response.json()["code"] == 0
+    old_payload = decode_access_token(old_token)
+    replacement_payload = decode_access_token(replacement_token)
+    assert old_payload.subject == replacement_payload.subject == "first-owner"
+    assert old_payload.auth_revision != replacement_payload.auth_revision
 
 
 def test_auth_refresh_revokes_previous_jwt(
@@ -1700,7 +2042,7 @@ def test_auth_refresh_revokes_previous_jwt(
 ) -> None:
     login_response = unauthenticated_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "ResuMate@2026"},
+        json={"username": "admin", "password": "TestPassword2026"},
     )
     old_token = login_response.json()["data"]["accessToken"]
     refresh_response = unauthenticated_client.post(
@@ -1720,54 +2062,79 @@ def test_auth_refresh_revokes_previous_jwt(
 
     assert refresh_response.status_code == 200
     assert new_token != old_token
-    assert old_token_response.status_code == 200
+    assert old_token_response.status_code == 401
     assert old_token_response.json()["code"] == 40001
     assert old_token_response.json()["message"] == "UNAUTHORIZED_REQUEST"
     assert new_token_response.status_code == 200
     assert new_token_response.json()["code"] == 0
 
 
-def test_auth_password_update_writes_env_and_requires_new_login(
+def test_auth_password_update_stores_hash_and_revokes_all_tokens(
     unauthenticated_client: TestClient,
 ) -> None:
     settings = get_settings()
-    login_response = unauthenticated_client.post(
+    with sqlite3.connect(get_auth_db_path()) as conn:
+        previous_revision = conn.execute(
+            "SELECT auth_revision FROM auth_owner WHERE id = 1"
+        ).fetchone()[0]
+    first_login_response = unauthenticated_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "ResuMate@2026"},
+        json={"username": "admin", "password": "TestPassword2026"},
     )
-    token = login_response.json()["data"]["accessToken"]
+    second_login_response = unauthenticated_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "TestPassword2026"},
+    )
+    first_token = first_login_response.json()["data"]["accessToken"]
+    second_token = second_login_response.json()["data"]["accessToken"]
     update_response = unauthenticated_client.post(
         "/api/auth/password",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {first_token}"},
         json={
-            "currentPassword": "ResuMate@2026",
+            "currentPassword": "TestPassword2026",
             "newPassword": "Changed@2026",
             "confirmPassword": "Changed@2026",
         },
     )
     old_login_response = unauthenticated_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "ResuMate@2026"},
+        json={"username": "admin", "password": "TestPassword2026"},
     )
     new_login_response = unauthenticated_client.post(
         "/api/auth/login",
         json={"username": "admin", "password": "Changed@2026"},
     )
-    revoked_token_response = unauthenticated_client.get(
+    first_token_response = unauthenticated_client.get(
         "/api/workspace/pages/settings",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {first_token}"},
     )
+    second_token_response = unauthenticated_client.get(
+        "/api/workspace/pages/settings",
+        headers={"Authorization": f"Bearer {second_token}"},
+    )
+    with sqlite3.connect(get_auth_db_path()) as conn:
+        password_hash, current_revision = conn.execute(
+            """
+            SELECT password_hash, auth_revision
+            FROM auth_owner
+            WHERE id = 1
+            """
+        ).fetchone()
+    env_content = settings.env_file_path.read_text(encoding="utf-8")
 
     assert update_response.status_code == 200
     assert update_response.json()["code"] == 0
     assert update_response.json()["data"] == {"username": "admin", "updated": True}
-    assert "AUTH_PASSWORD=Changed@2026" in settings.env_file_path.read_text(
-        encoding="utf-8"
-    )
+    assert password_hash.startswith("$argon2id$")
+    assert "Changed@2026" not in password_hash
+    assert current_revision != previous_revision
+    assert "Changed@2026" not in env_content
+    assert "TestPassword2026" not in env_content
     assert old_login_response.json()["code"] == 40001
     assert old_login_response.json()["message"] == "INVALID_CREDENTIALS"
     assert new_login_response.json()["code"] == 0
-    assert revoked_token_response.json()["code"] == 40001
+    assert first_token_response.json()["code"] == 40001
+    assert second_token_response.json()["code"] == 40001
 
 
 def test_auth_password_update_validates_confirmation(
@@ -1776,13 +2143,13 @@ def test_auth_password_update_validates_confirmation(
     response = client.post(
         "/api/auth/password",
         json={
-            "currentPassword": "ResuMate@2026",
+            "currentPassword": "TestPassword2026",
             "newPassword": "Changed@2026",
             "confirmPassword": "Mismatch@2026",
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "PASSWORD_CONFIRMATION_MISMATCH"
 
@@ -1800,20 +2167,24 @@ def test_auth_password_update_wrong_current_password_keeps_session(
     )
     session_response = client.get("/api/workspace/pages/settings")
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "INVALID_CREDENTIALS"
     assert session_response.json()["code"] == 0
 
 
 def test_expired_jwt_is_rejected(client: TestClient) -> None:
-    expired_token, _ = create_access_token("admin", ttl_seconds=-1)
+    expired_token, _ = create_access_token(
+        "admin",
+        "expired-revision",
+        ttl_seconds=-1,
+    )
     response = client.get(
         "/api/workspace/pages/settings",
         headers={"Authorization": f"Bearer {expired_token}"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 401
     assert response.json()["code"] == 40001
     assert response.json()["message"] == "UNAUTHORIZED_REQUEST"
 
@@ -1908,7 +2279,7 @@ def test_template_image_sources_require_uploaded_data_urls(
         json={"template": template},
     )
 
-    assert remote_response.status_code == 200
+    assert remote_response.status_code == 422
     assert remote_response.json()["code"] == 40002
     assert remote_response.json()["message"] == "VALIDATION_ERROR"
     assert remote_response.json()["data"]["errors"][0]["loc"][-1] == "src"
@@ -1966,7 +2337,7 @@ def test_template_images_must_fit_within_the_a4_page(
 
     response = client.post("/api/templates", json={"template": template})
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert response.json()["code"] == 40002
     error = response.json()["data"]["errors"][0]
     assert error["loc"][-3:] == ["layout", "images", 0]
@@ -2128,7 +2499,7 @@ def test_user_settings_endpoint_rejects_workspace_resource_fields(
         json={"settings": {"resumes": []}},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert response.json()["code"] != 0
     assert response.json()["message"] == "VALIDATION_ERROR"
 
@@ -2323,8 +2694,8 @@ def test_master_key_generated_once(client: TestClient) -> None:
 
     assert second_settings.env_file_path == env_file
     assert "APP_DATA_DIR=~/.resumate" in first_content
-    assert "AUTH_PASSWORD=ResuMate@2026" in first_content
-    assert "AUTH_PASSWORD=replace-me" not in first_content
+    assert "AUTH_USERNAME" not in first_content
+    assert "AUTH_PASSWORD" not in first_content
     assert "DO NOT CHANGE: RESUMATE_MASTER_KEY" in first_content
     assert "DO NOT CHANGE: RESUMATE_JWT_SECRET" in first_content
     assert first_content == second_content
@@ -2337,8 +2708,7 @@ def test_existing_master_key_is_not_rewritten(tmp_path, monkeypatch) -> None:
     master_key = Fernet.generate_key().decode("ascii")
     jwt_secret = "x" * 48
     original_content = (
-        f"APP_ENV=development\n"
-        f"AUTH_PASSWORD=custom-password\n"
+        f"CUSTOM_VALUE=preserved\n"
         f"RESUMATE_MASTER_KEY={master_key}\n"
         f"RESUMATE_JWT_SECRET={jwt_secret}\n"
     )
@@ -2366,7 +2736,6 @@ def test_default_env_file_lives_in_data_dir(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
     monkeypatch.setenv("APP_DB_PATH", str(data_dir / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(data_dir / "storage"))
-    monkeypatch.setattr(app_config, "LEGACY_ENV_PATH", tmp_path / "missing.env")
     get_settings.cache_clear()
 
     settings = get_settings()
@@ -2376,7 +2745,8 @@ def test_default_env_file_lives_in_data_dir(tmp_path, monkeypatch) -> None:
     assert settings.env_file_path == env_file.resolve()
     assert env_file.exists()
     assert "APP_DATA_DIR=~/.resumate" in content
-    assert "AUTH_PASSWORD=ResuMate@2026" in content
+    assert "AUTH_USERNAME" not in content
+    assert "AUTH_PASSWORD" not in content
     assert "DO NOT CHANGE: RESUMATE_MASTER_KEY" in content
     assert "DO NOT CHANGE: RESUMATE_JWT_SECRET" in content
     assert content.count("RESUMATE_MASTER_KEY=") == 1
@@ -2432,39 +2802,85 @@ def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
     assert row["enabled"] == 0
 
 
-def test_ensure_database_schema_initializes_fresh_database_idempotently_as_v1(
+def test_existing_v1_database_starts_unchanged_with_separate_auth_database(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from app.db.schema import CURRENT_SCHEMA_VERSION, ensure_database_schema
+    from app.db.schema import CURRENT_SCHEMA_VERSION
+    from app.main import create_app
 
     db_path = tmp_path / "app.db"
+    frozen_schema_path = Path(__file__).parent / "fixtures" / "app_schema_v1.sql"
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APP_DB_PATH", str(db_path))
     monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
     get_settings.cache_clear()
 
-    ensure_database_schema()
-    ensure_database_schema()
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(frozen_schema_path.read_text(encoding="utf-8"))
+        conn.execute("PRAGMA user_version = 1")
+        conn.execute(
+            """
+            INSERT INTO resumes (id, title, saved_at)
+            VALUES ('resume-v1-sentinel', 'Existing V1 Resume', '2026-08-09')
+            """
+        )
+        schema_before = conn.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+        user_version_before = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    with TestClient(
+        create_app(),
+        client=("127.0.0.1", 50000),
+    ) as test_client:
+        setup_status = test_client.get("/api/auth/setup")
 
     with sqlite3.connect(db_path) as conn:
-        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        user_version_after = conn.execute("PRAGMA user_version").fetchone()[0]
+        schema_after = conn.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+        sentinel = conn.execute(
+            """
+            SELECT title, saved_at
+            FROM resumes
+            WHERE id = 'resume-v1-sentinel'
+            """
+        ).fetchone()
         tables = {
             row[0]
             for row in conn.execute(
                 "SELECT name FROM sqlite_schema WHERE type = 'table'"
             )
         }
-        resume_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(resumes)")
-        }
+        resume_columns = {row[1] for row in conn.execute("PRAGMA table_info(resumes)")}
         template_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(templates)")
         }
 
-    assert user_version == CURRENT_SCHEMA_VERSION == 1
-    assert {"workspace_state", "resumes", "templates", "llm_configs"} <= tables
+    assert setup_status.json()["data"] == {"setupRequired": True}
+    assert user_version_before == user_version_after == CURRENT_SCHEMA_VERSION == 1
+    assert schema_after == schema_before
+    assert sentinel == ("Existing V1 Resume", "2026-08-09")
+    assert {
+        "workspace_state",
+        "resumes",
+        "templates",
+        "llm_configs",
+    } <= tables
+    assert "auth_owner" not in tables
     assert resume_columns == {
         "id",
         "current_version_id",
@@ -2484,6 +2900,14 @@ def test_ensure_database_schema_initializes_fresh_database_idempotently_as_v1(
         "created_at",
         "updated_at",
     }
+    with sqlite3.connect(get_auth_db_path()) as conn:
+        auth_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+    assert "auth_owner" in auth_tables
     get_settings.cache_clear()
 
 
@@ -2559,8 +2983,7 @@ def test_ensure_database_schema_rejects_modified_index_without_repairing_it(
 
     with sqlite3.connect(db_path) as conn:
         indexed_columns = [
-            row[2]
-            for row in conn.execute("PRAGMA index_info(idx_resumes_status)")
+            row[2] for row in conn.execute("PRAGMA index_info(idx_resumes_status)")
         ]
         stored_user_version = conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -3174,9 +3597,11 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "Find missing keywords",
-            "conversation": [],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-guides-when-model-is-missing",
+                "role": "user",
+                "text": "Find missing keywords",
+            },
             "locale": "en",
             "resume": minimal_resume_document(
                 name="Avery",
@@ -3200,29 +3625,31 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
 
 
 def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "王小明"},
+    )
+    assert create_response.status_code == 200
+    created_resume = create_response.json()["data"]["resume"]
+    resume_id = created_resume["id"]
+    initial_session_response = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    )
+    expected_revision = initial_session_response.json()["data"]["revision"]
+
     _, response_message = post_agent_chat_stream(
         client,
         {
-            "resumeId": "resume-test",
-            "prompt": "帮我检查项目经历",
+            "resumeId": resume_id,
+            "expectedRevision": expected_revision,
             "message": {
                 "id": "agent-user-session-1",
                 "role": "user",
                 "text": "帮我检查项目经历",
             },
-            "messages": [
-                {
-                    "id": "agent-user-session-1",
-                    "role": "user",
-                    "text": "帮我检查项目经历",
-                },
-            ],
-            "conversation": [
-                {"role": "user", "text": "帮我检查项目经历"},
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
-            "resume": {"basic": {"name": "王小明"}, "sections": []},
+            "resume": created_resume["resume"],
             "jobBrief": "",
             "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
@@ -3230,12 +3657,12 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
             "settings": {},
         },
     )
-    session_response = client.get("/api/agent/resumes/resume-test/session")
+    session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
 
     assert session_response.status_code == 200
     session_data = session_response.json()["data"]
     messages = session_data["messages"]
-    assert session_data["resumeId"] == "resume-test"
+    assert session_data["resumeId"] == resume_id
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert len({message["id"] for message in messages}) == 2
     assert messages[0]["id"] == "agent-user-session-1"
@@ -3247,10 +3674,20 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
 def test_agent_session_put_replaces_persisted_messages(
     client: TestClient,
 ) -> None:
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "Editable agent session"},
+    )
+    assert create_response.status_code == 200
+    resume_id = create_response.json()["data"]["resume"]["id"]
+    initial_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
     first_response = client.put(
-        "/api/agent/resumes/resume-edit/session",
+        f"/api/agent/resumes/{resume_id}/session",
         json={
             "locale": "zh",
+            "revision": initial_session["revision"],
             "messages": [
                 {
                     "id": "agent-user-original",
@@ -3276,10 +3713,22 @@ def test_agent_session_put_replaces_persisted_messages(
             ],
         },
     )
+
+    assert first_response.status_code == 200
+    first_session = first_response.json()["data"]
+    first_messages = first_session["messages"]
+    assert [message["id"] for message in first_messages] == [
+        "agent-user-original",
+        "agent-assistant-original",
+        "agent-user-tail",
+    ]
+    assert first_messages[1]["response"]["quickReplies"] == ["继续"]
+
     second_response = client.put(
-        "/api/agent/resumes/resume-edit/session",
+        f"/api/agent/resumes/{resume_id}/session",
         json={
             "locale": "zh",
+            "revision": first_session["revision"],
             "messages": [
                 {
                     "id": "agent-user-original",
@@ -3289,15 +3738,6 @@ def test_agent_session_put_replaces_persisted_messages(
             ],
         },
     )
-
-    assert first_response.status_code == 200
-    first_messages = first_response.json()["data"]["messages"]
-    assert [message["id"] for message in first_messages] == [
-        "agent-user-original",
-        "agent-assistant-original",
-        "agent-user-tail",
-    ]
-    assert first_messages[1]["response"]["quickReplies"] == ["继续"]
 
     assert second_response.status_code == 200
     second_messages = second_response.json()["data"]["messages"]
@@ -3311,8 +3751,9 @@ def test_agent_session_put_replaces_persisted_messages(
             """
             SELECT COUNT(*) AS count
             FROM agent_messages
-            WHERE session_id = 'resume-edit'
+            WHERE session_id = ?
             """,
+            (resume_id,),
         ).fetchone()["count"]
 
     assert stored_count == 1
@@ -3321,7 +3762,12 @@ def test_agent_session_put_replaces_persisted_messages(
 def test_agent_session_replace_rejects_stale_revision_without_pruning_files(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-concurrent-replace"
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "Concurrent agent session"},
+    )
+    assert create_response.status_code == 200
+    resume_id = create_response.json()["data"]["resume"]["id"]
     winner_attachment = store_agent_attachment(
         session_id=resume_id,
         filename="winner.txt",
@@ -3334,11 +3780,15 @@ def test_agent_session_replace_rejects_stale_revision_without_pruning_files(
         media_type="text/plain",
         payload=b"stale",
     ).model_dump(mode="json", by_alias=True)
+    empty_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
 
     initial_response = client.put(
         f"/api/agent/resumes/{resume_id}/session",
         json={
             "locale": "en",
+            "revision": empty_session["revision"],
             "messages": [
                 {
                     "id": "initial-message",
@@ -3409,11 +3859,20 @@ def test_agent_session_replace_rejects_stale_revision_without_pruning_files(
 def test_agent_session_replace_serializes_two_concurrent_clients(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-simultaneous-replace"
+    create_response = client.post(
+        "/api/resumes",
+        json={"title": "Simultaneous agent session"},
+    )
+    assert create_response.status_code == 200
+    resume_id = create_response.json()["data"]["resume"]["id"]
+    empty_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
     initial_response = client.put(
         f"/api/agent/resumes/{resume_id}/session",
         json={
             "locale": "en",
+            "revision": empty_session["revision"],
             "messages": [
                 {
                     "id": "simultaneous-initial",
@@ -3429,13 +3888,14 @@ def test_agent_session_replace_serializes_two_concurrent_clients(
     def replace_from_client(
         test_client: TestClient,
         client_number: int,
+        expected_revision: str,
     ):
         start_together.wait(timeout=2)
         return test_client.put(
             f"/api/agent/resumes/{resume_id}/session",
             json={
                 "locale": "en",
-                "revision": initial_revision,
+                "revision": expected_revision,
                 "messages": [
                     {
                         "id": f"simultaneous-client-{client_number}",
@@ -3448,10 +3908,26 @@ def test_agent_session_replace_serializes_two_concurrent_clients(
 
     with TestClient(client.app) as second_client:
         second_client.headers.update(client.headers)
+        first_client_revision = client.get(
+            f"/api/agent/resumes/{resume_id}/session",
+        ).json()["data"]["revision"]
+        second_client_revision = second_client.get(
+            f"/api/agent/resumes/{resume_id}/session",
+        ).json()["data"]["revision"]
+        assert first_client_revision == second_client_revision == initial_revision
+
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [
-                executor.submit(replace_from_client, test_client, client_number)
-                for test_client, client_number in ((client, 1), (second_client, 2))
+                executor.submit(
+                    replace_from_client,
+                    test_client,
+                    client_number,
+                    expected_revision,
+                )
+                for test_client, client_number, expected_revision in (
+                    (client, 1, first_client_revision),
+                    (second_client, 2, second_client_revision),
+                )
             ]
             responses = [future.result() for future in futures]
 
@@ -3471,6 +3947,13 @@ def test_provider_failure_keeps_user_message_without_assistant(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    resume_id = client.post(
+        "/api/resumes",
+        json={"title": "Provider failure"},
+    ).json()["data"]["resume"]["id"]
+    initial_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
     model_config = create_agent_model_config(client)
 
     def raise_provider_error(*_: object) -> str:
@@ -3484,16 +3967,14 @@ def test_provider_failure_keeps_user_message_without_assistant(
     post_agent_chat_stream(
         client,
         {
-            "resumeId": "resume-provider-failure",
-            "prompt": "Keep this prompt.",
+            "resumeId": resume_id,
+            "expectedRevision": initial_session["revision"],
             "message": {
                 "id": "agent-user-provider-failure",
                 "role": "user",
                 "text": "Keep this prompt.",
             },
             "messages": [],
-            "conversation": [],
-            "files": [],
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
             "jobBrief": "",
@@ -3505,7 +3986,7 @@ def test_provider_failure_keeps_user_message_without_assistant(
     )
 
     session = client.get(
-        "/api/agent/resumes/resume-provider-failure/session",
+        f"/api/agent/resumes/{resume_id}/session",
     ).json()["data"]
     assert [(message["id"], message["role"]) for message in session["messages"]] == [
         ("agent-user-provider-failure", "user"),
@@ -3581,10 +4062,8 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         },
     )
     request = AgentChatRequest(
-        prompt="把刚才那个版本的第二条再短一点",
-        messages=conversation,
-        conversation=conversation,
-        files=[],
+        message=conversation[-1],
+        messages=conversation[:-1],
         locale="zh",
         resume={"basic": {"name": "王小明"}, "sections": []},
         draftState={
@@ -3699,10 +4178,12 @@ def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
         for index in range(40)
     ]
     request = AgentChatRequest(
-        prompt="只保留当前这条请求",
+        message={
+            "id": "agent-user-messages-drop-old-summaries-before-provider-call",
+            "role": "user",
+            "text": "只保留当前这条请求",
+        },
         messages=conversation,
-        conversation=conversation,
-        files=[],
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
         jobBrief="",
@@ -3740,10 +4221,12 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
         context_window_tokens=128,
     )
     request = AgentChatRequest(
-        prompt="继续",
+        message={
+            "id": "agent-user-messages-reject-state-that-cannot-fit-context",
+            "role": "user",
+            "text": "继续",
+        },
         messages=[],
-        conversation=[],
-        files=[],
         locale="zh",
         resume={
             "basic": {"name": "测试用户", "summary": "很长的简介" * 300},
@@ -3760,8 +4243,13 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
         build_agent_messages(request, config, mode="tools")
 
 
-def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
+def test_agent_messages_hide_personal_identity_from_model_payload(
+    client: TestClient,
+) -> None:
     session_id = "agent-message-privacy"
+    session_revision = client.get(
+        f"/api/agent/resumes/{session_id}/session",
+    ).json()["data"]["revision"]
     attachment = store_agent_attachment(
         session_id=session_id,
         filename="note.txt",
@@ -3782,7 +4270,12 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         context_window_tokens=24000,
     )
     request = AgentChatRequest(
-        prompt="帮王小明优化简介，电话 13800138000",
+        message={
+            "id": "agent-user-messages-hide-personal-identity-from-model-payload",
+            "role": "user",
+            "text": "帮王小明优化简介，电话 13800138000",
+            "files": [attachment],
+        },
         messages=[
             {
                 "id": "agent-user-1",
@@ -3790,8 +4283,6 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
                 "text": "王小明的邮箱是 xiaoming@example.com",
             },
         ],
-        conversation=[],
-        files=[attachment],
         locale="zh",
         resume={
             "basic": {
@@ -3813,6 +4304,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
         modelConfig=None,
         settings={},
         resume_id=session_id,
+        expected_revision=session_revision,
     )
 
     messages = build_agent_messages(request, config, mode="tools")
@@ -3840,10 +4332,12 @@ def test_agent_messages_hide_personal_identity_from_model_payload() -> None:
 
 def test_agent_executor_analyzes_pending_draft_resume() -> None:
     request = AgentChatRequest(
-        prompt="继续修改刚才的草稿",
+        message={
+            "id": "agent-user-executor-analyzes-pending-draft-resume",
+            "role": "user",
+            "text": "继续修改刚才的草稿",
+        },
         messages=[],
-        conversation=[],
-        files=[],
         locale="zh",
         resume={"basic": {"name": "王小明"}, "sections": []},
         draftState={
@@ -3886,7 +4380,11 @@ def test_agent_executor_analyzes_pending_draft_resume() -> None:
 
 def test_agent_resume_lookup_finds_target_item() -> None:
     request = AgentChatRequest(
-        prompt="缩短 ResuMate 项目",
+        message={
+            "id": "agent-user-resume-lookup-finds-target-item",
+            "role": "user",
+            "text": "缩短 ResuMate 项目",
+        },
         locale="zh",
         resume={
             "basic": {
@@ -3936,7 +4434,11 @@ def test_agent_resume_lookup_finds_target_item() -> None:
 
 def test_agent_draft_diff_summary_hides_personal_identity() -> None:
     request = AgentChatRequest(
-        prompt="解释刚才的草稿",
+        message={
+            "id": "agent-user-draft-diff-summary-hides-personal-identity",
+            "role": "user",
+            "text": "解释刚才的草稿",
+        },
         locale="zh",
         resume={
             "basic": {
@@ -4007,11 +4509,15 @@ def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
     assert "hidden personal fields" in rejected[0]["reason"]
 
 
-def test_agent_writes_explicit_location_without_observing_old_value() -> None:
+def test_agent_rejects_location_write_as_hidden_personal_data() -> None:
     resume = minimal_resume_item()["resume"]
     resume["basic"]["location"] = "杭州"
     request = AgentChatRequest(
-        prompt="请修改这份简历，只把基本信息中的地点改为远程，并生成待确认草稿。",
+        message={
+            "id": "agent-user-rejects-location-write-as-hidden-personal-data",
+            "role": "user",
+            "text": "请修改这份简历，只把基本信息中的地点改为远程，并生成待确认草稿。",
+        },
         locale="zh",
         resume=resume,
     )
@@ -4038,16 +4544,21 @@ def test_agent_writes_explicit_location_without_observing_old_value() -> None:
         ),
     )
 
-    assert tool.state == "output-available"
-    assert runner.draft_resume["basic"]["location"] == "远程"
-    assert result["output"]["observations"][0]["before"] == "[hidden]"
-    assert result["output"]["observations"][0]["after"] == "远程"
+    assert tool.state == "output-error"
+    assert runner.draft_resume["basic"]["location"] == "杭州"
+    assert result["output"]["editCount"] == 0
+    assert result["output"]["rejectedEditCount"] == 1
+    assert "hidden personal fields" in result["output"]["rejectedEdits"][0]["reason"]
     assert "杭州" not in json.dumps(result["output"], ensure_ascii=False)
 
 
 def test_agent_edit_move_item_rejects_cross_kind_content() -> None:
     request = AgentChatRequest(
-        prompt="把项目移动到其他经历",
+        message={
+            "id": "agent-user-edit-move-item-rejects-cross-kind-content",
+            "role": "user",
+            "text": "把项目移动到其他经历",
+        },
         locale="zh",
         resume={
             "basic": {"name": "王小明"},
@@ -4113,7 +4624,11 @@ def test_agent_edit_move_item_rejects_cross_kind_content() -> None:
 
 def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -> None:
     request = AgentChatRequest(
-        prompt="拆分项目经历",
+        message={
+            "id": "agent-user-split-missing-target",
+            "role": "user",
+            "text": "拆分项目经历",
+        },
         locale="zh",
         resume={
             "basic": {},
@@ -4172,7 +4687,11 @@ def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
         },
     ]
     request = AgentChatRequest(
-        prompt="拆分项目经历",
+        message={
+            "id": "agent-user-edit-split-item-generates-fresh-second-item-id",
+            "role": "user",
+            "text": "拆分项目经历",
+        },
         locale="zh",
         resume=resume,
     )
@@ -4206,7 +4725,11 @@ def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
 
 def test_agent_edit_merge_items_rejects_missing_target_without_partial_delete() -> None:
     request = AgentChatRequest(
-        prompt="合并项目经历",
+        message={
+            "id": "agent-user-merge-missing-target",
+            "role": "user",
+            "text": "合并项目经历",
+        },
         locale="zh",
         resume={
             "basic": {},
@@ -4248,7 +4771,11 @@ def test_agent_edit_merge_items_rejects_missing_target_without_partial_delete() 
 
 def test_agent_edit_merge_items_rejects_duplicate_item_ids() -> None:
     request = AgentChatRequest(
-        prompt="合并项目经历",
+        message={
+            "id": "agent-user-edit-merge-items-rejects-duplicate-item-ids",
+            "role": "user",
+            "text": "合并项目经历",
+        },
         locale="zh",
         resume={
             "basic": {},
@@ -4309,7 +4836,11 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
         },
     ]
     request = AgentChatRequest(
-        prompt="把刚才草稿里的项目描述再短一点",
+        message={
+            "id": "agent-user-draft-rewrite-uses-pending-draft-resume",
+            "role": "user",
+            "text": "把刚才草稿里的项目描述再短一点",
+        },
         locale="zh",
         resume=base_resume,
         draftState={
@@ -4349,7 +4880,10 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
 
 
 def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
-    session_id = "agent-chat-json"
+    session_id = client.post(
+        "/api/resumes",
+        json={"title": "Agent JSON chat"},
+    ).json()["data"]["resume"]["id"]
     attachment_response = client.post(
         "/api/agent/attachments",
         data={"resumeId": session_id},
@@ -4363,6 +4897,9 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     )
     assert attachment_response.status_code == 200
     attachment = attachment_response.json()["data"]
+    session_revision = client.get(
+        f"/api/agent/resumes/{session_id}/session",
+    ).json()["data"]["revision"]
 
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
@@ -4431,26 +4968,13 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "Find missing keywords and edit my summary",
             "message": {
                 "id": "agent-user-1",
                 "role": "user",
                 "text": "Find missing keywords and edit my summary",
                 "files": [attachment],
             },
-            "messages": [
-                {
-                    "role": "user",
-                    "text": "Find missing keywords and edit my summary",
-                },
-            ],
-            "conversation": [
-                {
-                    "role": "user",
-                    "text": "Find missing keywords and edit my summary",
-                },
-            ],
-            "files": [attachment],
+            "messages": [],
             "locale": "en",
             "resume": minimal_resume_document(
                 name="Avery",
@@ -4466,6 +4990,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             "modelConfig": model_config,
             "settings": {},
             "resumeId": session_id,
+            "expectedRevision": session_revision,
         },
     )
 
@@ -4566,18 +5091,12 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "把项目经历写得更像推荐算法工程师",
             "message": {
+                "id": "agent-user-selected-item-edit",
                 "role": "user",
                 "text": "把项目经历写得更像推荐算法工程师",
             },
-            "messages": [
-                {"role": "user", "text": "把项目经历写得更像推荐算法工程师"},
-            ],
-            "conversation": [
-                {"role": "user", "text": "把项目经历写得更像推荐算法工程师"},
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": resume,
             "jobBrief": "",
@@ -4663,11 +5182,12 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": prompt,
-            "message": {"role": "user", "text": prompt},
+            "message": {
+                "id": "agent-user-chat-executes-empty-resume-project-insert-from-plan",
+                "role": "user",
+                "text": prompt,
+            },
             "messages": [],
-            "conversation": [],
-            "files": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
             "jobBrief": "",
@@ -4830,11 +5350,12 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": prompt,
-            "message": {"role": "user", "text": prompt},
+            "message": {
+                "id": "agent-user-chat-normalizes-model-inserted-resume-fields",
+                "role": "user",
+                "text": prompt,
+            },
             "messages": [],
-            "conversation": [],
-            "files": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
             "jobBrief": "",
@@ -5103,7 +5624,11 @@ def test_agent_web_search_schema_supports_multi_queries() -> None:
 
 def test_agent_target_context_search_fallback_uses_explicit_target() -> None:
     request = AgentChatRequest(
-        prompt="查找示例大学计算机硕士项目的课程和研究方向",
+        message={
+            "id": "agent-user-target-context-search-fallback-uses-explicit-target",
+            "role": "user",
+            "text": "查找示例大学计算机硕士项目的课程和研究方向",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5123,7 +5648,7 @@ def test_agent_target_context_search_fallback_uses_explicit_target() -> None:
 
     assert queries
     assert queries[0].startswith("示例大学计算机硕士项目")
-    assert queries != [request.prompt]
+    assert queries != [request.message.text]
     assert all(" JD " not in query for query in queries)
 
 
@@ -5142,7 +5667,11 @@ def test_agent_web_fetch_schema_supports_generic_target_context() -> None:
 
 def test_agent_web_fetch_requires_explicit_purpose() -> None:
     request = AgentChatRequest(
-        prompt="参考这个链接 https://example.test/project",
+        message={
+            "id": "agent-user-web-fetch-requires-explicit-purpose",
+            "role": "user",
+            "text": "参考这个链接 https://example.test/project",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5176,7 +5705,11 @@ def test_agent_web_fetch_target_context_is_not_candidate_evidence(
         ),
     )
     request = AgentChatRequest(
-        prompt="请参考 https://example.test/graduate-program 的申请要求",
+        message={
+            "id": "agent-user-web-fetch-target-context-is-not-candidate-evidence",
+            "role": "user",
+            "text": "请参考 https://example.test/graduate-program 的申请要求",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5205,7 +5738,11 @@ def test_agent_web_fetch_target_context_is_not_candidate_evidence(
 def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
     monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
     request = AgentChatRequest(
-        prompt="帮我了解 AI application developer 岗位",
+        message={
+            "id": "agent-user-web-search-uses-explicit-reference-purpose",
+            "role": "user",
+            "text": "帮我了解 AI application developer 岗位",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5237,7 +5774,11 @@ def test_agent_web_search_accepts_multi_query_target_context(monkeypatch) -> Non
         stub_web_search_summary,
     )
     request = AgentChatRequest(
-        prompt="帮我了解 AI application developer 岗位",
+        message={
+            "id": "agent-user-web-search-accepts-multi-query-target-context",
+            "role": "user",
+            "text": "帮我了解 AI application developer 岗位",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5294,7 +5835,11 @@ def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> N
         context_window_tokens=16_384,
     )
     request = AgentChatRequest(
-        prompt="帮我了解 AI application developer 岗位",
+        message={
+            "id": "agent-user-web-search-context-is-visible-to-final-response",
+            "role": "user",
+            "text": "帮我了解 AI application developer 岗位",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5417,7 +5962,11 @@ def test_agent_web_headers_are_browser_compatible() -> None:
 def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
     request = prepare_agent_request(
         AgentChatRequest(
-            prompt="优化个人简介",
+            message={
+                "id": "agent-user-suggest-only-filters-and-blocks-edit-tools",
+                "role": "user",
+                "text": "优化个人简介",
+            },
             locale="zh",
             resume={
                 "basic": {"summary": "已有简介"},
@@ -5466,7 +6015,11 @@ def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
 
 def test_agent_explain_draft_policy_allows_diff_summary_only() -> None:
     request = AgentChatRequest(
-        prompt="解释刚才的草稿改了什么",
+        message={
+            "id": "agent-user-explain-draft-policy-allows-diff-summary-only",
+            "role": "user",
+            "text": "解释刚才的草稿改了什么",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
         draftState={
@@ -5527,7 +6080,11 @@ def test_agent_explain_draft_policy_allows_diff_summary_only() -> None:
 
 def test_agent_rewrite_draft_requires_pending_draft() -> None:
     request = AgentChatRequest(
-        prompt="把刚才的草稿再短一点",
+        message={
+            "id": "agent-user-rewrite-draft-requires-pending-draft",
+            "role": "user",
+            "text": "把刚才的草稿再短一点",
+        },
         locale="zh",
         resume={"basic": {"summary": "已有简介"}, "sections": []},
     )
@@ -5556,7 +6113,11 @@ def test_agent_rewrite_draft_requires_pending_draft() -> None:
 
 def test_agent_plain_edit_phrase_does_not_require_pending_draft() -> None:
     request = AgentChatRequest(
-        prompt="把项目标题改成更像后端工程师",
+        message={
+            "id": "agent-user-plain-edit-phrase-does-not-require-pending-draft",
+            "role": "user",
+            "text": "把项目标题改成更像后端工程师",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5585,10 +6146,12 @@ def test_agent_plain_edit_phrase_does_not_require_pending_draft() -> None:
 
 def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
     request = AgentChatRequest(
-        prompt=(
-            "帮我生成一个项目经历草稿：项目名称：智能客服系统；"
-            "职责：负责 RAG 检索和接口开发；技术：Python、FastAPI、Milvus。"
-        ),
+        message={
+            "id": "agent-user-new-draft-request-does-not-require-pending-draft",
+            "role": "user",
+            "text": "帮我生成一个项目经历草稿：项目名称：智能客服系统；"
+            "职责：负责 RAG 检索和接口开发；技术：Python、FastAPI、Milvus。",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5606,7 +6169,11 @@ def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
 
 def test_agent_material_generation_requires_user_evidence() -> None:
     request = AgentChatRequest(
-        prompt="帮我生成一个项目经历草稿",
+        message={
+            "id": "agent-user-material-generation-requires-user-evidence",
+            "role": "user",
+            "text": "帮我生成一个项目经历草稿",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5623,7 +6190,11 @@ def test_agent_material_generation_requires_user_evidence() -> None:
 
 def test_agent_revising_named_draft_requires_pending_draft() -> None:
     request = AgentChatRequest(
-        prompt="把草稿改短一点",
+        message={
+            "id": "agent-user-revising-named-draft-requires-pending-draft",
+            "role": "user",
+            "text": "把草稿改短一点",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5639,7 +6210,11 @@ def test_agent_revising_named_draft_requires_pending_draft() -> None:
 
 def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
     request = AgentChatRequest(
-        prompt="这份简历整体怎么样？",
+        message={
+            "id": "agent-user-keyword-match-missing-does-not-force-jd-intent",
+            "role": "user",
+            "text": "这份简历整体怎么样？",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
         keywordMatch={"matched": [], "missing": ["TypeScript"], "score": 0},
@@ -5658,7 +6233,11 @@ def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
 
 def test_agent_role_research_policy_allows_web_search_without_edits() -> None:
     request = AgentChatRequest(
-        prompt="帮我了解 AI应用开发工程师",
+        message={
+            "id": "agent-user-role-research-policy-allows-web-search-without-edits",
+            "role": "user",
+            "text": "帮我了解 AI应用开发工程师",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5677,7 +6256,11 @@ def test_agent_role_research_policy_allows_web_search_without_edits() -> None:
 
 def test_agent_admission_research_policy_allows_web_search_without_edits() -> None:
     request = AgentChatRequest(
-        prompt="帮我了解示例大学计算机硕士项目的申请要求和研究方向",
+        message={
+            "id": "agent-user-admission-research",
+            "role": "user",
+            "text": "帮我了解示例大学计算机硕士项目的申请要求和研究方向",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5695,7 +6278,11 @@ def test_agent_admission_research_policy_allows_web_search_without_edits() -> No
 
 def test_agent_admission_tailoring_can_draft_and_research_target() -> None:
     request = AgentChatRequest(
-        prompt="根据示例大学计算机硕士项目的申请要求优化这份简历",
+        message={
+            "id": "agent-user-admission-tailoring-can-draft-and-research-target",
+            "role": "user",
+            "text": "根据示例大学计算机硕士项目的申请要求优化这份简历",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5713,7 +6300,11 @@ def test_agent_admission_tailoring_can_draft_and_research_target() -> None:
 
 def test_agent_scholarship_application_is_not_misclassified_as_jd() -> None:
     request = AgentChatRequest(
-        prompt="我想申请奖学金，应该怎么准备？",
+        message={
+            "id": "agent-user-scholarship-application-is-not-misclassified-as-jd",
+            "role": "user",
+            "text": "我想申请奖学金，应该怎么准备？",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
@@ -5726,7 +6317,11 @@ def test_agent_scholarship_application_is_not_misclassified_as_jd() -> None:
 
 def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
     request = AgentChatRequest(
-        prompt="这份简历和 JD 的差距在哪里？",
+        message={
+            "id": "agent-user-jd-gap-diagnosis-policy-is-read-only",
+            "role": "user",
+            "text": "这份简历和 JD 的差距在哪里？",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
         jobBrief="AI application developer requires Python, RAG, and evaluation.",
@@ -5747,7 +6342,11 @@ def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
 
 def test_agent_jd_optimization_request_can_still_draft() -> None:
     request = AgentChatRequest(
-        prompt="根据这个 JD 优化简历，并看一下差距",
+        message={
+            "id": "agent-user-jd-optimization-request-can-still-draft",
+            "role": "user",
+            "text": "根据这个 JD 优化简历，并看一下差距",
+        },
         locale="zh",
         resume={"basic": {}, "sections": []},
         jobBrief="AI application developer requires Python, RAG, and evaluation.",
@@ -5765,7 +6364,11 @@ def test_agent_jd_optimization_request_can_still_draft() -> None:
 
 def test_agent_delete_operations_require_explicit_delete_intent() -> None:
     request = AgentChatRequest(
-        prompt="优化项目经历",
+        message={
+            "id": "agent-user-delete-operations-require-explicit-delete-intent",
+            "role": "user",
+            "text": "优化项目经历",
+        },
         locale="zh",
         resume={
             "basic": {},
@@ -5808,7 +6411,11 @@ def test_agent_delete_operations_require_explicit_delete_intent() -> None:
 
 def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() -> None:
     request = AgentChatRequest(
-        prompt="整理技能分组",
+        message={
+            "id": "agent-user-skills-classify",
+            "role": "user",
+            "text": "整理技能分组",
+        },
         locale="zh",
         resume={
             "schemaVersion": 2,
@@ -6225,11 +6832,12 @@ def test_agent_chat_plain_message_does_not_return_tools(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-plain-message-does-not-return-tools",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6267,11 +6875,12 @@ def test_agent_chat_plain_stream_uses_final_completion(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-plain-stream-uses-final-completion",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6316,11 +6925,12 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-no-tool-support",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6371,11 +6981,12 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
     body, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-no-stream-support",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6416,11 +7027,12 @@ def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "帮我修改简历",
-            "message": {"role": "user", "text": "帮我修改简历"},
-            "messages": [{"role": "user", "text": "帮我修改简历"}],
-            "conversation": [{"role": "user", "text": "帮我修改简历"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-finish-blocked-json",
+                "role": "user",
+                "text": "帮我修改简历",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6462,11 +7074,12 @@ def test_agent_chat_material_gap_asks_followup_questions(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "帮我生成一个项目经历草稿",
-            "message": {"role": "user", "text": "帮我生成一个项目经历草稿"},
-            "messages": [{"role": "user", "text": "帮我生成一个项目经历草稿"}],
-            "conversation": [{"role": "user", "text": "帮我生成一个项目经历草稿"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-material-gap-asks-followup-questions",
+                "role": "user",
+                "text": "帮我生成一个项目经历草稿",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
             "jobBrief": "",
@@ -6528,11 +7141,12 @@ def test_agent_chat_reports_invalid_model_edit_operation(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "补强项目结果",
-            "message": {"role": "user", "text": "补强项目结果"},
-            "messages": [{"role": "user", "text": "补强项目结果"}],
-            "conversation": [{"role": "user", "text": "补强项目结果"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-reports-invalid-model-edit-operation",
+                "role": "user",
+                "text": "补强项目结果",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {
                 "basic": {"name": "王小明", "summary": "前端开发。"},
@@ -6591,11 +7205,12 @@ def test_agent_model_error_does_not_return_llm_tool(
     body, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-model-error-does-not-return-llm-tool",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6607,8 +7222,10 @@ def test_agent_model_error_does_not_return_llm_tool(
     )
 
     assert "调用模型失败" in message["text"]
-    assert "provider unavailable" in message["text"]
+    assert "provider unavailable" not in message["text"]
+    assert "Model provider request failed." in message["text"]
     assert "event: error" in body
+    assert '"errorCode":"AGENT_PROVIDER_ERROR"' in body
     assert message["tools"] == []
 
 
@@ -6701,25 +7318,12 @@ def test_agent_chat_uses_provided_jd_url(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "请基于 https://example.test/jobs/frontend 调整模块顺序",
             "message": {
                 "id": "agent-user-1",
                 "role": "user",
                 "text": "请基于 https://example.test/jobs/frontend 调整模块顺序",
             },
-            "messages": [
-                {
-                    "role": "user",
-                    "text": "请基于 https://example.test/jobs/frontend 调整模块顺序",
-                },
-            ],
-            "conversation": [
-                {
-                    "role": "user",
-                    "text": "请基于 https://example.test/jobs/frontend 调整模块顺序",
-                },
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": resume,
             "jobBrief": "",
@@ -6780,18 +7384,12 @@ def test_agent_chat_cleans_chinese_target_role(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "帮我优化简历，应聘的职位是AI应用开发",
             "message": {
+                "id": "agent-user-chat-cleans-chinese-target-role",
                 "role": "user",
                 "text": "帮我优化简历，应聘的职位是AI应用开发",
             },
-            "messages": [
-                {"role": "user", "text": "帮我优化简历，应聘的职位是AI应用开发"},
-            ],
-            "conversation": [
-                {"role": "user", "text": "帮我优化简历，应聘的职位是AI应用开发"},
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -6859,14 +7457,12 @@ def test_agent_chat_streams_role_research_web_summary(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "帮我了解 AI应用开发工程师",
             "message": {
+                "id": "agent-user-chat-streams-role-research-web-summary",
                 "role": "user",
                 "text": "帮我了解 AI应用开发工程师",
             },
-            "messages": [{"role": "user", "text": "帮我了解 AI应用开发工程师"}],
-            "conversation": [{"role": "user", "text": "帮我了解 AI应用开发工程师"}],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
             "jobBrief": "",
@@ -6939,16 +7535,12 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
     _, message = post_agent_chat_stream(
         client,
         {
-            "prompt": "这份简历和 JD 的差距在哪里？",
             "message": {
+                "id": "agent-user-chat-streams-jd-gap-diagnosis-without-edits",
                 "role": "user",
                 "text": "这份简历和 JD 的差距在哪里？",
             },
-            "messages": [{"role": "user", "text": "这份简历和 JD 的差距在哪里？"}],
-            "conversation": [
-                {"role": "user", "text": "这份简历和 JD 的差距在哪里？"},
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": {
                 "basic": {"headline": "AI 应用开发工程师", "summary": "熟悉 Python"},
@@ -7035,18 +7627,12 @@ def test_agent_chat_streams_tool_and_source_metadata(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "针对前端开发工程师岗位优化个人简介",
             "message": {
+                "id": "agent-user-chat-streams-tool-and-source-metadata",
                 "role": "user",
                 "text": "针对前端开发工程师岗位优化个人简介",
             },
-            "messages": [
-                {"role": "user", "text": "针对前端开发工程师岗位优化个人简介"},
-            ],
-            "conversation": [
-                {"role": "user", "text": "针对前端开发工程师岗位优化个人简介"},
-            ],
-            "files": [],
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -7120,11 +7706,12 @@ def test_agent_chat_streams_finish_blocked_without_visible_tools(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "帮我生成项目经历",
-            "message": {"role": "user", "text": "帮我生成项目经历"},
-            "messages": [{"role": "user", "text": "帮我生成项目经历"}],
-            "conversation": [{"role": "user", "text": "帮我生成项目经历"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-streams-finish-blocked-without-visible-tools",
+                "role": "user",
+                "text": "帮我生成项目经历",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -7184,11 +7771,12 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "优化个人简介",
-            "message": {"role": "user", "text": "优化个人简介"},
-            "messages": [{"role": "user", "text": "优化个人简介"}],
-            "conversation": [{"role": "user", "text": "优化个人简介"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-streams-model-narration-between-tool-actions",
+                "role": "user",
+                "text": "优化个人简介",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(
                 name="王小明",
@@ -7284,11 +7872,12 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "优化个人简介",
-            "message": {"role": "user", "text": "优化个人简介"},
-            "messages": [{"role": "user", "text": "优化个人简介"}],
-            "conversation": [{"role": "user", "text": "优化个人简介"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-tool-batch",
+                "role": "user",
+                "text": "优化个人简介",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
@@ -7368,11 +7957,12 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "分析一下我的简历",
-            "message": {"role": "user", "text": "分析一下我的简历"},
-            "messages": [{"role": "user", "text": "分析一下我的简历"}],
-            "conversation": [{"role": "user", "text": "分析一下我的简历"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-terminal-model-text",
+                "role": "user",
+                "text": "分析一下我的简历",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
@@ -7461,11 +8051,12 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "优化个人简介",
-            "message": {"role": "user", "text": "优化个人简介"},
-            "messages": [{"role": "user", "text": "优化个人简介"}],
-            "conversation": [{"role": "user", "text": "优化个人简介"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-streams-edit-metadata-when-execute-finishes",
+                "role": "user",
+                "text": "优化个人简介",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(
                 name="王小明",
@@ -7541,11 +8132,12 @@ def test_agent_chat_streams_plain_model_tokens(
         "/api/agent/chat",
         headers={"accept": "text/event-stream"},
         json={
-            "prompt": "你好",
-            "message": {"role": "user", "text": "你好"},
-            "messages": [{"role": "user", "text": "你好"}],
-            "conversation": [{"role": "user", "text": "你好"}],
-            "files": [],
+            "message": {
+                "id": "agent-user-chat-streams-plain-model-tokens",
+                "role": "user",
+                "text": "你好",
+            },
+            "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "jobBrief": "",
@@ -7578,7 +8170,7 @@ def test_import_rejects_invalid_json_upload(
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 400
         assert response.json()["code"] == 40000
         assert response.json()["message"] == "JSON_UPLOAD_INVALID"
 
@@ -7709,7 +8301,7 @@ def test_import_resume_rejects_non_v1_artifacts(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     assert response.json()["code"] == 40000
     assert response.json()["message"] in {
         "RESUME_ARTIFACT_INVALID",
@@ -7861,7 +8453,7 @@ def test_import_resume_rejects_invalid_custom_template_references(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "RESUME_ARTIFACT_INVALID"
 
@@ -7897,7 +8489,7 @@ def test_import_templates_accepts_only_v1_artifact(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["templates"] == [template]
-    assert legacy_response.status_code == 200
+    assert legacy_response.status_code == 400
     assert legacy_response.json()["message"] == "TEMPLATE_ARTIFACT_INVALID"
 
 
@@ -7979,7 +8571,7 @@ def test_import_templates_rejects_non_v1_artifacts(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
     assert response.json()["code"] == 40000
     assert response.json()["message"] == expected_message
 
@@ -8067,7 +8659,7 @@ def test_export_pdf_rejects_client_render_base_url(
     )
 
     payload = response.json()
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert payload["code"] == 40002
     assert payload["message"] == "VALIDATION_ERROR"
     assert any(

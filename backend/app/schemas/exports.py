@@ -29,7 +29,7 @@ class ExportResumePdfResponse(BaseModel):
     export_id: str = Field(alias="exportId")
     download_url: str = Field(alias="downloadUrl")
     file_name: str = Field(alias="fileName")
-    expires_at: str | None = Field(default=None, alias="expiresAt")
+    expires_at: str = Field(alias="expiresAt")
 
 
 class ExportResumeImagesResponse(ExportResumePdfResponse):

@@ -1,7 +1,10 @@
 import json
+import os
 import re
 import secrets
 import shutil
+import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +32,8 @@ BUILT_IN_TEMPLATE_IDS = {
     "executive",
     "academic",
 }
+
+
 @dataclass(frozen=True)
 class TemplateCatalog:
     """Active templates together with the currently selected default."""
@@ -73,6 +78,15 @@ def _template_storage_dir(template_id: str) -> Path:
     return get_settings().storage_dir / "templates" / safe_template_id
 
 
+def _delete_template_storage(template_id: str) -> None:
+    """Delete template files while treating an absent directory as deleted."""
+
+    try:
+        shutil.rmtree(_template_storage_dir(template_id))
+    except FileNotFoundError:
+        pass
+
+
 def _write_template_json(template_id: str, template_item: dict[str, Any]) -> None:
     """Write one template JSON file atomically."""
 
@@ -83,10 +97,40 @@ def _write_template_json(template_id: str, template_item: dict[str, Any]) -> Non
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
+    ).encode("utf-8")
+    _replace_template_json(path, content)
+
+
+def _replace_template_json(path: Path, content: bytes) -> None:
+    """Atomically replace one template JSON file without sharing temp paths."""
+
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
     )
-    temp_path = path.with_suffix(".json.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as temp_file:
+            temp_file.write(content)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _restore_template_json(template_id: str, content: bytes | None) -> None:
+    """Restore the file state captured before an uncommitted template write."""
+
+    path = _template_path(template_id)
+    if content is None:
+        path.unlink(missing_ok=True)
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _replace_template_json(path, content)
 
 
 def _read_template_json(template_id: str) -> dict[str, Any]:
@@ -128,8 +172,6 @@ def _save_template_item(
             detail="Template id is required.",
         )
     template_id = _validate_template_id(template_id.strip())
-    _write_template_json(template_id, template_item)
-
     conn.execute(
         """
         INSERT INTO templates (
@@ -156,6 +198,7 @@ def _save_template_item(
             deleted_at,
         ),
     )
+    _write_template_json(template_id, template_item)
 
     return template_id
 
@@ -286,11 +329,15 @@ def _build_template_item(
 def load_template_catalog() -> TemplateCatalog:
     """Load the active template catalog and its default selection."""
 
-    with connect() as conn:
-        return TemplateCatalog(
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        catalog = TemplateCatalog(
             default_template_id=load_default_template_id(conn),
             templates=_load_template_items(conn, deleted=False),
         )
+        conn.execute("COMMIT")
+
+    return catalog
 
 
 def list_templates(status_filter: str = "active") -> dict[str, Any]:
@@ -302,35 +349,46 @@ def list_templates(status_filter: str = "active") -> dict[str, Any]:
             detail="Unsupported template status filter.",
         )
 
-    with connect() as conn:
-        return {
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        result = {
             "templates": _load_template_items(
                 conn,
                 deleted=status_filter == "deleted",
             )
         }
+        conn.execute("COMMIT")
+
+    return result
 
 
 def create_template(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a backend-owned custom template."""
 
-    saved_at = _utc_now()
-    with connect() as conn:
-        conn.execute("BEGIN")
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        saved_at = _utc_now()
         template_id = _allocate_template_id(conn)
+        path = _template_path(template_id)
+        previous_content = path.read_bytes() if path.exists() else None
         template_item = _build_template_item(
             template_id=template_id,
             payload=payload,
             saved_at=saved_at,
         )
-        _save_template_item(
-            conn,
-            template_item=template_item,
-            saved_at=saved_at,
-            deleted=False,
-            deleted_at=None,
-        )
-        conn.execute("COMMIT")
+        try:
+            _save_template_item(
+                conn,
+                template_item=template_item,
+                saved_at=saved_at,
+                deleted=False,
+                deleted_at=None,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                _restore_template_json(template_id, previous_content)
+            raise
 
     return {"template": template_item}
 
@@ -338,24 +396,32 @@ def create_template(payload: dict[str, Any]) -> dict[str, Any]:
 def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Replace one active custom template."""
 
-    saved_at = _utc_now()
-    with connect() as conn:
-        row = _require_custom_template_row(conn, template_id)
-        template_item = _build_template_item(
-            template_id=row["id"],
-            payload=payload,
-            saved_at=saved_at,
-        )
+    safe_template_id = _validate_template_id(template_id.strip())
+    path = _template_path(safe_template_id)
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        saved_at = _utc_now()
+        previous_content = path.read_bytes() if path.exists() else None
+        try:
+            row = _require_custom_template_row(conn, safe_template_id)
+            template_item = _build_template_item(
+                template_id=row["id"],
+                payload=payload,
+                saved_at=saved_at,
+            )
 
-        conn.execute("BEGIN")
-        _save_template_item(
-            conn,
-            template_item=template_item,
-            saved_at=saved_at,
-            deleted=False,
-            deleted_at=None,
-        )
-        conn.execute("COMMIT")
+            _save_template_item(
+                conn,
+                template_item=template_item,
+                saved_at=saved_at,
+                deleted=False,
+                deleted_at=None,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                _restore_template_json(safe_template_id, previous_content)
+            raise
 
     return {"template": template_item}
 
@@ -370,11 +436,11 @@ def trash_template(template_id: str) -> dict[str, Any]:
         rebind_current_resume_template_references,
     )
 
-    deleted_at = _utc_now()
     rebind_result = None
     try:
         with connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            deleted_at = _utc_now()
             row = _require_custom_template_row(conn, template_id)
             template_item = _read_template_json(row["id"])
             default_template_id = load_default_template_id(conn)
@@ -421,35 +487,44 @@ def trash_template(template_id: str) -> dict[str, Any]:
 def restore_template(template_id: str) -> dict[str, Any]:
     """Restore one deleted custom template."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_custom_template_row(
             conn,
             template_id,
             include_deleted=True,
         )
         if not row["deleted"]:
-            return {"template": _read_template_json(row["id"])}
+            template_item = _read_template_json(row["id"])
+            conn.execute("COMMIT")
+            return {"template": template_item}
 
-        conn.execute("BEGIN")
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE templates
             SET deleted = 0,
                 deleted_at = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            WHERE id = ? AND deleted = 1
             """,
             (row["id"],),
         )
+        if cursor.rowcount != 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Template state changed during restore.",
+            )
+        template_item = _read_template_json(row["id"])
         conn.execute("COMMIT")
 
-        return {"template": _read_template_json(row["id"])}
+    return {"template": template_item}
 
 
 def delete_template_forever(template_id: str) -> dict[str, Any]:
     """Physically delete one already-deleted custom template."""
 
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_custom_template_row(
             conn,
             template_id,
@@ -461,11 +536,10 @@ def delete_template_forever(template_id: str) -> dict[str, Any]:
                 detail="Only deleted templates can be permanently deleted.",
             )
 
-        conn.execute("BEGIN")
+        _delete_template_storage(row["id"])
         conn.execute("DELETE FROM templates WHERE id = ?", (row["id"],))
         conn.execute("COMMIT")
 
-    shutil.rmtree(_template_storage_dir(row["id"]), ignore_errors=True)
     return {"id": row["id"]}
 
 
@@ -473,6 +547,7 @@ def empty_template_trash() -> dict[str, Any]:
     """Physically delete every custom template currently in the recycle bin."""
 
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
             SELECT id
@@ -481,16 +556,10 @@ def empty_template_trash() -> dict[str, Any]:
             """,
         ).fetchall()
         template_ids = [row["id"] for row in rows]
-        if template_ids:
-            conn.execute("BEGIN")
-            conn.executemany(
-                "DELETE FROM templates WHERE id = ?",
-                [(template_id,) for template_id in template_ids],
-            )
-            conn.execute("COMMIT")
+        conn.execute("COMMIT")
 
-    for deleted_template_id in template_ids:
-        shutil.rmtree(_template_storage_dir(deleted_template_id), ignore_errors=True)
+    for template_id in template_ids:
+        delete_template_forever(template_id)
 
     return {"deletedCount": len(template_ids)}
 
@@ -500,13 +569,13 @@ def save_default_template(template_id: str) -> dict[str, Any]:
 
     safe_template_id = _validate_template_id(template_id.strip())
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         if not is_visible_template(conn, safe_template_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Template not found.",
             )
 
-        conn.execute("BEGIN")
         store_default_template_id(conn, safe_template_id)
         conn.execute("COMMIT")
 

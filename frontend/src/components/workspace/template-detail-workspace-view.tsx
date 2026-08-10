@@ -38,7 +38,7 @@ function TemplateDetailContent({
   const template = controller.template;
 
   return (
-    <main className="template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[460px_minmax(0,1fr)]">
+    <div className="template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[460px_minmax(0,1fr)]">
       <section className="resume-editor-panel resume-template-editor-panel flex flex-col gap-4 print:hidden">
         {controller.hasLoaded && template ? (
           <TemplateEditor
@@ -75,7 +75,7 @@ function TemplateDetailContent({
       ) : (
         <WorkspacePreviewSkeleton />
       )}
-    </main>
+    </div>
   );
 }
 

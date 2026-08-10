@@ -639,9 +639,7 @@ def rebind_current_resume_template_references(
                 version_kind="checkpoint",
             )
             if obsolete_autosave_version_id is not None:
-                obsolete_autosaves.append(
-                    (row["id"], obsolete_autosave_version_id)
-                )
+                obsolete_autosaves.append((row["id"], obsolete_autosave_version_id))
     except Exception:
         cleanup_resume_version_files(created_versions)
         raise
@@ -1263,10 +1261,48 @@ def _delete_resume_rows(conn: Connection, resume_ids: list[str]) -> None:
         )
 
 
+def _delete_resume_storage(resume_id: str) -> None:
+    """Delete resume files while treating an absent directory as deleted."""
+
+    try:
+        shutil.rmtree(_resume_storage_dir(resume_id))
+    except FileNotFoundError:
+        pass
+
+
+def _reject_running_agent_turns(conn: Connection, resume_ids: list[str]) -> None:
+    """Keep durable running turns intact until their terminal state is persisted."""
+
+    if not resume_ids:
+        return
+    placeholders = ", ".join("?" for _ in resume_ids)
+    running_row = conn.execute(
+        f"""
+        SELECT 1
+        FROM agent_turn_executions AS execution
+        JOIN agent_sessions AS session
+          ON session.id = execution.session_id
+        WHERE execution.status = 'running'
+          AND (
+            session.resume_id IN ({placeholders})
+            OR session.id IN ({placeholders})
+          )
+        LIMIT 1
+        """,
+        (*resume_ids, *resume_ids),
+    ).fetchone()
+    if running_row is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="AGENT_RUN_CONFLICT",
+        )
+
+
 def delete_resume_forever(resume_id: str) -> dict[str, Any]:
     """Physically delete one already-deleted resume."""
 
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_resume_row(conn, resume_id)
         if not row["deleted"]:
             raise HTTPException(
@@ -1274,12 +1310,12 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
                 detail="Only deleted resumes can be permanently deleted.",
             )
 
-        conn.execute("BEGIN")
+        _reject_running_agent_turns(conn, [row["id"]])
+        delete_agent_session_attachments(row["id"])
+        _delete_resume_storage(row["id"])
         _delete_resume_rows(conn, [row["id"]])
         conn.execute("COMMIT")
 
-    shutil.rmtree(_resume_storage_dir(row["id"]), ignore_errors=True)
-    delete_agent_session_attachments(row["id"])
     return {"id": row["id"]}
 
 
@@ -1287,6 +1323,7 @@ def empty_resume_trash() -> dict[str, Any]:
     """Physically delete every resume currently in the recycle bin."""
 
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             """
             SELECT id
@@ -1295,13 +1332,10 @@ def empty_resume_trash() -> dict[str, Any]:
             """
         ).fetchall()
         resume_ids = [row["id"] for row in rows]
-        if resume_ids:
-            conn.execute("BEGIN")
-            _delete_resume_rows(conn, resume_ids)
-            conn.execute("COMMIT")
+        _reject_running_agent_turns(conn, resume_ids)
+        conn.execute("COMMIT")
 
-    for deleted_resume_id in resume_ids:
-        shutil.rmtree(_resume_storage_dir(deleted_resume_id), ignore_errors=True)
-        delete_agent_session_attachments(deleted_resume_id)
+    for resume_id in resume_ids:
+        delete_resume_forever(resume_id)
 
     return {"deletedCount": len(resume_ids)}

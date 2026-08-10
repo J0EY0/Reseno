@@ -1,13 +1,19 @@
 import asyncio
+import threading
 from collections.abc import AsyncIterator
 from contextlib import closing
+from datetime import UTC, datetime
+from time import perf_counter
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.db.connection import connect
-from app.schemas.agent import AgentChatRequest, AgentConversationItem
-from app.services import agent_runs, agent_sessions
+from app.routers import agent as agent_router
+from app.routers import resumes as resumes_router
+from app.schemas.agent import AgentChatRequest, AgentConversationItem, AgentDraftState
+from app.services import agent_runs, agent_sessions, resumes
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent_runs import AgentRunConflictError, AgentRunManager
@@ -24,17 +30,36 @@ def _bypass_turn_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(
         agent_runs,
-        "prepare_agent_turn",
-        lambda conn, request, *, run_id=None: request,
+        "_prepare_run_request",
+        lambda request, run_id: request,
     )
 
 
 def _request(resume_id: str = "resume-1") -> AgentChatRequest:
     return AgentChatRequest(
         resumeId=resume_id,
-        prompt="优化项目经历",
+        expectedRevision="synthetic-bypassed-revision",
+        message=AgentConversationItem(
+            id=f"turn-agent-run-{resume_id}",
+            role="user",
+            text="优化项目经历",
+        ),
         resume={"basic": {"summary": "原始简介"}, "sections": []},
     )
+
+
+def _current_session_revision(resume_id: str) -> str:
+    """Read the optimistic revision used by real run-acceptance tests."""
+
+    with closing(connect()) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO resumes (id, title, saved_at)
+            VALUES (?, 'Agent run test resume', ?)
+            """,
+            (resume_id, datetime.now(UTC).isoformat()),
+        )
+        return agent_sessions.load_agent_session(conn, resume_id).revision
 
 
 async def _collect_events(
@@ -44,6 +69,357 @@ async def _collect_events(
     after: int = 0,
 ) -> list[str]:
     return [frame async for frame in manager.subscribe(run_id, after=after)]
+
+
+def test_run_response_uses_pending_draft_resume_as_its_base() -> None:
+    request_resume = {
+        "basic": {"headline": "Engineer"},
+        "sections": [],
+    }
+    pending_draft_resume = {
+        "basic": {"headline": "Staff Engineer"},
+        "sections": [],
+    }
+    request = _request("resume-run-pending-draft-base").model_copy(
+        update={
+            "resume": request_resume,
+            "draft_state": AgentDraftState(
+                id="draft-run-pending-base",
+                status="pending",
+                resume=pending_draft_resume,
+            ),
+        },
+    )
+    run = agent_runs.AgentRun(
+        id="run-pending-draft-base",
+        request=request,
+        resume_id=request.resume_id,
+    )
+
+    assert run.response().base_resume == pending_draft_resume
+
+
+def test_permanent_resume_delete_purges_completed_run_replay(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Completed run owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    revision = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]["revision"]
+    private_summary = "private-summary-must-not-survive-hard-delete"
+    run_response = client.post(
+        "/api/agent/chat",
+        json={
+            "resumeId": resume_id,
+            "expectedRevision": revision,
+            "message": {
+                "id": "turn-completed-run-purge",
+                "role": "user",
+                "text": "Review my private resume.",
+            },
+            "messages": [],
+            "locale": "en",
+            "resume": {
+                "basic": {"summary": private_summary},
+                "sections": [],
+            },
+        },
+    )
+    run_id = run_response.headers["x-agent-run-id"]
+    retained_response = client.delete(f"/api/agent/runs/{run_id}")
+    assert retained_response.status_code == 200
+    assert (
+        retained_response.json()["data"]["baseResume"]["basic"]["summary"]
+        == private_summary
+    )
+
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+    assert client.delete(f"/api/resumes/{resume_id}").status_code == 200
+
+    assert client.delete(f"/api/agent/runs/{run_id}").status_code == 404
+    assert client.get(f"/api/agent/runs/{run_id}/events").status_code == 404
+
+
+def test_empty_trash_purges_completed_run_replay(client: TestClient) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Trash purge run owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    revision = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]["revision"]
+    run_response = client.post(
+        "/api/agent/chat",
+        json={
+            "resumeId": resume_id,
+            "expectedRevision": revision,
+            "message": {
+                "id": "turn-empty-trash-run-purge",
+                "role": "user",
+                "text": "Review this resume.",
+            },
+            "messages": [],
+            "locale": "en",
+            "resume": {"basic": {"summary": "private"}, "sections": []},
+        },
+    )
+    run_id = run_response.headers["x-agent-run-id"]
+
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+    empty_response = client.delete("/api/resumes/trash")
+
+    assert empty_response.status_code == 200
+    assert empty_response.json()["data"]["deletedCount"] == 1
+    assert client.delete(f"/api/agent/runs/{run_id}").status_code == 404
+    assert client.get(f"/api/agent/runs/{run_id}/events").status_code == 404
+
+
+def test_partially_failed_empty_trash_purges_runs_already_hard_deleted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_ids_by_resume: dict[str, str] = {}
+    for index in range(2):
+        resume_id = client.post(
+            "/api/resumes",
+            json={"title": f"Partial purge owner {index}"},
+        ).json()["data"]["resume"]["id"]
+        revision = client.get(
+            f"/api/agent/resumes/{resume_id}/session",
+        ).json()["data"]["revision"]
+        run_response = client.post(
+            "/api/agent/chat",
+            json={
+                "resumeId": resume_id,
+                "expectedRevision": revision,
+                "message": {
+                    "id": f"turn-partial-purge-{index}",
+                    "role": "user",
+                    "text": "Review this private resume.",
+                },
+                "messages": [],
+                "locale": "en",
+                "resume": {
+                    "basic": {"summary": f"private replay {index}"},
+                    "sections": [],
+                },
+            },
+        )
+        run_ids_by_resume[resume_id] = run_response.headers["x-agent-run-id"]
+        assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+
+    original_delete_storage = resumes._delete_resume_storage
+    deleted_ids: list[str] = []
+
+    def delete_first_then_fail(resume_id: str) -> None:
+        if deleted_ids:
+            raise PermissionError("forced later resume deletion failure")
+        original_delete_storage(resume_id)
+        deleted_ids.append(resume_id)
+
+    monkeypatch.setattr(
+        resumes,
+        "_delete_resume_storage",
+        delete_first_then_fail,
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="forced later resume deletion failure",
+    ):
+        client.delete("/api/resumes/trash")
+
+    deleted_resume_id = deleted_ids[0]
+    retained_resume_id = next(
+        resume_id for resume_id in run_ids_by_resume if resume_id != deleted_resume_id
+    )
+    assert (
+        client.delete(
+            f"/api/agent/runs/{run_ids_by_resume[deleted_resume_id]}"
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete(
+            f"/api/agent/runs/{run_ids_by_resume[retained_resume_id]}"
+        ).status_code
+        == 200
+    )
+
+
+def test_hard_delete_purges_durably_finished_run_before_memory_terminal(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = client.post(
+        "/api/resumes",
+        json={"title": "Terminal purge race"},
+    ).json()["data"]["resume"]["id"]
+    stream_may_finish = asyncio.Event()
+    durable_finish_committed = threading.Event()
+    real_finish = agent_sessions.finish_agent_turn_execution
+
+    async def fake_stream(
+        request: AgentChatRequest,
+        conn: object,
+        persist_message: object,
+        runtime: AgentRuntimeContext,
+    ) -> AsyncIterator[str]:
+        del request, conn, persist_message, runtime
+        await stream_may_finish.wait()
+        if False:
+            yield ""
+
+    def finish_and_signal(*args: object, **kwargs: object) -> None:
+        real_finish(*args, **kwargs)
+        durable_finish_committed.set()
+
+    monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+    monkeypatch.setattr(
+        agent_runs,
+        "finish_agent_turn_execution",
+        finish_and_signal,
+    )
+
+    async def scenario() -> None:
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-terminal-purge-race",
+                    role="user",
+                    text="Keep private replay out of deleted resumes.",
+                ),
+                resume={
+                    "basic": {"summary": "private terminal-window replay"},
+                    "sections": [],
+                },
+            ),
+        )
+        assert run.task is not None
+
+        # Hold the in-memory terminal publication after its durable execution
+        # has committed. Permanent deletion is valid in this exact window.
+        async with run.condition:
+            stream_may_finish.set()
+            committed = await asyncio.to_thread(
+                durable_finish_committed.wait,
+                1,
+            )
+            assert committed
+            assert run.status == "active"
+
+            resumes.trash_resume(resume_id)
+            await asyncio.to_thread(resumes.delete_resume_forever, resume_id)
+            await manager.purge_resume(resume_id)
+
+            with pytest.raises(agent_runs.AgentRunNotFoundError):
+                await manager.get(run.id)
+
+        await asyncio.wait_for(run.task, timeout=1)
+        with pytest.raises(agent_runs.AgentRunNotFoundError):
+            await manager.get(run.id)
+        assert run.id not in manager._completed_order
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_hard_delete_waits_for_completed_run_purge(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = client.post(
+        "/api/resumes",
+        json={"title": "Cancelled hard delete"},
+    ).json()["data"]["resume"]["id"]
+    delete_committed = threading.Event()
+    deletion_may_return = threading.Event()
+
+    async def fake_stream(
+        request: AgentChatRequest,
+        conn: object,
+        persist_message: object,
+        runtime: AgentRuntimeContext,
+    ) -> AsyncIterator[str]:
+        del request, conn, persist_message, runtime
+        yield agent_runs._sse_frame(
+            "message_done",
+            {
+                "type": "message_done",
+                "message": {
+                    "id": "message-cancelled-hard-delete",
+                    "text": "Done",
+                    "transactionState": "committed",
+                },
+            },
+        )
+
+    real_delete = resumes.delete_resume_forever
+
+    def delete_then_wait(resume_id: str) -> dict[str, object]:
+        result = real_delete(resume_id)
+        delete_committed.set()
+        assert deletion_may_return.wait(timeout=1)
+        return result
+
+    monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+    monkeypatch.setattr(
+        resumes_router,
+        "delete_resume_forever",
+        delete_then_wait,
+    )
+
+    async def scenario() -> None:
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-cancelled-hard-delete",
+                    role="user",
+                    text="Do not retain this replay after deletion.",
+                ),
+                resume={
+                    "basic": {"summary": "private cancelled-delete replay"},
+                    "sections": [],
+                },
+            ),
+        )
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
+        resumes.trash_resume(resume_id)
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(agent_runs=manager),
+            ),
+        )
+        delete_task = asyncio.create_task(
+            resumes_router.delete_resume(resume_id, request),
+        )
+        committed = await asyncio.to_thread(delete_committed.wait, 1)
+        assert committed
+
+        delete_task.cancel()
+        deletion_may_return.set()
+        with pytest.raises(asyncio.CancelledError):
+            await delete_task
+
+        with pytest.raises(agent_runs.AgentRunNotFoundError):
+            await manager.get(run.id)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        deletion_may_return.set()
 
 
 def test_subscribe_heartbeat_does_not_advance_replay_cursor(
@@ -100,6 +476,132 @@ def test_subscribe_heartbeat_does_not_advance_replay_cursor(
         assert "event: run_done" in terminal_event
         assert "id: 2" in terminal_event
         await subscription.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_turn_preparation_does_not_block_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        preparation_started = threading.Event()
+        release_preparation = threading.Event()
+
+        def blocking_prepare(
+            request: AgentChatRequest,
+            run_id: str,
+        ) -> AgentChatRequest:
+            del run_id
+            preparation_started.set()
+            assert release_preparation.wait(timeout=1)
+            return request
+
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: _FakeConnection,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "message-nonblocking-preparation",
+                        "text": "Done",
+                        "transactionState": "committed",
+                    },
+                },
+            )
+
+        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
+        monkeypatch.setattr(agent_runs, "_prepare_run_request", blocking_prepare)
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+
+        manager = AgentRunManager()
+        release_timer = threading.Timer(0.3, release_preparation.set)
+        release_timer.start()
+        try:
+            start_task = asyncio.create_task(
+                manager.start(_request("resume-nonblocking-preparation")),
+            )
+            started_at = perf_counter()
+            await asyncio.sleep(0.01)
+            elapsed = perf_counter() - started_at
+
+            assert preparation_started.is_set()
+            assert elapsed < 0.1
+
+            release_preparation.set()
+            run = await asyncio.wait_for(start_task, timeout=1)
+            assert run.task is not None
+            await asyncio.wait_for(run.task, timeout=1)
+        finally:
+            release_preparation.set()
+            release_timer.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_terminal_persistence_does_not_block_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        persistence_started = threading.Event()
+        release_persistence = threading.Event()
+
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: _FakeConnection,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "message-nonblocking-terminal",
+                        "text": "Done",
+                        "transactionState": "committed",
+                    },
+                },
+            )
+
+        def blocking_finish(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            persistence_started.set()
+            assert release_persistence.wait(timeout=1)
+
+        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(
+            agent_runs,
+            "finish_agent_turn_execution",
+            blocking_finish,
+        )
+        _bypass_turn_preparation(monkeypatch)
+
+        manager = AgentRunManager()
+        release_timer = threading.Timer(0.3, release_persistence.set)
+        release_timer.start()
+        try:
+            run = await manager.start(_request("resume-nonblocking-terminal"))
+            started_at = perf_counter()
+            await asyncio.sleep(0.01)
+            elapsed = perf_counter() - started_at
+
+            assert persistence_started.is_set()
+            assert elapsed < 0.1
+
+            release_persistence.set()
+            assert run.task is not None
+            await asyncio.wait_for(run.task, timeout=1)
+        finally:
+            release_persistence.set()
+            release_timer.cancel()
 
     asyncio.run(scenario())
 
@@ -200,8 +702,11 @@ def test_user_message_is_persisted_before_cancelled_provider_work(
     async def scenario() -> None:
         provider_started = asyncio.Event()
         provider_blocked = asyncio.Event()
+        conn = connect()
+        revision = _current_session_revision("resume-cancelled-persistence")
         request = AgentChatRequest(
             resumeId="resume-cancelled-persistence",
+            expectedRevision=revision,
             message=AgentConversationItem(
                 id="agent-user-before-cancel",
                 role="user",
@@ -242,8 +747,6 @@ def test_user_message_is_persisted_before_cancelled_provider_work(
             "async_iter_agent_tool_call_loop",
             blocked_loop,
         )
-
-        conn = connect()
 
         async def consume() -> None:
             async for _frame in streaming.async_stream_agent_response(
@@ -428,6 +931,9 @@ def test_successful_execution_state_is_persisted(
         run = await manager.start(
             AgentChatRequest(
                 resumeId="resume-success-state",
+                expectedRevision=_current_session_revision(
+                    "resume-success-state",
+                ),
                 message=AgentConversationItem(
                     id="agent-user-success-state",
                     role="user",
@@ -449,13 +955,19 @@ def test_successful_execution_state_is_persisted(
     assert execution["completedAt"] is not None
 
 
-def test_terminal_persistence_failure_still_finalizes_in_memory_run(
+def test_shutdown_interrupts_terminal_retry_for_startup_cleanup(
+    client: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def scenario() -> None:
+    del client
+    resume_id = "resume-terminal-persistence-shutdown"
+
+    async def scenario() -> str:
+        failure_seen = asyncio.Event()
+
         async def fake_stream(
             request: AgentChatRequest,
-            conn: _FakeConnection,
+            conn: object,
             persist_message: object,
             runtime: AgentRuntimeContext,
         ) -> AsyncIterator[str]:
@@ -465,7 +977,7 @@ def test_terminal_persistence_failure_still_finalizes_in_memory_run(
                 {
                     "type": "message_done",
                     "message": {
-                        "id": "message-terminal-persistence-failure",
+                        "id": "message-terminal-persistence-shutdown",
                         "text": "Done",
                         "transactionState": "committed",
                     },
@@ -474,40 +986,294 @@ def test_terminal_persistence_failure_still_finalizes_in_memory_run(
 
         def fail_terminal_persistence(*args: object, **kwargs: object) -> None:
             del args, kwargs
+            failure_seen.set()
             raise OSError("terminal database commit failed")
 
-        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
         monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
         monkeypatch.setattr(
             agent_runs,
             "finish_agent_turn_execution",
             fail_terminal_persistence,
         )
-        _bypass_turn_preparation(monkeypatch)
+        monkeypatch.setattr(
+            agent_runs,
+            "AGENT_TERMINAL_RETRY_INITIAL_SECONDS",
+            0.001,
+        )
+        monkeypatch.setattr(
+            agent_runs,
+            "AGENT_TERMINAL_RETRY_MAX_SECONDS",
+            0.005,
+        )
 
         manager = AgentRunManager()
-        run = await manager.start(_request("resume-terminal-persistence-failure"))
-        subscription = asyncio.create_task(_collect_events(manager, run.id))
-
-        assert run.task is not None
-        task_results = await asyncio.wait_for(
-            asyncio.gather(run.task, return_exceptions=True),
-            timeout=1,
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-terminal-persistence-shutdown",
+                    role="user",
+                    text="Leave startup cleanup an owned running row.",
+                ),
+            ),
         )
-        events = await asyncio.wait_for(subscription, timeout=0.2)
+        assert run.task is not None
+        await asyncio.wait_for(failure_seen.wait(), timeout=1)
+        assert run.terminalizing
 
-        assert task_results == [None]
+        await manager.shutdown()
+
+        assert run.task.cancelled()
+        assert run.status == "active"
+        assert run.id in manager._reserved_run_ids
+        assert not any("event: run_done" in event.frame for event in run.events)
+        return run.id
+
+    run_id = asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        before_cleanup = agent_sessions.load_agent_session(conn, resume_id)
+        assert before_cleanup.executions[-1].run_id == run_id
+        assert before_cleanup.executions[-1].status == "running"
+        assert agent_sessions.fail_interrupted_agent_turn_executions(conn) == 1
+        after_cleanup = agent_sessions.load_agent_session(conn, resume_id)
+
+    assert after_cleanup.executions[-1].status == "failed"
+    assert after_cleanup.executions[-1].error_code == "AGENT_INTERNAL_ERROR"
+
+
+def test_terminal_persistence_failure_recovers_only_its_durable_execution(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+    resume_id = "resume-terminal-persistence-recovery"
+    unaffected_resume_id = "resume-terminal-persistence-unaffected"
+    unaffected_run_id = "run-terminal-persistence-unaffected"
+    unaffected_revision = _current_session_revision(unaffected_resume_id)
+
+    with closing(connect()) as conn:
+        agent_sessions.prepare_agent_turn(
+            conn,
+            AgentChatRequest(
+                resumeId=unaffected_resume_id,
+                expectedRevision=unaffected_revision,
+                message=AgentConversationItem(
+                    id="turn-terminal-persistence-unaffected",
+                    role="user",
+                    text="Keep this unrelated execution running.",
+                ),
+            ),
+            run_id=unaffected_run_id,
+        )
+
+    real_finish = agent_sessions.finish_agent_turn_execution
+    finish_attempts = 0
+
+    def fail_first_finish(*args: object, **kwargs: object) -> None:
+        nonlocal finish_attempts
+        finish_attempts += 1
+        if finish_attempts == 1:
+            raise OSError("terminal database commit failed")
+        real_finish(*args, **kwargs)
+
+    async def scenario() -> str:
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: object,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "message-terminal-persistence-recovery",
+                        "text": "Done",
+                        "transactionState": "committed",
+                    },
+                },
+            )
+
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(
+            agent_runs,
+            "finish_agent_turn_execution",
+            fail_first_finish,
+        )
+
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-terminal-persistence-recovery",
+                    role="user",
+                    text="Recover this execution if terminal persistence fails.",
+                ),
+            ),
+        )
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
         assert run.status == "failed"
         assert run.execution_state == "failed"
         assert run.error_code == "AGENT_INTERNAL_ERROR"
-        assert await manager.active_for_resume(run.resume_id or "") is None
-        assert run.resume_id not in manager._active_by_resume
-        assert "event: run_done" in events[-1]
-        assert sum("event: run_done" in frame for frame in events) == 1
-        assert '"status":"failed"' in events[-1]
-        assert '"errorCode":"AGENT_INTERNAL_ERROR"' in events[-1]
+        return run.id
 
-    asyncio.run(scenario())
+    recovered_run_id = asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        recovered = agent_sessions.load_agent_session(conn, resume_id)
+        unaffected = agent_sessions.load_agent_session(conn, unaffected_resume_id)
+
+    assert finish_attempts == 2
+    assert [
+        (execution.run_id, execution.status, execution.error_code)
+        for execution in recovered.executions
+    ] == [(recovered_run_id, "failed", "AGENT_INTERNAL_ERROR")]
+    assert [
+        (execution.run_id, execution.status, execution.error_code)
+        for execution in unaffected.executions
+    ] == [(unaffected_run_id, "running", None)]
+
+
+def test_terminal_persistence_retries_while_run_stays_active(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+    resume_id = "resume-terminal-persistence-retries"
+    real_finish = agent_sessions.finish_agent_turn_execution
+    allow_finish = threading.Event()
+    finish_attempts = 0
+
+    async def scenario() -> str:
+        third_failure = asyncio.Event()
+
+        def unavailable_finish(*args: object, **kwargs: object) -> None:
+            nonlocal finish_attempts
+            finish_attempts += 1
+            if not allow_finish.is_set():
+                if finish_attempts >= 3:
+                    third_failure.set()
+                raise OSError("terminal database remains unavailable")
+            real_finish(*args, **kwargs)
+
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: object,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_done",
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "message-terminal-persistence-retries",
+                        "text": "Done",
+                        "transactionState": "committed",
+                    },
+                },
+            )
+
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(
+            agent_runs,
+            "finish_agent_turn_execution",
+            unavailable_finish,
+        )
+        monkeypatch.setattr(
+            agent_runs,
+            "AGENT_TERMINAL_RETRY_INITIAL_SECONDS",
+            0.001,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            agent_runs,
+            "AGENT_TERMINAL_RETRY_MAX_SECONDS",
+            0.005,
+            raising=False,
+        )
+
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-terminal-persistence-retries",
+                    role="user",
+                    text="Keep retrying terminal persistence.",
+                ),
+            ),
+        )
+        assert run.task is not None
+        third_failure_task = asyncio.create_task(third_failure.wait())
+        done, _ = await asyncio.wait(
+            {third_failure_task, run.task},
+            timeout=1,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if third_failure_task not in done:
+            allow_finish.set()
+            await asyncio.gather(run.task, return_exceptions=True)
+            pytest.fail("The run stopped retrying before the third failure.")
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(agent_runs=manager),
+            ),
+        )
+        active_response = await agent_router.get_active_agent_run(
+            request,
+            resume_id,
+        )
+        assert active_response.data is not None
+        assert active_response.data.id == run.id
+        assert active_response.data.status == "active"
+        assert active_response.data.execution_state == "running"
+        assert active_response.data.error_code is None
+        assert run.id in manager._reserved_run_ids
+        assert not any("event: run_done" in event.frame for event in run.events)
+        with closing(connect()) as conn:
+            execution = agent_sessions.load_agent_session(
+                conn,
+                resume_id,
+            ).executions[-1]
+        assert execution.status == "running"
+
+        attempts_before_stop = finish_attempts
+        await manager.stop(run.id)
+        await asyncio.sleep(0.02)
+        assert not run.task.done()
+        assert finish_attempts > attempts_before_stop
+        assert await manager.active_for_resume(resume_id) is run
+        assert run.id in manager._reserved_run_ids
+
+        allow_finish.set()
+        await asyncio.wait_for(run.task, timeout=1)
+        assert await manager.active_for_resume(resume_id) is None
+        assert run.id not in manager._reserved_run_ids
+        assert sum("event: run_done" in event.frame for event in run.events) == 1
+        return run.id
+
+    run_id = asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        execution = agent_sessions.load_agent_session(
+            conn,
+            resume_id,
+        ).executions[-1]
+    assert finish_attempts >= 4
+    assert execution.run_id == run_id
+    assert execution.status == "failed"
+    assert execution.error_code == "AGENT_INTERNAL_ERROR"
 
 
 def test_provider_401_execution_state_is_persisted(
@@ -536,6 +1302,9 @@ def test_provider_401_execution_state_is_persisted(
         run = await manager.start(
             AgentChatRequest(
                 resumeId="resume-provider-401",
+                expectedRevision=_current_session_revision(
+                    "resume-provider-401",
+                ),
                 message=AgentConversationItem(
                     id="agent-user-provider-401",
                     role="user",
@@ -587,6 +1356,9 @@ def test_unexpected_run_failure_execution_state_is_persisted(
         run = await manager.start(
             AgentChatRequest(
                 resumeId="resume-unexpected-failure",
+                expectedRevision=_current_session_revision(
+                    "resume-unexpected-failure",
+                ),
                 message=AgentConversationItem(
                     id="agent-user-unexpected-failure",
                     role="user",
@@ -634,6 +1406,9 @@ def test_cancelled_execution_state_is_persisted(
         run = await manager.start(
             AgentChatRequest(
                 resumeId="resume-cancelled-state",
+                expectedRevision=_current_session_revision(
+                    "resume-cancelled-state",
+                ),
                 message=AgentConversationItem(
                     id="agent-user-cancelled-state",
                     role="user",
@@ -671,17 +1446,18 @@ def test_interrupted_running_execution_becomes_retryable(
     client: TestClient,
 ) -> None:
     del client
-    request = AgentChatRequest(
-        resumeId="resume-interrupted-state",
-        message=AgentConversationItem(
-            id="agent-user-interrupted-state",
-            role="user",
-            text="Improve this resume.",
-        ),
-        resume={"basic": {}, "sections": []},
-    )
-
+    revision = _current_session_revision("resume-interrupted-state")
     with closing(connect()) as conn:
+        request = AgentChatRequest(
+            resumeId="resume-interrupted-state",
+            expectedRevision=revision,
+            message=AgentConversationItem(
+                id="agent-user-interrupted-state",
+                role="user",
+                text="Improve this resume.",
+            ),
+            resume={"basic": {}, "sections": []},
+        )
         agent_sessions.prepare_agent_turn(
             conn,
             request,
@@ -711,20 +1487,29 @@ def test_same_millisecond_retry_is_latest_execution(
         "_now_iso",
         lambda: "2026-07-28T00:00:00.000Z",
     )
-    request = AgentChatRequest(
-        resumeId="resume-same-millisecond-retry",
-        message=AgentConversationItem(
-            id="agent-user-same-millisecond-retry",
-            role="user",
-            text="Improve this resume.",
-        ),
-        resume={"basic": {}, "sections": []},
-    )
 
+    def retry_request(revision: str) -> AgentChatRequest:
+        return AgentChatRequest(
+            resumeId="resume-same-millisecond-retry",
+            expectedRevision=revision,
+            message=AgentConversationItem(
+                id="agent-user-same-millisecond-retry",
+                role="user",
+                text="Improve this resume.",
+            ),
+            resume={"basic": {}, "sections": []},
+        )
+
+    _current_session_revision("resume-same-millisecond-retry")
     with closing(connect()) as conn:
         failed_request = agent_sessions.prepare_agent_turn(
             conn,
-            request,
+            retry_request(
+                agent_sessions.load_agent_session(
+                    conn,
+                    "resume-same-millisecond-retry",
+                ).revision,
+            ),
             run_id="run-z-first",
         )
         agent_sessions.finish_agent_turn_execution(
@@ -736,7 +1521,12 @@ def test_same_millisecond_retry_is_latest_execution(
         )
         agent_sessions.prepare_agent_turn(
             conn,
-            request,
+            retry_request(
+                agent_sessions.load_agent_session(
+                    conn,
+                    "resume-same-millisecond-retry",
+                ).revision,
+            ),
             run_id="run-a-retry",
         )
         session = agent_sessions.load_agent_session(
@@ -780,5 +1570,46 @@ def test_only_one_active_run_is_allowed_per_resume(
         await manager.stop(run.id)
         assert run.task is not None
         await asyncio.wait_for(run.task, timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_global_active_run_capacity_is_enforced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: _FakeConnection,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message
+            while not await runtime.is_aborted():
+                await asyncio.sleep(0)
+            if False:
+                yield ""
+
+        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "MAX_ACTIVE_AGENT_RUNS", 2)
+        _bypass_turn_preparation(monkeypatch)
+
+        manager = AgentRunManager()
+        first = await manager.start(_request("resume-capacity-1"))
+        second = await manager.start(_request("resume-capacity-2"))
+
+        with pytest.raises(agent_runs.AgentRunCapacityError):
+            await manager.start(_request("resume-capacity-3"))
+
+        await manager.stop(first.id)
+        assert first.task is not None
+        await asyncio.wait_for(first.task, timeout=1)
+
+        third = await manager.start(_request("resume-capacity-3"))
+        for run in (second, third):
+            await manager.stop(run.id)
+            assert run.task is not None
+            await asyncio.wait_for(run.task, timeout=1)
 
     asyncio.run(scenario())

@@ -1,6 +1,7 @@
 import { SettingsPanel } from "@/components/settings-panel";
 import { WorkspaceRouteSkeleton } from "@/components/workspace-skeletons";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
+import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 import type { AppMessages, Locale } from "@/i18n";
@@ -26,6 +27,10 @@ export function SettingsWorkspacePage({
     onLocaleChange,
     persistence,
   });
+  useRememberWorkspaceLateralRouteData(
+    "settings",
+    preferences.hasLoaded ? preferences.routeData : null,
+  );
 
   return (
     <WorkspaceShell
@@ -34,6 +39,7 @@ export function SettingsWorkspacePage({
       messages={messages}
       theme={preferences.theme}
       resolvedTheme={preferences.resolvedTheme}
+      persistence={persistence}
       onLocaleChange={onLocaleChange}
       onThemeChange={preferences.changeTheme}
       onLogout={onLogout}

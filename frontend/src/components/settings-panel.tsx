@@ -35,7 +35,7 @@ export function SettingsPanel({
   }
 
   return (
-    <main className="flex flex-1 items-start p-4 sm:p-6 lg:p-8">
+    <div className="flex flex-1 items-start p-4 sm:p-6 lg:p-8">
       <Tabs
         value={activeTab}
         onValueChange={changeTab}
@@ -76,6 +76,6 @@ export function SettingsPanel({
           modelConfigs={modelConfigs}
         />
       </Tabs>
-    </main>
+    </div>
   );
 }

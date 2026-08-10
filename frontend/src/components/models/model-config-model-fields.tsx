@@ -64,7 +64,11 @@ function DiscoveredModelField({
             onValueChange={selectModel}
             disabled={discoveredModels.length === 0}
           >
-            <SelectTrigger id="model-select" className="w-full">
+            <SelectTrigger
+              id="model-select"
+              className="w-full"
+              aria-invalid={Boolean(errors.model || errors.discovery)}
+            >
               <SelectValue placeholder={placeholder}>
                 <span className="min-w-0 truncate">{placeholder}</span>
               </SelectValue>
@@ -90,6 +94,7 @@ function DiscoveredModelField({
         </div>
         {canDiscoverModels ? (
           <Button
+            id="model-discovery"
             type="button"
             variant="outline"
             className="shrink-0"

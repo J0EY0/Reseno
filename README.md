@@ -20,10 +20,9 @@ supports structured resume editing, workspace persistence, imports, AI agent ass
 Backend defaults are documented in `backend/.env.example`. The backend stores
 runtime data outside the Git working tree under `~/.resumate` by default.
 
-The default local login is:
-
-- Username: `admin`
-- Password: `ResuMate@2026`
+There are no default credentials. On first opening ResuMate locally, create the
+single owner username and password on the setup page. Authentication is stored
+separately in `~/.resumate/auth.db`; the resume database remains unchanged.
 
 ## Start The Backend
 

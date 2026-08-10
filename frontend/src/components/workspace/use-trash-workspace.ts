@@ -14,6 +14,7 @@ import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
 import { getTemplateCatalog } from "@/lib/templates";
+import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
   deleteResumeForeverApi,
@@ -45,34 +46,55 @@ export function useTrashWorkspace({
   onLocaleChange: (locale: Locale) => void;
   persistence: WorkspacePreferencesPersistence;
 }) {
+  const preparedRouteData = useWorkspaceLateralRouteData("trash");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
+  const routeMutationEpochRef = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!preparedRouteData);
   const [theme, setTheme] = useState<ThemeMode>(
-    () => persistence.getSnapshot()?.theme ?? "light",
+    () =>
+      preparedRouteData?.theme
+        ? normalizeWorkspaceTheme(preparedRouteData.theme)
+        : persistence.getSnapshot()?.theme ?? "light",
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
-  >([]);
+  >(() => preparedRouteData?.customTemplates ?? []);
+  const [defaultTemplateId, setDefaultTemplateId] = useState(
+    () => preparedRouteData?.defaultTemplateId ?? "minimal",
+  );
   const [deletedResumes, setDeletedResumes] = useState<
     DeletedResumeWorkspaceItem[]
-  >([]);
+  >(() => preparedRouteData?.deletedResumes ?? []);
   const [deletedTemplates, setDeletedTemplates] = useState<
     DeletedResumeTemplateDefinition[]
-  >([]);
+  >(() => preparedRouteData?.deletedTemplates ?? []);
   const templates = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
     [customTemplates, messages],
   );
+  const routeData = useMemo(
+    () => ({
+      customTemplates,
+      defaultTemplateId,
+      deletedResumes,
+      deletedTemplates,
+      theme,
+    }),
+    [customTemplates, defaultTemplateId, deletedResumes, deletedTemplates, theme],
+  );
   const templatePreviewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
+  const markRouteMutation = useCallback(() => {
+    routeMutationEpochRef.current += 1;
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -100,64 +122,101 @@ export function useTrashWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal) => {
+    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      setIsLoading(true);
-      setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      if (!isPreparedCalibration) {
+        setIsLoading(true);
+        setHasLoadError(false);
+        toast.dismiss("workspace-load-error");
+      }
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+        while (!signal.aborted && requestIdRef.current === requestId) {
+          const mutationEpoch = routeMutationEpochRef.current;
+          try {
+            await persistence.flush();
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const source = await fetchWorkspaceRouteData("trash", {
-          notifyOnError: false,
-          signal,
-        });
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+            const source = await fetchWorkspaceRouteData(
+              "trash",
+              isPreparedCalibration
+                ? { notifyOnError: false }
+                : { notifyOnError: false, signal },
+            );
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
-        const persistedAgentSettings =
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
+            const persistedPreferences = persistence.getSnapshot();
+            const nextTheme = source.data.theme
+              ? normalizeWorkspaceTheme(source.data.theme)
+              : persistedPreferences?.theme ?? "light";
+            const persistedAgentSettings =
+              persistedPreferences?.agentSettings ??
+              createDefaultAgentSettings();
 
-        setTheme(nextTheme);
-        setCustomTemplates(source.data.customTemplates);
-        setDeletedResumes(source.data.deletedResumes);
-        setDeletedTemplates(source.data.deletedTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings: persistedAgentSettings,
-        });
-        setHasLoaded(true);
-      } catch (error) {
-        if (isAbortError(error)) {
-          return;
-        }
-        if (requestIdRef.current !== requestId) {
-          return;
-        }
+            setTheme(nextTheme);
+            setCustomTemplates(source.data.customTemplates);
+            setDefaultTemplateId(source.data.defaultTemplateId);
+            setDeletedResumes(source.data.deletedResumes);
+            setDeletedTemplates(source.data.deletedTemplates);
+            persistence.hydrate({
+              locale: initialLocaleRef.current,
+              theme: nextTheme,
+              agentSettings: persistedAgentSettings,
+            });
+            setHasLoaded(true);
+            return;
+          } catch (error) {
+            if (signal.aborted || isAbortError(error)) {
+              return;
+            }
+            if (requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        console.error("Failed to load the trash workspace route.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(
-            getMessagesSync(initialLocaleRef.current).apiMessages
-              .REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
-          );
+            console.error("Failed to load the trash workspace route.", error);
+            if (!isApiErrorToastShown(error)) {
+              toast.error(
+                getMessagesSync(initialLocaleRef.current).apiMessages
+                  .REQUEST_FAILED,
+                { closeButton: true, id: "workspace-load-error" },
+              );
+            }
+            if (!isPreparedCalibration) {
+              setHasLoaded(false);
+              setHasLoadError(true);
+            }
+            return;
+          }
         }
-        setHasLoaded(false);
-        setHasLoadError(true);
       } finally {
-        if (requestIdRef.current === requestId) {
+        if (
+          !isPreparedCalibration &&
+          !signal.aborted &&
+          requestIdRef.current === requestId
+        ) {
           setIsLoading(false);
         }
       }
@@ -166,12 +225,25 @@ export function useTrashWorkspace({
   );
 
   useEffect(() => {
+    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
+    if (isPreparedCalibration && preparedRouteData) {
+      const persistedPreferences = persistence.getSnapshot();
+      persistence.hydrate({
+        locale: initialLocaleRef.current,
+        theme: preparedRouteData.theme
+          ? normalizeWorkspaceTheme(preparedRouteData.theme)
+          : persistedPreferences?.theme ?? "light",
+        agentSettings:
+          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
+      });
+    }
+
     const controller = new AbortController();
     // Suppress StrictMode's development preflight before transport begins,
     // then abort a real request when route ownership changes.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal);
+        void loadRouteData(controller.signal, isPreparedCalibration);
       }
     }, 0);
 
@@ -179,10 +251,11 @@ export function useTrashWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, retryKey]);
+  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
+      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -216,7 +289,7 @@ export function useTrashWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
   );
 
   const restoreResumes = useCallback(
@@ -240,6 +313,7 @@ export function useTrashWorkspace({
         return false;
       }
 
+      markRouteMutation();
       startTransition(() => {
         setDeletedResumes((current) =>
           current.filter((item) => !resumeIds.includes(item.id)),
@@ -251,7 +325,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [deletedResumes, messages],
+    [deletedResumes, markRouteMutation, messages],
   );
 
   const permanentlyDeleteResumes = useCallback(
@@ -272,6 +346,7 @@ export function useTrashWorkspace({
         return false;
       }
 
+      markRouteMutation();
       startTransition(() => {
         setDeletedResumes((current) =>
           current.filter((item) => !resumeIds.includes(item.id)),
@@ -285,7 +360,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [messages],
+    [markRouteMutation, messages],
   );
 
   const restoreTemplates = useCallback(
@@ -312,6 +387,7 @@ export function useTrashWorkspace({
         return false;
       }
 
+      markRouteMutation();
       startTransition(() => {
         setDeletedTemplates((current) =>
           current.filter((item) => !templateIds.includes(item.id)),
@@ -326,7 +402,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [deletedTemplates, messages],
+    [deletedTemplates, markRouteMutation, messages],
   );
 
   const permanentlyDeleteTemplates = useCallback(
@@ -347,6 +423,7 @@ export function useTrashWorkspace({
         return false;
       }
 
+      markRouteMutation();
       startTransition(() => {
         setDeletedTemplates((current) =>
           current.filter((item) => !templateIds.includes(item.id)),
@@ -360,7 +437,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [messages],
+    [markRouteMutation, messages],
   );
 
   return {
@@ -372,6 +449,7 @@ export function useTrashWorkspace({
     permanentlyDeleteResumes,
     permanentlyDeleteTemplates,
     resolvedTheme,
+    routeData,
     restoreResumes,
     restoreTemplates,
     retryLoad: () => setRetryKey((current) => current + 1),

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "vite";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 const server = await createServer({
+  cacheDir: createViteTestCacheDir(),
   configFile: false,
+  optimizeDeps: { noDiscovery: true },
   root: process.cwd(),
   server: { hmr: false, middlewareMode: true, ws: false },
   resolve: {

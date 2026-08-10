@@ -1,4 +1,8 @@
-from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentConversationItem,
+    AgentResumeEditSuggestion,
+)
 from app.services.agent.evidence import ground_edit_evidence
 
 
@@ -44,7 +48,13 @@ def _edit(
 def test_missing_model_evidence_is_inferred_from_operation() -> None:
     edits, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(prompt="Rewrite the existing project bullet."),
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-edit-evidence-inferred",
+                role="user",
+                text="Rewrite the existing project bullet.",
+            ),
+        ),
         [_edit()],
     )
 
@@ -59,14 +69,18 @@ def test_current_attachment_is_valid_candidate_evidence() -> None:
     edits, issues = ground_edit_evidence(
         _resume(),
         AgentChatRequest(
-            prompt="Use the attached project notes.",
-            files=[
-                {
-                    "id": "attachment-1",
-                    "filename": "notes.pdf",
-                    "mediaType": "application/pdf",
-                },
-            ],
+            message=AgentConversationItem(
+                id="turn-edit-evidence-attachment",
+                role="user",
+                text="Use the attached project notes.",
+                files=[
+                    {
+                        "id": "attachment-1",
+                        "filename": "notes.pdf",
+                        "mediaType": "application/pdf",
+                    },
+                ],
+            ),
         ),
         [_edit(evidence_refs=["attachment:attachment-1"])],
     )
@@ -78,7 +92,13 @@ def test_current_attachment_is_valid_candidate_evidence() -> None:
 def test_public_target_source_cannot_be_candidate_evidence() -> None:
     edits, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(prompt="Tailor this bullet to the role."),
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-edit-evidence-public-source",
+                role="user",
+                text="Tailor this bullet to the role.",
+            ),
+        ),
         [_edit(evidence_refs=["web:https://example.com/job"])],
     )
 

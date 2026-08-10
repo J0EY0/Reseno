@@ -90,7 +90,7 @@ export function ResumePageContent({
             summaryDiff={model.diffLookup.summaryDiff}
             enableContactLinks={enableContactLinks}
           />
-          <main
+          <div
             className="min-w-0"
             style={{
               padding: `${model.settings.pagePaddingTop}mm ${model.settings.pagePaddingX}mm ${model.settings.pagePaddingBottom}mm`,
@@ -107,7 +107,7 @@ export function ResumePageContent({
               sectionDiffById={model.diffLookup.sectionDiffById}
               itemDiffById={model.diffLookup.itemDiffById}
             />
-          </main>
+          </div>
         </div>
       </>
     );

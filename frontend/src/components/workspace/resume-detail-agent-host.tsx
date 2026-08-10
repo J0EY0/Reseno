@@ -1,15 +1,8 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
@@ -26,7 +19,7 @@ let copilotPanelModulePromise:
   | null = null;
 
 // Keep the conversation runtime out of the detail entry chunk until the Agent
-// dock is rendered or the compact-layout trigger warms the same module.
+// panel renders or its collapsed rail warms the same module.
 function loadCopilotPanelModule() {
   copilotPanelModulePromise ??= import(
     "@/components/copilot/copilot-panel"
@@ -40,40 +33,59 @@ const CopilotPanel = lazy(() =>
   })),
 );
 
-function AgentPanelFallback() {
+function AgentPanelFallback({
+  isPanelCollapsed,
+}: {
+  isPanelCollapsed: boolean;
+}) {
+  const shouldDockAgent = !isPanelCollapsed;
+
   return (
-    <Card className="h-full min-h-0 rounded-[32px] border-border/60">
-      <CardContent className="space-y-5 p-4">
-        <div className="flex items-center gap-3">
-          <Skeleton className="size-11 rounded-2xl" />
-          <Skeleton className="h-5 w-28" />
-        </div>
-        <Skeleton className="h-36 rounded-3xl" />
-        <Skeleton className="h-48 rounded-3xl" />
-        <Skeleton className="mt-auto h-44 rounded-[26px]" />
-      </CardContent>
-    </Card>
+    <aside
+      aria-hidden={!shouldDockAgent}
+      className={cn(
+        "agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden",
+        !shouldDockAgent && "pointer-events-none opacity-0",
+      )}
+      inert={!shouldDockAgent}
+    >
+      <Card className="h-full min-h-0 rounded-[32px] border-border/60">
+        <CardContent className="space-y-5 p-4">
+          <div className="flex items-center gap-3">
+            <Skeleton className="size-11 rounded-2xl" />
+            <Skeleton className="h-5 w-28" />
+          </div>
+          <Skeleton className="h-36 rounded-3xl" />
+          <Skeleton className="h-48 rounded-3xl" />
+          <Skeleton className="mt-auto h-44 rounded-[26px]" />
+        </CardContent>
+      </Card>
+    </aside>
   );
 }
 
 function ResumeDetailAgentPanel({
   locale,
   messages,
-  mode,
   model,
 }: {
   locale: Locale;
   messages: AppMessages;
-  mode: "docked" | "sheet";
   model: ResumeDetailWorkspaceModel;
 }) {
   const { commands, state } = model;
 
   return (
-    <Suspense fallback={<AgentPanelFallback />}>
+    <Suspense
+      fallback={
+        <AgentPanelFallback
+          isPanelCollapsed={state.agent.isPanelCollapsed}
+        />
+      }
+    >
       <CopilotPanel
-        key={`${state.resumeItem?.id ?? "resume"}-${mode}`}
-        mode={mode}
+        key={state.resumeItem?.id ?? "resume"}
+        isPanelCollapsed={state.agent.isPanelCollapsed}
         resumeId={state.resumeItem?.id ?? undefined}
         t={messages}
         locale={locale}
@@ -87,6 +99,7 @@ function ResumeDetailAgentPanel({
         hasAgentDraft={Boolean(state.agent.draft)}
         agentDraftState={state.agent.draftState}
         onPreviewAgentEdits={commands.agent.previewEdits}
+        onReconcileAgentDraft={commands.agent.reconcileDraft}
         onRollbackAgentDraft={commands.agent.rollbackDraft}
         onApplyAgentDraft={commands.agent.applyDraft}
         onDiscardAgentDraft={commands.agent.discardDraft}
@@ -105,23 +118,17 @@ function ResumeDetailAgentSeamRail({
   model: ResumeDetailWorkspaceModel;
 }) {
   const { commands, state } = model;
-
-  if (!state.agent.isDockLayout) {
-    return null;
-  }
-
-  const tooltip = state.agent.isPanelCollapsed
+  const isCollapsed = state.agent.isPanelCollapsed;
+  const tooltip = isCollapsed
     ? messages.agentExpandPanel
     : messages.agentCollapsePanel;
-  const RailIcon = state.agent.isPanelCollapsed
-    ? ChevronLeft
-    : ChevronRight;
+  const RailIcon = isCollapsed ? ChevronLeft : ChevronRight;
 
   return (
     <div
       className={cn(
-        "agent-seam-rail hidden print:hidden 2xl:flex",
-        state.agent.isPanelCollapsed && "agent-seam-rail--collapsed",
+        "agent-seam-rail flex print:hidden",
+        isCollapsed && "agent-seam-rail--collapsed",
       )}
     >
       <TooltipProvider delayDuration={180}>
@@ -132,12 +139,15 @@ function ResumeDetailAgentSeamRail({
               variant="ghost"
               size="icon"
               aria-label={tooltip}
+              aria-expanded={!state.agent.isPanelCollapsed}
               className="agent-seam-rail-button"
-              onClick={() =>
+              onFocus={() => void loadCopilotPanelModule()}
+              onPointerEnter={() => void loadCopilotPanelModule()}
+              onClick={() => {
                 commands.agent.setPanelCollapsed(
                   !state.agent.isPanelCollapsed,
-                )
-              }
+                );
+              }}
             >
               <span className="agent-seam-rail-track" aria-hidden="true">
                 <RailIcon className="agent-seam-rail-icon" />
@@ -160,54 +170,27 @@ export function ResumeDetailAgentHost({
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
 }) {
-  const { commands, state } = model;
-  const shouldDockAgent =
-    state.agent.isDockLayout && !state.agent.isPanelCollapsed;
+  const { state } = model;
+  const [hasMountedAgent, setHasMountedAgent] = useState(
+    () => !state.agent.isPanelCollapsed,
+  );
+  const shouldActivateAgent = !state.agent.isPanelCollapsed;
+  // This one-way latch keeps the conversation controller alive when the dock
+  // collapses. The resumeId key remains the only reason to remount its owner.
+  if (!hasMountedAgent && shouldActivateAgent) {
+    setHasMountedAgent(true);
+  }
+  const shouldMountAgent = hasMountedAgent || shouldActivateAgent;
 
   return (
     <>
       <ResumeDetailAgentSeamRail messages={messages} model={model} />
-
-      {state.agent.isDockLayout ? (
-        <aside
-          aria-hidden={!shouldDockAgent}
-          className={cn(
-            "agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden",
-            "transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            !shouldDockAgent && "pointer-events-none opacity-0",
-          )}
-        >
-          <ResumeDetailAgentPanel
-            locale={locale}
-            messages={messages}
-            mode="docked"
-            model={model}
-          />
-        </aside>
-      ) : null}
-
-      {!state.agent.isDockLayout ? (
-        <Sheet
-          open={state.agent.isSheetOpen}
-          onOpenChange={commands.agent.setSheetOpen}
-        >
-          <SheetContent
-            closeLabel={messages.close}
-            side="right"
-            className="w-[420px] max-w-[calc(100vw-1rem)] p-2 sm:max-w-[420px]"
-          >
-            <SheetHeader className="sr-only">
-              <SheetTitle>{messages.aiTitle}</SheetTitle>
-              <SheetDescription>{messages.agentEmptyPrompt}</SheetDescription>
-            </SheetHeader>
-            <ResumeDetailAgentPanel
-              locale={locale}
-              messages={messages}
-              mode="sheet"
-              model={model}
-            />
-          </SheetContent>
-        </Sheet>
+      {shouldMountAgent ? (
+        <ResumeDetailAgentPanel
+          locale={locale}
+          messages={messages}
+          model={model}
+        />
       ) : null}
     </>
   );

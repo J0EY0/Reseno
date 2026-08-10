@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -19,6 +13,7 @@ import {
 import { getTemplateCatalog } from "@/lib/templates";
 import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
   createResumeApi,
   createTemplateApi,
@@ -68,32 +63,53 @@ export function useResumeGalleryWorkspace({
   persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
+  const preparedRouteData = useWorkspaceLateralRouteData("resume");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
+  const routeMutationEpochRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
   const [retryKey, setRetryKey] = useState(0);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!preparedRouteData);
   const [theme, setTheme] = useState<ThemeMode>(
-    () => persistence.getSnapshot()?.theme ?? "light",
+    () =>
+      preparedRouteData?.theme
+        ? normalizeWorkspaceTheme(preparedRouteData.theme)
+        : persistence.getSnapshot()?.theme ?? "light",
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
   const [isCreating, setIsCreating] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [resumes, setResumes] = useState<ResumeWorkspaceItem[]>([]);
+  const [resumes, setResumes] = useState<ResumeWorkspaceItem[]>(
+    () => preparedRouteData?.resumes ?? [],
+  );
   const [activeDefaultTemplateId, setActiveDefaultTemplateId] =
-    useState<ResumeTemplateId>(defaultTemplateId);
+    useState<ResumeTemplateId>(
+      () => preparedRouteData?.defaultTemplateId ?? defaultTemplateId,
+    );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
-  >([]);
+  >(() => preparedRouteData?.customTemplates ?? []);
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
     [customTemplates, messages],
   );
+  const routeData = useMemo(
+    () => ({
+      customTemplates,
+      defaultTemplateId: activeDefaultTemplateId,
+      resumes,
+      theme,
+    }),
+    [activeDefaultTemplateId, customTemplates, resumes, theme],
+  );
+  const markRouteMutation = useCallback(() => {
+    routeMutationEpochRef.current += 1;
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -121,63 +137,99 @@ export function useResumeGalleryWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal) => {
+    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      setIsLoading(true);
-      setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      if (!isPreparedCalibration) {
+        setIsLoading(true);
+        setHasLoadError(false);
+        toast.dismiss("workspace-load-error");
+      }
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+        while (!signal.aborted && requestIdRef.current === requestId) {
+          const mutationEpoch = routeMutationEpochRef.current;
+          try {
+            await persistence.flush();
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const source = await fetchWorkspaceRouteData("resume-gallery", {
-          notifyOnError: false,
-          signal,
-        });
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+            const source = await fetchWorkspaceRouteData(
+              "resume-gallery",
+              isPreparedCalibration
+                ? { notifyOnError: false }
+                : { notifyOnError: false, signal },
+            );
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
+            const persistedPreferences = persistence.getSnapshot();
+            const nextTheme = source.data.theme
+              ? normalizeWorkspaceTheme(source.data.theme)
+              : persistedPreferences?.theme ?? "light";
 
-        setTheme(nextTheme);
-        setResumes(source.data.resumes);
-        setActiveDefaultTemplateId(source.data.defaultTemplateId);
-        setCustomTemplates(source.data.customTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings:
-            persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
-        });
-        setHasLoaded(true);
-      } catch (error) {
-        if (isAbortError(error)) {
-          return;
-        }
-        if (requestIdRef.current !== requestId) {
-          return;
-        }
+            setTheme(nextTheme);
+            setResumes(source.data.resumes);
+            setActiveDefaultTemplateId(source.data.defaultTemplateId);
+            setCustomTemplates(source.data.customTemplates);
+            persistence.hydrate({
+              locale: initialLocaleRef.current,
+              theme: nextTheme,
+              agentSettings:
+                persistedPreferences?.agentSettings ??
+                createDefaultAgentSettings(),
+            });
+            setHasLoaded(true);
+            return;
+          } catch (error) {
+            if (signal.aborted || isAbortError(error)) {
+              return;
+            }
+            if (requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        console.error("Failed to load the resume gallery route.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(
-            getMessagesSync(initialLocaleRef.current).apiMessages
-              .REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
-          );
+            console.error("Failed to load the resume gallery route.", error);
+            if (!isApiErrorToastShown(error)) {
+              toast.error(
+                getMessagesSync(initialLocaleRef.current).apiMessages
+                  .REQUEST_FAILED,
+                { closeButton: true, id: "workspace-load-error" },
+              );
+            }
+            if (!isPreparedCalibration) {
+              setHasLoaded(false);
+              setHasLoadError(true);
+            }
+            return;
+          }
         }
-        setHasLoaded(false);
-        setHasLoadError(true);
       } finally {
-        if (requestIdRef.current === requestId) {
+        if (
+          !isPreparedCalibration &&
+          !signal.aborted &&
+          requestIdRef.current === requestId
+        ) {
           setIsLoading(false);
         }
       }
@@ -186,12 +238,25 @@ export function useResumeGalleryWorkspace({
   );
 
   useEffect(() => {
+    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
+    if (isPreparedCalibration && preparedRouteData) {
+      const persistedPreferences = persistence.getSnapshot();
+      persistence.hydrate({
+        locale: initialLocaleRef.current,
+        theme: preparedRouteData.theme
+          ? normalizeWorkspaceTheme(preparedRouteData.theme)
+          : persistedPreferences?.theme ?? "light",
+        agentSettings:
+          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
+      });
+    }
+
     const controller = new AbortController();
     // Suppress StrictMode's development preflight before transport begins,
     // then abort a real in-flight read when this route releases ownership.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal);
+        void loadRouteData(controller.signal, isPreparedCalibration);
       }
     }, 0);
 
@@ -199,10 +264,11 @@ export function useResumeGalleryWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, retryKey]);
+  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
+      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -236,7 +302,7 @@ export function useResumeGalleryWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
   );
 
   const buildResumeDetailHandoff = useCallback(
@@ -309,6 +375,7 @@ export function useResumeGalleryWorkspace({
         title: createDefaultResumeTitle(messages, resumes.length + 1),
         template: activeDefaultTemplateId,
       });
+      markRouteMutation();
       setResumes((current) => [...current, result.resume]);
       runViewTransition(
         () =>
@@ -340,6 +407,7 @@ export function useResumeGalleryWorkspace({
     buildResumeDetailHandoff,
     customTemplates,
     isLoading,
+    markRouteMutation,
     messages,
     navigate,
     resumes.length,
@@ -427,6 +495,7 @@ export function useResumeGalleryWorkspace({
         }
 
         const nextCustomTemplates = [...customTemplates, ...savedTemplates];
+        markRouteMutation();
         setResumes((current) => [
           ...current,
           ...savedImports.map((item) => item.resume),
@@ -466,6 +535,7 @@ export function useResumeGalleryWorkspace({
       buildResumeDetailHandoff,
       customTemplates,
       messages,
+      markRouteMutation,
       navigate,
       resumes.length,
     ],
@@ -494,6 +564,7 @@ export function useResumeGalleryWorkspace({
         return;
       }
 
+      markRouteMutation();
       setResumes((current) =>
         current.filter((item) => !resumeIds.includes(item.id)),
       );
@@ -502,7 +573,7 @@ export function useResumeGalleryWorkspace({
         { closeButton: true },
       );
     },
-    [messages, resumes],
+    [markRouteMutation, messages, resumes],
   );
 
   return {
@@ -517,6 +588,7 @@ export function useResumeGalleryWorkspace({
     openResume,
     resolvedTheme,
     resumes,
+    routeData,
     retryLoad: () => setRetryKey((current) => current + 1),
     templateCatalog,
     theme,

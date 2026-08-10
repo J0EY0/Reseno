@@ -62,6 +62,29 @@ export function shouldRollbackOptimisticAgentMessages({
   return !runAccepted;
 }
 
+/**
+ * One submit gate is shared by the textarea, attachments, and send button so
+ * a partial session bootstrap cannot be bypassed by another composer control.
+ */
+export function canSubmitAgentPrompt({
+  hasConfiguredModel,
+  isResponding,
+  isSessionReady,
+  isSubmitting,
+}: {
+  hasConfiguredModel: boolean;
+  isResponding: boolean;
+  isSessionReady: boolean;
+  isSubmitting: boolean;
+}) {
+  return (
+    hasConfiguredModel &&
+    isSessionReady &&
+    !isResponding &&
+    !isSubmitting
+  );
+}
+
 export function getAgentQualityWarningCount(tools: AgentToolInvocation[]) {
   return tools.reduce((total, tool) => {
     if (

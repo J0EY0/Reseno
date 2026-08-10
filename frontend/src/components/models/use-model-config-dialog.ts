@@ -305,10 +305,10 @@ export function useModelConfigDialog({
 
     if (Object.keys(nextErrors).length > 0) {
       setErrors(nextErrors);
-      return false;
+      return { status: "invalid", errors: nextErrors } as const;
     }
     if (!selectedProvider) {
-      return false;
+      return { status: "failed" } as const;
     }
 
     setSubmitting(true);
@@ -324,14 +324,14 @@ export function useModelConfigDialog({
           : messages.modelConfigUpdated,
         { closeButton: true },
       );
-      return true;
+      return { status: "saved" } as const;
     } catch (error) {
       setErrors((current) => ({
         ...current,
         discovery:
           error instanceof Error ? error.message : messages.validationRequired,
       }));
-      return false;
+      return { status: "failed" } as const;
     } finally {
       setSubmitting(false);
     }

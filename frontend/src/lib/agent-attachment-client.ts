@@ -5,7 +5,7 @@ import {
   resolveApiUrl,
   uploadApi,
 } from "@/lib/api-client";
-import type { AgentChatAttachment } from "@/types/api";
+import type { AgentChatAttachment, ApiRequestOptions } from "@/types/api";
 
 export function uploadAgentAttachment(
   file: FormData,
@@ -37,11 +37,13 @@ export function downloadAgentAttachment(
 export function deletePendingAgentAttachment(
   resumeId: string,
   attachmentId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
   return requestApi<{ id: string }>(
     apiRoutes.agentAttachment(resumeId, attachmentId),
     {
       method: "DELETE",
+      ...options,
     },
   );
 }

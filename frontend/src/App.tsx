@@ -6,14 +6,7 @@ import {
   useLocation,
 } from "react-router-dom";
 
-import {
-  clearAuthSession,
-  isAuthRequired,
-  loadAuthSession,
-  loginWithCredentials,
-  refreshAuthSession,
-} from "@/lib/auth";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { loadAuthSession } from "@/lib/auth";
 import {
   getSystemLocale,
   type AppMessages,
@@ -25,13 +18,23 @@ import {
   saveLocalePreferenceApi,
 } from "@/lib/preference-api";
 import { createWorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
-import { runViewTransition } from "@/lib/view-transition";
-import { Skeleton } from "@/components/ui/skeleton";
+import { clearWorkspaceLateralRouteMemory } from "@/lib/workspace-route-memory";
+import { useAuthGate } from "@/hooks/use-auth-gate";
+import { Spinner } from "@/components/ui/spinner";
 import { ViewTransitionBoundary } from "@/components/view-transition";
+import { clearDynamicImportReloadGuard } from "@/lib/dynamic-import-recovery";
 
+const loadAuthStatusErrorPage = () =>
+  import("@/components/auth/auth-status-error-page").then((module) => ({
+    default: module.AuthStatusErrorPage,
+  }));
 const loadLoginPage = () =>
   import("@/components/auth/login-page").then((module) => ({
     default: module.LoginPage,
+  }));
+const loadSetupPage = () =>
+  import("@/components/auth/setup-page").then((module) => ({
+    default: module.SetupPage,
   }));
 const loadResumeGalleryWorkspacePage = () =>
   import("@/components/workspace/resume-gallery-workspace-page").then(
@@ -65,7 +68,9 @@ const loadPdfExportRenderer = () =>
   import("@/components/pdf-export-renderer").then((module) => ({
     default: module.PdfExportRenderer,
   }));
+const AuthStatusErrorPage = lazy(loadAuthStatusErrorPage);
 const LoginPage = lazy(loadLoginPage);
+const SetupPage = lazy(loadSetupPage);
 const ResumeGalleryWorkspacePage = lazy(loadResumeGalleryWorkspacePage);
 const ResumeDetailWorkspacePage = lazy(loadResumeDetailWorkspacePage);
 const ModelsWorkspacePage = lazy(loadModelsWorkspacePage);
@@ -83,25 +88,20 @@ function getInitialLocale(isAuthenticated: boolean) {
 
 function AppRouteFallback() {
   return (
-    <div className="flex min-h-svh items-center justify-center bg-background p-6">
-      <div className="w-[min(420px,100%)] space-y-5">
-        <div className="flex items-center gap-3">
-          <Skeleton className="size-12 rounded-2xl" />
-          <div className="grid flex-1 gap-2">
-            <Skeleton className="h-5 w-32" />
-            <Skeleton className="h-3 w-48" />
-          </div>
-        </div>
-        <div className="rounded-3xl border border-border bg-card p-5 shadow-sm">
-          <div className="grid gap-3">
-            <Skeleton className="h-11 w-full rounded-2xl" />
-            <Skeleton className="h-11 w-full rounded-2xl" />
-            <Skeleton className="h-11 w-36 rounded-2xl" />
-          </div>
-        </div>
-      </div>
+    <div className="flex min-h-svh items-center justify-center bg-background">
+      <Spinner className="size-8 text-muted-foreground" />
     </div>
   );
+}
+
+function DynamicImportRecoveryReset() {
+  const { key } = useLocation();
+
+  useEffect(() => {
+    clearDynamicImportReloadGuard();
+  }, [key]);
+
+  return null;
 }
 
 function AppRouteSuspense({ children }: { children: ReactNode }) {
@@ -115,6 +115,7 @@ function AppRouteSuspense({ children }: { children: ReactNode }) {
     >
       <ViewTransitionBoundary enter="slide-up" default="none">
         {children}
+        <DynamicImportRecoveryReset />
       </ViewTransitionBoundary>
     </Suspense>
   );
@@ -146,6 +147,8 @@ function DocumentMetadata({
 
     document.title = pageLabel
       ? `${pageLabel} · ${messages.brandTitle}`
+      : pathname === "/setup"
+        ? messages.setupTitle
       : pathname === "/login"
         ? messages.loginTitle
         : messages.brandTitle;
@@ -156,11 +159,9 @@ function DocumentMetadata({
 
 function App() {
   const { pathname } = useLocation();
-  const authRequired = isAuthRequired();
-  const [isAuthenticated, setIsAuthenticated] = useState(() =>
-    authRequired ? loadAuthSession() : true,
+  const [initialLocale] = useState(() =>
+    getInitialLocale(loadAuthSession()),
   );
-  const [initialLocale] = useState(() => getInitialLocale(isAuthenticated));
   const [preferencesPersistence] = useState(() =>
     createWorkspacePreferencesPersistence(),
   );
@@ -171,16 +172,38 @@ function App() {
     locale,
     messages,
   } = useLocaleMessages(initialLocale);
+  const { authGate, login, logout, retry, setup } = useAuthGate({
+    loginFallbackError: messages.loginInvalidCredentials,
+    onAuthenticated: () => {
+      changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
+    },
+    onLoggedOut: () => {
+      changeLocale(getSystemLocale());
+    },
+    requestFallbackError: messages.apiMessages.REQUEST_FAILED,
+  });
+
+  useEffect(() => {
+    if (authGate.phase !== "app") {
+      clearWorkspaceLateralRouteMemory();
+    }
+  }, [authGate.phase]);
 
   useEffect(() => {
     if (isMessagesReady) {
       return;
     }
 
+    if (authGate.phase === "loading" || authGate.phase === "error") {
+      return;
+    }
+
     const routeRequest =
       pathname === "/pdf-export"
         ? loadPdfExportRenderer
-        : authRequired && !isAuthenticated
+        : authGate.phase === "setup"
+          ? loadSetupPage
+        : authGate.phase === "login"
           ? loadLoginPage
           : pathname === "/models"
             ? loadModelsWorkspacePage
@@ -203,69 +226,24 @@ function App() {
     void routeRequest().catch((error: unknown) => {
       console.error("Failed to preload the current application route.", error);
     });
-  }, [authRequired, isAuthenticated, isMessagesReady, pathname]);
+  }, [authGate.phase, isMessagesReady, pathname]);
 
   useEffect(() => {
-    if (!isAuthenticated || !canPersistLocale) {
+    if (authGate.phase !== "app" || !canPersistLocale) {
       return;
     }
 
     saveLocalePreferenceApi(locale);
-  }, [canPersistLocale, isAuthenticated, locale]);
-
-  useEffect(() => {
-    if (!authRequired || !isAuthenticated) {
-      return;
-    }
-
-    const refreshInterval = window.setInterval(() => {
-      void refreshAuthSession().catch((error) => {
-        console.error("Failed to refresh auth session.", error);
-        clearAuthSession();
-        setIsAuthenticated(false);
-      });
-    }, 4 * 60 * 60 * 1000);
-
-    return () => {
-      window.clearInterval(refreshInterval);
-    };
-  }, [authRequired, isAuthenticated]);
-
-  async function handleLogin(credentials: {
-    username: string;
-    password: string;
-  }) {
-    try {
-      await loginWithCredentials(credentials.username, credentials.password);
-
-      runViewTransition(() => {
-        changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
-        setIsAuthenticated(true);
-      }, "nav-forward");
-
-      return {
-        ok: true as const,
-      };
-    } catch (error) {
-      return {
-        ok: false as const,
-        error: error instanceof Error ? error.message : messages.loginInvalidCredentials,
-        errorShown: isApiErrorToastShown(error),
-      };
-    }
-  }
-
-  function handleLogout() {
-    clearAuthSession();
-    runViewTransition(() => {
-      changeLocale(getSystemLocale());
-      setIsAuthenticated(!authRequired);
-    }, "nav-back");
-  }
+  }, [authGate.phase, canPersistLocale, locale]);
 
   const renderLoginPage = () => (
     <AppRouteSuspense>
-      <LoginPage t={messages} onSubmitCredentials={handleLogin} />
+      <LoginPage t={messages} onSubmitCredentials={login} />
+    </AppRouteSuspense>
+  );
+  const renderSetupPage = () => (
+    <AppRouteSuspense>
+      <SetupPage t={messages} onSubmitCredentials={setup} />
     </AppRouteSuspense>
   );
 
@@ -275,7 +253,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -286,7 +264,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -297,7 +275,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -308,7 +286,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -319,7 +297,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -330,7 +308,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -341,7 +319,7 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={handleLogout}
+        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -356,7 +334,34 @@ function App() {
     return <AppRouteFallback />;
   }
 
-  if (authRequired && !isAuthenticated) {
+  if (authGate.phase === "loading") {
+    return <AppRouteFallback />;
+  }
+
+  if (authGate.phase === "error") {
+    return (
+      <AppRouteSuspense>
+        <AuthStatusErrorPage
+          t={messages}
+          onRetry={retry}
+        />
+      </AppRouteSuspense>
+    );
+  }
+
+  if (authGate.phase === "setup") {
+    return (
+      <>
+        <DocumentMetadata locale={locale} messages={messages} />
+        <Routes>
+          <Route path="/setup" element={renderSetupPage()} />
+          <Route path="*" element={<Navigate to="/setup" replace />} />
+        </Routes>
+      </>
+    );
+  }
+
+  if (authGate.phase === "login") {
     return (
       <>
         <DocumentMetadata locale={locale} messages={messages} />
@@ -382,6 +387,7 @@ function App() {
         <Route path="/template/:id" element={renderTemplateDetailWorkspace()} />
         <Route path="/trash" element={renderTrashWorkspace()} />
         <Route path="/login" element={<Navigate to="/resume" replace />} />
+        <Route path="/setup" element={<Navigate to="/resume" replace />} />
         <Route path="*" element={<Navigate to="/resume" replace />} />
       </Routes>
     </>

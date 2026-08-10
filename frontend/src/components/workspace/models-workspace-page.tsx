@@ -1,6 +1,7 @@
 import { ModelConfigPanel } from "@/components/model-config-panel";
 import { WorkspaceContentSkeleton } from "@/components/workspace-skeletons";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
+import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 import type { AppMessages, Locale } from "@/i18n";
@@ -26,6 +27,10 @@ export function ModelsWorkspacePage({
     onLocaleChange,
     persistence,
   });
+  useRememberWorkspaceLateralRouteData(
+    "models",
+    preferences.hasLoaded ? preferences.routeData : null,
+  );
 
   return (
     <WorkspaceShell
@@ -34,6 +39,7 @@ export function ModelsWorkspacePage({
       messages={messages}
       theme={preferences.theme}
       resolvedTheme={preferences.resolvedTheme}
+      persistence={persistence}
       onLocaleChange={onLocaleChange}
       onThemeChange={preferences.changeTheme}
       onLogout={onLogout}
@@ -44,18 +50,18 @@ export function ModelsWorkspacePage({
           onRetry={preferences.retryLoad}
         />
       ) : !preferences.hasLoaded ? (
-        <main className="flex-1 p-4">
+        <div className="flex-1 p-4">
           <WorkspaceContentSkeleton />
-        </main>
+        </div>
       ) : (
-        <main className="flex-1 p-4">
+        <div className="flex-1 p-4">
           <ModelConfigPanel
             locale={locale}
             t={messages}
             configs={preferences.modelConfigs}
             onChange={preferences.changeModelConfigs}
           />
-        </main>
+        </div>
       )}
     </WorkspaceShell>
   );

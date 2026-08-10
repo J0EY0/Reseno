@@ -5,6 +5,7 @@ import pytest
 
 from app.schemas.agent import (
     AgentChatRequest,
+    AgentConversationItem,
     AgentResumeEditSuggestion,
     AgentToolInvocation,
 )
@@ -16,7 +17,11 @@ from app.services.llm import LlmRequestError, LlmToolCall
 
 def _runner() -> AgentToolRunner:
     request = AgentChatRequest(
-        prompt="Analyze this resume.",
+        message=AgentConversationItem(
+            id="turn-local-tool-cancellation",
+            role="user",
+            text="Analyze this resume.",
+        ),
         locale="en",
         resume={"basic": {"name": "Original"}, "sections": []},
     )

@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services import agent_runs
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent_runs import AgentRunManager
@@ -71,15 +71,20 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
         monkeypatch.setattr(agent_runs, "MAX_BUFFERED_AGENT_EVENTS", 3)
         monkeypatch.setattr(
             agent_runs,
-            "prepare_agent_turn",
-            lambda conn, request, *, run_id=None: request,
+            "_prepare_run_request",
+            lambda request, run_id: request,
         )
 
         manager = AgentRunManager()
         run = await manager.start(
             AgentChatRequest(
                 resumeId="resume-replay-buffer",
-                prompt="Improve this resume.",
+                expectedRevision="synthetic-bypassed-revision",
+                message=AgentConversationItem(
+                    id="turn-run-replay-buffer",
+                    role="user",
+                    text="Improve this resume.",
+                ),
                 resume={"basic": {}, "sections": []},
             ),
         )

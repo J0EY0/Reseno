@@ -1,6 +1,6 @@
 import json
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.schemas.agent_settings import normalize_agent_settings
 from app.services.agent import WebReference
 from app.services.agent.attachments import store_agent_attachment
@@ -9,6 +9,8 @@ from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.runtime.events import AgentRunEvent
 from app.services.agent.tools import registry as tool_registry
 from tests.agent_replay import AgentReplayScenario, ReplayToolCall, run_agent_replay
+
+SYNTHETIC_SESSION_REVISION = "synthetic-session-revision"
 
 
 def _v2_basic(**overrides: object) -> dict[str, object]:
@@ -62,7 +64,11 @@ def test_replay_explain_draft_success() -> None:
         AgentReplayScenario(
             name="explain_draft_success",
             request=AgentChatRequest(
-                prompt="解释刚才的草稿改了什么",
+                message=AgentConversationItem(
+                    id="turn-replay-explain-draft-success",
+                    role="user",
+                    text="解释刚才的草稿改了什么",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
                 draftState={
@@ -102,7 +108,11 @@ def test_replay_draft_diff_summary_includes_reference_map() -> None:
         AgentReplayScenario(
             name="draft_diff_reference_map",
             request=AgentChatRequest(
-                prompt="解释刚才第二条修改",
+                message=AgentConversationItem(
+                    id="turn-replay-draft-diff-reference-map",
+                    role="user",
+                    text="解释刚才第二条修改",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
                 draftState={
@@ -169,7 +179,11 @@ def test_replay_suggest_only_blocks_draft() -> None:
             name="suggest_only_blocks_draft",
             request=prepare_agent_request(
                 AgentChatRequest(
-                    prompt="优化个人简介",
+                    message=AgentConversationItem(
+                        id="turn-replay-suggest-only-blocks-draft",
+                        role="user",
+                        text="优化个人简介",
+                    ),
                     locale="zh",
                     resume={
                         "schemaVersion": 2,
@@ -213,7 +227,11 @@ def test_replay_pii_write_blocked() -> None:
         AgentReplayScenario(
             name="pii_hidden_and_write_blocked",
             request=AgentChatRequest(
-                prompt="优化联系方式",
+                message=AgentConversationItem(
+                    id="turn-replay-pii-hidden-write-blocked",
+                    role="user",
+                    text="优化联系方式",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -254,7 +272,11 @@ def test_replay_external_evidence_rejects_entire_edit_batch() -> None:
         AgentReplayScenario(
             name="external_evidence_rejects_batch",
             request=AgentChatRequest(
-                prompt="优化个人简介",
+                message=AgentConversationItem(
+                    id="turn-replay-external-evidence-rejects-batch",
+                    role="user",
+                    text="优化个人简介",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -298,7 +320,11 @@ def test_replay_explain_draft_no_pending_blocks_diff_tool() -> None:
         AgentReplayScenario(
             name="explain_draft_no_pending",
             request=AgentChatRequest(
-                prompt="解释刚才的草稿",
+                message=AgentConversationItem(
+                    id="turn-replay-explain-draft-no-pending",
+                    role="user",
+                    text="解释刚才的草稿",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
@@ -315,7 +341,11 @@ def test_replay_finish_blocked_records_missing_context() -> None:
         AgentReplayScenario(
             name="finish_blocked_missing_context",
             request=AgentChatRequest(
-                prompt="解释刚才的草稿",
+                message=AgentConversationItem(
+                    id="turn-replay-finish-blocked-missing-context",
+                    role="user",
+                    text="解释刚才的草稿",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
@@ -382,7 +412,11 @@ def test_replay_rewrite_project_with_lookup() -> None:
         AgentReplayScenario(
             name="rewrite_project_with_lookup",
             request=AgentChatRequest(
-                prompt="缩短 ResuMate 项目描述",
+                message=AgentConversationItem(
+                    id="turn-replay-rewrite-project-with-lookup",
+                    role="user",
+                    text="缩短 ResuMate 项目描述",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -445,7 +479,11 @@ def test_replay_reports_draft_quality_issues_without_raw_content() -> None:
         AgentReplayScenario(
             name="quality_issue_long_highlight",
             request=AgentChatRequest(
-                prompt="优化项目经历",
+                message=AgentConversationItem(
+                    id="turn-replay-quality-issue-long-highlight",
+                    role="user",
+                    text="优化项目经历",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -504,7 +542,11 @@ def test_replay_reports_style_quality_issues() -> None:
         AgentReplayScenario(
             name="quality_issue_style_constraints",
             request=AgentChatRequest(
-                prompt="优化简介和项目经历",
+                message=AgentConversationItem(
+                    id="turn-replay-quality-issue-style-constraints",
+                    role="user",
+                    text="优化简介和项目经历",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -566,7 +608,11 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
         AgentReplayScenario(
             name="quality_ignores_preexisting_highlight_count",
             request=AgentChatRequest(
-                prompt="修改项目标题并生成草稿",
+                message=AgentConversationItem(
+                    id="turn-replay-quality-preexisting-highlight-count",
+                    role="user",
+                    text="修改项目标题并生成草稿",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -634,15 +680,20 @@ def test_replay_material_extract_sanitizes_attachment_candidates() -> None:
         AgentReplayScenario(
             name="material_extract_attachment",
             request=AgentChatRequest(
-                prompt="根据附件补充项目经历",
+                message=AgentConversationItem(
+                    id="turn-replay-material-extract-attachment",
+                    role="user",
+                    text="根据附件补充项目经历",
+                    files=[attachment],
+                ),
                 locale="zh",
-                files=[attachment],
                 resume={
                     "schemaVersion": 2,
                     "basic": {"name": "王小明"},
                     "sections": [],
                 },
                 resume_id=session_id,
+                expected_revision=SYNTHETIC_SESSION_REVISION,
             ),
             tool_calls=[
                 ReplayToolCall(
@@ -678,7 +729,11 @@ def test_replay_material_extract_does_not_treat_short_prompt_as_material() -> No
         AgentReplayScenario(
             name="material_extract_short_prompt",
             request=AgentChatRequest(
-                prompt="根据附件补充项目经历",
+                message=AgentConversationItem(
+                    id="turn-replay-material-extract-short-prompt",
+                    role="user",
+                    text="根据附件补充项目经历",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -719,7 +774,11 @@ def test_replay_material_extract_keeps_jd_keywords_reference_only() -> None:
         AgentReplayScenario(
             name="material_extract_jd_reference_only",
             request=AgentChatRequest(
-                prompt="根据 JD 分析匹配情况",
+                message=AgentConversationItem(
+                    id="turn-replay-material-extract-jd-reference-only",
+                    role="user",
+                    text="根据 JD 分析匹配情况",
+                ),
                 locale="zh",
                 jobBrief="任职要求: React TypeScript，负责前端性能优化。",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
@@ -752,7 +811,11 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
         AgentReplayScenario(
             name="resume_analysis_target_fit",
             request=AgentChatRequest(
-                prompt="目标岗位是前端工程师，分析匹配情况",
+                message=AgentConversationItem(
+                    id="turn-replay-resume-analysis-target-fit",
+                    role="user",
+                    text="目标岗位是前端工程师，分析匹配情况",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -814,7 +877,11 @@ def test_replay_explicit_web_fetch_project_reference(monkeypatch) -> None:
         AgentReplayScenario(
             name="explicit_web_fetch_project_reference",
             request=AgentChatRequest(
-                prompt="参考这个公开项目链接优化表达：https://example.test/project",
+                message=AgentConversationItem(
+                    id="turn-replay-explicit-web-fetch-project-reference",
+                    role="user",
+                    text="参考这个公开项目链接优化表达：https://example.test/project",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
@@ -837,7 +904,11 @@ def test_replay_explicit_web_fetch_project_reference(monkeypatch) -> None:
 
 def test_replay_customfield_github_not_auto_fetched() -> None:
     request = AgentChatRequest(
-        prompt="优化项目经历",
+        message=AgentConversationItem(
+            id="turn-replay-customfield-github-not-auto-fetched",
+            role="user",
+            text="优化项目经历",
+        ),
         locale="zh",
         resume={
             "schemaVersion": 2,
@@ -867,7 +938,11 @@ def test_replay_unknown_url_purpose_blocked() -> None:
         AgentReplayScenario(
             name="unknown_url_purpose_blocked",
             request=AgentChatRequest(
-                prompt="参考这个链接：https://example.test/page",
+                message=AgentConversationItem(
+                    id="turn-replay-unknown-url-purpose-blocked",
+                    role="user",
+                    text="参考这个链接：https://example.test/page",
+                ),
                 locale="zh",
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
@@ -889,7 +964,11 @@ def test_replay_delete_requires_explicit_intent() -> None:
         AgentReplayScenario(
             name="delete_requires_explicit_intent",
             request=AgentChatRequest(
-                prompt="优化项目经历",
+                message=AgentConversationItem(
+                    id="turn-replay-delete-requires-explicit-intent",
+                    role="user",
+                    text="优化项目经历",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,
@@ -935,7 +1014,11 @@ def test_replay_draft_rewrite_uses_pending_draft() -> None:
         AgentReplayScenario(
             name="draft_rewrite_uses_pending_draft",
             request=AgentChatRequest(
-                prompt="把刚才的草稿再短一点",
+                message=AgentConversationItem(
+                    id="turn-replay-draft-rewrite-uses-pending-draft",
+                    role="user",
+                    text="把刚才的草稿再短一点",
+                ),
                 locale="zh",
                 resume={
                     "schemaVersion": 2,

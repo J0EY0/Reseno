@@ -1,5 +1,4 @@
 import {
-  Bot,
   ChevronDown,
   ChevronLeft,
   CopyPlus,
@@ -53,22 +52,6 @@ function ResumeDetailEditorActions({
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
-      {!state.agent.isDockLayout ? (
-        <Button
-          type="button"
-          variant="outline"
-          aria-label={messages.agentExpandPanel}
-          onFocus={() => void import("@/components/copilot/copilot-panel")}
-          onPointerEnter={() =>
-            void import("@/components/copilot/copilot-panel")
-          }
-          onClick={() => commands.agent.setSheetOpen(true)}
-        >
-          <Bot data-icon="inline-start" />
-          {messages.aiTitle}
-        </Button>
-      ) : null}
-
       <Button
         type="button"
         variant="outline"

@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.integrations import WebSearchReference, WebSearchResult
 from app.services.agent.runtime.context import AgentRuntimeContext
@@ -17,7 +17,11 @@ from app.services.llm import LlmToolCall
 
 def _runner() -> AgentToolRunner:
     request = AgentChatRequest(
-        prompt="Search for public target context.",
+        message=AgentConversationItem(
+            id="turn-web-search-cache",
+            role="user",
+            text="Search for public target context.",
+        ),
         locale="en",
         resume={"basic": {}, "sections": []},
     )

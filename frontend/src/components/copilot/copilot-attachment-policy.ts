@@ -62,7 +62,11 @@ export async function deletePendingUploads(
     .map((file) => file.id)
     .filter((id): id is string => Boolean(id));
   const results = await Promise.allSettled(
-    attachmentIds.map((id) => deletePendingAgentAttachment(resumeId, id)),
+    attachmentIds.map((id) =>
+      deletePendingAgentAttachment(resumeId, id, {
+        notifyOnError: false,
+      }),
+    ),
   );
 
   // Cleanup is best-effort: the server may already have protected a file after

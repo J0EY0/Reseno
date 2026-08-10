@@ -23,7 +23,6 @@ from ..attachments import (
     load_agent_attachment,
 )
 from ..executor import (
-    _active_resume,
     _agent_file_context,
     _conversation_depth,
     _current_prompt,
@@ -42,6 +41,7 @@ from ..prompts import (
     STREAMING_FINAL_RESPONSE_PROMPT,
     SYSTEM_PROMPT,
 )
+from ..request_context import active_resume
 from ..tools.registry import agent_tool_schemas_for_names
 
 AgentMessageMode = Literal["tools", "final", "streaming_final"]
@@ -267,7 +267,7 @@ def _current_attachment_payload(
         return [], []
 
     session_id = _attachment_session_id(request)
-    hidden_terms = resume_hidden_terms(_active_resume(request))
+    hidden_terms = resume_hidden_terms(active_resume(request))
     text_files: list[dict[str, Any]] = []
     binary_parts: list[dict[str, str]] = []
 
@@ -352,15 +352,15 @@ def _agent_payload(
     context_files: list[dict[str, Any]],
     tool_schema_tokens: int,
 ) -> dict[str, Any]:
-    active_resume = _active_resume(request)
-    hidden_terms = resume_hidden_terms(active_resume)
+    resume = active_resume(request)
+    hidden_terms = resume_hidden_terms(resume)
     payload = {
         "responseLanguage": _locale_name(request),
         "userPrompt": _current_prompt(request),
         "jobBrief": request.job_brief,
         "files": context_files,
         "keywordMatch": request.keyword_match,
-        "resume": sanitize_agent_resume(active_resume, hidden_terms=hidden_terms),
+        "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
         "conversationDepth": _conversation_depth(request),
     }
 
@@ -400,7 +400,7 @@ def _conversation_payload(
     system_content: str,
     tool_schema_tokens: int,
 ) -> dict[str, Any]:
-    conversation = _conversation_with_current_prompt(request)
+    conversation = _conversation_with_current_message(request)
     conversation_messages = [
         item for item in conversation if _conversation_item_text(item)
     ]
@@ -621,22 +621,12 @@ def _conversation_context(
     }
 
 
-def _conversation_with_current_prompt(
+def _conversation_with_current_message(
     request: AgentChatRequest,
 ) -> list[AgentConversationItem]:
-    conversation = list(request.messages or request.conversation)
-    prompt = _current_prompt(request)
+    """Append the singular current turn after the prior-only history."""
 
-    if prompt and not any(
-        _conversation_item_role(item) == "user"
-        and _conversation_item_text(item) == prompt
-        for item in conversation
-    ):
-        conversation.append(
-            AgentConversationItem(role="user", text=prompt),
-        )
-
-    return conversation
+    return [*request.messages, request.message]
 
 
 def _conversation_entries(conversation: list[Any]) -> list[dict[str, str]]:
@@ -1043,8 +1033,7 @@ def _compact_section_outline(section: Any) -> dict[str, Any]:
         "title": _string_value(section.get("title")),
         "itemCount": len(item_list),
         "items": [
-            _compact_item_outline(item, section_kind=kind)
-            for item in item_list[:3]
+            _compact_item_outline(item, section_kind=kind) for item in item_list[:3]
         ],
     }
 
@@ -1065,9 +1054,7 @@ def _compact_item_outline(
             continue
         compact_value = " ".join(value.split())
         outline[field] = (
-            compact_value
-            if len(compact_value) <= 160
-            else f"{compact_value[:157]}..."
+            compact_value if len(compact_value) <= 160 else f"{compact_value[:157]}..."
         )
         visible_field_count += 1
         if visible_field_count >= 3:

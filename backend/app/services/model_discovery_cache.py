@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -8,14 +10,14 @@ from typing import Any
 from app.config import get_settings
 from app.services.model_providers import DiscoveredModel
 
-MODEL_DISCOVERY_CACHE_NAME = "model-discovery-cache.json"
+MODEL_DISCOVERY_CACHE_NAME = "model-discovery-cache"
 MODEL_DISCOVERY_CACHE_VERSION = 1
 
 
 def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | None:
     """Return cached normalized discovery results for one provider."""
 
-    entry = _read_cache().get("providers", {}).get(provider_id)
+    entry = _read_cache(provider_id)
     if not isinstance(entry, dict):
         return None
 
@@ -47,50 +49,61 @@ def write_cached_provider_models(
 ) -> None:
     """Persist normalized discovery results for one provider."""
 
-    cache = _read_cache()
-    providers = cache.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        providers = {}
-        cache["providers"] = providers
-
-    providers[provider_id] = {
+    cache = {
+        "version": MODEL_DISCOVERY_CACHE_VERSION,
         "provider": provider_id,
         "fetchedAt": datetime.now(UTC).isoformat(),
         "models": [_model_to_cache_item(model) for model in models],
     }
-    _write_cache(cache)
+    _write_cache(provider_id, cache)
 
 
-def _cache_path() -> Path:
-    return get_settings().data_dir / MODEL_DISCOVERY_CACHE_NAME
+def _cache_path(provider_id: str) -> Path:
+    return get_settings().data_dir / MODEL_DISCOVERY_CACHE_NAME / f"{provider_id}.json"
 
 
-def _read_cache() -> dict[str, Any]:
-    path = _cache_path()
+def _read_cache(provider_id: str) -> dict[str, Any] | None:
+    path = _cache_path(provider_id)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {"version": MODEL_DISCOVERY_CACHE_VERSION, "providers": {}}
+        return None
 
     if not isinstance(payload, dict):
-        return {"version": MODEL_DISCOVERY_CACHE_VERSION, "providers": {}}
+        return None
     if payload.get("version") != MODEL_DISCOVERY_CACHE_VERSION:
-        return {"version": MODEL_DISCOVERY_CACHE_VERSION, "providers": {}}
-    if not isinstance(payload.get("providers"), dict):
-        payload["providers"] = {}
+        return None
+    if payload.get("provider") != provider_id:
+        return None
 
     return payload
 
 
-def _write_cache(cache: dict[str, Any]) -> None:
-    path = _cache_path()
+def _write_cache(provider_id: str, cache: dict[str, Any]) -> None:
+    path = _cache_path(provider_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(
-        json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
+    file_descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
     )
-    tmp_path.replace(path)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as temp_file:
+            json.dump(
+                cache,
+                temp_file,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _model_to_cache_item(model: DiscoveredModel) -> dict[str, Any]:

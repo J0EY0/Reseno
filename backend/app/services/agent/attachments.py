@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ElementTree
 import zipfile
 from base64 import b64encode
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,9 @@ from uuid import UUID, uuid4
 from pypdf import PdfReader
 
 from app.config import get_settings
+from app.db.connection import connect
 from app.schemas.agent import AgentAttachmentResponse, AgentChatRequest
+from app.services.agent.resume_owner import active_resume_transaction
 
 MAX_AGENT_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_AGENT_ATTACHMENT_TEXT_CHARS = 250_000
@@ -103,22 +106,16 @@ def current_request_attachments(request: AgentChatRequest) -> list[dict[str, Any
     This prevents old file bytes from growing every later model request.
     """
 
-    groups: list[list[dict[str, Any]]] = []
-    if request.message is not None:
-        groups.append(request.message.files)
-    groups.append(request.files)
-
     files: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for group in groups:
-        for file in group:
-            if not isinstance(file, dict):
-                continue
-            attachment_id = _normalized_attachment_id(file.get("id"))
-            if attachment_id is None or attachment_id in seen:
-                continue
-            seen.add(attachment_id)
-            files.append(file)
+    for file in request.message.files:
+        if not isinstance(file, dict):
+            continue
+        attachment_id = _normalized_attachment_id(file.get("id"))
+        if attachment_id is None or attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        files.append(file)
 
     if len(files) > MAX_AGENT_CONTEXT_ATTACHMENTS:
         raise AgentAttachmentError(
@@ -136,11 +133,12 @@ def store_agent_attachment(
     media_type: str,
     payload: bytes,
 ) -> AgentAttachmentResponse:
-    """Validate and persist an original attachment inside its Agent session.
+    """Validate and persist an original inside an already-authorized session.
 
     Upload intentionally does not extract document text. The original file is
     canonical; extraction is lazy and cached only when an adapter needs a text
-    fallback.
+    fallback. HTTP uploads must use ``store_resume_agent_attachment`` so the
+    filesystem write cannot outlive its resume owner.
     """
 
     if not _is_valid_session_id(session_id):
@@ -156,39 +154,65 @@ def store_agent_attachment(
         _normalized_media_type(media_type),
         payload,
     )
-    attachment_id = uuid4().hex
-    session_root = _session_root(session_id)
-    session_root.mkdir(parents=True, exist_ok=True)
-    original_path = _write_original_with_unique_name(
-        session_root,
-        safe_filename,
-        payload,
-    )
-    now = _now_iso()
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        attachment_id = uuid4().hex
+        session_root = _session_root(session_id)
+        session_root.mkdir(parents=True, exist_ok=True)
+        original_path = _write_original_with_unique_name(
+            session_root,
+            safe_filename,
+            payload,
+        )
+        now = _now_iso()
 
-    try:
-        metadata = {
-            "version": ATTACHMENT_STORAGE_VERSION,
-            "id": attachment_id,
-            "filename": original_path.name,
-            "mediaType": detected_media_type,
-            "kind": kind,
-            "size": len(payload),
-            "createdAt": now,
-            "sentAt": None,
-            "state": "stored",
-        }
-        _write_metadata(session_id, attachment_id, metadata)
-    except Exception:
-        original_path.unlink(missing_ok=True)
-        raise
+        try:
+            metadata = {
+                "version": ATTACHMENT_STORAGE_VERSION,
+                "id": attachment_id,
+                "filename": original_path.name,
+                "mediaType": detected_media_type,
+                "kind": kind,
+                "size": len(payload),
+                "createdAt": now,
+                "sentAt": None,
+                "state": "stored",
+            }
+            _write_metadata(session_id, attachment_id, metadata)
+        except Exception:
+            original_path.unlink(missing_ok=True)
+            raise
 
-    return AgentAttachmentResponse(
-        id=attachment_id,
-        filename=original_path.name,
-        mediaType=detected_media_type,
-        kind=kind,
-    )
+        return AgentAttachmentResponse(
+            id=attachment_id,
+            filename=original_path.name,
+            mediaType=detected_media_type,
+            kind=kind,
+        )
+
+
+def store_resume_agent_attachment(
+    *,
+    resume_id: str,
+    filename: str,
+    media_type: str,
+    payload: bytes,
+) -> AgentAttachmentResponse:
+    """Store an upload only while its active resume still exists.
+
+    The immediate transaction uses the same DB-before-attachment lock order as
+    permanent resume deletion. An upload either finishes before deletion and
+    is removed with the resume, or observes that deletion already won.
+    """
+
+    with closing(connect()) as conn, active_resume_transaction(conn, resume_id):
+        attachment = store_agent_attachment(
+            session_id=resume_id,
+            filename=filename,
+            media_type=media_type,
+            payload=payload,
+        )
+
+    return attachment
 
 
 def load_agent_attachment(
@@ -357,8 +381,14 @@ def attachment_text(session_id: str, file: dict[str, Any]) -> str:
         raise AgentAttachmentError(
             "The attachment could not be extracted.",
         ) from exc
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_text_atomic(cache_path, text)
+    # Extraction can be slow. Revalidate only the cache commit under the
+    # lifecycle lock so cleanup or permanent deletion cannot remove the owner
+    # and then have this worker recreate an orphan cache containing PII.
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        if load_agent_attachment(session_id, attachment.id) is None:
+            raise AgentAttachmentError("The attachment is no longer available.")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomic(cache_path, text)
     return text
 
 
@@ -433,8 +463,7 @@ def mark_agent_attachments_sent(
                 rollback_agent_attachments_sent(partial_receipt)
             except Exception as rollback_exc:
                 raise AgentAttachmentError(
-                    "Attachment metadata could not be restored after a partial "
-                    "update.",
+                    "Attachment metadata could not be restored after a partial update.",
                 ) from rollback_exc
             raise
 
@@ -448,8 +477,14 @@ def rollback_agent_attachments_sent(
 
     if receipt is None:
         return
-    for attachment_id, metadata in receipt.previous_metadata:
-        _write_metadata(receipt.session_id, attachment_id, dict(metadata))
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        for attachment_id, metadata in receipt.previous_metadata:
+            filename = _safe_filename(str(metadata.get("filename") or "attachment"))
+            if not (_session_root(receipt.session_id) / filename).is_file():
+                # Permanent deletion already won. Restoring metadata would
+                # recreate an orphan directory with a PII-bearing filename.
+                continue
+            _write_metadata(receipt.session_id, attachment_id, dict(metadata))
 
 
 def delete_pending_agent_attachment(session_id: str, attachment_id: str) -> bool:
@@ -469,12 +504,13 @@ def prune_sent_agent_attachments(
 ) -> None:
     """Remove sent originals no longer referenced after history replacement."""
 
-    retained_ids = set(_attachment_ids(retained_files))
-    for attachment in _iter_session_attachments(session_id):
-        if attachment.sent_at is None or attachment.id in retained_ids:
-            continue
-        _delete_attachment_files(session_id, attachment)
-    _remove_empty_session_dirs(session_id)
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        retained_ids = set(_attachment_ids(retained_files))
+        for attachment in _iter_session_attachments(session_id):
+            if attachment.sent_at is None or attachment.id in retained_ids:
+                continue
+            _delete_attachment_files(session_id, attachment)
+        _remove_empty_session_dirs(session_id)
 
 
 def delete_agent_session_attachments(session_id: str) -> None:
@@ -482,7 +518,11 @@ def delete_agent_session_attachments(session_id: str) -> None:
 
     if not _is_valid_session_id(session_id):
         return
-    shutil.rmtree(_session_root(session_id), ignore_errors=True)
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        try:
+            shutil.rmtree(_session_root(session_id))
+        except FileNotFoundError:
+            pass
 
 
 def cleanup_expired_pending_attachments(
@@ -514,7 +554,8 @@ def cleanup_expired_pending_attachments(
                     continue
                 _delete_attachment_files(session_dir.name, current)
                 deleted += 1
-        _remove_empty_session_dirs(session_dir.name)
+        with _ATTACHMENT_LIFECYCLE_LOCK:
+            _remove_empty_session_dirs(session_dir.name)
 
     return deleted
 

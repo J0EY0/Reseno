@@ -1,5 +1,5 @@
 import { Languages, LogOut, Moon, Sun } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { AppSidebar } from "@/components/app-sidebar";
@@ -20,30 +20,15 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { ViewTransitionBoundary } from "@/components/view-transition";
+import { prepareWorkspaceRoute } from "@/components/workspace/workspace-route-preparation";
 import type { AppMessages, Locale } from "@/i18n";
+import {
+  createWorkspaceLateralRouteHandoff,
+  deleteWorkspaceLateralRouteHandoff,
+} from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
+import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { ThemeMode, WorkspaceView } from "@/types/resume";
-
-function preloadWorkspaceView(view: WorkspaceView) {
-  if (view === "models") {
-    void import("@/components/workspace/models-workspace-page");
-    return;
-  }
-  if (view === "settings") {
-    void import("@/components/workspace/settings-workspace-page");
-    return;
-  }
-  if (view === "templates") {
-    void import("@/components/workspace/template-gallery-workspace-page");
-    return;
-  }
-  if (view === "trash") {
-    void import("@/components/workspace/trash-workspace-page");
-    return;
-  }
-
-  void import("@/components/workspace/resume-gallery-workspace-page");
-}
 
 function getWorkspacePageTitle(view: WorkspaceView, messages: AppMessages) {
   switch (view) {
@@ -69,6 +54,7 @@ export function WorkspaceShell({
   onLocaleChange,
   onLogout,
   onThemeChange,
+  persistence,
   resolvedTheme,
   theme,
 }: {
@@ -79,15 +65,51 @@ export function WorkspaceShell({
   onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
   onThemeChange: (theme: ThemeMode) => void;
+  persistence: WorkspacePreferencesPersistence;
   resolvedTheme: "light" | "dark";
   theme: ThemeMode;
 }) {
   const navigate = useNavigate();
+  const navigationIntentRef = useRef(0);
   const pageTitle = getWorkspacePageTitle(activeView, messages);
 
-  function handleViewChange(view: WorkspaceView) {
-    preloadWorkspaceView(view);
-    navigate(getWorkspacePath(view));
+  useEffect(
+    () => () => {
+      navigationIntentRef.current += 1;
+    },
+    [],
+  );
+
+  function handleViewPreload(view: WorkspaceView) {
+    void prepareWorkspaceRoute(view, persistence).catch(() => undefined);
+  }
+
+  async function handleViewChange(view: WorkspaceView) {
+    if (view === activeView) {
+      return;
+    }
+
+    const intentId = navigationIntentRef.current + 1;
+    navigationIntentRef.current = intentId;
+    const path = getWorkspacePath(view);
+    let handoffToken: string | null = null;
+    try {
+      const prepared = await prepareWorkspaceRoute(view, persistence);
+      if (navigationIntentRef.current !== intentId) {
+        return;
+      }
+      const state = createWorkspaceLateralRouteHandoff(prepared);
+      handoffToken = state.token;
+      navigate(path, { state });
+    } catch {
+      if (handoffToken) {
+        deleteWorkspaceLateralRouteHandoff(handoffToken);
+      }
+      if (navigationIntentRef.current !== intentId) {
+        return;
+      }
+      navigate(path);
+    }
   }
 
   return (
@@ -103,7 +125,7 @@ export function WorkspaceShell({
         t={messages}
         activeView={activeView}
         onViewChange={handleViewChange}
-        onViewPreload={preloadWorkspaceView}
+        onViewPreload={handleViewPreload}
       />
 
       <SidebarInset id="main-content" tabIndex={-1} className="app-shell">

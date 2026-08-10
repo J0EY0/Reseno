@@ -32,7 +32,6 @@ import {
   createTemplateDetailRouteHandoff,
   getTemplateDetailRouteHandoff,
   getTemplatePath,
-  getWorkspacePath,
 } from "@/lib/workspace-route";
 import type {
   ResumeTemplateDefinition,
@@ -42,6 +41,7 @@ import type {
 } from "@/types/resume";
 import { useTemplateDetailLeave } from "@/components/workspace/use-template-detail-leave";
 import { useTemplateDetailSave } from "@/components/workspace/use-template-detail-save";
+import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 
 interface TemplateDetailWorkspaceOptions {
   locale: Locale;
@@ -55,27 +55,6 @@ interface TemplateDetailWorkspaceOptions {
 
 function normalizeWorkspaceTheme(value: unknown): ThemeMode {
   return value === "dark" || value === "system" ? value : "light";
-}
-
-function preloadWorkspaceView(view: WorkspaceView) {
-  if (view === "models") {
-    void import("@/components/workspace/models-workspace-page");
-    return;
-  }
-  if (view === "settings") {
-    void import("@/components/workspace/settings-workspace-page");
-    return;
-  }
-  if (view === "templates") {
-    void import("@/components/workspace/template-gallery-workspace-page");
-    return;
-  }
-  if (view === "trash") {
-    void import("@/components/workspace/trash-workspace-page");
-    return;
-  }
-
-  void import("@/components/workspace/resume-gallery-workspace-page");
 }
 
 function resolveInitialTemplate(
@@ -524,24 +503,29 @@ export function useTemplateDetailWorkspace({
     save,
   });
   const { requestLeave } = leave;
+  const {
+    cancelPending: cancelPendingWorkspaceNavigation,
+    preload: preloadWorkspaceView,
+    request: requestWorkspaceNavigation,
+  } = usePreparedWorkspaceNavigation({ persistence, requestLeave });
   const changeView = useCallback(
-    (view: WorkspaceView) =>
-      requestLeave(() => {
-        preloadWorkspaceView(view);
-        navigate(getWorkspacePath(view));
-      }),
-    [navigate, requestLeave],
+    (view: WorkspaceView) => {
+      void requestWorkspaceNavigation(view);
+    },
+    [requestWorkspaceNavigation],
   );
   const goBack = useCallback(
-    () =>
-      requestLeave(() =>
-        runViewTransition(() => navigate("/templates"), "nav-back"),
-      ),
-    [navigate, requestLeave],
+    () => {
+      void requestWorkspaceNavigation("templates", "nav-back");
+    },
+    [requestWorkspaceNavigation],
   );
   const logout = useCallback(
-    () => requestLeave(onLogout),
-    [onLogout, requestLeave],
+    () => {
+      cancelPendingWorkspaceNavigation();
+      requestLeave(onLogout);
+    },
+    [cancelPendingWorkspaceNavigation, onLogout, requestLeave],
   );
 
   return {

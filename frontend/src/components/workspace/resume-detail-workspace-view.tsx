@@ -44,17 +44,17 @@ function ResumeDetailContent({
   previewRef: RefObject<DocumentPreviewHandle | null>;
 }) {
   const { commands, state } = model;
-  const shouldDockAgent =
-    state.agent.isDockLayout && !state.agent.isPanelCollapsed;
+  const shouldDockAgent = !state.agent.isPanelCollapsed;
   const workspaceStyle = {
     "--resume-workspace-columns": shouldDockAgent
-      ? "400px minmax(0,1fr) 18px 360px"
-      : "400px minmax(0,1fr) 18px 0px",
+      ? "clamp(340px,27vw,400px) minmax(0,1fr) 18px clamp(320px,25vw,360px)"
+      : "clamp(340px,27vw,400px) minmax(0,1fr) 18px 0px",
   } as CSSProperties;
 
   return (
-    <main
+    <div
       style={workspaceStyle}
+      data-agent-expanded={shouldDockAgent}
       className={cn(
         "resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4 xl:gap-x-2",
         "print:block print:h-auto print:overflow-visible print:p-0",
@@ -93,7 +93,7 @@ function ResumeDetailContent({
         messages={messages}
         model={model}
       />
-    </main>
+    </div>
   );
 }
 

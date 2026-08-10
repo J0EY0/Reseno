@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createServer } from "vite";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 const require = createRequire(import.meta.url);
 const requireFromPdfJs = createRequire(
   require.resolve("pdfjs-dist/package.json"),
@@ -15,6 +17,8 @@ const pdfWorkerFileUrl = pathToFileURL(
   require.resolve("pdfjs-dist/build/pdf.worker.min.mjs"),
 ).href;
 const pdfWorkerUrlModuleId = "\0resumate-pdf-worker-url";
+const authSessionImportId = "virtual:resumate-pdf-import-auth-session";
+const authSessionModuleId = `\0${authSessionImportId}`;
 const parserModuleDirectory = new URL(
   "../src/lib/pdf-resume-import/",
   import.meta.url,
@@ -68,8 +72,19 @@ const parserConfigRequestCounts = {
   registry: 0,
 };
 
-globalThis.fetch = async (input) => {
+globalThis.fetch = async (input, init = {}) => {
   const route = String(input);
+
+  if (
+    route.endsWith("/api/section-registry") ||
+    route.endsWith("/api/resume-import-lexicon")
+  ) {
+    assert.equal(
+      new Headers(init.headers).get("Authorization"),
+      "Bearer pdf-import-test-token",
+      "protected parser-config requests must carry the active session token",
+    );
+  }
 
   if (route.endsWith("/api/section-registry")) {
     parserConfigRequestCounts.registry += 1;
@@ -157,18 +172,30 @@ globalThis.fetch = async (input) => {
 };
 
 const server = await createServer({
+  cacheDir: createViteTestCacheDir(),
   configFile: false,
+  optimizeDeps: { noDiscovery: true },
   root: process.cwd(),
   plugins: [
     {
       name: "resumate-pdf-worker-url",
       enforce: "pre",
       resolveId(id) {
+        if (id === authSessionImportId) {
+          return authSessionModuleId;
+        }
         return id === "pdfjs-dist/build/pdf.worker.min.mjs?url"
           ? pdfWorkerUrlModuleId
           : null;
       },
       load(id) {
+        if (id === authSessionModuleId) {
+          return `
+            export function clearAuthSession() {}
+            export function getAccessToken() { return "pdf-import-test-token"; }
+            export function isTokenLocallyInvalidated() { return false; }
+          `;
+        }
         return id === pdfWorkerUrlModuleId
           ? `export default ${JSON.stringify(pdfWorkerFileUrl)};`
           : null;
@@ -181,9 +208,16 @@ const server = await createServer({
     ws: false,
   },
   resolve: {
-    alias: {
-      "@": new URL("../src", import.meta.url).pathname,
-    },
+    alias: [
+      {
+        find: "@/lib/auth-session",
+        replacement: authSessionImportId,
+      },
+      {
+        find: "@",
+        replacement: new URL("../src", import.meta.url).pathname,
+      },
+    ],
   },
 });
 

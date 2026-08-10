@@ -8,6 +8,7 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from ..common import (
     async_openai_client,
     attr_or_item,
+    close_async_client,
     close_async_stream,
     image_data_url,
     map_stop_reason,
@@ -43,18 +44,27 @@ async def complete(
 ) -> LlmAssistantMessage:
     """Call the OpenAI Responses API and require visible text."""
 
+    client = async_openai_client(config)
     try:
-        response = await async_openai_client(config).responses.create(
-            **responses_params(config, messages),
-        )
-    except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
-        raise_openai_error(exc)
+        try:
+            response = await client.responses.create(
+                **responses_params(config, messages),
+            )
+        except (
+            APIStatusError,
+            APITimeoutError,
+            APIConnectionError,
+            APIError,
+        ) as exc:
+            raise_openai_error(exc)
 
-    message = _message_from_response(response)
-    if message.content:
-        return message
+        message = _message_from_response(response)
+        if message.content:
+            return message
 
-    raise LlmRequestError("Model provider returned an empty response.")
+        raise LlmRequestError("Model provider returned an empty response.")
+    finally:
+        await close_async_client(client)
 
 
 async def complete_tool_call(
@@ -64,14 +74,23 @@ async def complete_tool_call(
 ) -> LlmAssistantMessage:
     """Ask the Responses API to choose zero or more function tools."""
 
+    client = async_openai_client(config)
     try:
-        response = await async_openai_client(config).responses.create(
-            **responses_params(config, messages, tools=tools),
-        )
-    except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
-        raise_openai_error(exc)
+        try:
+            response = await client.responses.create(
+                **responses_params(config, messages, tools=tools),
+            )
+        except (
+            APIStatusError,
+            APITimeoutError,
+            APIConnectionError,
+            APIError,
+        ) as exc:
+            raise_openai_error(exc)
 
-    return _message_from_response(response)
+        return _message_from_response(response)
+    finally:
+        await close_async_client(client)
 
 
 async def stream(
@@ -80,6 +99,7 @@ async def stream(
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream OpenAI Responses events into the provider-independent contract."""
 
+    client = async_openai_client(config)
     stream_response = None
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -88,7 +108,7 @@ async def stream(
     # response object becomes the unified `done` message.
     final_response: object | None = None
     try:
-        stream_response = await async_openai_client(config).responses.create(
+        stream_response = await client.responses.create(
             **responses_params(config, messages, stream=True),
         )
         async for event in stream_response:
@@ -119,8 +139,11 @@ async def stream(
     except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
         raise_openai_error(exc)
     finally:
-        if stream_response is not None:
-            await close_async_stream(stream_response)
+        try:
+            if stream_response is not None:
+                await close_async_stream(stream_response)
+        finally:
+            await close_async_client(client)
 
     message = (
         _message_from_response(final_response)

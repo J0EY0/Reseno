@@ -3,6 +3,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 from uuid import uuid4
@@ -11,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
+from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import (
     AgentChatMessage,
@@ -18,7 +20,7 @@ from app.schemas.agent import (
     AgentConversationItem,
 )
 from app.schemas.common import APP_CODE_NOT_FOUND
-from app.services import agent_sessions
+from app.services import agent_sessions, resumes
 from app.services.agent import attachments as agent_attachments
 from app.services.agent.attachments import mark_agent_attachments_sent
 from app.services.agent.runtime.messages import (
@@ -32,6 +34,23 @@ from app.services.llm.adapters import (
     google_gemini,
     openai_responses,
 )
+
+SYNTHETIC_SESSION_REVISION = "synthetic-session-revision"
+
+
+def _current_session_revision(session_id: str) -> str:
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO resumes (id, title, saved_at)
+            VALUES (?, 'Attachment test resume', ?)
+            """,
+            (session_id, datetime.now(UTC).isoformat()),
+        )
+        return agent_sessions.load_agent_session(conn, session_id).revision
+    finally:
+        conn.close()
 
 
 def _config(*, api_family: str = "openai_compatible_chat") -> AgentLlmConfig:
@@ -57,11 +76,16 @@ def _request(
     session_id: str,
 ) -> AgentChatRequest:
     return AgentChatRequest(
-        prompt="Use the attached material.",
-        files=[attachment],
+        message=AgentConversationItem(
+            id=f"turn-attachment-{session_id}",
+            role="user",
+            text="Use the attached material.",
+            files=[attachment],
+        ),
         locale="en",
         resume={"basic": {}, "sections": []},
         resume_id=session_id,
+        expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
 
@@ -73,6 +97,14 @@ def _upload(
     payload: bytes,
     media_type: str,
 ) -> dict[str, Any]:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO resumes (id, title, saved_at)
+            VALUES (?, 'Attachment test resume', ?)
+            """,
+            (session_id, datetime.now(UTC).isoformat()),
+        )
     response = client.post(
         "/api/agent/attachments",
         data={"resumeId": session_id},
@@ -406,7 +438,7 @@ def test_cleanup_cannot_delete_attachment_referenced_by_committed_history(
 
     request = AgentChatRequest(
         resumeId=session_id,
-        prompt="Use the evidence.",
+        expectedRevision=_current_session_revision(session_id),
         message=AgentConversationItem(
             id="agent-user-cleanup-race",
             role="user",
@@ -490,11 +522,13 @@ def test_cleanup_cannot_delete_during_attachment_readiness_handoff(
     def replace_history() -> None:
         conn = connect()
         try:
+            revision = agent_sessions.load_agent_session(conn, session_id).revision
             agent_sessions.replace_agent_session_messages(
                 conn,
                 session_id,
                 locale="en",
                 messages=messages,
+                revision=revision,
             )
         except BaseException as exc:
             replace_errors.append(exc)
@@ -614,7 +648,6 @@ def test_attachment_only_message_is_persisted_without_generated_text() -> None:
         "kind": "text",
     }
     request = AgentChatRequest(
-        files=[attachment],
         message=AgentConversationItem(
             id="agent-user-attachment",
             role="user",
@@ -671,8 +704,7 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
     )
     request = AgentChatRequest(
         resumeId=session_id,
-        prompt="Use the evidence.",
-        files=[attachment],
+        expectedRevision=_current_session_revision(session_id),
         message=AgentConversationItem(
             id="agent-user-rollback",
             role="user",
@@ -726,6 +758,7 @@ def test_stale_assistant_is_rejected_after_session_history_replacement(
     session_id = "resume-stale-assistant"
     request = AgentChatRequest(
         resumeId=session_id,
+        expectedRevision=_current_session_revision(session_id),
         message=AgentConversationItem(
             id="agent-user-old-run",
             role="user",
@@ -746,11 +779,13 @@ def test_stale_assistant_is_rejected_after_session_history_replacement(
     conn = connect()
     try:
         agent_sessions.persist_agent_user_message(conn, request)
+        revision = agent_sessions.load_agent_session(conn, session_id).revision
         agent_sessions.replace_agent_session_messages(
             conn,
             session_id,
             locale="en",
             messages=[replacement],
+            revision=revision,
         )
 
         with pytest.raises(agent_sessions.AgentSessionTurnConflictError):
@@ -831,6 +866,7 @@ def test_user_message_and_attachment_state_are_compensated_on_db_failure(
     )
     request = AgentChatRequest(
         resumeId=session_id,
+        expectedRevision=_current_session_revision(session_id),
         message=AgentConversationItem(
             id="agent-user-compensation",
             role="user",
@@ -891,12 +927,18 @@ def test_replace_session_rolls_back_when_attachment_protection_fails(
 
     conn = connect()
     try:
+        initial_revision = agent_sessions.load_agent_session(conn, session_id).revision
         agent_sessions.replace_agent_session_messages(
             conn,
             session_id,
             locale="en",
             messages=[original],
+            revision=initial_revision,
         )
+        replacement_revision = agent_sessions.load_agent_session(
+            conn,
+            session_id,
+        ).revision
 
         def fail_protection(
             protected_session_id: str,
@@ -917,6 +959,7 @@ def test_replace_session_rolls_back_when_attachment_protection_fails(
                 session_id,
                 locale="en",
                 messages=[replacement],
+                revision=replacement_revision,
             )
 
         persisted = agent_sessions.load_agent_session(conn, session_id)
@@ -958,11 +1001,13 @@ def test_history_replacement_preserves_more_than_request_attachment_limit(
 
     conn = connect()
     try:
+        revision = agent_sessions.load_agent_session(conn, session_id).revision
         replaced = agent_sessions.replace_agent_session_messages(
             conn,
             session_id,
             locale="en",
             messages=messages,
+            revision=revision,
         )
     finally:
         conn.close()
@@ -1009,11 +1054,13 @@ def test_history_replacement_ignores_current_request_aggregate_size_limit(
 
     conn = connect()
     try:
+        revision = agent_sessions.load_agent_session(conn, session_id).revision
         replaced = agent_sessions.replace_agent_session_messages(
             conn,
             session_id,
             locale="en",
             messages=messages,
+            revision=revision,
         )
     finally:
         conn.close()
@@ -1086,8 +1133,11 @@ def test_historical_attachment_is_not_resent_implicitly(
         media_type="application/pdf",
     )
     request = AgentChatRequest(
-        prompt="Summarize the paper again.",
-        files=[],
+        message=AgentConversationItem(
+            id="user-follow-up",
+            role="user",
+            text="Summarize the paper again.",
+        ),
         messages=[
             AgentConversationItem(
                 id="user-with-paper",
@@ -1100,15 +1150,11 @@ def test_historical_attachment_is_not_resent_implicitly(
                 role="assistant",
                 text="I reviewed the paper.",
             ),
-            AgentConversationItem(
-                id="user-follow-up",
-                role="user",
-                text="Summarize the paper again.",
-            ),
         ],
         locale="en",
         resume={"basic": {}, "sections": []},
         resume_id=session_id,
+        expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
     messages = build_agent_messages(request, _config(), mode="tools")
@@ -1131,8 +1177,6 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
         media_type="application/pdf",
     )
     request = AgentChatRequest(
-        prompt="What did the notes say?",
-        files=[attachment],
         message=AgentConversationItem(
             id="user-current",
             role="user",
@@ -1142,6 +1186,7 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
         locale="en",
         resume={"basic": {}, "sections": []},
         resume_id=session_id,
+        expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
     messages = build_agent_messages(request, _config(), mode="tools")
@@ -1263,7 +1308,7 @@ def test_original_attachment_can_be_downloaded_only_from_owning_session(
     assert response.status_code == 200
     assert response.content == payload
     assert response.headers["content-type"].startswith("application/pdf")
-    assert wrong_session_response.status_code == 200
+    assert wrong_session_response.status_code == 404
     assert wrong_session_response.json()["code"] == APP_CODE_NOT_FOUND
 
 
@@ -1321,13 +1366,12 @@ def test_pending_attachment_can_be_deleted_but_sent_history_is_protected(
     )
 
     assert pending_response.status_code == 200
-    assert (
-        client.get(
-            f"/api/agent/resumes/{session_id}/attachments/{pending['id']}",
-        ).json()["code"]
-        == APP_CODE_NOT_FOUND
+    deleted_pending_response = client.get(
+        f"/api/agent/resumes/{session_id}/attachments/{pending['id']}",
     )
-    assert sent_response.status_code == 200
+    assert deleted_pending_response.status_code == 404
+    assert deleted_pending_response.json()["code"] == APP_CODE_NOT_FOUND
+    assert sent_response.status_code == 404
     assert sent_response.json()["code"] == APP_CODE_NOT_FOUND
     assert (
         client.get(
@@ -1335,6 +1379,426 @@ def test_pending_attachment_can_be_deleted_but_sent_history_is_protected(
         ).status_code
         == 200
     )
+
+
+def test_permanent_resume_delete_preserves_records_when_attachment_cleanup_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Protected attachment"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    initial_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
+    session_response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "revision": initial_session["revision"],
+            "messages": [
+                {
+                    "id": "protected-attachment-message",
+                    "role": "user",
+                    "text": "Keep this session if cleanup fails.",
+                },
+            ],
+        },
+    )
+    assert session_response.status_code == 200
+
+    attachment = _upload(
+        client,
+        session_id=resume_id,
+        filename="private.txt",
+        payload=b"private resume material",
+        media_type="text/plain",
+    )
+    stored = agent_attachments.load_agent_attachment(resume_id, attachment)
+    assert stored is not None
+    attachment_root = stored.path.parent.resolve()
+
+    trash_response = client.post(f"/api/resumes/{resume_id}/trash")
+    assert trash_response.status_code == 200
+
+    real_rmtree = agent_attachments.shutil.rmtree
+
+    def deny_attachment_cleanup(
+        path: str | Path,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        if Path(path).resolve() == attachment_root:
+            if kwargs.get("ignore_errors"):
+                return
+            raise PermissionError("attachment cleanup denied")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        agent_attachments.shutil,
+        "rmtree",
+        deny_attachment_cleanup,
+    )
+
+    with pytest.raises(PermissionError, match="attachment cleanup denied"):
+        client.delete(f"/api/resumes/{resume_id}")
+
+    assert stored.path.read_bytes() == b"private resume material"
+    with connect() as conn:
+        resume_row = conn.execute(
+            "SELECT deleted FROM resumes WHERE id = ?",
+            (resume_id,),
+        ).fetchone()
+        session_row = conn.execute(
+            "SELECT id FROM agent_sessions WHERE id = ?",
+            (resume_id,),
+        ).fetchone()
+
+    assert resume_row is not None
+    assert resume_row["deleted"] == 1
+    assert session_row is not None
+
+
+def test_delete_agent_session_attachments_accepts_missing_directory(
+    client: TestClient,
+) -> None:
+    del client  # The fixture provides isolated attachment storage and settings.
+
+    agent_attachments.delete_agent_session_attachments(
+        "missing-attachment-session",
+    )
+
+
+def test_attachment_rollback_does_not_recreate_deleted_session_directory(
+    client: TestClient,
+) -> None:
+    session_id = "resume-deleted-attachment-rollback"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename="private.txt",
+        payload=b"private rollback data",
+        media_type="text/plain",
+    )
+    agent_attachments.prevalidate_agent_attachments(session_id, [attachment])
+    receipt = mark_agent_attachments_sent(session_id, [attachment])
+    attachment_root = (
+        get_settings().storage_dir
+        / agent_attachments.ATTACHMENT_STORAGE_DIRNAME
+        / session_id
+    )
+
+    agent_attachments.delete_agent_session_attachments(session_id)
+    agent_attachments.rollback_agent_attachments_sent(receipt)
+
+    assert not attachment_root.exists()
+
+
+def test_attachment_upload_rejects_permanently_deleted_resume(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Deleted attachment owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+    assert client.delete(f"/api/resumes/{resume_id}").status_code == 200
+
+    response = client.post(
+        "/api/agent/attachments",
+        data={"resumeId": resume_id},
+        files={"file": ("orphan.txt", b"private data", "text/plain")},
+    )
+    attachment_root = (
+        get_settings().storage_dir
+        / agent_attachments.ATTACHMENT_STORAGE_DIRNAME
+        / resume_id
+    )
+
+    assert response.status_code == 404
+    assert not attachment_root.exists()
+
+
+def test_attachment_upload_rejects_trashed_resume(client: TestClient) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Trashed attachment owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+
+    response = client.post(
+        "/api/agent/attachments",
+        data={"resumeId": resume_id},
+        files={"file": ("orphan.txt", b"private data", "text/plain")},
+    )
+
+    assert response.status_code == 404
+
+
+def test_session_replace_rejects_permanently_deleted_resume(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Deleted session owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    revision = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]["revision"]
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+    assert client.delete(f"/api/resumes/{resume_id}").status_code == 200
+
+    response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={
+            "locale": "en",
+            "revision": revision,
+            "messages": [
+                {
+                    "id": "orphan-session-message",
+                    "role": "user",
+                    "text": "private orphaned message",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 404
+    with connect() as conn:
+        session_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_sessions WHERE resume_id = ?",
+            (resume_id,),
+        ).fetchone()[0]
+        message_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_messages
+            WHERE session_id = ?
+            """,
+            (resume_id,),
+        ).fetchone()[0]
+    assert session_count == 0
+    assert message_count == 0
+
+
+def test_agent_chat_rejects_permanently_deleted_resume(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Deleted chat owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    revision = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]["revision"]
+    assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
+    assert client.delete(f"/api/resumes/{resume_id}").status_code == 200
+
+    response = client.post(
+        "/api/agent/chat",
+        json={
+            "resumeId": resume_id,
+            "expectedRevision": revision,
+            "message": {
+                "id": "orphan-chat-message",
+                "role": "user",
+                "text": "private orphaned chat",
+            },
+            "messages": [],
+            "locale": "en",
+            "resume": {"basic": {}, "sections": []},
+        },
+    )
+
+    assert response.status_code == 404
+    with connect() as conn:
+        session_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_sessions WHERE resume_id = ?",
+            (resume_id,),
+        ).fetchone()[0]
+        message_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
+            (resume_id,),
+        ).fetchone()[0]
+        execution_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM agent_turn_executions
+            WHERE session_id = ?
+            """,
+            (resume_id,),
+        ).fetchone()[0]
+    assert session_count == 0
+    assert message_count == 0
+    assert execution_count == 0
+
+
+def test_inflight_attachment_upload_is_removed_by_permanent_delete(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Concurrent attachment owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    upload_entered = Event()
+    release_upload = Event()
+    delete_started = Event()
+    real_write_original = agent_attachments._write_original_with_unique_name
+
+    def wait_before_writing(
+        session_root: Path,
+        filename: str,
+        payload: bytes,
+    ) -> Path:
+        upload_entered.set()
+        assert release_upload.wait(timeout=2)
+        return real_write_original(session_root, filename, payload)
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "_write_original_with_unique_name",
+        wait_before_writing,
+    )
+    results: dict[str, Any] = {}
+
+    def upload() -> None:
+        results["upload"] = client.post(
+            "/api/agent/attachments",
+            data={"resumeId": resume_id},
+            files={"file": ("private.txt", b"private data", "text/plain")},
+        )
+
+    def delete() -> None:
+        delete_started.set()
+        results["trash"] = resumes.trash_resume(resume_id)
+        results["delete"] = resumes.delete_resume_forever(resume_id)
+
+    upload_thread = Thread(target=upload)
+    delete_thread = Thread(target=delete)
+    upload_thread.start()
+    assert upload_entered.wait(timeout=2)
+    delete_thread.start()
+    assert delete_started.wait(timeout=2)
+    release_upload.set()
+    upload_thread.join(timeout=3)
+    delete_thread.join(timeout=3)
+
+    assert not upload_thread.is_alive()
+    assert not delete_thread.is_alive()
+    assert results["upload"].status_code == 200
+    assert results["delete"] == {"id": resume_id}
+    attachment_root = (
+        get_settings().storage_dir
+        / agent_attachments.ATTACHMENT_STORAGE_DIRNAME
+        / resume_id
+    )
+    assert not attachment_root.exists()
+    with connect() as conn:
+        resume_row = conn.execute(
+            "SELECT id FROM resumes WHERE id = ?",
+            (resume_id,),
+        ).fetchone()
+    assert resume_row is None
+
+
+def test_chat_prevalidation_cannot_recreate_cache_after_permanent_delete(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Concurrent chat attachment owner"},
+    ).json()["data"]["resume"]
+    resume_id = created["id"]
+    attachment = _upload(
+        client,
+        session_id=resume_id,
+        filename="private.txt",
+        payload=b"private attachment text",
+        media_type="text/plain",
+    )
+    revision = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]["revision"]
+    extraction_started = Event()
+    release_extraction = Event()
+    deletion_finished = Event()
+    real_extract = agent_attachments._extract_attachment_text
+
+    def wait_after_reading(
+        stored: agent_attachments.StoredAgentAttachment,
+        payload: bytes,
+    ) -> str:
+        text = real_extract(stored, payload)
+        extraction_started.set()
+        assert release_extraction.wait(timeout=2)
+        return text
+
+    monkeypatch.setattr(
+        agent_attachments,
+        "_extract_attachment_text",
+        wait_after_reading,
+    )
+    results: dict[str, Any] = {}
+
+    def start_chat() -> None:
+        results["chat"] = client.post(
+            "/api/agent/chat",
+            json={
+                "resumeId": resume_id,
+                "expectedRevision": revision,
+                "message": {
+                    "id": "concurrent-private-attachment",
+                    "role": "user",
+                    "text": "Use the private attachment.",
+                    "files": [attachment],
+                },
+                "messages": [],
+                "locale": "en",
+                "resume": {"basic": {}, "sections": []},
+            },
+        )
+
+    def delete_resume() -> None:
+        try:
+            results["trash"] = resumes.trash_resume(resume_id)
+            try:
+                results["delete"] = resumes.delete_resume_forever(resume_id)
+            except BaseException as exc:
+                results["delete_error"] = exc
+        finally:
+            deletion_finished.set()
+
+    chat_thread = Thread(target=start_chat)
+    delete_thread = Thread(target=delete_resume)
+    chat_thread.start()
+    assert extraction_started.wait(timeout=2)
+    delete_thread.start()
+    deletion_finished.wait(timeout=1)
+    release_extraction.set()
+    chat_thread.join(timeout=3)
+    delete_thread.join(timeout=3)
+
+    assert not chat_thread.is_alive()
+    assert not delete_thread.is_alive()
+    if delete_error := results.get("delete_error"):
+        assert getattr(delete_error, "status_code", None) == 409
+        results["delete"] = resumes.delete_resume_forever(resume_id)
+    assert results["delete"] == {"id": resume_id}
+    attachment_root = (
+        get_settings().storage_dir
+        / agent_attachments.ATTACHMENT_STORAGE_DIRNAME
+        / resume_id
+    )
+    assert not attachment_root.exists()
 
 
 def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
@@ -1394,11 +1858,16 @@ def test_more_than_five_current_attachments_is_rejected() -> None:
         for index in range(6)
     ]
     request = AgentChatRequest(
-        prompt="Review all files.",
-        files=files,
+        message=AgentConversationItem(
+            id="turn-attachments-over-limit",
+            role="user",
+            text="Review all files.",
+            files=files,
+        ),
         locale="en",
         resume={"basic": {}, "sections": []},
         resume_id="resume-too-many",
+        expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
     with pytest.raises(LlmRequestError, match="At most 5 attachments"):

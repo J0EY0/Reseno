@@ -115,7 +115,7 @@ assert(
   "Cold gallery navigation must resolve the detail route before its view transition.",
 );
 assert(
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("template-gallery"/.test(
+  /await persistence\.flush\(\)[\s\S]{0,1000}fetchWorkspaceRouteData\(\s*"template-gallery"/.test(
     galleryRoute,
   ) &&
     /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/.test(

@@ -8,7 +8,7 @@ from hashlib import sha256
 import httpx
 import pytest
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.integrations import web as agent_web
 from app.services.agent.runtime.context import AgentRuntimeContext
@@ -43,7 +43,11 @@ def _web_tool_call(name: str, arguments: dict[str, object]) -> LlmToolCall:
 
 def _agent_runner(*, prompt: str, job_brief: str = "") -> AgentToolRunner:
     request = AgentChatRequest(
-        prompt=prompt,
+        message=AgentConversationItem(
+            id=f"turn-agent-web-{prompt}",
+            role="user",
+            text=prompt,
+        ),
         jobBrief=job_brief,
         locale="zh",
         resume={"basic": {}, "sections": []},

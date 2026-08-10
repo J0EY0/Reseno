@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from .adapters import anthropic_messages, google_gemini, openai_chat, openai_responses
+from .common import close_async_stream
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -125,8 +126,11 @@ async def async_stream_chat(
     else:
         stream = openai_chat.stream(config, messages)
 
-    async for event in stream:
-        yield event
+    try:
+        async for event in stream:
+            yield event
+    finally:
+        await close_async_stream(stream)
 
 
 def _provider_state_for_validation_retry(

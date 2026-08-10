@@ -63,6 +63,18 @@ assert(
   "Sidebar context, layout, and menu responsibilities must remain one-way.",
 );
 assert(
+  /function getInitialSidebarOpen\(defaultOpen:\s*boolean\)/.test(sidebarCore) &&
+    /typeof document === ["']undefined["']/.test(sidebarCore) &&
+    (sidebarCore.match(/document\.cookie/g) ?? []).length === 2 &&
+    (sidebarCore.match(/return defaultOpen/g) ?? []).length === 2 &&
+    /cookieValue === ["']true["']/.test(sidebarCore) &&
+    /cookieValue === ["']false["']/.test(sidebarCore) &&
+    /React\.useState\(\(\)\s*=>\s*getInitialSidebarOpen\(defaultOpen\)\s*\)/.test(
+      sidebarCore,
+    ),
+  "SidebarProvider must synchronously restore its persisted cookie and retain defaultOpen as the fallback.",
+);
+assert(
   appSidebar.includes('from "@/components/ui/sidebar-layout"') &&
     appSidebar.includes('from "@/components/ui/sidebar-menu"') &&
     !sidebarCore.includes("SidebarMenuButton") &&

@@ -27,10 +27,15 @@ export type RefreshAgentSession = (
   replaceMessages?: boolean,
 ) => Promise<AgentSessionResponse | null>
 
+interface ConsumeAgentRunStreamOptions {
+  notifyOnFailure?: boolean
+  throwOnFailure?: boolean
+}
+
 export type ConsumeAgentRunStream = (
   start: (options: AgentChatStreamOptions) => Promise<AgentChatResponse>,
   abortController: AbortController,
-  notifyOnFailure?: boolean,
+  options?: ConsumeAgentRunStreamOptions,
 ) => Promise<AgentRunStatus>
 
 export function useAgentRunStream({
@@ -78,7 +83,10 @@ export function useAgentRunStream({
     async (
       start,
       abortController,
-      notifyOnFailure = true,
+      {
+        notifyOnFailure = true,
+        throwOnFailure = false,
+      }: ConsumeAgentRunStreamOptions = {},
     ): Promise<AgentRunStatus> => {
       const runtime = runtimeRef.current
       let streamedMessageId: string | undefined
@@ -190,6 +198,9 @@ export function useAgentRunStream({
             closeButton: true,
           })
         }
+        if (throwOnFailure) {
+          throw error
+        }
         return 'failed'
       } finally {
         if (expectedResumeId) {
@@ -201,6 +212,12 @@ export function useAgentRunStream({
                 'Failed to refresh the Agent session revision.',
                 error,
               )
+              if (runtime.currentResumeId === expectedResumeId) {
+                runtime.sessionRevision = null
+                runtime.sessionReady = false
+                updates.setSessionReady(false)
+                updates.setSessionLoadError(true)
+              }
             }
           }
         }

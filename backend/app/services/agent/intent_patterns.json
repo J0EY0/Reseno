@@ -152,6 +152,22 @@
       "suggest"
     ]
   },
+  "explicit_read_only": {
+    "common": [],
+    "zh": [
+      "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:修改|改动|改|编辑|优化|润色|改写)(?=[，。！？；,.!?;]|$)",
+      "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:修改|改动|改|编辑|优化|润色|改写)(?:这份|我的|当前|整个|整份)?简历",
+      "(?:不要|别|请勿|不用|无需|不需要)(?:生成|创建)(?:任何)?(?:草稿|修改|编辑)",
+      "(?:只|仅)(?:给|要|需要)?(?:建议|分析|诊断|评价|说明)"
+    ],
+    "en": [
+      "(?:do not|don['’]?t|never) (?:edit|change|modify|rewrite|optimi[sz]e) (?:(?:my|the|this|current|entire) )?(?:resume|draft)",
+      "(?:do not|don['’]?t|never) (?:create|generate|make) (?:a )?draft",
+      "without (?:editing|changing|modifying|rewriting|optimizing) (?:(?:my|the|this|current|entire) )?(?:resume|draft)",
+      "(?:advice|analysis|review|suggestions?) only",
+      "no (?:edits?|changes?|drafts?)"
+    ]
+  },
   "edit_resume": {
     "common": [],
     "zh": [
@@ -182,6 +198,7 @@
       "edit",
       "rewrite",
       "improve",
+      "tailor",
       "add",
       "insert",
       "delete",

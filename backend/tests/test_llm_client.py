@@ -2,8 +2,13 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import pytest
+from openai import APIStatusError
+
 from app.services.llm import (
     AgentLlmConfig,
+    LlmRequestError,
     async_complete_chat,
     async_complete_tool_call,
     async_stream_chat,
@@ -12,12 +17,15 @@ from app.services.llm import (
 from app.services.llm.adapters import (
     anthropic_messages,
     google_gemini,
+    openai_chat,
+    openai_responses,
 )
 
 
 class AsyncStream:
     def __init__(self, chunks: list[object]) -> None:
         self._chunks = chunks
+        self.close_count = 0
 
     def __aiter__(self) -> "AsyncStream":
         return self
@@ -29,7 +37,7 @@ class AsyncStream:
         return self._chunks.pop(0)
 
     async def close(self) -> None:
-        return None
+        self.close_count += 1
 
 
 def _config(**overrides: Any) -> AgentLlmConfig:
@@ -105,6 +113,199 @@ def test_openai_chat_async_completion_uses_sdk_params(monkeypatch) -> None:
     }
 
 
+def test_openai_chat_closes_request_client_after_completion(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **_: Any) -> object:
+            return SimpleNamespace(
+                id="chatcmpl-close",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="closed"),
+                    ),
+                ],
+            )
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+
+    message = asyncio.run(
+        openai_chat.complete(
+            _config(),
+            [{"role": "user", "content": "hello"}],
+        ),
+    )
+
+    assert message.content == "closed"
+    assert client.close_count == 1
+
+
+def test_openai_chat_closes_request_client_when_create_raises(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **_: Any) -> object:
+            raise RuntimeError("provider create failed")
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+
+    with pytest.raises(RuntimeError, match="provider create failed"):
+        asyncio.run(
+            async_complete_chat(
+                _config(),
+                [{"role": "user", "content": "hello"}],
+            ),
+        )
+
+    assert client.close_count == 1
+
+
+def test_openai_responses_closes_request_client_after_stream(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **_: Any) -> AsyncStream:
+            return AsyncStream(
+                [
+                    SimpleNamespace(
+                        type="response.completed",
+                        response=SimpleNamespace(
+                            id="response-close",
+                            output_text="closed",
+                            output=[],
+                            status="completed",
+                            usage=None,
+                        ),
+                    ),
+                ],
+            )
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    events = asyncio.run(
+        _collect_stream(
+            openai_responses.stream(
+                _config(api_family="openai_responses"),
+                [{"role": "user", "content": "hello"}],
+            ),
+        ),
+    )
+
+    assert events[-1].message and events[-1].message.content == "closed"
+    assert client.close_count == 1
+
+
+def test_openai_responses_closes_request_client_when_completion_fails(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **_: Any) -> object:
+            return SimpleNamespace(
+                id="response-empty",
+                output_text="",
+                output=[],
+                status="completed",
+                usage=None,
+            )
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    with pytest.raises(LlmRequestError, match="empty response"):
+        asyncio.run(
+            async_complete_chat(
+                _config(api_family="openai_responses"),
+                [{"role": "user", "content": "hello"}],
+            ),
+        )
+
+    assert client.close_count == 1
+
+
+def test_openai_chat_tool_fallback_reuses_and_closes_one_client(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.close_count = 0
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **params: Any) -> object:
+            self.calls.append(params)
+            if len(self.calls) == 1:
+                request = httpx.Request("POST", "https://api.example.test/v1")
+                response = httpx.Response(
+                    400,
+                    request=request,
+                    text='{"error":"parallel_tool_calls is unsupported"}',
+                )
+                raise APIStatusError(
+                    "Unsupported parameter",
+                    response=response,
+                    body=None,
+                )
+            return SimpleNamespace(
+                id="chatcmpl-fallback",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="tool_calls",
+                        message=SimpleNamespace(content="", tool_calls=[]),
+                    ),
+                ],
+            )
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+
+    message = asyncio.run(
+        openai_chat.complete_tool_call(
+            _config(),
+            [{"role": "user", "content": "inspect"}],
+            [],
+        ),
+    )
+
+    assert message.stop_reason == "tool_calls"
+    assert len(client.calls) == 2
+    assert client.calls[0]["parallel_tool_calls"] is False
+    assert "parallel_tool_calls" not in client.calls[1]
+    assert client.close_count == 1
+
+
 def test_openai_chat_stream_returns_delta_and_done_message(monkeypatch) -> None:
     class FakeChatCompletions:
         async def create(self, **kwargs: Any) -> object:
@@ -163,6 +364,110 @@ def test_openai_chat_stream_returns_delta_and_done_message(monkeypatch) -> None:
     assert events[-1].message
     assert events[-1].message.content == "streamed"
     assert events[-1].message.reasoning == "think"
+
+
+def test_openai_chat_stream_closes_provider_and_client_when_closed_early(
+    monkeypatch,
+) -> None:
+    provider_stream = AsyncStream(
+        [
+            SimpleNamespace(
+                id="chunk-early-close",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason=None,
+                        delta=SimpleNamespace(content="first"),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **_: Any) -> AsyncStream:
+            return provider_stream
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+
+    async def consume_one_event() -> None:
+        stream = async_stream_chat(
+            _config(),
+            [{"role": "user", "content": "hello"}],
+        )
+        event = await anext(stream)
+        assert (event.type, event.delta) == ("text_delta", "first")
+
+        await stream.aclose()
+
+        assert provider_stream.close_count == 1
+        assert client.close_count == 1
+
+    asyncio.run(consume_one_event())
+
+
+def test_openai_responses_stream_closes_provider_and_client_when_cancelled(
+    monkeypatch,
+) -> None:
+    class BlockingStream:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.close_count = 0
+
+        def __aiter__(self) -> "BlockingStream":
+            return self
+
+        async def __anext__(self) -> object:
+            self.started.set()
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    class FakeClient:
+        def __init__(self, provider_stream: BlockingStream) -> None:
+            self.provider_stream = provider_stream
+            self.close_count = 0
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **_: Any) -> BlockingStream:
+            return self.provider_stream
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    async def consume_until_cancelled() -> None:
+        provider_stream = BlockingStream()
+        client = FakeClient(provider_stream)
+        monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+        consumer = asyncio.create_task(
+            _collect_stream(
+                async_stream_chat(
+                    _config(api_family="openai_responses"),
+                    [{"role": "user", "content": "hello"}],
+                ),
+            ),
+        )
+        await asyncio.wait_for(provider_stream.started.wait(), timeout=1)
+
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(consumer, timeout=1)
+
+        assert provider_stream.close_count == 1
+        assert client.close_count == 1
+
+    asyncio.run(consume_until_cancelled())
 
 
 def test_openai_responses_adapter_flattens_tools(monkeypatch) -> None:

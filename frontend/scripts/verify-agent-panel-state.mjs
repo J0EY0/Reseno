@@ -124,6 +124,24 @@ assert(
   "Only completed tool outputs may contribute quality warnings.",
 );
 assert(
+  panelState.canSubmitAgentPrompt({
+    hasConfiguredModel: true,
+    isResponding: false,
+    isSessionReady: true,
+    isSubmitting: false,
+  }),
+  "A ready idle Agent with a configured model may submit.",
+);
+assert(
+  !panelState.canSubmitAgentPrompt({
+    hasConfiguredModel: true,
+    isResponding: false,
+    isSessionReady: false,
+    isSubmitting: false,
+  }),
+  "A failed or pending bootstrap must keep the composer send gate closed.",
+);
+assert(
   conversationViewSource.includes("shouldShowAgentDraftActions({"),
   "The conversation view must bind draft actions to the draft source message.",
 );
@@ -134,6 +152,15 @@ assert(
 assert(
   promptActionsSource.includes("activeUploadAbortRef.current.abort()"),
   "The stop action must cancel an in-flight attachment upload.",
+);
+assert(
+  /if\s*\(activeUploadAbortRef\.current\s*===\s*uploadAbortController\)\s*\{\s*activeUploadAbortRef\.current\s*=\s*null\s*\}[\s\S]{0,500}const\s+sendOperation\s*=\s*sendPrompt\(/.test(
+    promptActionsSource,
+  ) &&
+    /const\s+stopResponding[\s\S]*activeUploadAbortRef\.current\.abort\(\)[\s\S]{0,120}return[\s\S]{0,160}stopConversation\(\)/.test(
+      promptActionsSource,
+    ),
+  "Once upload ownership ends, Stop must target the Agent conversation instead of the completed upload.",
 );
 assert(
   sendSource.includes("revision,"),

@@ -5,6 +5,7 @@ import type {
 
 import type {
   AgentDraftState,
+  AgentDraftSnapshot,
   AgentResumeEditSuggestion,
   AgentTransactionState,
   WorkspaceVersionSummary,
@@ -50,9 +51,7 @@ export interface ResumeDetailLeaveViewState {
 export interface ResumeDetailAgentViewState {
   draft: AgentDraftState | null;
   draftState: AgentDraftState | null;
-  isDockLayout: boolean;
   isPanelCollapsed: boolean;
-  isSheetOpen: boolean;
   jobBrief: string;
   keywordMatch: KeywordMatch;
   modelConfigs: ModelConfig[];
@@ -97,9 +96,9 @@ export interface ResumeDetailAgentCommands {
     sourceMessageId?: string,
     transactionState?: AgentTransactionState,
   ) => void;
+  reconcileDraft: (snapshot: AgentDraftSnapshot | null) => void;
   rollbackDraft: (sourceMessageId?: string) => void;
   setPanelCollapsed: (collapsed: boolean) => void;
-  setSheetOpen: (open: boolean) => void;
 }
 
 export interface ResumeDetailWorkspaceCommands {

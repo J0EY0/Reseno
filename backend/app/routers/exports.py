@@ -13,7 +13,9 @@ from app.schemas.exports import (
 )
 from app.services.auth_tokens import format_token_expiry
 from app.services.pdf import (
+    cleanup_expired_exports,
     create_export_id,
+    export_expires_at,
     require_export_file,
     require_image_export_file,
     safe_file_name,
@@ -62,10 +64,11 @@ def export_resume_pdf(
     """Generate a PDF export for a saved resume."""
 
     _require_resume_for_export(request)
+    cleanup_expired_exports()
 
     export_id = create_export_id()
     file_name = safe_file_name(request.file_name_seed)
-    write_resume_pdf(
+    export_path = write_resume_pdf(
         export_id,
         request,
         **_render_auth_kwargs(http_request),
@@ -77,7 +80,7 @@ def export_resume_pdf(
             exportId=export_id,
             downloadUrl=f"/api/exports/download/{export_id}?{download_query}",
             fileName=file_name,
-            expiresAt=None,
+            expiresAt=export_expires_at(export_path),
         ),
     )
 
@@ -93,6 +96,7 @@ def export_resume_images(
     """Export each saved resume page as PNG, archiving multi-page output."""
 
     _require_resume_for_export(request)
+    cleanup_expired_exports()
     export_id = create_export_id()
     result = write_resume_images(
         export_id,
@@ -110,7 +114,7 @@ def export_resume_images(
             exportId=export_id,
             downloadUrl=(f"/api/exports/image-download/{export_id}?{download_query}"),
             fileName=file_name,
-            expiresAt=None,
+            expiresAt=export_expires_at(result.path),
             pageCount=result.page_count,
             isArchive=result.is_archive,
         ),

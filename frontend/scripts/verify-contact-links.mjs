@@ -7,6 +7,8 @@ import { createServer } from "vite";
 import vm from "node:vm";
 import * as ts from "typescript";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 const root = new URL("..", import.meta.url).pathname;
 const helperPath = join(root, "src", "lib", "contact-links.ts");
 const source = await readFile(helperPath, "utf8");
@@ -55,6 +57,8 @@ assert.equal(createContactHref("url", "https://"), null);
 assert.equal(createContactHref("url", "https://example.com\nunsafe"), null);
 
 const vite = await createServer({
+  cacheDir: createViteTestCacheDir(),
+  optimizeDeps: { noDiscovery: true },
   root,
   appType: "custom",
   logLevel: "silent",

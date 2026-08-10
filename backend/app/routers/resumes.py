@@ -1,6 +1,7 @@
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query
+import anyio
+from fastapi import APIRouter, Query, Request
 
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.resumes import (
@@ -12,6 +13,7 @@ from app.schemas.resumes import (
     ResumeTrashEmptyResponse,
     ResumeVersionsResponse,
 )
+from app.services.agent_runs import AgentRunManager
 from app.services.resumes import (
     create_resume,
     delete_resume_forever,
@@ -56,11 +58,27 @@ def post_resume(
     )
 
 
+def _agent_run_manager(request: Request) -> AgentRunManager | None:
+    manager = getattr(request.app.state, "agent_runs", None)
+    return manager if isinstance(manager, AgentRunManager) else None
+
+
 @router.delete("/trash", response_model=ApiResponse[ResumeTrashEmptyResponse])
-def delete_resume_trash() -> ApiResponse[ResumeTrashEmptyResponse]:
+async def delete_resume_trash(
+    request: Request,
+) -> ApiResponse[ResumeTrashEmptyResponse]:
     """Physically delete every resume in the recycle bin."""
 
-    return ok_response(ResumeTrashEmptyResponse.model_validate(empty_resume_trash()))
+    manager = _agent_run_manager(request)
+    try:
+        result = await anyio.to_thread.run_sync(empty_resume_trash)
+    finally:
+        if manager is not None:
+            # The storage operation commits each resume independently. Purge
+            # owners that are already gone even if a later deletion fails.
+            with anyio.CancelScope(shield=True):
+                await manager.purge_missing_resume_runs()
+    return ok_response(ResumeTrashEmptyResponse.model_validate(result))
 
 
 @router.get("/{resume_id}", response_model=ApiResponse[ResumeDetailResponse])
@@ -119,12 +137,22 @@ def post_resume_restore(resume_id: str) -> ApiResponse[ResumeDetailResponse]:
 
 
 @router.delete("/{resume_id}", response_model=ApiResponse[ResumeDeleteResponse])
-def delete_resume(resume_id: str) -> ApiResponse[ResumeDeleteResponse]:
+async def delete_resume(
+    resume_id: str,
+    request: Request,
+) -> ApiResponse[ResumeDeleteResponse]:
     """Physically delete one already-deleted resume."""
 
-    return ok_response(
-        ResumeDeleteResponse.model_validate(delete_resume_forever(resume_id))
-    )
+    manager = _agent_run_manager(request)
+    try:
+        result = await anyio.to_thread.run_sync(delete_resume_forever, resume_id)
+    finally:
+        if manager is not None:
+            # Query durable ownership so failed deletes retain their replay,
+            # while committed deletes cannot leak it through cancellation.
+            with anyio.CancelScope(shield=True):
+                await manager.purge_missing_resume_runs()
+    return ok_response(ResumeDeleteResponse.model_validate(result))
 
 
 @router.get("/{resume_id}/versions", response_model=ApiResponse[ResumeVersionsResponse])

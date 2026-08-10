@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent import WebSearchReference, WebSearchResult
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.runtime.context import AgentRuntimeContext
@@ -26,7 +26,11 @@ def _runner(
     candidate_name: str = "",
 ) -> AgentToolRunner:
     request = AgentChatRequest(
-        prompt=prompt,
+        message=AgentConversationItem(
+            id=f"turn-search-query-{prompt}",
+            role="user",
+            text=prompt,
+        ),
         jobBrief=job_brief,
         locale="zh",
         resume={"basic": {"name": candidate_name}, "sections": []},

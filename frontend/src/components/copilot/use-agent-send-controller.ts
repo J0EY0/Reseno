@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 
 import type { AppMessages, Locale } from '@/i18n'
@@ -18,6 +18,7 @@ import {
 import { createId, getKeywordMatch } from '@/lib/resume'
 import type {
   AgentChatAttachment,
+  AgentChatUserMessage,
   AgentDraftState,
   AgentRunStatus,
 } from '@/types/api'
@@ -38,6 +39,7 @@ import {
   type AgentPanelMessage,
 } from './copilot-message-model'
 import type {
+  AgentSendOperation,
   AgentSendOptions,
   SendAgentPrompt,
 } from './copilot-panel-types'
@@ -47,6 +49,51 @@ import type {
 } from './use-agent-run-stream'
 
 const AGENT_REQUEST_DEBOUNCE_MS = 420
+
+function waitForAgentSendPreflight(
+  task: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) {
+    return Promise.resolve(false)
+  }
+
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false
+    const removeAbortListener = () => {
+      signal.removeEventListener('abort', handleAbort)
+    }
+    const settle = (completed: boolean) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      removeAbortListener()
+      resolve(completed)
+    }
+    const handleAbort = () => settle(false)
+
+    signal.addEventListener('abort', handleAbort, { once: true })
+    void task.then(
+      () => settle(true),
+      (error) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        removeAbortListener()
+        reject(error)
+      },
+    )
+  })
+}
+
+function ownsAgentSendPreflight(
+  current: AbortController | null,
+  owner: AbortController,
+) {
+  return current === owner && !owner.signal.aborted
+}
 
 export function useAgentSendController({
   agentDraftState,
@@ -81,6 +128,18 @@ export function useAgentSendController({
   t: AppMessages
   updates: AgentConversationUpdates
 }) {
+  const preflightAbortRef = useRef<AbortController | null>(null)
+  const cancelAgentSendPreflight = useCallback(() => {
+    const preflight = preflightAbortRef.current
+    if (!preflight) {
+      return false
+    }
+
+    preflightAbortRef.current = null
+    preflight.abort()
+    return true
+  }, [])
+
   const cancelScheduledSend = useCallback(
     (rollback: boolean) => {
       const runtime = runtimeRef.current
@@ -118,6 +177,9 @@ export function useAgentSendController({
 
   const stopResponding = useCallback(() => {
     const runtime = runtimeRef.current
+    if (cancelAgentSendPreflight()) {
+      return
+    }
     if (cancelScheduledSend(true)) {
       return
     }
@@ -148,222 +210,314 @@ export function useAgentSendController({
       runtime.stopRequested = false
       updates.setIsResponding(false)
     }
-  }, [cancelScheduledSend, runtimeRef, updates])
+  }, [cancelAgentSendPreflight, cancelScheduledSend, runtimeRef, updates])
 
   const sendPrompt: SendAgentPrompt = useCallback(
-    async (
+    (
       text: string,
       files: AgentChatAttachment[] = [],
       options: AgentSendOptions = {},
-    ): Promise<AgentRunStatus> => {
-      const runtime = runtimeRef.current
-      const prompt = text.trim()
-
-      if ((!prompt && files.length === 0) || runtime.isResponding) {
-        return 'cancelled'
+    ): AgentSendOperation => {
+      let acceptanceSettled = false
+      let resolveAcceptance: (accepted: boolean) => void = () => undefined
+      const acceptedPromise = new Promise<boolean>((resolve) => {
+        resolveAcceptance = resolve
+      })
+      const settleAcceptance = (accepted: boolean) => {
+        if (acceptanceSettled) {
+          return
+        }
+        acceptanceSettled = true
+        resolveAcceptance(accepted)
+      }
+      let preflightOwner: AbortController | null = null
+      const releasePreflight = () => {
+        if (
+          preflightOwner &&
+          preflightAbortRef.current === preflightOwner
+        ) {
+          preflightAbortRef.current = null
+        }
+        preflightOwner = null
       }
 
-      await onBeforeSend?.()
-      await runtime.sessionReadyPromise
+      const completion = (async (): Promise<AgentRunStatus> => {
+        const runtime = runtimeRef.current
+        const prompt = text.trim()
 
-      if (runtime.isResponding) {
-        return 'cancelled'
-      }
-      if (resumeId && !runtime.sessionRevision) {
-        const session = await refreshAgentSession(resumeId, true)
-        if (!session) {
+        if ((!prompt && files.length === 0) || runtime.isResponding) {
+          return 'cancelled'
+        }
+
+        preflightAbortRef.current?.abort()
+        const preflightAbortController = new AbortController()
+        preflightOwner = preflightAbortController
+        preflightAbortRef.current = preflightAbortController
+        const preflightCompleted = await waitForAgentSendPreflight(
+          Promise.resolve().then(() => onBeforeSend?.()),
+          preflightAbortController.signal,
+        )
+        if (
+          !preflightCompleted ||
+          !ownsAgentSendPreflight(
+            preflightAbortRef.current,
+            preflightAbortController,
+          )
+        ) {
+          return 'cancelled'
+        }
+
+        await runtime.sessionReadyPromise
+        if (
+          !ownsAgentSendPreflight(
+            preflightAbortRef.current,
+            preflightAbortController,
+          )
+        ) {
+          return 'cancelled'
+        }
+
+        if (!runtime.sessionReady) {
           return 'failed'
         }
-      }
-
-      const baseMessages = options.baseMessages ?? messages
-      const rollbackMessages = messages
-      const looksLikeJobBrief = isLikelyJobBriefPrompt(prompt)
-      const nextJobBrief = looksLikeJobBrief ? prompt : jobBrief
-      const nextKeywordMatch = looksLikeJobBrief
-        ? getKeywordMatch(resume, nextJobBrief, 0, t)
-        : keywordMatch
-      const userMessage: AgentPanelMessage = {
-        files,
-        id: options.messageId ?? createId('agent-user'),
-        role: 'user',
-        text: prompt,
-      }
-      const nextMessages = [...baseMessages, userMessage]
-      const apiMessages = nextMessages.map(toConversationMessage)
-
-      // Abort an in-flight restore before publishing the optimistic message so
-      // stale history can never replace this newly submitted prompt.
-      runtime.activeRequestAbort?.abort()
-      runtime.activeRequestAbort = null
-      updates.setSessionLoadError(false)
-      cancelScheduledSend(false)
-      updates.setIsResponding(true)
-      runtime.isResponding = true
-      updates.setMessages(nextMessages)
-      runtime.optimisticMessageOwner = userMessage.id
-      updates.setStreamingMessage(null)
-      runtime.previewedEditsKey = null
-      runtime.requestResume = resume
-
-      if (looksLikeJobBrief) {
-        onJobBriefChange(prompt)
-      }
-
-      return new Promise<AgentRunStatus>((resolve) => {
-        runtime.pendingSend = {
-          optimisticMessageId: userMessage.id,
-          resolve,
-          resumeId,
-          rollbackMessages,
+        if (runtime.isResponding) {
+          return 'cancelled'
         }
-        runtime.replyTimer = window.setTimeout(() => {
-          const pending = runtime.pendingSend
-          runtime.pendingSend = null
-          runtime.replyTimer = null
+        if (resumeId && !runtime.sessionRevision) {
+          const session = await refreshAgentSession(resumeId, true)
+          if (
+            !ownsAgentSendPreflight(
+              preflightAbortRef.current,
+              preflightAbortController,
+            )
+          ) {
+            return 'cancelled'
+          }
+          if (!session) {
+            return 'failed'
+          }
+        }
+        const loadedRevision = runtime.sessionRevision
+        let expectedRevision: string | undefined =
+          resumeId && loadedRevision ? loadedRevision : undefined
+        if (resumeId && !expectedRevision) {
+          return 'failed'
+        }
 
-          void (async () => {
-            const abortController = new AbortController()
-            let failure: unknown
-            let status: AgentRunStatus = 'failed'
-            let runAccepted = false
-            let sessionReconciled = false
+        const baseMessages = options.baseMessages ?? messages
+        const rollbackMessages = messages
+        const looksLikeJobBrief = isLikelyJobBriefPrompt(prompt)
+        const nextJobBrief = looksLikeJobBrief ? prompt : jobBrief
+        const nextKeywordMatch = looksLikeJobBrief
+          ? getKeywordMatch(resume, nextJobBrief, 0, t)
+          : keywordMatch
+        const userMessage: AgentPanelMessage = {
+          files,
+          id: options.messageId ?? createId('agent-user'),
+          role: 'user',
+          text: prompt,
+        }
+        const nextMessages = [...baseMessages, userMessage]
+        const currentMessage: AgentChatUserMessage = {
+          files,
+          id: userMessage.id,
+          role: 'user',
+          text: prompt,
+        }
+        const priorMessages = baseMessages.map(toConversationMessage)
+        const apiMessages = [...priorMessages, currentMessage]
 
-            runtime.activeRequestAbort?.abort()
-            runtime.activeRequestAbort = abortController
+        // Abort an in-flight restore before publishing the optimistic message
+        // so stale history can never replace this newly submitted prompt.
+        runtime.activeRequestAbort?.abort()
+        runtime.activeRequestAbort = null
+        updates.setSessionLoadError(false)
+        cancelScheduledSend(false)
+        updates.setIsResponding(true)
+        runtime.isResponding = true
+        updates.setMessages(nextMessages)
+        runtime.optimisticMessageOwner = userMessage.id
+        updates.setStreamingMessage(null)
+        runtime.previewedEditsKey = null
+        runtime.requestResume = resume
 
-            try {
-              if (options.replaceSessionBeforeSend && resumeId) {
-                const revision = runtime.sessionRevision
-                if (!revision) {
-                  await refreshAgentSession(resumeId, true)
-                  sessionReconciled = true
-                  throw new Error(
-                    'Cannot replace Agent history before loading its revision.',
-                  )
-                }
+        if (looksLikeJobBrief) {
+          onJobBriefChange(prompt)
+        }
 
-                const session = await replaceAgentSession(resumeId, {
-                  locale,
-                  messages: apiMessages,
-                  revision,
-                })
-                runtime.sessionRevision = session.revision
-                runAccepted = true
-              }
+        return await new Promise<AgentRunStatus>((resolve) => {
+          runtime.pendingSend = {
+            optimisticMessageId: userMessage.id,
+            resolve,
+            resumeId,
+            rollbackMessages,
+          }
+          runtime.replyTimer = window.setTimeout(() => {
+            const pending = runtime.pendingSend
+            runtime.pendingSend = null
+            runtime.replyTimer = null
 
-              if (abortController.signal.aborted) {
-                status = 'cancelled'
-              } else {
-                status = await consumeRunStream(
-                  (streamOptions) =>
-                    sendAgentChatMessage(
-                      {
-                        appliedActions: [],
-                        clientTurnId: userMessage.id,
-                        conversation: apiMessages,
-                        expectedRevision:
-                          runtime.sessionRevision ?? undefined,
-                        files,
-                        jobBrief: nextJobBrief,
-                        keywordMatch: nextKeywordMatch,
-                        locale,
-                        message: toConversationMessage(userMessage),
-                        messages: apiMessages,
-                        modelConfig: selectedModel,
-                        prompt,
-                        resume,
-                        resumeId,
-                        draftState: agentDraftState,
-                        stream: true,
-                      },
-                      {
-                        ...streamOptions,
-                        onRun: (run) => {
-                          runAccepted = true
-                          streamOptions.onRun?.(run)
-                        },
-                      },
-                    ),
-                  abortController,
-                  false,
-                )
-              }
-            } catch (error) {
-              failure = error
-              status = isAbortError(error) ? 'cancelled' : 'failed'
-              if (
-                status === 'failed' &&
-                resumeId &&
-                (isApiErrorCode(error, 'AGENT_SESSION_REVISION_CONFLICT') ||
-                  isApiErrorCode(error, 'AGENT_SESSION_TURN_CONFLICT'))
-              ) {
-                try {
-                  const session = await refreshAgentSession(resumeId, true)
-                  sessionReconciled = Boolean(session)
-                  if (sessionReconciled) {
-                    runtime.onRollbackAgentDraft()
+            void (async () => {
+              const abortController = new AbortController()
+              let failure: unknown
+              let status: AgentRunStatus = 'failed'
+              let runAccepted = false
+              let sessionReconciled = false
+
+              runtime.activeRequestAbort?.abort()
+              runtime.activeRequestAbort = abortController
+
+              try {
+                if (options.replaceSessionBeforeSend && resumeId) {
+                  const revision = runtime.sessionRevision
+                  if (!revision) {
+                    await refreshAgentSession(resumeId, true)
+                    sessionReconciled = true
+                    throw new Error(
+                      'Cannot replace Agent history before loading its revision.',
+                    )
                   }
-                } catch (refreshError) {
-                  console.error(
-                    'Failed to reconcile the Agent session after a conflict.',
-                    refreshError,
+
+                  const session = await replaceAgentSession(resumeId, {
+                    locale,
+                    messages: apiMessages,
+                    revision,
+                  })
+                  runtime.sessionRevision = session.revision
+                  expectedRevision = session.revision
+                  runAccepted = true
+                }
+
+                if (abortController.signal.aborted) {
+                  status = 'cancelled'
+                } else {
+                  status = await consumeRunStream(
+                    (streamOptions) =>
+                      sendAgentChatMessage(
+                        {
+                          appliedActions: [],
+                          expectedRevision,
+                          jobBrief: nextJobBrief,
+                          keywordMatch: nextKeywordMatch,
+                          locale,
+                          message: currentMessage,
+                          messages: priorMessages,
+                          modelConfig: selectedModel,
+                          resume,
+                          resumeId,
+                          draftState: agentDraftState,
+                          stream: true,
+                        },
+                        {
+                          ...streamOptions,
+                          onRun: (run) => {
+                            runAccepted = true
+                            settleAcceptance(true)
+                            streamOptions.onRun?.(run)
+                          },
+                        },
+                    ),
+                    abortController,
+                    {
+                      notifyOnFailure: false,
+                      throwOnFailure: true,
+                    },
                   )
                 }
-              }
-              if (status === 'failed') {
-                console.error(
-                  'Failed to replace the agent session before editing.',
-                  error,
+              } catch (error) {
+                failure = error
+                status = isAbortError(error) ? 'cancelled' : 'failed'
+                if (
+                  status === 'failed' &&
+                  resumeId &&
+                  (isApiErrorCode(
+                    error,
+                    'AGENT_SESSION_REVISION_CONFLICT',
+                  ) || isApiErrorCode(error, 'AGENT_SESSION_TURN_CONFLICT'))
+                ) {
+                  try {
+                    const session = await refreshAgentSession(resumeId, true)
+                    sessionReconciled = Boolean(session)
+                    if (sessionReconciled) {
+                      runtime.onRollbackAgentDraft()
+                    }
+                  } catch (refreshError) {
+                    console.error(
+                      'Failed to reconcile the Agent session after a conflict.',
+                      refreshError,
+                    )
+                  }
+                }
+                if (status === 'failed') {
+                  console.error(
+                    'Failed to start or consume the Agent run.',
+                    error,
+                  )
+                }
+              } finally {
+                const ownsOptimisticMessage = Boolean(
+                  pending &&
+                    isPendingSendOwner(
+                      runtime.optimisticMessageOwner,
+                      pending.optimisticMessageId,
+                      pending.resumeId,
+                      runtime.currentResumeId,
+                    ),
                 )
-              }
-            } finally {
-              const ownsOptimisticMessage = Boolean(
-                pending &&
-                  isPendingSendOwner(
-                    runtime.optimisticMessageOwner,
-                    pending.optimisticMessageId,
-                    pending.resumeId,
-                    runtime.currentResumeId,
-                  ),
-              )
-              if (
-                status !== 'completed' &&
-                !sessionReconciled &&
-                pending &&
-                ownsOptimisticMessage &&
-                shouldRollbackOptimisticAgentMessages({
-                  replaceSessionBeforeSend: Boolean(
-                    options.replaceSessionBeforeSend,
-                  ),
-                  runAccepted,
-                })
-              ) {
-                updates.setMessages(pending.rollbackMessages)
-              }
-              if (ownsOptimisticMessage) {
-                runtime.optimisticMessageOwner = null
-              }
+                if (
+                  status !== 'completed' &&
+                  !sessionReconciled &&
+                  pending &&
+                  ownsOptimisticMessage &&
+                  shouldRollbackOptimisticAgentMessages({
+                    replaceSessionBeforeSend: Boolean(
+                      options.replaceSessionBeforeSend,
+                    ),
+                    runAccepted,
+                  })
+                ) {
+                  updates.setMessages(pending.rollbackMessages)
+                }
+                if (ownsOptimisticMessage) {
+                  runtime.optimisticMessageOwner = null
+                }
 
-              if (status === 'failed' && !isApiErrorToastShown(failure)) {
-                toast.error(runtime.requestFailedText, {
-                  closeButton: true,
-                })
-              }
+                if (status === 'failed' && !isApiErrorToastShown(failure)) {
+                  toast.error(runtime.requestFailedText, {
+                    closeButton: true,
+                  })
+                }
 
-              if (runtime.activeRequestAbort === abortController) {
-                runtime.activeRequestAbort = null
-                runtime.activeRun = null
-                runtime.stopRequested = false
-                updates.setStreamingMessage(null)
-                runtime.isResponding = false
-                updates.setIsResponding(false)
+                if (runtime.activeRequestAbort === abortController) {
+                  runtime.activeRequestAbort = null
+                  runtime.activeRun = null
+                  runtime.stopRequested = false
+                  updates.setStreamingMessage(null)
+                  runtime.isResponding = false
+                  updates.setIsResponding(false)
+                }
+                pending?.resolve(status)
               }
-              pending?.resolve(status)
-            }
-          })()
-        }, AGENT_REQUEST_DEBOUNCE_MS)
-      })
+            })()
+          }, AGENT_REQUEST_DEBOUNCE_MS)
+          releasePreflight()
+        })
+      })()
+
+      // Every pre-acceptance exit settles the input gate as rejected. The
+      // handler above is the only path that can mark server acceptance.
+      void completion.then(
+        () => {
+          releasePreflight()
+          settleAcceptance(false)
+        },
+        () => {
+          releasePreflight()
+          settleAcceptance(false)
+        },
+      )
+
+      return { accepted: acceptedPromise, completion }
     },
     [
       agentDraftState,
@@ -388,6 +542,7 @@ export function useAgentSendController({
   useEffect(() => {
     const runtime = runtimeRef.current
     return () => {
+      cancelAgentSendPreflight()
       if (runtime.replyTimer !== null) {
         window.clearTimeout(runtime.replyTimer)
         runtime.replyTimer = null
@@ -396,7 +551,7 @@ export function useAgentSendController({
       runtime.pendingSend = null
       runtime.activeRequestAbort?.abort()
     }
-  }, [runtimeRef])
+  }, [cancelAgentSendPreflight, runtimeRef])
 
   return { cancelScheduledSend, sendPrompt, stopResponding }
 }

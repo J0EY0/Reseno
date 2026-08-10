@@ -189,19 +189,19 @@ export function GalleryRouteSkeleton({
   includeCreateCard?: boolean;
 }) {
   return (
-    <main className="flex-1 p-4">
+    <div className="flex-1 p-4">
       <GalleryWorkspaceSkeleton
         itemCount={itemCount}
         includeCreateCard={includeCreateCard}
       />
-    </main>
+    </div>
   );
 }
 
 export function WorkspaceRouteSkeleton() {
   return (
-    <main className="flex-1 p-4">
+    <div className="flex-1 p-4">
       <WorkspaceContentSkeleton />
-    </main>
+    </div>
   );
 }

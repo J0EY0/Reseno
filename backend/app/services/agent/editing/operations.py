@@ -108,8 +108,7 @@ def _resume_item_ids(resume: dict[str, Any]) -> set[str]:
         item_id
         for section in _resume_sections(resume)
         for item in section.get("items", [])
-        if isinstance(item, dict)
-        and isinstance((item_id := item.get("id")), str)
+        if isinstance(item, dict) and isinstance((item_id := item.get("id")), str)
     }
 
 
@@ -774,10 +773,10 @@ def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
         if not section:
             return f"{operation_type} requires an existing sectionId."
 
-        if (
-            section.get("kind") == "simple_list"
-            and operation_type in {"delete_item", "reorder_items"}
-        ):
+        if section.get("kind") == "simple_list" and operation_type in {
+            "delete_item",
+            "reorder_items",
+        }:
             return "simple_list has one rich-text item; update its content instead."
 
         if operation_type == "reorder_items":
@@ -1142,10 +1141,9 @@ def _operation_observation_value(
     if operation_type == "replace_field":
         path = str(operation.get("path", ""))
         if is_pii_basic_path(path):
-            # Never echo an existing personal value back into model-visible
-            # tool output. The post-edit value is safe because it came from
-            # the current user request.
-            return operation.get("value") if after else "[hidden]"
+            # PII writes are rejected during normalization. Keep this fallback
+            # opaque in both directions so future callers cannot echo a value.
+            return "[hidden]"
 
     if operation_type == "insert_section":
         if not after:

@@ -10,7 +10,7 @@ export function WorkspaceRouteError({
   onRetry: () => void;
 }) {
   return (
-    <main className="flex flex-1 p-4">
+    <div className="flex flex-1 p-4">
       <Card className="flex min-h-80 flex-1 items-center justify-center rounded-3xl border-border/80 shadow-sm">
         <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
           <p className="text-sm text-muted-foreground">
@@ -21,6 +21,6 @@ export function WorkspaceRouteError({
           </Button>
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }

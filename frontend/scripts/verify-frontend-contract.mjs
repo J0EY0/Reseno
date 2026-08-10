@@ -232,9 +232,76 @@ assert(
 );
 const agentChatRequestType =
   apiTypes.match(/export interface AgentChatRequest \{[\s\S]*?\n\}/)?.[0] ?? "";
+const agentChatUserMessageType =
+  apiTypes.match(/export interface AgentChatUserMessage \{[\s\S]*?\n\}/)?.[0] ?? "";
 assert(
   agentChatRequestType.length > 0 && !/\bsettings\s*:/.test(agentChatRequestType),
   "The frontend Agent request contract must not expose persisted Agent preferences.",
+);
+assert(
+  agentChatUserMessageType.length > 0 &&
+    /\bid\s*:\s*string\s*;/.test(agentChatUserMessageType) &&
+    /\brole\s*:\s*["']user["']\s*;/.test(agentChatUserMessageType) &&
+    !/\bresponse\s*[?:]/.test(agentChatUserMessageType) &&
+    /\bmessage\s*:\s*AgentChatUserMessage\s*;/.test(agentChatRequestType) &&
+    /\bmessages\s*:\s*AgentConversationMessage\[\]\s*;/.test(
+      agentChatRequestType,
+    ) &&
+    !/\b(?:prompt|files|conversation|clientTurnId)\s*[?:]/.test(
+      agentChatRequestType,
+    ),
+  "AgentChatRequest must require canonical message/messages and expose no legacy turn fields.",
+);
+const agentChatPostPayload =
+  agentSendController.match(
+    /sendAgentChatMessage\(\s*(\{[\s\S]*?\})\s*,\s*\{\s*\.\.\.streamOptions,/,
+  )?.[1] ?? "";
+const currentAgentChatMessageBuilder =
+  agentSendController.match(
+    /const currentMessage:\s*AgentChatUserMessage\s*=\s*\{([\s\S]*?)\n\s*\}/,
+  )?.[1] ?? "";
+assert(
+  currentAgentChatMessageBuilder.length > 0 &&
+    /\bid:\s*userMessage\.id\s*,/.test(currentAgentChatMessageBuilder) &&
+    /\brole:\s*["']user["']\s*,/.test(currentAgentChatMessageBuilder) &&
+    /\btext:\s*prompt\s*,/.test(currentAgentChatMessageBuilder) &&
+    /\bfiles\s*,/.test(currentAgentChatMessageBuilder) &&
+    !/\bresponse\s*:/.test(currentAgentChatMessageBuilder) &&
+    !/toConversationMessage\(userMessage\)/.test(agentSendController),
+  "The current Agent turn builder must produce only the canonical user-message fields.",
+);
+assert(
+  agentChatPostPayload.length > 0 &&
+    /^\s*message\s*:/m.test(agentChatPostPayload) &&
+    /^\s*messages\s*:/m.test(agentChatPostPayload) &&
+    !/^\s*(?:prompt|files|conversation|clientTurnId)\s*:/m.test(
+      agentChatPostPayload,
+    ),
+  "Agent chat POSTs must send only the canonical current message and prior messages fields.",
+);
+assert(
+  /const\s+priorMessages\s*=\s*baseMessages\.map\(toConversationMessage\)/.test(
+    agentSendController,
+  ) &&
+    /const\s+apiMessages\s*=\s*\[\.\.\.priorMessages,\s*currentMessage\]/.test(
+      agentSendController,
+    ) &&
+    /^\s*message\s*:\s*currentMessage\s*,/m.test(agentChatPostPayload) &&
+    /^\s*messages\s*:\s*priorMessages\s*,/m.test(agentChatPostPayload) &&
+    /replaceAgentSession\([\s\S]{0,300}messages:\s*apiMessages/.test(
+      agentSendController,
+    ),
+  "Session replacement must include the current message while chat history contains prior messages only.",
+);
+assert(
+  /if\s*\(\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.isResponding\)/.test(
+    agentSendController,
+  ) &&
+    /const\s+userMessage:[\s\S]{0,240}\bfiles,?[\s\S]{0,240}\btext:\s*prompt/.test(
+      agentSendController,
+    ) &&
+    /^\s*message\s*:\s*currentMessage\s*,/m.test(agentChatPostPayload),
+  "File-only Agent turns must remain valid and carry their attachments in the current message.",
 );
 assert(
   /status\s*!==\s*['"]completed['"][\s\S]{0,900}shouldRollbackOptimisticAgentMessages\([\s\S]{0,500}updates\.setMessages\(pending\.rollbackMessages\)/.test(
@@ -314,15 +381,33 @@ assert(
   "The Agent send control must render aggregate attachment upload progress.",
 );
 assert(
-  /const\s+completion\s*=\s*sendPrompt\(/.test(submitPromptSource) &&
-    !/await\s+sendPrompt\(/.test(submitPromptSource),
+  /const\s+sendOperation\s*=\s*sendPrompt\(/.test(submitPromptSource) &&
+    /requestAccepted\s*=\s*await\s+sendOperation\.accepted/.test(
+      submitPromptSource,
+    ) &&
+    /if\s*\(!requestAccepted\)\s*\{[\s\S]{0,180}await\s+sendOperation\.completion[\s\S]{0,180}throw/.test(
+      submitPromptSource,
+    ) &&
+    /void\s+sendOperation\.completion/.test(submitPromptSource),
   "The composer must clear after the uploaded prompt is accepted, not after the full Agent run completes.",
 );
 assert(
-  /if \(result instanceof Promise\)[\s\S]{0,300}await result;[\s\S]{0,180}clear\(\);[\s\S]{0,180}controller\?\.textInput\.clear\(\)/.test(
+  /const convertedFiles = await Promise\.all\([\s\S]*?if \(!mountedRef\.current\) \{\s*return;\s*\}[\s\S]*?const result = onSubmit\(/.test(
     promptInputForm,
-  ),
-  "A successful async prompt submission must clear both attachment and text input state.",
+  ) &&
+    /if \(result instanceof Promise\) \{\s*await result;\s*\}\s*for \(const \{ id \} of activeFiles\)[\s\S]{0,80}remove\(id\)/.test(
+    promptInputForm,
+  ) &&
+    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(
+      promptInputForm,
+    ) &&
+    /shouldClearPromptSubmissionText\([\s\S]{0,100}latestController\.textInput\.value[\s\S]{0,100}latestController\.textInput\.clear\(\)/.test(
+      promptInputForm,
+    ) &&
+    /catch \{\s*\/\/ Keep the captured input and attachments available for retry\./.test(
+      promptInputForm,
+    ),
+  "Unmounting may block a stale request, but an accepted submission must still clear only its captured attachments and unchanged text.",
 );
 
 for (const file of files) {

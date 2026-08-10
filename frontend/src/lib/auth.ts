@@ -2,7 +2,6 @@ import { apiRoutes, requestApi } from "@/lib/api-client";
 import {
   clearAuthSession,
   getAccessToken,
-  isAuthRequired,
   loadAuthSession,
   recordInvalidatedToken,
   saveAuthSession,
@@ -13,6 +12,16 @@ export interface AuthTokenPayload {
   accessToken: string
   expiresAt: string
   tokenType: string
+}
+
+export interface AuthSetupStatusPayload {
+  setupRequired: boolean
+}
+
+export interface AuthSetupPayload {
+  username: string
+  password: string
+  confirmPassword: string
 }
 
 export interface AuthPasswordUpdatePayload {
@@ -28,6 +37,25 @@ export async function loginWithCredentials(username: string, password: string) {
       username: username.trim(),
       password,
     },
+    method: 'POST',
+  })
+
+  saveAuthSession(result.username, result.accessToken, result.expiresAt)
+  return result.username
+}
+
+export function getAuthSetupStatus() {
+  return requestApi<AuthSetupStatusPayload>(apiRoutes.authSetup, {
+    auth: false,
+    cacheTtlMs: 1_000,
+    notifyOnError: false,
+  })
+}
+
+export async function setupAuthOwner(payload: AuthSetupPayload) {
+  const result = await requestApi<AuthTokenPayload>(apiRoutes.authSetup, {
+    auth: false,
+    body: payload,
     method: 'POST',
   })
 
@@ -70,4 +98,4 @@ export async function updateAuthPassword(payload: AuthPasswordUpdatePayload) {
   return result
 }
 
-export { clearAuthSession, isAuthRequired, loadAuthSession, saveAuthSession }
+export { clearAuthSession, loadAuthSession, saveAuthSession }

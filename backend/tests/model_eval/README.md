@@ -11,21 +11,21 @@ offline mock-provider validation.
 From `backend/`:
 
 ```bash
-.venv/bin/python scripts/agent_model_eval.py
+uv run --locked python scripts/agent_model_eval.py
 ```
 
 The default enabled model is used. Select another configured model by its
 client id:
 
 ```bash
-.venv/bin/python scripts/agent_model_eval.py \
+uv run --locked python scripts/agent_model_eval.py \
   --model-config-id YOUR_MODEL_CONFIG_ID
 ```
 
 Run selected cases or save the JSON report:
 
 ```bash
-.venv/bin/python scripts/agent_model_eval.py \
+uv run --locked python scripts/agent_model_eval.py \
   --case advice_only_no_edits \
   --case current_attachment_boundary \
   --output /tmp/resumate-agent-model-eval.json
@@ -55,14 +55,15 @@ Exit codes:
 
 ## Fixture shape
 
-`scenarios.json` is versioned. Each case provides an `AgentChatRequest` subset,
-optional synthetic attachments, and observable expectations such as edit
-count, public transaction state, required evidence, forbidden claims, and
-tool-error count for the transaction-repair scenario.
+`scenarios.json` is versioned. Each case provides the canonical
+`AgentChatRequest.message` for the current user turn, optional prior
+`messages`, synthetic attachments, and observable expectations. Response and
+edit text are asserted in separate domains; edit targets, transaction states,
+finish state, and exact tool order can also be required.
 
 The offline unit test only mocks the provider boundary and verifies runner
 selection, reporting, and secret redaction:
 
 ```bash
-.venv/bin/pytest tests/model_eval/test_agent_model_eval.py
+uv run --locked pytest tests/model_eval/test_agent_model_eval.py
 ```

@@ -22,6 +22,27 @@ export interface PromptInputFileError {
   message: string;
 }
 
+/**
+ * Reconcile an immutable submit snapshot with the files that are still in the
+ * composer. Files removed during conversion stay removed, while files added
+ * after submit belong to the next message.
+ */
+export function selectActivePromptSubmissionFiles<T extends { id: string }>(
+  capturedFiles: readonly T[],
+  currentFiles: readonly { id: string }[],
+) {
+  const currentIds = new Set(currentFiles.map((file) => file.id));
+  return capturedFiles.filter((file) => currentIds.has(file.id));
+}
+
+/** Clear accepted text only when the user has not started the next prompt. */
+export function shouldClearPromptSubmissionText(
+  capturedText: string,
+  currentText: string,
+) {
+  return capturedText === currentText;
+}
+
 interface UsePromptInputFormOptions {
   accept?: string;
   globalDrop?: boolean;
@@ -135,16 +156,29 @@ export function usePromptInputForm({
   const usingProvider = controller !== null;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const mountedRef = useRef(false);
   const submissionInFlightRef = useRef(false);
   const [localFiles, setLocalFiles] = useState<
     (FileUIPart & { id: string })[]
   >([]);
   const files = controller?.attachments.files ?? localFiles;
   const filesRef = useRef(files);
+  const controllerRef = useRef(controller);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     filesRef.current = files;
   }, [files]);
+
+  useEffect(() => {
+    controllerRef.current = controller;
+  }, [controller]);
 
   const addLocal = useCallback(
     (fileList: File[] | FileList) => {
@@ -216,7 +250,17 @@ export function usePromptInputForm({
 
   const add = usingProvider ? addWithProviderValidation : addLocal;
   const clear = usingProvider ? controller.attachments.clear : clearLocal;
-  const remove = usingProvider ? controller.attachments.remove : removeLocal;
+  const removeSource = usingProvider
+    ? controller.attachments.remove
+    : removeLocal;
+  const remove = useCallback(
+    (id: string) => {
+      // Keep the in-flight snapshot check synchronous with the UI action.
+      filesRef.current = filesRef.current.filter((file) => file.id !== id);
+      removeSource(id);
+    },
+    [removeSource],
+  );
   const openFileDialog = usingProvider
     ? controller.attachments.openFileDialog
     : openLocalFileDialog;
@@ -312,43 +356,81 @@ export function usePromptInputForm({
       submissionInFlightRef.current = true;
 
       const form = event.currentTarget;
-      const text = controller
-        ? controller.textInput.value
+      const capturedController = controllerRef.current;
+      const text = capturedController
+        ? capturedController.textInput.value
         : String(new FormData(form).get("message") ?? "");
-
-      if (!controller) {
-        form.reset();
-      }
+      const capturedFiles = filesRef.current.map((file) => ({ ...file }));
 
       try {
-        const convertedFiles: FileUIPart[] = await Promise.all(
-          files.map(async ({ id: localId, ...file }) => {
-            // Browser-local attachment ids must not enter the chat payload.
-            void localId;
-
+        const convertedFiles = await Promise.all(
+          capturedFiles.map(async ({ id, ...file }) => {
             if (!file.url?.startsWith("blob:")) {
-              return file;
+              return { file, id };
             }
 
             const dataUrl = await convertBlobUrlToDataUrl(file.url);
-            return { ...file, url: dataUrl ?? file.url };
+            return {
+              file: { ...file, url: dataUrl ?? file.url },
+              id,
+            };
           }),
         );
-        const result = onSubmit({ files: convertedFiles, text }, event);
+        if (!mountedRef.current) {
+          return;
+        }
+        const activeFiles = selectActivePromptSubmissionFiles(
+          convertedFiles,
+          filesRef.current,
+        );
+
+        if (!text.trim() && activeFiles.length === 0) {
+          return;
+        }
+
+        const result = onSubmit(
+          {
+            // Browser-local attachment ids must not enter the chat payload.
+            files: activeFiles.map(({ file }) => file),
+            text,
+          },
+          event,
+        );
 
         if (result instanceof Promise) {
           await result;
         }
 
-        clear();
-        controller?.textInput.clear();
+        for (const { id } of activeFiles) {
+          remove(id);
+        }
+
+        const latestController = controllerRef.current;
+        if (
+          latestController &&
+          shouldClearPromptSubmissionText(
+            text,
+            latestController.textInput.value,
+          )
+        ) {
+          latestController.textInput.clear();
+        } else if (!latestController) {
+          const field = form.elements.namedItem("message");
+          if (
+            (field instanceof HTMLInputElement ||
+              field instanceof HTMLTextAreaElement) &&
+            shouldClearPromptSubmissionText(text, field.value)
+          ) {
+            field.value = "";
+          }
+        }
       } catch {
         // Keep the captured input and attachments available for retry.
       } finally {
         submissionInFlightRef.current = false;
       }
     },
-    [clear, controller, files, onSubmit],
+    [onSubmit, remove],
   );
 
   return {

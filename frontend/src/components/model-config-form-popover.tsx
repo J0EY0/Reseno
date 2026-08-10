@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -26,33 +27,6 @@ const LazyModelConfigDialog = lazy(() =>
     default: module.ModelConfigDialog,
   })),
 );
-
-function ModelConfigTrigger({
-  children,
-  messages,
-}: {
-  children?: ReactNode;
-  messages: AppMessages;
-}) {
-  if (!children) {
-    return (
-      <Button type="button">
-        <Plus data-icon="inline-start" />
-        {messages.addModelConfig}
-      </Button>
-    );
-  }
-
-  if (isValidElement(children)) {
-    return children;
-  }
-
-  return (
-    <Button type="button" variant="outline">
-      {children}
-    </Button>
-  );
-}
 
 export function ModelConfigFormPopover({
   t,
@@ -70,6 +44,18 @@ export function ModelConfigFormPopover({
   onSubmit: (value: ModelConfig) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerElement = !trigger ? (
+    <Button type="button">
+      <Plus data-icon="inline-start" />
+      {t.addModelConfig}
+    </Button>
+  ) : isValidElement(trigger) ? (
+    trigger
+  ) : (
+    <Button type="button" variant="outline">
+      {trigger}
+    </Button>
+  );
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -78,7 +64,8 @@ export function ModelConfigFormPopover({
         onFocus={() => void loadModelConfigDialog()}
         onPointerEnter={() => void loadModelConfigDialog()}
       >
-        <ModelConfigTrigger messages={t}>{trigger}</ModelConfigTrigger>
+        {/* Radix must clone the concrete trigger so its behavior reaches the button. */}
+        {triggerElement}
       </DialogTrigger>
       {open ? (
         <Suspense
@@ -87,6 +74,9 @@ export function ModelConfigFormPopover({
               <DialogTitle className="sr-only">
                 {mode === "create" ? t.addModelConfig : t.editModelConfig}
               </DialogTitle>
+              <DialogDescription className="sr-only">
+                {mode === "create" ? t.addModelConfig : t.editModelConfig}
+              </DialogDescription>
               <div className="flex min-h-48 items-center justify-center">
                 <Spinner aria-label={t.modelProvidersLoading} />
               </div>

@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 const frontendRoot = new URL("../", import.meta.url);
 const server = await createServer({
+  cacheDir: createViteTestCacheDir(),
   configFile: false,
+  optimizeDeps: { noDiscovery: true },
   resolve: {
     alias: { "@": new URL("src/", frontendRoot).pathname },
   },
@@ -216,6 +220,54 @@ try {
     new URL("src/components/editor/resume-editor-pane.tsx", frontendRoot),
     "utf8",
   );
+  const sidebarSource = await readFile(
+    new URL("src/components/ui/sidebar.tsx", frontendRoot),
+    "utf8",
+  );
+  const workspaceShellSource = await readFile(
+    new URL("src/components/workspace/workspace-shell.tsx", frontendRoot),
+    "utf8",
+  );
+  const innerWorkspaceSources = await Promise.all(
+    [
+      "src/components/workspace/workspace-route-error.tsx",
+      "src/components/workspace/resume-gallery-workspace-page.tsx",
+      "src/components/workspace/template-gallery-workspace-page.tsx",
+      "src/components/workspace/models-workspace-page.tsx",
+      "src/components/settings-panel.tsx",
+      "src/components/recycle-bin-panel.tsx",
+      "src/components/workspace-skeletons.tsx",
+      "src/components/workspace/resume-detail-workspace-view.tsx",
+      "src/components/workspace/template-detail-workspace-view.tsx",
+      "src/components/preview/resume-preview-content.tsx",
+    ].map(async (path) => [
+      path,
+      await readFile(new URL(path, frontendRoot), "utf8"),
+    ]),
+  );
+  assert.match(
+    sidebarSource,
+    /export function SidebarInset[\s\S]*?<main\b/,
+    "SidebarInset must remain the workspace's sole main landmark.",
+  );
+  for (const [path, source] of [
+    ["workspace-shell.tsx", workspaceShellSource],
+    ["resume-detail-workspace-view.tsx", resumeDetailViewSource],
+    ["template-detail-workspace-view.tsx", templateDetailViewSource],
+  ]) {
+    assert.match(
+      source,
+      /<SidebarInset[\s\S]{0,300}\bid="main-content"[\s\S]{0,300}\btabIndex=\{-1\}/,
+      `${path} must keep a focusable main landmark for its skip link.`,
+    );
+  }
+  for (const [path, source] of innerWorkspaceSources) {
+    assert.doesNotMatch(
+      source,
+      /<main\b/,
+      `${path} must not render another main landmark inside the workspace main.`,
+    );
+  }
   assert.ok(
     !/from\s+["']@\/lib\/pdf-resume-import["']/.test(
       resumeGalleryRouteSource,

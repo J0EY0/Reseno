@@ -17,6 +17,7 @@ import {
 import { useResumeDetailPreferences } from "@/components/workspace/use-resume-detail-preferences";
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
+import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
 import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
@@ -27,7 +28,6 @@ import {
   createResumeDetailRouteHandoff,
   getResumeDetailRouteHandoff,
   getResumePath,
-  getWorkspacePath,
 } from "@/lib/workspace-route";
 import type { ResumeDetailResponse } from "@/types/api";
 import type {
@@ -44,20 +44,6 @@ interface ResumeDetailWorkspaceOptions {
   persistence: WorkspacePreferencesPersistence;
   resumeId: string;
   routeState: unknown;
-}
-
-function preloadWorkspaceView(view: WorkspaceView) {
-  if (view === "resume") {
-    void import("@/components/workspace/resume-gallery-workspace-page");
-  } else if (view === "templates") {
-    void import("@/components/workspace/template-gallery-workspace-page");
-  } else if (view === "trash") {
-    void import("@/components/workspace/trash-workspace-page");
-  } else if (view === "models") {
-    void import("@/components/workspace/models-workspace-page");
-  } else {
-    void import("@/components/workspace/settings-workspace-page");
-  }
 }
 
 function areSettingsEqual(left: unknown, right: unknown) {
@@ -230,6 +216,11 @@ export function useResumeDetailWorkspace({
     save: () => save.save(),
   });
   const { requestLeave } = leave;
+  const {
+    cancelPending: cancelPendingWorkspaceNavigation,
+    preload: preloadWorkspaceView,
+    request: requestWorkspaceNavigation,
+  } = usePreparedWorkspaceNavigation({ persistence, requestLeave });
 
   const navigateToResume = useCallback(
     (detail: ResumeDetailResponse) => {
@@ -283,31 +274,29 @@ export function useResumeDetailWorkspace({
   const agentLayout = useResumeDetailAgentLayout();
 
   const changeView = useCallback(
-    (view: WorkspaceView) =>
-      requestLeave(() => {
-        preloadWorkspaceView(view);
-        navigate(getWorkspacePath(view));
-      }),
-    [navigate, requestLeave],
+    (view: WorkspaceView) => {
+      void requestWorkspaceNavigation(view);
+    },
+    [requestWorkspaceNavigation],
   );
   const back = useCallback(
-    () =>
-      requestLeave(() =>
-        runViewTransition(() => navigate("/resume"), "nav-back"),
-      ),
-    [navigate, requestLeave],
+    () => {
+      void requestWorkspaceNavigation("resume", "nav-back");
+    },
+    [requestWorkspaceNavigation],
   );
   const logout = useCallback(
-    () => requestLeave(onLogout),
-    [onLogout, requestLeave],
+    () => {
+      cancelPendingWorkspaceNavigation();
+      requestLeave(onLogout);
+    },
+    [cancelPendingWorkspaceNavigation, onLogout, requestLeave],
   );
   const openModelSettings = useCallback(
-    () =>
-      requestLeave(() => {
-        preloadWorkspaceView("models");
-        navigate(getWorkspacePath("models"));
-      }),
-    [navigate, requestLeave],
+    () => {
+      void requestWorkspaceNavigation("models");
+    },
+    [requestWorkspaceNavigation],
   );
   const changeSelectedModel = useCallback(
     (modelId: string) =>
@@ -335,9 +324,9 @@ export function useResumeDetailWorkspace({
         flushUserSettings: persistence.flush,
         openModelSettings,
         previewEdits: session.previewAgentEdits,
+        reconcileDraft: session.reconcileAgentDraft,
         rollbackDraft: session.rollbackAgentDraft,
         setPanelCollapsed: agentLayout.setIsPanelCollapsed,
-        setSheetOpen: agentLayout.setIsSheetOpen,
       },
       applyTemplate: documentCommands.applyTemplate,
       back,
@@ -371,9 +360,7 @@ export function useResumeDetailWorkspace({
       agent: {
         draft: session.agentDraft,
         draftState: session.agentDraftState,
-        isDockLayout: agentLayout.isDockLayout,
         isPanelCollapsed: agentLayout.isPanelCollapsed,
-        isSheetOpen: agentLayout.isSheetOpen,
         jobBrief: session.jobBrief,
         keywordMatch: session.keywordMatch,
         modelConfigs: preferences.modelConfigs,

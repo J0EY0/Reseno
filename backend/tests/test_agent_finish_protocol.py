@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import AgentLlmConfig, LlmAssistantMessage, LlmToolCall
@@ -26,7 +26,11 @@ def _config() -> AgentLlmConfig:
 
 def _request() -> AgentChatRequest:
     return AgentChatRequest(
-        prompt="优化个人简介",
+        message=AgentConversationItem(
+            id="turn-finish-protocol",
+            role="user",
+            text="优化个人简介",
+        ),
         locale="zh",
         resume={
             "schemaVersion": 2,

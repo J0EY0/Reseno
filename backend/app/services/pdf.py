@@ -1,7 +1,8 @@
 import json
+import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from re import sub
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -25,6 +26,9 @@ from playwright.sync_api import (
 
 from app.config import get_settings
 from app.schemas.exports import ExportResumeRenderRequest
+
+EXPORT_FILE_TTL = timedelta(hours=1)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,42 @@ def datetime_now_iso() -> str:
     """Return the current UTC time as an ISO string."""
 
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def export_expires_at(export_path: Path) -> str:
+    """Return the fixed expiry derived from an export artifact's write time."""
+
+    expires_at = datetime.fromtimestamp(export_path.stat().st_mtime, UTC)
+    expires_at += EXPORT_FILE_TTL
+    return expires_at.isoformat().replace("+00:00", "Z")
+
+
+def _export_has_expired(export_path: Path, now: datetime) -> bool:
+    modified_at = datetime.fromtimestamp(export_path.stat().st_mtime, UTC)
+    return modified_at + EXPORT_FILE_TTL <= now
+
+
+def cleanup_expired_exports() -> None:
+    """Delete expired generated PDF, PNG, and ZIP artifacts."""
+
+    export_dir = get_settings().export_dir
+    if not export_dir.exists():
+        return
+
+    now = datetime.now(UTC)
+    for extension in ("pdf", "png", "zip"):
+        for export_path in export_dir.glob(f"export-*.{extension}"):
+            try:
+                if export_path.is_file() and _export_has_expired(export_path, now):
+                    export_path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.warning(
+                    "Could not remove expired export artifact %s",
+                    export_path,
+                    exc_info=True,
+                )
 
 
 def get_export_path(export_id: str) -> Path:
@@ -342,6 +382,14 @@ def require_export_file(export_id: str) -> Path:
     """Return an export path or raise when the PDF no longer exists."""
 
     export_path = get_export_path(export_id)
+    try:
+        expired = _export_has_expired(export_path, datetime.now(UTC))
+    except FileNotFoundError:
+        expired = False
+
+    if expired:
+        export_path.unlink(missing_ok=True)
+
     if not export_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -356,8 +404,16 @@ def require_image_export_file(export_id: str) -> Path:
 
     for is_archive in (False, True):
         export_path = get_image_export_path(export_id, is_archive=is_archive)
-        if export_path.exists():
-            return export_path
+        try:
+            expired = _export_has_expired(export_path, datetime.now(UTC))
+        except FileNotFoundError:
+            continue
+
+        if expired:
+            export_path.unlink(missing_ok=True)
+            continue
+
+        return export_path
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,

@@ -8,6 +8,7 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from ..common import (
     async_openai_client,
     chat_completion_params,
+    close_async_client,
     close_async_stream,
     delta_text,
     map_stop_reason,
@@ -39,18 +40,27 @@ async def complete(
 ) -> LlmAssistantMessage:
     """Call an OpenAI-compatible chat endpoint and require visible text."""
 
+    client = async_openai_client(config)
     try:
-        response = await async_openai_client(config).chat.completions.create(
-            **chat_completion_params(config, messages, stream=False),
-        )
-    except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
-        raise_openai_error(exc)
+        try:
+            response = await client.chat.completions.create(
+                **chat_completion_params(config, messages, stream=False),
+            )
+        except (
+            APIStatusError,
+            APITimeoutError,
+            APIConnectionError,
+            APIError,
+        ) as exc:
+            raise_openai_error(exc)
 
-    message = _message_from_response(response)
-    if message.content:
-        return message
+        message = _message_from_response(response)
+        if message.content:
+            return message
 
-    raise LlmRequestError("Model provider returned an empty response.")
+        raise LlmRequestError("Model provider returned an empty response.")
+    finally:
+        await close_async_client(client)
 
 
 async def complete_tool_call(
@@ -63,31 +73,33 @@ async def complete_tool_call(
     # Disable parallel tool calls at the provider boundary. The agent loop
     # executes one assistant turn as a single transaction, then validates every
     # returned call before running any of them.
+    client = async_openai_client(config)
     params = _tool_completion_params(config, messages, tools)
     try:
-        response = await async_openai_client(config).chat.completions.create(**params)
-    except APIStatusError as exc:
-        if not unsupported_parallel_tool_calls(exc):
+        try:
+            response = await client.chat.completions.create(**params)
+        except APIStatusError as exc:
+            if not unsupported_parallel_tool_calls(exc):
+                raise_openai_error(exc)
+
+            # Several OpenAI-compatible local/cloud endpoints reject the OpenAI
+            # parallel-tool flag even though they support ordinary tool calls.
+            params.pop("parallel_tool_calls", None)
+            try:
+                response = await client.chat.completions.create(**params)
+            except (
+                APIStatusError,
+                APITimeoutError,
+                APIConnectionError,
+                APIError,
+            ) as fallback_exc:
+                raise_openai_error(fallback_exc)
+        except (APITimeoutError, APIConnectionError, APIError) as exc:
             raise_openai_error(exc)
 
-        # Several OpenAI-compatible local/cloud endpoints reject the OpenAI
-        # parallel-tool flag even though they support ordinary tool calls.
-        params.pop("parallel_tool_calls", None)
-        try:
-            response = await async_openai_client(config).chat.completions.create(
-                **params,
-            )
-        except (
-            APIStatusError,
-            APITimeoutError,
-            APIConnectionError,
-            APIError,
-        ) as fallback_exc:
-            raise_openai_error(fallback_exc)
-    except (APITimeoutError, APIConnectionError, APIError) as exc:
-        raise_openai_error(exc)
-
-    return _message_from_response(response)
+        return _message_from_response(response)
+    finally:
+        await close_async_client(client)
 
 
 def _tool_completion_params(
@@ -116,13 +128,14 @@ async def stream(
     checks or provider-specific SSE payloads.
     """
 
+    client = async_openai_client(config)
     stream_response = None
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     stop_reason: LlmStopReason = "unknown"
     response_id: str | None = None
     try:
-        stream_response = await async_openai_client(config).chat.completions.create(
+        stream_response = await client.chat.completions.create(
             **chat_completion_params(config, messages, stream=True),
         )
         async for chunk in stream_response:
@@ -149,8 +162,11 @@ async def stream(
     except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
         raise_openai_error(exc)
     finally:
-        if stream_response is not None:
-            await close_async_stream(stream_response)
+        try:
+            if stream_response is not None:
+                await close_async_stream(stream_response)
+        finally:
+            await close_async_client(client)
 
     yield LlmStreamEvent(
         type="done",

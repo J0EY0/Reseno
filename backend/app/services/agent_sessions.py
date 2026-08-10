@@ -7,13 +7,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from sqlite3 import Connection
-from typing import Any
+from typing import Any, Literal, NoReturn
 from uuid import uuid4
 
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
+    AgentCommittedDraft,
     AgentConversationItem,
+    AgentDraftDecisionStatus,
     AgentSessionResponse,
     AgentStoredMessage,
     AgentTurnErrorCode,
@@ -30,11 +32,14 @@ from app.services.agent.attachments import (
     prune_sent_agent_attachments,
     rollback_agent_attachments_sent,
 )
+from app.services.agent.request_context import active_resume
+from app.services.agent.resume_owner import require_active_resume
 from app.services.llm.config import resolve_agent_llm_config
 from app.services.llm.dispatch import supports_native_attachment
 
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 logger = logging.getLogger(__name__)
+AgentStoredMessageField = Literal["files", "response"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,15 @@ class AgentSessionRevisionConflictError(RuntimeError):
         self.current_revision = current_revision
 
 
+class AgentSessionActiveRunConflictError(RuntimeError):
+    """Raised when history replacement would invalidate a running turn."""
+
+    def __init__(self, current_revision: str, run_id: str) -> None:
+        super().__init__("The Agent session has an active run.")
+        self.current_revision = current_revision
+        self.run_id = run_id
+
+
 class AgentSessionTurnConflictError(RuntimeError):
     """Raised when a completed run no longer owns the persisted user turn."""
 
@@ -67,13 +81,49 @@ class AgentSessionTurnConflictError(RuntimeError):
         self.current_revision = current_revision
 
 
+class AgentSessionPersistenceError(RuntimeError):
+    """Raised when a durable turn transition no longer owns its database row."""
+
+
+class AgentSessionDataError(RuntimeError):
+    """Raised when a stored message field cannot be decoded safely."""
+
+    def __init__(
+        self,
+        session_id: str,
+        message_id: str,
+        field: AgentStoredMessageField,
+    ) -> None:
+        super().__init__("Stored Agent session data is invalid.")
+        self.session_id = session_id
+        self.message_id = message_id
+        self.field = field
+
+
 class AgentSessionTurnReplayError(RuntimeError):
-    """Raised when a client turn id cannot be safely executed again."""
+    """Raised when a message id cannot be safely accepted into session history."""
 
     def __init__(self, current_revision: str) -> None:
         super().__init__(
             "The Agent turn was already completed or its payload changed.",
         )
+        self.current_revision = current_revision
+
+
+class AgentDraftDecisionConflictError(RuntimeError):
+    """Raised when a committed draft already has the opposite decision."""
+
+    def __init__(self, current_revision: str, current_status: str) -> None:
+        super().__init__("The committed Agent draft was already resolved.")
+        self.current_revision = current_revision
+        self.current_status = current_status
+
+
+class AgentDraftUnavailableConflictError(RuntimeError):
+    """Raised when the current session no longer contains the target draft."""
+
+    def __init__(self, current_revision: str) -> None:
+        super().__init__("The committed Agent draft is unavailable.")
         self.current_revision = current_revision
 
 
@@ -101,8 +151,16 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
             id=row["id"],
             role=row["role"],
             text=row["text"],
-            files=_decode_files(row["files_json"]),
-            response=_decode_assistant_response(row["response_json"]),
+            files=_decode_files(
+                row["files_json"],
+                session_id=resume_id,
+                message_id=str(row["id"]),
+            ),
+            response=_decode_assistant_response(
+                row["response_json"],
+                session_id=resume_id,
+                message_id=str(row["id"]),
+            ),
             createdAt=row["created_at"],
         )
         for row in rows
@@ -161,11 +219,6 @@ def prepare_agent_turn(
 
     now = _now_iso()
     user_message = _current_user_message(request, now)
-    if user_message is None:
-        return request
-
-    if request.client_turn_id and request.client_turn_id != user_message.id:
-        raise AgentSessionTurnReplayError(_session_revision(conn, resume_id))
 
     _prevalidate_current_turn_attachments(
         conn,
@@ -177,6 +230,7 @@ def prepare_agent_turn(
     receipt: AgentAttachmentSentReceipt | None = None
     try:
         with _transaction(conn):
+            require_active_resume(conn, resume_id)
             current_revision = _session_revision(conn, resume_id)
             existing = _message_by_id(conn, user_message.id)
 
@@ -186,18 +240,7 @@ def prepare_agent_turn(
                 if _has_later_message(conn, resume_id, int(existing["sequence"])):
                     raise AgentSessionTurnReplayError(current_revision)
             else:
-                if (
-                    request.expected_revision is not None
-                    and request.expected_revision != current_revision
-                ):
-                    raise AgentSessionRevisionConflictError(current_revision)
-                # Legacy callers may omit a revision for the first turn only.
-                # Once history exists, accepting such a request would re-open
-                # the stale-client race this protocol is designed to prevent.
-                if request.expected_revision is None and _session_has_messages(
-                    conn,
-                    resume_id,
-                ):
+                if request.expected_revision != current_revision:
                     raise AgentSessionRevisionConflictError(current_revision)
 
                 _upsert_session(conn, request, resume_id, user_message, now)
@@ -228,17 +271,19 @@ def prepare_agent_turn(
                     started_at=now,
                 )
             authoritative_revision = _session_revision(conn, resume_id)
-            authoritative_messages = _load_conversation_items(conn, resume_id)
+            # `message` is the singular current turn. Provider history must be
+            # authoritative, prior-only state even though the turn is already
+            # durable before provider work starts.
+            authoritative_messages = [
+                message
+                for message in _load_conversation_items(conn, resume_id)
+                if message.id != user_message.id
+            ]
     except BaseException:
         _compensate_attachment_state(receipt)
         raise
 
-    prepared = request.model_copy(
-        update={
-            "conversation": authoritative_messages,
-            "messages": authoritative_messages,
-        },
-    )
+    prepared = request.model_copy(update={"messages": authoritative_messages})
     object.__setattr__(
         prepared,
         "_persisted_session_revision",
@@ -272,7 +317,7 @@ def finish_agent_turn_execution(
 
     completed_at = _now_iso()
     with _transaction(conn):
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE agent_turn_executions
             SET status = ?, error_code = ?, completed_at = ?, updated_at = ?
@@ -289,6 +334,10 @@ def finish_agent_turn_execution(
                 turn_id,
             ),
         )
+        if cursor.rowcount != 1:
+            raise AgentSessionPersistenceError(
+                "The running Agent execution no longer owns its durable row.",
+            )
 
 
 def fail_interrupted_agent_turn_executions(conn: Connection) -> int:
@@ -334,8 +383,6 @@ def persist_agent_user_message(
 
     now = _now_iso()
     user_message = _current_user_message(request, now)
-    if user_message is None:
-        return None
 
     _prevalidate_current_turn_attachments(
         conn,
@@ -348,6 +395,7 @@ def persist_agent_user_message(
     authoritative_revision: str | None = None
     try:
         with _transaction(conn):
+            require_active_resume(conn, resume_id)
             _upsert_session(conn, request, resume_id, user_message, now)
             _insert_message(
                 conn,
@@ -397,6 +445,7 @@ def append_agent_exchange(
         return
 
     with _transaction(conn):
+        require_active_resume(conn, resume_id)
         current_revision = _session_revision(conn, resume_id)
         if current_revision != expected_revision:
             if _message_exists(conn, resume_id, assistant_message.id):
@@ -406,18 +455,124 @@ def append_agent_exchange(
                 current_revision,
             )
 
+        persisted_message = _attach_committed_draft(request, assistant_message)
         now = _now_iso()
         _insert_message(
             conn,
             session_id=resume_id,
-            message_id=assistant_message.id,
+            message_id=persisted_message.id,
             role="assistant",
-            text=assistant_message.text,
+            text=persisted_message.text,
             files=[],
-            response=assistant_message,
+            response=persisted_message,
             sequence=_next_message_sequence(conn, resume_id),
             created_at=now,
         )
+
+
+def _attach_committed_draft(
+    request: AgentChatRequest,
+    message: AgentChatMessage,
+) -> AgentChatMessage:
+    """Bind the immutable edit base to a committed response before storage."""
+
+    if message.transaction_state != "committed" or not message.edits:
+        return message
+
+    # Store the same snapshot tools edited so the next turn cannot restart
+    # from the pre-draft request.resume.
+    return message.model_copy(
+        update={"draft": AgentCommittedDraft(baseResume=active_resume(request))},
+    )
+
+
+def update_agent_draft_decision(
+    conn: Connection,
+    resume_id: str,
+    *,
+    message_id: str,
+    status: AgentDraftDecisionStatus,
+    revision: str,
+) -> AgentSessionResponse:
+    """Atomically resolve one committed draft without replacing its session."""
+
+    with _transaction(conn):
+        require_active_resume(conn, resume_id)
+        current_revision = _session_revision(conn, resume_id)
+        # CAS ownership is session-wide. Check it before resolving the target,
+        # which may already have been removed by a concurrent replacement.
+        if revision != current_revision:
+            raise AgentSessionRevisionConflictError(current_revision)
+
+        row = conn.execute(
+            """
+            SELECT response_json
+            FROM agent_messages
+            WHERE session_id = ? AND id = ? AND role = 'assistant'
+            """,
+            (resume_id, message_id),
+        ).fetchone()
+        response = (
+            _decode_assistant_response(
+                row["response_json"],
+                session_id=resume_id,
+                message_id=message_id,
+            )
+            if row is not None
+            else None
+        )
+        if response is None or response.draft is None:
+            raise AgentDraftUnavailableConflictError(current_revision)
+        if response.draft.status == status:
+            return load_agent_session(conn, resume_id)
+
+        running_execution = conn.execute(
+            """
+            SELECT run_id
+            FROM agent_turn_executions
+            WHERE session_id = ? AND status = 'running'
+            ORDER BY started_at ASC, rowid ASC
+            LIMIT 1
+            """,
+            (resume_id,),
+        ).fetchone()
+        if running_execution is not None:
+            raise AgentSessionActiveRunConflictError(
+                current_revision,
+                str(running_execution["run_id"]),
+            )
+
+        if response.draft.status != "pending":
+            raise AgentDraftDecisionConflictError(
+                current_revision,
+                response.draft.status,
+            )
+
+        updated_response = response.model_copy(
+            update={
+                "draft": response.draft.model_copy(update={"status": status}),
+            },
+        )
+        cursor = conn.execute(
+            """
+            UPDATE agent_messages
+            SET response_json = ?
+            WHERE session_id = ? AND id = ? AND role = 'assistant'
+            """,
+            (
+                _json_dumps(
+                    updated_response.model_dump(mode="json", by_alias=True),
+                ),
+                resume_id,
+                message_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise AgentSessionPersistenceError(
+                "The committed Agent draft response could not be updated.",
+            )
+
+    return load_agent_session(conn, resume_id)
 
 
 def replace_agent_session_messages(
@@ -426,7 +581,7 @@ def replace_agent_session_messages(
     *,
     locale: str,
     messages: list[AgentConversationItem],
-    revision: str | None = None,
+    revision: str,
 ) -> AgentSessionResponse:
     """Replace history if the caller still owns the supplied revision."""
 
@@ -446,16 +601,38 @@ def replace_agent_session_messages(
         for file in message["files"]
         if isinstance(file, dict)
     ]
-    # History persistence only verifies that retained references still resolve.
-    # Request count and aggregate payload limits belong to provider-bound turns.
-    prepare_agent_history_attachments(safe_resume_id, retained_files)
-
     receipt: AgentAttachmentSentReceipt | None = None
     try:
         with _transaction(conn):
+            require_active_resume(conn, safe_resume_id)
             current_revision = _session_revision(conn, safe_resume_id)
-            if revision is not None and revision != current_revision:
+            if revision != current_revision:
                 raise AgentSessionRevisionConflictError(current_revision)
+
+            # A matching raw revision proves ownership, not that persisted JSON
+            # is usable. Decode the current session before any destructive DB
+            # write or external attachment-state transition.
+            load_agent_session(conn, safe_resume_id)
+
+            running_execution = conn.execute(
+                """
+                SELECT run_id
+                FROM agent_turn_executions
+                WHERE session_id = ? AND status = 'running'
+                ORDER BY started_at ASC, rowid ASC
+                LIMIT 1
+                """,
+                (safe_resume_id,),
+            ).fetchone()
+            if running_execution is not None:
+                raise AgentSessionActiveRunConflictError(
+                    current_revision,
+                    str(running_execution["run_id"]),
+                )
+
+            # History persistence only verifies that retained references still
+            # resolve. Provider-bound request quotas do not apply here.
+            prepare_agent_history_attachments(safe_resume_id, retained_files)
 
             _upsert_replacement_session(
                 conn,
@@ -474,7 +651,7 @@ def replace_agent_session_messages(
             )
 
             for sequence, message in enumerate(normalized_messages, start=1):
-                _insert_message(
+                inserted = _insert_message(
                     conn,
                     session_id=safe_resume_id,
                     message_id=message["id"],
@@ -485,6 +662,10 @@ def replace_agent_session_messages(
                     sequence=sequence,
                     created_at=message["created_at"] or now,
                 )
+                if not inserted:
+                    # Message ids are globally unique. Never commit a partial
+                    # replacement when another session already owns one.
+                    raise AgentSessionTurnReplayError(current_revision)
             receipt = mark_agent_attachments_sent(safe_resume_id, retained_files)
     except BaseException:
         _compensate_attachment_state(receipt)
@@ -645,10 +826,20 @@ def _load_conversation_items(
             id=row["id"],
             role=row["role"],
             text=row["text"],
-            files=_decode_files(row["files_json"]),
+            files=_decode_files(
+                row["files_json"],
+                session_id=resume_id,
+                message_id=str(row["id"]),
+            ),
             response=(
                 response.model_dump(mode="json", by_alias=True)
-                if (response := _decode_assistant_response(row["response_json"]))
+                if (
+                    response := _decode_assistant_response(
+                        row["response_json"],
+                        session_id=resume_id,
+                        message_id=str(row["id"]),
+                    )
+                )
                 else None
             ),
             createdAt=row["created_at"],
@@ -681,7 +872,12 @@ def _is_matching_retry(
         row["session_id"] == resume_id
         and row["role"] == "user"
         and row["text"] == user_message.text
-        and _decode_files(row["files_json"]) == user_message.files
+        and _decode_files(
+            row["files_json"],
+            session_id=resume_id,
+            message_id=user_message.id,
+        )
+        == user_message.files
     )
 
 
@@ -704,19 +900,6 @@ def _has_later_message(
     return row is not None
 
 
-def _session_has_messages(conn: Connection, resume_id: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM agent_messages
-        WHERE session_id = ?
-        LIMIT 1
-        """,
-        (resume_id,),
-    ).fetchone()
-    return row is not None
-
-
 def _compensate_attachment_state(
     receipt: AgentAttachmentSentReceipt | None,
 ) -> None:
@@ -731,82 +914,111 @@ def _compensate_attachment_state(
         ) from exc
 
 
-def _decode_files(raw_value: str) -> list[dict[str, Any]]:
-    """Decode the persisted files list while tolerating legacy bad rows."""
+def _raise_invalid_stored_message_field(
+    *,
+    session_id: str,
+    message_id: str,
+    field: AgentStoredMessageField,
+) -> NoReturn:
+    """Report corruption using identifiers only, never stored field contents."""
+
+    logger.error(
+        "Stored Agent message field is invalid.",
+        extra={
+            "agent_session_id": session_id,
+            "agent_message_id": message_id,
+            "agent_message_field": field,
+        },
+    )
+    raise AgentSessionDataError(session_id, message_id, field) from None
+
+
+def _decode_files(
+    raw_value: str,
+    *,
+    session_id: str,
+    message_id: str,
+) -> list[dict[str, Any]]:
+    """Decode a complete persisted files list or fail visibly."""
 
     try:
         value = json.loads(raw_value)
     except json.JSONDecodeError:
-        return []
+        _raise_invalid_stored_message_field(
+            session_id=session_id,
+            message_id=message_id,
+            field="files",
+        )
 
     if not isinstance(value, list):
-        return []
+        _raise_invalid_stored_message_field(
+            session_id=session_id,
+            message_id=message_id,
+            field="files",
+        )
 
-    return [item for item in value if isinstance(item, dict)]
+    files: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            _raise_invalid_stored_message_field(
+                session_id=session_id,
+                message_id=message_id,
+                field="files",
+            )
+        files.append(item)
+    return files
 
 
-def _decode_assistant_response(raw_value: str | None) -> AgentChatMessage | None:
+def _decode_assistant_response(
+    raw_value: str | None,
+    *,
+    session_id: str,
+    message_id: str,
+) -> AgentChatMessage | None:
     """Decode a stored assistant payload into the public response schema."""
 
-    if not raw_value:
+    if raw_value is None:
         return None
 
     try:
         value = json.loads(raw_value)
     except json.JSONDecodeError:
-        return None
+        _raise_invalid_stored_message_field(
+            session_id=session_id,
+            message_id=message_id,
+            field="response",
+        )
 
     if not isinstance(value, dict):
-        return None
+        _raise_invalid_stored_message_field(
+            session_id=session_id,
+            message_id=message_id,
+            field="response",
+        )
 
     try:
         return AgentChatMessage.model_validate(value)
     except ValueError:
-        return None
+        _raise_invalid_stored_message_field(
+            session_id=session_id,
+            message_id=message_id,
+            field="response",
+        )
 
 
 def _current_user_message(
     request: AgentChatRequest,
     created_at: str,
-) -> UserAgentMessage | None:
-    """Build the persisted user message from the current chat request."""
+) -> UserAgentMessage:
+    """Build the persisted turn from the validated canonical message."""
 
-    if request.message and (request.message.text.strip() or request.message.files):
-        message_id = request.message.id or _request_user_message_id(request)
-        return UserAgentMessage(
-            id=message_id,
-            text=request.message.text.strip(),
-            files=request.message.files,
-            created_at=request.message.created_at or created_at,
-        )
-
-    prompt = request.prompt.strip()
-    if not prompt and not request.files:
-        return None
-
-    text = prompt or _attachment_summary(request.files)
+    assert request.message.id is not None
     return UserAgentMessage(
-        id=_request_user_message_id(request),
-        text=text,
-        files=request.files,
-        created_at=created_at,
+        id=request.message.id,
+        text=request.message.text.strip(),
+        files=request.message.files,
+        created_at=request.message.created_at or created_at,
     )
-
-
-def _request_user_message_id(request: AgentChatRequest) -> str:
-    """Keep a generated id stable across start and completion callbacks."""
-
-    existing = getattr(request, "_persisted_user_message_id", None)
-    if isinstance(existing, str):
-        return existing
-
-    message_id = (
-        request.client_turn_id.strip()
-        if request.client_turn_id and request.client_turn_id.strip()
-        else f"agent-user-{uuid4().hex[:12]}"
-    )
-    object.__setattr__(request, "_persisted_user_message_id", message_id)
-    return message_id
 
 
 def _request_session_revision(request: AgentChatRequest) -> str | None:
@@ -814,17 +1026,6 @@ def _request_session_revision(request: AgentChatRequest) -> str | None:
 
     revision = getattr(request, "_persisted_session_revision", None)
     return revision if isinstance(revision, str) else None
-
-
-def _attachment_summary(files: list[dict[str, Any]]) -> str:
-    """Create visible text for a file-only user message."""
-
-    names = [
-        str(file.get("filename") or file.get("url") or "Attachment")
-        for file in files
-        if isinstance(file, dict)
-    ]
-    return ", ".join(names) or "Attachment"
 
 
 def _session_title(user_message: UserAgentMessage | None) -> str:

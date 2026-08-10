@@ -2,10 +2,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, closing
 from typing import cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from starlette.exceptions import HTTPException
 
 from app.config import get_settings
 from app.db.connection import connect
@@ -32,7 +33,9 @@ from app.routers import (
 )
 from app.services.agent_runs import AgentRunManager
 from app.services.agent_sessions import fail_interrupted_agent_turn_executions
+from app.services.auth_accounts import ensure_auth_database
 from app.services.model_metadata import ensure_model_metadata_cache
+from app.services.pdf import cleanup_expired_exports
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
 
@@ -41,10 +44,12 @@ ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize or verify the current database before serving requests."""
 
+    ensure_auth_database()
     ensure_database_schema()
     with closing(connect()) as conn:
         fail_interrupted_agent_turn_executions(conn)
     ensure_model_metadata_cache()
+    cleanup_expired_exports()
     app.state.agent_runs = AgentRunManager()
     try:
         yield

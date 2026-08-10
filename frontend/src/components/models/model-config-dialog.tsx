@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import { useRef, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +15,7 @@ import type { AppMessages, Locale } from "@/i18n";
 import type { ModelConfig } from "@/types/resume";
 
 import { ModelConfigModelFields } from "./model-config-model-fields";
+import { focusFirstModelConfigError } from "./model-config-focus";
 import { ModelConfigProviderFields } from "./model-config-provider-fields";
 import { useModelConfigDialog } from "./use-model-config-dialog";
 
@@ -33,6 +34,7 @@ export function ModelConfigDialog({
   onClose: () => void;
   onSaved: (config: ModelConfig) => void;
 }) {
+  const formRef = useRef<HTMLFormElement>(null);
   const controller = useModelConfigDialog({
     initialConfig,
     locale,
@@ -44,8 +46,16 @@ export function ModelConfigDialog({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (await controller.submit()) {
+    const result = await controller.submit();
+
+    if (result.status === "saved") {
       onClose();
+    } else if (result.status === "invalid" && formRef.current) {
+      focusFirstModelConfigError(
+        formRef.current,
+        result.errors,
+        controller.draft.providerKind,
+      );
     }
   }
 
@@ -55,6 +65,7 @@ export function ModelConfigDialog({
       className="overflow-hidden p-0 sm:max-w-xl"
     >
       <form
+        ref={formRef}
         className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
         onSubmit={(event) => void handleSubmit(event)}
       >

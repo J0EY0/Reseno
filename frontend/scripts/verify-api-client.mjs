@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import axios from "axios";
 import { createServer } from "vite";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 const apiClientSource = await readFile(
   new URL("../src/lib/api-client.ts", import.meta.url),
   "utf8",
@@ -11,7 +13,6 @@ assert.doesNotMatch(apiClientSource, /^import[\s\S]*?from ["']axios["'];$/m);
 assert.match(apiClientSource, /await import\(["']axios["']\)/);
 
 const testState = {
-  authRequired: true,
   clearedAuthCount: 0,
   invalidatedTokens: new Set(),
   redirects: [],
@@ -167,7 +168,6 @@ const virtualModules = {
     const state = globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
     export function clearAuthSession() { state.clearedAuthCount += 1; }
     export function getAccessToken() { return state.token; }
-    export function isAuthRequired() { return state.authRequired; }
     export function isTokenLocallyInvalidated(token) {
       return state.invalidatedTokens.has(token);
     }
@@ -182,6 +182,7 @@ const virtualModules = {
 const virtualImportPrefix = "virtual:resumate-api-client-test:";
 const virtualPrefix = `\0${virtualImportPrefix}`;
 const server = await createServer({
+  cacheDir: createViteTestCacheDir(),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: process.cwd(),
@@ -220,7 +221,6 @@ function reset(api) {
   api.clearApiCache();
   replies.length = 0;
   requests.length = 0;
-  testState.authRequired = true;
   testState.clearedAuthCount = 0;
   testState.invalidatedTokens.clear();
   testState.redirects.length = 0;
@@ -275,38 +275,56 @@ try {
   assert.match(requests[0].headers.get("Content-Type"), /^application\/json/);
   assert.equal(requests[0].body, '{"password":"secret","username":"admin"}');
 
-  reset(api);
-  enqueueJson({ code: 40000, data: null, message: "BAD_REQUEST" });
-  await assert.rejects(
-    api.requestApi("/api/failure"),
-    (error) =>
-      assertRequestFailure(error, api, {
-        apiCode: "BAD_REQUEST",
-        messageKey: "BAD_REQUEST",
-        status: 200,
-      }),
-  );
-  assert.deepEqual(testState.toasts, ["localized:BAD_REQUEST"]);
+  const standardApiErrors = [
+    { code: 40000, message: "BAD_REQUEST", status: 400 },
+    { code: 40001, message: "UNAUTHORIZED_REQUEST", status: 401 },
+    { code: 40004, message: "NOT_FOUND", status: 404 },
+    { code: 40002, message: "VALIDATION_ERROR", status: 422 },
+    { code: 50000, message: "INTERNAL_SERVER_ERROR", status: 500 },
+  ];
+
+  for (const expected of standardApiErrors) {
+    reset(api);
+    enqueueJson(
+      { code: expected.code, data: null, message: expected.message },
+      expected.status,
+    );
+    await assert.rejects(
+      api.requestApi(`/api/failure-${expected.status}`),
+      (error) =>
+        assertRequestFailure(error, api, {
+          apiCode: expected.message,
+          messageKey: expected.message,
+          status: expected.status,
+        }),
+    );
+    assert.deepEqual(testState.toasts, [`localized:${expected.message}`]);
+    assert.equal(
+      testState.clearedAuthCount,
+      expected.status === 401 ? 1 : 0,
+    );
+    assert.deepEqual(
+      testState.redirects,
+      expected.status === 401 ? ["/login"] : [],
+    );
+  }
 
   reset(api);
-  enqueueJson({ code: 40000, data: null, message: "BAD_REQUEST" });
+  enqueueJson(
+    { code: 40002, data: null, message: "VALIDATION_ERROR" },
+    422,
+  );
   await assert.rejects(
     api.requestApi("/api/quiet-failure", { notifyOnError: false }),
     (error) =>
       assertRequestFailure(error, api, {
-        apiCode: "BAD_REQUEST",
-        messageKey: "BAD_REQUEST",
+        apiCode: "VALIDATION_ERROR",
+        messageKey: "VALIDATION_ERROR",
         notified: false,
-        status: 200,
+        status: 422,
       }),
   );
   assert.deepEqual(testState.toasts, []);
-
-  reset(api);
-  enqueueJson({ code: 40001, data: null, message: "UNAUTHORIZED_REQUEST" });
-  await assert.rejects(api.requestApi("/api/protected"), /localized:UNAUTHORIZED_REQUEST/);
-  assert.equal(testState.clearedAuthCount, 1);
-  assert.deepEqual(testState.redirects, ["/login"]);
 
   reset(api);
   testState.token = null;
@@ -465,15 +483,62 @@ try {
   assert.equal(requests[0].headers.get("Authorization"), "Bearer token-a");
   assert.equal(requests[0].credentials, undefined);
 
+  for (const expected of standardApiErrors) {
+    reset(api);
+    enqueueJson(
+      { code: expected.code, data: null, message: expected.message },
+      expected.status,
+    );
+    await assert.rejects(
+      api.fetchApiResource(`/api/resource-error-${expected.status}`),
+      (error) =>
+        assertRequestFailure(error, api, {
+          apiCode: expected.message,
+          messageKey: expected.message,
+          status: expected.status,
+        }),
+    );
+    assert.deepEqual(testState.toasts, [`localized:${expected.message}`]);
+    assert.equal(
+      testState.clearedAuthCount,
+      expected.status === 401 ? 1 : 0,
+    );
+    assert.deepEqual(
+      testState.redirects,
+      expected.status === 401 ? ["/login"] : [],
+    );
+  }
+
   reset(api);
-  enqueueJson({ code: 40000, data: null, message: "BAD_REQUEST" });
+  enqueueJson(
+    { detail: { code: "AGENT_SESSION_TURN_CONFLICT", runId: "run-1" } },
+    409,
+  );
   await assert.rejects(
-    api.fetchApiResource("/api/resource-error"),
+    api.fetchApiResource("/api/resource-conflict"),
     (error) =>
       assertRequestFailure(error, api, {
-        apiCode: "BAD_REQUEST",
-        messageKey: "BAD_REQUEST",
-        status: 200,
+        apiCode: "AGENT_SESSION_TURN_CONFLICT",
+        messageKey: "AGENT_SESSION_TURN_CONFLICT",
+        status: 409,
+      }),
+  );
+  assert.deepEqual(testState.toasts, [
+    "localized:AGENT_SESSION_TURN_CONFLICT",
+  ]);
+
+  reset(api);
+  enqueueJson(
+    { detail: { code: "AGENT_SESSION_REVISION_CONFLICT", revision: 4 } },
+    409,
+  );
+  await assert.rejects(
+    api.fetchApiResource("/api/resource-revision-conflict"),
+    (error) =>
+      assertRequestFailure(error, api, {
+        apiCode: "AGENT_SESSION_REVISION_CONFLICT",
+        messageKey: "AGENT_SESSION_REVISION_CONFLICT",
+        status: 409,
       }),
   );
 

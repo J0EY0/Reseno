@@ -13,22 +13,26 @@ def main() -> None:
         os.environ["APP_DB_PATH"] = str(data_dir / "app.db")
         os.environ["APP_STORAGE_DIR"] = str(data_dir / "storage")
         os.environ["APP_ENV_FILE"] = str(data_dir / ".env")
-        os.environ["APP_ENV"] = "production"
-        os.environ["AUTH_USERNAME"] = "admin"
-        os.environ["AUTH_PASSWORD"] = "ResuMate@2026"
 
         from fastapi.testclient import TestClient
 
         from app.main import create_app
 
-        with TestClient(create_app()) as client:
-            login = client.post(
-                "/api/auth/login",
-                json={"username": "admin", "password": "ResuMate@2026"},
+        with TestClient(
+            create_app(),
+            client=("127.0.0.1", 50000),
+        ) as client:
+            setup = client.post(
+                "/api/auth/setup",
+                json={
+                    "username": "admin",
+                    "password": "ScriptPassword2026",
+                    "confirmPassword": "ScriptPassword2026",
+                },
             )
-            assert login.status_code == 200
-            assert "ResuMate@2026" not in login.text
-            access_token = login.json()["data"]["accessToken"]
+            assert setup.status_code == 200
+            assert "ScriptPassword2026" not in setup.text
+            access_token = setup.json()["data"]["accessToken"]
             client.headers.update({"Authorization": f"Bearer {access_token}"})
 
             model_saved = client.post(
@@ -57,6 +61,7 @@ def main() -> None:
                     "typography": {"fontFamily": "inter", "fontSize": 16},
                     "template": "minimal",
                     "resume": {
+                        "schemaVersion": 2,
                         "basic": {
                             "name": "Script Resume",
                             "headline": "",
@@ -72,6 +77,7 @@ def main() -> None:
                 },
             )
             assert resume_saved.status_code == 200
+            assert resume_saved.json()["code"] == 0, resume_saved.text
             resume_id = resume_saved.json()["data"]["resume"]["id"]
 
             models_page = client.get("/api/workspace/pages/models")

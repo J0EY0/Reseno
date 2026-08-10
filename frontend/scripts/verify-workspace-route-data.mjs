@@ -130,7 +130,7 @@ if (!/Promise<WorkspaceRouteDataResult<Kind>>/.test(workspaceApiSource)) {
 
 for (const [kind, ownerSource] of routeOwnerSources) {
   const expectedCall = new RegExp(
-    `fetchWorkspaceRouteData\\(${kind === "models" || kind === "settings" ? "kind" : `"${kind}"`}`,
+    `fetchWorkspaceRouteData\\(\\s*${kind === "models" || kind === "settings" ? "kind" : `"${kind}"`}`,
   );
 
   if (!expectedCall.test(ownerSource)) {

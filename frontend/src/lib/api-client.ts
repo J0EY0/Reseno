@@ -4,7 +4,6 @@ import type { ApiRequestOptions, ApiResponse } from "@/types/api";
 import {
   clearAuthSession,
   getAccessToken,
-  isAuthRequired,
   isTokenLocallyInvalidated,
 } from "@/lib/auth-session";
 import { resolveApiMessage } from "@/lib/api-message";
@@ -29,6 +28,7 @@ type ResuMateApiError = Error & {
 const DEFAULT_ACCEPT_HEADER = "application/json, text/plain, */*";
 
 export const apiRoutes = {
+  authSetup: "/api/auth/setup",
   authLogin: "/api/auth/login",
   authRefresh: "/api/auth/refresh",
   authPassword: "/api/auth/password",
@@ -281,7 +281,7 @@ function getAuthHeaders(
   notifyOnError = true,
 ) {
   const headers = new Headers(baseHeaders);
-  const shouldAuthenticate = options.auth !== false && isAuthRequired();
+  const shouldAuthenticate = options.auth !== false;
 
   if (!shouldAuthenticate) {
     return headers;
@@ -440,6 +440,18 @@ async function rejectApiEnvelopeResource(response: Response) {
   throw createPayloadApiError(payload, response.status);
 }
 
+async function createApiResourceResponseError(response: Response) {
+  let payload: unknown;
+
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return createApiError("REQUEST_FAILED", { status: response.status });
+  }
+
+  return createHttpResponseError(payload, response.status, true);
+}
+
 export async function requestApi<T>(
   route: string,
   options: ApiRequestOptions = {},
@@ -577,9 +589,7 @@ export async function fetchApiResource(url: string, init: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    throw createApiError("REQUEST_FAILED", {
-      status: response.status,
-    });
+    throw await createApiResourceResponseError(response);
   }
 
   await rejectApiEnvelopeResource(response);

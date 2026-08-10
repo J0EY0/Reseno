@@ -1,5 +1,5 @@
 import type { Locale } from '@/i18n'
-import type { LegacyModelConfig, ModelConfig } from '@/types/resume'
+import type { ModelConfig } from '@/types/resume'
 
 export const DEFAULT_MODEL_API_FAMILY = 'openai_compatible_chat'
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
@@ -61,7 +61,7 @@ export function normalizeModelConfig(
     return null
   }
 
-  const raw = value as LegacyModelConfig & Partial<ModelConfig>
+  const raw = value as Partial<ModelConfig>
   const provider = typeof raw.provider === 'string' ? raw.provider.trim() : ''
   const providerKind = raw.providerKind ?? 'custom'
   const apiFamily = raw.apiFamily ?? DEFAULT_MODEL_API_FAMILY
@@ -119,7 +119,7 @@ export function normalizeModelConfig(
 }
 
 export function normalizeModelConfigs(
-  source: { modelConfigs?: unknown; modelConfig?: unknown } | null | undefined,
+  source: { modelConfigs?: unknown } | null | undefined,
   locale: Locale,
 ) {
   if (Array.isArray(source?.modelConfigs)) {
@@ -132,9 +132,7 @@ export function normalizeModelConfigs(
     }
   }
 
-  const legacy = normalizeModelConfig(source?.modelConfig, locale)
-
-  return legacy ? [legacy] : []
+  return []
 }
 
 export function formatApiKeyPreview(apiKeyPreview: string) {

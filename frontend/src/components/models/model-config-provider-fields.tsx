@@ -105,7 +105,11 @@ function ModelProviderField({
           value={selectedProvider.id}
           onValueChange={controller.selectProvider}
         >
-          <SelectTrigger id="model-provider" className="w-full">
+          <SelectTrigger
+            id="model-provider"
+            className="w-full"
+            aria-invalid={Boolean(errors.provider)}
+          >
             <div className="flex min-w-0 flex-1 items-center gap-2 pr-2">
               <ModelProviderIcon
                 provider={selectedProvider.iconProvider}

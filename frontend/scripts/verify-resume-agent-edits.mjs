@@ -2,6 +2,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "vite";
 import ts from "typescript";
 
+import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -106,13 +108,72 @@ function createResume() {
   };
 }
 
+function createDraftSession(status, revision) {
+  const baseResume = createResume();
+  return {
+    resumeId: "resume-draft-decision",
+    revision,
+    executions: [],
+    messages: [
+      {
+        id: "assistant-draft-decision",
+        role: "assistant",
+        text: "The edit is ready.",
+        createdAt: "2026-08-09T12:00:00.000Z",
+        response: {
+          id: "assistant-draft-decision",
+          role: "assistant",
+          text: "The edit is ready.",
+          edits: [
+            {
+              id: "edit-draft-decision",
+              title: "Update headline",
+              target: "basic.headline",
+              reason: "Use the requested title.",
+            },
+          ],
+          transactionState: "committed",
+          draft: { baseResume, status },
+        },
+      },
+    ],
+  };
+}
+
+function apiResponse(data, status = 200) {
+  return new Response(
+    JSON.stringify({ code: 0, data, message: "SUCCESS" }),
+    {
+      headers: { "Content-Type": "application/json" },
+      status,
+    },
+  );
+}
+
+function transportError(code, details = {}) {
+  return new Response(
+    JSON.stringify({ detail: { code, ...details } }),
+    {
+      headers: { "Content-Type": "application/json" },
+      status: 409,
+    },
+  );
+}
+
 const agentEditModuleUrls = [
   new URL("../src/lib/resume-agent-edits.ts", import.meta.url),
   new URL("../src/lib/resume-agent-edits/transaction-core.ts", import.meta.url),
   new URL("../src/lib/resume-agent-edits/apply-operations.ts", import.meta.url),
   new URL("../src/lib/resume-agent-edits/three-way-merge.ts", import.meta.url),
 ];
-const [sessionSource, draftHookSource, agentEditModuleSources, moduleEntries] = await Promise.all([
+const [
+  sessionSource,
+  draftHookSource,
+  hydrationSource,
+  conversationSource,
+  agentEditModuleSources,
+  moduleEntries,
+] = await Promise.all([
   readFile(
     new URL(
       "../src/components/workspace/use-resume-detail-session.ts",
@@ -122,6 +183,20 @@ const [sessionSource, draftHookSource, agentEditModuleSources, moduleEntries] = 
   ),
   readFile(
     new URL("../src/hooks/use-resume-agent-draft.ts", import.meta.url),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "../src/components/copilot/use-agent-session-hydration.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "../src/components/copilot/use-agent-conversation.ts",
+      import.meta.url,
+    ),
     "utf8",
   ),
   Promise.all(agentEditModuleUrls.map((moduleUrl) => readFile(moduleUrl, "utf8"))),
@@ -206,10 +281,16 @@ assert(
 assert(
   !/createContext|useContext/.test(draftHookSource) &&
     !/useEffect/.test(draftHookSource) &&
+    /const currentResumeRef = useRef\(resume\);/.test(
+      draftHookSource,
+    ) &&
+    /currentResumeRef\.current = resume;/.test(
+      draftHookSource,
+    ) &&
     /applyAgentEditsWithMerge\(\s*draftBase,\s*resume,\s*edits,?\s*\)/.test(
       draftHookSource,
     ) &&
-    /applyAgentEditsWithMerge\(\s*draftBase\.resume,\s*resume,\s*agentDraft\.edits,?\s*\)/.test(
+    /applyAgentEditsWithMerge\(\s*baseResume,\s*currentResumeRef\.current,\s*draft\.edits,?\s*\)/.test(
       draftHookSource,
     ),
   "The Agent draft hook must read the latest editor resume without introducing Context.",
@@ -230,16 +311,43 @@ assert(
   "Only a committed Agent batch may clear and report a rejected provisional draft.",
 );
 assert(
-  /if \(!agentDraft \|\| agentDraft\.transactionState !== "committed"\) \{\s*return;\s*\}[\s\S]*?draftBase\.resume,[\s\S]*?resume,[\s\S]*?agentDraft\.edits/.test(
+  /const applyAgentDraft = useCallback\(async \(\) => \{\s*if \(!agentDraft \|\| agentDraft\.transactionState !== "committed"\)/.test(
     draftHookSource,
   ) &&
-    /onApplyResume\(result\.resume\)[\s\S]*?status:\s*"applied"[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
+    /const discardAgentDraft = useCallback\(async \(\) => \{\s*if \(!agentDraft \|\| agentDraft\.transactionState !== "committed"\)/.test(
       draftHookSource,
     ) &&
-    /status:\s*"discarded"[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
+    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
+      draftHookSource,
+    ) &&
+    /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setAgentDraft\(null\)/.test(
       draftHookSource,
     ),
   "Apply and discard must stay committed-only and close the stored merge transaction.",
+);
+assert(
+  /import\s*\{\s*resolveAgentDraftDecision\s*\}\s*from\s*["']@\/lib\/agent-session-run-client["']/.test(
+    draftHookSource,
+  ) &&
+    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?mergeCommittedAgentDraft\([\s\S]*?await resolveAgentDraftDecision\([\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?onApplyResume\(result\.resume\)/.test(
+      draftHookSource,
+    ) &&
+    /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?await resolveAgentDraftDecision\([\s\S]*?resolution\.status/.test(
+      draftHookSource,
+    ),
+  "Apply and discard must wait for the durable message decision before closing the local draft.",
+);
+assert(
+  /const mergeCommittedAgentDraft = useCallback\([\s\S]*?applyAgentEditsWithMerge\([\s\S]*?if \(result\.errors\.length > 0\)[\s\S]*?toast\.error[\s\S]*?return null;[\s\S]*?return result;/.test(
+    draftHookSource,
+  ) &&
+    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?if \(!mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)\) \{\s*return;\s*\}[\s\S]*?await resolveAgentDraftDecision\([\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?const result = mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)[\s\S]*?onApplyResume\(result\.resume\)/.test(
+      draftHookSource,
+    ) &&
+    /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?const result = mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)[\s\S]*?if \(!result\) \{\s*return;\s*\}[\s\S]*?onApplyResume\(result\.resume\)/.test(
+      draftHookSource,
+    ),
+  "A discard that converges to authoritative applied must reuse the apply merge result and error path.",
 );
 assert(
   (sessionSource.match(/resetAgentDraft\(\)/g) ?? []).length === 1 &&
@@ -248,9 +356,23 @@ assert(
     ),
   "Hydrating a resume detail session must reset the complete Agent draft transaction.",
 );
+assert(
+  /const \{ draftSnapshot, panelMessages, session \}\s*=\s*await hydrateAgentSession/.test(
+    hydrationSource,
+  ) &&
+    /runtime\.onReconcileAgentDraft\(draftSnapshot\)/.test(
+      hydrationSource,
+    ) &&
+    /const \{ draftSnapshot, panelMessages, session \} = await hydrateAgentSession[\s\S]*?runtime\.onReconcileAgentDraft\(draftSnapshot\)/.test(
+      conversationSource,
+    ),
+  "Every authoritative session load must reconcile a pending, terminal, or absent draft.",
+);
 
 const server = await createServer({
+  cacheDir: createViteTestCacheDir(),
   configFile: false,
+  optimizeDeps: { noDiscovery: true },
   root: process.cwd(),
   server: { hmr: false, middlewareMode: true, ws: false },
   resolve: {
@@ -261,6 +383,14 @@ const server = await createServer({
 try {
 const agentEditModule = await server.ssrLoadModule(
   "/src/lib/resume-agent-edits.ts",
+);
+const {
+  getAgentDraftSnapshot,
+  getPendingAgentDraftSnapshot,
+  hydrateAgentSession,
+  toConversationMessage,
+} = await server.ssrLoadModule(
+  "/src/components/copilot/copilot-message-model.ts",
 );
 assert(
   JSON.stringify(Object.keys(agentEditModule).sort()) ===
@@ -276,6 +406,78 @@ const {
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
 } = agentEditModule;
+
+{
+  const baseResume = createResume();
+  const edit = {
+    id: "durable-edit",
+    title: "Update headline",
+    target: "basic.headline",
+    reason: "Use the requested title.",
+    operation: {
+      type: "replace_field",
+      path: "basic.headline",
+      value: "Staff Engineer",
+    },
+    status: "executed",
+  };
+  const storedMessages = [
+    {
+      id: "assistant-durable-draft",
+      role: "assistant",
+      text: "The edit is ready.",
+      createdAt: "2026-08-09T12:00:00.000Z",
+      response: {
+        id: "assistant-durable-draft",
+        role: "assistant",
+        text: "The edit is ready.",
+        edits: [edit],
+        transactionState: "committed",
+        draft: { baseResume, status: "pending" },
+      },
+    },
+  ];
+  const pendingDraft = getPendingAgentDraftSnapshot(storedMessages);
+
+  assert(
+    pendingDraft?.sourceMessageId === "assistant-durable-draft" &&
+      pendingDraft.transactionState === "committed" &&
+      pendingDraft.baseResume === baseResume &&
+      pendingDraft.edits[0] === edit,
+    "Session hydration must recover the committed pending draft and its immutable base.",
+  );
+  const terminalMessages = structuredClone(storedMessages);
+  terminalMessages[0].response.draft.status = "discarded";
+  assert(
+    getAgentDraftSnapshot(terminalMessages)?.status === "discarded" &&
+      getAgentDraftSnapshot([]) === null,
+    "Authoritative hydration must distinguish a terminal draft from no draft.",
+  );
+
+  const hydrated = await hydrateAgentSession(
+    Promise.resolve({
+      resumeId: "resume-durable-draft",
+      revision: "revision-durable-draft",
+      messages: storedMessages,
+      executions: [],
+    }),
+  );
+  assert(
+    hydrated.draftSnapshot?.sourceMessageId === "assistant-durable-draft" &&
+      hydrated.draftSnapshot.baseResume === baseResume &&
+      hydrated.draftSnapshot.status === "pending",
+    "The session hydration interface must return the pending draft alongside panel history.",
+  );
+
+  const replacementMessage = toConversationMessage(
+    hydrated.panelMessages[0],
+  );
+  assert(
+    replacementMessage.response?.draft?.status === "pending" &&
+      replacementMessage.response.draft.baseResume === baseResume,
+    "History replacement must preserve the durable draft payload on retained assistant messages.",
+  );
+}
 
 {
   const baseResume = createResume();
@@ -835,6 +1037,246 @@ for (const operation of [
         "User edit after draft generation",
     "A late conflict must leave the complete current resume untouched.",
   );
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const authSession = JSON.stringify({
+    accessToken: "agent-draft-token",
+    authenticatedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    username: "agent-draft-test",
+  });
+  const requests = [];
+  const responses = [
+    apiResponse(createDraftSession("pending", "revision-pending")),
+    apiResponse(createDraftSession("applied", "revision-applied")),
+  ];
+
+  globalThis.window = {
+    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    sessionStorage: {
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({
+      body: options.body,
+      method: options.method ?? "GET",
+      url: String(url),
+    });
+    const response = responses.shift();
+    assert(response, "The draft decision client made an unexpected request.");
+    return response;
+  };
+
+  try {
+    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+      "/src/lib/agent-session-run-client.ts",
+    );
+    const resolution = await resolveAgentDraftDecision(
+      "resume-draft-decision",
+      "assistant-draft-decision",
+      "applied",
+    );
+
+    assert(
+      resolution.status === "applied" &&
+        resolution.session.revision === "revision-applied",
+      "A successful apply must resolve from the durable assistant response.",
+    );
+    assert(
+      requests.length === 2 &&
+        requests[0].method === "GET" &&
+        requests[1].method === "PATCH" &&
+        requests[1].url.endsWith(
+          "/api/agent/resumes/resume-draft-decision/session/messages/assistant-draft-decision/draft",
+        ) &&
+        requests[1].body ===
+          JSON.stringify({ revision: "revision-pending", status: "applied" }),
+      "A draft decision must CAS the target message with the latest session revision.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (typeof originalWindow === "undefined") {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const authSession = JSON.stringify({
+    accessToken: "agent-draft-token",
+    authenticatedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    username: "agent-draft-test",
+  });
+  const requests = [];
+  const responses = [
+    apiResponse(createDraftSession("pending", "revision-stale")),
+    transportError("AGENT_SESSION_REVISION_CONFLICT", {
+      revision: "revision-refreshed",
+    }),
+    apiResponse(createDraftSession("pending", "revision-refreshed")),
+    apiResponse(createDraftSession("applied", "revision-reconciled")),
+  ];
+
+  globalThis.window = {
+    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    sessionStorage: {
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({
+      body: options.body,
+      method: options.method ?? "GET",
+      url: String(url),
+    });
+    const response = responses.shift();
+    assert(response, "Draft decision reconciliation exceeded one retry.");
+    return response;
+  };
+
+  try {
+    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+      "/src/lib/agent-session-run-client.ts",
+    );
+    const resolution = await resolveAgentDraftDecision(
+      "resume-draft-decision",
+      "assistant-draft-decision",
+      "applied",
+    );
+
+    assert(
+      resolution.status === "applied" &&
+        resolution.session.revision === "revision-reconciled",
+      "A stale draft decision must converge after one authoritative reload.",
+    );
+    assert(
+      requests.length === 4 &&
+        requests[1].body ===
+          JSON.stringify({ revision: "revision-stale", status: "applied" }) &&
+        requests[3].body ===
+          JSON.stringify({ revision: "revision-refreshed", status: "applied" }),
+      "A revision conflict may retry once, using only the reloaded revision.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (typeof originalWindow === "undefined") {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
+}
+
+for (const {
+  authoritativeStatus,
+  conflictCode,
+} of [
+  {
+    authoritativeStatus: "applied",
+    conflictCode: "AGENT_SESSION_REVISION_CONFLICT",
+  },
+  {
+    authoritativeStatus: "discarded",
+    conflictCode: "AGENT_DRAFT_DECISION_CONFLICT",
+  },
+]) {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const authSession = JSON.stringify({
+    accessToken: "agent-draft-token",
+    authenticatedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    username: "agent-draft-test",
+  });
+  const requests = [];
+  const responses = [
+    apiResponse(createDraftSession("pending", "revision-before-terminal")),
+    transportError(conflictCode, {
+      revision: "revision-terminal",
+      status: authoritativeStatus,
+    }),
+    apiResponse(
+      createDraftSession(authoritativeStatus, "revision-terminal"),
+    ),
+  ];
+
+  globalThis.window = {
+    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    sessionStorage: {
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ method: options.method ?? "GET", url: String(url) });
+    const response = responses.shift();
+    assert(response, "A terminal draft reconciliation must not retry.");
+    return response;
+  };
+
+  try {
+    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+      "/src/lib/agent-session-run-client.ts",
+    );
+    const resolution = await resolveAgentDraftDecision(
+      "resume-draft-decision",
+      "assistant-draft-decision",
+      "applied",
+    );
+
+    assert(
+      resolution.status === authoritativeStatus && requests.length === 3,
+      "After a 409, the authoritative terminal draft status must win without another PATCH.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (typeof originalWindow === "undefined") {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
 }
 
 console.log("Resume agent edit transaction checks passed.");

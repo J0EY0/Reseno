@@ -142,8 +142,8 @@ def _build_upsert_values(
     name = str(item.get("nickname") or item.get("name") or model).strip()
     base_url = str(item.get("apiUrl") or item.get("base_url") or "").strip()
     api_key = extract_plain_api_key(item)
-    encrypted_api_key = existing["encrypted_api_key"] if existing else None
-    api_key_preview = existing["api_key_preview"] if existing else ""
+    encrypted_api_key = None
+    api_key_preview = ""
 
     if api_key:
         if existing and _existing_api_key_matches(existing, api_key):
@@ -480,8 +480,11 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         and existing["api_family"] == api_family
         and existing["model"] == model
         and existing["base_url"] == base_url
-        and existing["encrypted_api_key"] == encrypted_api_key
-        and existing["api_key_preview"] == api_key_preview
+        and (
+            encrypted_api_key is None
+            or existing["encrypted_api_key"] == encrypted_api_key
+        )
+        and (not api_key_preview or existing["api_key_preview"] == api_key_preview)
         and _same_nullable_float(existing["temperature"], temperature)
         and _same_nullable_float(existing["top_p"], top_p)
         and existing["max_tokens"] == max_tokens
@@ -564,7 +567,17 @@ def upsert_llm_config_dict(
     values = _build_upsert_values(item, existing)
 
     if existing is not None and _is_same_upsert_values(existing, values):
-        return _row_to_response(existing)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = _select_llm_config(conn, client_id)
+            if current is None:
+                raise RuntimeError("Failed to reload saved model config.")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return _row_to_response(current)
 
     conn.execute(
         """
@@ -597,14 +610,26 @@ def upsert_llm_config_dict(
             api_family = excluded.api_family,
             model = excluded.model,
             base_url = excluded.base_url,
-            encrypted_api_key = COALESCE(
-                excluded.encrypted_api_key,
-                llm_configs.encrypted_api_key
-            ),
-            api_key_preview = COALESCE(
-                NULLIF(excluded.api_key_preview, ''),
-                llm_configs.api_key_preview
-            ),
+            encrypted_api_key = CASE
+                WHEN excluded.encrypted_api_key IS NOT NULL
+                    THEN excluded.encrypted_api_key
+                WHEN llm_configs.provider = excluded.provider
+                    AND llm_configs.api_family = excluded.api_family
+                    AND COALESCE(llm_configs.base_url, '') =
+                        COALESCE(excluded.base_url, '')
+                    THEN llm_configs.encrypted_api_key
+                ELSE NULL
+            END,
+            api_key_preview = CASE
+                WHEN excluded.encrypted_api_key IS NOT NULL
+                    THEN excluded.api_key_preview
+                WHEN llm_configs.provider = excluded.provider
+                    AND llm_configs.api_family = excluded.api_family
+                    AND COALESCE(llm_configs.base_url, '') =
+                        COALESCE(excluded.base_url, '')
+                    THEN llm_configs.api_key_preview
+                ELSE ''
+            END,
             temperature = excluded.temperature,
             top_p = excluded.top_p,
             max_tokens = excluded.max_tokens,

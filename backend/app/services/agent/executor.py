@@ -31,6 +31,7 @@ from .models import (
 from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
 from .policy import AgentTaskIntent, infer_agent_task_intent
 from .privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_text
+from .request_context import active_resume
 
 OPPORTUNITY_KIND_PATTERN_KEYS: tuple[
     tuple[TargetOpportunityKind, str],
@@ -43,62 +44,26 @@ OPPORTUNITY_KIND_PATTERN_KEYS: tuple[
 )
 ALL_ITEM_STRING_FIELDS = tuple(
     dict.fromkeys(
-        field
-        for fields in ITEM_STRING_FIELDS_BY_KIND.values()
-        for field in fields
+        field for fields in ITEM_STRING_FIELDS_BY_KIND.values() for field in fields
     ),
 )
 ALL_ITEM_LIST_FIELDS = tuple(
     dict.fromkeys(
-        field
-        for fields in ITEM_LIST_FIELDS_BY_KIND.values()
-        for field in fields
+        field for fields in ITEM_LIST_FIELDS_BY_KIND.values() for field in fields
     ),
 )
 
 
 def _current_prompt(request: AgentChatRequest) -> str:
-    """Return the current user message while keeping the legacy prompt field."""
+    """Return text from the singular validated current user message."""
 
-    if request.message and request.message.text.strip():
-        return request.message.text.strip()
-
-    if request.prompt.strip():
-        return request.prompt.strip()
-
-    if request.messages:
-        last_user = next(
-            (
-                message.text.strip()
-                for message in reversed(request.messages)
-                if message.role == "user" and message.text.strip()
-            ),
-            "",
-        )
-
-        if last_user:
-            return last_user
-
-    return ""
+    return request.message.text.strip()
 
 
 def _conversation_depth(request: AgentChatRequest) -> int:
-    """Return the number of real conversation messages sent by the frontend."""
+    """Count prior history plus the singular current user turn."""
 
-    if request.messages:
-        return len(request.messages)
-
-    return len(request.conversation)
-
-
-def _active_resume(request: AgentChatRequest) -> dict[str, Any]:
-    """Return the resume state tools should inspect for this request."""
-
-    draft = request.draft_state
-    if draft and draft.status == "pending" and draft.resume:
-        return draft.resume
-
-    return request.resume
+    return len(request.messages) + 1
 
 
 def _file_content_text(
@@ -192,10 +157,7 @@ def _has_item_content(item: object, section_kind: str = "") -> bool:
         for field in string_fields
     ) or any(
         isinstance(item.get(field), list)
-        and any(
-            isinstance(entry, str) and entry.strip()
-            for entry in item[field]
-        )
+        and any(isinstance(entry, str) and entry.strip() for entry in item[field])
         for field in list_fields
     )
 
@@ -227,7 +189,7 @@ class AgentPlanExecutor:
         self.request = request
         # `jobBrief` remains the request wire name; normalize it at this boundary.
         self.target_brief = request.job_brief.strip()
-        self.resume = _active_resume(request)
+        self.resume = active_resume(request)
         self.hidden_terms = resume_hidden_terms(self.resume)
         self.visible_resume = sanitize_agent_resume(
             self.resume,
@@ -596,11 +558,7 @@ class AgentPlanExecutor:
             section_kind = str(section.get("kind") or "")
             items = section.get("items")
             visible_items = (
-                [
-                    item
-                    for item in items
-                    if _has_item_content(item, section_kind)
-                ]
+                [item for item in items if _has_item_content(item, section_kind)]
                 if isinstance(items, list)
                 else []
             )

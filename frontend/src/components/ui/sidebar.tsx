@@ -14,6 +14,27 @@ const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
+function getInitialSidebarOpen(defaultOpen: boolean) {
+  if (typeof document === "undefined") {
+    return defaultOpen
+  }
+
+  const cookiePrefix = `${SIDEBAR_COOKIE_NAME}=`
+  const sidebarCookie = document.cookie
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(cookiePrefix))
+  const cookieValue = sidebarCookie?.slice(cookiePrefix.length)
+
+  if (cookieValue === "true") {
+    return true
+  }
+  if (cookieValue === "false") {
+    return false
+  }
+  return defaultOpen
+}
+
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
   open: boolean
@@ -50,7 +71,9 @@ export function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
-  const [_open, _setOpen] = React.useState(defaultOpen)
+  const [_open, _setOpen] = React.useState(() =>
+    getInitialSidebarOpen(defaultOpen)
+  )
   const open = openProp ?? _open
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {

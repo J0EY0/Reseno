@@ -4,6 +4,7 @@ import type {
   AgentChatAttachment,
   AgentChatMessage,
   AgentConversationMessage,
+  AgentDraftSnapshot,
   AgentResumeEditSuggestion,
   AgentSessionResponse,
   AgentSource,
@@ -18,6 +19,40 @@ export interface AgentPanelMessage {
   files?: AgentChatAttachment[];
   response?: AgentChatMessage;
   execution?: AgentTurnExecution;
+}
+
+export function getAgentDraftSnapshot(
+  messages: AgentStoredMessage[],
+): AgentDraftSnapshot | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const response = message.response;
+    if (
+      message.role !== "assistant" ||
+      response?.transactionState !== "committed" ||
+      !response.draft ||
+      !response.edits?.length
+    ) {
+      continue;
+    }
+
+    return {
+      baseResume: response.draft.baseResume,
+      edits: response.edits,
+      sourceMessageId: message.id,
+      status: response.draft.status,
+      transactionState: "committed",
+    };
+  }
+
+  return null;
+}
+
+export function getPendingAgentDraftSnapshot(
+  messages: AgentStoredMessage[],
+): AgentDraftSnapshot | null {
+  const draft = getAgentDraftSnapshot(messages);
+  return draft?.status === "pending" ? draft : null;
 }
 
 export function toConversationMessage(
@@ -40,6 +75,7 @@ function toConversationResponse(
 ): AgentConversationMessage["response"] {
   return {
     actions: response.actions,
+    draft: response.draft,
     edits: response.edits?.map((edit) => ({
       evidenceRefs: edit.evidenceRefs,
       id: edit.id,
@@ -180,6 +216,7 @@ export async function hydrateAgentSession(
   );
 
   return {
+    draftSnapshot: getAgentDraftSnapshot(session.messages),
     panelMessages: toPanelMessages(session, transientStatusTexts),
     session,
   };

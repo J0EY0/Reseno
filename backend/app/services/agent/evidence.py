@@ -160,10 +160,7 @@ def _inferred_evidence_refs(
 
 
 def _request_files(request: AgentChatRequest) -> list[dict[str, Any]]:
-    files = list(request.files)
-    if request.message is not None:
-        files.extend(request.message.files)
-    return [file for file in files if isinstance(file, dict)]
+    return [file for file in request.message.files if isinstance(file, dict)]
 
 
 def _string_list(value: object) -> list[str]:

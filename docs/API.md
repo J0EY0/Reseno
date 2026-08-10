@@ -19,8 +19,11 @@ type ApiResponse<T> = {
 }
 ```
 
-HTTP 层用于表示请求是否成功到达后端；业务状态统一放在 payload 中。正常业务错误
-也返回 HTTP 200，前端只按 `code` 分支处理，避免 HTTP 状态码和业务状态混用。
+HTTP 状态码遵循标准语义：2xx 表示成功，400 表示无效请求，401 表示认证失败，
+403 表示请求被禁止，404 表示资源不存在，409 表示状态冲突，422 表示请求结构
+校验失败，429 表示请求过多，5xx 表示服务端或上游故障。所有 `/api/*` 响应仍使用
+上述统一 envelope；payload 中的 `code` 和 `message` 用于区分具体业务错误，而不是
+替代 HTTP 状态码。
 
 常用业务码：
 
@@ -41,13 +44,37 @@ const ApiCode = {
 
 ## Auth
 
+所有环境都要求认证。空实例只公开一次性 owner 设置接口；owner 创建后，除 setup
+状态和登录外的 `/api/*` 都要求有效 Bearer JWT。
+
+### GET `/api/auth/setup`
+
+用途：查询实例是否仍需创建唯一 owner。响应带 `Cache-Control: no-store`。
+
+```ts
+type AuthSetupStatusResponse = {
+  setupRequired: boolean
+}
+```
+
+### POST `/api/auth/setup`
+
+用途：首次从 loopback 客户端创建唯一 owner。成功后 setup 永久关闭，并直接返回
+`AuthLoginResponse`。用户名去除首尾空白后至少 3 个字符，只允许字母、数字、`_`
+和 `-`；密码至少 8 个字符并同时包含字母和数字。
+
+```ts
+type AuthSetupRequest = {
+  username: string
+  password: string
+  confirmPassword: string
+}
+```
+
 ### POST `/api/auth/login`
 
 用途：由后端校验用户名和密码。前端只接收成功或失败结果，不读取后端明文凭据。
 登录成功后返回 8 小时有效的 Bearer JWT。
-
-JWT 校验只在后端 `APP_ENV=production` 时启用；`development` 下后端不会拦截缺失
-或过期的 JWT，前端开发服务器也不会因为缺少本地 token 强制跳转登录页。
 
 请求：
 
@@ -85,9 +112,9 @@ Authorization: Bearer <accessToken>
 
 ### POST `/api/auth/password`
 
-用途：修改登录密码。前端只提交当前密码和新密码，后端完成校验并写入运行时
-`.env` 的 `AUTH_PASSWORD`。修改成功后，后端会让当前 JWT 失效，前端清理本地
-session 并跳转登录页。
+用途：修改登录密码。前端只提交当前密码和新密码；后端在同一个 `auth.db`
+事务内写入新的 Argon2id 哈希和随机认证 revision。全部已有 JWT 因 revision
+不再匹配而失效，前端清理本地 session 并跳转登录页。
 
 请求头：
 
@@ -114,9 +141,10 @@ type AuthPasswordUpdateResponse = {
 }
 ```
 
-生产环境下，除 `/api/auth/login` 外，所有 `/api/*` 接口都需要携带
-`Authorization: Bearer <accessToken>`。缺失、过期、签名错误或已被刷新失效的
-token 会返回 HTTP 200，但 payload 为：
+所有环境下，除 `/api/auth/setup`（GET/POST）和 `/api/auth/login` 外，所有
+`/api/*` 接口都需要携带 `Authorization: Bearer <accessToken>`。缺失、过期、
+签名错误、owner revision 不匹配或已被刷新失效的 token 会返回 HTTP 401，并携带
+`WWW-Authenticate: Bearer`；payload 为：
 
 ```ts
 {
@@ -124,7 +152,10 @@ token 会返回 HTTP 200，但 payload 为：
   message: "UNAUTHORIZED_REQUEST",
   data: {
     loginUrl: "/login",
-    reason: "missing_token" | "invalid_or_expired_token"
+    reason:
+      | "missing_token"
+      | "invalid_or_expired_token"
+      | "owner_missing_or_changed"
   }
 }
 ```
@@ -309,9 +340,11 @@ type ExportResumePdfResponse = {
   exportId: string
   downloadUrl: string
   fileName: string
-  expiresAt?: string
+  expiresAt: string
 }
 ```
+
+`expiresAt` 固定为导出文件写入后一小时；过期下载返回 404，后端会清理对应临时文件。
 
 后端流程：
 
@@ -412,16 +445,18 @@ type AgentConversationMessage = {
   createdAt?: string
 }
 
+type AgentCurrentMessage = {
+  id: string // 当前轮唯一 ID，也是唯一的幂等键
+  role: "user"
+  text: string // 可为空，但此时 files 必须非空
+  files?: AgentChatAttachment[]
+}
+
 type AgentChatRequest = {
   resumeId?: string // 当前简历 ID；Agent 会话按 resumeId 存储和检索
-  prompt: string
-  message?: AgentConversationMessage // 当前用户消息
-  messages?: AgentConversationMessage[] // 最近可见多轮消息，前端当前发送最近 12 条
-  conversation: Array<{
-    role: "user" | "assistant"
-    text: string
-  }> // legacy 兼容字段，后端可优先读取 messages
-  files: AgentChatAttachment[]
+  expectedRevision?: string // 传 resumeId 时必填，取自 GET session 的 revision
+  message: AgentCurrentMessage // 当前唯一用户轮；附件也放在这里
+  messages?: AgentConversationMessage[] // 仅当前轮之前的历史，不能包含 message
   locale: "zh" | "en"
   resume: ResumeData
   jobBrief: string
@@ -438,6 +473,9 @@ type AgentChatRequest = {
   stream?: boolean
 }
 ```
+
+请求没有 `prompt`、顶层 `files`、`conversation` 或 `clientTurnId` 字段；这些旧字段
+不会被兼容，传入时会直接校验失败。`message.id` 是当前轮唯一的幂等键。
 
 普通 JSON 响应：
 
@@ -601,9 +639,11 @@ data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant",
 - `edit_execute.output.observations` 会返回本次草稿操作的目标位置、修改前快照和修改后快照，模型应根据 Observation 判断是否继续修正或调用隐藏 `finish` 结束。
 - `finish` 是后端内部 ReAct 结束 action，不作为前端工具卡展示。
 - `quickReplies` 是后端建议的继续追问，不要由前端硬编码。
-- `message` 是当前用户消息，`messages` 用于多轮上下文；`conversation` 仅作为旧字段兼容。
+- `message` 是当前唯一用户轮，`messages` 只包含它之前的历史；当前 `message.id`
+  不能再次出现在 `messages` 中。
 - 传入 `resumeId` 时，后端会把当前用户消息和最终助手消息写入
-  `agent_sessions` / `agent_messages`，前端重新进入同一简历时按 `resumeId` 加载。
+  `agent_sessions` / `agent_messages`。请求必须同时传入最近一次 GET session 返回的
+  `revision` 作为 `expectedRevision`；并发冲突返回 409。
 - 附件 `url` 当前可能是 data URL；大文件接后端后建议先上传，再传后端可访问 URL。
 - 后端发生可恢复错误时可发送 `event: error`，也可以直接返回非 2xx JSON error。
 
@@ -621,6 +661,7 @@ type AgentStoredMessage = AgentConversationMessage & {
 
 type AgentSessionResponse = {
   resumeId: string
+  revision: string
   messages: AgentStoredMessage[]
 }
 ```
@@ -919,7 +960,6 @@ type AgentSettings = {
 `APP_DATA_DIR/.env`，本地即 `~/.resumate/.env`：
 
 ```env
-APP_ENV=development
 APP_DATA_DIR=~/.resumate
 APP_DB_PATH=~/.resumate/app.db
 APP_STORAGE_DIR=~/.resumate/storage
@@ -927,8 +967,6 @@ APP_HOST=127.0.0.1
 APP_PORT=8000
 FRONTEND_RENDER_BASE_URL=http://127.0.0.1:5173
 PDF_RENDER_TIMEOUT_MS=30000
-AUTH_USERNAME=admin
-AUTH_PASSWORD=ResuMate@2026
 BACKEND_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 # RESUMATE_MASTER_KEY 在 .env.example 中留空，真实 .env 首次启动自动填充
 RESUMATE_MASTER_KEY=
@@ -936,12 +974,14 @@ RESUMATE_MASTER_KEY=
 RESUMATE_JWT_SECRET=
 ```
 
+业务 `app.db` 继续使用 schema v1，不加入或迁移任何认证表。唯一 owner 的用户名、
+Argon2id 密码哈希和随机认证 revision 单独保存在 `APP_DATA_DIR/auth.db`。
+替换 `auth.db` 或修改密码都会使旧 JWT 的 revision 失效。
+
 SQLite 中的大模型配置保存非敏感字段、`encrypted_api_key` 和固定长度
 `api_key_preview`。真实 `.env` 缺失时后端会在运行时数据目录中从
 `backend/.env.example` 生成一份，再把 `RESUMATE_MASTER_KEY` 填成 Fernet key
 并把 `RESUMATE_JWT_SECRET` 填成随机签名密钥，两者都会标记 `DO NOT CHANGE`；
-之后启动如果已经存在有效值，绝不重新生成或覆盖。
-如检测到旧版仓库内 `backend/.env`，只会在目标 runtime `.env` 不存在时迁移一次，
-避免项目更新覆盖用户密钥。`AUTH_PASSWORD` 首次初始化默认写入 `ResuMate@2026`；
-之后可通过设置页调用 `POST /api/auth/password` 修改，也可自行编辑
-`APP_DATA_DIR/.env`。通过设置页修改会立即生效；手动编辑 `.env` 后需要重启后端。
+之后启动如果已经存在有效值，绝不重新生成或覆盖。ResuMate 不提供默认用户名或
+密码；首次打开时通过 `POST /api/auth/setup` 创建唯一 owner，之后通过设置页调用
+`POST /api/auth/password` 修改密码。

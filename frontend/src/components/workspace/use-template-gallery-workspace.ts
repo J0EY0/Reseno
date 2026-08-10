@@ -14,6 +14,7 @@ import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { importTemplatePayload } from "@/lib/import-api";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
+import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
   createCustomTemplateFromBase,
   getTemplateById,
@@ -63,17 +64,22 @@ export function useTemplateGalleryWorkspace({
   persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
+  const preparedRouteData = useWorkspaceLateralRouteData("templates");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
+  const routeMutationEpochRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
   const setDefaultInFlightRef = useRef(false);
   const [retryKey, setRetryKey] = useState(0);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!preparedRouteData);
   const [theme, setTheme] = useState<ThemeMode>(
-    () => persistence.getSnapshot()?.theme ?? "light",
+    () =>
+      preparedRouteData?.theme
+        ? normalizeWorkspaceTheme(preparedRouteData.theme)
+        : persistence.getSnapshot()?.theme ?? "light",
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
@@ -84,17 +90,26 @@ export function useTemplateGalleryWorkspace({
     string | null
   >(null);
   const [defaultTemplateId, setDefaultTemplateId] =
-    useState<ResumeTemplateId>(baseTemplateId);
+    useState<ResumeTemplateId>(
+      () => preparedRouteData?.defaultTemplateId ?? baseTemplateId,
+    );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
-  >([]);
+  >(() => preparedRouteData?.customTemplates ?? []);
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
     [customTemplates, messages],
   );
+  const routeData = useMemo(
+    () => ({ customTemplates, defaultTemplateId, theme }),
+    [customTemplates, defaultTemplateId, theme],
+  );
   const previewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
+  const markRouteMutation = useCallback(() => {
+    routeMutationEpochRef.current += 1;
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -122,63 +137,99 @@ export function useTemplateGalleryWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal) => {
+    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      setIsLoading(true);
-      setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      if (!isPreparedCalibration) {
+        setIsLoading(true);
+        setHasLoadError(false);
+        toast.dismiss("workspace-load-error");
+      }
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+        while (!signal.aborted && requestIdRef.current === requestId) {
+          const mutationEpoch = routeMutationEpochRef.current;
+          try {
+            await persistence.flush();
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const source = await fetchWorkspaceRouteData("template-gallery", {
-          notifyOnError: false,
-          signal,
-        });
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
+            const source = await fetchWorkspaceRouteData(
+              "template-gallery",
+              isPreparedCalibration
+                ? { notifyOnError: false }
+                : { notifyOnError: false, signal },
+            );
+            if (signal.aborted || requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
-        const persistedAgentSettings =
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
+            const persistedPreferences = persistence.getSnapshot();
+            const nextTheme = source.data.theme
+              ? normalizeWorkspaceTheme(source.data.theme)
+              : persistedPreferences?.theme ?? "light";
+            const persistedAgentSettings =
+              persistedPreferences?.agentSettings ??
+              createDefaultAgentSettings();
 
-        setTheme(nextTheme);
-        setDefaultTemplateId(source.data.defaultTemplateId);
-        setCustomTemplates(source.data.customTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings: persistedAgentSettings,
-        });
-        setHasLoaded(true);
-      } catch (error) {
-        if (isAbortError(error)) {
-          return;
-        }
-        if (requestIdRef.current !== requestId) {
-          return;
-        }
+            setTheme(nextTheme);
+            setDefaultTemplateId(source.data.defaultTemplateId);
+            setCustomTemplates(source.data.customTemplates);
+            persistence.hydrate({
+              locale: initialLocaleRef.current,
+              theme: nextTheme,
+              agentSettings: persistedAgentSettings,
+            });
+            setHasLoaded(true);
+            return;
+          } catch (error) {
+            if (signal.aborted || isAbortError(error)) {
+              return;
+            }
+            if (requestIdRef.current !== requestId) {
+              return;
+            }
+            if (
+              isPreparedCalibration &&
+              routeMutationEpochRef.current !== mutationEpoch
+            ) {
+              continue;
+            }
 
-        console.error("Failed to load the template gallery route.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(
-            getMessagesSync(initialLocaleRef.current).apiMessages
-              .REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
-          );
+            console.error("Failed to load the template gallery route.", error);
+            if (!isApiErrorToastShown(error)) {
+              toast.error(
+                getMessagesSync(initialLocaleRef.current).apiMessages
+                  .REQUEST_FAILED,
+                { closeButton: true, id: "workspace-load-error" },
+              );
+            }
+            if (!isPreparedCalibration) {
+              setHasLoaded(false);
+              setHasLoadError(true);
+            }
+            return;
+          }
         }
-        setHasLoaded(false);
-        setHasLoadError(true);
       } finally {
-        if (requestIdRef.current === requestId) {
+        if (
+          !isPreparedCalibration &&
+          !signal.aborted &&
+          requestIdRef.current === requestId
+        ) {
           setIsLoading(false);
         }
       }
@@ -187,12 +238,25 @@ export function useTemplateGalleryWorkspace({
   );
 
   useEffect(() => {
+    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
+    if (isPreparedCalibration && preparedRouteData) {
+      const persistedPreferences = persistence.getSnapshot();
+      persistence.hydrate({
+        locale: initialLocaleRef.current,
+        theme: preparedRouteData.theme
+          ? normalizeWorkspaceTheme(preparedRouteData.theme)
+          : persistedPreferences?.theme ?? "light",
+        agentSettings:
+          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
+      });
+    }
+
     const controller = new AbortController();
     // Suppress StrictMode's development preflight before transport begins,
     // then abort any real in-flight request when route ownership changes.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal);
+        void loadRouteData(controller.signal, isPreparedCalibration);
       }
     }, 0);
 
@@ -200,10 +264,11 @@ export function useTemplateGalleryWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, retryKey]);
+  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
+      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -237,7 +302,7 @@ export function useTemplateGalleryWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
   );
 
   const buildTemplateDetailHandoff = useCallback(
@@ -298,6 +363,7 @@ export function useTemplateGalleryWorkspace({
     try {
       const result = await createTemplateApi(draftTemplate);
       const nextCustomTemplates = [...customTemplates, result.template];
+      markRouteMutation();
       setCustomTemplates(nextCustomTemplates);
       runViewTransition(
         () =>
@@ -323,6 +389,7 @@ export function useTemplateGalleryWorkspace({
     buildTemplateDetailHandoff,
     customTemplates,
     isLoading,
+    markRouteMutation,
     messages,
     navigate,
     templateCatalog,
@@ -358,6 +425,7 @@ export function useTemplateGalleryWorkspace({
         }
 
         const nextCustomTemplates = [...customTemplates, ...savedImports];
+        markRouteMutation();
         setCustomTemplates(nextCustomTemplates);
         runViewTransition(
           () =>
@@ -380,7 +448,7 @@ export function useTemplateGalleryWorkspace({
         setIsImporting(false);
       }
     },
-    [buildTemplateDetailHandoff, customTemplates, messages, navigate],
+    [buildTemplateDetailHandoff, customTemplates, markRouteMutation, messages, navigate],
   );
 
   const deleteTemplates = useCallback(
@@ -404,6 +472,7 @@ export function useTemplateGalleryWorkspace({
         return;
       }
 
+      markRouteMutation();
       setCustomTemplates((current) =>
         current.filter((item) => !customTemplateIds.includes(item.id)),
       );
@@ -417,7 +486,7 @@ export function useTemplateGalleryWorkspace({
         { closeButton: true },
       );
     },
-    [customTemplates, defaultTemplateId, messages],
+    [customTemplates, defaultTemplateId, markRouteMutation, messages],
   );
 
   const setDefaultTemplate = useCallback(
@@ -434,6 +503,7 @@ export function useTemplateGalleryWorkspace({
       setSettingDefaultTemplateId(templateId);
       try {
         const result = await saveDefaultTemplateApi(templateId);
+        markRouteMutation();
         setDefaultTemplateId(result.defaultTemplateId);
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
@@ -446,7 +516,7 @@ export function useTemplateGalleryWorkspace({
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateId, messages, templateCatalog],
+    [defaultTemplateId, markRouteMutation, messages, templateCatalog],
   );
 
   return {
@@ -463,6 +533,7 @@ export function useTemplateGalleryWorkspace({
     previewResume,
     retryLoad: () => setRetryKey((current) => current + 1),
     resolvedTheme,
+    routeData,
     setDefaultTemplate,
     settingDefaultTemplateId,
     templateCatalog,
