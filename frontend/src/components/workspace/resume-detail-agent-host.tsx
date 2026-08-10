@@ -90,9 +90,6 @@ function ResumeDetailAgentPanel({
         t={messages}
         locale={locale}
         resume={state.resume}
-        jobBrief={state.agent.jobBrief}
-        onJobBriefChange={commands.agent.changeJobBrief}
-        keywordMatch={state.agent.keywordMatch}
         modelConfigs={state.agent.modelConfigs}
         selectedModelId={state.agent.selectedModelId}
         onSelectedModelChange={commands.agent.changeSelectedModel}

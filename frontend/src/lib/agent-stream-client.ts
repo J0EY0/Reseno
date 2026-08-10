@@ -47,6 +47,7 @@ const agentTurnExecutionStatuses = new Set<AgentTurnExecutionStatus>([
 const agentTurnErrorCodes = new Set<AgentTurnErrorCode>([
   "AGENT_PROVIDER_AUTH_ERROR",
   "AGENT_PROVIDER_ERROR",
+  "AGENT_PROVIDER_TIMEOUT",
   "AGENT_INTERNAL_ERROR",
   "AGENT_RUN_CANCELLED",
   "AGENT_EDIT_TRANSACTION_INCOMPLETE",

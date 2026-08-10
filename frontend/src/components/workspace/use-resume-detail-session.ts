@@ -9,7 +9,8 @@ import {
 
 import { useResumeAgentDraft } from "@/hooks/use-resume-agent-draft";
 import type { AppMessages } from "@/i18n";
-import { createEmptyResume, getKeywordMatch } from "@/lib/resume";
+import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
+import { createEmptyResume } from "@/lib/resume";
 import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
 import type {
   ResumeData,
@@ -37,12 +38,17 @@ function createCollapsedState(resume: ResumeData, openId?: string) {
 interface ResumeDetailSessionOptions {
   initialResume: ResumeWorkspaceItem | null;
   messages: AppMessages;
+  onResolveAppliedDraft: (
+    messageId: string,
+    resume: ResumeData,
+  ) => Promise<AgentDraftDecisionResolution>;
 }
 
 /** Owns the live document fields and Agent draft, independent of persistence. */
 export function useResumeDetailSession({
   initialResume,
   messages,
+  onResolveAppliedDraft,
 }: ResumeDetailSessionOptions) {
   const emptyResume = useMemo(() => createEmptyResume(), []);
   const [resumeItem, setResumeItem] =
@@ -72,6 +78,7 @@ export function useResumeDetailSession({
   const agent = useResumeAgentDraft({
     messages,
     onApplyResume: applyAgentDraftResume,
+    onResolveAppliedDraft,
     resume,
     resumeId: resumeItem?.id,
   });
@@ -182,7 +189,6 @@ export function useResumeDetailSession({
 
   const effectiveResume = agentDraft?.resume ?? resume;
   const previewResume = useDeferredValue(effectiveResume);
-  const deferredJobBrief = useDeferredValue(jobBrief);
   const liveResume = resumeItem
     ? {
         ...resumeItem,
@@ -194,11 +200,6 @@ export function useResumeDetailSession({
       }
     : null;
   const liveFingerprint = createResumeFingerprint(liveResume);
-  const keywordMatch = useMemo(
-    () => getKeywordMatch(previewResume, deferredJobBrief, 0, messages),
-    [deferredJobBrief, messages, previewResume],
-  );
-
   return {
     ...agent,
     adoptSavedResume,
@@ -207,7 +208,6 @@ export function useResumeDetailSession({
     hydrate,
     hydrateIfUnchanged,
     jobBrief,
-    keywordMatch,
     liveFingerprint,
     liveResume,
     previewResume,

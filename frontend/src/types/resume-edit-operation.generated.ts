@@ -5,7 +5,7 @@ import type { ResumeSection, ResumeSectionItem } from "@/types/resume";
 export type ResumeEditOperation =
   {
     type: "replace_field";
-    path: "basic.headline" | "basic.location" | "basic.summary";
+    path: "basic.headline" | "basic.summary";
     value: string;
   }
   | {

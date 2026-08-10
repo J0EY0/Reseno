@@ -130,14 +130,12 @@ export function findItem(section: ResumeSection, itemId: string) {
   return index >= 0 ? { index, item: section.items[index] } : null;
 }
 
-export type ReplaceBasicField = "headline" | "location" | "summary";
+export type ReplaceBasicField = "headline" | "summary";
 
 export function replaceBasicField(path: unknown): ReplaceBasicField | null {
   switch (path) {
     case "basic.headline":
       return "headline";
-    case "basic.location":
-      return "location";
     case "basic.summary":
       return "summary";
     default:

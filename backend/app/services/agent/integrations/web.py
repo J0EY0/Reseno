@@ -3,13 +3,24 @@ import ipaddress
 import re
 import socket
 from collections.abc import AsyncIterable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
 from typing import Literal
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote_plus,
+    unquote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
+from xml.etree.ElementTree import ParseError, fromstring
 
 import httpx
 
@@ -20,9 +31,10 @@ WEB_USER_AGENT = "Mozilla/5.0 (compatible; ResuMate/1.0)"
 WEB_ACCEPT_LANGUAGE = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
 FETCH_MAX_BYTES = 220_000
 SEARCH_MAX_BYTES = 240_000
-SEARCH_ENDPOINTS = (
-    "https://html.duckduckgo.com/html/?q={query}",
-    "https://duckduckgo.com/html/?q={query}",
+SearchResponseFormat = Literal["html", "rss"]
+SEARCH_PROVIDERS: tuple[tuple[str, SearchResponseFormat], ...] = (
+    ("https://html.duckduckgo.com/html/?q={query}", "html"),
+    ("https://www.bing.com/search?format=rss&q={query}", "rss"),
 )
 MAX_WEB_SEARCH_QUERIES = 5
 MAX_WEB_SEARCH_RESULTS = 10
@@ -45,6 +57,30 @@ BLOCKED_WEB_HOSTS = frozenset(
         "metadata.google.internal",
     },
 )
+TUN_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+TRACKING_QUERY_PARAMETERS = frozenset(
+    {
+        "_hsenc",
+        "_hsmi",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid",
+        "msclkid",
+    },
+)
+SEARCH_AGGREGATOR_HOST_SUFFIXES = (
+    "glassdoor.com",
+    "indeed.com",
+    "linkedin.com",
+    "monster.com",
+    "ziprecruiter.com",
+)
+OFFICIAL_CAREER_HOST_PREFIXES = ("careers.", "jobs.")
+OFFICIAL_CAREER_PATH_SEGMENTS = frozenset(
+    {"career", "careers", "job", "jobs", "join-us", "openings", "positions"},
+)
+SEARCH_RESULT_YEAR_PATTERN = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -123,6 +159,16 @@ class _AsyncQuerySearchState:
 
 
 @dataclass(frozen=True)
+class _SearchCandidate:
+    """A canonical result plus the query/rank signals used for fair selection."""
+
+    result: WebSearchResult
+    query_index: int
+    result_index: int
+    sequence: int
+
+
+@dataclass(frozen=True)
 class _PageTextBlock:
     """One visible semantic block with enough structure for excerpt selection."""
 
@@ -178,6 +224,48 @@ def _relevant_web_url(
     )
 
 
+def _canonical_web_url(url: str) -> str:
+    """Normalize a public result URL and remove non-semantic tracking fields."""
+
+    try:
+        parsed = urlsplit(url.strip())
+        hostname = (parsed.hostname or "").rstrip(".").casefold()
+        port = parsed.port
+    except ValueError:
+        return ""
+
+    scheme = parsed.scheme.casefold()
+    if (
+        scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return ""
+
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    default_port = 443 if scheme == "https" else 80
+    netloc = hostname if port in {None, default_port} else f"{hostname}:{port}"
+
+    query_fields = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not name.casefold().startswith("utm_")
+        and name.casefold() not in TRACKING_QUERY_PARAMETERS
+    ]
+    query_fields.sort(key=lambda item: (item[0].casefold(), item[1]))
+    return urlunsplit(
+        (
+            scheme,
+            netloc,
+            parsed.path,
+            urlencode(query_fields, doseq=True),
+            "",
+        ),
+    )
+
+
 def _search_result_url(href: str | None) -> str:
     """Return a real result URL from a search engine link."""
 
@@ -195,7 +283,7 @@ def _search_result_url(href: str | None) -> str:
         parsed = urlparse(candidate)
 
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return candidate
+        return _canonical_web_url(candidate)
 
     return ""
 
@@ -599,8 +687,24 @@ def _is_public_ip_address(value: str) -> bool:
     return address.is_global and not address.is_multicast
 
 
-def _is_allowed_web_url(url: str) -> bool:
-    """Resolve and reject any target that is not entirely on the public internet."""
+def _is_tun_fake_ip_address(value: str) -> bool:
+    """Recognize the RFC 2544 range used by Clash-compatible fake-IP DNS."""
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return address.version == 4 and address in TUN_FAKE_IP_NETWORK
+
+
+def _is_safe_resolved_address(value: str) -> bool:
+    """Allow public peers and a DNS-only TUN fake-IP transport address."""
+
+    return _is_public_ip_address(value) or _is_tun_fake_ip_address(value)
+
+
+def _safe_web_target_addresses(url: str) -> frozenset[str] | None:
+    """Resolve a URL into peer addresses approved for this exact request."""
 
     try:
         parsed = urlparse(url)
@@ -608,7 +712,7 @@ def _is_allowed_web_url(url: str) -> bool:
         # Reading ``port`` also rejects malformed or out-of-range port values.
         _ = parsed.port
     except ValueError:
-        return False
+        return None
 
     if (
         parsed.scheme not in {"http", "https"}
@@ -619,7 +723,7 @@ def _is_allowed_web_url(url: str) -> bool:
         or hostname.endswith(".localhost")
         or hostname in BLOCKED_WEB_HOSTS
     ):
-        return False
+        return None
 
     try:
         ipaddress.ip_address(hostname)
@@ -631,18 +735,27 @@ def _is_allowed_web_url(url: str) -> bool:
                 type=socket.SOCK_STREAM,
             )
         except (OSError, UnicodeError):
-            return False
+            return None
 
-        resolved_addresses = {str(sockaddr[0]) for *_, sockaddr in address_info}
-        return bool(resolved_addresses) and all(
-            _is_public_ip_address(address) for address in resolved_addresses
+        resolved_addresses = frozenset(
+            str(sockaddr[0]) for *_, sockaddr in address_info
         )
+        if not resolved_addresses or not all(
+            _is_safe_resolved_address(address) for address in resolved_addresses
+        ):
+            return None
+        return resolved_addresses
 
-    return _is_public_ip_address(hostname)
+    if not _is_public_ip_address(hostname):
+        return None
+    return frozenset({hostname})
 
 
-def _has_public_connected_peer(response: httpx.Response) -> bool:
-    """Fail closed unless httpcore reports a public address for the actual peer."""
+def _has_safe_connected_peer(
+    response: httpx.Response,
+    resolved_addresses: frozenset[str],
+) -> bool:
+    """Verify the peer, binding non-public fake-IP use to the DNS preflight."""
 
     network_stream = response.extensions.get("network_stream")
     get_extra_info = getattr(network_stream, "get_extra_info", None)
@@ -659,7 +772,11 @@ def _has_public_connected_peer(response: httpx.Response) -> bool:
     else:
         peer_address = server_addr
 
-    return isinstance(peer_address, str) and _is_public_ip_address(peer_address)
+    if not isinstance(peer_address, str):
+        return False
+    if _is_public_ip_address(peer_address):
+        return True
+    return peer_address in resolved_addresses and _is_tun_fake_ip_address(peer_address)
 
 
 def _web_reference_from_response(
@@ -777,11 +894,12 @@ def _get_bounded_web_response(
 
     current_url = url
     for redirect_count in range(MAX_WEB_REDIRECTS + 1):
-        if not _is_allowed_web_url(current_url):
+        resolved_addresses = _safe_web_target_addresses(current_url)
+        if resolved_addresses is None:
             return None
 
         with client.stream("GET", current_url) as response:
-            if not _has_public_connected_peer(response):
+            if not _has_safe_connected_peer(response, resolved_addresses):
                 return None
 
             if response.is_redirect:
@@ -817,11 +935,15 @@ async def _async_get_bounded_web_response(
     for redirect_count in range(MAX_WEB_REDIRECTS + 1):
         # DNS resolution uses the blocking socket API, so keep it off the
         # event loop while retaining the same validation as the sync path.
-        if not await asyncio.to_thread(_is_allowed_web_url, current_url):
+        resolved_addresses = await asyncio.to_thread(
+            _safe_web_target_addresses,
+            current_url,
+        )
+        if resolved_addresses is None:
             return None
 
         async with client.stream("GET", current_url) as response:
-            if not _has_public_connected_peer(response):
+            if not _has_safe_connected_peer(response, resolved_addresses):
                 return None
 
             if response.is_redirect:
@@ -944,7 +1066,7 @@ def _search_web_results(
         timeout=timeout,
         trust_env=False,
     ) as client:
-        for search_url in _search_urls(query):
+        for search_url, response_format in _search_requests(query):
             try:
                 fetched = _get_bounded_web_response(
                     client,
@@ -958,9 +1080,10 @@ def _search_web_results(
                 last_error = "Web search target was blocked or redirected unsafely."
                 continue
 
-            results, parse_error = _parse_search_results(
+            results, parse_error = _parse_provider_search_results(
                 fetched.raw,
                 fetched.charset,
+                response_format,
             )
             if results:
                 return results, None
@@ -982,7 +1105,7 @@ async def _async_search_web_results(
         timeout=timeout,
         trust_env=False,
     ) as client:
-        for search_url in _search_urls(query):
+        for search_url, response_format in _search_requests(query):
             try:
                 fetched = await _async_get_bounded_web_response(
                     client,
@@ -996,9 +1119,10 @@ async def _async_search_web_results(
                 last_error = "Web search target was blocked or redirected unsafely."
                 continue
 
-            results, parse_error = _parse_search_results(
+            results, parse_error = _parse_provider_search_results(
                 fetched.raw,
                 fetched.charset,
+                response_format,
             )
             if results:
                 return results, None
@@ -1007,9 +1131,24 @@ async def _async_search_web_results(
     return [], last_error or "Web search returned no usable result links."
 
 
-def _search_urls(query: str) -> tuple[str, ...]:
+def _search_requests(
+    query: str,
+) -> tuple[tuple[str, SearchResponseFormat], ...]:
     encoded_query = quote_plus(query)
-    return tuple(endpoint.format(query=encoded_query) for endpoint in SEARCH_ENDPOINTS)
+    return tuple(
+        (endpoint.format(query=encoded_query), response_format)
+        for endpoint, response_format in SEARCH_PROVIDERS
+    )
+
+
+def _parse_provider_search_results(
+    raw: bytes,
+    charset: str,
+    response_format: SearchResponseFormat,
+) -> tuple[list[WebSearchResult], str | None]:
+    if response_format == "rss":
+        return _parse_rss_search_results(raw, charset)
+    return _parse_search_results(raw, charset)
 
 
 def _parse_search_results(
@@ -1042,6 +1181,46 @@ def _parse_search_results(
         return [], "Web search returned no usable result links."
 
     return deduped_results, None
+
+
+def _parse_rss_search_results(
+    raw: bytes,
+    charset: str,
+) -> tuple[list[WebSearchResult], str | None]:
+    """Parse a bounded RSS search response into canonical organic links."""
+
+    try:
+        root = fromstring(raw.decode(charset, errors="replace"))
+    except (ParseError, ValueError):
+        return [], "Web search returned malformed RSS."
+
+    results: list[WebSearchResult] = []
+    seen_urls: set[str] = set()
+    for item in root.findall(".//item"):
+        title = _compact_text(item.findtext("title", default=""), limit=120)
+        url = _search_result_url(item.findtext("link", default=""))
+        if not title or not url or url in seen_urls:
+            continue
+
+        description = item.findtext("description", default="")
+        parser = PageTextParser()
+        parser.feed(description)
+        parser.close()
+        excerpt = _compact_text(" ".join(parser.text_parts) or description)
+        seen_urls.add(url)
+        results.append(
+            WebSearchResult(
+                title=title,
+                url=url,
+                excerpt=excerpt,
+            ),
+        )
+        if len(results) >= 5:
+            break
+
+    if not results:
+        return [], "Web search returned no usable result links."
+    return results, None
 
 
 def _search_web_reference(query: str) -> tuple[WebSearchResult | None, int, str | None]:
@@ -1228,6 +1407,114 @@ async def _cancel_tasks(tasks: Iterable[asyncio.Task[object]]) -> None:
         await asyncio.gather(*task_list, return_exceptions=True)
 
 
+def _canonicalized_search_result(
+    result: WebSearchResult,
+) -> WebSearchResult | None:
+    url = _canonical_web_url(result.url)
+    if not url:
+        return None
+
+    final_url = _canonical_web_url(result.final_url) if result.final_url else ""
+    return replace(result, url=url, final_url=final_url)
+
+
+def _search_result_domain(result: WebSearchResult) -> str:
+    hostname = (urlparse(result.url).hostname or "").casefold()
+    return hostname.removeprefix("www.")
+
+
+def _is_host_suffix(hostname: str, suffix: str) -> bool:
+    return hostname == suffix or hostname.endswith(f".{suffix}")
+
+
+def _is_official_career_result(result: WebSearchResult) -> bool:
+    parsed = urlparse(result.url)
+    hostname = (parsed.hostname or "").casefold().removeprefix("www.")
+    if any(
+        _is_host_suffix(hostname, suffix) for suffix in SEARCH_AGGREGATOR_HOST_SUFFIXES
+    ):
+        return False
+
+    path_segments = {
+        segment.casefold() for segment in parsed.path.split("/") if segment
+    }
+    return hostname.startswith(OFFICIAL_CAREER_HOST_PREFIXES) or bool(
+        path_segments & OFFICIAL_CAREER_PATH_SEGMENTS,
+    )
+
+
+def _search_result_freshness_year(result: WebSearchResult) -> int:
+    current_year = datetime.now(UTC).year
+    years = {
+        int(value)
+        for value in SEARCH_RESULT_YEAR_PATTERN.findall(
+            f"{result.title} {result.url} {result.excerpt}",
+        )
+    }
+    plausible_years = {
+        year for year in years if current_year - 5 <= year <= current_year + 1
+    }
+    return max(plausible_years, default=0)
+
+
+def _select_search_candidates(
+    query_states: dict[int, _AsyncQuerySearchState],
+    query_count: int,
+    result_limit: int,
+) -> list[WebSearchResult]:
+    """Select canonical results with query/domain diversity and stable quality."""
+
+    candidates: list[_SearchCandidate] = []
+    seen_urls: set[str] = set()
+    max_query_results = max(
+        (len(state.results) for state in query_states.values()),
+        default=0,
+    )
+    sequence = 0
+    for result_index in range(max_query_results):
+        for query_index in range(query_count):
+            state = query_states.get(query_index)
+            if state is None or result_index >= len(state.results):
+                continue
+
+            result = _canonicalized_search_result(state.results[result_index])
+            if result is None or result.url in seen_urls:
+                continue
+
+            seen_urls.add(result.url)
+            candidates.append(
+                _SearchCandidate(
+                    result=result,
+                    query_index=query_index,
+                    result_index=result_index,
+                    sequence=sequence,
+                ),
+            )
+            sequence += 1
+
+    selected: list[WebSearchResult] = []
+    represented_queries: set[int] = set()
+    represented_domains: set[str] = set()
+    while candidates and len(selected) < result_limit:
+        candidate = max(
+            candidates,
+            key=lambda item: (
+                item.query_index not in represented_queries,
+                _search_result_domain(item.result) not in represented_domains,
+                _is_official_career_result(item.result),
+                _search_result_freshness_year(item.result),
+                -item.result_index,
+                -item.sequence,
+            ),
+        )
+        candidates.remove(candidate)
+        selected.append(candidate.result)
+        represented_queries.add(candidate.query_index)
+        represented_domains.add(_search_result_domain(candidate.result))
+
+    return selected
+
+
 def _search_web_reference_summary(
     queries: list[str],
     max_results: int = MAX_WEB_SEARCH_RESULTS,
@@ -1254,11 +1541,12 @@ def _search_web_reference_summary(
         if error:
             last_error = error
         for result in query_results:
-            if result.url in seen_urls:
+            canonical_result = _canonicalized_search_result(result)
+            if canonical_result is None or canonical_result.url in seen_urls:
                 continue
 
-            seen_urls.add(result.url)
-            results.append(result)
+            seen_urls.add(canonical_result.url)
+            results.append(canonical_result)
 
     return WebSearchReference(
         query=normalized_queries[0] if normalized_queries else "",
@@ -1338,30 +1626,13 @@ async def _async_search_web_reference_summary(
             last_error = state.error
 
     # Select before fetching so the page budget is global rather than
-    # ``query_count * max_results``. Walking one result depth at a time gives
-    # every completed query a fair chance while preserving deterministic order.
-    selected_results: list[WebSearchResult] = []
-    seen_urls: set[str] = set()
-    max_query_results = max(
-        (len(state.results) for state in query_states.values()),
-        default=0,
+    # ``query_count * max_results``. Query coverage wins first, followed by
+    # source-domain diversity, official-career signals, freshness, and rank.
+    selected_results = _select_search_candidates(
+        query_states,
+        len(normalized_queries),
+        result_limit,
     )
-    for result_index in range(max_query_results):
-        for query_index in range(len(normalized_queries)):
-            state = query_states.get(query_index)
-            if state is None or result_index >= len(state.results):
-                continue
-
-            result = state.results[result_index]
-            if result.url in seen_urls:
-                continue
-
-            seen_urls.add(result.url)
-            selected_results.append(result)
-            if len(selected_results) >= result_limit:
-                break
-        if len(selected_results) >= result_limit:
-            break
 
     page_states: dict[int, WebReference | None] = {}
     relevance_query = " ".join(normalized_queries)
@@ -1395,6 +1666,7 @@ async def _async_search_web_reference_summary(
             task.result()
 
     results: list[WebSearchResult] = []
+    seen_result_urls: set[str] = set()
     for index, result in enumerate(selected_results):
         web_reference = page_states.get(index)
         candidate = (
@@ -1402,8 +1674,15 @@ async def _async_search_web_reference_summary(
             if web_reference
             else _search_snippet_fallback(result)
         )
-        if candidate is not None:
-            results.append(candidate)
+        canonical_candidate = (
+            _canonicalized_search_result(candidate) if candidate is not None else None
+        )
+        if (
+            canonical_candidate is not None
+            and canonical_candidate.url not in seen_result_urls
+        ):
+            seen_result_urls.add(canonical_candidate.url)
+            results.append(canonical_candidate)
 
     timed_out = search_timed_out or fetch_timed_out
 

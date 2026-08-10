@@ -33,7 +33,7 @@
     "test:domain-modules": "node scripts/verify-resume-domain-boundaries.mjs",
     "test:dynamic-import-recovery": "node scripts/verify-dynamic-import-recovery.mjs",
     "test:resume-font-loading": "node scripts/verify-resume-font-loading.mjs",
-    "test:agent-panel": "node scripts/verify-agent-panel-state.mjs && node scripts/verify-agent-render-boundaries.mjs && node scripts/verify-agent-controller-boundaries.mjs",
+    "test:agent-panel": "node scripts/verify-agent-panel-state.mjs && node scripts/verify-agent-diff-value.mjs && node scripts/verify-agent-render-boundaries.mjs && node scripts/verify-agent-controller-boundaries.mjs",
     "test:agent-controller-boundaries": "node scripts/verify-agent-controller-boundaries.mjs",
     "test:agent-render-boundaries": "node scripts/verify-agent-render-boundaries.mjs",
     "test:agent-sse": "node scripts/verify-agent-sse-reconnect.mjs",

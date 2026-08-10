@@ -22,7 +22,6 @@ def _tool_call(arguments: dict[str, object]) -> LlmToolCall:
 def _runner(
     *,
     prompt: str,
-    job_brief: str = "",
     candidate_name: str = "",
 ) -> AgentToolRunner:
     request = AgentChatRequest(
@@ -31,7 +30,6 @@ def _runner(
             role="user",
             text=prompt,
         ),
-        jobBrief=job_brief,
         locale="zh",
         resume={"basic": {"name": candidate_name}, "sections": []},
     )

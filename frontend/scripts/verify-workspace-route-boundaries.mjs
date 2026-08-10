@@ -499,7 +499,7 @@ assert.match(
 );
 assert.match(
   resumeDetailSaveSource,
-  /while \(activeRequestRef\.current\)[\s\S]*submittedFingerprint[\s\S]*recentlySavedFingerprintsRef/,
+  /const resolveAppliedAgentDraft[\s\S]*while \(activeRequestRef\.current\)[\s\S]*resolveAgentDraftDecision[\s\S]*resolution\.committed[\s\S]*adoptPersistedSave/,
   "Resume detail must keep serialized saves and protect edits made during an active request.",
 );
 assert.ok(

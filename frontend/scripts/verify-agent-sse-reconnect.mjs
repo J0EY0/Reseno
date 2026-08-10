@@ -198,6 +198,29 @@ const agentStreamClient = await loadTypeScriptModule(
 }
 
 {
+  let requestCount = 0;
+  activeFetch = async () => {
+    requestCount += 1;
+    return createEventStream(
+      [
+        'id: 10\nevent: message_done\ndata: {"message":{"id":"message-cancelled","role":"assistant","text":"kept partial","transactionState":"rolled_back"}}',
+        'id: 11\nevent: run_done\ndata: {"status":"cancelled","executionState":"cancelled","errorCode":"AGENT_RUN_CANCELLED"}',
+        "",
+      ].join("\n\n"),
+    );
+  };
+
+  const result = await agentStreamClient.connectAgentRun(createActiveRun());
+
+  assert.equal(requestCount, 1);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.executionState, "cancelled");
+  assert.equal(result.messageDone, true);
+  assert.equal(result.message.text, "kept partial");
+  assert.equal(result.message.transactionState, "rolled_back");
+}
+
+{
   const controller = new AbortController();
   const request = {
     message: "Improve the summary",

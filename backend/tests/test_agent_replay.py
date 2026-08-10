@@ -173,6 +173,66 @@ def test_replay_draft_diff_summary_includes_reference_map() -> None:
     assert output["diffs"][1]["path"] == "sections.project.items.project-1"
 
 
+def test_replay_draft_diff_summary_preserves_structured_values() -> None:
+    structured_values = [
+        {
+            "id": "diff-update",
+            "operationId": "edit-update",
+            "path": "sections.project.items.project-1",
+            "label": "项目",
+            "before": {"description": "旧描述", "highlights": ["旧要点"]},
+            "after": {"description": "新描述", "highlights": ["新要点"]},
+        },
+        {
+            "id": "diff-reorder",
+            "operationId": "edit-reorder",
+            "path": "sections.project.items",
+            "label": "项目排序",
+            "before": ["project-1", "project-2"],
+            "after": ["project-2", "project-1"],
+        },
+        {
+            "id": "diff-delete",
+            "operationId": "edit-delete",
+            "path": "sections.project.items.project-2",
+            "label": "删除项目",
+            "before": {"name": "Legacy project", "description": "原描述"},
+            "after": None,
+        },
+    ]
+    result = run_agent_replay(
+        AgentReplayScenario(
+            name="draft_diff_structured_values",
+            request=AgentChatRequest(
+                message=AgentConversationItem(
+                    id="turn-replay-draft-structured-values",
+                    role="user",
+                    text="解释草稿差异",
+                ),
+                locale="zh",
+                resume={"schemaVersion": 2, "basic": {}, "sections": []},
+                draftState={
+                    "id": "draft-structured-values",
+                    "status": "pending",
+                    "resume": {"schemaVersion": 2, "basic": {}, "sections": []},
+                    "editCount": 3,
+                    "edits": [],
+                    "diffs": structured_values,
+                },
+            ),
+            tool_calls=[ReplayToolCall("draft_diff_summary")],
+        ),
+    )
+
+    diffs = result.observations[0]["output"]["diffs"]
+    assert diffs[0]["before"] == structured_values[0]["before"]
+    assert diffs[0]["after"] == structured_values[0]["after"]
+    assert diffs[1]["before"] == ["project-1", "project-2"]
+    assert diffs[1]["after"] == ["project-2", "project-1"]
+    assert diffs[2]["before"] == structured_values[2]["before"]
+    assert diffs[2]["after"] is None
+
+
 def test_replay_suggest_only_blocks_draft() -> None:
     result = run_agent_replay(
         AgentReplayScenario(
@@ -448,7 +508,7 @@ def test_replay_rewrite_project_with_lookup() -> None:
                                     "type": "update_item",
                                     "sectionId": "project",
                                     "itemId": "project-1",
-                                    "patch": {"description": "AI 简历草稿编辑器。"},
+                                    "patch": {"description": "多轮简历草稿编辑器。"},
                                 },
                             },
                         ],
@@ -482,7 +542,10 @@ def test_replay_reports_draft_quality_issues_without_raw_content() -> None:
                 message=AgentConversationItem(
                     id="turn-replay-quality-issue-long-highlight",
                     role="user",
-                    text="优化项目经历",
+                    text=(
+                        "项目事实：Improved resume editing workflow with "
+                        "measurable product impact. 请据此优化项目经历。"
+                    ),
                 ),
                 locale="zh",
                 resume={
@@ -535,8 +598,15 @@ def test_replay_reports_draft_quality_issues_without_raw_content() -> None:
 
 
 def test_replay_reports_style_quality_issues() -> None:
-    long_summary = "Frontend engineer building AI resume editing workflows. " * 8
-    highlights = [f"Built validated workflow improvement {index}" for index in range(6)]
+    long_summary = "Frontend engineer building resume editing workflows. " * 8
+    highlights = [
+        "Built validated import workflow",
+        "Improved structured editing flow",
+        "Clarified user feedback",
+        "Streamlined draft comparison",
+        "Documented validation behavior",
+        "Maintained editor interactions",
+    ]
 
     result = run_agent_replay(
         AgentReplayScenario(
@@ -545,7 +615,13 @@ def test_replay_reports_style_quality_issues() -> None:
                 message=AgentConversationItem(
                     id="turn-replay-quality-issue-style-constraints",
                     role="user",
-                    text="优化简介和项目经历",
+                    text=(
+                        "候选人事实：Frontend engineer building resume editing "
+                        "workflows. 项目事实：Built validated import workflow，"
+                        "Improved structured editing flow，Clarified user feedback，"
+                        "Streamlined draft comparison，Documented validation behavior，"
+                        "Maintained editor interactions。请据此优化简介和项目经历。"
+                    ),
                 ),
                 locale="zh",
                 resume={
@@ -611,7 +687,7 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
                 message=AgentConversationItem(
                     id="turn-replay-quality-preexisting-highlight-count",
                     role="user",
-                    text="修改项目标题并生成草稿",
+                    text="项目名称：ResuMate Resume Editor，请修改项目标题并生成草稿",
                 ),
                 locale="zh",
                 resume={
@@ -646,7 +722,7 @@ def test_replay_quality_checks_only_touched_item_fields() -> None:
                                     "type": "update_item",
                                     "sectionId": "project",
                                     "itemId": "project-1",
-                                    "patch": {"name": "ResuMate AI Resume Editor"},
+                                    "patch": {"name": "ResuMate Resume Editor"},
                                 },
                             },
                         ],
@@ -780,7 +856,26 @@ def test_replay_material_extract_keeps_jd_keywords_reference_only() -> None:
                     text="根据 JD 分析匹配情况",
                 ),
                 locale="zh",
-                jobBrief="任职要求: React TypeScript，负责前端性能优化。",
+                messages=[
+                    AgentConversationItem(
+                        id="assistant-replay-jd-context",
+                        role="assistant",
+                        text="目标已更新。",
+                        response={
+                            "id": "assistant-replay-jd-context",
+                            "role": "assistant",
+                            "text": "目标已更新。",
+                            "targetContext": {
+                                "kind": "employment",
+                                "target": "前端工程师",
+                                "description": (
+                                    "任职要求: React TypeScript，负责前端性能优化。"
+                                ),
+                                "exactJobDescription": True,
+                            },
+                        },
+                    ),
+                ],
                 resume={"schemaVersion": 2, "basic": {}, "sections": []},
             ),
             tool_calls=[
@@ -817,6 +912,27 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
                     text="目标岗位是前端工程师，分析匹配情况",
                 ),
                 locale="zh",
+                messages=[
+                    AgentConversationItem(
+                        id="assistant-replay-fit-context",
+                        role="assistant",
+                        text="目标已更新。",
+                        response={
+                            "id": "assistant-replay-fit-context",
+                            "role": "assistant",
+                            "text": "目标已更新。",
+                            "targetContext": {
+                                "kind": "employment",
+                                "target": "前端工程师",
+                                "mustHaveSkills": [
+                                    "React",
+                                    "TypeScript",
+                                    "性能优化",
+                                ],
+                            },
+                        },
+                    ),
+                ],
                 resume={
                     "schemaVersion": 2,
                     "basic": {
@@ -834,11 +950,6 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
                         },
                     ],
                 },
-                keywordMatch={
-                    "matched": ["React"],
-                    "missing": ["TypeScript", "性能优化"],
-                    "score": 72,
-                },
             ),
             tool_calls=[ReplayToolCall("resume_analysis")],
         ),
@@ -848,7 +959,7 @@ def test_replay_resume_analysis_includes_target_fit_summary() -> None:
 
     assert target_fit["hasTargetContext"] is True
     assert target_fit["targetRole"] == "前端工程师"
-    assert target_fit["score"] == 72
+    assert target_fit["score"] == 33
     assert target_fit["matchedKeywordCount"] == 1
     assert target_fit["missingKeywordCount"] == 2
     assert target_fit["recommendedTargets"] == [

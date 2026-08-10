@@ -10,6 +10,7 @@ from app.schemas.agent import (
     AgentKnowledgeItem,
     AgentResumeEditSuggestion,
     AgentSource,
+    AgentTargetContext,
     AgentToolInvocation,
 )
 from app.services.resume_document_contract import (
@@ -18,9 +19,8 @@ from app.services.resume_document_contract import (
 )
 
 from .attachments import attachment_text, current_request_attachments
-from .editing import _string_list
 from .integrations import URL_PATTERN, WebReference, WebSearchResult, _compact_text
-from .localization import agent_text, section_label
+from .localization import agent_text
 from .models import (
     EditPlanStep,
     ResumeAnalysis,
@@ -29,9 +29,20 @@ from .models import (
     TargetReferenceSource,
 )
 from .parsing_patterns import agent_pattern, agent_patterns, matches_agent_pattern
-from .policy import AgentTaskIntent, infer_agent_task_intent
+from .policy import (
+    AgentCapabilityMode,
+    AgentTaskIntent,
+    capability_policy_for_request,
+    infer_agent_task_intent,
+)
 from .privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_text
 from .request_context import active_resume
+from .target_context import (
+    rejects_target_context_update,
+    target_context_from_request,
+    target_context_text,
+)
+from .target_matching import match_resume_to_target
 
 OPPORTUNITY_KIND_PATTERN_KEYS: tuple[
     tuple[TargetOpportunityKind, str],
@@ -116,25 +127,31 @@ def _visible_plan_steps(request: AgentChatRequest) -> list[str]:
 
     prompt = _current_prompt(request).lower()
     has_jd_context = bool(
-        request.job_brief.strip()
+        target_context_from_request(request)
         or URL_PATTERN.search(prompt)
-        or matches_agent_pattern(prompt, "visible_plan.job_context")
+        or (
+            matches_agent_pattern(prompt, "visible_plan.job_context")
+            and not rejects_target_context_update(prompt)
+        )
     )
     asks_export = matches_agent_pattern(prompt, "visible_plan.export")
+    can_draft = capability_policy_for_request(request).mode in {
+        AgentCapabilityMode.CAN_DRAFT,
+        AgentCapabilityMode.CAN_REWRITE_DRAFT,
+    }
 
     steps = [agent_text(request.locale, "plan.review_resume")]
     if has_jd_context:
         steps.append(agent_text(request.locale, "plan.confirm_target"))
-    steps.extend(
-        [
-            agent_text(request.locale, "plan.locate_sections"),
-            agent_text(request.locale, "plan.generate_draft"),
-        ],
-    )
+    steps.append(agent_text(request.locale, "plan.locate_sections"))
+    if can_draft:
+        steps.append(agent_text(request.locale, "plan.generate_draft"))
     if asks_export:
         steps.append(agent_text(request.locale, "plan.prepare_export"))
-    else:
+    elif can_draft:
         steps.append(agent_text(request.locale, "plan.summarize"))
+    else:
+        steps.append(agent_text(request.locale, "plan.summarize_findings"))
     return steps[:5]
 
 
@@ -162,41 +179,32 @@ def _has_item_content(item: object, section_kind: str = "") -> bool:
     )
 
 
-def _section_label(section: dict[str, object], locale: str) -> str:
-    """Return a readable section label for response text and edit cards."""
-
-    title = section.get("title")
-    if isinstance(title, str) and title.strip():
-        return title.strip()
-
-    return section_label(section.get("kind"), locale)
-
-
-def _section_has_content_item(section: dict[str, object]) -> bool:
-    """Return whether a section contains a non-empty canonical item."""
-
-    items = section.get("items")
-    if not isinstance(items, list):
-        return False
-    kind = str(section.get("kind") or "")
-    return any(_has_item_content(item, kind) for item in items)
-
-
 class AgentPlanExecutor:
     """Build resume draft-editing responses and tool payloads."""
 
     def __init__(self, request: AgentChatRequest) -> None:
         self.request = request
-        # `jobBrief` remains the request wire name; normalize it at this boundary.
-        self.target_brief = request.job_brief.strip()
+        self.target_context = target_context_from_request(request)
+        self.target_brief = target_context_text(self.target_context)
         self.resume = active_resume(request)
         self.hidden_terms = resume_hidden_terms(self.resume)
         self.visible_resume = sanitize_agent_resume(
             self.resume,
             hidden_terms=self.hidden_terms,
         )
+        self.target_match = match_resume_to_target(
+            self.visible_resume,
+            self.target_context,
+        )
         self.is_zh = request.locale == "zh"
         self.prompt = _current_prompt(request)
+
+    def set_target_context(self, context: AgentTargetContext | None) -> None:
+        """Make a tool-selected target available to later tools in this turn."""
+
+        self.target_context = context
+        self.target_brief = target_context_text(context)
+        self.target_match = match_resume_to_target(self.visible_resume, context)
 
     def build_message_from_parts(
         self,
@@ -243,6 +251,9 @@ class AgentPlanExecutor:
     def infer_target_kind(self, context: str = "") -> TargetOpportunityKind:
         """Classify the target into the small set supported by the resume agent."""
 
+        if self.target_context is not None and not context:
+            return self.target_context.kind
+
         text = f"{self.target_brief}\n{context or self.prompt}".casefold()
         if matches_agent_pattern(
             text,
@@ -255,8 +266,7 @@ class AgentPlanExecutor:
             if matches_agent_pattern(text, pattern_key, locale="all"):
                 return kind
 
-        # Existing `jobBrief` clients historically use the field for a JD.
-        return "employment" if self.target_brief else "general"
+        return "general"
 
     def has_exact_job_description(
         self,
@@ -267,8 +277,8 @@ class AgentPlanExecutor:
         resolved_kind = kind or self.infer_target_kind()
         if resolved_kind != "employment":
             return False
-        if self.target_brief:
-            return True
+        if self.target_context is not None:
+            return self.target_context.exact_job_description
         return matches_agent_pattern(
             self.prompt,
             "target.exact_job_description",
@@ -279,6 +289,8 @@ class AgentPlanExecutor:
         """Infer a compact opportunity label without forcing a job role."""
 
         resolved_kind = kind or self.infer_target_kind()
+        if self.target_context is not None and self.target_context.target:
+            return self.target_context.target
         if resolved_kind == "employment":
             return self.infer_target_role()
 
@@ -297,20 +309,28 @@ class AgentPlanExecutor:
         )
 
     def target_reference_from_request(self) -> TargetReference:
-        """Normalize the compatibility request field into internal target context."""
+        """Build the active reference from conversation-owned target context."""
 
         kind = self.infer_target_kind()
+        exact_job_description = self.has_exact_job_description(kind)
+        excerpt = (
+            self.target_context.description
+            if exact_job_description
+            and self.target_context is not None
+            and self.target_context.description
+            else self.target_brief
+        )
         return TargetReference(
-            mode="provided" if self.target_brief else "none",
+            mode="provided" if self.target_context is not None else "none",
             kind=kind,
             target=self.infer_target(kind),
             query="",
             url=None,
             excerpt=sanitize_agent_text(
-                self.target_brief,
+                excerpt,
                 hidden_terms=self.hidden_terms,
             ),
-            exact_job_description=self.has_exact_job_description(kind),
+            exact_job_description=exact_job_description,
         )
 
     def target_search_query(
@@ -579,74 +599,9 @@ class AgentPlanExecutor:
             summary=summary,
             sections=normalized_sections,
             empty_section_ids=empty_section_ids,
-            matched_keywords=_string_list(
-                self.request.keyword_match.get("matched"),
-            )[:6],
-            missing_keywords=_string_list(
-                self.request.keyword_match.get("missing"),
-            )[:6],
+            matched_keywords=list(self.target_match.matched),
+            missing_keywords=list(self.target_match.missing),
         )
-
-    def create_plan(
-        self,
-        target_reference: TargetReference,
-        analysis: ResumeAnalysis,
-    ) -> list[EditPlanStep]:
-        """Create readable, conservative plan steps from user intent."""
-
-        prompt = self.prompt.lower()
-        wants_add = matches_agent_pattern(prompt, "plan.add")
-        wants_delete = matches_agent_pattern(prompt, "plan.delete")
-        wants_reorder = matches_agent_pattern(prompt, "plan.reorder")
-        wants_summary = matches_agent_pattern(prompt, "plan.summary")
-        wants_bullet = matches_agent_pattern(prompt, "plan.bullet")
-        plan: list[EditPlanStep] = []
-
-        if not self.has_editable_resume_content(analysis):
-            if wants_add or wants_bullet:
-                reason = agent_text(
-                    self.request.locale,
-                    "plan.reason.insert_project_empty_resume",
-                )
-                plan.append(EditPlanStep("insert_project", "sections", reason))
-            return plan
-
-        if wants_summary:
-            reason = agent_text(
-                self.request.locale,
-                "plan.reason.replace_summary",
-            )
-            plan.append(EditPlanStep("replace_summary", "basic.summary", reason))
-
-        if wants_bullet and self.find_first_item_section(analysis):
-            reason = agent_text(
-                self.request.locale,
-                "plan.reason.update_first_item",
-            )
-            plan.append(EditPlanStep("update_first_item", "sections.items", reason))
-
-        if wants_add or (wants_bullet and not self.find_project_section(analysis)):
-            reason = agent_text(
-                self.request.locale,
-                "plan.reason.insert_project",
-            )
-            plan.append(EditPlanStep("insert_project", "sections", reason))
-
-        if wants_reorder and len(analysis.sections) > 1:
-            reason = agent_text(
-                self.request.locale,
-                "plan.reason.reorder_sections",
-            )
-            plan.append(EditPlanStep("reorder_sections", "sections", reason))
-
-        if wants_delete and analysis.empty_section_ids:
-            reason = agent_text(
-                self.request.locale,
-                "plan.reason.delete_empty_sections",
-            )
-            plan.append(EditPlanStep("delete_empty_sections", "sections", reason))
-
-        return plan
 
     def has_editable_resume_content(self, analysis: ResumeAnalysis) -> bool:
         """Return whether the resume has enough facts for executable edits."""
@@ -655,446 +610,6 @@ class AgentPlanExecutor:
             return True
 
         return self.find_first_item_section(analysis) is not None
-
-    def execute_plan(
-        self,
-        plan: list[EditPlanStep],
-        target_reference: TargetReference,
-        analysis: ResumeAnalysis,
-    ) -> list[AgentResumeEditSuggestion]:
-        """Translate plan steps into frontend-executable draft operations."""
-
-        edits: list[AgentResumeEditSuggestion] = []
-
-        for step in plan:
-            if step.action in {"replace_summary", "replace_field"}:
-                edits.append(self.build_summary_edit(step, target_reference, analysis))
-                continue
-
-            if step.action in {"update_first_item", "update_item"}:
-                edit = self.build_first_item_edit(step, target_reference, analysis)
-                if edit:
-                    edits.append(edit)
-                continue
-
-            if step.action in {"insert_project", "insert_section", "insert_item"}:
-                edits.append(self.build_project_section_edit(step, target_reference))
-                continue
-
-            if step.action == "reorder_sections":
-                edit = self.build_reorder_sections_edit(step, analysis)
-                if edit:
-                    edits.append(edit)
-                continue
-
-            if step.action == "delete_empty_sections":
-                edits.extend(self.build_delete_empty_section_edits(step, analysis))
-
-        return edits
-
-    def build_summary_edit(
-        self,
-        step: EditPlanStep,
-        target_reference: TargetReference,
-        analysis: ResumeAnalysis,
-    ) -> AgentResumeEditSuggestion:
-        """Build the summary replacement operation."""
-
-        keywords = analysis.missing_keywords[:3] or analysis.matched_keywords[:3]
-        keyword_text = ""
-        if keywords:
-            keyword_text = agent_text(
-                self.request.locale,
-                "summary.keyword_text",
-                keywords=agent_text(self.request.locale, "list.separator").join(
-                    keywords,
-                ),
-            )
-        replacement = agent_text(
-            self.request.locale,
-            "summary.replacement",
-            role=target_reference.target,
-            keyword_text=keyword_text,
-        )
-        title = agent_text(self.request.locale, "title.summary_draft")
-
-        return AgentResumeEditSuggestion(
-            id=f"edit-{uuid4().hex[:8]}",
-            title=title,
-            target=step.target,
-            reason=step.reason,
-            replacement=replacement,
-            operation={
-                "type": "replace_field",
-                "path": "basic.summary",
-                "value": replacement,
-            },
-            status="executed",
-        )
-
-    def build_first_item_edit(
-        self,
-        step: EditPlanStep,
-        target_reference: TargetReference,
-        analysis: ResumeAnalysis,
-    ) -> AgentResumeEditSuggestion | None:
-        """Build an update operation for the first meaningful resume item."""
-
-        section = next(
-            (
-                candidate
-                for candidate in analysis.sections
-                if "highlights"
-                in ITEM_LIST_FIELDS_BY_KIND.get(
-                    str(candidate.get("kind") or ""),
-                    (),
-                )
-                and _section_has_content_item(candidate)
-            ),
-            None,
-        )
-        if not section:
-            return None
-
-        items = section.get("items")
-        item = (
-            next(
-                (
-                    entry
-                    for entry in items
-                    if isinstance(entry, dict)
-                    and _has_item_content(
-                        entry,
-                        str(section.get("kind") or ""),
-                    )
-                ),
-                None,
-            )
-            if isinstance(items, list)
-            else None
-        )
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            return None
-
-        current_highlights = _string_list(item.get("highlights"))
-        new_highlight = agent_text(
-            self.request.locale,
-            "highlight.first_item",
-            role=target_reference.target,
-        )
-        title = agent_text(self.request.locale, "title.strengthen_first_item")
-
-        section_id = str(section["id"])
-        item_id = str(item["id"])
-        return AgentResumeEditSuggestion(
-            id=f"edit-{uuid4().hex[:8]}",
-            title=title,
-            target=f"sections.{section_id}.items.{item_id}",
-            reason=step.reason,
-            replacement=new_highlight,
-            operation={
-                "type": "update_item",
-                "sectionId": section_id,
-                "itemId": item_id,
-                "patch": {
-                    "highlights": [*current_highlights, new_highlight],
-                },
-            },
-            status="executed",
-        )
-
-    def build_project_section_edit(
-        self,
-        step: EditPlanStep,
-        target_reference: TargetReference,
-    ) -> AgentResumeEditSuggestion:
-        """Build an insert operation for a new project section."""
-
-        section_id = f"section-agent-project-{uuid4().hex[:8]}"
-        item_id = f"item-agent-project-{uuid4().hex[:8]}"
-        prompt_project = self.extract_project_from_prompt()
-
-        title = agent_text(self.request.locale, "title.add_project_section")
-        section_title = section_label("project", self.request.locale)
-        project_title = prompt_project["name"]
-        description = prompt_project["description"]
-        highlights = prompt_project["highlights"]
-
-        section = {
-            "id": section_id,
-            "kind": "project",
-            "title": section_title,
-            "items": [
-                {
-                    "id": item_id,
-                    "name": project_title,
-                    "role": prompt_project["role"],
-                    "techStack": prompt_project["techStack"],
-                    "period": prompt_project["period"],
-                    "url": prompt_project["url"],
-                    "description": description,
-                    "highlights": highlights,
-                },
-            ],
-        }
-
-        return AgentResumeEditSuggestion(
-            id=f"edit-{uuid4().hex[:8]}",
-            title=title,
-            target="sections",
-            reason=step.reason,
-            replacement=section_title,
-            operation={
-                "type": "insert_section",
-                "section": section,
-                "index": self.find_project_insert_index(),
-            },
-            status="executed",
-        )
-
-    def extract_project_from_prompt(self) -> dict[str, Any]:
-        """Extract a conservative project item from user-provided prompt text."""
-
-        text = _compact_text(self.prompt, limit=900)
-        title = ""
-        role = ""
-        tech_stack_text = ""
-        period = ""
-
-        def labeled_value(labels: str, stop_labels: str, limit: int = 80) -> str:
-            pattern = rf"(?:{labels})[:：]\s*(.+?)(?=\s*(?:{stop_labels})[:：]|\n|$)"
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return match.group(1).strip(" ，。；;,")[:limit]
-            return ""
-
-        stop_labels = agent_pattern("project.stop_labels")
-        title = labeled_value(
-            agent_pattern("project.title_labels"),
-            stop_labels,
-            60,
-        )
-        if not title:
-            title = labeled_value(
-                agent_pattern("project.fallback_title_labels"),
-                stop_labels,
-                60,
-            )
-        role = labeled_value(
-            agent_pattern("project.subtitle_labels"),
-            stop_labels,
-            60,
-        )
-        tech_stack_text = labeled_value(
-            agent_pattern("project.meta_labels"),
-            stop_labels,
-            120,
-        )
-
-        period_match = re.search(
-            agent_pattern("project.period_range"),
-            text,
-        )
-        if period_match:
-            period = period_match.group(1).strip()
-        else:
-            period = labeled_value(
-                agent_pattern("project.period_labels"),
-                stop_labels,
-                60,
-            )
-
-        cleaned = re.sub(
-            agent_pattern("project.request_prefix"),
-            "",
-            text,
-            flags=re.IGNORECASE,
-        ).strip()
-        description = labeled_value(
-            agent_pattern("project.description_labels"),
-            stop_labels,
-            120,
-        )
-        url_match = re.search(r"https?://[^\s，。；;]+", text, flags=re.IGNORECASE)
-        url = url_match.group(0).rstrip(").,，。") if url_match else ""
-        tech_stack = [
-            value.strip()
-            for value in re.split(r"[,，、;；|]+", tech_stack_text)
-            if value.strip()
-        ]
-
-        parts = [
-            re.sub(
-                agent_pattern("project.content_label_prefix"),
-                "",
-                part.strip(" -•\t"),
-                flags=re.IGNORECASE,
-            )
-            for part in re.split(r"[。；;\n]+", cleaned)
-            if part.strip(" -•\t")
-        ]
-        field_values = [title, role, tech_stack_text, period, url, description]
-        field_keys = {
-            re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", value).lower()
-            for value in field_values
-            if value
-        }
-        field_label_pattern = re.compile(
-            agent_pattern("project.field_label_prefix"),
-            flags=re.IGNORECASE,
-        )
-        highlights: list[str] = []
-        seen: set[str] = set()
-        for part in parts:
-            if not part:
-                continue
-            if field_label_pattern.search(part):
-                responsibility_match = re.search(
-                    agent_pattern("project.responsibility_value"),
-                    part,
-                    flags=re.IGNORECASE,
-                )
-                if not responsibility_match:
-                    continue
-                part = (
-                    responsibility_match.group(1) or responsibility_match.group(2) or ""
-                ).strip()
-            if not part:
-                continue
-            key = re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", part).lower()
-            if not key or key in seen or key in field_keys:
-                continue
-            repeated_field_count = sum(
-                field_key in key for field_key in field_keys if len(field_key) >= 3
-            )
-            if repeated_field_count >= 2:
-                continue
-            highlights.append(part)
-            seen.add(key)
-            if len(highlights) >= 3:
-                break
-
-        return {
-            "name": title,
-            "role": role,
-            "techStack": tech_stack,
-            "period": period,
-            "url": url,
-            "description": description,
-            "highlights": highlights,
-        }
-
-    def build_reorder_sections_edit(
-        self,
-        step: EditPlanStep,
-        analysis: ResumeAnalysis,
-    ) -> AgentResumeEditSuggestion | None:
-        """Build an operation that reorders existing sections."""
-
-        if len(analysis.sections) < 2:
-            return None
-
-        priority = {
-            "experience": 0,
-            "project": 1,
-            "simple_list": 2,
-            "achievement": 3,
-            "education": 4,
-        }
-        ordered_sections = sorted(
-            analysis.sections,
-            key=lambda section: priority.get(str(section.get("kind")), 9),
-        )
-        ordered_ids = [
-            str(section["id"])
-            for section in ordered_sections
-            if isinstance(section.get("id"), str)
-        ]
-
-        if ordered_ids == [str(section["id"]) for section in analysis.sections]:
-            return None
-
-        return AgentResumeEditSuggestion(
-            id=f"edit-{uuid4().hex[:8]}",
-            title=agent_text(self.request.locale, "title.reorder_sections"),
-            target="sections",
-            reason=step.reason,
-            replacement=", ".join(ordered_ids),
-            operation={
-                "type": "reorder_sections",
-                "sectionIds": ordered_ids,
-            },
-            status="executed",
-        )
-
-    def build_delete_empty_section_edits(
-        self,
-        step: EditPlanStep,
-        analysis: ResumeAnalysis,
-    ) -> list[AgentResumeEditSuggestion]:
-        """Build delete operations for sections without visible content."""
-
-        edits: list[AgentResumeEditSuggestion] = []
-        sections_by_id = {
-            str(section["id"]): section
-            for section in analysis.sections
-            if isinstance(section.get("id"), str)
-        }
-
-        for section_id in analysis.empty_section_ids:
-            section = sections_by_id.get(section_id)
-            if not section:
-                continue
-
-            label = _section_label(section, self.request.locale)
-            edits.append(
-                AgentResumeEditSuggestion(
-                    id=f"edit-{uuid4().hex[:8]}",
-                    title=agent_text(
-                        self.request.locale,
-                        "title.delete_empty_section",
-                        label=label,
-                    ),
-                    target=f"sections.{section_id}",
-                    reason=step.reason,
-                    replacement=None,
-                    operation={
-                        "type": "delete_section",
-                        "sectionId": section_id,
-                    },
-                    status="executed",
-                ),
-            )
-
-        return edits
-
-    def build_tools(
-        self,
-        target_reference: TargetReference,
-        analysis: ResumeAnalysis,
-        plan: list[EditPlanStep],
-        edits: list[AgentResumeEditSuggestion],
-        tool_ids: dict[str, str] | None = None,
-    ) -> list[AgentToolInvocation]:
-        """Return tool call metadata for the deterministic fallback phases."""
-
-        tool_ids = tool_ids or {}
-        tools = [
-            self.build_target_reference_tool(
-                target_reference,
-                tool_ids.get("jd"),
-            ),
-            self.build_resume_analysis_tool(analysis, tool_ids.get("analysis")),
-        ]
-
-        tools.append(self.build_plan_tool(plan, tool_ids.get("plan")))
-
-        if plan:
-            tools.append(
-                self.build_execute_tool(plan, edits, tool_ids.get("execute")),
-            )
-
-        return tools
 
     def build_target_reference_tool(
         self,
@@ -1190,7 +705,7 @@ class AgentPlanExecutor:
         """Return structured target-opportunity fit hints for resume planning."""
 
         has_target_context = bool(
-            self.request.job_brief.strip()
+            self.target_context is not None
             or analysis.matched_keywords
             or analysis.missing_keywords
             or matches_agent_pattern(self.prompt, "visible_plan.job_context")
@@ -1221,10 +736,7 @@ class AgentPlanExecutor:
     def keyword_match_score(self) -> int | float | None:
         """Return a bounded keyword match score from request state."""
 
-        score = self.request.keyword_match.get("score")
-        if not isinstance(score, (int, float)) or isinstance(score, bool):
-            return None
-        return min(100, max(0, score))
+        return self.target_match.score
 
     def target_fit_edit_targets(
         self,
@@ -1385,12 +897,12 @@ class AgentPlanExecutor:
         if self.target_brief:
             sources.append(
                 AgentSource(
-                    id="source-job-brief",
+                    id="source-target-context",
                     title=agent_text(
                         self.request.locale,
                         "target.source.context",
                     ),
-                    sourceType="jobBrief",
+                    sourceType="targetContext",
                     excerpt=self.target_brief[:220],
                 ),
             )
@@ -1546,20 +1058,6 @@ class AgentPlanExecutor:
             count=len(edits),
         )
 
-    def find_project_section(
-        self, analysis: ResumeAnalysis
-    ) -> dict[str, object] | None:
-        """Return the first project section, if present."""
-
-        return next(
-            (
-                section
-                for section in analysis.sections
-                if section.get("kind") == "project"
-            ),
-            None,
-        )
-
     def find_first_item_section(
         self,
         analysis: ResumeAnalysis,
@@ -1575,15 +1073,3 @@ class AgentPlanExecutor:
                 return section
 
         return None
-
-    def find_project_insert_index(self) -> int:
-        """Choose a predictable insertion point for generated project sections."""
-
-        sections_value = self.resume.get("sections")
-        sections = sections_value if isinstance(sections_value, list) else []
-
-        for index, section in enumerate(sections):
-            if isinstance(section, dict) and section.get("kind") == "education":
-                return index
-
-        return len(sections)

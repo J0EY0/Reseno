@@ -32,6 +32,7 @@ from app.services.agent_sessions import (
     replace_agent_session_messages,
     update_agent_draft_decision,
 )
+from app.services.resumes import save_resume
 
 
 def _ensure_active_resume(resume_id: str) -> None:
@@ -105,6 +106,30 @@ def _persist_committed_draft(
         ),
     )
     return prepared
+
+
+def _resume_save_payload(*, headline: str) -> dict:
+    return {
+        "title": "Agent protocol test resume",
+        "resume": {
+            "schemaVersion": 2,
+            "basic": {
+                "name": "Test Candidate",
+                "headline": headline,
+                "phone": "",
+                "email": "",
+                "location": "",
+                "avatar": "",
+                "summary": "",
+                "customFields": [],
+            },
+            "sections": [],
+        },
+        "jobBrief": "",
+        "typography": {"fontFamily": "inter", "fontSize": 16},
+        "template": "minimal",
+        "templateSettings": None,
+    }
 
 
 def test_prepare_agent_turn_rebuilds_history_and_rejects_stale_revision(
@@ -327,54 +352,161 @@ def test_committed_draft_survives_session_reload_with_its_base(
     }
 
 
-def test_committed_draft_uses_pending_draft_resume_as_its_base(
+def test_new_committed_draft_discards_previous_pending_draft(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-latest-committed-draft"
+
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id="assistant-draft-a",
+        )
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id="assistant-draft-b",
+        )
+        session = load_agent_session(conn, resume_id)
+
+    draft_statuses = {
+        message.id: message.response.draft.status
+        for message in session.messages
+        if message.response is not None and message.response.draft is not None
+    }
+    assert draft_statuses == {
+        "assistant-draft-a": "discarded",
+        "assistant-draft-b": "pending",
+    }
+
+
+def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
     client: object,
 ) -> None:
     del client
     resume_id = "resume-durable-pending-draft-base"
     request_resume = {
         "schemaVersion": 2,
-        "basic": {"headline": "Engineer"},
+        "basic": {"headline": "Engineer", "summary": "Original summary"},
         "sections": [],
     }
     pending_draft_resume = {
         "schemaVersion": 2,
-        "basic": {"headline": "Staff Engineer"},
+        "basic": {
+            "headline": "Staff Engineer",
+            "summary": "Focused summary",
+        },
         "sections": [],
     }
 
+    first_edit = {
+        "id": "edit-initial-headline",
+        "title": "Update headline",
+        "target": "basic.headline",
+        "reason": "Use the requested title.",
+        "operation": {
+            "type": "replace_field",
+            "path": "basic.headline",
+            "value": "Staff Engineer",
+        },
+        "status": "executed",
+        "diffs": [
+            {
+                "id": "diff-initial-headline",
+                "operationId": "edit-initial-headline",
+                "path": "basic.headline",
+                "kind": "modified",
+                "label": "Update headline",
+                "before": "Engineer",
+                "after": "Staff Engineer",
+            },
+        ],
+    }
+    refined_edit = {
+        "id": "edit-refined-headline",
+        "title": "Refine headline",
+        "target": "basic.headline",
+        "reason": "Build on the pending draft.",
+        "operation": {
+            "type": "replace_field",
+            "path": "basic.headline",
+            "value": "Principal Engineer",
+        },
+        "status": "executed",
+        "diffs": [
+            {
+                "id": "diff-refined-headline",
+                "operationId": "edit-refined-headline",
+                "path": "basic.headline",
+                "kind": "modified",
+                "label": "Refine headline",
+                "before": "Staff Engineer",
+                "after": "Principal Engineer",
+            },
+        ],
+    }
+    first_summary_edit = {
+        "id": "edit-initial-summary",
+        "title": "Update summary",
+        "target": "basic.summary",
+        "reason": "Focus the opening statement.",
+        "operation": {
+            "type": "replace_field",
+            "path": "basic.summary",
+            "value": "Focused summary",
+        },
+        "status": "executed",
+    }
+
     with closing(connect()) as conn:
-        request = _request(
+        first_request = _request(
             resume_id,
-            message_id="turn-pending-draft-base",
+            message_id="turn-initial-draft",
+            text="Update my headline",
+            revision=load_agent_session(conn, resume_id).revision,
+        ).model_copy(update={"resume": request_resume})
+        first_prepared = prepare_agent_turn(conn, first_request)
+        append_agent_exchange(
+            conn,
+            first_prepared,
+            AgentChatMessage(
+                id="assistant-initial-draft",
+                role="assistant",
+                text="The first draft is ready for review.",
+                edits=[first_edit, first_summary_edit],
+                transactionState="committed",
+            ),
+        )
+
+        second_request = _request(
+            resume_id,
+            message_id="turn-refined-draft",
             text="Refine the pending headline edit",
             revision=load_agent_session(conn, resume_id).revision,
         ).model_copy(
             update={
                 "resume": request_resume,
                 "draft_state": AgentDraftState(
-                    id="draft-pending-base",
+                    id="draft-initial-headline",
                     status="pending",
+                    sourceMessageId="assistant-initial-draft",
                     resume=pending_draft_resume,
+                    editCount=2,
+                    edits=[first_edit, first_summary_edit],
                 ),
             },
         )
-        prepared = prepare_agent_turn(conn, request)
+        second_prepared = prepare_agent_turn(conn, second_request)
         append_agent_exchange(
             conn,
-            prepared,
+            second_prepared,
             AgentChatMessage(
-                id="assistant-pending-draft-base",
+                id="assistant-refined-draft",
                 role="assistant",
                 text="The refinement is ready for review.",
-                edits=[
-                    {
-                        "id": "edit-pending-draft-base",
-                        "title": "Refine headline",
-                        "target": "basic.headline",
-                        "reason": "Build on the pending draft.",
-                    },
-                ],
+                edits=[refined_edit],
                 transactionState="committed",
             ),
         )
@@ -382,7 +514,26 @@ def test_committed_draft_uses_pending_draft_resume_as_its_base(
 
     response = session.messages[-1].response
     assert response is not None and response.draft is not None
-    assert response.draft.base_resume == pending_draft_resume
+    assert response.draft.base_resume == request_resume
+    assert [edit.id for edit in response.edits] == [
+        "edit-initial-headline",
+        "edit-initial-summary",
+        "edit-refined-headline",
+    ]
+    assert [edit.diffs[0]["operationId"] for edit in response.edits[:1]] == [
+        "edit-initial-headline",
+    ]
+    assert response.edits[-1].diffs[0]["before"] == "Staff Engineer"
+    assert response.edits[-1].diffs[0]["after"] == "Principal Engineer"
+    draft_statuses = {
+        message.id: message.response.draft.status
+        for message in session.messages
+        if message.response is not None and message.response.draft is not None
+    }
+    assert draft_statuses == {
+        "assistant-initial-draft": "discarded",
+        "assistant-refined-draft": "pending",
+    }
 
 
 @pytest.mark.parametrize("decision", ["applied", "discarded"])
@@ -586,14 +737,267 @@ def test_agent_draft_decision_route_returns_the_updated_session(
         message_id,
         AgentDraftDecisionRequest(
             revision=revision,
-            status="applied",
+            status="discarded",
         ),
     )
 
-    assert response.data.messages[-1].response is not None
-    assert response.data.messages[-1].response.draft is not None
-    assert response.data.messages[-1].response.draft.status == "applied"
-    assert response.data.revision != revision
+    assert response.data.session.messages[-1].response is not None
+    assert response.data.session.messages[-1].response.draft is not None
+    assert response.data.session.messages[-1].response.draft.status == "discarded"
+    assert response.data.session.revision != revision
+    assert response.data.resume is None
+
+
+def test_agent_draft_apply_persists_resume_and_decision_together(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-draft-atomic-apply"
+    message_id = "assistant-draft-atomic-apply"
+    original_payload = _resume_save_payload(headline="Engineer")
+    candidate_resume = _resume_save_payload(headline="Staff Engineer")["resume"]
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(resume_id, original_payload)
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=message_id,
+        )
+        revision = load_agent_session(conn, resume_id).revision
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": revision,
+            "status": "applied",
+            "resume": candidate_resume,
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["data"]["session"]["messages"][-1]["response"]["draft"][
+            "status"
+        ]
+        == "applied"
+    )
+    assert (
+        response.json()["data"]["resume"]["resume"]["resume"]["basic"]["headline"]
+        == "Staff Engineer"
+    )
+    persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
+    assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
+        "Staff Engineer"
+    )
+
+
+def test_only_latest_committed_draft_can_be_applied(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-latest-draft-apply-only"
+    original_payload = _resume_save_payload(headline="Engineer")
+    latest_candidate = _resume_save_payload(headline="Staff Engineer")["resume"]
+    superseded_candidate = original_payload["resume"]
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(resume_id, original_payload)
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id="assistant-draft-a",
+        )
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id="assistant-draft-b",
+        )
+        revision = load_agent_session(conn, resume_id).revision
+
+    latest_response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/assistant-draft-b/draft",
+        json={
+            "revision": revision,
+            "status": "applied",
+            "resume": latest_candidate,
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+    latest_payload = latest_response.json()["data"]
+    superseded_response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/assistant-draft-a/draft",
+        json={
+            "revision": latest_payload["session"]["revision"],
+            "status": "applied",
+            "resume": superseded_candidate,
+            "expectedVersionId": latest_payload["resume"]["versionId"],
+        },
+    )
+
+    assert latest_response.status_code == 200
+    assert superseded_response.status_code == 409
+    assert superseded_response.json() == {
+        "detail": {
+            "code": "AGENT_DRAFT_DECISION_CONFLICT",
+            "revision": latest_payload["session"]["revision"],
+            "status": "discarded",
+        },
+    }
+    persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
+    assert persisted_resume["versionId"] == latest_payload["resume"]["versionId"]
+    assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
+        "Staff Engineer"
+    )
+
+
+def test_apply_boundary_rejects_a_non_latest_pending_draft(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-authoritative-latest-draft"
+    original_payload = _resume_save_payload(headline="Engineer")
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(resume_id, original_payload)
+    messages = [
+        AgentConversationItem(
+            id=f"assistant-pending-{suffix}",
+            role="assistant",
+            text=f"Draft {suffix} is ready.",
+            response=AgentChatMessage(
+                id=f"assistant-pending-{suffix}",
+                role="assistant",
+                text=f"Draft {suffix} is ready.",
+                edits=[
+                    {
+                        "id": f"edit-pending-{suffix}",
+                        "title": "Update headline",
+                        "target": "basic.headline",
+                        "reason": "Use the requested title.",
+                    },
+                ],
+                draft={
+                    "baseResume": original_payload["resume"],
+                    "status": "pending",
+                },
+                transactionState="committed",
+            ).model_dump(mode="json", by_alias=True),
+        )
+        for suffix in ("a", "b")
+    ]
+
+    with closing(connect()) as conn:
+        session = replace_agent_session_messages(
+            conn,
+            resume_id,
+            locale="zh",
+            messages=messages,
+            revision=load_agent_session(conn, resume_id).revision,
+        )
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/assistant-pending-a/draft",
+        json={
+            "revision": session.revision,
+            "status": "applied",
+            "resume": _resume_save_payload(headline="Superseded Engineer")["resume"],
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "AGENT_DRAFT_DECISION_CONFLICT"
+    persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
+    assert persisted_resume["versionId"] == original_detail["versionId"]
+    assert persisted_resume["resume"]["resume"]["basic"]["headline"] == "Engineer"
+
+
+def test_agent_draft_apply_rolls_back_decision_when_resume_save_fails(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-draft-atomic-rollback"
+    message_id = "assistant-draft-atomic-rollback"
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(
+        resume_id,
+        _resume_save_payload(headline="Engineer"),
+    )
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=message_id,
+        )
+        revision = load_agent_session(conn, resume_id).revision
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": revision,
+            "status": "applied",
+            "resume": {"schemaVersion": 2, "basic": {}, "sections": []},
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert response.json()["code"] != 0
+    persisted_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
+    assert persisted_session["messages"][-1]["response"]["draft"]["status"] == "pending"
+    persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
+    assert persisted_resume["resume"]["resume"]["basic"]["headline"] == "Engineer"
+
+
+def test_agent_draft_apply_rejects_a_stale_formal_resume_version(
+    client: TestClient,
+) -> None:
+    resume_id = "resume-draft-stale-formal-version"
+    message_id = "assistant-draft-stale-formal-version"
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(
+        resume_id,
+        _resume_save_payload(headline="Engineer"),
+    )
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=message_id,
+        )
+        revision = load_agent_session(conn, resume_id).revision
+    current_detail = save_resume(
+        resume_id,
+        _resume_save_payload(headline="Senior Engineer"),
+    )
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": revision,
+            "status": "applied",
+            "resume": _resume_save_payload(headline="Staff Engineer")["resume"],
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "RESUME_VERSION_CONFLICT",
+            "versionId": current_detail["versionId"],
+        },
+    }
+    persisted_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
+    assert persisted_session["messages"][-1]["response"]["draft"]["status"] == "pending"
+    persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
+    assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
+        "Senior Engineer"
+    )
 
 
 def test_agent_draft_decision_route_reports_stale_revision(
@@ -742,6 +1146,8 @@ def test_agent_draft_decision_route_reports_active_run(
         AgentDraftDecisionRequest(
             revision=current_revision,
             status="applied",
+            resume=_resume_save_payload(headline="Staff Engineer")["resume"],
+            expectedVersionId="0",
         ),
     )
 

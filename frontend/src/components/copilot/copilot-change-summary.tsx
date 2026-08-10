@@ -1,11 +1,10 @@
 import { Button } from "@/components/ui/button";
 import type { AppMessages } from "@/i18n";
+import { getAgentEditDiff } from "@/lib/agent-diff-value";
 import { getAgentQualityWarningCount } from "@/lib/agent-panel-state";
-import { isAgentEditExecutionTool } from "@/lib/agent-tool-display";
 import type {
   AgentChatMessage,
   AgentResumeEditSuggestion,
-  AgentToolInvocation,
 } from "@/types/api";
 import { Check, ChevronDown, ClipboardList, RotateCcw } from "lucide-react";
 
@@ -21,79 +20,6 @@ function formatCountMessage(
 
 function getEditSummaryLabel(edit: AgentResumeEditSuggestion) {
   return edit.title.trim() || edit.target.trim() || edit.id;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
-
-function toReadableDiffValue(value: unknown) {
-  if (typeof value === "string") {
-    return value.trim();
-  }
-
-  if (!isRecord(value)) {
-    return "";
-  }
-
-  const fields = [
-    value.title,
-    value.subtitle,
-    value.organization,
-    value.role,
-    value.description,
-    value.summary,
-  ]
-    .filter((field): field is string => typeof field === "string")
-    .map((field) => field.trim())
-    .filter(Boolean);
-
-  if (Array.isArray(value.highlights)) {
-    fields.push(
-      ...value.highlights
-        .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    );
-  }
-
-  if (fields.length) {
-    return fields.join("\n");
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return "";
-  }
-}
-
-function getEditObservationMap(tools: AgentToolInvocation[]) {
-  const map = new Map<string, { before?: string; after?: string }>();
-
-  tools.forEach((tool) => {
-    if (!isAgentEditExecutionTool(tool) || !isRecord(tool.output)) {
-      return;
-    }
-
-    const observations = tool.output.observations;
-    if (!Array.isArray(observations)) {
-      return;
-    }
-
-    observations.forEach((observation) => {
-      if (!isRecord(observation) || typeof observation.target !== "string") {
-        return;
-      }
-
-      map.set(observation.target, {
-        before: toReadableDiffValue(observation.before),
-        after: toReadableDiffValue(observation.after),
-      });
-    });
-  });
-
-  return map;
 }
 
 /**
@@ -122,7 +48,6 @@ export function AgentChangeSummary({
   }
 
   const tools = response?.tools ?? [];
-  const observations = getEditObservationMap(tools);
   const qualityWarningCount = getAgentQualityWarningCount(tools);
   const isCommitted = response?.transactionState === "committed";
 
@@ -149,7 +74,7 @@ export function AgentChangeSummary({
       ) : null}
       <div className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1 text-xs leading-5 text-muted-foreground">
         {edits.map((edit) => {
-          const observation = observations.get(edit.target);
+          const observation = getAgentEditDiff(edit);
           const hasDiff = Boolean(observation?.before || observation?.after);
 
           return (

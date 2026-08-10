@@ -13,7 +13,6 @@ const copilotRoot = path.join(
 );
 const modules = [
   "agent-conversation-runtime.ts",
-  "agent-prompt-context.ts",
   "copilot-composer.tsx",
   "copilot-conversation-view.tsx",
   "copilot-model-selector.tsx",
@@ -157,6 +156,11 @@ assert.match(conversation, /useAgentSessionHydration\(/);
 assert.match(sendController, /shouldRollbackOptimisticAgentMessages\(/);
 assert.match(sendController, /AGENT_SESSION_REVISION_CONFLICT/);
 assert.match(sendController, /AGENT_REQUEST_DEBOUNCE_MS/);
+assert.doesNotMatch(
+  sendController,
+  /\b(?:isLikelyJobBriefPrompt|onJobBriefChange|getKeywordMatch|jobBrief|keywordMatch)\b/,
+  "Agent prompts must update conversation targetContext, never resume.jobBrief or client keyword scoring.",
+);
 assert.match(promptActions, /for \(const file of preparedFiles\)/);
 assert.match(promptActions, /deletePendingUploads/);
 assert.match(conversationView, /shouldShowAgentDraftActions\(/);

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import replace
 from typing import Any
 
 from ..common import (
     async_post_json,
     async_stream_json,
+    close_async_stream,
     gemini_usage,
     map_stop_reason,
     message_content_parts,
@@ -16,6 +16,7 @@ from ..common import (
     provider_base_url,
     system_and_messages,
     tool_function,
+    usage_from_values,
 )
 from ..errors import LlmRequestError
 from ..types import (
@@ -24,6 +25,7 @@ from ..types import (
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
+    LlmUsage,
 )
 
 
@@ -58,62 +60,175 @@ async def complete_tool_call(
     return _message_from_payload(payload)
 
 
-async def stream(
+def stream(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream Gemini interaction SSE events into the shared LLM contract."""
 
-    payload = {**gemini_payload(config, messages), "stream": True}
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    # Gemini interaction chunks may contain cumulative output snapshots instead
-    # of strict deltas. Track already emitted text so the agent still receives
-    # true incremental deltas.
-    emitted_text = ""
-    emitted_reasoning = ""
-    # The last stream payload is the only place that may include final usage,
-    # stop reason, and provider continuation steps.
-    final_payload: dict[str, Any] | None = None
+    return _stream_interaction(config, messages)
 
-    async for event in async_stream_json(
+
+def stream_tool_call(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> AsyncIterator[LlmStreamEvent]:
+    """Stream a Gemini tool selection without exposing partial calls."""
+
+    return _stream_interaction(config, messages, tools)
+
+
+async def _stream_interaction(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[LlmStreamEvent]:
+    provider_stream = async_stream_json(
         f"{provider_base_url(config.base_url)}/interactions?alt=sse",
         headers=_headers(config),
-        payload=payload,
+        payload={**gemini_payload(config, messages, tools), "stream": True},
         timeout_seconds=config.timeout_seconds,
-    ):
-        if _is_error_event(event):
-            raise LlmRequestError(_stream_error_message(event))
+    )
+    steps: dict[int, dict[str, Any]] = {}
+    text_parts: dict[int, list[str]] = {}
+    reasoning_parts: dict[int, list[str]] = {}
+    argument_parts: dict[int, list[str]] = {}
+    thought_signatures: dict[int, str] = {}
+    stopped_steps: set[int] = set()
 
-        final_payload = event
-        text, emitted_text = _stream_delta(
-            _stream_text(event),
-            emitted_text,
-        )
-        if text:
-            content_parts.append(text)
-            yield LlmStreamEvent(type="text_delta", delta=text)
+    try:
+        async for event in provider_stream:
+            if _is_error_event(event):
+                raise LlmRequestError(_stream_error_message(event))
 
-        reasoning, emitted_reasoning = _stream_delta(
-            _stream_reasoning(event),
-            emitted_reasoning,
-        )
-        if reasoning:
-            reasoning_parts.append(reasoning)
-            yield LlmStreamEvent(type="reasoning_delta", delta=reasoning)
+            event_type = _stream_event_type(event)
+            if event_type == "ping":
+                continue
+            if event_type == "interaction.created":
+                yield LlmStreamEvent(type="activity")
+                continue
+            if event_type == "interaction.status_update":
+                if event.get("status") in {
+                    "queued",
+                    "in_progress",
+                    "requires_action",
+                }:
+                    yield LlmStreamEvent(type="activity")
+                continue
 
-    if final_payload is None:
-        raise LlmRequestError("Model provider returned an empty stream.")
+            if event_type == "step.start":
+                index = _stream_step_index(event)
+                if index in steps:
+                    raise LlmRequestError(
+                        "Model provider returned an invalid stream step lifecycle.",
+                    )
+                step = event.get("step")
+                if not isinstance(step, dict):
+                    raise LlmRequestError(
+                        "Model provider returned an invalid stream step.",
+                    )
+                steps[index] = dict(step)
+                yield LlmStreamEvent(type="activity")
+                continue
 
-    message = _message_from_payload(final_payload)
-    stream_content = "".join(content_parts).strip()
-    stream_reasoning = "".join(reasoning_parts).strip()
-    if stream_content and not message.content:
-        message = replace(message, content=stream_content)
-    if stream_reasoning and not message.reasoning:
-        message = replace(message, reasoning=stream_reasoning)
+            if event_type == "step.delta":
+                index = _stream_step_index(event)
+                if index not in steps:
+                    raise LlmRequestError(
+                        "Model provider returned an out-of-order stream step.",
+                    )
+                if index in stopped_steps:
+                    raise LlmRequestError(
+                        "Model provider returned an invalid stream step lifecycle.",
+                    )
+                delta = event.get("delta")
+                if not isinstance(delta, dict):
+                    raise LlmRequestError(
+                        "Model provider returned an invalid stream delta.",
+                    )
+                delta_type = delta.get("type")
+                if delta_type == "text" and isinstance(delta.get("text"), str):
+                    text = delta["text"]
+                    if text:
+                        text_parts.setdefault(index, []).append(text)
+                        yield LlmStreamEvent(type="text_delta", delta=text)
+                elif delta_type == "thought_summary":
+                    content = delta.get("content")
+                    reasoning = (
+                        content.get("text")
+                        if isinstance(content, dict)
+                        and content.get("type") == "text"
+                        and isinstance(content.get("text"), str)
+                        else ""
+                    )
+                    if reasoning:
+                        reasoning_parts.setdefault(index, []).append(reasoning)
+                        yield LlmStreamEvent(
+                            type="reasoning_delta",
+                            delta=reasoning,
+                        )
+                elif delta_type == "thought_signature" and isinstance(
+                    delta.get("signature"),
+                    str,
+                ):
+                    signature = delta["signature"]
+                    if signature:
+                        thought_signatures[index] = signature
+                        yield LlmStreamEvent(type="activity")
+                elif delta_type == "arguments_delta" and isinstance(
+                    delta.get("arguments"),
+                    str,
+                ):
+                    arguments = delta["arguments"]
+                    if arguments:
+                        argument_parts.setdefault(index, []).append(arguments)
+                        yield LlmStreamEvent(type="activity")
+                continue
 
-    yield LlmStreamEvent(type="done", message=message)
+            if event_type == "step.stop":
+                index = _stream_step_index(event)
+                if index not in steps:
+                    raise LlmRequestError(
+                        "Model provider returned an out-of-order stream step.",
+                    )
+                if index in stopped_steps:
+                    raise LlmRequestError(
+                        "Model provider returned an invalid stream step lifecycle.",
+                    )
+                stopped_steps.add(index)
+                yield LlmStreamEvent(type="activity")
+                continue
+
+            if event_type == "interaction.completed":
+                interaction = event.get("interaction")
+                if not isinstance(interaction, dict):
+                    raise LlmRequestError(
+                        "Model provider returned an invalid completed interaction.",
+                    )
+                if stopped_steps != set(steps):
+                    raise LlmRequestError(
+                        "Model provider returned an incomplete stream step.",
+                    )
+                payload = _stream_payload(
+                    interaction,
+                    steps,
+                    text_parts,
+                    reasoning_parts,
+                    argument_parts,
+                    thought_signatures,
+                )
+                message = _message_from_payload(payload)
+                yield LlmStreamEvent(
+                    type="done",
+                    message=message,
+                )
+                return
+
+    finally:
+        await close_async_stream(provider_stream)
+
+    raise LlmRequestError("Model provider stream ended before completion.")
 
 
 async def _post_interaction(
@@ -263,12 +378,40 @@ def _headers(config: AgentLlmConfig) -> dict[str, str]:
 
 
 def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
+    status = payload.get("status")
+    if status not in {
+        "completed",
+        "requires_action",
+        "incomplete",
+        "budget_exceeded",
+    }:
+        raise LlmRequestError(
+            "Model provider interaction did not complete successfully.",
+        )
+    if status in {"incomplete", "budget_exceeded"}:
+        payload = {
+            **payload,
+            "steps": [
+                step
+                for step in payload.get("steps") or []
+                if isinstance(step, dict) and step.get("type") != "function_call"
+            ],
+        }
     tool_calls = _tool_calls(payload)
+    if status == "completed" and tool_calls:
+        raise LlmRequestError(
+            "Model provider completed interaction contained a function call.",
+        )
+    if status == "requires_action" and not tool_calls:
+        raise LlmRequestError(
+            "Model provider requested action without a valid function call.",
+        )
     provider_steps = _provider_steps(payload)
     return LlmAssistantMessage(
         content=_text(payload),
         tool_calls=tool_calls,
-        usage=gemini_usage(payload),
+        reasoning=_reasoning(payload),
+        usage=_usage(payload),
         stop_reason="tool_calls" if tool_calls else _stop_reason(payload),
         response_id=str(payload.get("id") or "") or None,
         # Gemini requires prior thought/function steps to be replayed before
@@ -278,10 +421,6 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
 
 
 def _text(payload: dict[str, Any]) -> str:
-    output_text = payload.get("output_text") or payload.get("outputText")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-
     parts: list[str] = []
     for step in payload.get("steps") or []:
         if not isinstance(step, dict):
@@ -296,24 +435,46 @@ def _text(payload: dict[str, Any]) -> str:
     return "".join(parts).strip()
 
 
+def _reasoning(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict) or step.get("type") != "thought":
+            continue
+        for block in step.get("summary") or []:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+
+    return "".join(parts).strip()
+
+
 def _tool_calls(payload: dict[str, Any]) -> list[LlmToolCall]:
     tool_calls: list[LlmToolCall] = []
+    seen_call_ids: set[str] = set()
     for step in payload.get("steps") or []:
         if not isinstance(step, dict) or step.get("type") != "function_call":
             continue
         call_id = str(step.get("id") or step.get("call_id") or "")
         name = str(step.get("name") or "").strip()
         arguments = step.get("arguments")
-        if not isinstance(arguments, dict) or not call_id or not name:
-            continue
+        if (
+            not isinstance(arguments, dict)
+            or not call_id
+            or not name
+            or call_id in seen_call_ids
+        ):
+            raise LlmRequestError(
+                "Model provider returned an invalid function call batch.",
+            )
+        seen_call_ids.add(call_id)
         import json
 
-        raw_arguments = json.dumps(arguments, ensure_ascii=False)
+        raw_arguments = step.get("_raw_arguments")
+        if not isinstance(raw_arguments, str):
+            raw_arguments = json.dumps(arguments, ensure_ascii=False)
         tool_calls.append(
-            LlmToolCall(
-                id=call_id,
+            parsed_tool_call(
+                call_id=call_id,
                 name=name,
-                arguments=arguments,
                 raw_arguments=raw_arguments,
             ),
         )
@@ -326,10 +487,27 @@ def _provider_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(steps, list):
         return []
 
-    return [dict(step) for step in steps if isinstance(step, dict)]
+    provider_steps: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") not in {
+            "thought",
+            "function_call",
+        }:
+            continue
+        provider_step = dict(step)
+        provider_step.pop("_raw_arguments", None)
+        provider_steps.append(provider_step)
+
+    return provider_steps
 
 
 def _stop_reason(payload: dict[str, Any]) -> LlmStopReason:
+    status = payload.get("status")
+    if status == "budget_exceeded":
+        return "length"
+    if status:
+        return map_stop_reason(status)
+
     for key in ("finishReason", "finish_reason", "stopReason", "stop_reason"):
         reason = payload.get(key)
         if reason:
@@ -338,60 +516,78 @@ def _stop_reason(payload: dict[str, Any]) -> LlmStopReason:
     return "stop"
 
 
-def _stream_text(payload: dict[str, Any]) -> str:
-    for key in ("delta", "text", "output_text", "outputText"):
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            return value
+def _usage(payload: dict[str, Any]) -> LlmUsage | None:
+    usage = payload.get("usage")
+    if isinstance(usage, dict) and any(
+        key in usage
+        for key in (
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_cached_tokens",
+            "total_thought_tokens",
+        )
+    ):
+        return usage_from_values(
+            input_tokens=usage.get("total_input_tokens"),
+            output_tokens=usage.get("total_output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            cached_input_tokens=usage.get("total_cached_tokens"),
+            reasoning_tokens=usage.get("total_thought_tokens"),
+        )
 
-    candidates = payload.get("candidates")
-    if isinstance(candidates, list):
-        parts: list[str] = []
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            content = candidate.get("content")
-            if not isinstance(content, dict):
-                continue
-            for part in content.get("parts") or []:
-                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                    parts.append(part["text"])
-        if parts:
-            return "".join(parts)
-
-    return _text(payload)
+    return gemini_usage(payload)
 
 
-def _stream_reasoning(payload: dict[str, Any]) -> str:
-    reasoning = payload.get("reasoning") or payload.get("thought")
-    if isinstance(reasoning, str) and reasoning:
-        return reasoning
-
-    parts: list[str] = []
-    for step in payload.get("steps") or []:
-        if (
-            isinstance(step, dict)
-            and step.get("type") == "thought"
-            and isinstance(step.get("text"), str)
-        ):
-            parts.append(step["text"])
-
-    return "".join(parts)
+def _stream_event_type(payload: dict[str, Any]) -> str:
+    return str(payload.get("event_type") or payload.get("_event") or "").lower()
 
 
-def _stream_delta(value: str, emitted: str) -> tuple[str, str]:
-    if not value:
-        return "", emitted
-    if value.startswith(emitted):
-        delta = value[len(emitted) :]
-        return delta, value
+def _stream_step_index(payload: dict[str, Any]) -> int:
+    index = payload.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise LlmRequestError("Model provider returned an invalid stream step index.")
+    return index
 
-    return value, f"{emitted}{value}"
+
+def _stream_payload(
+    interaction: dict[str, Any],
+    steps: dict[int, dict[str, Any]],
+    text_parts: dict[int, list[str]],
+    reasoning_parts: dict[int, list[str]],
+    argument_parts: dict[int, list[str]],
+    thought_signatures: dict[int, str],
+) -> dict[str, Any]:
+    assembled_steps: list[dict[str, Any]] = []
+    for index in sorted(steps):
+        step = dict(steps[index])
+        text = "".join(text_parts.get(index, []))
+        if text:
+            step["content"] = [{"type": "text", "text": text}]
+        reasoning = "".join(reasoning_parts.get(index, []))
+        if reasoning:
+            step["summary"] = [{"type": "text", "text": reasoning}]
+        signature = thought_signatures.get(index)
+        if signature:
+            step["signature"] = signature
+        raw_arguments = "".join(argument_parts.get(index, []))
+        if step.get("type") == "function_call" and raw_arguments:
+            call = parsed_tool_call(
+                call_id=str(step.get("id") or step.get("call_id") or ""),
+                name=str(step.get("name") or "").strip(),
+                raw_arguments=raw_arguments,
+            )
+            step["arguments"] = call.arguments
+            step["_raw_arguments"] = raw_arguments
+        assembled_steps.append(step)
+
+    return {**interaction, "steps": assembled_steps}
 
 
 def _is_error_event(payload: dict[str, Any]) -> bool:
-    event_type = str(payload.get("type") or payload.get("_event") or "").lower()
-    return event_type in {"error", "failed"} or isinstance(payload.get("error"), dict)
+    return _stream_event_type(payload) in {
+        "error",
+        "interaction.failed",
+    } or isinstance(payload.get("error"), dict)
 
 
 def _stream_error_message(payload: dict[str, Any]) -> str:

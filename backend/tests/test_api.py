@@ -715,6 +715,33 @@ def tool_call(
     )
 
 
+def target_context_history(
+    *,
+    target: str,
+    description: str = "",
+    must_have_skills: list[str] | None = None,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": "assistant-target-context-history",
+            "role": "assistant",
+            "text": "Target context updated.",
+            "response": {
+                "id": "assistant-target-context-history",
+                "role": "assistant",
+                "text": "Target context updated.",
+                "targetContext": {
+                    "kind": "employment",
+                    "target": target,
+                    "description": description,
+                    "mustHaveSkills": must_have_skills or [],
+                    "exactJobDescription": bool(description),
+                },
+            },
+        },
+    ]
+
+
 def stub_tool_call_batches(
     *batches: list[LlmToolCall],
 ):
@@ -3607,12 +3634,6 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
                 name="Avery",
                 summary="Frontend engineer with React project experience.",
             ),
-            "jobBrief": "React TypeScript",
-            "keywordMatch": {
-                "matched": ["React"],
-                "missing": ["TypeScript"],
-                "score": 60,
-            },
             "appliedActions": [],
             "modelConfig": None,
             "settings": {},
@@ -3650,8 +3671,6 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
             "messages": [],
             "locale": "zh",
             "resume": created_resume["resume"],
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": None,
             "settings": {},
@@ -3977,8 +3996,6 @@ def test_provider_failure_keeps_user_message_without_assistant(
             "messages": [],
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -4112,8 +4129,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                 },
             ],
         },
-        jobBrief="",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=["execute"],
         modelConfig=None,
         settings={},
@@ -4186,8 +4201,6 @@ def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
         messages=conversation,
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
-        jobBrief="",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=[],
         modelConfig=None,
         settings={},
@@ -4232,8 +4245,6 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
             "basic": {"name": "测试用户", "summary": "很长的简介" * 300},
             "sections": [],
         },
-        jobBrief="",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=[],
         modelConfig=None,
         settings={},
@@ -4282,6 +4293,10 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
                 "role": "user",
                 "text": "王小明的邮箱是 xiaoming@example.com",
             },
+            *target_context_history(
+                target="前端工程师",
+                description="候选人邮箱 xiaoming@example.com",
+            ),
         ],
         locale="zh",
         resume={
@@ -4298,8 +4313,6 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
             },
             "sections": [],
         },
-        jobBrief="候选人邮箱 xiaoming@example.com",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=[],
         modelConfig=None,
         settings={},
@@ -4365,8 +4378,6 @@ def test_agent_executor_analyzes_pending_draft_resume() -> None:
                 ],
             },
         },
-        jobBrief="",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=[],
         modelConfig=None,
         settings={},
@@ -4690,7 +4701,10 @@ def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
         message={
             "id": "agent-user-edit-split-item-generates-fresh-second-item-id",
             "role": "user",
-            "text": "拆分项目经历",
+            "text": (
+                "项目事实：我负责 Agent 草稿流程，并将第二个项目命名为 "
+                "ResuMate 指标优化，同时优化草稿预览链路。请拆分项目经历。"
+            ),
         },
         locale="zh",
         resume=resume,
@@ -4915,6 +4929,18 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
         stub_tool_call_batches(
             [
                 tool_call(
+                    "call-target-context",
+                    "update_target_context",
+                    {
+                        "mode": "replace",
+                        "context": {
+                            "kind": "employment",
+                            "target": "Frontend engineer",
+                            "mustHaveSkills": ["React", "TypeScript"],
+                        },
+                    },
+                ),
+                tool_call(
                     "call-jd",
                     "web_search",
                     {
@@ -4927,7 +4953,19 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 tool_call("call-analysis", "resume_analysis"),
             ],
             [
-                tool_call("call-plan", "edit_plan"),
+                tool_call(
+                    "call-plan",
+                    "edit_plan",
+                    {
+                        "steps": [
+                            {
+                                "action": "replace_field",
+                                "target": "basic.summary",
+                                "reason": "Tighten the existing summary.",
+                            },
+                        ],
+                    },
+                ),
             ],
             [
                 tool_call(
@@ -4938,15 +4976,13 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                             {
                                 "title": "Update summary",
                                 "target": "basic.summary",
-                                "reason": (
-                                    "Add the missing TypeScript keyword from the JD."
-                                ),
+                                "reason": "Clarify the existing React experience.",
                                 "operation": {
                                     "type": "replace_field",
                                     "path": "basic.summary",
                                     "value": (
-                                        "Frontend engineer with React and "
-                                        "TypeScript project experience."
+                                        "Frontend engineer focused on React "
+                                        "project delivery."
                                     ),
                                 },
                             },
@@ -4971,7 +5007,10 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
             "message": {
                 "id": "agent-user-1",
                 "role": "user",
-                "text": "Find missing keywords and edit my summary",
+                "text": (
+                    "The target frontend role requires React and TypeScript. "
+                    "Find missing keywords and edit my summary."
+                ),
                 "files": [attachment],
             },
             "messages": [],
@@ -4980,12 +5019,6 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 name="Avery",
                 summary="Frontend engineer with React project experience.",
             ),
-            "jobBrief": "React TypeScript",
-            "keywordMatch": {
-                "matched": ["React"],
-                "missing": ["TypeScript"],
-                "score": 60,
-            },
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -5001,7 +5034,7 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     assert message["sources"]
     assert message["edits"]
     assert message["quickReplies"]
-    assert any(source["sourceType"] == "jobBrief" for source in message["sources"])
+    assert any(source["sourceType"] == "targetContext" for source in message["sources"])
     assert any(
         source["sourceType"] == "attachment" and source["title"] == "jd.txt"
         for source in message["sources"]
@@ -5047,7 +5080,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
                                         "description": (
                                             "负责推荐链路优化，点击率提升 12%。"
                                         ),
-                                        "highlights": ["协同后端将接口延迟降低 30%"],
+                                        "highlights": ["接口延迟降低 30%"],
                                     },
                                 },
                             },
@@ -5094,13 +5127,14 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             "message": {
                 "id": "agent-user-selected-item-edit",
                 "role": "user",
-                "text": "把项目经历写得更像推荐算法工程师",
+                "text": (
+                    "候选人事实：该项目点击率提升 12%，接口延迟降低 30%。"
+                    "把项目经历写得更像推荐算法工程师。"
+                ),
             },
             "messages": [],
             "locale": "zh",
             "resume": resume,
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -5123,12 +5157,12 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
         "itemId": "project-1",
         "patch": {
             "description": "负责推荐链路优化，点击率提升 12%。",
-            "highlights": ["协同后端将接口延迟降低 30%"],
+            "highlights": ["接口延迟降低 30%"],
         },
     }
 
 
-def test_agent_chat_executes_empty_resume_project_insert_from_plan(
+def test_agent_chat_executes_explicit_project_insert_after_plan(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -5164,7 +5198,42 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
                 ),
             ],
             [
-                tool_call("call-execute", "edit_execute"),
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "新增项目经历",
+                                "target": "sections",
+                                "reason": "用户提供了完整项目事实。",
+                                "operation": {
+                                    "type": "insert_section",
+                                    "section": {
+                                        "section_type": "project",
+                                        "title": "项目经历",
+                                        "items": [
+                                            {
+                                                "name": "电商后台管理系统",
+                                                "role": "",
+                                                "techStack": [],
+                                                "period": "2023.03 - 2023.06",
+                                                "url": "",
+                                                "description": "",
+                                                "highlights": [
+                                                    (
+                                                        "负责 Spring Boot、MySQL、"
+                                                        "Redis、Docker 和 SQL 优化"
+                                                    ),
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ),
             ],
             [
                 tool_call(
@@ -5183,15 +5252,13 @@ def test_agent_chat_executes_empty_resume_project_insert_from_plan(
         client,
         {
             "message": {
-                "id": "agent-user-chat-executes-empty-resume-project-insert-from-plan",
+                "id": "agent-user-chat-executes-explicit-project-insert-after-plan",
                 "role": "user",
                 "text": prompt,
             },
             "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -5358,8 +5425,6 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
             "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -6208,7 +6273,7 @@ def test_agent_revising_named_draft_requires_pending_draft() -> None:
     assert schema_names == {"finish"}
 
 
-def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
+def test_agent_without_target_context_does_not_force_jd_intent() -> None:
     request = AgentChatRequest(
         message={
             "id": "agent-user-keyword-match-missing-does-not-force-jd-intent",
@@ -6217,7 +6282,6 @@ def test_agent_keyword_match_missing_does_not_force_jd_intent() -> None:
         },
         locale="zh",
         resume={"basic": {}, "sections": []},
-        keywordMatch={"matched": [], "missing": ["TypeScript"], "score": 0},
     )
 
     policy = capability_policy_for_request(request)
@@ -6324,7 +6388,12 @@ def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
         },
         locale="zh",
         resume={"basic": {}, "sections": []},
-        jobBrief="AI application developer requires Python, RAG, and evaluation.",
+        messages=target_context_history(
+            target="AI application developer",
+            description=(
+                "AI application developer requires Python, RAG, and evaluation."
+            ),
+        ),
     )
 
     policy = capability_policy_for_request(request)
@@ -6349,7 +6418,12 @@ def test_agent_jd_optimization_request_can_still_draft() -> None:
         },
         locale="zh",
         resume={"basic": {}, "sections": []},
-        jobBrief="AI application developer requires Python, RAG, and evaluation.",
+        messages=target_context_history(
+            target="AI application developer",
+            description=(
+                "AI application developer requires Python, RAG, and evaluation."
+            ),
+        ),
     )
 
     policy = capability_policy_for_request(request)
@@ -6409,12 +6483,15 @@ def test_agent_delete_operations_require_explicit_delete_intent() -> None:
     assert runner.edits == []
 
 
-def test_agent_skills_classify_replaces_existing_groups_without_delete_prompt() -> None:
+def test_agent_skills_classify_replaces_existing_groups_with_explicit_delete() -> None:
     request = AgentChatRequest(
         message={
             "id": "agent-user-skills-classify",
             "role": "user",
-            "text": "整理技能分组",
+            "text": (
+                "候选人事实：前端技能是 React、TypeScript，后端技能是 Python。"
+                "请删除旧技能 HTML，并按这两组整理技能。"
+            ),
         },
         locale="zh",
         resume={
@@ -6840,8 +6917,6 @@ def test_agent_chat_plain_message_does_not_return_tools(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -6883,8 +6958,6 @@ def test_agent_chat_plain_stream_uses_final_completion(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -6933,8 +7006,6 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -6989,8 +7060,6 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7035,8 +7104,6 @@ def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7082,8 +7149,6 @@ def test_agent_chat_material_gap_asks_followup_questions(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7170,8 +7235,6 @@ def test_agent_chat_reports_invalid_model_edit_operation(
                     },
                 ],
             },
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7213,8 +7276,6 @@ def test_agent_model_error_does_not_return_llm_tool(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7255,10 +7316,38 @@ def test_agent_chat_uses_provided_jd_url(
                 tool_call("call-analysis", "resume_analysis"),
             ],
             [
-                tool_call("call-plan", "edit_plan"),
+                tool_call(
+                    "call-plan",
+                    "edit_plan",
+                    {
+                        "steps": [
+                            {
+                                "action": "reorder_sections",
+                                "target": "sections",
+                                "reason": "用户明确要求调整模块顺序。",
+                            },
+                        ],
+                    },
+                ),
             ],
             [
-                tool_call("call-execute", "edit_execute"),
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "调整模块顺序",
+                                "target": "sections",
+                                "reason": "将项目经历前置。",
+                                "operation": {
+                                    "type": "reorder_sections",
+                                    "sectionIds": ["project", "education"],
+                                },
+                            },
+                        ],
+                    },
+                ),
             ],
             [
                 tool_call(
@@ -7326,8 +7415,6 @@ def test_agent_chat_uses_provided_jd_url(
             "messages": [],
             "locale": "zh",
             "resume": resume,
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7392,8 +7479,6 @@ def test_agent_chat_cleans_chinese_target_role(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7465,8 +7550,6 @@ def test_agent_chat_streams_role_research_web_summary(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7495,6 +7578,20 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         stub_tool_call_batches(
             [
                 tool_call(
+                    "call-update-target-context",
+                    "update_target_context",
+                    {
+                        "mode": "replace",
+                        "context": {
+                            "kind": "employment",
+                            "target": "AI application developer",
+                            "mustHaveSkills": ["Python", "RAG", "evaluation"],
+                        },
+                    },
+                ),
+            ],
+            [
+                tool_call(
                     "call-target-context",
                     "web_search",
                     {
@@ -7519,8 +7616,8 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
     ) -> object:
         payload = json.loads(messages[1]["content"])
         analysis_context = payload["toolContext"]["resumeAnalysis"][0]
-        assert analysis_context["matchedKeywords"] == ["Python"]
-        assert analysis_context["missingKeywords"] == ["RAG", "evaluation"]
+        assert analysis_context["matchedKeywords"] == ["python"]
+        assert analysis_context["missingKeywords"] == ["rag", "evaluation"]
         assert analysis_context["targetFit"]["hasTargetContext"] is True
         assert payload["toolContext"]["webSearch"][0]["purpose"] == "target_context"
         yield LlmStreamEvent(
@@ -7538,7 +7635,10 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
             "message": {
                 "id": "agent-user-chat-streams-jd-gap-diagnosis-without-edits",
                 "role": "user",
-                "text": "这份简历和 JD 的差距在哪里？",
+                "text": (
+                    "目标 AI application developer 要求 Python、RAG 和 evaluation；"
+                    "这份简历和 JD 的差距在哪里？"
+                ),
             },
             "messages": [],
             "locale": "zh",
@@ -7563,14 +7663,6 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
                     },
                 ],
             },
-            "jobBrief": (
-                "AI application developer requires Python, RAG, and evaluation."
-            ),
-            "keywordMatch": {
-                "matched": ["Python"],
-                "missing": ["RAG", "evaluation"],
-                "score": 34,
-            },
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7580,7 +7672,11 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
     tool_titles = [tool["title"] for tool in message["tools"]]
     assert message["edits"] == []
     assert "差距诊断" in message["text"]
-    assert tool_titles == ["web_search", "resume_analysis"]
+    assert tool_titles == [
+        "update_target_context",
+        "web_search",
+        "resume_analysis",
+    ]
     assert "edit_plan" not in tool_titles
     assert "edit_execute" not in tool_titles
 
@@ -7611,7 +7707,19 @@ def test_agent_chat_streams_tool_and_source_metadata(
                 tool_call("call-analysis", "resume_analysis"),
             ],
             [
-                tool_call("call-plan", "edit_plan"),
+                tool_call(
+                    "call-plan",
+                    "edit_plan",
+                    {
+                        "steps": [
+                            {
+                                "action": "replace_field",
+                                "target": "basic.summary",
+                                "reason": "整理个人简介。",
+                            },
+                        ],
+                    },
+                ),
             ],
         ),
     )
@@ -7635,12 +7743,6 @@ def test_agent_chat_streams_tool_and_source_metadata(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {
-                "matched": ["React"],
-                "missing": ["TypeScript"],
-                "score": 72,
-            },
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7714,8 +7816,6 @@ def test_agent_chat_streams_finish_blocked_without_visible_tools(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7742,7 +7842,7 @@ def test_agent_chat_streams_finish_blocked_without_visible_tools(
     assert message["edits"] == []
 
 
-def test_agent_chat_streams_model_narration_between_tool_actions(
+def test_agent_chat_hides_model_narration_between_tool_actions(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -7756,7 +7856,21 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
             ),
             LlmAssistantMessage(
                 content="我发现简介比较短，下一步先整理可执行的修改方向。",
-                tool_calls=[tool_call("call-plan", "edit_plan")],
+                tool_calls=[
+                    tool_call(
+                        "call-plan",
+                        "edit_plan",
+                        {
+                            "steps": [
+                                {
+                                    "action": "replace_field",
+                                    "target": "basic.summary",
+                                    "reason": "整理个人简介。",
+                                },
+                            ],
+                        },
+                    ),
+                ],
             ),
         ),
     )
@@ -7782,8 +7896,6 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
                 name="王小明",
                 summary="有前端项目经验。",
             ),
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7796,19 +7908,11 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
     assert "event: updates" not in body
     assert "event: timeline" in body
     assert "event: text_delta" not in body
-    assert "我先看一下当前简历内容。" in body
+    assert "我先看一下当前简历内容。" not in body
     assert "已读取当前简历结构" not in body
     assert "已整理出" not in body
-    assert "我发现简介比较短，下一步先整理可执行的修改方向。" in body
-    assert body.index("我先看一下当前简历内容。") < body.index(
-        "resume_analysis",
-    )
-    assert body.index("resume_analysis") < body.index(
-        "我发现简介比较短，下一步先整理可执行的修改方向。",
-    )
-    assert body.index("我发现简介比较短，下一步先整理可执行的修改方向。") < body.index(
-        "edit_plan",
-    )
+    assert "我发现简介比较短，下一步先整理可执行的修改方向。" not in body
+    assert body.index("resume_analysis") < body.index("edit_plan")
     assert body.index("edit_plan") < body.index("最后给出草稿建议。")
     assert "最后给出草稿建议。" in body
 
@@ -7824,15 +7928,11 @@ def test_agent_chat_streams_model_narration_between_tool_actions(
     )
     timeline = json.loads(message_done_data)["message"]["timeline"]
     assert [part["type"] for part in timeline] == [
-        "text",
-        "tool_group",
-        "text",
         "tool_group",
         "text",
     ]
     assert [part["toolIds"] for part in timeline if part["type"] == "tool_group"] == [
-        ["call-analysis"],
-        ["call-plan"],
+        ["call-analysis", "call-plan"],
     ]
 
 
@@ -7883,8 +7983,6 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
                 "sections": [],
             },
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7897,9 +7995,7 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     assert "event: plan" not in body
     assert "event: timeline" in body
     assert "event: text_delta" not in body
-    assert body.index("我先同时检查简历结构和岗位参考。") < body.index(
-        "resume_analysis",
-    )
+    assert "我先同时检查简历结构和岗位参考。" not in body
     assert "已读取当前简历结构" not in body
     assert "已拿到岗位参考" not in body
     assert body.index("resume_analysis") < body.index("web_search")
@@ -7919,7 +8015,6 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     )
     timeline = json.loads(message_done_data)["message"]["timeline"]
     assert [part["type"] for part in timeline] == [
-        "text",
         "tool_group",
         "text",
     ]
@@ -7968,8 +8063,6 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
                 "sections": [],
             },
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -7979,10 +8072,9 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         body = "".join(response.iter_text())
 
     assert response.status_code == 200
-    assert "我先读取当前简历。" in body
+    assert "我先读取当前简历。" not in body
     assert "当前简历已经足够回答这个问题，我不会继续调用工具。" in body
     assert "已读取当前简历结构" not in body
-    assert body.index("我先读取当前简历。") < body.index("resume_analysis")
     assert body.index("resume_analysis") < body.index(
         "当前简历已经足够回答这个问题，我不会继续调用工具。",
     )
@@ -7998,7 +8090,7 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         if line.startswith("data: ")
     )
     timeline = json.loads(message_done_data)["message"]["timeline"]
-    assert [part["type"] for part in timeline] == ["text", "tool_group", "text"]
+    assert [part["type"] for part in timeline] == ["tool_group", "text"]
     assert timeline[-1]["text"] == "当前简历已经足够回答这个问题，我不会继续调用工具。"
 
 
@@ -8025,10 +8117,39 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
                 tool_call("call-analysis", "resume_analysis"),
             ],
             [
-                tool_call("call-plan", "edit_plan"),
+                tool_call(
+                    "call-plan",
+                    "edit_plan",
+                    {
+                        "steps": [
+                            {
+                                "action": "replace_field",
+                                "target": "basic.summary",
+                                "reason": "整理个人简介。",
+                            },
+                        ],
+                    },
+                ),
             ],
             [
-                tool_call("call-execute", "edit_execute"),
+                tool_call(
+                    "call-execute",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "优化个人简介",
+                                "target": "basic.summary",
+                                "reason": "让已有经历表达更聚焦。",
+                                "operation": {
+                                    "type": "replace_field",
+                                    "path": "basic.summary",
+                                    "value": "具备前端项目经验。",
+                                },
+                            },
+                        ],
+                    },
+                ),
             ],
             [
                 tool_call(
@@ -8062,12 +8183,6 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
                 name="王小明",
                 summary="有前端项目经验。",
             ),
-            "jobBrief": "",
-            "keywordMatch": {
-                "matched": ["React"],
-                "missing": ["TypeScript"],
-                "score": 72,
-            },
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
@@ -8140,8 +8255,6 @@ def test_agent_chat_streams_plain_model_tokens(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "jobBrief": "",
-            "keywordMatch": {"matched": [], "missing": [], "score": 0},
             "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},

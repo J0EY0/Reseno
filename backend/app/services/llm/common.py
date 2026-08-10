@@ -15,12 +15,13 @@ from openai import (
     AsyncOpenAI,
 )
 
-from .errors import LlmRequestError
+from .errors import LlmRequestError, LlmTimeoutError
 from .tool_schema import portable_tool_schema
 from .types import LlmStopReason, LlmToolCall, LlmUsage
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TIMEOUT_SECONDS = 60
+PROVIDER_CONNECT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -41,7 +42,16 @@ def async_openai_client(config: Any) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=config.api_key or "local",
         base_url=openai_base_url(config.base_url),
-        timeout=max(5, config.timeout_seconds),
+        timeout=provider_http_timeout(config.timeout_seconds),
+    )
+
+
+def provider_http_timeout(idle_timeout_seconds: int) -> httpx.Timeout:
+    """Separate connection setup from per-read provider inactivity."""
+
+    return httpx.Timeout(
+        max(5, idle_timeout_seconds),
+        connect=PROVIDER_CONNECT_TIMEOUT_SECONDS,
     )
 
 
@@ -126,7 +136,7 @@ def raise_openai_error(error: Exception) -> None:
             status_code=error.status_code,
         ) from error
     if isinstance(error, APITimeoutError):
-        raise LlmRequestError("Model provider request timed out.") from error
+        raise LlmTimeoutError("Model provider request timed out.") from error
     if isinstance(error, APIConnectionError):
         raise LlmRequestError("Model provider request failed.") from error
     if isinstance(error, APIError):
@@ -311,7 +321,9 @@ async def async_post_json(
     """POST JSON and normalize transport errors for non-SDK providers."""
 
     try:
-        async with httpx.AsyncClient(timeout=max(5, timeout_seconds)) as client:
+        async with httpx.AsyncClient(
+            timeout=provider_http_timeout(timeout_seconds),
+        ) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -321,7 +333,7 @@ async def async_post_json(
             status_code=exc.response.status_code,
         ) from exc
     except httpx.TimeoutException as exc:
-        raise LlmRequestError("Model provider request timed out.") from exc
+        raise LlmTimeoutError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
         raise LlmRequestError("Model provider request failed.") from exc
     except ValueError as exc:
@@ -343,7 +355,9 @@ async def async_stream_json(
     """POST JSON and yield server-sent JSON events."""
 
     try:
-        async with httpx.AsyncClient(timeout=max(5, timeout_seconds)) as client:
+        async with httpx.AsyncClient(
+            timeout=provider_http_timeout(timeout_seconds),
+        ) as client:
             async with client.stream(
                 "POST",
                 url,
@@ -359,7 +373,7 @@ async def async_stream_json(
             status_code=exc.response.status_code,
         ) from exc
     except httpx.TimeoutException as exc:
-        raise LlmRequestError("Model provider request timed out.") from exc
+        raise LlmTimeoutError("Model provider request timed out.") from exc
     except httpx.HTTPError as exc:
         raise LlmRequestError("Model provider request failed.") from exc
 

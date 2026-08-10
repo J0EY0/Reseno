@@ -10,6 +10,13 @@ AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "summary"})
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")
+HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)
+DATE_RANGE_RE = re.compile(
+    r"(?:19|20)\d{2}\s*[./-]\s*(?:0?[1-9]|1[0-2])\s*"
+    r"(?:-|–|—|至|to)\s*"
+    r"(?:19|20)\d{2}\s*[./-]\s*(?:0?[1-9]|1[0-2])",
+    flags=re.IGNORECASE,
+)
 
 
 def is_pii_basic_path(path: str) -> bool:
@@ -103,10 +110,41 @@ def sanitize_agent_resume(
 
 
 def _phone_replacement(match: re.Match[str]) -> str:
+    if DATE_RANGE_RE.fullmatch(match.group(0).strip()):
+        return match.group(0)
+    if _is_numeric_url_path_segment(match):
+        return match.group(0)
     digits = re.sub(r"\D", "", match.group(0))
     if len(digits) < 10:
         return match.group(0)
     return "[redacted_phone]"
+
+
+def _is_numeric_url_path_segment(match: re.Match[str]) -> bool:
+    if not match.group(0).isdigit():
+        return False
+
+    for url_match in HTTP_URL_RE.finditer(match.string):
+        if not (url_match.start() <= match.start() and match.end() <= url_match.end()):
+            continue
+
+        url = url_match.group(0)
+        authority_start = url.find("://") + 3
+        path_start = url.find("/", authority_start)
+        if path_start == -1:
+            return False
+
+        path_end = len(url)
+        for separator in ("?", "#"):
+            separator_index = url.find(separator, path_start)
+            if separator_index != -1:
+                path_end = min(path_end, separator_index)
+
+        relative_start = match.start() - url_match.start()
+        relative_end = match.end() - url_match.start()
+        return path_start < relative_start and relative_end <= path_end
+
+    return False
 
 
 def _replace_hidden_term(text: str, term: str) -> str:

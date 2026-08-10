@@ -406,7 +406,9 @@ type ImportTemplatesResponse = {
 
 ### POST `/api/agent/chat`
 
-用途：发送当前简历上下文、JD、模型配置和用户输入，返回 Agent 建议。
+用途：发送当前简历上下文、模型配置和用户输入，返回 Agent 建议。岗位/JD
+直接从用户 prompt 提取，并通过会话消息中的 `targetContext` 延续、更新或清除；请求不接受
+独立的 `jobBrief` 或 `keywordMatch` 字段。
 同一个接口同时支持普通 JSON 和 SSE 流式响应。
 Agent 使用 ReAct 范式：模型先理解用户意图，再决定是否调用 JD 获取、JD 搜索、
 简历分析、编辑计划或编辑执行工具。每轮遵循 Reasoning → Action → Observation；
@@ -452,6 +454,30 @@ type AgentCurrentMessage = {
   files?: AgentChatAttachment[]
 }
 
+type ResumeDraftDiff = {
+  id: string
+  operationId: string
+  path: string
+  kind: "added" | "modified" | "deleted" | "moved"
+  label: string
+  sectionId?: string
+  itemId?: string
+  before?: unknown
+  after?: unknown
+}
+
+type AgentDraftState = {
+  id: string
+  status: "pending" | "applied" | "discarded"
+  sourceMessageId?: string
+  createdAt?: string
+  updatedAt?: string
+  resume: ResumeData
+  editCount: number
+  edits: AgentResumeEditSuggestion[]
+  diffs: ResumeDraftDiff[]
+}
+
 type AgentChatRequest = {
   resumeId?: string // 当前简历 ID；Agent 会话按 resumeId 存储和检索
   expectedRevision?: string // 传 resumeId 时必填，取自 GET session 的 revision
@@ -459,13 +485,8 @@ type AgentChatRequest = {
   messages?: AgentConversationMessage[] // 仅当前轮之前的历史，不能包含 message
   locale: "zh" | "en"
   resume: ResumeData
-  jobBrief: string
-  keywordMatch: {
-    matched: string[]
-    missing: string[]
-    score: number
-  }
   appliedActions: string[]
+  draftState?: AgentDraftState | null // 仅用于继续处理当前会话的待确认草稿
   modelConfig: ModelConfig | null
   settings: AgentSettings & {
     maxReActIterations?: number // 可选；默认 5，后端会限制在 1-8
@@ -485,7 +506,7 @@ type AgentChatActionId = "summary" | "bullet" | "keywords" | "plan" | "execute"
 type AgentSource = {
   id: string
   title: string
-  sourceType: "resume" | "jobBrief" | "attachment" | "web" | "system"
+  sourceType: "targetContext" | "attachment" | "web"
   url?: string
   excerpt?: string
 }
@@ -517,6 +538,27 @@ type AgentResumeEditSuggestion = {
   replacement?: string
   status?: "planned" | "executed" | "rejected"
   operation?: ResumeEditOperation
+  diffs?: ResumeDraftDiff[]
+}
+
+type AgentCommittedDraft = {
+  baseResume: ResumeData
+  status: "pending" | "applied" | "discarded"
+}
+
+type AgentTargetContext = {
+  cleared: boolean
+  kind: "employment" | "graduate_study" | "research" | "scholarship" | "general"
+  target: string
+  locations: string[]
+  seniority: string
+  responsibilities: string[]
+  mustHaveSkills: string[]
+  niceToHaveSkills: string[]
+  requirements: string[]
+  description: string
+  exactJobDescription: boolean
+  sourceMessageIds: string[]
 }
 
 type ResumeEditOperation =
@@ -546,9 +588,30 @@ type AgentChatResponse = {
     tools?: AgentToolInvocation[]
     sources?: AgentSource[]
     edits?: AgentResumeEditSuggestion[]
+    draft?: AgentCommittedDraft
+    targetContext?: AgentTargetContext
+    transactionState?: "none" | "provisional" | "committed" | "rolled_back"
+    finishMissing?: Array<
+      | "pending_draft"
+      | "url_purpose"
+      | "resume_target"
+      | "draft_edit_target"
+      | "source_material"
+      | "target_role"
+      | "user_evidence"
+      | "explicit_delete_intent"
+      | "explicit_reorder_intent"
+      | "model_config"
+    >
     quickReplies?: string[]
     actions?: AgentChatActionId[]
   }
+  runId: string
+  status: "active" | "completed" | "cancelled" | "failed"
+  executionState: "running" | "succeeded" | "failed" | "cancelled"
+  errorCode: string | null
+  lastEventId: number
+  messageDone: boolean
 }
 ```
 

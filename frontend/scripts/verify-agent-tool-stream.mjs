@@ -126,8 +126,8 @@ const toolDisplay = await loadTypeScriptModule(
   );
 
   assert(
-    backendToolNames.length === 14,
-    `Expected 14 backend Agent tools, found ${backendToolNames.length}.`,
+    backendToolNames.length === 15,
+    `Expected 15 backend Agent tools, found ${backendToolNames.length}.`,
   );
   assert(
     JSON.stringify([...frontendToolNames].sort()) ===

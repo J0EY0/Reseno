@@ -41,8 +41,6 @@ def _request(
         messages=messages or [],
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
-        jobBrief="",
-        keywordMatch={"matched": [], "missing": [], "score": 0},
         appliedActions=[],
         modelConfig=None,
         settings={},

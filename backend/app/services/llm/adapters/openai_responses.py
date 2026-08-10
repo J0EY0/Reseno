@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
@@ -99,24 +100,54 @@ async def stream(
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream OpenAI Responses events into the provider-independent contract."""
 
+    events = _stream_events(config, messages)
+    try:
+        async for event in events:
+            yield event
+    finally:
+        await close_async_stream(events)
+
+
+async def stream_tool_call(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> AsyncIterator[LlmStreamEvent]:
+    """Stream tool-call activity without exposing partial executable calls."""
+
+    events = _stream_events(config, messages, tools=tools)
+    try:
+        async for event in events:
+            yield event
+    finally:
+        await close_async_stream(events)
+
+
+async def _stream_events(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[LlmStreamEvent]:
+    """Own one Responses stream and publish only provider-authoritative state."""
+
     client = async_openai_client(config)
     stream_response = None
-    content_parts: list[str] = []
     reasoning_parts: list[str] = []
     # The terminal Responses stream event carries authoritative usage, response
     # id, and stop status. Deltas are emitted immediately for UX, then the final
     # response object becomes the unified `done` message.
     final_response: object | None = None
+    terminal_event_type = ""
     try:
         stream_response = await client.responses.create(
-            **responses_params(config, messages, stream=True),
+            **responses_params(config, messages, tools=tools, stream=True),
         )
         async for event in stream_response:
             event_type = str(attr_or_item(event, "type") or "")
             if event_type == "response.output_text.delta":
                 delta = attr_or_item(event, "delta")
                 if isinstance(delta, str) and delta:
-                    content_parts.append(delta)
                     yield LlmStreamEvent(type="text_delta", delta=delta)
                 continue
 
@@ -130,9 +161,24 @@ async def stream(
                     yield LlmStreamEvent(type="reasoning_delta", delta=delta)
                 continue
 
+            if event_type in {
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+            }:
+                yield LlmStreamEvent(type="activity")
+                continue
+
+            if event_type in {
+                "response.output_item.added",
+                "response.output_item.done",
+            }:
+                yield LlmStreamEvent(type="activity")
+                continue
+
             if event_type in {"response.completed", "response.incomplete"}:
                 final_response = attr_or_item(event, "response")
-                continue
+                terminal_event_type = event_type
+                break
 
             if event_type in {"response.failed", "error"}:
                 raise LlmRequestError(_stream_error_message(event))
@@ -145,15 +191,14 @@ async def stream(
         finally:
             await close_async_client(client)
 
-    message = (
-        _message_from_response(final_response)
-        if final_response is not None
-        else LlmAssistantMessage(
-            content="".join(content_parts).strip(),
-            reasoning="".join(reasoning_parts).strip(),
-            stop_reason="unknown",
+    if final_response is None:
+        raise LlmRequestError(
+            "Model provider stream ended before a terminal response.",
         )
-    )
+
+    message = _message_from_response(final_response)
+    if terminal_event_type != "response.completed" and message.tool_calls:
+        message = replace(message, tool_calls=[])
     if reasoning_parts and not message.reasoning:
         message = LlmAssistantMessage(
             content=message.content,
@@ -336,7 +381,7 @@ def _response_tool_calls(response: object) -> list[LlmToolCall]:
             continue
 
         name = str(data.get("name") or "").strip()
-        call_id = str(data.get("call_id") or data.get("id") or "").strip()
+        call_id = str(data.get("call_id") or "").strip()
         raw_arguments = str(data.get("arguments") or "{}")
         if not name or not call_id:
             continue
@@ -357,9 +402,6 @@ def _response_stop_reason(
     *,
     has_tool_calls: bool,
 ) -> LlmStopReason:
-    if has_tool_calls:
-        return "tool_calls"
-
     incomplete_details = getattr(response, "incomplete_details", None)
     # Truncation is reported through `incomplete_details.reason`, not only the
     # top-level status. Preserve it so the agent can ask for a larger budget.
@@ -368,7 +410,12 @@ def _response_stop_reason(
         return map_stop_reason(reason)
 
     status = getattr(response, "status", None)
-    return map_stop_reason(status) if status else "stop"
+    status_reason = map_stop_reason(status) if status else "stop"
+    if status_reason in {"length", "content_filter", "error"}:
+        return status_reason
+    if has_tool_calls:
+        return "tool_calls"
+    return status_reason
 
 
 def _stream_error_message(event: object) -> str:

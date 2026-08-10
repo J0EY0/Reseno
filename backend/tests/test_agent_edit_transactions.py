@@ -1,14 +1,27 @@
 import asyncio
 import json
 
-from app.schemas.agent import AgentChatRequest, AgentConversationItem
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentConversationItem,
+    AgentResumeEditSuggestion,
+)
 from app.services.agent.editing.operations import (
+    _edit_observations,
     _model_edit_suggestions_with_diagnostics,
 )
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import AgentLlmConfig, LlmAssistantMessage, LlmToolCall
+
+_CANDIDATE_FACTS = (
+    "候选人事实：我关注复杂交互与工程质量。"
+    "项目事实：我在 ResuMate 担任产品开发，构建可验证的 Agent 编辑流程，"
+    "面向结构化简历编辑与预览工作流，实现事务化编辑以避免部分修改进入草稿，"
+    "并提供失败信息以支持模型修复完整批次。"
+    "请据此优化个人简介和项目经历。"
+)
 
 
 def _basic(*, headline: str = "", summary: str = "") -> dict:
@@ -29,7 +42,7 @@ def _runner() -> AgentToolRunner:
         message=AgentConversationItem(
             id="turn-edit-transaction-runner",
             role="user",
-            text="优化项目经历",
+            text=_CANDIDATE_FACTS,
         ),
         locale="zh",
         resume={
@@ -120,6 +133,90 @@ def test_edit_batch_is_atomic_when_one_operation_is_invalid() -> None:
     assert runner.draft_resume == original_resume
     assert runner.edits == []
     assert runner.semantic_retry_pending is True
+
+
+def test_same_target_edits_keep_sequential_diffs_by_edit_id() -> None:
+    runner = _runner()
+
+    tool, _ = runner._run_local_tool(
+        _tool_call(
+            "call-sequential-summary-edits",
+            [
+                _replace_summary("聚焦复杂交互与工程质量。"),
+                _replace_summary("关注复杂交互与工程质量。"),
+            ],
+        ),
+    )
+
+    assert tool.state == "output-available"
+    observations = tool.output["observations"]
+    assert [item["editId"] for item in observations] == [
+        runner.edits[0].id,
+        runner.edits[1].id,
+    ]
+    assert observations[0]["before"] == "原始简介"
+    assert observations[0]["after"] == "聚焦复杂交互与工程质量。"
+    assert observations[1]["before"] == "聚焦复杂交互与工程质量。"
+    assert observations[1]["after"] == "关注复杂交互与工程质量。"
+    assert runner.edits[0].diffs[0]["operationId"] == runner.edits[0].id
+    assert runner.edits[0].diffs[0]["before"] == "原始简介"
+    assert runner.edits[0].diffs[0]["after"] == "聚焦复杂交互与工程质量。"
+    assert runner.edits[1].diffs[0]["before"] == "聚焦复杂交互与工程质量。"
+    assert runner.edits[1].diffs[0]["after"] == "关注复杂交互与工程质量。"
+
+
+def test_persisted_edit_diff_keeps_complete_values_beyond_model_limits() -> None:
+    before_description = "A" * 300
+    after_description = "B" * 320
+    before_highlights = [f"before-{index}" for index in range(7)]
+    after_highlights = [f"after-{index}" for index in range(8)]
+    resume = {
+        "basic": {},
+        "sections": [
+            {
+                "id": "project",
+                "kind": "project",
+                "title": "项目经历",
+                "items": [
+                    {
+                        "id": "project-1",
+                        "name": "ResuMate",
+                        "role": "",
+                        "techStack": [],
+                        "period": "",
+                        "url": "",
+                        "description": before_description,
+                        "highlights": before_highlights,
+                    },
+                ],
+            },
+        ],
+    }
+    edit = AgentResumeEditSuggestion(
+        id="edit-complete-project-diff",
+        title="Update project",
+        target="sections.project.items.project-1",
+        reason="Keep the review payload complete.",
+        operation={
+            "type": "update_item",
+            "sectionId": "project",
+            "itemId": "project-1",
+            "patch": {
+                "description": after_description,
+                "highlights": after_highlights,
+            },
+        },
+        status="executed",
+    )
+
+    observations, diffs = _edit_observations(resume, [edit])
+
+    assert observations[0]["after"]["description"].endswith("...")
+    assert len(observations[0]["after"]["highlights"]) == 6
+    assert diffs[0]["before"]["description"] == before_description
+    assert diffs[0]["before"]["highlights"] == before_highlights
+    assert diffs[0]["after"]["description"] == after_description
+    assert diffs[0]["after"]["highlights"] == after_highlights
 
 
 def test_edit_plan_rejects_the_whole_batch_when_one_operation_is_invalid() -> None:
@@ -245,7 +342,7 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
             message=AgentConversationItem(
                 id="turn-edit-transaction-quality",
                 role="user",
-                text="优化项目经历",
+                text=_CANDIDATE_FACTS,
             ),
             locale="zh",
             resume={
@@ -304,8 +401,8 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
                                         "sectionId": "project",
                                         "itemId": "project-1",
                                         "patch": {
-                                            "role": "AI 简历编辑器",
-                                            "description": "ResuMate AI 简历编辑器",
+                                            "role": "产品开发",
+                                            "description": "ResuMate 产品开发",
                                         },
                                     },
                                 },
@@ -335,7 +432,7 @@ def test_quality_rejection_defers_same_response_finish_for_one_repair(
                                     "sectionId": "project",
                                     "itemId": "project-1",
                                     "patch": {
-                                        "role": "AI 简历编辑器",
+                                        "role": "产品开发",
                                         "description": (
                                             "面向结构化简历编辑与预览工作流。"
                                         ),
@@ -451,8 +548,8 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
                         "sectionId": "project",
                         "itemId": "project-1",
                         "patch": {
-                            "role": "AI 简历编辑器",
-                            "description": "ResuMate AI 简历编辑器",
+                            "role": "产品开发",
+                            "description": "ResuMate 产品开发",
                         },
                     },
                 },
@@ -483,11 +580,11 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
                         "sectionId": "project",
                         "itemId": "project-1",
                         "patch": {
-                            "role": "AI 简历编辑器",
+                            "role": "产品开发",
                             "description": "面向结构化简历编辑与预览工作流。",
                             "highlights": [
                                 "实现事务化编辑，避免部分修改进入草稿。",
-                                "提供失败诊断，支持模型修复完整批次。",
+                                "提供失败信息，支持模型修复完整批次。",
                             ],
                         },
                     },
@@ -500,10 +597,10 @@ def test_blocking_quality_issue_rejects_batch_and_allows_one_repair() -> None:
     assert repaired_tool.state == "output-available"
     assert runner.transaction_state == "committed"
     assert runner.draft_resume["basic"]["summary"] == "聚焦复杂交互与工程质量。"
-    assert runner.draft_resume["sections"][0]["items"][0]["role"] == ("AI 简历编辑器")
+    assert runner.draft_resume["sections"][0]["items"][0]["role"] == "产品开发"
     assert runner.draft_resume["sections"][0]["items"][0]["highlights"] == [
         "实现事务化编辑，避免部分修改进入草稿。",
-        "提供失败诊断，支持模型修复完整批次。",
+        "提供失败信息，支持模型修复完整批次。",
     ]
 
 
@@ -543,13 +640,13 @@ def test_failed_repair_rolls_back_edits_from_the_whole_turn() -> None:
     runner = _runner()
 
     successful_tool, _ = runner._run_local_tool(
-        _tool_call("call-success", [_replace_summary("第一批有效修改")]),
+        _tool_call("call-success", [_replace_summary("精简的原始简介")]),
     )
     failed_tool, _ = runner._run_local_tool(
-        _tool_call("call-invalid", [_replace_summary("第一批有效修改")]),
+        _tool_call("call-invalid", [_replace_summary("精简的原始简介")]),
     )
     retry_tool, _ = runner._run_local_tool(
-        _tool_call("call-invalid-retry", [_replace_summary("第一批有效修改")]),
+        _tool_call("call-invalid-retry", [_replace_summary("精简的原始简介")]),
     )
 
     assert successful_tool.state == "output-available"
@@ -563,10 +660,10 @@ def test_failed_repair_rolls_back_edits_from_the_whole_turn() -> None:
 def test_unresolved_semantic_error_rolls_back_when_turn_finishes() -> None:
     runner = _runner()
     runner._run_local_tool(
-        _tool_call("call-success", [_replace_summary("第一批有效修改")]),
+        _tool_call("call-success", [_replace_summary("精简的原始简介")]),
     )
     runner._run_local_tool(
-        _tool_call("call-invalid", [_replace_summary("第一批有效修改")]),
+        _tool_call("call-invalid", [_replace_summary("精简的原始简介")]),
     )
 
     runner.finalize_turn()
@@ -579,7 +676,7 @@ def test_unresolved_semantic_error_rolls_back_when_turn_finishes() -> None:
 def test_blocked_finish_rolls_back_edits_but_keeps_blocked_context() -> None:
     runner = _runner()
     edit_tool, _ = runner._run_local_tool(
-        _tool_call("call-success", [_replace_summary("不应提交的修改")]),
+        _tool_call("call-success", [_replace_summary("精简的原始简介")]),
     )
     finish_tool, _ = runner._run_local_tool(
         LlmToolCall(
@@ -671,7 +768,7 @@ def test_staged_edits_replay_the_complete_server_operation_sequence() -> None:
                 "type": "update_item",
                 "sectionId": "project",
                 "itemId": "project-1",
-                "patch": {"description": "第一步描述"},
+                "patch": {"description": "面向结构化简历编辑与预览工作流"},
             },
         },
         {
@@ -681,7 +778,7 @@ def test_staged_edits_replay_the_complete_server_operation_sequence() -> None:
                 "type": "update_item",
                 "sectionId": "project",
                 "itemId": "project-1",
-                "patch": {"highlights": ["第二步要点"]},
+                "patch": {"highlights": ["实现事务化编辑，避免部分修改进入草稿"]},
             },
         },
     ]
@@ -693,5 +790,5 @@ def test_staged_edits_replay_the_complete_server_operation_sequence() -> None:
         edit["operation"] for edit in edits
     ]
     item = runner.draft_resume["sections"][0]["items"][0]
-    assert item["description"] == "第一步描述"
-    assert item["highlights"] == ["第二步要点"]
+    assert item["description"] == "面向结构化简历编辑与预览工作流"
+    assert item["highlights"] == ["实现事务化编辑，避免部分修改进入草稿"]

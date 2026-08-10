@@ -78,6 +78,7 @@ function toConversationResponse(
     draft: response.draft,
     edits: response.edits?.map((edit) => ({
       evidenceRefs: edit.evidenceRefs,
+      diffs: edit.diffs,
       id: edit.id,
       operation: edit.operation,
       reason: edit.reason,
@@ -89,6 +90,7 @@ function toConversationResponse(
     finishMissing: response.finishMissing,
     id: response.id,
     role: "assistant",
+    targetContext: response.targetContext,
     sources: response.sources?.map((source) => ({
       id: source.id,
       sourceType: source.sourceType,
@@ -118,7 +120,7 @@ function isCitationSource(source: AgentSource) {
 
   return (
     source.sourceType === "web" ||
-    source.sourceType === "jobBrief" ||
+    source.sourceType === "targetContext" ||
     source.sourceType === "attachment"
   );
 }

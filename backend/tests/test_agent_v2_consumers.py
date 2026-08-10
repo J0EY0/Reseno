@@ -1,3 +1,9 @@
+from copy import deepcopy
+
+from app.services.agent.editing.operations import (
+    _apply_edit_operation,
+    _model_edit_suggestions_with_diagnostics,
+)
 from app.services.agent.materials import extract_resume_materials
 from app.services.agent.runtime.messages import _compact_resume_outline
 from app.services.agent.tools.structured import (
@@ -101,6 +107,71 @@ def test_move_item_rejects_simple_list_structure_changes() -> None:
     )
 
 
+def test_move_item_between_same_kind_sections_is_one_valid_batch() -> None:
+    item = {
+        "id": "project-1",
+        "name": "ResuMate",
+        "role": "Frontend engineer",
+        "techStack": ["React"],
+        "period": "2026",
+        "url": "",
+        "description": "AI resume editor.",
+        "highlights": ["Built draft review."],
+    }
+    resume = {
+        "schemaVersion": 2,
+        "basic": {
+            "name": "",
+            "headline": "Engineer",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "",
+            "customFields": [],
+        },
+        "sections": [
+            {
+                "id": "projects-current",
+                "kind": "project",
+                "title": "Current projects",
+                "items": [item],
+            },
+            {
+                "id": "projects-selected",
+                "kind": "project",
+                "title": "Selected projects",
+                "items": [],
+            },
+        ],
+    }
+    entries, error = move_item_entries(
+        resume,
+        {
+            "fromSectionId": "projects-current",
+            "toSectionId": "projects-selected",
+            "itemId": "project-1",
+        },
+        locale="en",
+    )
+    candidate = deepcopy(resume)
+
+    edits, rejected = _model_edit_suggestions_with_diagnostics(
+        candidate,
+        entries,
+        locale="en",
+    )
+
+    assert error is None
+    assert rejected == []
+    assert len(edits) == 2
+    for edit in edits:
+        assert edit.operation is not None
+        _apply_edit_operation(candidate, edit.operation)
+    assert candidate["sections"][0]["items"] == []
+    assert candidate["sections"][1]["items"] == [item]
+
+
 def test_compact_resume_outline_uses_canonical_names() -> None:
     outline = _compact_resume_outline(
         {
@@ -139,7 +210,7 @@ def test_language_materials_suggest_canonical_simple_list_section() -> None:
     result = extract_resume_materials(
         session_id="",
         prompt="语言能力：英语 CET-6 600 分，能够熟练阅读技术文档。",
-        job_brief="",
+        target_context="",
         files=[],
         focus="languages",
     )

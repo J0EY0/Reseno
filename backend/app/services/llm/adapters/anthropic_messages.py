@@ -8,6 +8,7 @@ from ..common import (
     anthropic_usage,
     async_post_json,
     async_stream_json,
+    close_async_stream,
     map_stop_reason,
     message_content_parts,
     message_content_text,
@@ -59,111 +60,233 @@ async def complete_tool_call(
     return _message_from_payload(payload)
 
 
+async def stream_tool_call(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> AsyncIterator[LlmStreamEvent]:
+    """Stream tool input privately until Anthropic authoritatively completes."""
+
+    events = _stream_messages(config, messages, tools)
+    try:
+        async for event in events:
+            yield event
+    finally:
+        await close_async_stream(events)
+
+
 async def stream(
     config: AgentLlmConfig,
     messages: list[dict[str, Any]],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream Anthropic Messages SSE events into the shared LLM contract."""
 
-    payload = {**_payload(config, messages), "stream": True}
+    events = _stream_messages(config, messages)
+    try:
+        async for event in events:
+            yield event
+    finally:
+        await close_async_stream(events)
+
+
+async def _stream_messages(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[LlmStreamEvent]:
+    payload = {**_payload(config, messages, tools), "stream": True}
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     thinking_blocks_by_index: dict[int, dict[str, Any]] = {}
+    tool_inputs_by_index: dict[int, dict[str, Any]] = {}
     response_id: str | None = None
     stop_reason: LlmStopReason = "unknown"
-    # Anthropic splits usage across message_start/message_delta events. Merge
-    # those fragments before building the final provider-independent message.
     usage: dict[str, Any] = {}
-
-    async for event in async_stream_json(
+    provider_stream = async_stream_json(
         f"{provider_base_url(config.base_url)}/messages",
         headers=_headers(config),
         payload=payload,
         timeout_seconds=config.timeout_seconds,
-    ):
-        event_type = str(event.get("type") or event.get("_event") or "")
-        if event_type == "message_start":
-            message = event.get("message")
-            if isinstance(message, dict):
+    )
+
+    try:
+        async for event in provider_stream:
+            event_type = str(event.get("type") or "")
+            if event_type == "message_start":
+                message = event.get("message")
+                if not isinstance(message, dict):
+                    continue
                 response_id = str(message.get("id") or "") or response_id
                 message_usage = message.get("usage")
                 if isinstance(message_usage, dict):
                     usage.update(message_usage)
-            continue
+                if response_id or message_usage:
+                    yield LlmStreamEvent(type="activity")
+                continue
 
-        if event_type == "content_block_start":
-            block = event.get("content_block")
-            if isinstance(block, dict):
+            if event_type == "content_block_start":
+                block = event.get("content_block")
+                if not isinstance(block, dict):
+                    continue
+                index = _content_block_index(event)
                 thinking_block = _thinking_block(block)
                 if thinking_block:
-                    thinking_blocks_by_index[_content_block_index(event)] = (
-                        thinking_block
+                    thinking_blocks_by_index[index] = thinking_block
+                    if thinking_block.get("type") == "redacted_thinking":
+                        yield LlmStreamEvent(type="activity")
+                    continue
+                if block.get("type") != "tool_use":
+                    continue
+                if tools is None:
+                    raise LlmRequestError(
+                        "Model provider returned an unexpected tool call.",
                     )
-            continue
-
-        if event_type == "content_block_delta":
-            delta = event.get("delta")
-            if not isinstance(delta, dict):
+                tool_id = str(block.get("id") or "")
+                name = str(block.get("name") or "").strip()
+                if not tool_id or not name or index in tool_inputs_by_index:
+                    raise LlmRequestError(
+                        "Model provider returned an invalid tool stream.",
+                    )
+                tool_inputs_by_index[index] = {
+                    "id": tool_id,
+                    "name": name,
+                    "raw_parts": [],
+                    "closed": False,
+                }
+                yield LlmStreamEvent(type="activity")
                 continue
-            delta_type = str(delta.get("type") or "")
-            if delta_type == "text_delta":
-                text = delta.get("text")
-                if isinstance(text, str) and text:
-                    content_parts.append(text)
-                    yield LlmStreamEvent(type="text_delta", delta=text)
-            elif delta_type == "thinking_delta":
-                # Extended thinking is provider metadata for the agent; expose
-                # it through reasoning_delta instead of leaking Anthropic block
-                # event names into the runtime.
-                thinking = delta.get("thinking")
-                if isinstance(thinking, str) and thinking:
-                    reasoning_parts.append(thinking)
-                    block = thinking_blocks_by_index.setdefault(
-                        _content_block_index(event),
-                        {"type": "thinking", "thinking": ""},
+
+            if event_type == "content_block_delta":
+                delta = event.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                delta_type = str(delta.get("type") or "")
+                if delta_type == "text_delta":
+                    text = delta.get("text")
+                    if isinstance(text, str) and text:
+                        content_parts.append(text)
+                        yield LlmStreamEvent(type="text_delta", delta=text)
+                    continue
+                if delta_type == "thinking_delta":
+                    thinking = delta.get("thinking")
+                    if isinstance(thinking, str) and thinking:
+                        reasoning_parts.append(thinking)
+                        block = thinking_blocks_by_index.setdefault(
+                            _content_block_index(event),
+                            {"type": "thinking", "thinking": ""},
+                        )
+                        block["thinking"] = str(block.get("thinking") or "") + thinking
+                        yield LlmStreamEvent(
+                            type="reasoning_delta",
+                            delta=thinking,
+                        )
+                    continue
+                if delta_type == "signature_delta":
+                    signature = delta.get("signature")
+                    if isinstance(signature, str) and signature:
+                        block = thinking_blocks_by_index.setdefault(
+                            _content_block_index(event),
+                            {"type": "thinking", "thinking": ""},
+                        )
+                        block["signature"] = (
+                            str(block.get("signature") or "") + signature
+                        )
+                        yield LlmStreamEvent(type="activity")
+                    continue
+                if delta_type != "input_json_delta":
+                    continue
+                tool_input = tool_inputs_by_index.get(_content_block_index(event))
+                if tool_input is None or bool(tool_input["closed"]):
+                    raise LlmRequestError(
+                        "Model provider returned an invalid tool stream.",
                     )
-                    block["thinking"] = str(block.get("thinking") or "") + thinking
-                    yield LlmStreamEvent(type="reasoning_delta", delta=thinking)
-            elif delta_type == "signature_delta":
-                # The signature is opaque continuation state. It must be
-                # replayed unchanged, but must never surface as reasoning text.
-                signature = delta.get("signature")
-                if isinstance(signature, str) and signature:
-                    block = thinking_blocks_by_index.setdefault(
-                        _content_block_index(event),
-                        {"type": "thinking", "thinking": ""},
+                partial_json = delta.get("partial_json")
+                if isinstance(partial_json, str) and partial_json:
+                    tool_input["raw_parts"].append(partial_json)
+                    yield LlmStreamEvent(type="activity")
+                continue
+
+            if event_type == "content_block_stop":
+                tool_input = tool_inputs_by_index.get(_content_block_index(event))
+                if tool_input is not None:
+                    if bool(tool_input["closed"]):
+                        raise LlmRequestError(
+                            "Model provider returned an invalid tool stream.",
+                        )
+                    tool_input["closed"] = True
+                    yield LlmStreamEvent(type="activity")
+                continue
+
+            if event_type == "message_delta":
+                delta = event.get("delta")
+                stop_reason_value = (
+                    delta.get("stop_reason") if isinstance(delta, dict) else None
+                )
+                has_stop_reason = stop_reason_value is not None
+                if has_stop_reason:
+                    stop_reason = map_stop_reason(stop_reason_value)
+                event_usage = event.get("usage")
+                if isinstance(event_usage, dict):
+                    usage.update(event_usage)
+                if has_stop_reason or event_usage:
+                    yield LlmStreamEvent(type="activity")
+                continue
+
+            if event_type == "error":
+                raise LlmRequestError(_stream_error_message(event))
+
+            if event_type != "message_stop":
+                continue
+
+            if stop_reason == "unknown" or (
+                tool_inputs_by_index and stop_reason == "stop"
+            ):
+                raise LlmRequestError(
+                    "Model provider returned an invalid stream completion.",
+                )
+
+            tool_calls: list[LlmToolCall] = []
+            if stop_reason == "tool_calls":
+                if not tool_inputs_by_index or any(
+                    not bool(tool_input["closed"])
+                    for tool_input in tool_inputs_by_index.values()
+                ):
+                    raise LlmRequestError(
+                        "Model provider stream ended with an incomplete tool call.",
                     )
-                    block["signature"] = str(block.get("signature") or "") + signature
-            continue
+                tool_calls = [
+                    parsed_tool_call(
+                        call_id=str(tool_input["id"]),
+                        name=str(tool_input["name"]),
+                        raw_arguments="".join(tool_input["raw_parts"]),
+                    )
+                    for _, tool_input in sorted(tool_inputs_by_index.items())
+                ]
 
-        if event_type == "message_delta":
-            delta = event.get("delta")
-            if isinstance(delta, dict):
-                stop_reason = map_stop_reason(delta.get("stop_reason"))
-            event_usage = event.get("usage")
-            if isinstance(event_usage, dict):
-                usage.update(event_usage)
-            continue
+            yield LlmStreamEvent(
+                type="done",
+                message=LlmAssistantMessage(
+                    content="".join(content_parts).strip(),
+                    tool_calls=tool_calls,
+                    reasoning="".join(reasoning_parts).strip(),
+                    usage=anthropic_usage({"usage": usage}),
+                    stop_reason=stop_reason,
+                    response_id=response_id,
+                    provider_state=_thinking_provider_state(
+                        [
+                            block
+                            for _, block in sorted(
+                                thinking_blocks_by_index.items(),
+                            )
+                        ],
+                    ),
+                ),
+            )
+            return
+    finally:
+        await close_async_stream(provider_stream)
 
-        if event_type == "error":
-            raise LlmRequestError(_stream_error_message(event))
-
-        if event_type == "message_stop":
-            break
-
-    yield LlmStreamEvent(
-        type="done",
-        message=LlmAssistantMessage(
-            content="".join(content_parts).strip(),
-            reasoning="".join(reasoning_parts).strip(),
-            usage=anthropic_usage({"usage": usage}),
-            stop_reason=stop_reason,
-            response_id=response_id,
-            provider_state=_thinking_provider_state(
-                [block for _, block in sorted(thinking_blocks_by_index.items())],
-            ),
-        ),
-    )
+    raise LlmRequestError("Model provider stream ended before completion.")
 
 
 async def _post_messages(
@@ -338,6 +461,7 @@ def _tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "name": name,
                 "description": str(function.get("description") or ""),
                 "input_schema": portable_tool_schema(function.get("parameters")),
+                "eager_input_streaming": True,
             },
         )
 

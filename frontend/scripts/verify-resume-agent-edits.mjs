@@ -140,6 +140,23 @@ function createDraftSession(status, revision) {
   };
 }
 
+function createResumeDetail(versionId = "version-formal") {
+  return {
+    resume: {
+      id: "resume-draft-decision",
+      title: "Draft decision resume",
+      updatedAt: "2026-08-09T12:00:00.000Z",
+      jobBrief: "",
+      typography: { fontFamily: "inter", fontSize: 16 },
+      template: "minimal",
+      templateSettings: null,
+      resume: createResume(),
+    },
+    savedAt: "2026-08-09T12:00:00.000Z",
+    versionId,
+  };
+}
+
 function apiResponse(data, status = 200) {
   return new Response(
     JSON.stringify({ code: 0, data, message: "SUCCESS" }),
@@ -171,6 +188,8 @@ const [
   draftHookSource,
   hydrationSource,
   conversationSource,
+  saveSource,
+  workspaceSource,
   agentEditModuleSources,
   moduleEntries,
 ] = await Promise.all([
@@ -195,6 +214,20 @@ const [
   readFile(
     new URL(
       "../src/components/copilot/use-agent-conversation.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "../src/components/workspace/use-resume-detail-save.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "../src/components/workspace/use-resume-detail-workspace.ts",
       import.meta.url,
     ),
     "utf8",
@@ -326,28 +359,43 @@ assert(
   "Apply and discard must stay committed-only and close the stored merge transaction.",
 );
 assert(
-  /import\s*\{\s*resolveAgentDraftDecision\s*\}\s*from\s*["']@\/lib\/agent-session-run-client["']/.test(
+  /import\s*\{[\s\S]*?resolveAgentDraftDecision[\s\S]*?\}\s*from\s*["']@\/lib\/agent-session-run-client["']/.test(
     draftHookSource,
   ) &&
-    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?mergeCommittedAgentDraft\([\s\S]*?await resolveAgentDraftDecision\([\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?onApplyResume\(result\.resume\)/.test(
+    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?const candidate = mergeCommittedAgentDraft\([\s\S]*?await onResolveAppliedDraft\([\s\S]*?candidate\.resume[\s\S]*?if \(resolution\.status === "applied"\)/.test(
       draftHookSource,
     ) &&
     /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?await resolveAgentDraftDecision\([\s\S]*?resolution\.status/.test(
       draftHookSource,
     ),
-  "Apply and discard must wait for the durable message decision before closing the local draft.",
+  "Apply must send its validated candidate in the durable decision, while discard waits for its decision.",
 );
 assert(
-  /const mergeCommittedAgentDraft = useCallback\([\s\S]*?applyAgentEditsWithMerge\([\s\S]*?if \(result\.errors\.length > 0\)[\s\S]*?toast\.error[\s\S]*?return null;[\s\S]*?return result;/.test(
+  /const mergeCommittedAgentDraft = useCallback\([\s\S]*?reportConflict = true[\s\S]*?applyAgentEditsWithMerge\([\s\S]*?if \(result\.errors\.length > 0\)[\s\S]*?if \(reportConflict\)[\s\S]*?toast\.error[\s\S]*?return null;[\s\S]*?return result;/.test(
     draftHookSource,
   ) &&
-    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?if \(!mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)\) \{\s*return;\s*\}[\s\S]*?await resolveAgentDraftDecision\([\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?const result = mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)[\s\S]*?onApplyResume\(result\.resume\)/.test(
+    /const adoptAppliedDraftResolution = useCallback\([\s\S]*?if \(!resolution\.committed\)[\s\S]*?resolution\.resume\?\.resume\.resume[\s\S]*?onApplyResume\(authoritativeResume\)[\s\S]*?mergeCommittedAgentDraft\(draft, baseResume, false\)[\s\S]*?currentResumeRef\.current/.test(
       draftHookSource,
     ) &&
-    /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?if \(resolution\.status === "applied"\) \{[\s\S]*?const result = mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)[\s\S]*?if \(!result\) \{\s*return;\s*\}[\s\S]*?onApplyResume\(result\.resume\)/.test(
+    /const applyAgentDraft = useCallback\(async \(\) => \{[\s\S]*?const candidate = mergeCommittedAgentDraft\(agentDraft, draftBase\.resume\)[\s\S]*?onResolveAppliedDraft\([\s\S]*?candidate\.resume[\s\S]*?adoptAppliedDraftResolution\(/.test(
+      draftHookSource,
+    ) &&
+    /const discardAgentDraft = useCallback\(async \(\) => \{[\s\S]*?resolution\.status === "applied"[\s\S]*?adoptAppliedDraftResolution\(/.test(
       draftHookSource,
     ),
-  "A discard that converges to authoritative applied must reuse the apply merge result and error path.",
+  "A terminal decision must adopt another tab's authoritative resume while preserving post-click edits after this tab's own commit.",
+);
+assert(
+  /const resolveAppliedAgentDraft = useCallback\([\s\S]*?while \(activeRequestRef\.current\)[\s\S]*?resolveAgentDraftDecision\([\s\S]*?adoptPersistedSave\([\s\S]*?activeRequestRef\.current = trackedRequest/.test(
+    saveSource,
+  ) &&
+    /const resolveAppliedDraftRef = useRef[\s\S]*?onResolveAppliedDraft:\s*resolveAppliedDraft[\s\S]*?resolveAppliedDraftRef\.current = save\.resolveAppliedAgentDraft/.test(
+      workspaceSource,
+    ) &&
+    /onResolveAppliedDraft,[\s\S]*?useResumeAgentDraft\(\{[\s\S]*?onResolveAppliedDraft/.test(
+      sessionSource,
+    ),
+  "Draft apply must serialize with resume saves and adopt the authoritative save receipt.",
 );
 assert(
   (sessionSource.match(/resetAgentDraft\(\)/g) ?? []).length === 1 &&
@@ -420,6 +468,15 @@ const {
       value: "Staff Engineer",
     },
     status: "executed",
+    diffs: [{
+      id: "diff-durable-edit",
+      operationId: "durable-edit",
+      path: "basic.headline",
+      kind: "modified",
+      label: "Headline",
+      before: "Engineer",
+      after: "Staff Engineer",
+    }],
   };
   const storedMessages = [
     {
@@ -474,7 +531,9 @@ const {
   );
   assert(
     replacementMessage.response?.draft?.status === "pending" &&
-      replacementMessage.response.draft.baseResume === baseResume,
+      replacementMessage.response.draft.baseResume === baseResume &&
+      replacementMessage.response.edits?.[0]?.diffs?.[0]?.operationId ===
+        "durable-edit",
     "History replacement must preserve the durable draft payload on retained assistant messages.",
   );
 }
@@ -729,11 +788,31 @@ for (const operation of [
         value: "Updated summary",
       },
     },
+  ]);
+
+  assert(result.errors.length === 0, "A valid batch must not return errors.");
+  assert(result.appliedCount === 2, "A valid batch must commit every edit.");
+  assert(result.diffs.length === 2, "A valid batch must expose every diff.");
+  assert(
+    result.resume.basic.headline === "Staff Engineer" &&
+      result.resume.basic.summary === "Updated summary",
+    "A valid batch must return the fully updated resume.",
+  );
+  assert(
+    baseResume.basic.headline === "Engineer" &&
+      baseResume.basic.summary === "Original summary",
+    "Applying a batch must never mutate the source resume.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  const result = applyAgentEditsToDraft(baseResume, [
     {
-      id: "update-location",
-      title: "Update location",
+      id: "reject-location",
+      title: "Reject hidden location",
       target: "basic.location",
-      reason: "Use the location explicitly supplied by the user.",
+      reason: "Location is outside the Agent write contract.",
       operation: {
         type: "replace_field",
         path: "basic.location",
@@ -742,20 +821,13 @@ for (const operation of [
     },
   ]);
 
-  assert(result.errors.length === 0, "A valid batch must not return errors.");
-  assert(result.appliedCount === 3, "A valid batch must commit every edit.");
-  assert(result.diffs.length === 3, "A valid batch must expose every diff.");
   assert(
-    result.resume.basic.headline === "Staff Engineer" &&
-      result.resume.basic.summary === "Updated summary" &&
-      result.resume.basic.location === "Remote",
-    "A valid batch must return the fully updated resume.",
+    result.errors.length === 1 && result.appliedCount === 0,
+    "Agent drafts must reject hidden basic fields on the frontend boundary.",
   );
   assert(
-    baseResume.basic.headline === "Engineer" &&
-      baseResume.basic.summary === "Original summary" &&
-      baseResume.basic.location === "",
-    "Applying a batch must never mutate the source resume.",
+    result.resume.basic.location === "",
+    "A rejected location edit must not change the resume.",
   );
 }
 
@@ -991,6 +1063,70 @@ for (const operation of [
 }
 
 {
+  const originalResume = createResume();
+  const transactionBase = createAgentDraftBaseSnapshot(originalResume);
+  const firstDraftEdits = [
+    {
+      id: "initial-headline",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Create the first pending draft.",
+      operation: {
+        type: "replace_field",
+        path: "basic.headline",
+        value: "Staff Engineer",
+      },
+    },
+  ];
+  const firstDraft = applyAgentEditsWithMerge(
+    transactionBase,
+    originalResume,
+    firstDraftEdits,
+  );
+  const followUpEdits = [
+    {
+      id: "refined-headline",
+      title: "Refine headline",
+      target: "basic.headline",
+      reason: "Continue from the pending Staff Engineer candidate.",
+      operation: {
+        type: "replace_field",
+        path: "basic.headline",
+        value: "Principal Engineer",
+      },
+    },
+    {
+      id: "follow-up-summary",
+      title: "Update summary",
+      target: "basic.summary",
+      reason: "Apply a disjoint follow-up edit.",
+      operation: {
+        type: "replace_field",
+        path: "basic.summary",
+        value: "Focused summary",
+      },
+    },
+  ];
+  const refinedDraft = applyAgentEditsWithMerge(
+    transactionBase,
+    originalResume,
+    [...firstDraftEdits, ...followUpEdits],
+  );
+
+  assert(
+    firstDraft.errors.length === 0 &&
+      firstDraft.resume.basic.headline === "Staff Engineer",
+    "The first pending draft must be a valid candidate built from the immutable base.",
+  );
+  assert(
+    refinedDraft.errors.length === 0 &&
+      refinedDraft.resume.basic.headline === "Principal Engineer" &&
+      refinedDraft.resume.basic.summary === "Focused summary",
+    "A follow-up must replace the same field without conflict and preserve every prior edit.",
+  );
+}
+
+{
   const baseResume = createResume();
   const draftBase = createAgentDraftBaseSnapshot(baseResume);
   const edits = [
@@ -1050,8 +1186,82 @@ for (const operation of [
   });
   const requests = [];
   const responses = [
+    apiResponse(createDraftSession("applied", "revision-other-tab")),
+    apiResponse(createResumeDetail("version-stale-parallel-read")),
+    apiResponse(createResumeDetail("version-authoritative-other-tab")),
+  ];
+
+  globalThis.window = {
+    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    sessionStorage: {
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ method: options.method ?? "GET", url: String(url) });
+    const response = responses.shift();
+    assert(response, "An authoritative apply read made an unexpected request.");
+    return response;
+  };
+
+  try {
+    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+      "/src/lib/agent-session-run-client.ts",
+    );
+    const resolution = await resolveAgentDraftDecision(
+      "resume-draft-decision",
+      "assistant-draft-decision",
+      { status: "applied", resume: createResume() },
+    );
+
+    assert(
+      resolution.status === "applied" &&
+        resolution.committed === false &&
+        resolution.resume?.versionId === "version-authoritative-other-tab",
+      "A decision already applied by another tab must return a fresh authoritative resume.",
+    );
+    assert(
+      requests.length === 3 && requests.every((request) => request.method === "GET"),
+      "An already-applied decision must refresh the formal resume after the session read without issuing PATCH.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (typeof originalWindow === "undefined") {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const authSession = JSON.stringify({
+    accessToken: "agent-draft-token",
+    authenticatedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    username: "agent-draft-test",
+  });
+  const requests = [];
+  const responses = [
     apiResponse(createDraftSession("pending", "revision-pending")),
-    apiResponse(createDraftSession("applied", "revision-applied")),
+    apiResponse(createResumeDetail()),
+    apiResponse({
+      session: createDraftSession("applied", "revision-applied"),
+      resume: createResumeDetail("version-applied"),
+    }),
   ];
 
   globalThis.window = {
@@ -1089,24 +1299,31 @@ for (const operation of [
     const resolution = await resolveAgentDraftDecision(
       "resume-draft-decision",
       "assistant-draft-decision",
-      "applied",
+      { status: "applied", resume: createResume() },
     );
 
     assert(
       resolution.status === "applied" &&
-        resolution.session.revision === "revision-applied",
+        resolution.session.revision === "revision-applied" &&
+        resolution.resume?.versionId === "version-applied",
       "A successful apply must resolve from the durable assistant response.",
     );
     assert(
-      requests.length === 2 &&
+      requests.length === 3 &&
         requests[0].method === "GET" &&
-        requests[1].method === "PATCH" &&
-        requests[1].url.endsWith(
+        requests[1].method === "GET" &&
+        requests[2].method === "PATCH" &&
+        requests[2].url.endsWith(
           "/api/agent/resumes/resume-draft-decision/session/messages/assistant-draft-decision/draft",
         ) &&
-        requests[1].body ===
-          JSON.stringify({ revision: "revision-pending", status: "applied" }),
-      "A draft decision must CAS the target message with the latest session revision.",
+        requests[2].body ===
+          JSON.stringify({
+            status: "applied",
+            resume: createResume(),
+            expectedVersionId: "version-formal",
+            revision: "revision-pending",
+          }),
+      "A draft apply must atomically submit the candidate with both current revisions.",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1130,11 +1347,15 @@ for (const operation of [
   const requests = [];
   const responses = [
     apiResponse(createDraftSession("pending", "revision-stale")),
+    apiResponse(createResumeDetail()),
     transportError("AGENT_SESSION_REVISION_CONFLICT", {
       revision: "revision-refreshed",
     }),
     apiResponse(createDraftSession("pending", "revision-refreshed")),
-    apiResponse(createDraftSession("applied", "revision-reconciled")),
+    apiResponse({
+      session: createDraftSession("applied", "revision-reconciled"),
+      resume: createResumeDetail("version-reconciled"),
+    }),
   ];
 
   globalThis.window = {
@@ -1172,21 +1393,103 @@ for (const operation of [
     const resolution = await resolveAgentDraftDecision(
       "resume-draft-decision",
       "assistant-draft-decision",
-      "applied",
+      { status: "applied", resume: createResume() },
     );
 
     assert(
       resolution.status === "applied" &&
-        resolution.session.revision === "revision-reconciled",
+        resolution.session.revision === "revision-reconciled" &&
+        resolution.resume?.versionId === "version-reconciled",
       "A stale draft decision must converge after one authoritative reload.",
     );
     assert(
-      requests.length === 4 &&
-        requests[1].body ===
-          JSON.stringify({ revision: "revision-stale", status: "applied" }) &&
-        requests[3].body ===
-          JSON.stringify({ revision: "revision-refreshed", status: "applied" }),
+      requests.length === 5 &&
+        requests[2].body ===
+          JSON.stringify({
+            status: "applied",
+            resume: createResume(),
+            expectedVersionId: "version-formal",
+            revision: "revision-stale",
+          }) &&
+        requests[4].body ===
+          JSON.stringify({
+            status: "applied",
+            resume: createResume(),
+            expectedVersionId: "version-formal",
+            revision: "revision-refreshed",
+          }),
       "A revision conflict may retry once, using only the reloaded revision.",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (typeof originalWindow === "undefined") {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const authSession = JSON.stringify({
+    accessToken: "agent-draft-token",
+    authenticatedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    username: "agent-draft-test",
+  });
+  const requests = [];
+  const responses = [
+    apiResponse(createDraftSession("pending", "revision-formal-stale")),
+    apiResponse(createResumeDetail("version-stale")),
+    transportError("RESUME_VERSION_CONFLICT", {
+      versionId: "version-current",
+    }),
+  ];
+
+  globalThis.window = {
+    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    sessionStorage: {
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
+      },
+      removeItem() {},
+      setItem() {},
+    },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ method: options.method ?? "GET", url: String(url) });
+    const response = responses.shift();
+    assert(response, "A formal-version conflict must not be retried.");
+    return response;
+  };
+
+  try {
+    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+      "/src/lib/agent-session-run-client.ts",
+    );
+    let conflictRaised = false;
+    try {
+      await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        { status: "applied", resume: createResume() },
+      );
+    } catch {
+      conflictRaised = true;
+    }
+
+    assert(
+      conflictRaised && requests.length === 3,
+      "A stale formal resume must abort after one PATCH without an overwrite retry.",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1222,6 +1525,7 @@ for (const {
   const requests = [];
   const responses = [
     apiResponse(createDraftSession("pending", "revision-before-terminal")),
+    apiResponse(createResumeDetail()),
     transportError(conflictCode, {
       revision: "revision-terminal",
       status: authoritativeStatus,
@@ -1229,6 +1533,9 @@ for (const {
     apiResponse(
       createDraftSession(authoritativeStatus, "revision-terminal"),
     ),
+    ...(authoritativeStatus === "applied"
+      ? [apiResponse(createResumeDetail("version-terminal"))]
+      : []),
   ];
 
   globalThis.window = {
@@ -1262,11 +1569,12 @@ for (const {
     const resolution = await resolveAgentDraftDecision(
       "resume-draft-decision",
       "assistant-draft-decision",
-      "applied",
+      { status: "applied", resume: createResume() },
     );
 
     assert(
-      resolution.status === authoritativeStatus && requests.length === 3,
+      resolution.status === authoritativeStatus &&
+        requests.length === (authoritativeStatus === "applied" ? 5 : 4),
       "After a 409, the authoritative terminal draft status must win without another PATCH.",
     );
   } finally {

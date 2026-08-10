@@ -89,15 +89,17 @@ assert(
 );
 assert(
   /export function AgentChangeSummary/.test(changeSummary) &&
-    changeSummary.includes("isAgentEditExecutionTool") &&
+    changeSummary.includes("getAgentEditDiff") &&
     changeSummary.includes("getAgentQualityWarningCount"),
   "Change-summary decoding and quality warnings must stay behind the summary seam.",
 );
 assert(
   /export function AgentUserMessageRow/.test(userMessageRow) &&
     userMessageRow.includes("<AgentMessageAttachments") &&
-    userMessageRow.includes("message.execution?.status"),
-  "User message attachments, editing, and retry state must stay owned by the row.",
+    userMessageRow.includes("message.execution?.status") &&
+    userMessageRow.includes("message.execution?.errorCode") &&
+    userMessageRow.includes("agentProviderTimeout"),
+  "User message attachments and precise terminal state must stay owned by the row.",
 );
 assert(
   !shimmer.includes('from "motion/react"') &&

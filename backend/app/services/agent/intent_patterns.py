@@ -21,6 +21,18 @@ def matches_intent_pattern(
     return bool(pattern.search(value))
 
 
+def remove_intent_pattern_matches(
+    value: str,
+    pattern_name: str,
+    *,
+    locale: str | None = None,
+) -> str:
+    """Remove configured matches so an affirmative clause can be re-checked."""
+
+    pattern = _compiled_pattern(pattern_name, _cache_locale_key(locale))
+    return pattern.sub(" ", value)
+
+
 @lru_cache(maxsize=1)
 def _pattern_groups() -> dict[str, Any]:
     loaded = json.loads(INTENT_PATTERN_FILE.read_text(encoding="utf-8"))

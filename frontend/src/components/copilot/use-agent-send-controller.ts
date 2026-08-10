@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 
-import type { AppMessages, Locale } from '@/i18n'
+import type { Locale } from '@/i18n'
 import {
   replaceAgentSession,
   stopAgentRun,
@@ -15,25 +15,20 @@ import {
   isApiErrorCode,
   isApiErrorToastShown,
 } from '@/lib/api-client'
-import { createId, getKeywordMatch } from '@/lib/resume'
+import { createId } from '@/lib/resume'
 import type {
   AgentChatAttachment,
   AgentChatUserMessage,
   AgentDraftState,
   AgentRunStatus,
 } from '@/types/api'
-import type {
-  KeywordMatch,
-  ModelConfig,
-  ResumeData,
-} from '@/types/resume'
+import type { ModelConfig, ResumeData } from '@/types/resume'
 
 import {
   isPendingSendOwner,
   type AgentConversationRuntimeRef,
   type AgentConversationUpdates,
 } from './agent-conversation-runtime'
-import { isLikelyJobBriefPrompt } from './agent-prompt-context'
 import {
   toConversationMessage,
   type AgentPanelMessage,
@@ -98,34 +93,26 @@ function ownsAgentSendPreflight(
 export function useAgentSendController({
   agentDraftState,
   consumeRunStream,
-  jobBrief,
-  keywordMatch,
   locale,
   messages,
   onBeforeSend,
-  onJobBriefChange,
   refreshAgentSession,
   resume,
   resumeId,
   runtimeRef,
   selectedModel,
-  t,
   updates,
 }: {
   agentDraftState: AgentDraftState | null
   consumeRunStream: ConsumeAgentRunStream
-  jobBrief: string
-  keywordMatch: KeywordMatch
   locale: Locale
   messages: AgentPanelMessage[]
   onBeforeSend?: () => Promise<void>
-  onJobBriefChange: (value: string) => void
   refreshAgentSession: RefreshAgentSession
   resume: ResumeData
   resumeId?: string
   runtimeRef: AgentConversationRuntimeRef
   selectedModel: ModelConfig | null
-  t: AppMessages
   updates: AgentConversationUpdates
 }) {
   const preflightAbortRef = useRef<AbortController | null>(null)
@@ -306,11 +293,6 @@ export function useAgentSendController({
 
         const baseMessages = options.baseMessages ?? messages
         const rollbackMessages = messages
-        const looksLikeJobBrief = isLikelyJobBriefPrompt(prompt)
-        const nextJobBrief = looksLikeJobBrief ? prompt : jobBrief
-        const nextKeywordMatch = looksLikeJobBrief
-          ? getKeywordMatch(resume, nextJobBrief, 0, t)
-          : keywordMatch
         const userMessage: AgentPanelMessage = {
           files,
           id: options.messageId ?? createId('agent-user'),
@@ -340,10 +322,6 @@ export function useAgentSendController({
         updates.setStreamingMessage(null)
         runtime.previewedEditsKey = null
         runtime.requestResume = resume
-
-        if (looksLikeJobBrief) {
-          onJobBriefChange(prompt)
-        }
 
         return await new Promise<AgentRunStatus>((resolve) => {
           runtime.pendingSend = {
@@ -397,8 +375,6 @@ export function useAgentSendController({
                         {
                           appliedActions: [],
                           expectedRevision,
-                          jobBrief: nextJobBrief,
-                          keywordMatch: nextKeywordMatch,
                           locale,
                           message: currentMessage,
                           messages: priorMessages,
@@ -523,18 +499,14 @@ export function useAgentSendController({
       agentDraftState,
       cancelScheduledSend,
       consumeRunStream,
-      jobBrief,
-      keywordMatch,
       locale,
       messages,
       onBeforeSend,
-      onJobBriefChange,
       refreshAgentSession,
       resume,
       resumeId,
       runtimeRef,
       selectedModel,
-      t,
       updates,
     ],
   )

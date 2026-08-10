@@ -170,7 +170,7 @@ web_fetch
 web_search
 ```
 
-`material_extract` 只整理用户 prompt、jobBrief、附件中的候选片段，不做事实校验，也不直接写草稿。`resume_analysis` 输出 `targetFit`，用于表达目标岗位、关键词缺口、建议编辑目标和风险代码。
+`material_extract` 只整理用户 prompt、会话级 `targetContext`、附件中的候选片段，不做事实校验，也不直接写草稿。`resume_analysis` 输出 `targetFit`，用于表达目标岗位、关键词缺口、建议编辑目标和风险代码。
 
 `ToolSpec` 第一版保持最小，只描述工具元数据；是否允许本轮调用仍由
 `CapabilityPolicy` 根据请求上下文判断：
@@ -271,7 +271,7 @@ company_reference
   "url": "...",
   "purpose": "project_reference",
   "excerpt": "...",
-  "sourceType": "web_fetch",
+  "sourceType": "web",
   "canSupportResumeFacts": true
 }
 ```

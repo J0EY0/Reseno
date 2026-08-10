@@ -153,13 +153,6 @@ export interface ResumeDraftDiff {
   after?: unknown
 }
 
-export interface KeywordMatch {
-  score: number
-  matched: string[]
-  missing: string[]
-  summary: string
-}
-
 export interface ResumeTypographySettings {
   fontFamily: ResumeFontFamily
   fontSize: number

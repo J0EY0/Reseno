@@ -18,16 +18,12 @@ from ..section_registry import normalize_section_alias
 EDIT_ENTRY = dict[str, Any]
 ALL_ITEM_STRING_FIELDS = tuple(
     dict.fromkeys(
-        field
-        for fields in ITEM_STRING_FIELDS_BY_KIND.values()
-        for field in fields
+        field for fields in ITEM_STRING_FIELDS_BY_KIND.values() for field in fields
     ),
 )
 ALL_ITEM_LIST_FIELDS = tuple(
     dict.fromkeys(
-        field
-        for fields in ITEM_LIST_FIELDS_BY_KIND.values()
-        for field in fields
+        field for fields in ITEM_LIST_FIELDS_BY_KIND.values() for field in fields
     ),
 )
 SKILL_SECTION_TITLE_ALIASES = frozenset(
@@ -108,6 +104,25 @@ def compact_text(value: object, limit: int = 220) -> str:
     return text if len(text) <= limit else f"{text[: limit - 3]}..."
 
 
+def compact_value(value: object, *, depth: int = 0) -> object:
+    """Preserve bounded structured values for draft explanation tools."""
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return compact_text(value)
+    if depth >= 4:
+        return "..."
+    if isinstance(value, list):
+        return [compact_value(item, depth=depth + 1) for item in value[:8]]
+    if isinstance(value, dict):
+        return {
+            str(key): compact_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:12]
+        }
+    return compact_text(str(value))
+
+
 def item_snapshot(
     item: dict[str, Any],
     *,
@@ -180,8 +195,7 @@ def lookup_resume(resume: dict[str, Any], args: dict[str, Any]) -> dict[str, Any
 
         kind = str(section.get("kind") or "")
         section_text = " ".join(
-            compact_text(section.get(key)).lower()
-            for key in ("id", "kind", "title")
+            compact_text(section.get(key)).lower() for key in ("id", "kind", "title")
         )
         section_matches = (not query and not item_id) or query in section_text
 
@@ -199,10 +213,7 @@ def lookup_resume(resume: dict[str, Any], args: dict[str, Any]) -> dict[str, Any
                 ALL_ITEM_LIST_FIELDS,
             )
             item_text = " ".join(
-                [
-                    compact_text(item.get(key)).lower()
-                    for key in ("id", *string_fields)
-                ]
+                [compact_text(item.get(key)).lower() for key in ("id", *string_fields)]
                 + [
                     compact_text(value).lower()
                     for field in list_fields
@@ -303,8 +314,8 @@ def draft_diff_summary(
                 "operationId": str(diff.get("operationId") or ""),
                 "path": compact_text(diff.get("path")),
                 "label": compact_text(diff.get("label") or diff.get("title")),
-                "before": compact_text(diff.get("before")),
-                "after": compact_text(diff.get("after")),
+                "before": compact_value(diff.get("before")),
+                "after": compact_value(diff.get("after")),
             }
             for index, diff in enumerate(draft_state.diffs[:12], start=1)
             if isinstance(diff, dict)
@@ -399,16 +410,17 @@ def move_item_entries(
 
     return [
         edit_entry(
-            agent_text(locale, "structured.title.move_item_to_section"),
-            f"sections.{to_section_id}.items.{item_id}",
-            reason,
-            insert_operation,
-        ),
-        edit_entry(
             agent_text(locale, "structured.title.remove_original_item"),
             f"sections.{from_section_id}.items.{item_id}",
             reason,
             {"type": "delete_item", "sectionId": from_section_id, "itemId": item_id},
+        ),
+        edit_entry(
+            agent_text(locale, "structured.title.move_item_to_section"),
+            f"sections.{to_section_id}.items.{item_id}",
+            reason,
+            insert_operation,
+            evidence_refs=[f"resume:item:{from_section_id}:{item_id}"],
         ),
     ], None
 
@@ -516,6 +528,10 @@ def merge_item_entries(
                 "itemId": unique_item_ids[0],
                 "patch": merged_item,
             },
+            evidence_refs=[
+                *(f"resume:item:{section_id}:{item_id}" for item_id in unique_item_ids),
+                "prompt:current",
+            ],
         ),
     ]
     for item_id in unique_item_ids[1:]:
@@ -562,9 +578,7 @@ def classify_skills_entries(
         return [], agent_text(locale, "error.skills_classify_empty_items")
 
     content = (
-        "<ul>"
-        + "".join(f"<li>{escape(line)}</li>" for line in group_lines)
-        + "</ul>"
+        "<ul>" + "".join(f"<li>{escape(line)}</li>" for line in group_lines) + "</ul>"
     )
 
     reason = string_arg(args, "reason") or agent_text(
@@ -640,12 +654,17 @@ def edit_entry(
     target: str,
     reason: str,
     operation: dict[str, Any],
+    *,
+    evidence_refs: list[str] | None = None,
 ) -> EDIT_ENTRY:
     """Return an edit_execute-compatible entry."""
 
-    return {
+    entry: EDIT_ENTRY = {
         "title": title,
         "target": target,
         "reason": reason,
         "operation": operation,
     }
+    if evidence_refs:
+        entry["evidenceRefs"] = evidence_refs
+    return entry

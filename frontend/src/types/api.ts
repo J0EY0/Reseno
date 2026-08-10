@@ -5,7 +5,6 @@ import type {
   BuiltinResumeTemplateId,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
-  KeywordMatch,
   ModelConfig,
   ResumeData,
   ResumeDraftDiff,
@@ -196,7 +195,6 @@ export interface AgentChatUserMessage {
 }
 
 export type AgentDraftStatus = "pending" | "applied" | "discarded";
-export type AgentDraftDecisionStatus = Exclude<AgentDraftStatus, "pending">;
 export type AgentTransactionState =
   | "none"
   | "provisional"
@@ -211,6 +209,7 @@ export type AgentTurnExecutionStatus =
 export type AgentTurnErrorCode =
   | "AGENT_PROVIDER_AUTH_ERROR"
   | "AGENT_PROVIDER_ERROR"
+  | "AGENT_PROVIDER_TIMEOUT"
   | "AGENT_INTERNAL_ERROR"
   | "AGENT_RUN_CANCELLED"
   | "AGENT_EDIT_TRANSACTION_INCOMPLETE";
@@ -233,6 +232,26 @@ export interface AgentCommittedDraft {
   status: AgentDraftStatus;
 }
 
+export interface AgentTargetContext {
+  cleared: boolean;
+  kind:
+    | "employment"
+    | "graduate_study"
+    | "research"
+    | "scholarship"
+    | "general";
+  target: string;
+  locations: string[];
+  seniority: string;
+  responsibilities: string[];
+  mustHaveSkills: string[];
+  niceToHaveSkills: string[];
+  requirements: string[];
+  description: string;
+  exactJobDescription: boolean;
+  sourceMessageIds: string[];
+}
+
 export interface AgentDraftSnapshot extends AgentCommittedDraft {
   edits: AgentResumeEditSuggestion[];
   sourceMessageId: string;
@@ -246,8 +265,6 @@ export interface AgentChatRequest {
   messages: AgentConversationMessage[];
   locale: Locale;
   resume: ResumeData;
-  jobBrief: string;
-  keywordMatch: KeywordMatch;
   appliedActions: string[];
   draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
@@ -276,7 +293,7 @@ export type AgentFinishMissing =
 export interface AgentSource {
   id: string;
   title: string;
-  sourceType: "jobBrief" | "attachment" | "web";
+  sourceType: "targetContext" | "attachment" | "web";
   url?: string;
   excerpt?: string;
 }
@@ -337,6 +354,7 @@ export interface AgentChatMessage {
   sources?: AgentSource[];
   edits?: AgentResumeEditSuggestion[];
   draft?: AgentCommittedDraft;
+  targetContext?: AgentTargetContext;
   transactionState?: AgentTransactionState;
   finishMissing?: AgentFinishMissing[];
   quickReplies?: string[];
@@ -391,9 +409,21 @@ export interface AgentSessionReplaceRequest {
   messages: AgentConversationMessage[];
 }
 
-export interface AgentDraftDecisionRequest {
-  revision: string;
-  status: AgentDraftDecisionStatus;
+export type AgentDraftDecisionRequest =
+  | {
+      revision: string;
+      status: "applied";
+      resume: ResumeData;
+      expectedVersionId: string;
+    }
+  | {
+      revision: string;
+      status: "discarded";
+    };
+
+export interface AgentDraftDecisionResponse {
+  session: AgentSessionResponse;
+  resume: ResumeDetailResponse | null;
 }
 
 export type AgentChatStreamEvent =

@@ -3,7 +3,12 @@ import json
 
 from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services.agent.executor import AgentPlanExecutor
-from app.services.agent.privacy import HIDDEN_BASIC_VALUE, sanitize_agent_resume
+from app.services.agent.privacy import (
+    HIDDEN_BASIC_VALUE,
+    sanitize_agent_resume,
+    sanitize_agent_text,
+)
+from app.services.agent.prompts import EDIT_OPERATION_GUIDE
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import LlmToolCall
@@ -36,6 +41,40 @@ def test_resume_location_is_hidden_from_every_model_visible_field() -> None:
     assert location not in json.dumps(sanitized, ensure_ascii=False)
     assert sanitized["basic"]["location"] == HIDDEN_BASIC_VALUE
     assert sanitized["basicFieldStatus"]["location"] == "present"
+
+
+def test_resume_date_ranges_are_not_redacted_as_phone_numbers() -> None:
+    sanitized = sanitize_agent_resume(
+        {
+            "basic": {
+                "summary": (
+                    "学习时间为 2019.09 - 2023.06，联系电话 +86 138 0000 0000。"
+                ),
+            },
+            "sections": [
+                {
+                    "id": "experience",
+                    "kind": "experience",
+                    "items": [
+                        {
+                            "id": "experience-1",
+                            "period": "2022.07 - 2022.09",
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert "2019.09 - 2023.06" in sanitized["basic"]["summary"]
+    assert "[redacted_phone]" in sanitized["basic"]["summary"]
+    assert sanitized["sections"][0]["items"][0]["period"] == ("2022.07 - 2022.09")
+
+
+def test_web_source_url_numeric_path_is_not_redacted_as_phone_number() -> None:
+    url = "https://zhuanlan.zhihu.com/p/1234567890123456789"
+
+    assert sanitize_agent_text(url) == url
 
 
 def test_agent_write_tool_rejects_location_changes() -> None:
@@ -85,3 +124,7 @@ def test_agent_write_tool_rejects_location_changes() -> None:
     assert tool.state == "output-error"
     assert runner.edits == []
     assert runner.draft_resume["basic"]["location"] == "Beijing"
+
+
+def test_agent_prompt_does_not_offer_hidden_location_writes() -> None:
+    assert "basic.location" not in EDIT_OPERATION_GUIDE

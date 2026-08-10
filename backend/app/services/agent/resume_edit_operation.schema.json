@@ -189,7 +189,7 @@
       "type": "object",
       "properties": {
         "type": { "const": "replace_field" },
-        "path": { "type": "string", "enum": ["basic.headline", "basic.location", "basic.summary"] },
+        "path": { "type": "string", "enum": ["basic.headline", "basic.summary"] },
         "value": { "type": "string" }
       },
       "required": ["type", "path", "value"],

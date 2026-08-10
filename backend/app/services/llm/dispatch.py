@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+from .activity import iter_with_activity_timeout
 from .adapters import anthropic_messages, google_gemini, openai_chat, openai_responses
 from .common import close_async_stream
+from .errors import LlmRequestError
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -13,6 +15,8 @@ from .types import (
     LlmToolValidationError,
 )
 from .validation import validate_tool_calls
+
+PROVIDER_FIRST_EVENT_TIMEOUT_SECONDS = 30.0
 
 
 def supports_native_attachment(
@@ -54,7 +58,20 @@ async def async_complete_tool_call(
 ) -> LlmAssistantMessage:
     """Ask the configured provider family to choose tools, then validate them."""
 
-    if config.api_family == "openai_responses":
+    if config.supports_streaming:
+        if config.api_family == "openai_responses":
+            stream = openai_responses.stream_tool_call(config, messages, tools)
+        elif config.api_family == "anthropic_messages":
+            stream = anthropic_messages.stream_tool_call(config, messages, tools)
+        elif config.api_family == "google_gemini":
+            stream = google_gemini.stream_tool_call(config, messages, tools)
+        else:
+            stream = openai_chat.stream_tool_call(config, messages, tools)
+        message = await _complete_streamed_tool_call(
+            stream,
+            idle_timeout_seconds=config.timeout_seconds,
+        )
+    elif config.api_family == "openai_responses":
         message = await openai_responses.complete_tool_call(config, messages, tools)
     elif config.api_family == "anthropic_messages":
         message = await anthropic_messages.complete_tool_call(config, messages, tools)
@@ -63,6 +80,41 @@ async def async_complete_tool_call(
     else:
         message = await openai_chat.complete_tool_call(config, messages, tools)
 
+    return _validated_tool_message(message, tools)
+
+
+async def _complete_streamed_tool_call(
+    stream: AsyncIterator[LlmStreamEvent],
+    *,
+    idle_timeout_seconds: float,
+) -> LlmAssistantMessage:
+    """Consume activity privately and expose exactly one terminal message."""
+
+    terminal_message: LlmAssistantMessage | None = None
+    terminal_seen = False
+    async for event in iter_with_activity_timeout(
+        stream,
+        first_event_timeout_seconds=PROVIDER_FIRST_EVENT_TIMEOUT_SECONDS,
+        idle_timeout_seconds=idle_timeout_seconds,
+    ):
+        if terminal_seen:
+            raise LlmRequestError("Model provider returned events after completion.")
+        if event.type != "done":
+            continue
+        if event.message is None:
+            raise LlmRequestError("Model provider returned an empty response.")
+        terminal_message = event.message
+        terminal_seen = True
+
+    if terminal_message is None:
+        raise LlmRequestError("Model provider stream ended before completion.")
+    return terminal_message
+
+
+def _validated_tool_message(
+    message: LlmAssistantMessage,
+    tools: list[dict[str, Any]],
+) -> LlmAssistantMessage:
     valid_tool_calls, validation_errors = validate_tool_calls(message.tool_calls, tools)
     if validation_errors:
         # Tool execution is all-or-nothing for one assistant turn. Executing only
@@ -126,11 +178,16 @@ async def async_stream_chat(
     else:
         stream = openai_chat.stream(config, messages)
 
+    guarded_stream = iter_with_activity_timeout(
+        stream,
+        first_event_timeout_seconds=PROVIDER_FIRST_EVENT_TIMEOUT_SECONDS,
+        idle_timeout_seconds=config.timeout_seconds,
+    )
     try:
-        async for event in stream:
+        async for event in guarded_stream:
             yield event
     finally:
-        await close_async_stream(stream)
+        await close_async_stream(guarded_stream)
 
 
 def _provider_state_for_validation_retry(

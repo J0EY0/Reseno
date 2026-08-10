@@ -5,6 +5,7 @@ from pydantic_core import PydanticCustomError
 
 from app.agent_locales import AgentLocale
 from app.schemas.agent_settings import AgentExecutionProfile
+from app.schemas.resumes import ResumeDetailResponse
 
 AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
 AgentDraftDecisionStatus = Literal["applied", "discarded"]
@@ -15,6 +16,7 @@ AgentTurnExecutionStatus = Literal["running", "succeeded", "failed", "cancelled"
 AgentTurnErrorCode = Literal[
     "AGENT_PROVIDER_AUTH_ERROR",
     "AGENT_PROVIDER_ERROR",
+    "AGENT_PROVIDER_TIMEOUT",
     "AGENT_INTERNAL_ERROR",
     "AGENT_RUN_CANCELLED",
     "AGENT_EDIT_TRANSACTION_INCOMPLETE",
@@ -40,6 +42,47 @@ AgentToolState = Literal[
     "approval-responded",
     "output-denied",
 ]
+AgentTargetOpportunityKind = Literal[
+    "employment",
+    "graduate_study",
+    "research",
+    "scholarship",
+    "general",
+]
+
+
+class AgentTargetContext(BaseModel):
+    """Structured opportunity context remembered by one Agent conversation."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    cleared: bool = False
+    kind: AgentTargetOpportunityKind = "general"
+    target: str = Field(default="", max_length=160)
+    locations: list[str] = Field(default_factory=list, max_length=12)
+    seniority: str = Field(default="", max_length=80)
+    responsibilities: list[str] = Field(default_factory=list, max_length=24)
+    must_have_skills: list[str] = Field(
+        default_factory=list,
+        alias="mustHaveSkills",
+        max_length=40,
+    )
+    nice_to_have_skills: list[str] = Field(
+        default_factory=list,
+        alias="niceToHaveSkills",
+        max_length=40,
+    )
+    requirements: list[str] = Field(default_factory=list, max_length=40)
+    description: str = Field(default="", max_length=12_000)
+    exact_job_description: bool = Field(
+        default=False,
+        alias="exactJobDescription",
+    )
+    source_message_ids: list[str] = Field(
+        default_factory=list,
+        alias="sourceMessageIds",
+        max_length=40,
+    )
 
 
 class AgentAttachmentResponse(BaseModel):
@@ -106,8 +149,6 @@ class AgentChatRequest(BaseModel):
     messages: list[AgentConversationItem] = Field(default_factory=list)
     locale: AgentLocale = "zh"
     resume: dict[str, Any] = Field(default_factory=dict)
-    job_brief: str = Field(default="", alias="jobBrief")
-    keyword_match: dict[str, Any] = Field(default_factory=dict, alias="keywordMatch")
     applied_actions: list[str] = Field(default_factory=list, alias="appliedActions")
     draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
@@ -201,13 +242,9 @@ class AgentSource(BaseModel):
 
     id: str
     title: str
-    source_type: Literal[
-        "resume",
-        "jobBrief",
-        "attachment",
-        "web",
-        "system",
-    ] = Field(alias="sourceType")
+    source_type: Literal["targetContext", "attachment", "web"] = Field(
+        alias="sourceType",
+    )
     url: str | None = None
     excerpt: str | None = None
 
@@ -241,6 +278,7 @@ class AgentResumeEditSuggestion(BaseModel):
     operation: dict[str, Any] | None = None
     evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
     status: Literal["planned", "executed", "rejected"] = "planned"
+    diffs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentTimelinePart(BaseModel):
@@ -273,6 +311,11 @@ class AgentChatMessage(BaseModel):
     sources: list[AgentSource] = Field(default_factory=list)
     edits: list[AgentResumeEditSuggestion] = Field(default_factory=list)
     draft: AgentCommittedDraft | None = None
+    target_context: AgentTargetContext | None = Field(
+        default=None,
+        alias="targetContext",
+        exclude_if=lambda value: value is None,
+    )
     transaction_state: AgentTransactionState = Field(
         default="none",
         alias="transactionState",
@@ -335,7 +378,41 @@ class AgentSessionReplaceRequest(BaseModel):
 
 
 class AgentDraftDecisionRequest(BaseModel):
-    """Optimistic apply/discard decision for one committed draft."""
+    """Optimistic decision plus the document committed by an apply."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     revision: str = Field(min_length=1)
     status: AgentDraftDecisionStatus
+    resume: dict[str, Any] | None = None
+    expected_version_id: str | None = Field(
+        default=None,
+        alias="expectedVersionId",
+        min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def require_resume_only_for_apply(self) -> "AgentDraftDecisionRequest":
+        if self.status == "applied" and (
+            self.resume is None or self.expected_version_id is None
+        ):
+            raise PydanticCustomError(
+                "agent_draft_apply_resume_required",
+                "resume and expectedVersionId are required when applying a draft.",
+            )
+        if self.status == "discarded" and (
+            self.resume is not None or self.expected_version_id is not None
+        ):
+            raise PydanticCustomError(
+                "agent_draft_discard_resume_forbidden",
+                "resume and expectedVersionId are not accepted "
+                "when discarding a draft.",
+            )
+        return self
+
+
+class AgentDraftDecisionResponse(BaseModel):
+    """Authoritative session plus the resume committed by an apply."""
+
+    session: AgentSessionResponse
+    resume: ResumeDetailResponse | None = None

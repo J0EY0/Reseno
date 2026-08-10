@@ -2,17 +2,16 @@
   "explain_draft": {
     "common": [],
     "zh": [
-      "解释",
-      "说明",
-      "为什么",
+      "解释.{0,16}(?:草稿|(?:这些?|本次|刚才).*(?:修改|改动)|改了什么)",
+      "为什么.{0,16}(?:草稿|修改|改动)",
       "改了什么",
       "修改了什么",
       "这(?:个|些)修改",
       "草稿差异"
     ],
     "en": [
-      "explain",
-      "why",
+      "explain.{0,24}(?:draft|edit|change)",
+      "why.{0,24}(?:draft|edit|change)",
       "what changed",
       "draft diff",
       "summari[sz]e changes"
@@ -57,11 +56,22 @@
       "再改",
       "继续改",
       "改成",
-      "换成"
+      "换成",
+      "压缩",
+      "精简",
+      "扩写",
+      "撤回",
+      "恢复",
+      "保留",
+      "删掉"
     ],
     "en": [
       "shorter",
-      "longer"
+      "longer",
+      "condense",
+      "expand",
+      "revert",
+      "keep the other"
     ]
   },
   "job_request": {
@@ -81,6 +91,18 @@
       "target role",
       "missing keywords",
       "keyword match"
+    ]
+  },
+  "target_clear_general": {
+    "common": [],
+    "zh": [
+      "通用",
+      "不再针对",
+      "不针对"
+    ],
+    "en": [
+      "general",
+      "without (?:a )?target"
     ]
   },
   "role_research": {
@@ -172,6 +194,8 @@
     "common": [],
     "zh": [
       "修改",
+      "只改",
+      "仅改",
       "优化",
       "润色",
       "改写",
@@ -235,6 +259,15 @@
       "remove"
     ]
   },
+  "negated_delete_intent": {
+    "common": [],
+    "zh": [
+      "(?:不要|不得|不能|无需|不需要|别|禁止|切勿|请勿)[^，。；,.!?！？]{0,8}(?:删除|移除|去掉|删掉)"
+    ],
+    "en": [
+      "(?:do\\s+not|don't|never|without)\\s+(?:delete|remove)"
+    ]
+  },
   "reorder_intent": {
     "common": [],
     "zh": [
@@ -251,6 +284,15 @@
       "reorder",
       "order",
       "sort"
+    ]
+  },
+  "negated_reorder_intent": {
+    "common": [],
+    "zh": [
+      "(?:不要|不得|不能|无需|不需要|别|禁止|切勿|请勿)[^，。；,.!?！？]{0,8}(?:调整顺序|调整模块|顺序|排序|前置|后置|移动)"
+    ],
+    "en": [
+      "(?:do\\s+not|don't|never|without)\\s+(?:(?:change|adjust)\\s+(?:the\\s+)?order|move|reorder|sort)"
     ]
   },
   "merge_intent": {

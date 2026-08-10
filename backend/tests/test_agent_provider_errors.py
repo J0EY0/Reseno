@@ -5,10 +5,18 @@ import pytest
 from openai import APIConnectionError, APIStatusError
 
 from app.schemas.agent import AgentChatRequest, AgentConversationItem
-from app.services import agent_sessions
+from app.services import agent_runs, agent_sessions
+from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.messages import is_native_attachment_unsupported
-from app.services.llm import AgentLlmConfig, LlmRequestError
+from app.services.llm import (
+    AgentLlmConfig,
+    LlmAssistantMessage,
+    LlmRequestError,
+    LlmStreamEvent,
+    LlmTimeoutError,
+    LlmToolCall,
+)
 from app.services.llm import common as llm_common
 from app.services.llm.common import http_error_message, raise_openai_error
 
@@ -164,3 +172,243 @@ def test_redacted_provider_error_preserves_attachment_fallback_signal() -> None:
 
     assert is_native_attachment_unsupported(captured.value) is True
     assert "upstream-secret" not in str(captured.value)
+
+
+def test_provider_timeout_has_a_distinct_public_error_code() -> None:
+    error = LlmTimeoutError("Model provider request timed out.")
+
+    assert streaming._llm_error_code(error) == "AGENT_PROVIDER_TIMEOUT"
+    assert streaming._llm_error_detail(error) == ("Model provider request timed out.")
+    assert (
+        agent_runs._provider_error_code(
+            "event: error\n"
+            'data: {"type":"error","errorCode":"AGENT_PROVIDER_TIMEOUT"}\n\n',
+        )
+        == "AGENT_PROVIDER_TIMEOUT"
+    )
+
+
+def test_agent_tool_loop_does_not_apply_a_total_provider_wall_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        provider_calls = 0
+
+        async def complete_tool_call(*args: object, **kwargs: object):
+            nonlocal provider_calls
+            del args, kwargs
+            provider_calls += 1
+            return LlmAssistantMessage(content="done", stop_reason="stop")
+
+        class RuntimeWithoutWallClock:
+            async def checkpoint(self) -> None:
+                return None
+
+            async def run_provider(self, *args: object, **kwargs: object):
+                del args, kwargs
+                raise AssertionError("provider wall-clock wrapper must not run")
+
+        monkeypatch.setattr(
+            agent_loop,
+            "async_complete_tool_call",
+            complete_tool_call,
+        )
+        request = AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-provider-no-wall-clock",
+                role="user",
+                text="Hello.",
+            ),
+            locale="en",
+            resume={"basic": {}, "sections": []},
+        )
+
+        events = [
+            event
+            async for event in agent_loop.async_iter_agent_tool_call_loop(
+                request,
+                _config(),
+                RuntimeWithoutWallClock(),  # type: ignore[arg-type]
+            )
+        ]
+
+        assert provider_calls == 1
+        assert any(event.text == "done" for event in events)
+
+    asyncio.run(scenario())
+
+
+def test_initial_tool_choice_timeout_is_retried_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        attempts = 0
+
+        async def flaky_tool_response(
+            *args: object,
+            **kwargs: object,
+        ) -> LlmAssistantMessage:
+            nonlocal attempts
+            del args, kwargs
+            attempts += 1
+            if attempts == 1:
+                raise LlmTimeoutError("Model provider request timed out.")
+            return LlmAssistantMessage(
+                content="诊断完成。",
+                stop_reason="stop",
+            )
+
+        monkeypatch.setattr(
+            agent_loop,
+            "_async_tool_call_response",
+            flaky_tool_response,
+        )
+        request = AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-provider-timeout-retry",
+                role="user",
+                text="诊断这份简历。",
+            ),
+            locale="zh",
+            resume={"basic": {}, "sections": []},
+        )
+
+        events = [
+            event
+            async for event in agent_loop.async_iter_agent_tool_call_loop(
+                request,
+                _config(),
+            )
+        ]
+
+        assert attempts == 2
+        assert not any(event.text == "诊断完成。" for event in events)
+        assert any(
+            event.tools and any(tool.title == "resume_analysis" for tool in event.tools)
+            for event in events
+        )
+        done_event = next(event for event in events if event.kind == "done")
+        assert done_event.runner is not None
+        assert any(tool.title == "resume_analysis" for tool in done_event.runner.tools)
+
+    asyncio.run(scenario())
+
+
+def test_timeout_after_a_tool_result_is_never_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        attempts = 0
+
+        async def timeout_after_tool(
+            *args: object,
+            **kwargs: object,
+        ) -> LlmAssistantMessage:
+            nonlocal attempts
+            del args, kwargs
+            attempts += 1
+            if attempts == 1:
+                return LlmAssistantMessage(
+                    tool_calls=[
+                        LlmToolCall(
+                            id="call-resume-analysis",
+                            name="resume_analysis",
+                            arguments={},
+                            raw_arguments="{}",
+                        ),
+                    ],
+                    stop_reason="tool_calls",
+                )
+            raise LlmTimeoutError("Model provider request timed out.")
+
+        monkeypatch.setattr(
+            agent_loop,
+            "_async_tool_call_response",
+            timeout_after_tool,
+        )
+        request = AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-provider-timeout-after-tool",
+                role="user",
+                text="诊断这份简历。",
+            ),
+            locale="zh",
+            resume={"basic": {}, "sections": []},
+        )
+
+        with pytest.raises(LlmTimeoutError):
+            async for _event in agent_loop.async_iter_agent_tool_call_loop(
+                request,
+                _config(),
+            ):
+                pass
+
+        assert attempts == 2
+
+    asyncio.run(scenario())
+
+
+def test_initial_final_response_timeout_is_retried_before_visible_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        attempts = 0
+
+        async def no_tool_events(*args: object, **kwargs: object):
+            del args, kwargs
+            if False:
+                yield object()
+
+        async def flaky_final_stream(*args: object, **kwargs: object):
+            nonlocal attempts
+            del args, kwargs
+            attempts += 1
+            if attempts == 1:
+                raise LlmTimeoutError("Model provider request timed out.")
+            message = LlmAssistantMessage(
+                content="Recovered response.",
+                stop_reason="stop",
+            )
+            yield LlmStreamEvent(type="text_delta", delta=message.content)
+            yield LlmStreamEvent(type="done", message=message)
+
+        monkeypatch.setattr(
+            agent_sessions,
+            "persist_agent_user_message",
+            lambda conn, request: None,
+        )
+        monkeypatch.setattr(
+            streaming,
+            "resolve_agent_llm_config",
+            lambda conn, model_config: _config(),
+        )
+        monkeypatch.setattr(
+            streaming,
+            "async_iter_agent_tool_call_loop",
+            no_tool_events,
+        )
+        monkeypatch.setattr(
+            streaming,
+            "_complete_chat_stream_events",
+            flaky_final_stream,
+        )
+        frames = [
+            frame
+            async for frame in streaming.async_stream_agent_response(
+                AgentChatRequest(
+                    message=AgentConversationItem(
+                        id="turn-final-timeout-retry",
+                        role="user",
+                        text="Review this resume.",
+                    ),
+                    resume={"basic": {}, "sections": []},
+                ),
+                object(),
+            )
+        ]
+
+        assert attempts == 2
+        assert "Recovered response." in "".join(frames)
+        assert "AGENT_PROVIDER_TIMEOUT" not in "".join(frames)
+
+    asyncio.run(scenario())

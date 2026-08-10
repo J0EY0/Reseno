@@ -34,6 +34,7 @@ const AGENT_TOOL_DISPLAY_METADATA = {
   resume_analysis: { category: "analyze-resume" },
   resume_lookup: { category: "read-resume" },
   draft_diff_summary: { category: "read-resume" },
+  update_target_context: { category: "processing" },
   edit_plan: { category: "plan-edits" },
   edit_execute: { category: "generate-draft" },
   edit_move_item: { category: "generate-draft" },

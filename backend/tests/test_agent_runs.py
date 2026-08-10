@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from collections.abc import AsyncIterator
 from contextlib import closing
@@ -12,12 +13,17 @@ from fastapi.testclient import TestClient
 from app.db.connection import connect
 from app.routers import agent as agent_router
 from app.routers import resumes as resumes_router
-from app.schemas.agent import AgentChatRequest, AgentConversationItem, AgentDraftState
+from app.schemas.agent import (
+    AgentChatMessage,
+    AgentChatRequest,
+    AgentConversationItem,
+    AgentDraftState,
+)
 from app.services import agent_runs, agent_sessions, resumes
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent_runs import AgentRunConflictError, AgentRunManager
-from app.services.llm import AgentLlmConfig
+from app.services.llm import AgentLlmConfig, LlmTimeoutError
 
 
 class _FakeConnection:
@@ -71,7 +77,7 @@ async def _collect_events(
     return [frame async for frame in manager.subscribe(run_id, after=after)]
 
 
-def test_run_response_uses_pending_draft_resume_as_its_base() -> None:
+def test_run_response_preserves_the_pending_transaction_base() -> None:
     request_resume = {
         "basic": {"headline": "Engineer"},
         "sections": [],
@@ -86,8 +92,22 @@ def test_run_response_uses_pending_draft_resume_as_its_base() -> None:
             "draft_state": AgentDraftState(
                 id="draft-run-pending-base",
                 status="pending",
+                sourceMessageId="assistant-pending-draft-base",
                 resume=pending_draft_resume,
             ),
+            "messages": [
+                AgentConversationItem(
+                    id="assistant-pending-draft-base",
+                    role="assistant",
+                    text="The first draft is ready.",
+                    response={
+                        "draft": {
+                            "baseResume": request_resume,
+                            "status": "pending",
+                        },
+                    },
+                ),
+            ],
         },
     )
     run = agent_runs.AgentRun(
@@ -96,7 +116,151 @@ def test_run_response_uses_pending_draft_resume_as_its_base() -> None:
         resume_id=request.resume_id,
     )
 
-    assert run.response().base_resume == pending_draft_resume
+    assert run.response().base_resume == request_resume
+
+
+def test_follow_up_stream_keeps_prior_edits_in_every_draft_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        prior_edit = {
+            "id": "edit-prior-summary",
+            "title": "Update summary",
+            "target": "basic.summary",
+            "reason": "Keep the first draft edit.",
+            "operation": {
+                "type": "replace_field",
+                "path": "basic.summary",
+                "value": "Focused summary",
+            },
+            "status": "executed",
+        }
+        next_edit = {
+            "id": "edit-next-headline",
+            "title": "Refine headline",
+            "target": "basic.headline",
+            "reason": "Apply the follow-up request.",
+            "operation": {
+                "type": "replace_field",
+                "path": "basic.headline",
+                "value": "Principal Engineer",
+            },
+            "status": "executed",
+        }
+        stale_client_edit = {
+            **prior_edit,
+            "id": "edit-stale-client-copy",
+            "operation": {
+                **prior_edit["operation"],
+                "value": "Stale client summary",
+            },
+        }
+        request = _request("resume-follow-up-stream").model_copy(
+            update={
+                "messages": [
+                    AgentConversationItem(
+                        id="assistant-prior-stream-draft",
+                        role="assistant",
+                        text="The first draft is ready.",
+                        response={
+                            "draft": {
+                                "baseResume": {
+                                    "basic": {
+                                        "headline": "Engineer",
+                                        "summary": "Original summary",
+                                    },
+                                    "sections": [],
+                                },
+                                "status": "pending",
+                            },
+                            "edits": [prior_edit],
+                            "transactionState": "committed",
+                        },
+                    ),
+                ],
+                "draft_state": AgentDraftState(
+                    id="draft-prior-stream",
+                    status="pending",
+                    sourceMessageId="assistant-prior-stream-draft",
+                    resume={
+                        "basic": {
+                            "headline": "Engineer",
+                            "summary": "Focused summary",
+                        },
+                        "sections": [],
+                    },
+                    editCount=1,
+                    edits=[stale_client_edit],
+                ),
+            },
+        )
+        next_message = AgentChatMessage(
+            id="assistant-follow-up-stream-draft",
+            role="assistant",
+            text="The follow-up draft is ready.",
+            edits=[next_edit],
+            transactionState="committed",
+        )
+
+        async def fake_loop(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield SimpleNamespace(
+                kind="edits",
+                edits=next_message.edits,
+                transaction_state="provisional",
+            )
+            yield SimpleNamespace(
+                kind="done",
+                runner=SimpleNamespace(
+                    build_message=lambda **_kwargs: next_message,
+                    finish_status="ready",
+                    tools=[],
+                    transaction_failed=False,
+                ),
+            )
+
+        monkeypatch.setattr(
+            agent_sessions,
+            "persist_agent_user_message",
+            lambda conn, prepared: None,
+        )
+        monkeypatch.setattr(
+            streaming,
+            "resolve_agent_llm_config",
+            lambda conn, config: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            streaming,
+            "async_iter_agent_tool_call_loop",
+            fake_loop,
+        )
+
+        completed: list[AgentChatMessage] = []
+        frames = [
+            frame
+            async for frame in streaming.async_stream_agent_response(
+                request,
+                _FakeConnection(),
+                completed.append,
+            )
+        ]
+        provisional = next(
+            frame for frame in frames if '"transactionState":"provisional"' in frame
+        )
+        message_done = next(
+            frame for frame in frames if frame.startswith("event: message_done")
+        )
+
+        for snapshot in [provisional, message_done]:
+            assert '"id":"edit-prior-summary"' in snapshot
+            assert '"id":"edit-next-headline"' in snapshot
+        assert [edit.id for edit in completed[0].edits] == [
+            "edit-prior-summary",
+            "edit-next-headline",
+        ]
+        assert completed[0].transaction_state == "committed"
+        assert '"transactionState":"rolled_back"' not in "".join(frames)
+
+    asyncio.run(scenario())
 
 
 def test_permanent_resume_delete_purges_completed_run_replay(
@@ -837,6 +1001,117 @@ def test_explicit_stop_rolls_back_provisional_edits(
     asyncio.run(scenario())
 
 
+def test_explicit_stop_persists_visible_partial_message(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = "resume-cancelled-partial-message"
+    partial_text = "已完成岗位分析，正在整理改写建议。"
+
+    async def scenario() -> tuple[str, list[str]]:
+        partial_published = asyncio.Event()
+        blocked_stream = asyncio.Event()
+
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: object,
+            persist_message: object,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[str]:
+            del request, conn, persist_message, runtime
+            yield agent_runs._sse_frame(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "message-cancelled-partial",
+                        "role": "assistant",
+                        "text": "",
+                    },
+                },
+            )
+            yield agent_runs._sse_frame(
+                "text_delta",
+                {"type": "text_delta", "delta": partial_text},
+            )
+            yield agent_runs._sse_frame(
+                "edits",
+                {
+                    "type": "edits",
+                    "message": {
+                        "edits": [{"id": "uncommitted-edit"}],
+                        "transactionState": "provisional",
+                    },
+                },
+            )
+            partial_published.set()
+            await blocked_stream.wait()
+
+        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="turn-cancelled-partial",
+                    role="user",
+                    text="请优化这份简历。",
+                ),
+                resume={"basic": {}, "sections": []},
+            ),
+        )
+        await asyncio.wait_for(partial_published.wait(), timeout=1)
+
+        await manager.stop(run.id)
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
+
+        return run.id, await _collect_events(manager, run.id)
+
+    run_id, events = asyncio.run(scenario())
+
+    rollback_index = next(
+        index
+        for index, frame in enumerate(events)
+        if '"transactionState":"rolled_back"' in frame
+    )
+    message_done_index = next(
+        index for index, frame in enumerate(events) if "event: message_done" in frame
+    )
+    terminal_index = next(
+        index for index, frame in enumerate(events) if "event: run_done" in frame
+    )
+    assert rollback_index < message_done_index < terminal_index
+    assert partial_text in events[message_done_index]
+    assert "uncommitted-edit" not in events[message_done_index]
+    assert '"status":"cancelled"' in events[terminal_index]
+
+    session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
+    assert session_response.status_code == 200
+    session = session_response.json()["data"]
+    assert [message["role"] for message in session["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assistant = session["messages"][-1]
+    assert assistant["text"] == partial_text
+    assert assistant["response"]["transactionState"] == "rolled_back"
+    assert assistant["response"]["edits"] == []
+    assert assistant["response"].get("draft") is None
+    execution = session["executions"][-1]
+    assert execution["runId"] == run_id
+    assert execution["turnId"] == "turn-cancelled-partial"
+    assert execution["status"] == "cancelled"
+    assert execution["errorCode"] == "AGENT_RUN_CANCELLED"
+    assert execution["completedAt"] is not None
+
+    refreshed = client.get(f"/api/agent/resumes/{resume_id}/session").json()["data"]
+    assert refreshed["revision"] == session["revision"]
+    assert refreshed["messages"] == session["messages"]
+
+
 def test_provider_error_rolls_back_provisional_edits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1274,6 +1549,105 @@ def test_terminal_persistence_retries_while_run_stays_active(
     assert execution.run_id == run_id
     assert execution.status == "failed"
     assert execution.error_code == "AGENT_INTERNAL_ERROR"
+
+
+def test_provider_timeout_error_code_is_consistent_across_run_and_reload(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = "resume-provider-timeout-state"
+    timeout_detail = "Model provider request timed out."
+    config = AgentLlmConfig(
+        client_id="provider-timeout-state",
+        name="Provider Timeout State",
+        provider="openai",
+        model="test-model",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        temperature=None,
+        top_p=None,
+        max_tokens=None,
+        timeout_seconds=30,
+    )
+
+    async def timeout_tool_loop(
+        *args: object,
+        **kwargs: object,
+    ) -> AsyncIterator[object]:
+        del args, kwargs
+        if False:
+            yield object()
+        raise LlmTimeoutError(timeout_detail)
+
+    monkeypatch.setattr(
+        streaming,
+        "resolve_agent_llm_config",
+        lambda conn, model_config: config,
+    )
+    monkeypatch.setattr(
+        streaming,
+        "async_iter_agent_tool_call_loop",
+        timeout_tool_loop,
+    )
+
+    async def scenario() -> tuple[str, dict[str, object]]:
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="agent-user-provider-timeout-state",
+                    role="user",
+                    text="Review this resume.",
+                ),
+                resume={"basic": {}, "sections": []},
+            ),
+        )
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=2)
+        frames = await _collect_events(manager, run.id)
+
+        def event_payload(event_name: str) -> dict[str, object]:
+            for frame in frames:
+                lines = frame.splitlines()
+                if not lines or lines[0] != f"event: {event_name}":
+                    continue
+                data = "\n".join(
+                    line.removeprefix("data:").strip()
+                    for line in lines
+                    if line.startswith("data:")
+                )
+                payload = json.loads(data)
+                assert isinstance(payload, dict)
+                return payload
+            pytest.fail(f"Missing {event_name} event")
+
+        error_payload = event_payload("error")
+        message_payload = event_payload("message_done")
+        run_payload = event_payload("run_done")
+        assert error_payload["errorCode"] == "AGENT_PROVIDER_TIMEOUT"
+        assert timeout_detail in str(message_payload["message"])
+        assert run_payload["errorCode"] == "AGENT_PROVIDER_TIMEOUT"
+        assert run.response().error_code == "AGENT_PROVIDER_TIMEOUT"
+        return run.id, run_payload
+
+    run_id, _ = asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        execution = agent_sessions.load_agent_session(
+            conn,
+            resume_id,
+        ).executions[-1]
+    assert execution.run_id == run_id
+    assert execution.status == "failed"
+    assert execution.error_code == "AGENT_PROVIDER_TIMEOUT"
+
+    reloaded = client.get(f"/api/agent/resumes/{resume_id}/session")
+    assert reloaded.status_code == 200
+    reloaded_execution = reloaded.json()["data"]["executions"][-1]
+    assert reloaded_execution["runId"] == run_id
+    assert reloaded_execution["errorCode"] == "AGENT_PROVIDER_TIMEOUT"
 
 
 def test_provider_401_execution_state_is_persisted(

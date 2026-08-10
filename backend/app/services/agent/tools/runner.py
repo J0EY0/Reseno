@@ -20,6 +20,11 @@ from app.services.resume_document_contract import (
 
 from ..attachments import AgentAttachmentError, current_request_attachments
 from ..compat import get_agent_api
+from ..edit_authorization import (
+    derive_edit_authorization,
+    unauthorized_edit_issues,
+    unauthorized_plan_issues,
+)
 from ..editing import (
     _apply_edit_operations,
     _edit_observations,
@@ -62,6 +67,14 @@ from ..quality import (
     normalization_loss_issues,
 )
 from ..runtime.context import AgentRuntimeContext
+from ..target_context import (
+    clears_target_context,
+    exact_job_description_from_prompt,
+    prompt_declares_partial_job_description,
+    rejects_target_context_update,
+    target_context_update_is_grounded,
+    update_target_context,
+)
 from .registry import ALL_KNOWN_TOOL_NAMES, agent_tool_spec
 from .structured import (
     classify_skills_entries,
@@ -136,8 +149,13 @@ class AgentToolRunner:
     def __init__(self, executor: AgentPlanExecutor) -> None:
         self.executor = executor
         self.policy = capability_policy_for_request(executor.request)
+        self.session_target_context = executor.target_context
         self.base_resume = deepcopy(executor.resume)
         self.draft_resume = deepcopy(self.base_resume)
+        self.edit_authorization = derive_edit_authorization(
+            executor.request,
+            self.base_resume,
+        )
         self.target_reference: TargetReference | None = None
         self.analysis: ResumeAnalysis | None = None
         self.plan: list[EditPlanStep] = []
@@ -362,6 +380,7 @@ class AgentToolRunner:
             name: vars(self)[name] for name in _LOCAL_TOOL_STABLE_REFERENCES
         }
         self.__dict__ = {**state, **stable_references}
+        self.executor.set_target_context(self.session_target_context)
 
     def _run_local_tool(
         self,
@@ -769,8 +788,8 @@ class AgentToolRunner:
         supplied_target = str(
             tool_call.arguments.get("target") or tool_call.arguments.get("role") or "",
         ).strip()
-        # jobBrief is a structured request field; an inferred prompt target is
-        # not safe enough to send when no explicit query/target was provided.
+        # Conversation target context is structured and privacy-sanitized; the
+        # full prompt is never a safe outbound fallback.
         fallback_target = supplied_target or (
             target if self.executor.target_brief else ""
         )
@@ -1011,6 +1030,96 @@ class AgentToolRunner:
         self.analysis = self.executor.analyze_resume()
         return self.executor.build_resume_analysis_tool(self.analysis, tool_call.id)
 
+    def run_update_target_context(
+        self,
+        tool_call: LlmToolCall,
+    ) -> AgentToolInvocation:
+        """Apply one prompt-derived target update to conversation-owned state."""
+
+        mode = str(tool_call.arguments.get("mode") or "").strip()
+        patch = tool_call.arguments.get("context")
+        if mode not in {"merge", "replace", "clear"} or not isinstance(patch, dict):
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type="tool-update_target_context",
+                title="update_target_context",
+                state="output-error",
+                input=tool_call.arguments,
+                output={"blocked": True},
+                errorText="Invalid target context update.",
+            )
+
+        try:
+            assert self.executor.request.message.id is not None
+            extracted_description = exact_job_description_from_prompt(
+                self.executor.prompt,
+            )
+            if (
+                mode != "clear"
+                and extracted_description
+                and not prompt_declares_partial_job_description(
+                    self.executor.prompt,
+                )
+            ):
+                patch = {
+                    **patch,
+                    "responsibilities": [],
+                    "mustHaveSkills": [],
+                    "niceToHaveSkills": [],
+                    "requirements": [],
+                    "description": extracted_description,
+                    "exactJobDescription": True,
+                }
+            if mode == "clear":
+                if not clears_target_context(self.executor.prompt):
+                    raise ValueError(
+                        "Target context clear is not authorized by this prompt.",
+                    )
+            elif rejects_target_context_update(
+                self.executor.prompt,
+            ) or not target_context_update_is_grounded(
+                self.session_target_context,
+                patch,
+                mode=cast(Any, mode),
+                prompt=self.executor.prompt,
+            ):
+                raise ValueError(
+                    "Target context update is not grounded in this prompt.",
+                )
+            self.session_target_context = update_target_context(
+                self.session_target_context,
+                patch,
+                mode=cast(Any, mode),
+                source_message_id=self.executor.request.message.id,
+            )
+        except ValueError as exc:
+            return AgentToolInvocation(
+                id=tool_call.id,
+                type="tool-update_target_context",
+                title="update_target_context",
+                state="output-error",
+                input=tool_call.arguments,
+                output={"blocked": True},
+                errorText=str(exc),
+            )
+
+        self.target_reference = None
+        self.analysis = None
+        return AgentToolInvocation(
+            id=tool_call.id,
+            type="tool-update_target_context",
+            title="update_target_context",
+            state="output-available",
+            input=tool_call.arguments,
+            output={
+                "mode": mode,
+                "targetContext": self.session_target_context.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+            },
+        )
+
     def run_material_extract(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Extract candidate resume facts from user-provided materials."""
 
@@ -1022,7 +1131,7 @@ class AgentToolRunner:
             output = extract_resume_materials(
                 session_id=(self.executor.request.resume_id or "").strip(),
                 prompt=self.executor.prompt,
-                job_brief=self.executor.request.job_brief,
+                target_context=self.executor.target_brief,
                 files=current_request_attachments(self.executor.request),
                 target_reference=self.current_target_reference(),
                 focus=str(tool_call.arguments.get("focus") or "all").strip(),
@@ -1077,9 +1186,25 @@ class AgentToolRunner:
         )
 
     def run_edit_plan(self, tool_call: LlmToolCall) -> AgentToolInvocation:
-        """Create an edit plan from model arguments or conservative fallback."""
+        """Validate and cache one explicit, prompt-scoped edit plan."""
 
         steps_value = tool_call.arguments.get("steps")
+        if not isinstance(steps_value, list) or not steps_value:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=steps_value if isinstance(steps_value, list) else [],
+                rejected_edits=[
+                    {
+                        "index": 1,
+                        "reason": agent_text(
+                            self.executor.request.locale,
+                            "error.edit_plan_missing_inputs",
+                        ),
+                    },
+                ],
+                message_key="error.edit_plan_missing_inputs",
+            )
+
         model_steps = _model_plan_steps(steps_value)
         model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
@@ -1097,34 +1222,66 @@ class AgentToolRunner:
                 message_key="error.edit_execute_rejected_detailed",
             )
 
-        if model_steps:
-            self.plan = model_steps
-            self.planned_edits = model_edits
-            return self.executor.build_plan_tool(self.plan, tool_call.id)
-
-        if not self.analysis:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type="tool-edit_plan",
-                title="edit_plan",
-                state="output-error",
-                input=tool_call.arguments,
-                errorText=agent_text(
-                    self.executor.request.locale,
-                    "error.edit_plan_missing_inputs",
-                ),
+        scope_issues = [
+            *unauthorized_edit_issues(
+                self.edit_authorization,
+                self.draft_resume,
+                model_edits,
+            ),
+            *unauthorized_plan_issues(self.edit_authorization, steps_value),
+        ]
+        if scope_issues:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=steps_value,
+                rejected_edits=scope_issues,
+                message_key="error.edit_execute_rejected_detailed",
             )
 
-        self.plan = self.executor.create_plan(
-            self.current_target_reference(),
-            self.analysis,
-        )
+        if not model_steps:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=steps_value,
+                rejected_edits=[
+                    {
+                        "index": 1,
+                        "reason": agent_text(
+                            self.executor.request.locale,
+                            "error.edit_plan_missing_inputs",
+                        ),
+                    },
+                ],
+                message_key="error.edit_plan_missing_inputs",
+            )
+
+        self.plan = model_steps
+        self.planned_edits = model_edits
         return self.executor.build_plan_tool(self.plan, tool_call.id)
 
     def run_edit_execute(self, tool_call: LlmToolCall) -> AgentToolInvocation:
-        """Execute model-supplied draft edits or a previously created plan."""
+        """Execute one explicit batch of prompt-scoped draft edits."""
 
         explicit_edits_value = tool_call.arguments.get("edits")
+        if not isinstance(explicit_edits_value, list) or not explicit_edits_value:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=(
+                    explicit_edits_value
+                    if isinstance(explicit_edits_value, list)
+                    else []
+                ),
+                rejected_edits=[
+                    {
+                        "index": 1,
+                        "reason": agent_text(
+                            self.executor.request.locale,
+                            "error.edit_execute_missing_inputs",
+                        ),
+                    },
+                ],
+                message_key="error.edit_execute_missing_inputs",
+            )
+
         guard_error = self.edit_entries_policy_error(
             explicit_edits_value,
             tool_call.name,
@@ -1176,70 +1333,6 @@ class AgentToolRunner:
                 ],
                 message_key="error.edit_execute_rejected",
             )
-
-        if self.planned_edits:
-            error_tool, observations, quality_issues = self.stage_edit_batch(
-                tool_call,
-                self.planned_edits,
-                entries=[
-                    {
-                        "title": edit.title,
-                        "target": edit.target,
-                        "operation": edit.operation,
-                    }
-                    for edit in self.planned_edits
-                ],
-            )
-            if error_tool is not None:
-                return error_tool
-            return self.executor.build_execute_tool(
-                self.plan,
-                self.edits,
-                tool_call.id,
-                observations=observations,
-                quality_issues=quality_issues,
-            )
-
-        if not self.plan or not self.analysis:
-            return AgentToolInvocation(
-                id=tool_call.id,
-                type="tool-edit_execute",
-                title="edit_execute",
-                state="output-error",
-                input=tool_call.arguments,
-                errorText=agent_text(
-                    self.executor.request.locale,
-                    "error.edit_execute_missing_inputs",
-                ),
-            )
-
-        fallback_edits = self.executor.execute_plan(
-            self.plan,
-            self.current_target_reference(),
-            self.analysis,
-        )
-        fallback_entries = [
-            {
-                "title": edit.title,
-                "target": edit.target,
-                "operation": edit.operation,
-            }
-            for edit in fallback_edits
-        ]
-        error_tool, observations, quality_issues = self.stage_edit_batch(
-            tool_call,
-            fallback_edits,
-            entries=fallback_entries,
-        )
-        if error_tool is not None:
-            return error_tool
-        return self.executor.build_execute_tool(
-            self.plan,
-            self.edits,
-            tool_call.id,
-            observations=observations,
-            quality_issues=quality_issues,
-        )
 
     def run_edit_move_item(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Move one existing item using validated draft operations."""
@@ -1373,6 +1466,23 @@ class AgentToolRunner:
         """
 
         before_resume = deepcopy(self.draft_resume)
+        scope_issues = unauthorized_edit_issues(
+            self.edit_authorization,
+            before_resume,
+            model_edits,
+        )
+        if scope_issues:
+            return (
+                self.semantic_edit_error(
+                    tool_call,
+                    entries=entries,
+                    rejected_edits=scope_issues,
+                    message_key="error.edit_execute_rejected_detailed",
+                ),
+                [],
+                [],
+            )
+
         model_edits, evidence_issues = ground_edit_evidence(
             before_resume,
             self.executor.request,
@@ -1431,14 +1541,20 @@ class AgentToolRunner:
                 quality_issues,
             )
 
-        self.draft_resume = candidate_resume
-        self.edits = _merge_edits(self.edits, model_edits)
-        self.mark_edit_batch_succeeded()
-        observations = _edit_observations(
+        observations, diffs = _edit_observations(
             before_resume,
-            self.draft_resume,
             model_edits,
         )
+        edits_with_diffs: list[AgentResumeEditSuggestion] = []
+        for edit, diff in zip(model_edits, diffs, strict=True):
+            edits_with_diffs.append(
+                edit.model_copy(
+                    update={"diffs": [diff]},
+                ),
+            )
+        self.draft_resume = candidate_resume
+        self.edits = _merge_edits(self.edits, edits_with_diffs)
+        self.mark_edit_batch_succeeded()
         return None, observations, quality_issues
 
     def semantic_edit_error(
@@ -1704,6 +1820,9 @@ class AgentToolRunner:
             finish_status=self.finish_status,
             finish_reason=self.finish_reason,
             finish_missing=self.finish_missing,
+        )
+        message = message.model_copy(
+            update={"target_context": self.session_target_context},
         )
         if self.transaction_failed:
             if self.finish_status == "blocked":

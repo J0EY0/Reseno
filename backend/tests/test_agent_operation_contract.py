@@ -28,14 +28,14 @@ def test_canonical_contract_accepts_normalized_operation() -> None:
     assert resume_edit_operation_error(operation) is None
 
 
-def test_canonical_contract_accepts_explicit_location_replacement() -> None:
+def test_canonical_contract_rejects_hidden_location_replacement() -> None:
     operation = {
         "type": "replace_field",
         "path": "basic.location",
         "value": "Remote",
     }
 
-    assert resume_edit_operation_error(operation) is None
+    assert resume_edit_operation_error(operation) is not None
 
 
 def test_canonical_contract_rejects_frontend_only_patch_fields() -> None:
@@ -60,18 +60,24 @@ def test_canonical_contract_requires_one_simple_list_item() -> None:
             },
         }
 
-    assert resume_edit_operation_error(
-        operation([{"id": "skill-1", "content": "React"}]),
-    ) is None
+    assert (
+        resume_edit_operation_error(
+            operation([{"id": "skill-1", "content": "React"}]),
+        )
+        is None
+    )
     assert resume_edit_operation_error(operation([])) is not None
-    assert resume_edit_operation_error(
-        operation(
-            [
-                {"id": "skill-1", "content": "React"},
-                {"id": "skill-2", "content": "TypeScript"},
-            ],
-        ),
-    ) is not None
+    assert (
+        resume_edit_operation_error(
+            operation(
+                [
+                    {"id": "skill-1", "content": "React"},
+                    {"id": "skill-2", "content": "TypeScript"},
+                ],
+            ),
+        )
+        is not None
+    )
 
 
 def test_normalized_operations_cross_api_boundary_in_canonical_shape() -> None:

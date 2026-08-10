@@ -4,6 +4,7 @@ import type {
   AgentFinishMissing,
   AgentResumeEditSuggestion,
   AgentSource,
+  AgentTargetContext,
   AgentTimelinePart,
   AgentToolInvocation,
   AgentTransactionState,
@@ -103,8 +104,39 @@ function toTransactionState(value: unknown): AgentTransactionState | undefined {
   return undefined;
 }
 
+function toTargetContext(value: unknown): AgentTargetContext | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const kind = value.kind;
+  if (
+    kind !== "employment" &&
+    kind !== "graduate_study" &&
+    kind !== "research" &&
+    kind !== "scholarship" &&
+    kind !== "general"
+  ) {
+    return undefined;
+  }
+
+  return {
+    cleared: value.cleared === true,
+    kind,
+    target: typeof value.target === "string" ? value.target : "",
+    locations: toStringArray(value.locations) ?? [],
+    seniority: typeof value.seniority === "string" ? value.seniority : "",
+    responsibilities: toStringArray(value.responsibilities) ?? [],
+    mustHaveSkills: toStringArray(value.mustHaveSkills) ?? [],
+    niceToHaveSkills: toStringArray(value.niceToHaveSkills) ?? [],
+    requirements: toStringArray(value.requirements) ?? [],
+    description: typeof value.description === "string" ? value.description : "",
+    exactJobDescription: value.exactJobDescription === true,
+    sourceMessageIds: toStringArray(value.sourceMessageIds) ?? [],
+  };
+}
+
 function toSourceType(value: unknown): AgentSource["sourceType"] | undefined {
-  if (value === "jobBrief" || value === "attachment" || value === "web") {
+  if (value === "targetContext" || value === "attachment" || value === "web") {
     return value;
   }
 
@@ -355,6 +387,7 @@ export function mergeAgentMessage(
   const finishMissing = toFinishMissing(patch.finishMissing);
   const transactionState = toTransactionState(patch.transactionState);
   const quickReplies = toStringArray(patch.quickReplies);
+  const targetContext = toTargetContext(patch.targetContext);
 
   return {
     ...current,
@@ -378,6 +411,7 @@ export function mergeAgentMessage(
         : mergeAgentToolInvocations(current.tools, tools),
     sources: sources ?? current.sources,
     edits: edits ?? current.edits,
+    targetContext: targetContext ?? current.targetContext,
     transactionState: transactionState ?? current.transactionState,
     finishMissing: finishMissing ?? current.finishMissing,
     quickReplies: quickReplies ?? current.quickReplies,

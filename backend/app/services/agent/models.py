@@ -71,10 +71,6 @@ class TargetReference:
     sources: tuple[TargetReferenceSource, ...] = ()
 
 
-# Keep the former package symbol for callers compiled against the old API.
-JobReference = TargetReference
-
-
 @dataclass(frozen=True)
 class ResumeAnalysis:
     """Small, explicit analysis result for plan generation."""

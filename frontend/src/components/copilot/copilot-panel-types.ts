@@ -7,7 +7,7 @@ import type {
   AgentRunStatus,
   AgentTransactionState,
 } from '@/types/api'
-import type { KeywordMatch, ModelConfig, ResumeData } from '@/types/resume'
+import type { ModelConfig, ResumeData } from '@/types/resume'
 
 import type { AgentPanelMessage } from './copilot-message-model'
 
@@ -17,9 +17,6 @@ export interface CopilotPanelProps {
   t: AppMessages
   locale: Locale
   resume: ResumeData
-  jobBrief: string
-  onJobBriefChange: (value: string) => void
-  keywordMatch: KeywordMatch
   modelConfigs: ModelConfig[]
   selectedModelId: string
   onSelectedModelChange: (modelId: string) => void

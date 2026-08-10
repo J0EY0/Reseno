@@ -5,7 +5,7 @@ from .dispatch import (
     async_stream_chat,
     supports_native_attachment,
 )
-from .errors import LlmRequestError
+from .errors import LlmRequestError, LlmTimeoutError
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -19,6 +19,7 @@ __all__ = [
     "AgentLlmConfig",
     "LlmAssistantMessage",
     "LlmRequestError",
+    "LlmTimeoutError",
     "LlmStreamEvent",
     "LlmToolCall",
     "LlmToolValidationError",

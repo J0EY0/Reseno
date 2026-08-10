@@ -42,6 +42,7 @@ from ..prompts import (
     SYSTEM_PROMPT,
 )
 from ..request_context import active_resume
+from ..target_context import target_context_from_request
 from ..tools.registry import agent_tool_schemas_for_names
 
 AgentMessageMode = Literal["tools", "final", "streaming_final"]
@@ -354,12 +355,18 @@ def _agent_payload(
 ) -> dict[str, Any]:
     resume = active_resume(request)
     hidden_terms = resume_hidden_terms(resume)
+    target_context = (
+        draft.target_context
+        if draft is not None and draft.target_context is not None
+        else target_context_from_request(request)
+    )
     payload = {
         "responseLanguage": _locale_name(request),
         "userPrompt": _current_prompt(request),
-        "jobBrief": request.job_brief,
+        "targetContext": target_context.model_dump(mode="json", by_alias=True)
+        if target_context is not None
+        else None,
         "files": context_files,
-        "keywordMatch": request.keyword_match,
         "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
         "conversationDepth": _conversation_depth(request),
     }

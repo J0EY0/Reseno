@@ -1158,6 +1158,35 @@ def _operation_observation_value(
     return _operation_snapshot(resume, operation)
 
 
+def _operation_diff_value(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+    *,
+    after: bool,
+) -> object:
+    """Return the complete non-PII value persisted for human draft review."""
+
+    operation_type = operation.get("type")
+    if operation_type == "replace_field" and is_pii_basic_path(
+        str(operation.get("path", "")),
+    ):
+        return "[hidden]"
+    if operation_type == "insert_section":
+        if not after:
+            return None
+        section = operation.get("section")
+        section_id = str(section.get("id", "")) if isinstance(section, dict) else ""
+        return _find_resume_section(resume, section_id)
+    if operation_type == "insert_item":
+        if not after:
+            return None
+        section = _find_resume_section(resume, str(operation.get("sectionId", "")))
+        item = operation.get("item")
+        item_id = str(item.get("id", "")) if isinstance(item, dict) else ""
+        return _find_resume_item(section, item_id) if section else None
+    return _operation_snapshot(resume, operation)
+
+
 def _apply_edit_operation(
     resume: dict[str, Any],
     operation: dict[str, Any],
@@ -1302,29 +1331,36 @@ def _apply_edit_operations(
 
 def _edit_observations(
     before_resume: dict[str, Any],
-    after_resume: dict[str, Any],
     edits: list[AgentResumeEditSuggestion],
-) -> list[dict[str, Any]]:
-    """Build observations that let the model inspect draft edit effects."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build compact model observations and complete review diffs in sequence."""
 
     observations: list[dict[str, Any]] = []
+    diffs: list[dict[str, Any]] = []
+    working_resume = deepcopy(before_resume)
     for edit in edits:
         operation = edit.operation or {}
+        raw_before = deepcopy(
+            _operation_diff_value(working_resume, operation, after=False),
+        )
+        before_value = _compact_observation_value(
+            _operation_observation_value(working_resume, operation, after=False),
+        )
+        if edit.operation:
+            _apply_edit_operation(working_resume, edit.operation)
+        raw_after = deepcopy(
+            _operation_diff_value(working_resume, operation, after=True),
+        )
         observations.append(
             {
+                "editId": edit.id,
                 "target": edit.target,
                 "operationType": operation.get("type"),
                 "status": edit.status,
-                "before": _compact_observation_value(
-                    _operation_observation_value(
-                        before_resume,
-                        operation,
-                        after=False,
-                    ),
-                ),
+                "before": before_value,
                 "after": _compact_observation_value(
                     _operation_observation_value(
-                        after_resume,
+                        working_resume,
                         operation,
                         after=True,
                     ),
@@ -1336,8 +1372,28 @@ def _edit_observations(
                 ),
             },
         )
+        operation_type = str(operation.get("type") or "")
+        if operation_type in {"insert_section", "insert_item"}:
+            diff_kind = "added"
+        elif operation_type in {"delete_section", "delete_item"}:
+            diff_kind = "deleted"
+        elif operation_type in {"reorder_sections", "reorder_items"}:
+            diff_kind = "moved"
+        else:
+            diff_kind = "modified"
+        diffs.append(
+            {
+                "id": f"agent-diff-{edit.id}",
+                "operationId": edit.id,
+                "path": edit.target,
+                "kind": diff_kind,
+                "label": edit.title or edit.target,
+                "before": raw_before,
+                "after": raw_after,
+            },
+        )
 
-    return observations
+    return observations, diffs
 
 
 def _merge_edits(

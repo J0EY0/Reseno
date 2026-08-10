@@ -11,7 +11,6 @@ import type {
   WorkspaceVersionSummary,
 } from "@/types/api";
 import type {
-  KeywordMatch,
   ModelConfig,
   ResumeData,
   ResumeTemplateDefinition,
@@ -52,8 +51,6 @@ export interface ResumeDetailAgentViewState {
   draft: AgentDraftState | null;
   draftState: AgentDraftState | null;
   isPanelCollapsed: boolean;
-  jobBrief: string;
-  keywordMatch: KeywordMatch;
   modelConfigs: ModelConfig[];
   selectedModelId: string;
 }
@@ -85,7 +82,6 @@ export interface ResumeDetailWorkspaceState {
 
 export interface ResumeDetailAgentCommands {
   applyDraft: () => void;
-  changeJobBrief: (value: string) => void;
   changeSelectedModel: (modelId: string) => void;
   discardDraft: () => void;
   flushUserSettings: () => Promise<void>;

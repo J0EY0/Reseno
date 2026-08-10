@@ -4,11 +4,7 @@ import type { AppMessages, Locale } from '@/i18n'
 import { loadAgentSession } from '@/lib/agent-session-run-client'
 import { mergeStreamingAgentMessage } from '@/lib/agent-panel-state'
 import type { AgentDraftState } from '@/types/api'
-import type {
-  KeywordMatch,
-  ModelConfig,
-  ResumeData,
-} from '@/types/resume'
+import type { ModelConfig, ResumeData } from '@/types/resume'
 
 import {
   useAgentConversationRuntime,
@@ -28,11 +24,8 @@ import { useAgentSessionHydration } from './use-agent-session-hydration'
 
 export function useAgentConversation({
   agentDraftState,
-  jobBrief,
-  keywordMatch,
   locale,
   onBeforeSend,
-  onJobBriefChange,
   onPreviewAgentEdits,
   onReconcileAgentDraft,
   onRollbackAgentDraft,
@@ -42,11 +35,8 @@ export function useAgentConversation({
   t,
 }: {
   agentDraftState: AgentDraftState | null
-  jobBrief: string
-  keywordMatch: KeywordMatch
   locale: Locale
   onBeforeSend?: () => Promise<void>
-  onJobBriefChange: CopilotPanelProps['onJobBriefChange']
   onPreviewAgentEdits: CopilotPanelProps['onPreviewAgentEdits']
   onReconcileAgentDraft: CopilotPanelProps['onReconcileAgentDraft']
   onRollbackAgentDraft: CopilotPanelProps['onRollbackAgentDraft']
@@ -111,18 +101,14 @@ export function useAgentConversation({
     useAgentSendController({
       agentDraftState,
       consumeRunStream,
-      jobBrief,
-      keywordMatch,
       locale,
       messages,
       onBeforeSend,
-      onJobBriefChange,
       refreshAgentSession,
       resume,
       resumeId,
       runtimeRef,
       selectedModel,
-      t,
       updates,
     })
 

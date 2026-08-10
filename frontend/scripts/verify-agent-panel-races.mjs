@@ -417,6 +417,18 @@ assert(
   "A terminal refresh failure must invalidate only the still-current resume session and expose its load error.",
 );
 assert(
+  /response\.messageDone\s*&&\s*\(\s*response\.status === ['"]completed['"]\s*\|\|\s*response\.status === ['"]cancelled['"]\s*\)/.test(
+    runStreamSource,
+  ),
+  "A cancelled run with a durable message_done must keep its visible partial assistant message locally.",
+);
+assert(
+  /finally \{[\s\S]*runtime\.activeRequestAbort === abortController[\s\S]*updates\.setStreamingMessage\(null\)[\s\S]*updates\.setIsResponding\(false\)/.test(
+    runStreamSource,
+  ),
+  "Every observed terminal run must clear its owned streaming and responding state.",
+);
+assert(
   conversationViewSource.includes("AgentSessionLoadError"),
   "Bootstrap failures must remain visible even when history is non-empty.",
 );

@@ -21,9 +21,6 @@ export function CopilotPanel({
   t,
   locale,
   resume,
-  jobBrief,
-  onJobBriefChange,
-  keywordMatch,
   modelConfigs,
   selectedModelId,
   onSelectedModelChange,
@@ -46,11 +43,8 @@ export function CopilotPanel({
   )
   const conversation = useAgentConversation({
     agentDraftState,
-    jobBrief,
-    keywordMatch,
     locale,
     onBeforeSend,
-    onJobBriefChange,
     onPreviewAgentEdits,
     onReconcileAgentDraft,
     onRollbackAgentDraft,

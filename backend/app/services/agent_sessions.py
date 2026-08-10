@@ -32,10 +32,19 @@ from app.services.agent.attachments import (
     prune_sent_agent_attachments,
     rollback_agent_attachments_sent,
 )
-from app.services.agent.request_context import active_resume
+from app.services.agent.request_context import (
+    accumulated_transaction_edits,
+    transaction_base_resume,
+)
 from app.services.agent.resume_owner import require_active_resume
 from app.services.llm.config import resolve_agent_llm_config
 from app.services.llm.dispatch import supports_native_attachment
+from app.services.resumes import (
+    ResumeSaveTransaction,
+    cleanup_resume_version_files,
+    load_resume_in_transaction,
+    save_resume_document_in_transaction,
+)
 
 RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 logger = logging.getLogger(__name__)
@@ -67,6 +76,14 @@ class AgentSessionActiveRunConflictError(RuntimeError):
         super().__init__("The Agent session has an active run.")
         self.current_revision = current_revision
         self.run_id = run_id
+
+
+class AgentResumeVersionConflictError(RuntimeError):
+    """Raised when an apply candidate targets an older formal resume."""
+
+    def __init__(self, current_version_id: str) -> None:
+        super().__init__("The formal resume changed before the draft was applied.")
+        self.current_version_id = current_version_id
 
 
 class AgentSessionTurnConflictError(RuntimeError):
@@ -304,8 +321,9 @@ def finish_agent_turn_execution(
     run_id: str,
     status: AgentTurnExecutionStatus,
     error_code: AgentTurnErrorCode | None,
+    assistant_message: AgentChatMessage | None = None,
 ) -> None:
-    """Persist one terminal execution state without changing message history."""
+    """Atomically persist a terminal execution and its optional assistant."""
 
     if not request.resume_id:
         return
@@ -317,6 +335,37 @@ def finish_agent_turn_execution(
 
     completed_at = _now_iso()
     with _transaction(conn):
+        if assistant_message is not None:
+            expected_revision = _request_session_revision(request)
+            if expected_revision is None:
+                raise AgentSessionPersistenceError(
+                    "The Agent turn has no durable message revision.",
+                )
+
+            require_active_resume(conn, resume_id)
+            current_revision = _session_revision(conn, resume_id)
+            if current_revision != expected_revision:
+                raise AgentSessionTurnConflictError(
+                    expected_revision,
+                    current_revision,
+                )
+
+            inserted = _insert_message(
+                conn,
+                session_id=resume_id,
+                message_id=assistant_message.id,
+                role="assistant",
+                text=assistant_message.text,
+                files=[],
+                response=assistant_message,
+                sequence=_next_message_sequence(conn, resume_id),
+                created_at=completed_at,
+            )
+            if not inserted:
+                raise AgentSessionPersistenceError(
+                    "The terminal Agent message could not be persisted.",
+                )
+
         cursor = conn.execute(
             """
             UPDATE agent_turn_executions
@@ -457,7 +506,7 @@ def append_agent_exchange(
 
         persisted_message = _attach_committed_draft(request, assistant_message)
         now = _now_iso()
-        _insert_message(
+        inserted = _insert_message(
             conn,
             session_id=resume_id,
             message_id=persisted_message.id,
@@ -468,89 +517,68 @@ def append_agent_exchange(
             sequence=_next_message_sequence(conn, resume_id),
             created_at=now,
         )
+        if inserted and persisted_message.draft is not None:
+            _discard_older_pending_drafts(
+                conn,
+                resume_id,
+                current_message_id=persisted_message.id,
+            )
 
 
 def _attach_committed_draft(
     request: AgentChatRequest,
     message: AgentChatMessage,
 ) -> AgentChatMessage:
-    """Bind the immutable edit base to a committed response before storage."""
+    """Bind one immutable base and the cumulative edits before storage."""
 
     if message.transaction_state != "committed" or not message.edits:
         return message
 
-    # Store the same snapshot tools edited so the next turn cannot restart
-    # from the pre-draft request.resume.
     return message.model_copy(
-        update={"draft": AgentCommittedDraft(baseResume=active_resume(request))},
+        update={
+            "draft": AgentCommittedDraft(
+                baseResume=transaction_base_resume(request),
+            ),
+            "edits": accumulated_transaction_edits(request, message.edits),
+        },
     )
 
 
-def update_agent_draft_decision(
+def _discard_older_pending_drafts(
     conn: Connection,
     resume_id: str,
     *,
-    message_id: str,
-    status: AgentDraftDecisionStatus,
-    revision: str,
-) -> AgentSessionResponse:
-    """Atomically resolve one committed draft without replacing its session."""
+    current_message_id: str,
+) -> None:
+    """Keep one authoritative pending draft when a new draft is committed."""
 
-    with _transaction(conn):
-        require_active_resume(conn, resume_id)
-        current_revision = _session_revision(conn, resume_id)
-        # CAS ownership is session-wide. Check it before resolving the target,
-        # which may already have been removed by a concurrent replacement.
-        if revision != current_revision:
-            raise AgentSessionRevisionConflictError(current_revision)
-
-        row = conn.execute(
-            """
-            SELECT response_json
-            FROM agent_messages
-            WHERE session_id = ? AND id = ? AND role = 'assistant'
-            """,
-            (resume_id, message_id),
-        ).fetchone()
-        response = (
-            _decode_assistant_response(
-                row["response_json"],
-                session_id=resume_id,
-                message_id=message_id,
-            )
-            if row is not None
-            else None
+    rows = conn.execute(
+        """
+        SELECT id, response_json
+        FROM agent_messages
+        WHERE session_id = ? AND role = 'assistant' AND id != ?
+        ORDER BY sequence ASC
+        """,
+        (resume_id, current_message_id),
+    ).fetchall()
+    for row in rows:
+        message_id = str(row["id"])
+        response = _decode_assistant_response(
+            row["response_json"],
+            session_id=resume_id,
+            message_id=message_id,
         )
-        if response is None or response.draft is None:
-            raise AgentDraftUnavailableConflictError(current_revision)
-        if response.draft.status == status:
-            return load_agent_session(conn, resume_id)
-
-        running_execution = conn.execute(
-            """
-            SELECT run_id
-            FROM agent_turn_executions
-            WHERE session_id = ? AND status = 'running'
-            ORDER BY started_at ASC, rowid ASC
-            LIMIT 1
-            """,
-            (resume_id,),
-        ).fetchone()
-        if running_execution is not None:
-            raise AgentSessionActiveRunConflictError(
-                current_revision,
-                str(running_execution["run_id"]),
-            )
-
-        if response.draft.status != "pending":
-            raise AgentDraftDecisionConflictError(
-                current_revision,
-                response.draft.status,
-            )
-
+        if (
+            response is None
+            or response.draft is None
+            or response.draft.status != "pending"
+        ):
+            continue
         updated_response = response.model_copy(
             update={
-                "draft": response.draft.model_copy(update={"status": status}),
+                "draft": response.draft.model_copy(
+                    update={"status": "discarded"},
+                ),
             },
         )
         cursor = conn.execute(
@@ -569,10 +597,200 @@ def update_agent_draft_decision(
         )
         if cursor.rowcount != 1:
             raise AgentSessionPersistenceError(
-                "The committed Agent draft response could not be updated.",
+                "The superseded Agent draft could not be updated.",
             )
 
+
+def _latest_committed_draft_message_id(
+    conn: Connection,
+    resume_id: str,
+) -> str | None:
+    """Return the newest assistant response that owns durable draft state."""
+
+    rows = conn.execute(
+        """
+        SELECT id, response_json
+        FROM agent_messages
+        WHERE session_id = ? AND role = 'assistant'
+        ORDER BY sequence DESC
+        """,
+        (resume_id,),
+    ).fetchall()
+    for row in rows:
+        message_id = str(row["id"])
+        response = _decode_assistant_response(
+            row["response_json"],
+            session_id=resume_id,
+            message_id=message_id,
+        )
+        if response is not None and response.draft is not None:
+            return message_id
+    return None
+
+
+def _update_agent_draft_decision(
+    conn: Connection,
+    resume_id: str,
+    *,
+    message_id: str,
+    status: AgentDraftDecisionStatus,
+    revision: str,
+) -> bool:
+    """Resolve one committed draft inside a caller-owned transaction."""
+
+    require_active_resume(conn, resume_id)
+    current_revision = _session_revision(conn, resume_id)
+    # CAS ownership is session-wide. Check it before resolving the target,
+    # which may already have been removed by a concurrent replacement.
+    if revision != current_revision:
+        raise AgentSessionRevisionConflictError(current_revision)
+
+    row = conn.execute(
+        """
+        SELECT response_json
+        FROM agent_messages
+        WHERE session_id = ? AND id = ? AND role = 'assistant'
+        """,
+        (resume_id, message_id),
+    ).fetchone()
+    response = (
+        _decode_assistant_response(
+            row["response_json"],
+            session_id=resume_id,
+            message_id=message_id,
+        )
+        if row is not None
+        else None
+    )
+    if response is None or response.draft is None:
+        raise AgentDraftUnavailableConflictError(current_revision)
+    if (
+        response.draft.status == "pending"
+        and _latest_committed_draft_message_id(conn, resume_id) != message_id
+    ):
+        raise AgentDraftUnavailableConflictError(current_revision)
+    if response.draft.status == status:
+        return False
+
+    running_execution = conn.execute(
+        """
+        SELECT run_id
+        FROM agent_turn_executions
+        WHERE session_id = ? AND status = 'running'
+        ORDER BY started_at ASC, rowid ASC
+        LIMIT 1
+        """,
+        (resume_id,),
+    ).fetchone()
+    if running_execution is not None:
+        raise AgentSessionActiveRunConflictError(
+            current_revision,
+            str(running_execution["run_id"]),
+        )
+
+    if response.draft.status != "pending":
+        raise AgentDraftDecisionConflictError(
+            current_revision,
+            response.draft.status,
+        )
+
+    updated_response = response.model_copy(
+        update={
+            "draft": response.draft.model_copy(update={"status": status}),
+        },
+    )
+    cursor = conn.execute(
+        """
+        UPDATE agent_messages
+        SET response_json = ?
+        WHERE session_id = ? AND id = ? AND role = 'assistant'
+        """,
+        (
+            _json_dumps(
+                updated_response.model_dump(mode="json", by_alias=True),
+            ),
+            resume_id,
+            message_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise AgentSessionPersistenceError(
+            "The committed Agent draft response could not be updated.",
+        )
+    return True
+
+
+def update_agent_draft_decision(
+    conn: Connection,
+    resume_id: str,
+    *,
+    message_id: str,
+    status: AgentDraftDecisionStatus,
+    revision: str,
+) -> AgentSessionResponse:
+    """Atomically resolve one committed draft without replacing its session."""
+
+    with _transaction(conn):
+        _update_agent_draft_decision(
+            conn,
+            resume_id,
+            message_id=message_id,
+            status=status,
+            revision=revision,
+        )
+
     return load_agent_session(conn, resume_id)
+
+
+def apply_agent_draft_decision(
+    conn: Connection,
+    resume_id: str,
+    *,
+    message_id: str,
+    resume: dict[str, Any],
+    revision: str,
+    expected_version_id: str,
+) -> tuple[AgentSessionResponse, dict[str, Any]]:
+    """Commit the candidate document and its applied status as one command."""
+
+    save_result: ResumeSaveTransaction | None = None
+    try:
+        with _transaction(conn):
+            row = conn.execute(
+                "SELECT current_version_id FROM resumes WHERE id = ? AND deleted = 0",
+                (resume_id,),
+            ).fetchone()
+            current_version_id = str(row["current_version_id"]) if row else "0"
+            if expected_version_id != current_version_id:
+                raise AgentResumeVersionConflictError(current_version_id)
+
+            changed = _update_agent_draft_decision(
+                conn,
+                resume_id,
+                message_id=message_id,
+                status="applied",
+                revision=revision,
+            )
+            if changed:
+                save_result = save_resume_document_in_transaction(
+                    conn,
+                    resume_id,
+                    resume,
+                    save_mode="autosave",
+                )
+            resume_detail = (
+                save_result.detail
+                if save_result is not None
+                else load_resume_in_transaction(conn, resume_id)
+            )
+    except BaseException:
+        if save_result is not None and save_result.created_version is not None:
+            cleanup_resume_version_files((save_result.created_version,))
+        raise
+
+    if save_result is not None and save_result.obsolete_autosave is not None:
+        cleanup_resume_version_files((save_result.obsolete_autosave,))
+    return load_agent_session(conn, resume_id), resume_detail
 
 
 def replace_agent_session_messages(

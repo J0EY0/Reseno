@@ -57,7 +57,7 @@ def extract_resume_materials(
     *,
     session_id: str,
     prompt: str,
-    job_brief: str,
+    target_context: str,
     files: list[dict[str, Any]],
     target_reference: TargetReference | None = None,
     focus: str = "all",
@@ -71,7 +71,7 @@ def extract_resume_materials(
     sources = _material_sources(
         session_id=session_id,
         prompt=prompt,
-        job_brief=job_brief,
+        target_context=target_context,
         files=files,
         target_reference=target_reference,
         hidden_terms=hidden_terms,
@@ -106,7 +106,7 @@ def _material_sources(
     *,
     session_id: str,
     prompt: str,
-    job_brief: str,
+    target_context: str,
     files: list[dict[str, Any]],
     target_reference: TargetReference | None,
     hidden_terms: tuple[str, ...],
@@ -115,7 +115,7 @@ def _material_sources(
     target_excerpt = (
         target_reference.excerpt.strip()
         if target_reference is not None
-        else job_brief.strip()
+        else target_context.strip()
     )
     has_reference_sources = bool(target_excerpt) or any(
         attachment_text(session_id, file) for file in files[:5]
@@ -136,8 +136,7 @@ def _material_sources(
 
     if target_excerpt:
         source = {
-            # `jobBrief` is retained as the public source discriminator.
-            "sourceType": "jobBrief",
+            "sourceType": "targetContext",
             "sourceIndex": 0,
             "allowFallback": True,
             "referenceOnly": True,

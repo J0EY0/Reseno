@@ -545,6 +545,98 @@ DRAFT_DIFF_SUMMARY_SCHEMA: dict[str, Any] = {
     },
 }
 
+TARGET_CONTEXT_PATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": [
+                "employment",
+                "graduate_study",
+                "research",
+                "scholarship",
+                "general",
+            ],
+        },
+        "target": {"type": "string", "maxLength": 160},
+        "locations": {
+            "type": "array",
+            "items": STRING_SCHEMA,
+            "maxItems": 12,
+        },
+        "seniority": {"type": "string", "maxLength": 80},
+        "responsibilities": {
+            "type": "array",
+            "items": STRING_SCHEMA,
+            "maxItems": 24,
+        },
+        "mustHaveSkills": {
+            "type": "array",
+            "items": STRING_SCHEMA,
+            "maxItems": 40,
+        },
+        "niceToHaveSkills": {
+            "type": "array",
+            "items": STRING_SCHEMA,
+            "maxItems": 40,
+        },
+        "requirements": {
+            "type": "array",
+            "items": STRING_SCHEMA,
+            "maxItems": 40,
+        },
+        "description": {"type": "string", "maxLength": 12000},
+        "exactJobDescription": {"type": "boolean"},
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
+}
+
+UPDATE_TARGET_CONTEXT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_target_context",
+        "description": (
+            "Derive and remember structured target-opportunity context from the "
+            "current user prompt. Use replace when the user switches targets or "
+            "provides a complete description; use merge for incremental changes; "
+            "use clear only when the user explicitly asks to forget the target. "
+            "Do not call for ordinary instructions, negations, or requests that "
+            "only refer to the already remembered target."
+        ),
+        "parameters": {
+            "type": "object",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["merge", "replace"],
+                        },
+                        "context": TARGET_CONTEXT_PATCH_SCHEMA,
+                    },
+                    "required": ["mode", "context"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["clear"]},
+                        "context": {
+                            "type": "object",
+                            "maxProperties": 0,
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["mode", "context"],
+                    "additionalProperties": False,
+                },
+            ],
+        },
+    },
+}
+
 EDIT_PLAN_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -558,6 +650,7 @@ EDIT_PLAN_SCHEMA: dict[str, Any] = {
             "properties": {
                 "steps": {
                     "type": "array",
+                    "minItems": 1,
                     "description": (
                         "Planned edits. Keep this limited to changes that "
                         "the user requested or that are directly supported."
@@ -613,6 +706,7 @@ EDIT_PLAN_SCHEMA: dict[str, Any] = {
                     },
                 },
             },
+            "required": ["steps"],
             "additionalProperties": False,
         },
     },
@@ -631,6 +725,7 @@ EDIT_EXECUTE_SCHEMA: dict[str, Any] = {
             "properties": {
                 "edits": {
                     "type": "array",
+                    "minItems": 1,
                     "description": (
                         "Executable edits. Each edit must include a frontend "
                         "ResumeEditOperation object."
@@ -673,6 +768,7 @@ EDIT_EXECUTE_SCHEMA: dict[str, Any] = {
                     },
                 },
             },
+            "required": ["edits"],
             "additionalProperties": False,
         },
     },
@@ -805,6 +901,7 @@ DRAFT_REWRITE_SCHEMA: dict[str, Any] = {
             "properties": {
                 "edits": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {
                         "type": "object",
                         "properties": {
@@ -897,6 +994,12 @@ AGENT_TOOL_SPECS: list[AgentToolSpec] = [
         "read",
         DRAFT_DIFF_SUMMARY_SCHEMA,
         "run_draft_diff_summary",
+    ),
+    AgentToolSpec(
+        "update_target_context",
+        "control",
+        UPDATE_TARGET_CONTEXT_SCHEMA,
+        "run_update_target_context",
     ),
     AgentToolSpec("edit_plan", "write", EDIT_PLAN_SCHEMA, "run_edit_plan"),
     AgentToolSpec("edit_execute", "write", EDIT_EXECUTE_SCHEMA, "run_edit_execute"),

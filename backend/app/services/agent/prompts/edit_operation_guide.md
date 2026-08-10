@@ -1,5 +1,5 @@
 Supported ResumeEditOperation shapes:
-- replace_field {type,path,value} only for basic.headline, basic.location, or basic.summary; do not edit name/phone/email/avatar.
+- replace_field {type,path,value} only for basic.headline or basic.summary; do not edit name/phone/email/location/avatar.
 - update_item {type,sectionId,itemId,patch}; patch may contain only fields belonging to that section kind.
 - insert_item {type,sectionId,item,index?}; item must match the target section kind.
 - update_section {type,sectionId,patch:{title}}.
@@ -9,8 +9,6 @@ Supported ResumeEditOperation shapes:
 - reorder_sections {type,sectionIds}.
 - reorder_items {type,sectionId,itemIds}.
 Use existing IDs from the resume. If the target is unclear, call resume_lookup or resume_analysis first.
-basic.location is write-only: set it only when the user explicitly provides the desired value. Never infer or claim the current location from resume context.
-
 Canonical item fields by section kind:
 - education: school, degree, major, gpa, location, period, description, highlights.
 - experience: company, position, location, period, description, highlights. Work and internships share this kind; preserve the section title the user intends.

@@ -150,6 +150,7 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "plan.review_resume": "Review the current resume",
         "plan.summarize": "Summarize the changes",
+        "plan.summarize_findings": "Summarize the findings",
         "response.blocked.default_reason": "Reason: not enough context.",
         "response.blocked.reason": "Reason: {reason}",
         "response.blocked.text": (
@@ -385,6 +386,7 @@ TEXT: dict[str, dict[str, str]] = {
         "plan.reason.update_first_item": "最强经历需要更明确地呈现职责、技术和结果。",
         "plan.review_resume": "检查当前简历内容",
         "plan.summarize": "汇总修改结果",
+        "plan.summarize_findings": "汇总分析结论",
         "response.blocked.default_reason": "原因：当前信息不足。",
         "response.blocked.reason": "原因：{reason}",
         "response.blocked.text": (

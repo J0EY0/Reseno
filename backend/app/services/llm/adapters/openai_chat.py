@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
+from openai.lib.streaming.chat import ChatCompletionStreamState
 
 from ..common import (
     async_openai_client,
@@ -134,6 +136,7 @@ async def stream(
     reasoning_parts: list[str] = []
     stop_reason: LlmStopReason = "unknown"
     response_id: str | None = None
+    terminal_seen = False
     try:
         stream_response = await client.chat.completions.create(
             **chat_completion_params(config, messages, stream=True),
@@ -147,6 +150,7 @@ async def stream(
             choice = chunk.choices[0]
             finish_reason = getattr(choice, "finish_reason", None)
             if finish_reason:
+                terminal_seen = True
                 stop_reason = map_stop_reason(finish_reason)
 
             delta = choice.delta
@@ -168,6 +172,9 @@ async def stream(
         finally:
             await close_async_client(client)
 
+    if not terminal_seen:
+        raise LlmRequestError("Model provider stream ended before completion.")
+
     yield LlmStreamEvent(
         type="done",
         message=LlmAssistantMessage(
@@ -179,6 +186,69 @@ async def stream(
     )
 
 
+async def stream_tool_call(
+    config: AgentLlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> AsyncIterator[LlmStreamEvent]:
+    """Stream tool-call activity and publish only one complete terminal call."""
+
+    client = async_openai_client(config)
+    stream_response = None
+    state = ChatCompletionStreamState()
+    terminal_reason: LlmStopReason | None = None
+    params = {**_tool_completion_params(config, messages, tools), "stream": True}
+    try:
+        try:
+            stream_response = await client.chat.completions.create(**params)
+        except APIStatusError as exc:
+            if not unsupported_parallel_tool_calls(exc):
+                raise_openai_error(exc)
+            params.pop("parallel_tool_calls", None)
+            stream_response = await client.chat.completions.create(**params)
+
+        async for chunk in stream_response:
+            state.handle_chunk(chunk)
+            if not chunk.choices:
+                continue
+
+            for choice in chunk.choices:
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason:
+                    terminal_reason = map_stop_reason(finish_reason)
+
+                delta = choice.delta
+                reasoning = delta_text(delta, ("reasoning_content", "reasoning"))
+                if reasoning:
+                    yield LlmStreamEvent(type="reasoning_delta", delta=reasoning)
+
+                content = delta_text(delta, ("content",))
+                if content:
+                    yield LlmStreamEvent(type="text_delta", delta=content)
+
+                if getattr(delta, "tool_calls", None):
+                    yield LlmStreamEvent(type="activity")
+    except (APIStatusError, APITimeoutError, APIConnectionError, APIError) as exc:
+        raise_openai_error(exc)
+    finally:
+        try:
+            if stream_response is not None:
+                await close_async_stream(stream_response)
+        finally:
+            await close_async_client(client)
+
+    if terminal_reason is None:
+        raise LlmRequestError("Model provider stream ended before completion.")
+
+    message = _message_from_response(state.current_completion_snapshot)
+    if terminal_reason != "tool_calls" and message.tool_calls:
+        message = replace(message, tool_calls=[])
+    yield LlmStreamEvent(
+        type="done",
+        message=message,
+    )
+
+
 def _message_from_response(response: object) -> LlmAssistantMessage:
     choices = getattr(response, "choices", None)
     if not choices:
@@ -187,15 +257,15 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
     choice = choices[0]
     sdk_message = choice.message
     content = sdk_message.content if isinstance(sdk_message.content, str) else ""
+    reasoning = delta_text(sdk_message, ("reasoning_content", "reasoning"))
     tool_calls = _tool_calls_from_message(sdk_message)
     finish_reason = getattr(choice, "finish_reason", None)
-    stop_reason: LlmStopReason = (
-        "tool_calls" if tool_calls else map_stop_reason(finish_reason)
-    )
+    stop_reason = map_stop_reason(finish_reason)
 
     return LlmAssistantMessage(
         content=content.strip(),
         tool_calls=tool_calls,
+        reasoning=reasoning.strip(),
         usage=openai_chat_usage(response),
         stop_reason=stop_reason,
         response_id=getattr(response, "id", None),

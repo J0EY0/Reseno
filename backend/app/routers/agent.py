@@ -21,11 +21,13 @@ from app.schemas.agent import (
     AgentAttachmentResponse,
     AgentChatRequest,
     AgentDraftDecisionRequest,
+    AgentDraftDecisionResponse,
     AgentRunResponse,
     AgentSessionReplaceRequest,
     AgentSessionResponse,
 )
 from app.schemas.common import APP_MESSAGE_BAD_REQUEST, ApiResponse, ok_response
+from app.schemas.resumes import ResumeDetailResponse
 from app.services.agent.attachments import (
     MAX_AGENT_ATTACHMENT_BYTES,
     AgentAttachmentError,
@@ -47,10 +49,12 @@ from app.services.agent_runs import (
 from app.services.agent_sessions import (
     AgentDraftDecisionConflictError,
     AgentDraftUnavailableConflictError,
+    AgentResumeVersionConflictError,
     AgentSessionActiveRunConflictError,
     AgentSessionDataError,
     AgentSessionRevisionConflictError,
     AgentSessionTurnReplayError,
+    apply_agent_draft_decision,
     is_valid_resume_id,
     load_agent_session,
     replace_agent_session_messages,
@@ -257,13 +261,13 @@ def put_agent_resume_session(
 
 @router.patch(
     "/resumes/{resume_id}/session/messages/{message_id}/draft",
-    response_model=ApiResponse[AgentSessionResponse],
+    response_model=ApiResponse[AgentDraftDecisionResponse],
 )
 def patch_agent_resume_draft(
     resume_id: str,
     message_id: str,
     request: AgentDraftDecisionRequest,
-) -> ApiResponse[AgentSessionResponse] | JSONResponse:
+) -> ApiResponse[AgentDraftDecisionResponse] | JSONResponse:
     """Durably apply or discard one committed Agent draft."""
 
     if not is_valid_resume_id(resume_id) or not message_id.strip():
@@ -274,13 +278,29 @@ def patch_agent_resume_draft(
 
     try:
         with closing(connect()) as conn:
-            session = update_agent_draft_decision(
-                conn,
-                resume_id,
-                message_id=message_id,
-                status=request.status,
-                revision=request.revision,
-            )
+            if request.status == "applied":
+                if request.resume is None or request.expected_version_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=APP_MESSAGE_BAD_REQUEST,
+                    )
+                session, saved_resume = apply_agent_draft_decision(
+                    conn,
+                    resume_id,
+                    message_id=message_id,
+                    resume=request.resume,
+                    revision=request.revision,
+                    expected_version_id=request.expected_version_id,
+                )
+            else:
+                session = update_agent_draft_decision(
+                    conn,
+                    resume_id,
+                    message_id=message_id,
+                    status=request.status,
+                    revision=request.revision,
+                )
+                saved_resume = None
     except AgentResumeUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     except AgentSessionRevisionConflictError as exc:
@@ -288,6 +308,12 @@ def patch_agent_resume_draft(
             status.HTTP_409_CONFLICT,
             "AGENT_SESSION_REVISION_CONFLICT",
             revision=exc.current_revision,
+        )
+    except AgentResumeVersionConflictError as exc:
+        return _agent_transport_error(
+            status.HTTP_409_CONFLICT,
+            "RESUME_VERSION_CONFLICT",
+            versionId=exc.current_version_id,
         )
     except AgentSessionActiveRunConflictError as exc:
         return _agent_transport_error(
@@ -311,7 +337,16 @@ def patch_agent_resume_draft(
         )
     except AgentSessionDataError:
         return _agent_session_data_error()
-    return ok_response(session)
+    return ok_response(
+        AgentDraftDecisionResponse(
+            session=session,
+            resume=(
+                ResumeDetailResponse.model_validate(saved_resume)
+                if saved_resume is not None
+                else None
+            ),
+        )
+    )
 
 
 @router.post("/chat")

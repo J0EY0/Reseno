@@ -13,13 +13,14 @@ from uuid import uuid4
 
 from app.db.connection import connect
 from app.schemas.agent import (
+    AgentChatMessage,
     AgentChatRequest,
     AgentRunResponse,
     AgentRunStatus,
     AgentTurnErrorCode,
     AgentTurnExecutionStatus,
 )
-from app.services.agent.request_context import active_resume
+from app.services.agent.request_context import transaction_base_resume
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import (
@@ -82,7 +83,7 @@ class AgentRun:
         return AgentRunResponse(
             id=self.id,
             resumeId=self.resume_id,
-            baseResume=active_resume(self.request),
+            baseResume=transaction_base_resume(self.request),
             status=self.status,
             executionState=self.execution_state,
             errorCode=self.error_code,
@@ -412,6 +413,11 @@ class AgentRunManager:
         run.terminalizing = True
         execution_state = _execution_state(status)
         error_code = None if execution_state == "succeeded" else run.error_code
+        cancelled_message = (
+            _cancelled_replay_message(run)
+            if status == "cancelled" and not run.has_terminal_message
+            else None
+        )
         retry_delay = AGENT_TERMINAL_RETRY_INITIAL_SECONDS
         failed_attempts = 0
         while True:
@@ -426,6 +432,7 @@ class AgentRunManager:
                         run.id,
                         execution_state,
                         error_code,
+                        cancelled_message,
                     ),
                 )
                 try:
@@ -458,6 +465,22 @@ class AgentRunManager:
                     retry_delay * 2,
                     AGENT_TERMINAL_RETRY_MAX_SECONDS,
                 )
+
+        if cancelled_message is not None:
+            run.has_terminal_message = True
+            await self._publish(
+                run,
+                _sse_frame(
+                    "message_done",
+                    {
+                        "type": "message_done",
+                        "message": cancelled_message.model_dump(
+                            mode="json",
+                            by_alias=True,
+                        ),
+                    },
+                ),
+            )
 
         frame = _sse_frame(
             "run_done",
@@ -546,6 +569,7 @@ def _finish_agent_run_execution(
     run_id: str,
     status: AgentTurnExecutionStatus,
     error_code: AgentTurnErrorCode | None,
+    assistant_message: AgentChatMessage | None,
 ) -> None:
     """Persist one terminal transition on its own worker connection."""
 
@@ -556,6 +580,7 @@ def _finish_agent_run_execution(
             run_id=run_id,
             status=status,
             error_code=error_code,
+            assistant_message=assistant_message,
         )
 
 
@@ -735,6 +760,33 @@ def _transaction_state(frame: str) -> str:
     return ""
 
 
+def _cancelled_replay_message(run: AgentRun) -> AgentChatMessage | None:
+    """Return the visible, non-actionable assistant snapshot for a stopped run."""
+
+    text = run.replay_message.get("text")
+    message_id = run.replay_message.get("id")
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or not isinstance(message_id, str)
+        or not message_id.strip()
+    ):
+        return None
+
+    payload = dict(run.replay_message)
+    payload.update(
+        {
+            "actions": [],
+            "draft": None,
+            "edits": [],
+            "finishMissing": [],
+            "quickReplies": [],
+            "targetContext": None,
+        },
+    )
+    return AgentChatMessage.model_validate(payload)
+
+
 def _event_name(frame: str) -> str:
     first_line = frame.splitlines()[0] if frame else ""
     return first_line.removeprefix("event:").strip()
@@ -747,6 +799,8 @@ def _provider_error_code(frame: str) -> AgentTurnErrorCode:
     explicit_code = payload.get("errorCode")
     if explicit_code == "AGENT_PROVIDER_AUTH_ERROR":
         return "AGENT_PROVIDER_AUTH_ERROR"
+    if explicit_code == "AGENT_PROVIDER_TIMEOUT":
+        return "AGENT_PROVIDER_TIMEOUT"
     if explicit_code == "AGENT_PROVIDER_ERROR":
         return "AGENT_PROVIDER_ERROR"
 

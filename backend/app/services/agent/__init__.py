@@ -10,7 +10,7 @@ from .integrations import (
     _search_web_reference,
     _search_web_reference_summary,
 )
-from .models import EditPlanStep, JobReference, ResumeAnalysis, TargetReference
+from .models import EditPlanStep, ResumeAnalysis, TargetReference
 from .runtime import (
     async_stream_agent_response,
     stream_agent_message,
@@ -18,7 +18,6 @@ from .runtime import (
 
 __all__ = [
     "EditPlanStep",
-    "JobReference",
     "ResumeAgent",
     "ResumeAnalysis",
     "TargetReference",

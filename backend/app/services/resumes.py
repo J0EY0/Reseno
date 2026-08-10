@@ -47,6 +47,14 @@ class ResumeTemplateRebindResult(NamedTuple):
     obsolete_autosaves: tuple[ResumeVersionFile, ...]
 
 
+class ResumeSaveTransaction(NamedTuple):
+    """Resume write metadata needed by a caller-owned transaction."""
+
+    detail: dict[str, Any]
+    created_version: ResumeVersionFile | None
+    obsolete_autosave: ResumeVersionFile | None
+
+
 def _normalize_locale(locale: str) -> str:
     """Return a supported locale, falling back to English."""
 
@@ -1096,6 +1104,99 @@ def load_resume(resume_id: str) -> dict[str, Any]:
         return _load_resume_detail(conn, resume_id=resume_id)
 
 
+def load_resume_in_transaction(
+    conn: Connection,
+    resume_id: str,
+) -> dict[str, Any]:
+    """Load the formal resume while a wider command owns the transaction."""
+
+    if not conn.in_transaction:
+        raise RuntimeError("A transactional resume load requires a transaction.")
+    return _load_resume_detail(conn, resume_id=resume_id)
+
+
+def save_resume_in_transaction(
+    conn: Connection,
+    resume_id: str,
+    payload: dict[str, Any],
+    *,
+    save_mode: ResumeVersionKind,
+) -> ResumeSaveTransaction:
+    """Persist one full snapshot while the caller owns the SQLite transaction."""
+
+    if not conn.in_transaction:
+        raise RuntimeError("A resume save requires a caller-owned transaction.")
+
+    saved_at = _utc_now()
+    row = _require_resume_row(conn, resume_id)
+    if row["deleted"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deleted resumes cannot be saved.",
+        )
+
+    submitted_template_id = payload["template"]
+    if not is_visible_template(conn, submitted_template_id.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="TEMPLATE_NOT_FOUND",
+        )
+
+    previous_version_id = int(row["current_version_id"])
+    resume_item = _normalize_resume_item_payload(
+        resume_id=row["id"],
+        payload=payload,
+        saved_at=saved_at,
+    )
+    _, version_id, obsolete_autosave_version_id = _save_resume_item(
+        conn,
+        resume_item=resume_item,
+        saved_at=saved_at,
+        deleted=False,
+        deleted_at=None,
+        version_kind=save_mode,
+    )
+
+    return ResumeSaveTransaction(
+        detail={
+            "resume": resume_item,
+            "savedAt": saved_at,
+            "versionId": str(version_id),
+        },
+        created_version=(resume_id, version_id)
+        if version_id > previous_version_id
+        else None,
+        obsolete_autosave=(resume_id, obsolete_autosave_version_id)
+        if obsolete_autosave_version_id is not None
+        else None,
+    )
+
+
+def save_resume_document_in_transaction(
+    conn: Connection,
+    resume_id: str,
+    resume: dict[str, Any],
+    *,
+    save_mode: ResumeVersionKind,
+) -> ResumeSaveTransaction:
+    """Persist a document edit while preserving current workspace metadata."""
+
+    current_item = _load_resume_detail(conn, resume_id=resume_id)["resume"]
+    return save_resume_in_transaction(
+        conn,
+        resume_id,
+        {
+            "title": current_item["title"],
+            "resume": resume,
+            "jobBrief": current_item["jobBrief"],
+            "typography": current_item["typography"],
+            "template": current_item["template"],
+            "templateSettings": current_item.get("templateSettings"),
+        },
+        save_mode=save_mode,
+    )
+
+
 def save_resume(
     resume_id: str,
     payload: dict[str, Any],
@@ -1104,47 +1205,28 @@ def save_resume(
 ) -> dict[str, Any]:
     """Persist the latest snapshot and retain only explicit checkpoints."""
 
-    saved_at = _utc_now()
-    obsolete_autosave_version_id: int | None = None
+    result: ResumeSaveTransaction | None = None
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = _require_resume_row(conn, resume_id)
-        if row["deleted"]:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Deleted resumes cannot be saved.",
+        try:
+            result = save_resume_in_transaction(
+                conn,
+                resume_id,
+                payload,
+                save_mode=save_mode,
             )
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            if result is not None and result.created_version is not None:
+                cleanup_resume_version_files((result.created_version,))
+            raise
 
-        submitted_template_id = payload["template"]
-        if not is_visible_template(conn, submitted_template_id.strip()):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="TEMPLATE_NOT_FOUND",
-            )
-        resume_item = _normalize_resume_item_payload(
-            resume_id=row["id"],
-            payload=payload,
-            saved_at=saved_at,
-        )
+    if result.obsolete_autosave is not None:
+        cleanup_resume_version_files((result.obsolete_autosave,))
 
-        _, version_id, obsolete_autosave_version_id = _save_resume_item(
-            conn,
-            resume_item=resume_item,
-            saved_at=saved_at,
-            deleted=False,
-            deleted_at=None,
-            version_kind=save_mode,
-        )
-        conn.execute("COMMIT")
-
-    if obsolete_autosave_version_id is not None:
-        _delete_resume_json(resume_id, obsolete_autosave_version_id)
-
-    return {
-        "resume": resume_item,
-        "savedAt": saved_at,
-        "versionId": str(version_id),
-    }
+    return result.detail
 
 
 def list_resume_versions(resume_id: str) -> dict[str, Any]:

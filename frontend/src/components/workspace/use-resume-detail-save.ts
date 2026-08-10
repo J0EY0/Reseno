@@ -3,6 +3,10 @@ import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
 import {
+  resolveAgentDraftDecision,
+  type AgentDraftDecisionResolution,
+} from "@/lib/agent-session-run-client";
+import {
   countResumeChanges,
   createResumeFingerprint,
 } from "@/lib/workspace-change-tracking";
@@ -18,7 +22,7 @@ import type {
   SaveResponse,
   WorkspaceVersionSummary,
 } from "@/types/api";
-import type { ResumeWorkspaceItem } from "@/types/resume";
+import type { ResumeData, ResumeWorkspaceItem } from "@/types/resume";
 
 const AUTOSAVE_DELAY_MS = 5_000;
 const AUTOSAVE_MAX_WAIT_MS = 30_000;
@@ -91,6 +95,33 @@ export function useResumeDetailSave({
   const autosaveRetryAttemptRef = useRef(0);
   const skipCheckpointPromotionRef = useRef(false);
   const versionLoadRequestRef = useRef<string | null>(null);
+
+  const adoptPersistedSave = useCallback(
+    (
+      saved: ResumeDetailResponse,
+      submitted: ResumeWorkspaceItem,
+      saveMode: ResumeSaveMode,
+    ) => {
+      const savedFingerprint = createResumeFingerprint(saved.resume);
+      persistedResumeRef.current = saved.resume;
+      persistenceEpochRef.current += 1;
+      setPersistedResume(saved.resume);
+      persistedFingerprintRef.current = savedFingerprint;
+      recentlySavedFingerprintsRef.current = new Set([
+        createResumeFingerprint(submitted),
+        savedFingerprint,
+      ]);
+      lastSaveModeRef.current = saveMode;
+      skipCheckpointPromotionRef.current = false;
+      lastSavedAtRef.current = saved.savedAt;
+      activeVersionIdRef.current = saved.versionId;
+      onAdoptSavedResume(saved.resume, submitted);
+      setLastSavedAt(saved.savedAt);
+      setActiveVersionId(saved.versionId);
+      setSaveState("saved");
+    },
+    [onAdoptSavedResume],
+  );
 
   const hasUnsavedChanges = useCallback(
     () =>
@@ -189,7 +220,6 @@ export function useResumeDetailSave({
         throw new Error("No active resume is available to save.");
       }
 
-      const submittedFingerprint = createResumeFingerprint(stableResume);
       const request = (async (): Promise<SaveResponse> => {
         setSaveState("saving");
         recentlySavedFingerprintsRef.current.clear();
@@ -207,24 +237,7 @@ export function useResumeDetailSave({
             saveMode,
             options,
           );
-          const savedFingerprint = createResumeFingerprint(saved.resume);
-          const acceptedFingerprints = new Set([
-            submittedFingerprint,
-            savedFingerprint,
-          ]);
-
-          persistedResumeRef.current = saved.resume;
-          persistenceEpochRef.current += 1;
-          setPersistedResume(saved.resume);
-          persistedFingerprintRef.current = savedFingerprint;
-          recentlySavedFingerprintsRef.current = acceptedFingerprints;
-          lastSaveModeRef.current = saveMode;
-          skipCheckpointPromotionRef.current = false;
-          lastSavedAtRef.current = saved.savedAt;
-          activeVersionIdRef.current = saved.versionId;
-          onAdoptSavedResume(saved.resume, stableResume);
-          setLastSavedAt(saved.savedAt);
-          setActiveVersionId(saved.versionId);
+          adoptPersistedSave(saved, stableResume, saveMode);
 
           if (saveMode === "checkpoint") {
             try {
@@ -235,7 +248,6 @@ export function useResumeDetailSave({
             }
           }
 
-          setSaveState("saved");
           return { savedAt: saved.savedAt, versionId: saved.versionId };
         } catch (error) {
           setSaveState("idle");
@@ -253,7 +265,71 @@ export function useResumeDetailSave({
         }
       }
     },
-    [getSnapshot, onAdoptSavedResume, resumeId],
+    [adoptPersistedSave, getSnapshot, resumeId],
+  );
+
+  const resolveAppliedAgentDraft = useCallback(
+    async (
+      messageId: string,
+      candidateResume: ResumeData,
+    ): Promise<AgentDraftDecisionResolution> => {
+      while (activeRequestRef.current) {
+        const activeRequest = activeRequestRef.current;
+        try {
+          await activeRequest.promise;
+        } catch {
+          // The apply reads fresh formal/session revisions after the failed save.
+        } finally {
+          if (activeRequestRef.current === activeRequest) {
+            activeRequestRef.current = null;
+          }
+        }
+      }
+
+      const resolutionPromise = (async () => {
+        setSaveState("saving");
+        try {
+          const resolution = await resolveAgentDraftDecision(
+            resumeId,
+            messageId,
+            { status: "applied", resume: candidateResume },
+          );
+          if (resolution.status === "applied" && resolution.resume) {
+            adoptPersistedSave(
+              resolution.resume,
+              resolution.committed
+                ? { ...resolution.resume.resume, resume: candidateResume }
+                : resolution.resume.resume,
+              "autosave",
+            );
+          } else {
+            setSaveState("idle");
+          }
+          return resolution;
+        } catch (error) {
+          setSaveState("idle");
+          throw error;
+        }
+      })();
+      const trackedRequest: ActiveResumeSave = {
+        promise: resolutionPromise.then((resolution) => ({
+          savedAt: resolution.resume?.savedAt ?? lastSavedAtRef.current ?? "",
+          versionId:
+            resolution.resume?.versionId ?? activeVersionIdRef.current ?? undefined,
+        })),
+        resumeId,
+      };
+      activeRequestRef.current = trackedRequest;
+
+      try {
+        return await resolutionPromise;
+      } finally {
+        if (activeRequestRef.current === trackedRequest) {
+          activeRequestRef.current = null;
+        }
+      }
+    },
+    [adoptPersistedSave, resumeId],
   );
 
   const discard = useCallback(async () => {
@@ -472,6 +548,7 @@ export function useResumeDetailSave({
       !skipCheckpointPromotionRef.current,
     save,
     saveState,
+    resolveAppliedAgentDraft,
     selectVersion,
     versions,
   };

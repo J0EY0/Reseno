@@ -3,7 +3,10 @@ import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
 import { isApiErrorToastShown } from "@/lib/api-client";
-import { resolveAgentDraftDecision } from "@/lib/agent-session-run-client";
+import {
+  resolveAgentDraftDecision,
+  type AgentDraftDecisionResolution,
+} from "@/lib/agent-session-run-client";
 import {
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
@@ -53,11 +56,16 @@ function formatAgentDraftErrors(
 export function useResumeAgentDraft({
   messages,
   onApplyResume,
+  onResolveAppliedDraft,
   resume,
   resumeId,
 }: {
   messages: AppMessages;
   onApplyResume: (resume: ResumeData) => void;
+  onResolveAppliedDraft: (
+    messageId: string,
+    resume: ResumeData,
+  ) => Promise<AgentDraftDecisionResolution>;
   resume: ResumeData;
   resumeId?: string;
 }) {
@@ -206,7 +214,11 @@ export function useResumeAgentDraft({
   );
 
   const mergeCommittedAgentDraft = useCallback(
-    (draft: AgentDraftState, baseResume: ResumeData) => {
+    (
+      draft: AgentDraftState,
+      baseResume: ResumeData,
+      reportConflict = true,
+    ) => {
       const result = applyAgentEditsWithMerge(
         baseResume,
         currentResumeRef.current,
@@ -214,16 +226,46 @@ export function useResumeAgentDraft({
       );
 
       if (result.errors.length > 0) {
-        toast.error(messages.agentDraftBatchRejected, {
-          description: formatAgentDraftErrors(result.errors, messages),
-          closeButton: true,
-        });
+        if (reportConflict) {
+          toast.error(messages.agentDraftBatchRejected, {
+            description: formatAgentDraftErrors(result.errors, messages),
+            closeButton: true,
+          });
+        }
         return null;
       }
 
       return result;
     },
     [messages],
+  );
+
+  const adoptAppliedDraftResolution = useCallback(
+    (
+      resolution: AgentDraftDecisionResolution,
+      draft: AgentDraftState,
+      baseResume: ResumeData,
+    ) => {
+      if (!resolution.committed) {
+        const authoritativeResume = resolution.resume?.resume.resume;
+        if (!authoritativeResume) {
+          throw new Error("The authoritative applied resume is unavailable.");
+        }
+        onApplyResume(authoritativeResume);
+        return authoritativeResume;
+      }
+
+      const result = mergeCommittedAgentDraft(draft, baseResume, false);
+      if (result) {
+        onApplyResume(result.resume);
+        return result.resume;
+      }
+
+      // A same-field edit made after this tab committed is newer than the
+      // submitted candidate. Keep it as a dirty edit after the saved receipt.
+      return currentResumeRef.current;
+    },
+    [mergeCommittedAgentDraft, onApplyResume],
   );
 
   const applyAgentDraft = useCallback(async () => {
@@ -236,7 +278,8 @@ export function useResumeAgentDraft({
       return;
     }
 
-    if (!mergeCommittedAgentDraft(agentDraft, draftBase.resume)) {
+    const candidate = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
+    if (!candidate) {
       return;
     }
 
@@ -252,10 +295,9 @@ export function useResumeAgentDraft({
     draftDecisionTokenRef.current = decisionToken;
 
     try {
-      const resolution = await resolveAgentDraftDecision(
-        resumeId,
+      const resolution = await onResolveAppliedDraft(
         agentDraft.sourceMessageId,
-        "applied",
+        candidate.resume,
       );
       if (
         draftDecisionTokenRef.current !== decisionToken ||
@@ -269,12 +311,11 @@ export function useResumeAgentDraft({
       }
       let resolvedResume = agentDraft.resume;
       if (resolution.status === "applied") {
-        const result = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
-        if (!result) {
-          return;
-        }
-        onApplyResume(result.resume);
-        resolvedResume = result.resume;
+        resolvedResume = adoptAppliedDraftResolution(
+          resolution,
+          agentDraft,
+          draftBase.resume,
+        );
       }
       if (!resolution.status) {
         agentDraftBaseRef.current = null;
@@ -309,9 +350,10 @@ export function useResumeAgentDraft({
     }
   }, [
     agentDraft,
+    adoptAppliedDraftResolution,
     mergeCommittedAgentDraft,
     messages,
-    onApplyResume,
+    onResolveAppliedDraft,
     resumeId,
   ]);
 
@@ -339,7 +381,7 @@ export function useResumeAgentDraft({
       const resolution = await resolveAgentDraftDecision(
         resumeId,
         agentDraft.sourceMessageId,
-        "discarded",
+        { status: "discarded" },
       );
       if (
         draftDecisionTokenRef.current !== decisionToken ||
@@ -360,12 +402,11 @@ export function useResumeAgentDraft({
 
       let resolvedResume = agentDraft.resume;
       if (resolution.status === "applied") {
-        const result = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
-        if (!result) {
-          return;
-        }
-        onApplyResume(result.resume);
-        resolvedResume = result.resume;
+        resolvedResume = adoptAppliedDraftResolution(
+          resolution,
+          agentDraft,
+          draftBase.resume,
+        );
       }
 
       setLastAgentDraft({
@@ -394,9 +435,8 @@ export function useResumeAgentDraft({
     }
   }, [
     agentDraft,
-    mergeCommittedAgentDraft,
+    adoptAppliedDraftResolution,
     messages,
-    onApplyResume,
     resumeId,
   ]);
 

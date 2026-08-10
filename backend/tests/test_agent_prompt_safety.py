@@ -1,8 +1,11 @@
 import pytest
 
 from app.schemas.agent import AgentChatRequest, AgentConversationItem
+from app.services.agent.executor import _visible_plan_steps
+from app.services.agent.localization import agent_text
 from app.services.agent.policy import (
     AgentCapabilityMode,
+    AgentTaskIntent,
     capability_policy_for_request,
 )
 from app.services.agent.prompts import CORE_POLICY_PROMPT, TOOL_POLICY_PROMPT
@@ -84,6 +87,57 @@ def test_jd_keyword_request_without_edit_instruction_is_read_only() -> None:
     assert "edit_execute" not in policy.allowed_tools
 
 
+def test_negated_target_search_is_not_exposed_to_the_model() -> None:
+    policy = capability_policy_for_request(
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-prompt-safety-no-target-search",
+                role="user",
+                text="先只做诊断，不要修改简历，也不要检索岗位。",
+            ),
+            resume={"basic": {}, "sections": []},
+        ),
+    )
+
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert policy.intent == AgentTaskIntent.ANALYZE_RESUME
+    assert "web_search" not in policy.allowed_tools
+
+
+def test_clearing_target_for_general_analysis_does_not_enable_web_search() -> None:
+    remembered = AgentConversationItem(
+        id="assistant-remembered-target",
+        role="assistant",
+        text="目标已记录。",
+        response={
+            "id": "assistant-remembered-target",
+            "role": "assistant",
+            "text": "目标已记录。",
+            "targetContext": {
+                "kind": "employment",
+                "target": "AI 前端工程师",
+                "sourceMessageIds": ["turn-old-target"],
+            },
+        },
+    )
+    policy = capability_policy_for_request(
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-clear-target-general-analysis",
+                role="user",
+                text=("清除之前的岗位目标，先只分析当前简历的通用问题，不修改简历。"),
+            ),
+            messages=[remembered],
+            resume={"basic": {}, "sections": []},
+        ),
+    )
+
+    assert policy.intent == AgentTaskIntent.ANALYZE_RESUME
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert {"update_target_context", "resume_analysis"} <= policy.allowed_tools
+    assert {"web_search", "web_fetch"}.isdisjoint(policy.allowed_tools)
+
+
 @pytest.mark.parametrize(
     "prompt",
     [
@@ -108,3 +162,42 @@ def test_affirmative_edit_request_can_create_a_draft(prompt: str) -> None:
 
     assert policy.mode == AgentCapabilityMode.CAN_DRAFT
     assert "edit_execute" in policy.allowed_tools
+
+
+def test_read_only_plan_never_promises_a_draft_or_changes() -> None:
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-prompt-safety-read-only-plan",
+            role="user",
+            text=(
+                "先只做诊断，不要修改简历，也不要检索岗位。"
+                "请逐模块指出已有事实和结构问题。"
+            ),
+        ),
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    plan = _visible_plan_steps(request)
+
+    assert agent_text("zh", "plan.confirm_target") not in plan
+    assert agent_text("zh", "plan.generate_draft") not in plan
+    assert agent_text("zh", "plan.summarize") not in plan
+    assert agent_text("zh", "plan.summarize_findings") in plan
+
+
+def test_edit_plan_still_promises_a_preview_draft() -> None:
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-prompt-safety-edit-plan",
+            role="user",
+            text="只改腾讯实习的两条 bullet。",
+        ),
+        locale="zh",
+        resume={"basic": {}, "sections": []},
+    )
+
+    plan = _visible_plan_steps(request)
+
+    assert agent_text("zh", "plan.generate_draft") in plan
+    assert agent_text("zh", "plan.summarize") in plan

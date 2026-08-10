@@ -12,7 +12,12 @@ LlmStopReason = Literal[
     "unknown",
 ]
 
-LlmStreamEventType = Literal["text_delta", "reasoning_delta", "done"]
+LlmStreamEventType = Literal[
+    "activity",
+    "text_delta",
+    "reasoning_delta",
+    "done",
+]
 
 
 @dataclass(frozen=True)

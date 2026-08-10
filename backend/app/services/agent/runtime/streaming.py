@@ -11,11 +11,13 @@ from app.schemas.agent import (
     AgentKnowledgeItem,
     AgentTimelinePart,
 )
+from app.services.agent.request_context import accumulated_transaction_edits
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
     LlmRequestError,
     LlmStreamEvent,
+    LlmTimeoutError,
     async_complete_chat,
     async_stream_chat,
     resolve_agent_llm_config,
@@ -95,23 +97,13 @@ def _merge_llm_response(
         if parsed_knowledge:
             knowledge = parsed_knowledge[:4]
 
-    return AgentChatMessage(
-        id=draft.id,
-        role=draft.role,
-        tone=draft.tone,
-        text=text,
-        plan=draft.plan,
-        updates=draft.updates,
-        timeline=draft.timeline,
-        suggestions=suggestions,
-        knowledge=knowledge,
-        tools=draft.tools,
-        sources=draft.sources,
-        edits=draft.edits,
-        transactionState=draft.transaction_state,
-        finishMissing=draft.finish_missing,
-        quickReplies=quick_replies,
-        actions=draft.actions,
+    return draft.model_copy(
+        update={
+            "text": text,
+            "suggestions": suggestions,
+            "knowledge": knowledge,
+            "quick_replies": quick_replies,
+        },
     )
 
 
@@ -219,6 +211,8 @@ def _llm_error_code(error: LlmRequestError) -> str:
 
     if error.status_code in {401, 403}:
         return "AGENT_PROVIDER_AUTH_ERROR"
+    if isinstance(error, LlmTimeoutError):
+        return "AGENT_PROVIDER_TIMEOUT"
     return "AGENT_PROVIDER_ERROR"
 
 
@@ -281,12 +275,8 @@ async def _complete_chat_stream_events(
 
     if not config.supports_streaming:
         await runtime.checkpoint()
-        message = await runtime.run_async(
-            async_complete_chat,
-            config,
-            messages,
-            timeout_seconds=config.timeout_seconds,
-        )
+        message = await async_complete_chat(config, messages)
+        await runtime.checkpoint()
         if message.content:
             yield LlmStreamEvent(type="text_delta", delta=message.content)
         yield LlmStreamEvent(type="done", message=message)
@@ -577,11 +567,15 @@ async def async_stream_agent_response(
                 )
                 continue
             if event.kind == "edits":
+                streamed_edits = accumulated_transaction_edits(
+                    request,
+                    event.edits or [],
+                )
                 yield _message_delta_event(
                     "edits",
                     edits=[
                         edit.model_dump(mode="json", by_alias=True)
-                        for edit in event.edits or []
+                        for edit in streamed_edits
                     ],
                     transactionState=event.transaction_state,
                 )
@@ -591,6 +585,15 @@ async def async_stream_agent_response(
 
         if runner and (runner.tools or runner.finish_status):
             draft = runner.build_message(message_id=message_id)
+            if draft.edits:
+                draft = draft.model_copy(
+                    update={
+                        "edits": accumulated_transaction_edits(
+                            request,
+                            draft.edits,
+                        ),
+                    },
+                )
 
         if draft and runner and runner.transaction_failed:
             yield _sse_event(
@@ -670,6 +673,7 @@ async def async_stream_agent_response(
             not force_attachment_text
             and has_native_current_request_attachments(request, config)
         )
+        final_timeout_retry_available = True
 
         while True:
             messages = build_agent_messages(
@@ -723,6 +727,15 @@ async def async_stream_agent_response(
                         },
                     )
                 break
+            except LlmTimeoutError:
+                if final_output_started or not final_timeout_retry_available:
+                    raise
+
+                # A final request that timed out before its first visible token
+                # has no tool or UI side effect and is safe to replay once.
+                final_timeout_retry_available = False
+                stream_message = None
+                continue
             except LlmRequestError as exc:
                 if (
                     final_output_started

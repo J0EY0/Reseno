@@ -1,7 +1,9 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -20,6 +22,7 @@ import { useResumeDetailSession } from "@/components/workspace/use-resume-detail
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
+import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
 import { runViewTransition } from "@/lib/view-transition";
 import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
@@ -31,10 +34,16 @@ import {
 } from "@/lib/workspace-route";
 import type { ResumeDetailResponse } from "@/types/api";
 import type {
+  ResumeData,
   ResumeTemplateDefinition,
   ResumeTemplateId,
   WorkspaceView,
 } from "@/types/resume";
+
+type ResolveAppliedDraft = (
+  messageId: string,
+  resume: ResumeData,
+) => Promise<AgentDraftDecisionResolution>;
 
 interface ResumeDetailWorkspaceOptions {
   locale: Locale;
@@ -81,9 +90,21 @@ export function useResumeDetailWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.data.customTemplates ?? []);
+  const resolveAppliedDraftRef = useRef<ResolveAppliedDraft | null>(null);
+  const resolveAppliedDraft = useCallback<ResolveAppliedDraft>(
+    (messageId, resume) => {
+      const resolve = resolveAppliedDraftRef.current;
+      if (!resolve) {
+        throw new Error("Resume persistence is not ready.");
+      }
+      return resolve(messageId, resume);
+    },
+    [],
+  );
   const session = useResumeDetailSession({
     initialResume: initialDetail?.resume ?? null,
     messages,
+    onResolveAppliedDraft: resolveAppliedDraft,
   });
   const readIsLoading = useCallback(() => isLoading, [isLoading]);
   const preferences = useResumeDetailPreferences({
@@ -116,6 +137,12 @@ export function useResumeDetailWorkspace({
     onHydrateResume: session.hydrate,
     resumeId,
   });
+  useLayoutEffect(() => {
+    resolveAppliedDraftRef.current = save.resolveAppliedAgentDraft;
+    return () => {
+      resolveAppliedDraftRef.current = null;
+    };
+  }, [save.resolveAppliedAgentDraft]);
 
   const handleRouteLoad = useCallback(
     ({
@@ -318,7 +345,6 @@ export function useResumeDetailWorkspace({
     commands: {
       agent: {
         applyDraft: session.applyAgentDraft,
-        changeJobBrief: session.setJobBrief,
         changeSelectedModel,
         discardDraft: session.discardAgentDraft,
         flushUserSettings: persistence.flush,
@@ -361,8 +387,6 @@ export function useResumeDetailWorkspace({
         draft: session.agentDraft,
         draftState: session.agentDraftState,
         isPanelCollapsed: agentLayout.isPanelCollapsed,
-        jobBrief: session.jobBrief,
-        keywordMatch: session.keywordMatch,
         modelConfigs: preferences.modelConfigs,
         selectedModelId: preferences.agentSettings.defaultModelId,
       },

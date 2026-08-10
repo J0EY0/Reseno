@@ -166,9 +166,12 @@ export function useAgentRunStream({
           )
         }
 
-        // Failed and cancelled runs are intentionally absent from persisted
-        // history, so only completed messages may enter the local history.
-        if (response.messageDone && response.status === 'completed') {
+        // A stopped run may durably retain the text already shown to the user.
+        // Keep that terminal snapshot locally even if session refresh fails.
+        if (
+          response.messageDone &&
+          (response.status === 'completed' || response.status === 'cancelled')
+        ) {
           updates.setMessages((currentMessages) => {
             const existingIndex = currentMessages.findIndex(
               (message) => message.id === finalMessage.id,

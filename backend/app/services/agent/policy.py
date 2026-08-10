@@ -9,10 +9,15 @@ from app.services.resume_document_contract import (
 )
 
 from .attachments import AgentAttachmentError, current_request_attachments
-from .intent_patterns import matches_intent_pattern
+from .intent_patterns import matches_intent_pattern, remove_intent_pattern_matches
 from .materials import extract_resume_materials
 from .preferences import execution_profile_for_request
 from .request_context import active_resume
+from .target_context import (
+    clears_target_context,
+    rejects_target_context_update,
+    target_context_from_request,
+)
 from .tools.registry import (
     ALL_KNOWN_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
@@ -80,12 +85,12 @@ def capability_policy_for_request(
             return AgentCapabilityPolicy(
                 intent=intent,
                 mode=AgentCapabilityMode.READ_ONLY,
-                allowed_tools=frozenset({"draft_diff_summary"}) | CONTROL_TOOL_NAMES,
+                allowed_tools=frozenset({"draft_diff_summary", "finish"}),
             )
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.CLARIFY_ONLY,
-            allowed_tools=CONTROL_TOOL_NAMES,
+            allowed_tools=frozenset({"finish"}),
             reason="pending_draft",
         )
 
@@ -100,7 +105,7 @@ def capability_policy_for_request(
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.CLARIFY_ONLY,
-            allowed_tools=CONTROL_TOOL_NAMES,
+            allowed_tools=frozenset({"finish"}),
             reason="pending_draft",
         )
 
@@ -116,7 +121,7 @@ def capability_policy_for_request(
             allowed_tools=_read_tools_for_request(request, intent),
         )
 
-    if not _matches_intent(prompt, "edit_resume"):
+    if not _has_affirmative_edit_intent(prompt):
         # Classification is not authorization: job context and any future task
         # intent stay read-only unless this turn contains an affirmative edit.
         return AgentCapabilityPolicy(
@@ -132,7 +137,7 @@ def capability_policy_for_request(
         return AgentCapabilityPolicy(
             intent=intent,
             mode=AgentCapabilityMode.CLARIFY_ONLY,
-            allowed_tools=CONTROL_TOOL_NAMES,
+            allowed_tools=frozenset({"finish"}),
             reason="source_material",
         )
 
@@ -159,16 +164,19 @@ def infer_agent_task_intent(request: AgentChatRequest) -> AgentTaskIntent:
     ):
         return AgentTaskIntent.REWRITE_DRAFT
 
-    if _matches_intent(prompt, "previous_draft_reference") or (
-        _matches_intent(prompt, "draft_reference")
-        and _matches_intent(prompt, "draft_revision")
+    if _matches_intent(prompt, "draft_revision") and (
+        _matches_intent(prompt, "previous_draft_reference")
+        or _matches_intent(prompt, "draft_reference")
     ):
         return AgentTaskIntent.REWRITE_DRAFT
 
     if (
         _matches_intent(prompt, "jd_gap_diagnosis")
         and _has_target_context(request, prompt)
-        and not _matches_intent(prompt, "edit_resume")
+        and (
+            not _has_affirmative_edit_intent(prompt)
+            or _matches_intent(prompt, "explicit_read_only")
+        )
     ):
         return AgentTaskIntent.DIAGNOSE_JD_GAP
 
@@ -178,13 +186,26 @@ def infer_agent_task_intent(request: AgentChatRequest) -> AgentTaskIntent:
     ):
         return AgentTaskIntent.RESEARCH_ROLE
 
-    if _matches_intent(prompt, "job_request"):
+    if clears_target_context(prompt) and _matches_intent(
+        prompt,
+        "target_clear_general",
+    ):
+        if _has_affirmative_edit_intent(prompt) and not _matches_intent(
+            prompt,
+            "explicit_read_only",
+        ):
+            return AgentTaskIntent.EDIT_RESUME
+        return AgentTaskIntent.ANALYZE_RESUME
+
+    if _matches_intent(prompt, "job_request") and not rejects_target_context_update(
+        prompt,
+    ):
         return AgentTaskIntent.MATCH_JD
 
     if _matches_intent(prompt, "analyze_resume"):
         return AgentTaskIntent.ANALYZE_RESUME
 
-    if _matches_intent(prompt, "edit_resume"):
+    if _has_affirmative_edit_intent(prompt):
         return AgentTaskIntent.EDIT_RESUME
 
     return AgentTaskIntent.ANSWER_ADVICE
@@ -212,15 +233,35 @@ def tool_block_reason(policy: AgentCapabilityPolicy, tool_name: str) -> str:
 
 
 def has_explicit_delete_intent(prompt: str) -> bool:
-    return _matches_intent(prompt, "delete_intent")
+    affirmative_text = remove_intent_pattern_matches(
+        prompt,
+        "negated_delete_intent",
+    )
+    return _matches_intent(affirmative_text, "delete_intent")
 
 
 def has_explicit_reorder_intent(prompt: str) -> bool:
-    return _matches_intent(prompt, "reorder_intent")
+    affirmative_text = remove_intent_pattern_matches(
+        prompt,
+        "negated_reorder_intent",
+    )
+    return _matches_intent(affirmative_text, "reorder_intent")
 
 
 def has_explicit_merge_intent(prompt: str) -> bool:
     return _matches_intent(prompt, "merge_intent")
+
+
+def _has_affirmative_edit_intent(prompt: str) -> bool:
+    without_negated_delete = remove_intent_pattern_matches(
+        prompt,
+        "negated_delete_intent",
+    )
+    affirmative_text = remove_intent_pattern_matches(
+        without_negated_delete,
+        "negated_reorder_intent",
+    )
+    return _matches_intent(affirmative_text, "edit_resume")
 
 
 def _read_tools_for_request(
@@ -228,11 +269,16 @@ def _read_tools_for_request(
     intent: AgentTaskIntent,
 ) -> frozenset[str]:
     tools = set(LOCAL_READ_TOOL_NAMES | CONTROL_TOOL_NAMES)
-    if intent in {AgentTaskIntent.MATCH_JD, AgentTaskIntent.DIAGNOSE_JD_GAP}:
+    prompt = _current_prompt(request)
+    target_search_forbidden = rejects_target_context_update(prompt)
+    if not target_search_forbidden and intent in {
+        AgentTaskIntent.MATCH_JD,
+        AgentTaskIntent.DIAGNOSE_JD_GAP,
+    }:
         tools.update(WEB_FETCH_TOOL_NAMES)
         tools.update(WEB_SEARCH_TOOL_NAMES)
-    elif intent == AgentTaskIntent.RESEARCH_ROLE or _requests_target_research(
-        _current_prompt(request),
+    elif not target_search_forbidden and (
+        intent == AgentTaskIntent.RESEARCH_ROLE or _requests_target_research(prompt)
     ):
         tools.update(WEB_SEARCH_TOOL_NAMES)
         if _prompt_has_url(request):
@@ -257,7 +303,7 @@ def _prompt_has_url(request: AgentChatRequest) -> bool:
 
 def _has_target_context(request: AgentChatRequest, prompt: str) -> bool:
     return bool(
-        request.job_brief.strip()
+        target_context_from_request(request)
         or _prompt_has_url(request)
         or _matches_intent(prompt, "job_request")
         or _requests_target_research(prompt),
@@ -286,7 +332,7 @@ def _has_user_resume_material(request: AgentChatRequest) -> bool:
         materials = extract_resume_materials(
             session_id=(request.resume_id or "").strip(),
             prompt=_current_prompt(request),
-            job_brief="",
+            target_context="",
             files=current_request_attachments(request),
             focus="resume_facts",
             max_items=1,

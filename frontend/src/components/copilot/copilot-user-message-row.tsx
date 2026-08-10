@@ -53,6 +53,14 @@ export function AgentUserMessageRow({
   const submitDisabled = isResponding || !editedText.trim();
   const hasText = Boolean(message.text.trim());
   const executionStatus = message.execution?.status;
+  const executionErrorCode = message.execution?.errorCode;
+  const terminalStatusText =
+    executionStatus === "failed" &&
+    executionErrorCode === "AGENT_PROVIDER_TIMEOUT"
+      ? t.agentProviderTimeout
+      : executionStatus === "failed"
+        ? t.agentRunFailed
+        : t.agentRunCancelled;
   const canRetry =
     retryable &&
     (executionStatus === "failed" || executionStatus === "cancelled");
@@ -144,9 +152,7 @@ export function AgentUserMessageRow({
         {!isEditing && canRetry ? (
           <div className="mr-1 mt-1 flex items-center gap-1 text-xs text-muted-foreground">
             <span role="status">
-              {executionStatus === "failed"
-                ? t.agentRunFailed
-                : t.agentRunCancelled}
+              {terminalStatusText}
             </span>
             <Button
               type="button"
