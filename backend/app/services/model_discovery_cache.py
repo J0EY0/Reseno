@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.services.model_providers import DiscoveredModel
 
 MODEL_DISCOVERY_CACHE_NAME = "model-discovery-cache"
-MODEL_DISCOVERY_CACHE_VERSION = 1
+MODEL_DISCOVERY_CACHE_VERSION = 2
 
 
 def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | None:

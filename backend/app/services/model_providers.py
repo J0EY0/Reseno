@@ -87,7 +87,7 @@ MODEL_PROVIDERS: tuple[ModelProvider, ...] = (
         kind="cloud",
         api_family="google_gemini",
         icon_provider="google",
-        default_base_url="https://generativelanguage.googleapis.com/v1beta",
+        default_base_url="https://generativelanguage.googleapis.com/v1",
         official_url="https://ai.google.dev/gemini-api/docs",
         auth_required=True,
         supports_model_discovery=True,
@@ -252,6 +252,20 @@ def get_model_provider(provider_id: str) -> ModelProvider | None:
 
     normalized = provider_id.strip().lower()
     return PROVIDERS_BY_ID.get(PROVIDER_ALIASES.get(normalized, normalized))
+
+
+def resolve_model_provider_base_url(
+    provider_id: str,
+    provider_kind: str,
+    configured_url: str,
+) -> str:
+    """Return the backend-owned endpoint for official cloud providers."""
+
+    provider = get_model_provider(provider_id)
+    if provider_kind == "cloud" and provider is not None and provider.kind == "cloud":
+        return provider.default_base_url
+
+    return configured_url.strip()
 
 
 def discover_provider_models(

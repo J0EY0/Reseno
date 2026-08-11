@@ -45,7 +45,7 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 242 * KIB,
+    maxGzipBytes: 245 * KIB,
   },
   {
     name: 'resume gallery',
@@ -76,7 +76,7 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 220 * KIB,
+    maxGzipBytes: 221 * KIB,
   },
   {
     name: 'trash',
@@ -114,6 +114,6 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 310 * KIB,
+    maxGzipBytes: 313 * KIB,
   },
 ]

@@ -32,6 +32,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.edit_plan_missing_inputs": (
             "Call resume_analysis first or provide explicit plan steps."
         ),
+        "error.edit_plan_action_mismatch": (
+            "edit_plan action must match operation.type."
+        ),
         "error.finish_invalid_status": (
             "finish.status must be either ready or blocked. The edit transaction "
             "was rolled back."
@@ -175,6 +178,26 @@ TEXT: dict[str, dict[str, str]] = {
         "response.edit_transaction_failed": (
             "I couldn't produce a valid draft, so no changes were applied."
         ),
+        "response.read_tool_failed": (
+            "The information needed for this request was unavailable. "
+            "No conclusions or resume changes were produced from missing evidence; "
+            "please retry."
+        ),
+        "response.research_failed": (
+            "Public-source research returned no usable results, so I cannot provide "
+            "a reliable research conclusion yet. Please retry later; no resume "
+            "changes were made from unavailable evidence."
+        ),
+        "response.research_timeout": (
+            "Public-source research timed out before returning usable results, so I "
+            "cannot provide a reliable research conclusion yet. Please retry later; "
+            "no resume changes were made from unavailable evidence."
+        ),
+        "response.target_context_update_failed": (
+            "I could not confirm the requested target information from the current "
+            "prompt, so I did not continue with research or resume changes. Please "
+            "clarify the target name or requirements and retry."
+        ),
         "response.no_edits": (
             "I completed the tool checks needed for this turn, but did not "
             "produce a safe previewable draft. Tell me which field, section, or "
@@ -186,6 +209,32 @@ TEXT: dict[str, dict[str, str]] = {
             "The preview shows a temporary highlighted draft that you can apply "
             "or discard."
         ),
+        "diff.field.company": "Company",
+        "diff.field.content": "Content",
+        "diff.field.date": "Date",
+        "diff.field.degree": "Degree",
+        "diff.field.description": "Description",
+        "diff.field.gpa": "GPA",
+        "diff.field.headline": "Headline",
+        "diff.field.highlights": "Highlights",
+        "diff.field.issuer": "Issuer",
+        "diff.field.location": "Location",
+        "diff.field.major": "Major",
+        "diff.field.name": "Name",
+        "diff.field.period": "Period",
+        "diff.field.position": "Position",
+        "diff.field.role": "Role",
+        "diff.field.school": "School",
+        "diff.field.summary": "Summary",
+        "diff.field.techStack": "Tech stack",
+        "diff.field.title": "Section title",
+        "diff.field.url": "Link",
+        "diff.kind.achievement": "Achievement",
+        "diff.kind.education": "Education",
+        "diff.kind.experience": "Experience",
+        "diff.kind.project": "Project",
+        "diff.kind.simple_list": "List",
+        "diff.label.item_field": "{kind} {field}",
         "role.default": "frontend engineer",
         "section.awards": "Awards",
         "section.achievement": "Certificates & Honors",
@@ -302,6 +351,9 @@ TEXT: dict[str, dict[str, str]] = {
         "error.edit_plan_missing_inputs": (
             "请先调用 resume_analysis，或提供明确的计划步骤。"
         ),
+        "error.edit_plan_action_mismatch": (
+            "edit_plan 的 action 必须与 operation.type 一致。"
+        ),
         "error.finish_invalid_status": (
             "finish.status 必须是 ready 或 blocked，修改事务已回滚。"
         ),
@@ -407,6 +459,22 @@ TEXT: dict[str, dict[str, str]] = {
             "本轮不会生成新的简历修改。"
         ),
         "response.edit_transaction_failed": "未能生成有效草稿，本轮未应用任何修改。",
+        "response.read_tool_failed": (
+            "本轮处理所需的信息未能获取，因此没有基于缺失证据生成结论或修改"
+            "简历。请重试。"
+        ),
+        "response.research_failed": (
+            "本轮公开信息检索没有返回可用结果，暂时无法给出可靠的研究结论。你可以"
+            "稍后重试；本轮没有基于缺失证据修改简历。"
+        ),
+        "response.research_timeout": (
+            "本轮公开信息检索在返回可用结果前超时，暂时无法给出可靠的研究结论。"
+            "你可以稍后重试；本轮没有基于缺失证据修改简历。"
+        ),
+        "response.target_context_update_failed": (
+            "无法从当前请求确认要更新的目标信息，因此本轮没有继续生成研究结论或"
+            "修改简历。请明确目标名称或要求后重试。"
+        ),
         "response.no_edits": (
             "我已完成本轮需要的工具检查，但没有生成可安全预览的修改草稿。"
             "如果你希望我直接改某个模块，请说明目标字段、模块或条目；如果"
@@ -416,6 +484,32 @@ TEXT: dict[str, dict[str, str]] = {
             "我已完成本轮处理，生成了 {count} 处可预览修改。"
             "预览区会先显示临时草稿和高亮位置，确认后可以应用或撤回。"
         ),
+        "diff.field.company": "企业",
+        "diff.field.content": "内容",
+        "diff.field.date": "日期",
+        "diff.field.degree": "学历",
+        "diff.field.description": "描述",
+        "diff.field.gpa": "GPA",
+        "diff.field.headline": "求职方向",
+        "diff.field.highlights": "亮点",
+        "diff.field.issuer": "颁发机构",
+        "diff.field.location": "地点",
+        "diff.field.major": "专业",
+        "diff.field.name": "名称",
+        "diff.field.period": "时间",
+        "diff.field.position": "职位",
+        "diff.field.role": "角色",
+        "diff.field.school": "学校",
+        "diff.field.summary": "个人简介",
+        "diff.field.techStack": "技术栈",
+        "diff.field.title": "模块标题",
+        "diff.field.url": "链接",
+        "diff.kind.achievement": "成果",
+        "diff.kind.education": "教育",
+        "diff.kind.experience": "工作",
+        "diff.kind.project": "项目",
+        "diff.kind.simple_list": "列表",
+        "diff.label.item_field": "{kind}{field}",
         "role.default": "前端开发工程师",
         "section.awards": "获奖经历",
         "section.achievement": "证书与荣誉",

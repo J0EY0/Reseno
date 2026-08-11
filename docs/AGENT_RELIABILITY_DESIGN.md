@@ -84,7 +84,7 @@ EditPlanIntent:
 
 `AgentTaskIntent` 是后端内部路由策略，不暴露给前端用户协议。前端仍根据事实事件和数据渲染：有没有工具事件、有没有 edits、有没有 message。
 
-`explain_draft` 是顶层只读任务意图，不是 `edit_plan.intent`。它只用于解释 pending draft，必须走 `draft_diff_summary`，不能调用 `edit_plan` 或 `edit_execute`。
+`explain_draft` 是后端顶层只读任务意图，不是 `edit_plan` step 字段。它只用于解释 pending draft，必须走 `draft_diff_summary`，不能调用 `edit_plan` 或 `edit_execute`。
 
 `research_role` 是岗位情报只读任务意图。它允许 `web_search` 聚合公开岗位/JD/技能表达参考，但不能调用写工具，也不能把公开信息写成用户个人经历。
 
@@ -104,7 +104,8 @@ EditPlanIntent:
 
 ```text
 read_only:
-  允许 resume_lookup, resume_analysis, draft_diff_summary, finish
+  允许 resume_lookup, resume_analysis, finish
+  仅在 pending draft 存在时允许 draft_diff_summary
   禁止所有写工具
 
 can_draft:
@@ -190,29 +191,21 @@ AgentToolSpec(
 
 ## `edit_plan` 合同
 
-`edit_plan` 不只是展示文案，而是执行前合同。但第一阶段渐进增强，不一次强制所有字段。
-
-第一阶段强制：
+`edit_plan` 不只是展示文案，而是执行前合同。每个 step 强制：
 
 ```text
-intent
+action
 target
 reason
 ```
 
-兼容现有 `action`。
-
-第一阶段可选收集：
+可选字段：
 
 ```text
-stepId
-riskLevel
-evidence
-targetContext
-expectedOperationTypes
+title
+replacement
+operation
 ```
-
-后续 replay 覆盖稳定后，再对中高风险操作逐步要求 evidence 和 risk。
 
 `evidence` 和 `targetContext` 分开：
 

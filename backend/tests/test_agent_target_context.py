@@ -1,8 +1,14 @@
 import asyncio
+import time
 
 import pytest
 
-from app.schemas.agent import AgentChatRequest, AgentConversationItem
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentConversationItem,
+    AgentSource,
+    AgentTimelinePart,
+)
 from app.services.agent import TargetReference, WebSearchReference, WebSearchResult
 from app.services.agent.executor import AgentPlanExecutor
 from app.services.agent.materials import extract_resume_materials
@@ -139,6 +145,189 @@ def test_final_response_merge_preserves_target_context_memory() -> None:
         merged.model_dump(mode="json", by_alias=True)["targetContext"]["target"]
         == "AI 前端工程师"
     )
+
+
+def test_final_response_merge_keeps_only_known_web_citation_ids() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    ).model_copy(
+        update={
+            "sources": [
+                AgentSource(
+                    id="source-jd-search",
+                    title="Role A",
+                    sourceType="web",
+                    url="https://example.test/a",
+                ),
+                AgentSource(
+                    id="source-target-context",
+                    title="Target context",
+                    sourceType="targetContext",
+                ),
+            ],
+        },
+    )
+
+    merged = _merge_llm_response(
+        draft,
+        (
+            '<citation source_ids="source-jd-search,source-target-context,'
+            'source-invented">React is required</citation>.'
+        ),
+    )
+
+    assert merged.text == "React is required."
+
+
+def test_final_response_merge_removes_unverifiable_citation_markup() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    )
+
+    merged = _merge_llm_response(
+        draft,
+        '<citation source_ids="source-invented">Unsupported claim</citation>.',
+    )
+
+    assert merged.text == "Unsupported claim."
+
+
+def test_final_response_merge_sanitizes_timeline_citation_markup() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    ).model_copy(
+        update={
+            "sources": [
+                AgentSource(
+                    id="source-jd-search",
+                    title="Role A",
+                    sourceType="web",
+                    url="https://example.test/a",
+                ),
+            ],
+            "timeline": [
+                AgentTimelinePart(
+                    id="timeline-final",
+                    type="text",
+                    text=('<citation source_ids="source-jd-search">React is required'),
+                ),
+            ],
+        },
+    )
+
+    merged = _merge_llm_response(
+        draft,
+        '<citation source_ids="source-jd-search">React is required',
+    )
+
+    assert merged.text == "React is required"
+    assert merged.timeline[0].text == "React is required"
+
+
+def test_final_response_merge_rejects_nested_citation_markup() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    ).model_copy(
+        update={
+            "sources": [
+                AgentSource(
+                    id="source-a",
+                    title="Role A",
+                    sourceType="web",
+                    url="https://example.test/a",
+                ),
+                AgentSource(
+                    id="source-b",
+                    title="Role B",
+                    sourceType="web",
+                    url="https://example.test/b",
+                ),
+            ],
+        },
+    )
+
+    merged = _merge_llm_response(
+        draft,
+        (
+            '<citation source_ids="source-a">A outer; '
+            '<citation source_ids="source-b">B inner</citation> tail</citation>.'
+        ),
+    )
+
+    assert merged.text == "A outer; B inner tail."
+
+
+def test_final_response_merge_rejects_more_than_three_sources_per_claim() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    ).model_copy(
+        update={
+            "sources": [
+                AgentSource(
+                    id=f"source-{suffix}",
+                    title=f"Role {suffix}",
+                    sourceType="web",
+                    url=f"https://example.test/{suffix}",
+                )
+                for suffix in ("a", "b", "c", "d")
+            ],
+        },
+    )
+
+    merged = _merge_llm_response(
+        draft,
+        (
+            '<citation source_ids="source-a,source-b,source-c,source-d">'
+            "Only one source supports this claim</citation>."
+        ),
+    )
+
+    assert merged.text == "Only one source supports this claim."
+
+
+def test_citation_sanitizer_handles_many_unclosed_tags_in_linear_time() -> None:
+    executor = _executor(prompt="研究 AI 前端岗位")
+    draft = executor.build_message_from_parts(
+        target_reference=executor.target_reference_from_request(),
+        analysis=executor.analyze_resume(),
+        plan=[],
+        edits=[],
+        tools=[],
+    )
+    raw_text = ('<citation source_ids="source-a">claim ' * 5_000) + "tail"
+
+    started_at = time.perf_counter()
+    merged = _merge_llm_response(draft, raw_text)
+    elapsed = time.perf_counter() - started_at
+
+    assert "<citation" not in merged.text
+    assert merged.text.endswith("tail")
+    assert elapsed < 1.0
 
 
 def test_prompt_can_incrementally_update_remembered_target_context() -> None:

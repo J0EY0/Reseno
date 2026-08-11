@@ -477,6 +477,148 @@ def test_explicit_multi_module_prompt_authorizes_only_named_modules() -> None:
     assert len(runner.edits) == 4
 
 
+def test_multi_module_prompt_authorizes_metadata_plan_with_pending_draft() -> None:
+    formal_resume = _resume()
+    formal_resume["sections"][0]["id"] = "section-wq3du958"
+    formal_resume["sections"][0]["items"][0]["id"] = "item-upszvq20"
+    formal_resume["sections"][1]["id"] = "section-x2q0fzfr"
+    formal_resume["sections"][1]["items"][0]["id"] = "item-rifg9awk"
+    formal_resume["sections"][2]["id"] = "section-56z352st"
+    formal_resume["sections"][2]["items"][0]["id"] = "item-rnzpx1u1"
+    pending_resume = deepcopy(formal_resume)
+    pending_resume["sections"][0]["items"][0]["highlights"] = [
+        "维护企业协同业务组件。",
+        "协助定位复杂交互问题。",
+    ]
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-multi-module-pending-plan",
+            role="user",
+            text=(
+                "一次整理 summary、实习、项目和技能，不要删除内容，不要调整顺序。"
+                "只基于现有事实改写并生成预览草稿。"
+            ),
+        ),
+        locale="zh",
+        resume=formal_resume,
+        draftState={
+            "id": "draft-tencent",
+            "status": "pending",
+            "resume": pending_resume,
+            "editCount": 1,
+            "edits": [
+                _edit(
+                    {
+                        "type": "update_item",
+                        "sectionId": "section-wq3du958",
+                        "itemId": "item-upszvq20",
+                        "patch": {
+                            "highlights": pending_resume["sections"][0]["items"][0][
+                                "highlights"
+                            ],
+                        },
+                    },
+                    target="sections.section-wq3du958.items.item-upszvq20",
+                ),
+            ],
+            "diffs": [],
+        },
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    steps = [
+        {
+            "action": "replace_field",
+            "target": "basic.summary",
+            "reason": "整理简介。",
+        },
+        {
+            "action": "update_item",
+            "target": "sections.section-wq3du958.items.item-upszvq20",
+            "reason": "整理实习。",
+        },
+        {
+            "action": "update_item",
+            "target": "sections.section-x2q0fzfr.items.item-rifg9awk",
+            "reason": "整理项目。",
+        },
+        {
+            "action": "update_item",
+            "target": "sections.section-56z352st.items.item-rnzpx1u1",
+            "reason": "整理技能。",
+        },
+    ]
+
+    tool = runner.run_edit_plan(_tool_call("edit_plan", {"steps": steps}))
+
+    assert tool.state == "output-available"
+    assert [step.target for step in runner.plan] == [
+        "basic.summary",
+        "sections.section-wq3du958.items.item-upszvq20",
+        "sections.section-x2q0fzfr.items.item-rifg9awk",
+        "sections.section-56z352st.items.item-rnzpx1u1",
+    ]
+
+
+def test_multi_module_plan_rejects_other_basic_and_education() -> None:
+    resume = _resume()
+    resume["sections"].append(
+        {
+            "id": "education",
+            "kind": "education",
+            "title": "教育经历",
+            "items": [
+                {
+                    "id": "university",
+                    "school": "示例大学",
+                    "degree": "本科",
+                    "major": "计算机科学",
+                    "location": "",
+                    "period": "2020 - 2024",
+                    "description": "",
+                    "highlights": [],
+                },
+            ],
+        },
+    )
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-multi-module-scope-boundary",
+            role="user",
+            text=(
+                "一次整理 summary、实习、项目和技能，不要删除内容，不要调整顺序。"
+                "只基于现有事实改写并生成预览草稿。"
+            ),
+        ),
+        locale="zh",
+        resume=resume,
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+
+    tool = runner.run_edit_plan(
+        _tool_call(
+            "edit_plan",
+            {
+                "steps": [
+                    {
+                        "action": "replace_field",
+                        "target": "basic.headline",
+                        "reason": "不应被简介授权包含。",
+                    },
+                    {
+                        "action": "update_item",
+                        "target": "sections.education.items.university",
+                        "reason": "不应被四个指定模块授权包含。",
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert tool.state == "output-error"
+    assert [issue["index"] for issue in tool.output["rejectedEdits"]] == [1, 2]
+    assert runner.plan == []
+
+
 def test_edit_plan_cannot_cache_an_operation_outside_prompt_scope() -> None:
     runner = _runner("只改腾讯实习的两条 bullet。")
     steps = [
@@ -500,7 +642,6 @@ def test_edit_plan_cannot_cache_an_operation_outside_prompt_scope() -> None:
 
     assert tool.state == "output-error"
     assert runner.plan == []
-    assert runner.planned_edits == []
 
 
 def test_item_scoped_plan_rejects_a_vague_sections_target() -> None:
@@ -887,7 +1028,6 @@ def test_empty_edit_plan_call_cannot_generate_a_deterministic_plan() -> None:
 
     assert tool.state == "output-error"
     assert runner.plan == []
-    assert runner.planned_edits == []
 
 
 def test_empty_edit_execute_call_cannot_generate_deterministic_edits() -> None:

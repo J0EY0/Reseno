@@ -1,10 +1,16 @@
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from hashlib import sha256
 from typing import Any, TypeVar
 
 import anyio
 
-from app.services.llm import LlmRequestError
+from app.schemas.agent import AgentChatRequest
+from app.services.llm import (
+    AgentLlmConfig,
+    LlmRequestContext,
+    LlmRequestError,
+)
 
 DEFAULT_BLOCKING_TIMEOUT_SECONDS = 30.0
 
@@ -21,6 +27,15 @@ class AgentRuntimeContext:
 
     is_aborted: Callable[[], Awaitable[bool]] | None = None
     blocking_timeout_seconds: float = DEFAULT_BLOCKING_TIMEOUT_SECONDS
+    llm_request_context: LlmRequestContext | None = None
+
+    def with_llm_request_context(
+        self,
+        request_context: LlmRequestContext | None,
+    ) -> "AgentRuntimeContext":
+        """Bind one provider request identity to every call in this run."""
+
+        return replace(self, llm_request_context=request_context)
 
     async def checkpoint(self) -> None:
         """Yield control and stop after an explicit cancellation request."""
@@ -76,3 +91,19 @@ class AgentRuntimeContext:
 
         await self.checkpoint()
         return result
+
+
+def agent_llm_request_context(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+) -> LlmRequestContext | None:
+    """Derive one opaque cache identity for an official OpenAI resume run."""
+
+    resume_id = (request.resume_id or "").strip()
+    if config.provider != "openai" or config.provider_kind != "cloud" or not resume_id:
+        return None
+
+    cache_key = sha256(
+        f"resumate-agent-prompt-cache:{resume_id}".encode(),
+    ).hexdigest()
+    return LlmRequestContext(cache_key=cache_key)

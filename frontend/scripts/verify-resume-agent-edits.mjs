@@ -539,6 +539,227 @@ const {
 }
 
 {
+  const storedResponse = {
+    id: "assistant-complete-history",
+    role: "assistant",
+    tone: "success",
+    text: "I checked the source and completed the analysis.",
+    reasoning: "Concise retained reasoning",
+    updates: ["Transient provider status"],
+    timeline: [
+      {
+        id: "timeline-tool-group",
+        type: "tool_group",
+        toolIds: ["tool-success", "tool-error"],
+      },
+    ],
+    plan: ["Inspect evidence"],
+    suggestions: ["Tighten the summary"],
+    knowledge: [{ title: "Requirement", detail: "TypeScript" }],
+    tools: [
+      {
+        id: "tool-success",
+        type: "tool-web_search",
+        title: "web_search",
+        state: "output-available",
+        input: { query: "staff frontend engineer" },
+        output: { resultCount: 2 },
+        startedAt: "2026-08-10T10:00:00.000Z",
+        completedAt: "2026-08-10T10:00:01.000Z",
+      },
+      {
+        id: "tool-error",
+        type: "tool-web_fetch",
+        title: "web_fetch",
+        state: "output-error",
+        input: { url: "https://example.com/job" },
+        errorText: "Fetch failed",
+        startedAt: "2026-08-10T10:00:02.000Z",
+        completedAt: "2026-08-10T10:00:03.000Z",
+      },
+    ],
+    sources: [
+      {
+        id: "source-public-job",
+        title: "Public job description",
+        sourceType: "web",
+        url: "https://example.com/job",
+        excerpt: "Build accessible React and TypeScript products.",
+      },
+      {
+        id: "source-jd-search-query",
+        title: "Internal search query",
+        sourceType: "targetContext",
+        excerpt: "Must be removed by sanitization.",
+      },
+    ],
+    transactionState: "none",
+    quickReplies: ["Continue"],
+    actions: ["summary"],
+  };
+  const hydrated = await hydrateAgentSession(
+    Promise.resolve({
+      resumeId: "resume-complete-history",
+      revision: "revision-complete-history",
+      messages: [
+        {
+          id: storedResponse.id,
+          role: "assistant",
+          text: storedResponse.text,
+          createdAt: "2026-08-10T10:00:04.000Z",
+          response: storedResponse,
+        },
+      ],
+      executions: [],
+    }),
+  );
+  const sanitizedResponse = hydrated.panelMessages[0].response;
+  const replacementResponse = toConversationMessage(
+    hydrated.panelMessages[0],
+  ).response;
+
+  assert(
+    JSON.stringify(replacementResponse) === JSON.stringify(sanitizedResponse) &&
+      replacementResponse.updates.length === 0 &&
+      replacementResponse.sources.length === 1 &&
+      replacementResponse.sources[0].excerpt ===
+        "Build accessible React and TypeScript products." &&
+      replacementResponse.tools[0].input.query === "staff frontend engineer" &&
+      replacementResponse.tools[0].output.resultCount === 2 &&
+      replacementResponse.tools[1].errorText === "Fetch failed" &&
+      replacementResponse.tools[1].completedAt ===
+        "2026-08-10T10:00:03.000Z",
+    "History replacement must preserve the complete sanitized assistant response for PUT-to-GET equivalence.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  baseResume.sections.push({
+    id: "experience",
+    kind: "experience",
+    title: "Experience",
+    items: ["first", "second", "third", "fourth"].map((id) => ({
+      id,
+      company: id,
+      position: "",
+      location: "",
+      period: "",
+      description: "",
+      highlights: [],
+    })),
+  });
+  const result = applyAgentEditsToDraft(baseResume, [{
+    id: "reorder-items-precisely",
+    title: "Reorder experience",
+    target: "sections.experience.items",
+    reason: "Verify each changed object.",
+    operation: {
+      type: "reorder_items",
+      sectionId: "experience",
+      itemIds: ["second", "fourth", "first", "third"],
+    },
+  }]);
+
+  assert(
+    JSON.stringify(result.diffs.map((diff) => ({
+      path: diff.path,
+      itemId: diff.itemId,
+      before: diff.before,
+      after: diff.after,
+    }))) === JSON.stringify([
+      { path: "sections.experience.items.first", itemId: "first", before: 0, after: 2 },
+      { path: "sections.experience.items.third", itemId: "third", before: 2, after: 3 },
+    ]),
+    "An item reorder must mark the deterministic minimal moved set from the longest common subsequence.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  baseResume.sections.push({
+    id: "experience",
+    kind: "experience",
+    title: "Experience",
+    items: [
+      { id: "first", company: "First", position: "", location: "", period: "", description: "", highlights: [] },
+      { id: "second", company: "Second", position: "", location: "", period: "", description: "", highlights: [] },
+    ],
+  });
+  const result = applyAgentEditsToDraft(baseResume, [
+    {
+      id: "delete-second-item",
+      title: "Delete second item",
+      target: "sections.experience.items.second",
+      reason: "Verify the exact review boundary.",
+      operation: {
+        type: "delete_item",
+        sectionId: "experience",
+        itemId: "second",
+      },
+    },
+    {
+      id: "delete-education-section",
+      title: "Delete education",
+      target: "sections.education",
+      reason: "Verify the exact review boundary.",
+      operation: {
+        type: "delete_section",
+        sectionId: "education",
+      },
+    },
+  ]);
+
+  assert(
+    result.diffs[0]?.beforePreviousId === "first" &&
+      result.diffs[0]?.beforeNextId === undefined &&
+      result.diffs[1]?.beforePreviousId === undefined &&
+      result.diffs[1]?.beforeNextId === "experience",
+    "Structural deletion diffs must retain stable pre-deletion neighbors.",
+  );
+}
+
+{
+  const baseResume = createResume();
+  baseResume.sections.push(
+    {
+      id: "experience",
+      kind: "experience",
+      title: "Experience",
+      items: [],
+    },
+    {
+      id: "projects",
+      kind: "project",
+      title: "Projects",
+      items: [],
+    },
+  );
+  const result = applyAgentEditsToDraft(baseResume, [{
+    id: "reorder-sections-precisely",
+    title: "Reorder sections",
+    target: "sections",
+    reason: "Verify each changed object.",
+    operation: {
+      type: "reorder_sections",
+      sectionIds: ["experience", "projects", "education"],
+    },
+  }]);
+
+  assert(
+    JSON.stringify(result.diffs.map((diff) => ({
+      path: diff.path,
+      sectionId: diff.sectionId,
+      before: diff.before,
+      after: diff.after,
+    }))) === JSON.stringify([
+      { path: "sections.education", sectionId: "education", before: 0, after: 2 },
+    ]),
+    "Moving the first section to the end must mark only that section as moved.",
+  );
+}
+
+{
   const baseResume = createResume();
   const result = applyAgentEditsToDraft(baseResume, [
     {
@@ -727,14 +948,18 @@ for (const operation of [
   const result = applyAgentEditsToDraft(baseResume, [
     {
       id: "update-position",
-      title: "Clarify the role",
-      target: "sections.experience.items.experience-1.position",
-      reason: "Use the semantic experience field.",
+      title: "Clarify the experience",
+      target: "sections.experience.items.experience-1",
+      reason: "Use the semantic experience fields.",
       operation: {
         type: "update_item",
         sectionId: "experience",
         itemId: "experience-1",
-        patch: { position: "Senior Engineer" },
+        patch: {
+          position: "Senior Engineer",
+          description: "Built the editor platform.",
+          highlights: ["Reduced state complexity."],
+        },
       },
     },
     {
@@ -760,6 +985,35 @@ for (const operation of [
       result.resume.sections[1].items[0].company === "Example Inc." &&
       result.resume.sections[2].items[0].content === "React · TypeScript",
     "Agent item edits must preserve unrelated fields and support simple-list strings.",
+  );
+  assert(
+    result.diffs.length === 4,
+    "One multi-field edit must expose one precise diff per changed field without changing applied edit count.",
+  );
+  assert(
+    JSON.stringify(result.diffs.map((diff) => diff.path)) ===
+      JSON.stringify([
+        "sections.experience.items.experience-1.position",
+        "sections.experience.items.experience-1.description",
+        "sections.experience.items.experience-1.highlights",
+        "sections.skills.items.skill-1.content",
+      ]),
+    "Item diffs must use canonical field paths instead of a whole-item target.",
+  );
+  assert(
+    JSON.stringify(result.diffs[0]) ===
+      JSON.stringify({
+        id: "diff-update-position-position",
+        operationId: "update-position",
+        path: "sections.experience.items.experience-1.position",
+        kind: "modified",
+        label: "Clarify the experience",
+        sectionId: "experience",
+        itemId: "experience-1",
+        before: "Engineer",
+        after: "Senior Engineer",
+      }),
+    "A field diff must carry only that field's before and after values.",
   );
 }
 

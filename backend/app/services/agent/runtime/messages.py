@@ -1,12 +1,12 @@
 import json
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
-    AgentConversationItem,
     AgentResumeEditSuggestion,
+    AgentTurnWorkspaceSnapshots,
 )
 from app.services.llm import (
     AgentLlmConfig,
@@ -14,6 +14,13 @@ from app.services.llm import (
     supports_native_attachment,
 )
 from app.services.llm.common import request_max_output_tokens
+from app.services.llm.types import (
+    LlmAssistantInputMessage,
+    LlmContent,
+    LlmContentPart,
+    LlmInputMessage,
+    LlmUserMessage,
+)
 from app.services.resume_document_contract import ITEM_STRING_FIELDS_BY_KIND
 
 from ..attachments import (
@@ -24,7 +31,6 @@ from ..attachments import (
 )
 from ..executor import (
     _agent_file_context,
-    _conversation_depth,
     _current_prompt,
 )
 from ..localization import agent_text
@@ -37,7 +43,6 @@ from ..privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent
 from ..prompts import (
     CORE_POLICY_PROMPT,
     EDIT_OPERATION_GUIDE,
-    FINAL_RESPONSE_PROMPT,
     STREAMING_FINAL_RESPONSE_PROMPT,
     SYSTEM_PROMPT,
 )
@@ -45,90 +50,18 @@ from ..request_context import active_resume
 from ..target_context import target_context_from_request
 from ..tools.registry import agent_tool_schemas_for_names
 
-AgentMessageMode = Literal["tools", "final", "streaming_final"]
+AgentMessageMode = Literal["tools", "streaming_final"]
 CONTEXT_COMPRESSION_RATIO = 0.85
+CONTEXT_CHECKPOINT_TARGET_RATIO = 0.70
 CONTEXT_SAFETY_MARGIN_RATIO = 0.01
 MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 256
 DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
-RECENT_EXACT_MESSAGE_COUNT = 4
-ROLLING_MEMORY_KEYS = (
-    "userGoals",
-    "factsAndMaterials",
-    "constraints",
-    "acceptedDecisions",
-    "rejectedDecisions",
-    "pendingQuestions",
-    "sourceReferences",
-)
-ROLLING_MEMORY_TRIM_ORDER = (
-    "factsAndMaterials",
-    "sourceReferences",
-    "pendingQuestions",
-    "acceptedDecisions",
-    "rejectedDecisions",
-    "constraints",
-    "userGoals",
-)
-GOAL_PREFIXES = (
-    "目标",
-    "目的",
-    "申请",
-    "希望",
-    "想要",
-    "goal",
-    "objective",
-    "target",
-    "apply",
-)
-FACT_PREFIXES = (
-    "材料",
-    "事实",
-    "背景",
-    "经历",
-    "证据",
-    "material",
-    "fact",
-    "evidence",
-    "experience",
-)
-CONSTRAINT_PREFIXES = (
-    "约束",
-    "要求",
-    "必须",
-    "只能",
-    "不要",
-    "不得",
-    "constraint",
-    "requirement",
-    "must",
-    "only",
-    "do not",
-    "don't",
-)
-ACCEPTED_DECISION_PREFIXES = (
-    "已确认",
-    "确认保留",
-    "同意",
-    "接受",
-    "accepted",
-    "approved",
-    "confirmed",
-)
-REJECTED_DECISION_PREFIXES = (
-    "已拒绝",
-    "拒绝",
-    "不接受",
-    "rejected",
-    "declined",
-)
-PENDING_QUESTION_PREFIXES = (
-    "待确认",
-    "需要确认",
-    "待补充",
-    "pending",
-    "open question",
-    "needs confirmation",
-)
+# Native media is opaque at this provider-neutral layer. Image billing varies
+# by resize/tile policy, so 4K is a conservative high-detail reserve without
+# treating transport bytes as text. Documents reuse the existing 32K complete-
+# document budget. Both values are intentionally fixed and additive.
+NATIVE_IMAGE_TOKEN_RESERVE = 4_096
+NATIVE_FILE_TOKEN_RESERVE = DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET
 
 
 @dataclass(frozen=True)
@@ -142,6 +75,24 @@ class _ContextBudget:
     safety_margin_tokens: int
 
 
+@dataclass(frozen=True)
+class _ConversationProjection:
+    """Conversation state projected behind the public message-builder seam."""
+
+    exact_messages: list[LlmInputMessage]
+    summary: str | None
+    state: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentPromptLimits:
+    """Provider-independent input limits used by the compaction orchestrator."""
+
+    input_tokens: int
+    trigger_tokens: int
+    target_tokens: int
+
+
 def build_agent_messages(
     request: AgentChatRequest,
     config: AgentLlmConfig,
@@ -149,7 +100,7 @@ def build_agent_messages(
     mode: AgentMessageMode,
     draft: AgentChatMessage | None = None,
     force_attachment_text: bool = False,
-) -> list[dict[str, Any]]:
+) -> list[LlmInputMessage]:
     """Build model messages with current-request attachments only.
 
     Original bytes are included only when the selected adapter explicitly
@@ -164,7 +115,7 @@ def build_agent_messages(
             execution_profile_prompt(profile),
         ],
     )
-    messages: list[dict[str, Any]] = [
+    messages: list[LlmInputMessage] = [
         {
             "role": "system",
             "content": system_content,
@@ -172,31 +123,165 @@ def build_agent_messages(
     ]
 
     tool_schema_tokens = _tool_schema_token_reserve(request, config, mode=mode)
+    hidden_terms = _request_hidden_terms(request)
     context_files, binary_parts = _current_attachment_payload(
         request,
         config,
         force_attachment_text=force_attachment_text,
         tool_schema_tokens=tool_schema_tokens,
+        hidden_terms=hidden_terms,
     )
-    payload_text = json.dumps(
-        _agent_payload(
-            request,
-            config=config,
-            draft=draft,
-            system_content=system_content,
-            context_files=context_files,
-            tool_schema_tokens=tool_schema_tokens,
-        ),
-        ensure_ascii=False,
+    workspace = _workspace_context(
+        request,
+        draft=draft,
+        hidden_terms=hidden_terms,
     )
-    # Keep one provider-neutral binary shape inside the Agent runtime. Adapters
-    # own the final wire format and never infer support from provider aliases.
-    user_content: str | list[dict[str, str]] = payload_text
-    if binary_parts:
-        user_content = [{"type": "text", "text": payload_text}, *binary_parts]
+    current_prompt = _sanitized_text(
+        _current_prompt(request),
+        hidden_terms=hidden_terms,
+    )
+    projection = _conversation_projection(
+        request,
+        config=config,
+        mode=mode,
+        tool_schema_tokens=tool_schema_tokens,
+        hidden_terms=hidden_terms,
+    )
+    sanitized_state = sanitize_agent_value(
+        projection.state,
+        hidden_terms=hidden_terms,
+    )
+    workspace["conversationState"] = (
+        sanitized_state if isinstance(sanitized_state, dict) else {}
+    )
 
-    messages.append({"role": "user", "content": user_content})
+    if projection.summary is not None:
+        messages.append(
+            {
+                "role": "user",
+                "content": _json_message(
+                    "conversationSummary",
+                    projection.summary,
+                ),
+            },
+        )
+    messages.extend(projection.exact_messages)
+
+    # Workspace is a per-turn compiler event. Putting its immutable snapshot
+    # immediately before the matching native user turn lets the next request
+    # replay this request byte-for-byte even when the live resume or draft has
+    # since changed. It remains user-role data, never a trusted instruction.
+    generated_workspace = _json_message("workspaceContext", workspace)
+    messages.append(
+        {
+            "role": "user",
+            "content": _active_workspace_content(
+                request,
+                mode=mode,
+                generated=generated_workspace,
+            ),
+        },
+    )
+
+    # Only the current turn may carry extracted text or original bytes. The
+    # persisted transcript deliberately replays the user's plain prompt on the
+    # next turn instead of retaining sensitive attachment payloads forever.
+    messages.append(
+        {
+            "role": "user",
+            "content": _current_turn_content(
+                current_prompt,
+                context_files=context_files,
+                binary_parts=binary_parts,
+            ),
+        },
+    )
     return messages
+
+
+def _json_message(name: str, value: Any) -> str:
+    return json.dumps({name: value}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _active_workspace_content(
+    request: AgentChatRequest,
+    *,
+    mode: AgentMessageMode,
+    generated: str,
+) -> str:
+    snapshots = request._active_workspace_snapshots
+    if snapshots is None:
+        return generated
+    if snapshots.turn_message_id != request.message.id:
+        raise LlmRequestError(
+            "The active workspace snapshot belongs to another user turn.",
+        )
+    frozen = snapshots.tools if mode == "tools" else snapshots.streaming_final
+    return frozen or generated
+
+
+def freeze_agent_workspace_snapshot(
+    request: AgentChatRequest,
+    messages: list[LlmInputMessage],
+    *,
+    mode: AgentMessageMode,
+) -> None:
+    """Freeze the canonical current workspace after prompt preparation.
+
+    Provider retries and native-file fallback must see the same compiler event
+    that the first request saw. The bundle remains request-private and is only
+    written to SQLite later, atomically with a successful assistant response.
+    """
+
+    if len(messages) < 2 or messages[-2]["role"] != "user":
+        raise LlmRequestError("The Agent workspace snapshot is missing.")
+    content = messages[-2]["content"]
+    if not isinstance(content, str) or not content.startswith('{"workspaceContext":'):
+        raise LlmRequestError("The Agent workspace snapshot is invalid.")
+
+    turn_message_id = request.message.id
+    assert turn_message_id is not None
+    existing = request._active_workspace_snapshots
+    if existing is not None and existing.turn_message_id != turn_message_id:
+        raise LlmRequestError(
+            "The active workspace snapshot belongs to another user turn.",
+        )
+    tools = existing.tools if existing is not None else None
+    streaming_final = existing.streaming_final if existing is not None else None
+    frozen = tools if mode == "tools" else streaming_final
+    if frozen is not None and frozen != content:
+        raise LlmRequestError("The Agent workspace snapshot changed during retry.")
+    if mode == "tools":
+        tools = content
+    else:
+        streaming_final = content
+    request._active_workspace_snapshots = AgentTurnWorkspaceSnapshots(
+        turnMessageId=turn_message_id,
+        tools=tools,
+        streamingFinal=streaming_final,
+    )
+
+
+def _current_turn_content(
+    prompt: str,
+    *,
+    context_files: list[dict[str, Any]],
+    binary_parts: list[LlmContentPart],
+) -> LlmContent:
+    if not context_files and not binary_parts:
+        return prompt
+
+    parts: list[LlmContentPart] = [{"type": "text", "text": prompt}]
+    if context_files:
+        # A separator is part of the second text block because adapters are
+        # allowed to concatenate neutral text parts without adding whitespace.
+        parts.append(
+            {
+                "type": "text",
+                "text": "\n\n" + _json_message("currentRequestFiles", context_files),
+            },
+        )
+    return [*parts, *binary_parts]
 
 
 def has_native_current_request_attachments(
@@ -262,15 +347,15 @@ def _current_attachment_payload(
     *,
     force_attachment_text: bool,
     tool_schema_tokens: int,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    hidden_terms: tuple[str, ...],
+) -> tuple[list[dict[str, str]], list[LlmContentPart]]:
     files = _safe_current_request_attachments(request)
     if not files:
         return [], []
 
     session_id = _attachment_session_id(request)
-    hidden_terms = resume_hidden_terms(active_resume(request))
     text_files: list[dict[str, Any]] = []
-    binary_parts: list[dict[str, str]] = []
+    binary_parts: list[LlmContentPart] = []
 
     try:
         for file in files:
@@ -285,13 +370,31 @@ def _current_attachment_payload(
                     raise AgentAttachmentError(
                         "The selected model does not support image input.",
                     )
-                binary_parts.append(attachment_content_part(session_id, file))
+                binary_parts.append(
+                    cast(
+                        LlmContentPart,
+                        attachment_content_part(
+                            session_id,
+                            file,
+                            hidden_terms=hidden_terms,
+                        ),
+                    ),
+                )
                 continue
 
             if not force_attachment_text and supports_native_attachment(
                 config, attachment.media_type
             ):
-                binary_parts.append(attachment_content_part(session_id, file))
+                binary_parts.append(
+                    cast(
+                        LlmContentPart,
+                        attachment_content_part(
+                            session_id,
+                            file,
+                            hidden_terms=hidden_terms,
+                        ),
+                    ),
+                )
                 continue
 
             text_files.append(file)
@@ -339,44 +442,43 @@ def _system_parts(
 ) -> list[str]:
     if mode == "tools":
         return [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
-    if mode == "final":
-        return [CORE_POLICY_PROMPT, FINAL_RESPONSE_PROMPT]
     return [CORE_POLICY_PROMPT, STREAMING_FINAL_RESPONSE_PROMPT]
 
 
-def _agent_payload(
+def _workspace_context(
     request: AgentChatRequest,
     *,
-    config: AgentLlmConfig,
     draft: AgentChatMessage | None = None,
-    system_content: str,
-    context_files: list[dict[str, Any]],
-    tool_schema_tokens: int,
+    hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
     resume = active_resume(request)
-    hidden_terms = resume_hidden_terms(resume)
     target_context = (
         draft.target_context
         if draft is not None and draft.target_context is not None
         else target_context_from_request(request)
     )
-    payload = {
+    workspace: dict[str, Any] = {
         "responseLanguage": _locale_name(request),
-        "userPrompt": _current_prompt(request),
         "targetContext": target_context.model_dump(mode="json", by_alias=True)
         if target_context is not None
         else None,
-        "files": context_files,
         "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
-        "conversationDepth": _conversation_depth(request),
     }
 
     if draft is not None:
-        payload.update(
+        workspace.update(
             {
+                # Only public HTTP(S) references participate in the inline
+                # citation protocol. User attachments and remembered target
+                # context remain available through their dedicated current
+                # request envelopes, but must never be persisted/replayed as
+                # citation excerpts merely because AgentSource permits one.
                 "citationSources": [
                     source.model_dump(mode="json", by_alias=True)
                     for source in draft.sources
+                    if source.source_type == "web"
+                    and isinstance(source.url, str)
+                    and source.url.strip().lower().startswith(("http://", "https://"))
                 ],
                 "draftStatusText": draft.text,
                 "draftEditCount": len(draft.edits),
@@ -385,344 +487,362 @@ def _agent_payload(
             },
         )
 
-    conversation_payload = _conversation_payload(
-        request,
-        config=config,
-        base_payload=payload,
-        system_content=system_content,
-        tool_schema_tokens=tool_schema_tokens,
+    sanitized_workspace = sanitize_agent_value(workspace, hidden_terms=hidden_terms)
+    return sanitized_workspace if isinstance(sanitized_workspace, dict) else {}
+
+
+def _request_hidden_terms(request: AgentChatRequest) -> tuple[str, ...]:
+    """Hide identity known by either the saved resume or pending candidate.
+
+    A pending draft can legitimately clear or replace a personal field. The
+    saved value must still remain a hidden term for history, attachments, and
+    the current prompt; otherwise choosing the draft as the active snapshot
+    would accidentally reveal the value that was present in the base resume.
+    """
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *resume_hidden_terms(request.resume),
+                *resume_hidden_terms(active_resume(request)),
+            ),
+        ),
     )
-    payload["conversation"] = conversation_payload["conversation"]
-    payload["conversationContext"] = conversation_payload["conversationContext"]
-
-    sanitized_payload = sanitize_agent_value(payload, hidden_terms=hidden_terms)
-    return sanitized_payload if isinstance(sanitized_payload, dict) else {}
 
 
-def _conversation_payload(
+def _conversation_projection(
     request: AgentChatRequest,
     *,
     config: AgentLlmConfig,
-    base_payload: dict[str, Any],
-    system_content: str,
+    mode: AgentMessageMode,
     tool_schema_tokens: int,
-) -> dict[str, Any]:
-    conversation = _conversation_with_current_message(request)
-    conversation_messages = [
-        item for item in conversation if _conversation_item_text(item)
-    ]
-    exact_messages = _conversation_entries(conversation_messages)
+    hidden_terms: tuple[str, ...],
+) -> _ConversationProjection:
+    # A persisted checkpoint replaces exactly one authoritative history
+    # prefix. The remaining product messages stay native and ordered, which is
+    # what lets a later request reuse the previous provider prompt prefix.
+    conversation = list(request.messages)
+    checkpoint = request._active_conversation_checkpoint
+    checkpoint_count = (
+        _checkpoint_message_count(conversation, checkpoint.through_message_id)
+        if checkpoint is not None
+        else 0
+    )
+    exact_messages = _conversation_entries(
+        conversation[checkpoint_count:],
+        hidden_terms=hidden_terms,
+        workspace_snapshots=request._historical_workspace_snapshots,
+        mode=mode,
+    )
     context_budget = _context_budget(
         request,
         config,
         tool_schema_tokens=tool_schema_tokens,
     )
-    budget_tokens = context_budget.input_tokens if context_budget else None
-    compression_trigger_tokens = (
-        context_budget.trigger_tokens if context_budget else None
-    )
-    state_token_budget = _state_token_budget(budget_tokens)
-    latest_draft = _latest_draft_state(
-        conversation_messages,
-        token_budget=state_token_budget,
+    state_token_budget = _state_token_budget(
+        context_budget.input_tokens if context_budget is not None else None,
     )
     current_draft = _current_draft_state(
         request,
         token_budget=state_token_budget,
     )
-    last_assistant_state = _last_assistant_state(
-        conversation_messages,
-        token_budget=state_token_budget,
-    )
-    base_tokens = _estimated_tokens(system_content) + _estimated_json_tokens(
-        base_payload,
-    )
-    context = _conversation_context(
+    state = _conversation_state(
         request,
-        total_messages=len(exact_messages),
-        exact_messages=exact_messages,
-        compressed_messages=[],
         current_draft=current_draft,
-        latest_draft=latest_draft,
-        last_assistant_state=last_assistant_state,
-        context_budget=context_budget,
-        estimated_tokens=base_tokens,
-        compressed=False,
     )
-    estimated_tokens = base_tokens + _estimated_json_tokens(
-        {
-            "conversation": exact_messages,
-            "conversationContext": context,
-        },
+    summary = (
+        _sanitized_text(checkpoint.summary, hidden_terms=hidden_terms)
+        if checkpoint is not None
+        else None
     )
-
-    if (
-        budget_tokens is None
-        or compression_trigger_tokens is None
-        or estimated_tokens <= compression_trigger_tokens
-    ):
-        context["compression"]["estimatedInputTokens"] = estimated_tokens
-        return {
-            "conversation": exact_messages,
-            "conversationContext": context,
-        }
-
-    # The early return above narrows both scalar limits, but type checkers do
-    # not infer that they originated from the same optional budget object.
-    assert context_budget is not None
-    return _compressed_conversation_payload(
-        request,
-        base_tokens=base_tokens,
-        budget_tokens=budget_tokens,
-        context_budget=context_budget,
+    if checkpoint is not None and not summary:
+        raise LlmRequestError("The stored conversation checkpoint is empty.")
+    return _ConversationProjection(
         exact_messages=exact_messages,
-        latest_draft=latest_draft,
-        current_draft=current_draft,
-        last_assistant_state=last_assistant_state,
-        source_conversation=conversation_messages,
+        summary=summary,
+        state=state,
     )
 
 
-def _compressed_conversation_payload(
+def _conversation_state(
     request: AgentChatRequest,
     *,
-    base_tokens: int,
-    budget_tokens: int,
-    context_budget: _ContextBudget,
-    exact_messages: list[dict[str, str]],
-    latest_draft: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
-    last_assistant_state: dict[str, Any] | None,
-    source_conversation: list[Any],
 ) -> dict[str, Any]:
-    exact_count = min(RECENT_EXACT_MESSAGE_COUNT, len(exact_messages))
-    exact_remaining = exact_messages[-exact_count:] if exact_count else []
-    older_conversation = (
-        source_conversation[:-exact_count] if exact_count else list(source_conversation)
-    )
-    rolling_memory, represented_message_count = _build_rolling_memory(
-        older_conversation,
-    )
-    context = _conversation_context(
-        request,
-        total_messages=len(exact_messages),
-        exact_messages=exact_remaining,
-        compressed_messages=[],
-        compressed_message_count=represented_message_count,
-        rolling_memory=rolling_memory,
-        current_draft=current_draft,
-        latest_draft=latest_draft,
-        last_assistant_state=last_assistant_state,
-        context_budget=context_budget,
-        estimated_tokens=base_tokens,
-        compressed=True,
-    )
-    estimated_tokens = base_tokens + _estimated_json_tokens(
-        {
-            "conversation": exact_remaining,
-            "conversationContext": context,
-        },
-    )
-
-    # Memory entries are semantic units. When space is tight, remove only
-    # duplicate/older units from a category; never keep a misleading text
-    # prefix. One value per populated category is protected.
-    while estimated_tokens > budget_tokens and _drop_oldest_redundant_memory_item(
-        rolling_memory
-    ):
-        context = _conversation_context(
-            request,
-            total_messages=len(exact_messages),
-            exact_messages=exact_remaining,
-            compressed_messages=[],
-            compressed_message_count=represented_message_count,
-            rolling_memory=rolling_memory,
-            current_draft=current_draft,
-            latest_draft=latest_draft,
-            last_assistant_state=last_assistant_state,
-            context_budget=context_budget,
-            estimated_tokens=base_tokens,
-            compressed=True,
-        )
-        estimated_tokens = base_tokens + _estimated_json_tokens(
-            {
-                "conversation": exact_remaining,
-                "conversationContext": context,
-            },
-        )
-
-    context["compression"]["estimatedInputTokens"] = estimated_tokens
-    if estimated_tokens <= budget_tokens:
-        return {
-            "conversation": exact_remaining,
-            "conversationContext": context,
-        }
-
-    # The latest exact window and one value in every populated memory category
-    # are correctness boundaries. If they do not fit, fail before the provider
-    # call rather than silently dropping recent turns or semantic state.
-    raise LlmRequestError(
-        "The current resume and conversation state exceed the selected "
-        "model context window. Start a new conversation or choose a model "
-        "with a larger context window.",
-    )
-
-
-def _conversation_context(
-    request: AgentChatRequest,
-    *,
-    total_messages: int,
-    exact_messages: list[dict[str, str]],
-    compressed_messages: list[dict[str, Any]],
-    compressed_message_count: int | None = None,
-    rolling_memory: dict[str, list[Any]] | None = None,
-    current_draft: dict[str, Any] | None,
-    latest_draft: dict[str, Any] | None,
-    last_assistant_state: dict[str, Any] | None,
-    context_budget: _ContextBudget | None,
-    estimated_tokens: int,
-    compressed: bool,
-) -> dict[str, Any]:
-    represented_count = (
-        compressed_message_count
-        if compressed_message_count is not None
-        else len(compressed_messages)
-    )
     return {
-        "totalMessages": total_messages,
-        "exactMessageCount": len(exact_messages),
-        "compressedMessageCount": represented_count,
-        "omittedMessageCount": max(
-            0,
-            total_messages - len(exact_messages) - represented_count,
-        ),
-        # Kept for clients from the previous payload shape. New compression
-        # state lives in rollingMemory and never contains truncated prose.
-        "olderSummary": compressed_messages,
-        "rollingMemory": rolling_memory or _empty_rolling_memory(),
         "currentDraft": current_draft,
-        "activeDraft": _active_draft_state(current_draft, latest_draft),
-        "latestDraft": latest_draft,
-        "lastAssistantState": last_assistant_state,
         "appliedActions": request.applied_actions,
-        "compression": {
-            "applied": compressed,
-            "triggerRatio": CONTEXT_COMPRESSION_RATIO,
-            "triggerInputTokens": (
-                context_budget.trigger_tokens if context_budget else None
-            ),
-            "inputBudgetTokens": (
-                context_budget.input_tokens if context_budget else None
-            ),
-            "outputReserveTokens": (
-                context_budget.output_reserve_tokens if context_budget else 0
-            ),
-            "toolSchemaTokens": (
-                context_budget.tool_schema_tokens if context_budget else 0
-            ),
-            "safetyMarginTokens": (
-                context_budget.safety_margin_tokens if context_budget else 0
-            ),
-            "estimatedInputTokens": estimated_tokens,
-        },
     }
 
 
-def _conversation_with_current_message(
+def _checkpoint_message_count(
+    source_conversation: list[Any],
+    through_message_id: str,
+) -> int:
+    for index, item in enumerate(source_conversation):
+        if _conversation_item_id(item) == through_message_id:
+            return index + 1
+    raise LlmRequestError(
+        "The stored conversation checkpoint does not match the authoritative "
+        "conversation history.",
+    )
+
+
+def agent_checkpoint_message_count(request: AgentChatRequest) -> int:
+    """Resolve the active summary boundary against authoritative history."""
+
+    checkpoint = request._active_conversation_checkpoint
+    if checkpoint is None:
+        return 0
+    return _checkpoint_message_count(
+        list(request.messages),
+        checkpoint.through_message_id,
+    )
+
+
+def agent_compaction_boundaries(
     request: AgentChatRequest,
-) -> list[AgentConversationItem]:
-    """Append the singular current turn after the prior-only history."""
+    *,
+    after_count: int,
+) -> list[tuple[int, str]]:
+    """Return advancing cuts whose exact tail begins with a user turn.
 
-    return [*request.messages, request.message]
+    Product histories can contain an assistant-only failure or an attachment
+    metadata companion, so parity is not a safe boundary. The next durable
+    product message must itself be user-authored; this retains at least the
+    latest complete historical user turn and every event after it.
+    """
+
+    history = list(request.messages)
+    boundaries: list[tuple[int, str]] = []
+    for count in range(after_count + 1, len(history)):
+        if _conversation_item_role(history[count]) != "user":
+            continue
+        through_message_id = _conversation_item_id(history[count - 1])
+        if through_message_id:
+            boundaries.append((count, through_message_id))
+    return boundaries
 
 
-def _conversation_entries(conversation: list[Any]) -> list[dict[str, str]]:
-    entries: list[dict[str, str]] = []
-    for item in conversation:
+def agent_compaction_events(
+    request: AgentChatRequest,
+    *,
+    start_count: int,
+    end_count: int,
+) -> list[dict[str, Any]]:
+    """Project one ordered history slice into safe summarizer input.
+
+    The compactor receives product-message identity and compact response state,
+    but never attachment bytes, extracted excerpts, raw tool I/O, or provider
+    continuation state. This is intentionally separate from the provider's
+    native exact-tail representation.
+    """
+
+    hidden_terms = _request_hidden_terms(request)
+    events: list[dict[str, Any]] = []
+    for item in list(request.messages)[start_count:end_count]:
+        role = _conversation_item_role(item)
+        message_id = _conversation_item_id(item)
+        event: dict[str, Any] = {
+            # This identifier is only descriptive input for the private
+            # summarizer, so it must cross the same privacy boundary as text.
+            # Checkpoint selection separately keeps the untouched product ID.
+            "id": (
+                _sanitized_text(message_id, hidden_terms=hidden_terms)
+                if message_id is not None
+                else None
+            ),
+            "role": role,
+        }
         text = _conversation_item_text(item)
         if text:
-            entries.append(
+            event["text"] = _sanitized_text(text, hidden_terms=hidden_terms)
+        filenames = _conversation_item_filenames(item)
+        if filenames:
+            event["attachments"] = [
                 {
-                    "role": _conversation_item_role(item),
-                    "content": text,
-                },
+                    "filename": _sanitized_text(
+                        filename,
+                        hidden_terms=hidden_terms,
+                    ),
+                }
+                for filename in filenames
+            ]
+        if role == "assistant":
+            response = _conversation_item_response(item)
+            response_state = _assistant_response_state(response) if response else {}
+            if response_state:
+                event["assistantResponseContext"] = sanitize_agent_value(
+                    response_state,
+                    hidden_terms=hidden_terms,
+                )
+        events.append(event)
+    return events
+
+
+def sanitize_agent_compaction_text(
+    request: AgentChatRequest,
+    text: str,
+) -> str:
+    """Apply the same identity boundary to a generated checkpoint summary."""
+
+    return _sanitized_text(text, hidden_terms=_request_hidden_terms(request))
+
+
+def agent_prompt_limits(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    *,
+    mode: AgentMessageMode,
+) -> AgentPromptLimits | None:
+    """Return the main prompt limits without exposing provider cache details."""
+
+    budget = _context_budget(
+        request,
+        config,
+        tool_schema_tokens=_tool_schema_token_reserve(request, config, mode=mode),
+    )
+    if budget is None:
+        return None
+    return AgentPromptLimits(
+        input_tokens=budget.input_tokens,
+        trigger_tokens=budget.trigger_tokens,
+        target_tokens=max(
+            1,
+            int(budget.input_tokens * CONTEXT_CHECKPOINT_TARGET_RATIO),
+        ),
+    )
+
+
+def estimate_agent_messages_tokens(messages: list[LlmInputMessage]) -> int:
+    """Estimate text plus bounded native-media reserves, never base64 bytes."""
+
+    estimated_messages: list[dict[str, Any]] = []
+    media_tokens = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            estimated_messages.append(cast(dict[str, Any], message))
+            continue
+
+        estimated_parts: list[dict[str, Any]] = []
+        for part in content:
+            part_type = part["type"]
+            if part_type in {"image", "file"}:
+                # Base64 is a transport encoding, not model-visible text. Keep
+                # the media metadata in the ordinary JSON estimate and account
+                # for the opaque media through one stable, bounded reserve.
+                estimated_parts.append(
+                    {key: value for key, value in part.items() if key != "data"},
+                )
+                media_tokens += (
+                    NATIVE_IMAGE_TOKEN_RESERVE
+                    if part_type == "image"
+                    else NATIVE_FILE_TOKEN_RESERVE
+                )
+            else:
+                estimated_parts.append(cast(dict[str, Any], part))
+        estimated_messages.append({**message, "content": estimated_parts})
+
+    return _estimated_json_tokens(estimated_messages) + media_tokens
+
+
+def _conversation_entries(
+    conversation: list[Any],
+    *,
+    hidden_terms: tuple[str, ...],
+    workspace_snapshots: dict[str, AgentTurnWorkspaceSnapshots] | None = None,
+    mode: AgentMessageMode = "streaming_final",
+) -> list[LlmInputMessage]:
+    entries: list[LlmInputMessage] = []
+    for item in conversation:
+        role = _conversation_item_role(item)
+        text = _conversation_item_text(item)
+        response = _conversation_item_response(item) if role == "assistant" else None
+        response_state = _assistant_response_state(response) if response else {}
+        if role == "assistant":
+            if text:
+                entries.append(
+                    LlmAssistantInputMessage(
+                        role="assistant",
+                        content=_sanitized_text(
+                            text,
+                            hidden_terms=hidden_terms,
+                        ),
+                    ),
+                )
+            if response_state:
+                response_state["messageId"] = _conversation_item_id(item)
+                entries.append(
+                    LlmUserMessage(
+                        role="user",
+                        content=_sanitized_text(
+                            _json_message(
+                                "assistantResponseContext",
+                                response_state,
+                            ),
+                            hidden_terms=hidden_terms,
+                        ),
+                    ),
+                )
+            continue
+        message_id = _conversation_item_id(item)
+        snapshot = (
+            workspace_snapshots.get(message_id)
+            if workspace_snapshots is not None and message_id is not None
+            else None
+        )
+        snapshot_content = (
+            snapshot.tools
+            if snapshot is not None and mode == "tools"
+            else (
+                snapshot.streaming_final
+                if snapshot is not None and mode == "streaming_final"
+                else None
+            )
+        )
+        if snapshot_content:
+            entries.append(
+                LlmUserMessage(
+                    role="user",
+                    content=_sanitized_text(
+                        snapshot_content,
+                        hidden_terms=hidden_terms,
+                    ),
+                ),
+            )
+        if text:
+            entries.append(
+                LlmUserMessage(
+                    role="user",
+                    content=_sanitized_text(text, hidden_terms=hidden_terms),
+                ),
+            )
+        filenames = _conversation_item_filenames(item)
+        if filenames:
+            # Historical binary data is never replayed. This adjacent metadata
+            # envelope preserves file identity for both attachment-only turns
+            # and ordinary text+attachment turns without retaining bytes,
+            # extracted excerpts, or provider-specific content blocks.
+            entries.append(
+                LlmUserMessage(
+                    role="user",
+                    content=_sanitized_text(
+                        _json_message(
+                            "historicalAttachments",
+                            [{"filename": filename} for filename in filenames],
+                        ),
+                        hidden_terms=hidden_terms,
+                    ),
+                ),
             )
 
     return entries
 
 
-def _empty_rolling_memory() -> dict[str, list[Any]]:
-    return {key: [] for key in ROLLING_MEMORY_KEYS}
-
-
-def _build_rolling_memory(
-    conversation: list[Any],
-) -> tuple[dict[str, list[Any]], int]:
-    """Extract stable long-term state without another nondeterministic LLM call."""
-
-    memory = _empty_rolling_memory()
-    represented_ids: set[int] = set()
-    fallback_goal: tuple[int, str] | None = None
-
-    for index, item in enumerate(conversation):
-        text = _conversation_item_text(item)
-        role = _conversation_item_role(item)
-        represented = False
-
-        if role == "user" and text:
-            if fallback_goal is None:
-                fallback_goal = (index, text)
-            category = _user_memory_category(text)
-            if category:
-                represented = _append_unique(memory[category], text) or represented
-        elif role == "assistant" and _is_pending_question(text):
-            represented = (
-                _append_unique(memory["pendingQuestions"], text) or represented
-            )
-
-        for filename in _conversation_item_filenames(item):
-            represented = (
-                _append_unique(memory["factsAndMaterials"], filename) or represented
-            )
-
-        for source in _conversation_source_references(item):
-            represented = (
-                _append_unique(memory["sourceReferences"], source) or represented
-            )
-
-        if represented:
-            represented_ids.add(index)
-
-    # A conversation may predate explicit labels. Preserve its first user
-    # request as the best deterministic goal fallback instead of discarding it.
-    if not memory["userGoals"] and fallback_goal is not None:
-        index, text = fallback_goal
-        _append_unique(memory["userGoals"], text)
-        represented_ids.add(index)
-
-    return memory, len(represented_ids)
-
-
-def _user_memory_category(text: str) -> str | None:
-    normalized = text.strip().casefold()
-    for category, prefixes in (
-        ("acceptedDecisions", ACCEPTED_DECISION_PREFIXES),
-        ("rejectedDecisions", REJECTED_DECISION_PREFIXES),
-        ("constraints", CONSTRAINT_PREFIXES),
-        ("userGoals", GOAL_PREFIXES),
-        ("factsAndMaterials", FACT_PREFIXES),
-    ):
-        if normalized.startswith(prefixes):
-            return category
-    return None
-
-
-def _is_pending_question(text: str) -> bool:
-    normalized = text.strip().casefold()
-    return bool(normalized) and (
-        normalized.startswith(PENDING_QUESTION_PREFIXES)
-        or normalized.endswith(("?", "？"))
-    )
+def _sanitized_text(value: str, *, hidden_terms: tuple[str, ...]) -> str:
+    sanitized = sanitize_agent_value(value, hidden_terms=hidden_terms)
+    return sanitized if isinstance(sanitized, str) else ""
 
 
 def _append_unique(items: list[Any], value: Any) -> bool:
@@ -749,67 +869,24 @@ def _conversation_item_filenames(item: Any) -> list[str]:
     return filenames
 
 
-def _conversation_source_references(item: Any) -> list[dict[str, str]]:
-    response = _conversation_item_response(item)
-    sources = response.get("sources") if response else None
-    if not isinstance(sources, list):
-        return []
+def _compact_source_reference(source: dict[str, Any]) -> dict[str, str]:
+    """Keep citation identity across turns without replaying source content."""
 
-    references: list[dict[str, str]] = []
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        reference = {
-            key: value.strip()
-            for key in ("id", "title", "sourceType", "url", "excerpt")
-            for value in [source.get(key)]
-            if isinstance(value, str) and value.strip()
-        }
-        if reference:
-            _append_unique(references, reference)
-    return references
-
-
-def _drop_oldest_redundant_memory_item(
-    memory: dict[str, list[Any]],
-) -> bool:
-    for key in ROLLING_MEMORY_TRIM_ORDER:
-        items = memory[key]
-        if len(items) > 1:
-            items.pop(0)
-            return True
-    return False
-
-
-def _latest_draft_state(
-    conversation: list[Any],
-    *,
-    token_budget: int | None,
-) -> dict[str, Any] | None:
-    for item in reversed(conversation):
-        response = _conversation_item_response(item)
-        if response is None:
-            continue
-
-        edits = _compact_response_edits(
-            response.get("edits"),
-            token_budget=token_budget,
-        )
-        if not edits:
-            continue
-
-        return {
-            "messageId": _conversation_item_id(item),
-            "text": _truncate_to_tokens(
-                _string_value(response.get("text")) or _conversation_item_text(item),
-                token_budget,
-            ),
-            "editCount": len(response.get("edits") or []),
-            "edits": edits,
-            "actions": _string_list(response.get("actions")),
-        }
-
-    return None
+    reference = {
+        key: value.strip()
+        for key in ("id", "title", "sourceType", "filename")
+        for value in [source.get(key)]
+        if isinstance(value, str) and value.strip()
+    }
+    source_type = reference.get("sourceType")
+    url = source.get("url")
+    if (
+        source_type == "web"
+        and isinstance(url, str)
+        and url.strip().lower().startswith(("http://", "https://"))
+    ):
+        reference["url"] = url.strip()
+    return reference
 
 
 def _current_draft_state(
@@ -840,68 +917,43 @@ def _current_draft_state(
     }
 
 
-def _active_draft_state(
-    current_draft: dict[str, Any] | None,
-    latest_draft: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    return current_draft or latest_draft
-
-
-def _last_assistant_state(
-    conversation: list[Any],
-    *,
-    token_budget: int | None,
-) -> dict[str, Any] | None:
-    for item in reversed(conversation):
-        if _conversation_item_role(item) != "assistant":
-            continue
-
-        response = _conversation_item_response(item)
-        state = _assistant_response_state(response) if response else {}
-        state.update(
-            {
-                "messageId": _conversation_item_id(item),
-                "text": _truncate_to_tokens(
-                    _conversation_item_text(item),
-                    token_budget,
-                ),
-            },
-        )
-        return state
-
-    return None
-
-
 def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
     edits = response.get("edits")
     tools = response.get("tools")
     sources = response.get("sources")
 
     source_refs = [
-        {
-            key: source[key]
-            for key in ("id", "title", "url")
-            if isinstance(source.get(key), str) and source[key].strip()
-        }
-        for source in (sources if isinstance(sources, list) else [])[:4]
+        reference
+        for source in (sources if isinstance(sources, list) else [])
         if isinstance(source, dict)
+        for reference in [_compact_source_reference(source)]
+        if reference
     ]
 
-    return {
-        "editCount": len(edits) if isinstance(edits, list) else 0,
-        "editTitles": [
-            title
-            for edit in (edits if isinstance(edits, list) else [])
-            if isinstance(edit, dict)
-            for title in [_string_value(edit.get("title"))]
-            if title
-        ],
-        "toolCount": len(tools) if isinstance(tools, list) else 0,
-        "sourceCount": len(sources) if isinstance(sources, list) else 0,
+    state: dict[str, Any] = {}
+    if isinstance(edits, list) and edits:
+        state["editCount"] = len(edits)
+        state["edits"] = _compact_response_edits(edits, token_budget=None)
+    transaction_state = _string_value(response.get("transactionState"))
+    if transaction_state:
+        state["transactionState"] = transaction_state
+    draft = response.get("draft")
+    if isinstance(draft, dict):
+        draft_status = _string_value(draft.get("status"))
+        if draft_status:
+            state["draftStatus"] = draft_status
+    actions = _string_list(response.get("actions"))
+    if actions:
+        state["actions"] = actions
+    if isinstance(tools, list) and tools:
+        state["toolCount"] = len(tools)
+    if isinstance(sources, list) and sources:
+        state["sourceCount"] = len(sources)
+    if source_refs:
         # Preserve compact citation identity across compression so later turns
         # can distinguish grounded evidence from unsupported recollection.
-        "sourceRefs": [source for source in source_refs if source],
-    }
+        state["sourceRefs"] = source_refs
+    return state
 
 
 def _compact_response_edits(
@@ -1330,6 +1382,11 @@ def _visible_web_search_context(output: dict[str, Any]) -> dict[str, Any]:
         text = _string_value(output.get(key))
         if text:
             context[key] = text
+
+    for key in ("timedOut", "partial"):
+        value = output.get(key)
+        if isinstance(value, bool):
+            context[key] = value
 
     queries = _string_list(output.get("queries"))[:5]
     if queries:

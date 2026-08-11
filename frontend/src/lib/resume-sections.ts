@@ -18,12 +18,19 @@ export interface RenderableSectionItem {
   id: string
   title: string
   subtitle: string
+  subtitleParts?: RenderableItemTextPart[]
   meta: string
+  metaParts?: RenderableItemTextPart[]
   period: string
   description: string
   highlights: string[]
   content: string
   url: string
+}
+
+interface RenderableItemTextPart {
+  field: string
+  value: string
 }
 
 export interface RenderableResumeSection {
@@ -452,7 +459,15 @@ export function projectResumeSection(
             id: item.id,
             title: item.school,
             subtitle: [item.degree, item.major].filter(Boolean).join(' · '),
+            subtitleParts: [
+              { field: 'degree', value: item.degree },
+              { field: 'major', value: item.major },
+            ],
             meta: [item.gpa, item.location].filter(Boolean).join(' · '),
+            metaParts: [
+              { field: 'gpa', value: item.gpa },
+              { field: 'location', value: item.location },
+            ],
             period: item.period,
             description: item.description,
             highlights: item.highlights,

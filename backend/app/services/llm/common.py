@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from inspect import isawaitable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from openai import (
@@ -17,7 +17,16 @@ from openai import (
 
 from .errors import LlmRequestError, LlmTimeoutError
 from .tool_schema import portable_tool_schema
-from .types import LlmStopReason, LlmToolCall, LlmUsage
+from .types import (
+    LlmContentPart,
+    LlmFilePart,
+    LlmImagePart,
+    LlmInputMessage,
+    LlmRequestContext,
+    LlmStopReason,
+    LlmToolCall,
+    LlmUsage,
+)
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 REQUEST_TIMEOUT_SECONDS = 60
@@ -166,9 +175,10 @@ def unsupported_parallel_tool_calls(error: APIStatusError) -> bool:
 
 def chat_completion_params(
     config: Any,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     *,
     stream: bool,
+    request_context: LlmRequestContext | None = None,
 ) -> dict[str, Any]:
     """Build OpenAI-compatible chat params, omitting unset optional knobs."""
 
@@ -183,8 +193,26 @@ def chat_completion_params(
         params["top_p"] = config.top_p
     if config.max_tokens:
         params["max_tokens"] = config.max_tokens
+    cache_key = openai_prompt_cache_key(config, request_context)
+    if cache_key:
+        params["prompt_cache_key"] = cache_key
 
     return params
+
+
+def openai_prompt_cache_key(
+    config: Any,
+    request_context: LlmRequestContext | None,
+) -> str | None:
+    """Return an opaque cache key only for the official OpenAI provider."""
+
+    if (
+        config.provider != "openai"
+        or config.provider_kind != "cloud"
+        or request_context is None
+    ):
+        return None
+    return request_context.cache_key
 
 
 def openai_style_function_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -531,7 +559,16 @@ def anthropic_usage(payload: dict[str, Any]) -> LlmUsage | None:
     if not isinstance(usage, dict):
         return None
 
-    input_tokens = positive_int(usage.get("input_tokens"))
+    input_parts = (
+        positive_int(usage.get("input_tokens")),
+        positive_int(usage.get("cache_creation_input_tokens")),
+        positive_int(usage.get("cache_read_input_tokens")),
+    )
+    input_tokens = (
+        sum(value for value in input_parts if value is not None)
+        if any(value is not None for value in input_parts)
+        else None
+    )
     output_tokens = positive_int(usage.get("output_tokens"))
     total_tokens = (
         input_tokens + output_tokens
@@ -542,21 +579,7 @@ def anthropic_usage(payload: dict[str, Any]) -> LlmUsage | None:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
-    )
-
-
-def gemini_usage(payload: dict[str, Any]) -> LlmUsage | None:
-    usage = payload.get("usageMetadata") or payload.get("usage")
-    if not isinstance(usage, dict):
-        return None
-
-    input_tokens = usage.get("promptTokenCount") or usage.get("input_tokens")
-    output_tokens = usage.get("candidatesTokenCount") or usage.get("output_tokens")
-    total_tokens = usage.get("totalTokenCount") or usage.get("total_tokens")
-    return usage_from_values(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
+        cached_input_tokens=usage.get("cache_read_input_tokens"),
     )
 
 
@@ -575,7 +598,7 @@ def map_stop_reason(value: Any) -> LlmStopReason:
     return "unknown"
 
 
-def tool_function(tool: dict[str, Any]) -> dict[str, Any]:
+def tool_function(tool: Mapping[str, Any]) -> dict[str, Any]:
     value = tool.get("function")
     return value if isinstance(value, dict) else {}
 
@@ -590,7 +613,7 @@ def message_content_text(content: Any) -> str:
     )
 
 
-def message_content_parts(content: Any) -> list[dict[str, str]]:
+def message_content_parts(content: Any) -> list[LlmContentPart]:
     """Normalize text, image, and file blocks without provider wire shapes."""
 
     if isinstance(content, str):
@@ -598,7 +621,7 @@ def message_content_parts(content: Any) -> list[dict[str, str]]:
     if not isinstance(content, list):
         return []
 
-    parts: list[dict[str, str]] = []
+    parts: list[LlmContentPart] = []
     for value in content:
         if not isinstance(value, dict):
             continue
@@ -648,14 +671,14 @@ def message_content_parts(content: Any) -> list[dict[str, str]]:
     return parts
 
 
-def image_data_url(part: dict[str, str]) -> str:
+def image_data_url(part: LlmImagePart | LlmFilePart) -> str:
     """Build a data URL from one validated provider-neutral image part."""
 
     return f"data:{part['media_type']};base64,{part['data']}"
 
 
 def openai_chat_messages(
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> list[dict[str, Any]]:
     """Map neutral image blocks to OpenAI-compatible Chat Completions parts."""
 
@@ -668,7 +691,9 @@ def openai_chat_messages(
                 "OpenAI-compatible Chat Completions does not support native files.",
             )
         if not any(part["type"] == "image" for part in parts):
-            converted.append(message)
+            # TypedDict messages are ordinary dicts at runtime; this cast only
+            # marks the point where the neutral transcript becomes SDK input.
+            converted.append(cast(dict[str, Any], message))
             continue
 
         provider_content: list[dict[str, Any]] = []
@@ -689,12 +714,12 @@ def openai_chat_messages(
 
 
 def system_and_messages(
-    messages: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
+    messages: list[LlmInputMessage],
+) -> tuple[str, list[LlmInputMessage]]:
     system_parts: list[str] = []
-    non_system: list[dict[str, Any]] = []
+    non_system: list[LlmInputMessage] = []
     for message in messages:
-        if message.get("role") == "system":
+        if message["role"] == "system":
             text = message_content_text(message.get("content")).strip()
             if text:
                 system_parts.append(text)

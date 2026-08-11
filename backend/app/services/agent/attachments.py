@@ -21,6 +21,7 @@ from pypdf import PdfReader
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentAttachmentResponse, AgentChatRequest
+from app.services.agent.privacy import sanitize_agent_text
 from app.services.agent.resume_owner import active_resume_transaction
 
 MAX_AGENT_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -395,6 +396,8 @@ def attachment_text(session_id: str, file: dict[str, Any]) -> str:
 def attachment_content_part(
     session_id: str,
     file: dict[str, Any],
+    *,
+    hidden_terms: tuple[str, ...],
 ) -> dict[str, str]:
     """Build one provider-neutral current-request binary content block."""
 
@@ -409,7 +412,14 @@ def attachment_content_part(
     part_type = "image" if attachment.kind == "image" else "file"
     return {
         "type": part_type,
-        "filename": attachment.filename,
+        # Native attachments bypass the extracted-text sanitizer, so their
+        # display name must be masked at the binary boundary itself. The file
+        # bytes remain canonical and unchanged; only provider-visible metadata
+        # is sanitized.
+        "filename": sanitize_agent_text(
+            attachment.filename,
+            hidden_terms=hidden_terms,
+        ),
         "media_type": attachment.media_type,
         "data": b64encode(payload).decode("ascii"),
     }

@@ -95,6 +95,17 @@ export function useResumeDetailSave({
   const autosaveRetryAttemptRef = useRef(0);
   const skipCheckpointPromotionRef = useRef(false);
   const versionLoadRequestRef = useRef<string | null>(null);
+  const ownerLifecycleRef = useRef<symbol | null>(null);
+
+  useEffect(() => {
+    const owner = Symbol("resume-detail-save-owner");
+    ownerLifecycleRef.current = owner;
+    return () => {
+      if (ownerLifecycleRef.current === owner) {
+        ownerLifecycleRef.current = null;
+      }
+    };
+  }, [resumeId]);
 
   const adoptPersistedSave = useCallback(
     (
@@ -273,6 +284,16 @@ export function useResumeDetailSave({
       messageId: string,
       candidateResume: ResumeData,
     ): Promise<AgentDraftDecisionResolution> => {
+      const owner = ownerLifecycleRef.current;
+      const requireCurrentOwner = () => {
+        if (!owner || ownerLifecycleRef.current !== owner) {
+          throw new DOMException(
+            "The resume detail save owner is no longer active.",
+            "AbortError",
+          );
+        }
+      };
+
       while (activeRequestRef.current) {
         const activeRequest = activeRequestRef.current;
         try {
@@ -284,8 +305,10 @@ export function useResumeDetailSave({
             activeRequestRef.current = null;
           }
         }
+        requireCurrentOwner();
       }
 
+      requireCurrentOwner();
       const resolutionPromise = (async () => {
         setSaveState("saving");
         try {

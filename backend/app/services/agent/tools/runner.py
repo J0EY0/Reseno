@@ -2,6 +2,7 @@ import json
 import re
 from collections import OrderedDict
 from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -159,7 +160,6 @@ class AgentToolRunner:
         self.target_reference: TargetReference | None = None
         self.analysis: ResumeAnalysis | None = None
         self.plan: list[EditPlanStep] = []
-        self.planned_edits: list[AgentResumeEditSuggestion] = []
         self.edits: list[AgentResumeEditSuggestion] = []
         self.tools: list[AgentToolInvocation] = []
         self.finished = False
@@ -170,11 +170,16 @@ class AgentToolRunner:
         self.edit_revision = 0
         self.semantic_retry_pending = False
         self.failed_batch_fingerprint = ""
+        self._semantic_error_fingerprints: set[str] = set()
         self.transaction_failed = False
         self.transaction_committed = False
         # Set only after an explicit provider rejection causes the single
         # current-request original-file fallback to extracted text.
         self.native_attachment_text_fallback_used = False
+        self._tool_call_results: dict[
+            str,
+            tuple[str, AgentToolInvocation, dict[str, Any]],
+        ] = {}
         self._web_search_cache: OrderedDict[
             tuple[tuple[str, ...], int, str],
             WebSearchReference,
@@ -326,17 +331,32 @@ class AgentToolRunner:
     ) -> tuple[AgentToolInvocation, dict[str, Any]]:
         """Execute a model-selected tool through the async runtime."""
 
+        cached = self._cached_tool_call_result(tool_call)
+        if cached is not None:
+            return cached
+        started_at = self._tool_timestamp()
+
         blocked_tool = self.blocked_tool_call(tool_call)
         if blocked_tool:
             if tool_call.name != "finish":
                 self.tools.append(blocked_tool)
-            return blocked_tool, self.tool_result(blocked_tool)
+            return self._remember_tool_call_result(
+                tool_call,
+                blocked_tool,
+                self.tool_result(blocked_tool),
+                started_at,
+            )
 
         spec = agent_tool_spec(tool_call.name)
         if spec is None:
             tool = self.unknown_tool(tool_call)
             self.tools.append(tool)
-            return tool, self.tool_result(tool)
+            return self._remember_tool_call_result(
+                tool_call,
+                tool,
+                self.tool_result(tool),
+                started_at,
+            )
 
         if spec.execution == "sync":
             initial_state = self._local_tool_state_snapshot()
@@ -349,12 +369,97 @@ class AgentToolRunner:
             # one-step state swap into the live runner.
             await runtime.checkpoint()
             self._commit_local_tool_state(final_state)
-            return tool, result
+            return self._remember_tool_call_result(
+                tool_call,
+                tool,
+                result,
+                started_at,
+            )
 
         handler = getattr(self, spec.handler_name)
         tool = await handler(tool_call, runtime)
         self.tools.append(tool)
-        return tool, self.tool_result(tool)
+        return self._remember_tool_call_result(
+            tool_call,
+            tool,
+            self.tool_result(tool),
+            started_at,
+        )
+
+    @staticmethod
+    def _tool_timestamp() -> str:
+        """Return a stable UTC timestamp for public tool observations."""
+
+        return (
+            datetime.now(UTC)
+            .isoformat(timespec="milliseconds")
+            .replace(
+                "+00:00",
+                "Z",
+            )
+        )
+
+    @staticmethod
+    def _tool_call_fingerprint(tool_call: LlmToolCall) -> str:
+        """Return the provider-independent identity of one tool request."""
+
+        return json.dumps(
+            {"name": tool_call.name, "arguments": tool_call.arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _cached_tool_call_result(
+        self,
+        tool_call: LlmToolCall,
+    ) -> tuple[AgentToolInvocation, dict[str, Any]] | None:
+        """Replay an identical completed call and reject conflicting reuse."""
+
+        if not tool_call.id.strip():
+            self.fail_transaction()
+            raise LlmRequestError("Model tool call id must be non-empty.")
+
+        cached = self._tool_call_results.get(tool_call.id)
+        if cached is None:
+            return None
+
+        fingerprint, tool, result = cached
+        if fingerprint != self._tool_call_fingerprint(tool_call):
+            self.fail_transaction()
+            raise LlmRequestError(
+                "Model reused a tool call id with different arguments.",
+            )
+        if self.semantic_retry_pending:
+            self.fail_transaction()
+        return deepcopy(tool), deepcopy(result)
+
+    def _remember_tool_call_result(
+        self,
+        tool_call: LlmToolCall,
+        tool: AgentToolInvocation,
+        result: dict[str, Any],
+        started_at: str,
+    ) -> tuple[AgentToolInvocation, dict[str, Any]]:
+        """Record one completed invocation for safe provider retries."""
+
+        completed_tool = tool.model_copy(
+            update={
+                "started_at": started_at,
+                "completed_at": self._tool_timestamp(),
+            },
+        )
+        for index in range(len(self.tools) - 1, -1, -1):
+            candidate = self.tools[index]
+            if candidate.id == tool.id and candidate.title == tool.title:
+                self.tools[index] = completed_tool
+                break
+        self._tool_call_results[tool_call.id] = (
+            self._tool_call_fingerprint(tool_call),
+            deepcopy(completed_tool),
+            deepcopy(result),
+        )
+        return completed_tool, result
 
     def _local_tool_state_snapshot(self) -> dict[str, Any]:
         """Copy every run-scoped field that a local tool may mutate."""
@@ -1027,7 +1132,7 @@ class AgentToolRunner:
     def run_resume_analysis(self, tool_call: LlmToolCall) -> AgentToolInvocation:
         """Analyze the current resume only when the model asks for it."""
 
-        self.analysis = self.executor.analyze_resume()
+        self.analysis = self.executor.analyze_resume(self.draft_resume)
         return self.executor.build_resume_analysis_tool(self.analysis, tool_call.id)
 
     def run_update_target_context(
@@ -1205,6 +1310,28 @@ class AgentToolRunner:
                 message_key="error.edit_plan_missing_inputs",
             )
 
+        action_mismatches = [
+            {
+                "index": index,
+                "reason": agent_text(
+                    self.executor.request.locale,
+                    "error.edit_plan_action_mismatch",
+                ),
+            }
+            for index, step in enumerate(steps_value, start=1)
+            if isinstance(step, dict)
+            and isinstance(step.get("operation"), dict)
+            and str(step.get("action") or "").strip()
+            != str(step["operation"].get("type") or "").strip()
+        ]
+        if action_mismatches:
+            return self.semantic_edit_error(
+                tool_call,
+                entries=steps_value,
+                rejected_edits=action_mismatches,
+                message_key="error.edit_execute_rejected_detailed",
+            )
+
         model_steps = _model_plan_steps(steps_value)
         model_edits, rejected_edits = _model_edit_suggestions_with_diagnostics(
             self.draft_resume,
@@ -1228,7 +1355,11 @@ class AgentToolRunner:
                 self.draft_resume,
                 model_edits,
             ),
-            *unauthorized_plan_issues(self.edit_authorization, steps_value),
+            *unauthorized_plan_issues(
+                self.edit_authorization,
+                self.draft_resume,
+                steps_value,
+            ),
         ]
         if scope_issues:
             return self.semantic_edit_error(
@@ -1254,8 +1385,10 @@ class AgentToolRunner:
                 message_key="error.edit_plan_missing_inputs",
             )
 
+        plan_changed = model_steps != self.plan
         self.plan = model_steps
-        self.planned_edits = model_edits
+        if plan_changed:
+            self.mark_semantic_progress()
         return self.executor.build_plan_tool(self.plan, tool_call.id)
 
     def run_edit_execute(self, tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -1541,15 +1674,16 @@ class AgentToolRunner:
                 quality_issues,
             )
 
-        observations, diffs = _edit_observations(
+        observations, diffs_by_edit = _edit_observations(
             before_resume,
             model_edits,
+            locale=self.executor.request.locale,
         )
         edits_with_diffs: list[AgentResumeEditSuggestion] = []
-        for edit, diff in zip(model_edits, diffs, strict=True):
+        for edit, edit_diffs in zip(model_edits, diffs_by_edit, strict=True):
             edits_with_diffs.append(
                 edit.model_copy(
-                    update={"diffs": [diff]},
+                    update={"diffs": edit_diffs},
                 ),
             )
         self.draft_resume = candidate_resume
@@ -1566,7 +1700,7 @@ class AgentToolRunner:
         message_key: str | None = None,
         error_text: str | None = None,
     ) -> AgentToolInvocation:
-        """Reject one whole edit batch and allow one model repair attempt."""
+        """Reject one batch and track its failure within the current progress state."""
 
         fingerprint = json.dumps(
             {"tool": tool_call.name, "entries": entries},
@@ -1574,13 +1708,22 @@ class AgentToolRunner:
             sort_keys=True,
             default=str,
         )
-        retry_exhausted = self.semantic_retry_pending
-        same_batch = retry_exhausted and fingerprint == self.failed_batch_fingerprint
+        semantic_fingerprint = self.semantic_error_fingerprint(
+            tool_call.name,
+            rejected_edits,
+            message_key=message_key,
+            error_text=error_text,
+        )
+        retry_exhausted = semantic_fingerprint in self._semantic_error_fingerprints
+        same_batch = (
+            self.semantic_retry_pending and fingerprint == self.failed_batch_fingerprint
+        )
         if retry_exhausted:
             self.fail_transaction()
         else:
             self.semantic_retry_pending = True
             self.failed_batch_fingerprint = fingerprint
+            self._semantic_error_fingerprints.add(semantic_fingerprint)
 
         return AgentToolInvocation(
             id=tool_call.id,
@@ -1604,12 +1747,60 @@ class AgentToolRunner:
             ),
         )
 
+    @staticmethod
+    def semantic_error_fingerprint(
+        tool_name: str,
+        rejected_edits: list[dict[str, Any]],
+        *,
+        message_key: str | None,
+        error_text: str | None,
+    ) -> str:
+        """Identify one semantic failure without volatile attempted values."""
+
+        issues: list[dict[str, str]] = []
+        for rejected_edit in rejected_edits:
+            quality_issue = rejected_edit.get("qualityIssue")
+            if isinstance(quality_issue, dict):
+                issue = {
+                    key: str(quality_issue.get(key) or "").strip()
+                    for key in ("code", "scope", "target")
+                    if str(quality_issue.get(key) or "").strip()
+                }
+            else:
+                reason = str(rejected_edit.get("reason") or "").strip()
+                issue = {"reason": reason} if reason else {}
+            issues.append(issue)
+
+        return json.dumps(
+            {
+                "tool": tool_name,
+                "error": error_text or message_key or "error.edit_execute_rejected",
+                "issues": sorted(
+                    issues,
+                    key=lambda issue: json.dumps(
+                        issue,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def mark_edit_batch_succeeded(self) -> None:
         """Publish a new provisional revision after an atomic batch succeeds."""
 
+        self.mark_semantic_progress()
+        self.edit_revision += 1
+
+    def mark_semantic_progress(self) -> None:
+        """Start a new repair state after a changed plan or atomic draft update."""
+
         self.semantic_retry_pending = False
         self.failed_batch_fingerprint = ""
-        self.edit_revision += 1
+        self._semantic_error_fingerprints.clear()
 
     def fail_transaction(self) -> None:
         """Roll back every edit staged during the current Agent turn."""
@@ -1617,9 +1808,9 @@ class AgentToolRunner:
         had_edits = bool(self.edits)
         self.draft_resume = deepcopy(self.base_resume)
         self.edits = []
-        self.planned_edits = []
         self.semantic_retry_pending = False
         self.failed_batch_fingerprint = ""
+        self._semantic_error_fingerprints.clear()
         self.transaction_failed = True
         self.transaction_committed = False
         self.finished = True
@@ -1750,7 +1941,6 @@ class AgentToolRunner:
         if status == "blocked":
             # A blocked turn may explain what is missing, but it must never
             # publish edits produced before the model discovered that blocker.
-            self.planned_edits = []
             if self.edits:
                 self.fail_transaction()
 
@@ -1805,11 +1995,42 @@ class AgentToolRunner:
             ),
         }
 
+    def non_edit_tool_failure_text(self, tool: AgentToolInvocation) -> str:
+        """Return a truthful terminal message for a failed non-edit action."""
+
+        spec = agent_tool_spec(tool.title)
+        if spec is None or tool.state != "output-error":
+            return ""
+
+        if spec.mode == "read":
+            if tool.title == "web_search":
+                output = tool.output if isinstance(tool.output, dict) else {}
+                message_key = (
+                    "response.research_timeout"
+                    if output.get("timedOut") is True
+                    else "response.research_failed"
+                )
+                return agent_text(self.executor.request.locale, message_key)
+
+            return agent_text(
+                self.executor.request.locale,
+                "response.read_tool_failed",
+            )
+
+        if tool.title == "update_target_context":
+            return agent_text(
+                self.executor.request.locale,
+                "response.target_context_update_failed",
+            )
+
+        return ""
+
     def build_message(self, message_id: str | None = None) -> AgentChatMessage:
         """Assemble an assistant payload from the tools the model used."""
 
         target_reference = self.current_target_reference()
-        analysis = self.analysis or self.executor.analyze_resume()
+        self.analysis = self.executor.analyze_resume(self.draft_resume)
+        analysis = self.analysis
         message = self.executor.build_message_from_parts(
             target_reference=target_reference,
             analysis=analysis,
@@ -1851,6 +2072,24 @@ class AgentToolRunner:
                     "quick_replies": [],
                     "actions": [],
                     "transaction_state": "rolled_back",
+                },
+            )
+        read_failure_text = next(
+            (
+                text
+                for tool in reversed(self.tools)
+                if (text := self.non_edit_tool_failure_text(tool))
+            ),
+            "",
+        )
+        if read_failure_text and not self.edits:
+            return message.model_copy(
+                update={
+                    "tone": "default",
+                    "text": read_failure_text,
+                    "quick_replies": [],
+                    "actions": [],
+                    "transaction_state": "none",
                 },
             )
         return message.model_copy(

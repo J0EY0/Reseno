@@ -422,7 +422,14 @@ for (const file of files) {
 }
 
 const { getVisibleCompletedTools } = await loadAgentToolDisplayHelpers();
-const { isPlainAgentText } = await loadAgentMessageRenderingHelpers();
+const {
+  getAgentCitationSourceIds,
+  hasAgentCitationMarkupCandidate,
+  hasCompleteAgentCitationMarkup,
+  isPlainAgentText,
+  stripAgentCitationMarkup,
+} =
+  await loadAgentMessageRenderingHelpers();
 const tool = (id, title, state, purpose = "jd") => ({
   id,
   type: `tool-${title}`,
@@ -442,8 +449,8 @@ assert(
     tool("fetch-2", "web_fetch", "output-available"),
   ])
     .map((item) => item.id)
-    .join(",") === "search-3,fetch-2",
-  "Recovered agent tool failures should be hidden from the visible timeline.",
+    .join(",") === "search-1,search-2,fetch-1,search-3,fetch-2",
+  "Recovered failures should be hidden while every successful invocation remains auditable.",
 );
 
 assert(
@@ -484,6 +491,51 @@ assert(
 assert(
   isPlainAgentText("熟悉 A* 搜索算法。"),
   "Plain text with a non-Markdown asterisk should keep inline citation rendering.",
+);
+
+assert(
+  getAgentCitationSourceIds(
+    "source-jd-search, source-jd-search-2,source-jd-search",
+  ).join(",") === "source-jd-search,source-jd-search-2",
+  "Claim-level citations must preserve stable source ids and remove duplicates.",
+);
+assert(
+  getAgentCitationSourceIds(
+    "source-jd-search,https://malicious.test,unknown",
+  ).length === 0,
+  "A citation with any malformed source id must fail closed.",
+);
+assert(
+  getAgentCitationSourceIds(
+    "source-a,source-b,source-c,source-d",
+  ).length === 0,
+  "One claim must never render more than three citation sources.",
+);
+assert(
+  hasCompleteAgentCitationMarkup(
+    '<citation source_ids="source-a">Supported claim</citation>',
+  ) &&
+    !hasCompleteAgentCitationMarkup(
+      '<citation source_ids="source-a">Streaming claim',
+    ) &&
+    !hasCompleteAgentCitationMarkup(
+      '<citation source_ids="source-a">Outer <citation source_ids="source-b">inner</citation></citation>',
+    ),
+  "Only complete, non-nested citation markup may activate inline source UI.",
+);
+assert(
+  ["<", "<ci", "<citatio", "</ci"].every(
+    (prefix) =>
+      hasAgentCitationMarkupCandidate(prefix) &&
+      stripAgentCitationMarkup(prefix) === "",
+  ) &&
+    !hasCompleteAgentCitationMarkup(
+      '<citation source_ids="source-a">Supported</citation><ci',
+    ) &&
+    stripAgentCitationMarkup(
+      '<citation source_ids="source-a">Supported</citation><ci',
+    ) === "Supported",
+  "Streaming citation prefixes must stay hidden until the protocol tag is complete.",
 );
 
 console.log(`Frontend contract verified across ${files.length} source files.`);

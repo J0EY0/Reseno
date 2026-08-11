@@ -17,16 +17,22 @@ from app.services.llm import (
     LlmToolCall,
     async_complete_tool_call,
 )
+from app.services.llm.types import (
+    LlmAssistantInputMessage,
+    LlmInputMessage,
+    LlmInputToolCall,
+    LlmSystemMessage,
+    LlmToolMessage,
+)
 from app.services.llm.validation import validation_error_observation
 
-from ..editing import _react_max_iterations
 from ..executor import AgentPlanExecutor
 from ..policy import AgentTaskIntent
 from ..tools.registry import agent_tool_schemas_for_names
 from ..tools.runner import AgentToolRunner, running_model_tool
-from .context import AgentRuntimeContext
+from .compaction import prepare_agent_messages
+from .context import AgentRuntimeContext, agent_llm_request_context
 from .messages import (
-    build_agent_messages,
     has_native_current_request_attachments,
     is_native_attachment_unsupported,
 )
@@ -61,30 +67,41 @@ def _tool_call_assistant_message(
     tool_calls: list[LlmToolCall],
     reasoning: str = "",
     provider_state: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> LlmAssistantInputMessage:
     """Serialize a model tool-call choice back into chat history."""
 
-    message: dict[str, Any] = {
-        "role": "assistant",
-        "content": content or None,
-        "tool_calls": [
-            {
-                "id": tool_call.id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.name,
-                    "arguments": tool_call.raw_arguments,
-                },
-            }
-            for tool_call in tool_calls
-        ],
-    }
+    serialized_calls = [
+        LlmInputToolCall(
+            id=tool_call.id,
+            type="function",
+            function={
+                "name": tool_call.name,
+                "arguments": tool_call.raw_arguments,
+            },
+        )
+        for tool_call in tool_calls
+    ]
+    message = LlmAssistantInputMessage(
+        role="assistant",
+        content=content or None,
+        tool_calls=serialized_calls,
+    )
     if reasoning:
         message["reasoning_content"] = reasoning
     if provider_state:
         message["provider_state"] = provider_state
 
     return message
+
+
+def _tool_result_message(tool_call_id: str, result: dict[str, Any]) -> LlmToolMessage:
+    """Serialize one complete observation at the neutral transcript boundary."""
+
+    return LlmToolMessage(
+        role="tool",
+        tool_call_id=tool_call_id,
+        content=json.dumps(result, ensure_ascii=False),
+    )
 
 
 def _model_tool_result(
@@ -110,16 +127,38 @@ def _model_tool_result(
     }
 
 
+def _validate_tool_call_batch(tool_calls: list[LlmToolCall]) -> None:
+    """Reject terminal-control calls that cannot be executed atomically."""
+
+    finish_indexes = [
+        index
+        for index, tool_call in enumerate(tool_calls)
+        if tool_call.name == "finish"
+    ]
+    if len(finish_indexes) > 1 or (
+        finish_indexes and finish_indexes[0] != len(tool_calls) - 1
+    ):
+        raise LlmRequestError(
+            "Model tool batch may contain at most one finish call, "
+            "and it must be last.",
+        )
+
+
 async def _async_tool_call_response(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     runtime: AgentRuntimeContext,
     tool_schemas: list[dict[str, Any]],
 ) -> LlmAssistantMessage:
     """Return a validated tool-call response through the async LLM runtime."""
 
     await runtime.checkpoint()
-    response = await async_complete_tool_call(config, messages, tool_schemas)
+    response = await async_complete_tool_call(
+        config,
+        messages,
+        tool_schemas,
+        request_context=runtime.llm_request_context,
+    )
     await runtime.checkpoint()
     return response
 
@@ -129,8 +168,8 @@ def _finalize_runner_transaction(runner: AgentToolRunner) -> None:
 
     explicit_ready_finish = runner.finished and runner.finish_status == "ready"
     if runner.edits and not explicit_ready_finish:
-        # Natural model termination, iteration exhaustion, cancellation, and
-        # provider failures must never publish an unfinished edit batch.
+        # Natural model termination, cancellation, and provider failures must
+        # never publish an unfinished edit batch.
         runner.fail_transaction()
     runner.finalize_turn()
 
@@ -143,8 +182,12 @@ async def _async_iter_agent_tool_call_loop(
 ) -> AsyncIterator[AgentToolLoopEvent]:
     """Yield tool-loop state as each async model-selected action executes."""
 
-    messages = build_agent_messages(request, config, mode="tools")
-    max_iterations = _react_max_iterations(request)
+    messages = await prepare_agent_messages(
+        request,
+        config,
+        runtime,
+        mode="tools",
+    )
     # Schema exposure and execution must share the same frozen policy. If these
     # diverge, the model can be offered a tool the runner will later reject.
     requires_resume_analysis = (
@@ -162,7 +205,7 @@ async def _async_iter_agent_tool_call_loop(
     )
     initial_timeout_retry_available = True
 
-    for _ in range(max_iterations):
+    while True:
         await runtime.checkpoint()
         try:
             response = await _async_tool_call_response(
@@ -197,9 +240,10 @@ async def _async_iter_agent_tool_call_loop(
             # Retry exactly once and only before the provider has accepted any
             # part of this turn. This avoids replaying completed tools.
             runner.native_attachment_text_fallback_used = True
-            messages = build_agent_messages(
+            messages = await prepare_agent_messages(
                 request,
                 config,
+                runtime,
                 mode="tools",
                 force_attachment_text=True,
             )
@@ -235,14 +279,10 @@ async def _async_iter_agent_tool_call_loop(
                 ),
             )
             messages.extend(
-                {
-                    "role": "tool",
-                    "tool_call_id": error.tool_call.id,
-                    "content": json.dumps(
-                        validation_error_observation(error),
-                        ensure_ascii=False,
-                    ),
-                }
+                _tool_result_message(
+                    error.tool_call.id,
+                    validation_error_observation(error),
+                )
                 for error in response.validation_errors
             )
             continue
@@ -257,7 +297,10 @@ async def _async_iter_agent_tool_call_loop(
                 config,
                 [
                     *messages,
-                    {"role": "system", "content": REQUIRED_FINISH_DECISION},
+                    LlmSystemMessage(
+                        role="system",
+                        content=REQUIRED_FINISH_DECISION,
+                    ),
                 ],
                 runtime,
                 finish_tool_schemas,
@@ -300,6 +343,7 @@ async def _async_iter_agent_tool_call_loop(
             break
 
         tool_calls = response.tool_calls
+        _validate_tool_call_batch(tool_calls)
         # Content attached to tool calls narrates an internal action. Keep it in
         # provider history below, but publish only the later terminal response.
         messages.append(
@@ -310,7 +354,7 @@ async def _async_iter_agent_tool_call_loop(
                 response.provider_state,
             ),
         )
-        tool_messages: list[dict[str, Any]] = []
+        tool_messages: list[LlmToolMessage] = []
         revision_before_tools = runner.edit_revision
         for tool_index, tool_call in enumerate(tool_calls):
             await runtime.checkpoint()
@@ -326,15 +370,34 @@ async def _async_iter_agent_tool_call_loop(
             if tool_call.name != "finish":
                 yield AgentToolLoopEvent(kind="tools", tools=runner.tools)
             tool_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(
-                        _model_tool_result(tool_call.name, result),
-                        ensure_ascii=False,
-                    ),
-                },
+                _tool_result_message(
+                    tool_call.id,
+                    _model_tool_result(tool_call.name, result),
+                ),
             )
+            if (
+                tool_call.name != "finish"
+                and tool.state != "output-available"
+                and not (
+                    runner.semantic_retry_pending
+                    and isinstance(tool.output, dict)
+                    and tool.output.get("retryable") is True
+                )
+            ):
+                non_edit_failure_text = runner.non_edit_tool_failure_text(tool)
+                if non_edit_failure_text:
+                    runner.terminal_text = non_edit_failure_text
+                    if not runner.edits:
+                        runner.finished = True
+                        yield AgentToolLoopEvent(
+                            kind="text",
+                            text=non_edit_failure_text,
+                            terminal=True,
+                        )
+                    else:
+                        runner.fail_transaction()
+                else:
+                    runner.fail_transaction()
             # A provider may emit several tool calls in one response. `finish`
             # is a terminal action, so calls ordered after it must never run.
             if runner.finished:
@@ -345,21 +408,17 @@ async def _async_iter_agent_tool_call_loop(
                 # Providers can emit an edit and `finish` in one response. Once
                 # the edit is rejected, every remaining call belongs to the
                 # invalid batch and must be acknowledged but not executed. This
-                # preserves the single repair round instead of letting `finish`
+                # preserves the current repair state instead of letting `finish`
                 # roll back the transaction immediately.
                 tool_messages.extend(
-                    {
-                        "role": "tool",
-                        "tool_call_id": deferred_call.id,
-                        "content": json.dumps(
-                            {
-                                "skipped": True,
-                                "retryable": True,
-                                "reason": "A prior edit batch requires repair.",
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
+                    _tool_result_message(
+                        deferred_call.id,
+                        {
+                            "skipped": True,
+                            "retryable": True,
+                            "reason": "A prior edit batch requires repair.",
+                        },
+                    )
                     for deferred_call in tool_calls[tool_index + 1 :]
                 )
                 break
@@ -403,6 +462,9 @@ async def async_iter_agent_tool_call_loop(
     """Yield one tool loop and roll back unfinished edits on every exit path."""
 
     runtime = runtime or AgentRuntimeContext()
+    runtime = runtime.with_llm_request_context(
+        agent_llm_request_context(request, config),
+    )
     if not config.supports_tools:
         # Tool support controls only the agent action loop. Models without it
         # can still answer the user through the final chat-completion stream.

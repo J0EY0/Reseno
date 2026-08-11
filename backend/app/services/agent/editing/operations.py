@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
-from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
+from app.schemas.agent import AgentResumeEditSuggestion
 from app.services.resume_document_contract import (
     ITEM_LIST_FIELDS_BY_KIND,
     ITEM_STRING_FIELDS_BY_KIND,
@@ -18,11 +18,6 @@ from ..models import EditPlanStep
 from ..operation_contract import resume_edit_operation_error
 from ..parsing_patterns import compiled_agent_pattern
 from ..privacy import AGENT_WRITABLE_BASIC_FIELDS, is_pii_basic_path
-from ..prompts import (
-    DEFAULT_REACT_MAX_ITERATIONS,
-    MAX_REACT_MAX_ITERATIONS,
-    MIN_REACT_MAX_ITERATIONS,
-)
 from ..section_registry import (
     SECTION_KIND_ALIAS_MATCHES,
     SECTION_KIND_ALIASES,
@@ -53,6 +48,9 @@ FIELD_ONLY_LABEL_RE = compiled_agent_pattern("editing.field_only_label")
 CONTENT_LABEL_RE = compiled_agent_pattern("editing.content_label")
 MIXED_FIELD_LABEL_RE = compiled_agent_pattern("editing.mixed_field_label")
 REQUEST_PREFIX_RE = compiled_agent_pattern("editing.request_prefix")
+QUALIFIED_ITEM_DIFF_FIELDS = frozenset(
+    {"name", "role", "url", "description", "highlights"},
+)
 
 
 def _resume_sections(resume: dict[str, Any]) -> list[dict[str, Any]]:
@@ -333,9 +331,7 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
 
     if not isinstance(value, dict):
         return None
-    if not set(value).issubset(
-        {"id", "section_type", "sectionType", "kind", "title", "items"}
-    ):
+    if not set(value).issubset({"id", "section_type", "kind", "title", "items"}):
         return None
     if "id" in value and not isinstance(value["id"], str):
         return None
@@ -343,14 +339,12 @@ def _normalized_section(value: object) -> dict[str, Any] | None:
         return None
     if _section_kind_aliases_conflict(
         value.get("section_type"),
-        value.get("sectionType"),
         value.get("kind"),
     ):
         return None
 
     kind = _normalized_section_kind(
         value.get("section_type"),
-        value.get("sectionType"),
         value.get("kind"),
     )
     items = value.get("items")
@@ -976,19 +970,6 @@ def _model_plan_steps(value: object) -> list[EditPlanStep]:
     return steps
 
 
-def _react_max_iterations(request: AgentChatRequest) -> int:
-    """Return the bounded per-request ReAct attempt limit."""
-
-    raw_value = request.settings.get("maxReActIterations")
-    if not isinstance(raw_value, int) or isinstance(raw_value, bool):
-        raw_value = DEFAULT_REACT_MAX_ITERATIONS
-
-    return min(
-        MAX_REACT_MAX_ITERATIONS,
-        max(MIN_REACT_MAX_ITERATIONS, raw_value),
-    )
-
-
 def _bounded_index(index: int | None, length: int) -> int:
     """Return a safe insertion index for draft mutations."""
 
@@ -1187,6 +1168,209 @@ def _operation_diff_value(
     return _operation_snapshot(resume, operation)
 
 
+def _minimal_moved_ids(before_ids: list[str], after_ids: list[str]) -> set[str]:
+    """Return IDs outside one deterministic longest common subsequence."""
+
+    lengths = [[0] * (len(after_ids) + 1) for _ in range(len(before_ids) + 1)]
+    for before_index in range(len(before_ids) - 1, -1, -1):
+        for after_index in range(len(after_ids) - 1, -1, -1):
+            if before_ids[before_index] == after_ids[after_index]:
+                lengths[before_index][after_index] = (
+                    lengths[before_index + 1][after_index + 1] + 1
+                )
+            else:
+                lengths[before_index][after_index] = max(
+                    lengths[before_index + 1][after_index],
+                    lengths[before_index][after_index + 1],
+                )
+
+    stable_ids: set[str] = set()
+    before_index = 0
+    after_index = 0
+    while before_index < len(before_ids) and after_index < len(after_ids):
+        if before_ids[before_index] == after_ids[after_index]:
+            stable_ids.add(before_ids[before_index])
+            before_index += 1
+            after_index += 1
+        elif (
+            lengths[before_index + 1][after_index]
+            >= lengths[before_index][after_index + 1]
+        ):
+            before_index += 1
+        else:
+            after_index += 1
+
+    return set(after_ids) - stable_ids
+
+
+def _operation_review_diffs(
+    *,
+    edit: AgentResumeEditSuggestion,
+    before_value: object,
+    after_value: object,
+    locale: str,
+    section_kind: str,
+    before_previous_id: str = "",
+    before_next_id: str = "",
+) -> list[dict[str, Any]]:
+    """Return canonical review diffs derived only from one normalized operation."""
+
+    operation = edit.operation or {}
+    operation_type = str(operation.get("type") or "")
+    if operation_type in {"insert_section", "insert_item"}:
+        diff_kind = "added"
+    elif operation_type in {"delete_section", "delete_item"}:
+        diff_kind = "deleted"
+    elif operation_type in {"reorder_sections", "reorder_items"}:
+        diff_kind = "moved"
+    else:
+        diff_kind = "modified"
+
+    common: dict[str, Any] = {
+        "operationId": edit.id,
+        "kind": diff_kind,
+    }
+    section_id = _model_string(operation.get("sectionId"))
+    if operation_type == "insert_section":
+        inserted_section = operation.get("section")
+        if isinstance(inserted_section, dict):
+            section_id = _model_string(inserted_section.get("id"))
+    if section_id:
+        common["sectionId"] = section_id
+    item_id = _model_string(operation.get("itemId"))
+    if operation_type == "insert_item":
+        inserted_item = operation.get("item")
+        if isinstance(inserted_item, dict):
+            item_id = _model_string(inserted_item.get("id"))
+    if item_id:
+        common["itemId"] = item_id
+    if diff_kind == "deleted" and before_previous_id:
+        common["beforePreviousId"] = before_previous_id
+    if diff_kind == "deleted" and before_next_id:
+        common["beforeNextId"] = before_next_id
+
+    if operation_type in {"reorder_sections", "reorder_items"}:
+        if not (
+            isinstance(before_value, list)
+            and isinstance(after_value, list)
+            and all(isinstance(value, str) for value in before_value)
+            and all(isinstance(value, str) for value in after_value)
+        ):
+            return []
+        before_ids = _string_list(before_value)
+        after_ids = _string_list(after_value)
+        moved_ids = _minimal_moved_ids(before_ids, after_ids)
+        before_positions = {value: index for index, value in enumerate(before_ids)}
+        diffs: list[dict[str, Any]] = []
+        for after_index, moved_id in enumerate(after_ids):
+            before_index = before_positions.get(moved_id)
+            if before_index is None or moved_id not in moved_ids:
+                continue
+            if operation_type == "reorder_sections":
+                path = f"sections.{moved_id}"
+                identity = {"sectionId": moved_id}
+            else:
+                path = f"sections.{section_id}.items.{moved_id}"
+                identity = {"sectionId": section_id, "itemId": moved_id}
+            diffs.append(
+                {
+                    **common,
+                    **identity,
+                    "id": f"agent-diff-{edit.id}-{moved_id}",
+                    "path": path,
+                    "label": edit.title or path,
+                    "before": before_index,
+                    "after": after_index,
+                },
+            )
+        return diffs
+
+    if operation_type == "update_item":
+        patch = operation.get("patch")
+        if not (
+            isinstance(before_value, dict)
+            and isinstance(after_value, dict)
+            and isinstance(patch, dict)
+        ):
+            return []
+        base_path = _operation_target(operation)
+        return [
+            {
+                **common,
+                "id": f"agent-diff-{edit.id}-{field}",
+                "path": f"{base_path}.{field}",
+                "label": _review_diff_field_label(
+                    field,
+                    locale=locale,
+                    section_kind=section_kind,
+                ),
+                "before": deepcopy(before_value.get(field)),
+                "after": deepcopy(after_value.get(field)),
+            }
+            for field in patch
+            if before_value.get(field) != after_value.get(field)
+        ]
+
+    if operation_type == "update_section":
+        patch = operation.get("patch")
+        if not (
+            isinstance(before_value, dict)
+            and isinstance(after_value, dict)
+            and isinstance(patch, dict)
+        ):
+            return []
+        base_path = _operation_target(operation)
+        return [
+            {
+                **common,
+                "id": f"agent-diff-{edit.id}-{field}",
+                "path": f"{base_path}.{field}",
+                "label": _review_diff_field_label(field, locale=locale),
+                "before": deepcopy(before_value.get(field)),
+                "after": deepcopy(after_value.get(field)),
+            }
+            for field in patch
+            if before_value.get(field) != after_value.get(field)
+        ]
+
+    path = _operation_target(operation)
+    field = path.rsplit(".", maxsplit=1)[-1]
+    label = (
+        _review_diff_field_label(field, locale=locale)
+        if operation_type == "replace_field"
+        else edit.title or path
+    )
+    return [
+        {
+            **common,
+            "id": f"agent-diff-{edit.id}",
+            "path": path,
+            "label": label,
+            "before": deepcopy(before_value),
+            "after": deepcopy(after_value),
+        },
+    ]
+
+
+def _review_diff_field_label(
+    field: str,
+    *,
+    locale: str,
+    section_kind: str = "",
+) -> str:
+    """Return one localized, user-facing label for a canonical field diff."""
+
+    field_label = agent_text(locale, f"diff.field.{field}")
+    if section_kind and field in QUALIFIED_ITEM_DIFF_FIELDS:
+        return agent_text(
+            locale,
+            "diff.label.item_field",
+            kind=agent_text(locale, f"diff.kind.{section_kind}"),
+            field=field_label,
+        )
+    return field_label
+
+
 def _apply_edit_operation(
     resume: dict[str, Any],
     operation: dict[str, Any],
@@ -1332,17 +1516,73 @@ def _apply_edit_operations(
 def _edit_observations(
     before_resume: dict[str, Any],
     edits: list[AgentResumeEditSuggestion],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    *,
+    locale: str,
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
     """Build compact model observations and complete review diffs in sequence."""
 
     observations: list[dict[str, Any]] = []
-    diffs: list[dict[str, Any]] = []
+    diffs_by_edit: list[list[dict[str, Any]]] = []
     working_resume = deepcopy(before_resume)
     for edit in edits:
         operation = edit.operation or {}
+        operation_type = operation.get("type")
+        before_previous_id = ""
+        before_next_id = ""
+        if operation_type == "delete_section":
+            section_id = _model_string(operation.get("sectionId"))
+            current_sections = _resume_sections(working_resume)
+            before_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(current_sections)
+                    if candidate.get("id") == section_id
+                ),
+                None,
+            )
+            if before_index is not None:
+                if before_index > 0:
+                    before_previous_id = _model_string(
+                        current_sections[before_index - 1].get("id"),
+                    )
+                if before_index + 1 < len(current_sections):
+                    before_next_id = _model_string(
+                        current_sections[before_index + 1].get("id"),
+                    )
+        elif operation_type == "delete_item":
+            current_section = _find_resume_section(
+                working_resume,
+                _model_string(operation.get("sectionId")),
+            )
+            current_items = current_section.get("items") if current_section else None
+            item_id = _model_string(operation.get("itemId"))
+            if isinstance(current_items, list):
+                before_index = next(
+                    (
+                        index
+                        for index, candidate in enumerate(current_items)
+                        if isinstance(candidate, dict)
+                        and candidate.get("id") == item_id
+                    ),
+                    None,
+                )
+                if before_index is not None:
+                    if before_index > 0:
+                        previous_item = current_items[before_index - 1]
+                        if isinstance(previous_item, dict):
+                            before_previous_id = _model_string(previous_item.get("id"))
+                    if before_index + 1 < len(current_items):
+                        next_item = current_items[before_index + 1]
+                        if isinstance(next_item, dict):
+                            before_next_id = _model_string(next_item.get("id"))
         raw_before = deepcopy(
             _operation_diff_value(working_resume, operation, after=False),
         )
+        section = _find_resume_section(
+            working_resume,
+            _model_string(operation.get("sectionId")),
+        )
+        section_kind = _model_string(section.get("kind")) if section else ""
         before_value = _compact_observation_value(
             _operation_observation_value(working_resume, operation, after=False),
         )
@@ -1372,28 +1612,19 @@ def _edit_observations(
                 ),
             },
         )
-        operation_type = str(operation.get("type") or "")
-        if operation_type in {"insert_section", "insert_item"}:
-            diff_kind = "added"
-        elif operation_type in {"delete_section", "delete_item"}:
-            diff_kind = "deleted"
-        elif operation_type in {"reorder_sections", "reorder_items"}:
-            diff_kind = "moved"
-        else:
-            diff_kind = "modified"
-        diffs.append(
-            {
-                "id": f"agent-diff-{edit.id}",
-                "operationId": edit.id,
-                "path": edit.target,
-                "kind": diff_kind,
-                "label": edit.title or edit.target,
-                "before": raw_before,
-                "after": raw_after,
-            },
+        diffs_by_edit.append(
+            _operation_review_diffs(
+                edit=edit,
+                before_value=raw_before,
+                after_value=raw_after,
+                locale=locale,
+                section_kind=section_kind,
+                before_previous_id=before_previous_id,
+                before_next_id=before_next_id,
+            ),
         )
 
-    return observations, diffs
+    return observations, diffs_by_edit
 
 
 def _merge_edits(

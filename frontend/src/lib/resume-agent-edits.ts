@@ -34,6 +34,7 @@ export function applyAgentEditsToDraft(
   const workingResume = cloneResume(baseResume);
   const diffs: ResumeDraftDiff[] = [];
   const errors: AgentDraftApplyError[] = [];
+  let appliedEditCount = 0;
 
   edits.forEach((edit) => {
     const operation = fallbackOperation(edit);
@@ -51,7 +52,8 @@ export function applyAgentEditsToDraft(
     const result = applyOperation(workingResume, edit, operation);
 
     if (result.ok) {
-      diffs.push(result.diff);
+      diffs.push(...result.diffs);
+      appliedEditCount += 1;
       return;
     }
 
@@ -78,7 +80,7 @@ export function applyAgentEditsToDraft(
   return {
     resume: workingResume,
     diffs,
-    appliedCount: diffs.length,
+    appliedCount: appliedEditCount,
     errors,
   };
 }
@@ -103,6 +105,7 @@ export function applyAgentEditsWithMerge(
   const baseWorking = cloneResume(baseResume);
   const currentWorking = cloneResume(currentResume);
   const diffs: ResumeDraftDiff[] = [];
+  let appliedEditCount = 0;
 
   for (const edit of edits) {
     const operation = fallbackOperation(edit);
@@ -133,8 +136,9 @@ export function applyAgentEditsWithMerge(
       };
     }
 
-    if (merged.diff) {
-      diffs.push(merged.diff);
+    if (merged.diffs.length > 0) {
+      diffs.push(...merged.diffs);
+      appliedEditCount += 1;
     }
 
     const baseResult = applyOperation(baseWorking, edit, operation);
@@ -157,7 +161,7 @@ export function applyAgentEditsWithMerge(
   return {
     resume: currentWorking,
     diffs,
-    appliedCount: diffs.length,
+    appliedCount: appliedEditCount,
     errors: [],
   };
 }

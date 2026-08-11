@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -7,11 +8,9 @@ from ..common import (
     async_post_json,
     async_stream_json,
     close_async_stream,
-    gemini_usage,
     map_stop_reason,
     message_content_parts,
     message_content_text,
-    openai_style_function_tools,
     parsed_tool_call,
     provider_base_url,
     system_and_messages,
@@ -19,9 +18,11 @@ from ..common import (
     usage_from_values,
 )
 from ..errors import LlmRequestError
+from ..tool_schema import portable_tool_schema
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmInputMessage,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
@@ -37,7 +38,7 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> LlmAssistantMessage:
     """Call Gemini's interaction endpoint and require visible text."""
 
@@ -51,7 +52,7 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
 ) -> LlmAssistantMessage:
     """Ask Gemini to choose zero or more tools."""
@@ -62,7 +63,7 @@ async def complete_tool_call(
 
 def stream(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream Gemini interaction SSE events into the shared LLM contract."""
 
@@ -71,7 +72,7 @@ def stream(
 
 def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream a Gemini tool selection without exposing partial calls."""
@@ -81,12 +82,12 @@ def stream_tool_call(
 
 async def _stream_interaction(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     provider_stream = async_stream_json(
-        f"{provider_base_url(config.base_url)}/interactions?alt=sse",
-        headers=_headers(config),
+        f"{provider_base_url(config.base_url)}/interactions",
+        headers={**_headers(config), "Accept": "text/event-stream"},
         payload={**gemini_payload(config, messages, tools), "stream": True},
         timeout_seconds=config.timeout_seconds,
     )
@@ -100,20 +101,14 @@ async def _stream_interaction(
     try:
         async for event in provider_stream:
             if _is_error_event(event):
-                raise LlmRequestError(_stream_error_message(event))
+                raise LlmRequestError("Model provider stream failed.")
 
             event_type = _stream_event_type(event)
-            if event_type == "ping":
-                continue
             if event_type == "interaction.created":
                 yield LlmStreamEvent(type="activity")
                 continue
             if event_type == "interaction.status_update":
-                if event.get("status") in {
-                    "queued",
-                    "in_progress",
-                    "requires_action",
-                }:
+                if event.get("status") in {"in_progress", "requires_action"}:
                     yield LlmStreamEvent(type="activity")
                 continue
 
@@ -129,7 +124,31 @@ async def _stream_interaction(
                         "Model provider returned an invalid stream step.",
                     )
                 steps[index] = dict(step)
-                yield LlmStreamEvent(type="activity")
+                if step.get("type") == "function_call":
+                    initial_arguments = step.get("arguments")
+                    if isinstance(initial_arguments, dict) and initial_arguments:
+                        argument_parts[index] = [
+                            json.dumps(initial_arguments, ensure_ascii=False),
+                        ]
+                content = step.get("content")
+                initial_texts = (
+                    [
+                        block["text"]
+                        for block in content
+                        if isinstance(block, dict)
+                        and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                        and block["text"]
+                    ]
+                    if step.get("type") == "model_output" and isinstance(content, list)
+                    else []
+                )
+                if initial_texts:
+                    text_parts[index] = initial_texts
+                    for text in initial_texts:
+                        yield LlmStreamEvent(type="text_delta", delta=text)
+                else:
+                    yield LlmStreamEvent(type="activity")
                 continue
 
             if event_type == "step.delta":
@@ -233,7 +252,7 @@ async def _stream_interaction(
 
 async def _post_interaction(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return await async_post_json(
@@ -246,7 +265,7 @@ async def _post_interaction(
 
 def gemini_payload(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     system, non_system = system_and_messages(messages)
@@ -260,18 +279,37 @@ def gemini_payload(
         # not fold them into user text or the agent's hard rules lose weight.
         payload["system_instruction"] = system
     if tools:
-        payload["tools"] = openai_style_function_tools(tools)
+        payload["tools"] = _gemini_function_tools(tools)
 
     return payload
 
 
-def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _gemini_function_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for tool in tools:
+        function = tool_function(tool)
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        declarations.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "parameters": portable_tool_schema(function.get("parameters")),
+            },
+        )
+    return declarations
+
+
+def gemini_input(messages: list[LlmInputMessage]) -> list[dict[str, Any]]:
     input_items: list[dict[str, Any]] = []
     tool_call_names: dict[str, str] = {}
 
     for message in messages:
-        role = message.get("role")
-        if role == "tool":
+        if message["role"] == "tool":
             tool_call_id = str(message.get("tool_call_id") or "")
             # Gemini function results need the function name as well as the id.
             # Recover the name from earlier replayed function_call steps.
@@ -290,7 +328,7 @@ def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
             continue
 
-        if role == "assistant":
+        if message["role"] == "assistant":
             provider_state = message.get("provider_state")
             continuation_steps = (
                 provider_state.get("steps")
@@ -302,10 +340,8 @@ def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 for step in continuation_steps:
                     if not isinstance(step, dict):
                         continue
-                    # Interactions are stateless. Gemini expects prior model-
-                    # generated thought/function_call steps before matching
-                    # function_result items, so replay only the compact
-                    # continuation state stored by `_message_from_payload`.
+                    # Interactions are stateless. Replay Gemini's generated
+                    # steps exactly once and in their original order.
                     input_items.append(step)
                     appended_provider_step = True
                     if step.get("type") == "function_call":
@@ -315,6 +351,15 @@ def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             tool_call_names[call_id] = name
                 if appended_provider_step:
                     continue
+
+            content = _gemini_content(message.get("content"))
+            if content:
+                input_items.append(
+                    {
+                        "type": "model_output",
+                        "content": content,
+                    },
+                )
 
             for tool_call in message.get("tool_calls") or []:
                 function = tool_function(tool_call)
@@ -338,7 +383,7 @@ def gemini_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 )
             continue
 
-        if role == "user":
+        if message["role"] == "user":
             input_items.append(
                 {
                     "type": "user_input",
@@ -383,12 +428,11 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
         "completed",
         "requires_action",
         "incomplete",
-        "budget_exceeded",
     }:
         raise LlmRequestError(
             "Model provider interaction did not complete successfully.",
         )
-    if status in {"incomplete", "budget_exceeded"}:
+    if status == "incomplete":
         payload = {
             **payload,
             "steps": [
@@ -398,9 +442,13 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
             ],
         }
     tool_calls = _tool_calls(payload)
+    # In Gemini Interactions v1, a client function call is actionable only
+    # when the authoritative terminal status is `requires_action`. Treat a
+    # call inside `completed` as a malformed batch instead of executing work
+    # that the provider explicitly declared finished.
     if status == "completed" and tool_calls:
         raise LlmRequestError(
-            "Model provider completed interaction contained a function call.",
+            "Model provider returned a function call with invalid terminal status.",
         )
     if status == "requires_action" and not tool_calls:
         raise LlmRequestError(
@@ -414,8 +462,8 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
         usage=_usage(payload),
         stop_reason="tool_calls" if tool_calls else _stop_reason(payload),
         response_id=str(payload.get("id") or "") or None,
-        # Gemini requires prior thought/function steps to be replayed before
-        # tool results; store only those continuation steps, not the raw payload.
+        # Stateless replay needs Gemini's generated output steps in order,
+        # without provider input/result steps from the raw interaction.
         provider_state={"steps": provider_steps} if provider_steps else {},
     )
 
@@ -466,8 +514,6 @@ def _tool_calls(payload: dict[str, Any]) -> list[LlmToolCall]:
                 "Model provider returned an invalid function call batch.",
             )
         seen_call_ids.add(call_id)
-        import json
-
         raw_arguments = step.get("_raw_arguments")
         if not isinstance(raw_arguments, str):
             raw_arguments = json.dumps(arguments, ensure_ascii=False)
@@ -492,6 +538,7 @@ def _provider_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(step, dict) or step.get("type") not in {
             "thought",
             "function_call",
+            "model_output",
         }:
             continue
         provider_step = dict(step)
@@ -503,8 +550,6 @@ def _provider_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _stop_reason(payload: dict[str, Any]) -> LlmStopReason:
     status = payload.get("status")
-    if status == "budget_exceeded":
-        return "length"
     if status:
         return map_stop_reason(status)
 
@@ -535,7 +580,7 @@ def _usage(payload: dict[str, Any]) -> LlmUsage | None:
             reasoning_tokens=usage.get("total_thought_tokens"),
         )
 
-    return gemini_usage(payload)
+    return None
 
 
 def _stream_event_type(payload: dict[str, Any]) -> str:
@@ -576,6 +621,10 @@ def _stream_payload(
                 name=str(step.get("name") or "").strip(),
                 raw_arguments=raw_arguments,
             )
+            if call.parse_error:
+                raise LlmRequestError(
+                    "Model provider returned invalid function call arguments.",
+                )
             step["arguments"] = call.arguments
             step["_raw_arguments"] = raw_arguments
         assembled_steps.append(step)
@@ -584,20 +633,7 @@ def _stream_payload(
 
 
 def _is_error_event(payload: dict[str, Any]) -> bool:
-    return _stream_event_type(payload) in {
-        "error",
-        "interaction.failed",
-    } or isinstance(payload.get("error"), dict)
-
-
-def _stream_error_message(payload: dict[str, Any]) -> str:
-    error = payload.get("error")
-    if isinstance(error, dict):
-        message = error.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-        code = error.get("code") or error.get("status") or error.get("type")
-        if code:
-            return f"Model provider stream failed: {code}"
-
-    return "Model provider stream failed."
+    return _stream_event_type(payload) == "error" or isinstance(
+        payload.get("error"),
+        dict,
+    )

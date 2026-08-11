@@ -99,7 +99,10 @@ export function AgentSettingsTab({
               })
             }
           >
-            <SelectTrigger aria-label={t.defaultAgentModel} className="w-full">
+            <SelectTrigger
+              aria-label={t.defaultAgentModel}
+              className="ml-auto w-64 max-w-full"
+            >
               <SelectValue placeholder={t.agentModelNotConfigured}>
                 {selectedDefaultModel ? (
                   <ModelOption
@@ -136,16 +139,33 @@ export function AgentSettingsTab({
           label={t.agentResponseLanguage}
           description={t.agentResponseLanguageHint}
         >
-          <OptionToggleGroup
-            items={responseLanguageItems}
+          <Select
             value={agentSettings.responseLanguage}
-            onChange={(value) =>
-              onAgentSettingsChange({
-                ...agentSettings,
-                responseLanguage: value,
-              })
-            }
-          />
+            onValueChange={(value) => {
+              if (value === "follow" || value === "zh" || value === "en") {
+                onAgentSettingsChange({
+                  ...agentSettings,
+                  responseLanguage: value,
+                });
+              }
+            }}
+          >
+            <SelectTrigger
+              aria-label={t.agentResponseLanguage}
+              className="ml-auto w-48 max-w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectGroup>
+                {responseLanguageItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <Separator className="mx-5 w-auto sm:mx-6" />
 

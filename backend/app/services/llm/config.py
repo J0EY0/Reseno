@@ -4,6 +4,7 @@ from sqlite3 import Connection
 from typing import Any
 
 from app.services.llm_secrets import decrypt_api_key
+from app.services.model_providers import resolve_model_provider_base_url
 
 from .common import DEFAULT_OPENAI_BASE_URL, REQUEST_TIMEOUT_SECONDS
 from .types import AgentLlmConfig
@@ -91,7 +92,11 @@ def resolve_agent_llm_config(
         provider_kind=row["provider_kind"],
         api_family=row["api_family"],
         model=row["model"],
-        base_url=row["base_url"] or DEFAULT_OPENAI_BASE_URL,
+        base_url=resolve_model_provider_base_url(
+            row["provider"],
+            row["provider_kind"],
+            row["base_url"] or DEFAULT_OPENAI_BASE_URL,
+        ),
         api_key=api_key,
         temperature=(
             float(row["temperature"]) if row["temperature"] is not None else None

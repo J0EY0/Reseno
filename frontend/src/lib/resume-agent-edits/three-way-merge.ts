@@ -13,7 +13,7 @@ import {
 } from "./transaction-core";
 
 type MergeOperationResult =
-  | { ok: true; diff?: ResumeDraftDiff }
+  | { ok: true; diffs: ResumeDraftDiff[] }
   | { ok: false; target: string };
 
 function mergeConflict(target: string): MergeOperationResult {
@@ -28,7 +28,7 @@ function applyMergedOperation(
   const result = applyOperation(resume, edit, operation);
 
   return result.ok
-    ? { ok: true, diff: result.diff }
+    ? { ok: true, diffs: result.diffs }
     : mergeConflict(result.target);
 }
 
@@ -52,7 +52,7 @@ export function applyOperationWithMerge(
       const currentValue = currentResume.basic[field];
 
       if (isDeepEqual(currentValue, operation.value)) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!isDeepEqual(currentValue, baseValue)) {
         return mergeConflict(operation.path);
@@ -80,7 +80,7 @@ export function applyOperationWithMerge(
 
       const desiredValue = operation.patch.title;
       if (isDeepEqual(currentMatch.section.title, desiredValue)) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!isDeepEqual(currentMatch.section.title, baseMatch.section.title)) {
         return mergeConflict(`${sectionPath(operation.sectionId)}.title`);
@@ -96,7 +96,7 @@ export function applyOperationWithMerge(
         return mergeConflict(sectionPath(operation.sectionId));
       }
       if (!currentMatch) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!isDeepEqual(currentMatch.section, baseMatch.section)) {
         return mergeConflict(sectionPath(operation.sectionId));
@@ -109,7 +109,7 @@ export function applyOperationWithMerge(
       const currentIds = currentResume.sections.map((section) => section.id);
 
       if (sameIds(currentIds, operation.sectionIds)) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!sameIds(currentIds, baseIds)) {
         return mergeConflict("sections");
@@ -183,7 +183,7 @@ export function applyOperationWithMerge(
       }
 
       if (pendingFields.length === 0) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
 
       const pendingPatch = Object.fromEntries(
@@ -210,7 +210,7 @@ export function applyOperationWithMerge(
         return mergeConflict(target);
       }
       if (!currentItem) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!isDeepEqual(currentItem.item, baseItem.item)) {
         return mergeConflict(target);
@@ -230,7 +230,7 @@ export function applyOperationWithMerge(
       const baseIds = baseSection.section.items.map((item) => item.id);
       const currentIds = currentSection.section.items.map((item) => item.id);
       if (sameIds(currentIds, operation.itemIds)) {
-        return { ok: true };
+        return { ok: true, diffs: [] };
       }
       if (!sameIds(currentIds, baseIds)) {
         return mergeConflict(target);

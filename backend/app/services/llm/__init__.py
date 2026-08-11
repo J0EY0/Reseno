@@ -9,6 +9,7 @@ from .errors import LlmRequestError, LlmTimeoutError
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmRequestContext,
     LlmStreamEvent,
     LlmToolCall,
     LlmToolValidationError,
@@ -19,6 +20,7 @@ __all__ = [
     "AgentLlmConfig",
     "LlmAssistantMessage",
     "LlmRequestError",
+    "LlmRequestContext",
     "LlmTimeoutError",
     "LlmStreamEvent",
     "LlmToolCall",

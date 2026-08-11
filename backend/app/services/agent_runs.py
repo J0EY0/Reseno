@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import closing
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Final
 from uuid import uuid4
@@ -774,6 +775,27 @@ def _cancelled_replay_message(run: AgentRun) -> AgentChatMessage | None:
         return None
 
     payload = dict(run.replay_message)
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        completed_at = datetime.now(UTC).isoformat()
+        payload["tools"] = [
+            {
+                **tool,
+                "state": "output-error",
+                "errorText": "Cancelled.",
+                "completedAt": completed_at,
+            }
+            if isinstance(tool, dict)
+            and tool.get("state")
+            in {
+                "approval-requested",
+                "approval-responded",
+                "input-available",
+                "input-streaming",
+            }
+            else tool
+            for tool in tools
+        ]
     payload.update(
         {
             "actions": [],

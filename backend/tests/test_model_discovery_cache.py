@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -43,6 +44,47 @@ def _write_provider_cache_in_process(
     ]
     start_barrier.wait(timeout=15)
     write_cached_provider_models(provider_id, models)
+
+
+def test_cache_rejects_pre_v1_google_discovery_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+    cache_path = tmp_path / "model-discovery-cache" / "google.json"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "provider": "google",
+                "fetchedAt": "2026-08-01T00:00:00+00:00",
+                "models": [
+                    {
+                        "id": "gemini-beta-only",
+                        "label": "gemini-beta-only",
+                        "contextWindowTokens": 1_000_000,
+                        "maxOutputTokens": 65_536,
+                        "supportsImage": True,
+                        "supportsThinking": True,
+                        "supportsTools": True,
+                        "supportsStreaming": True,
+                        "metadataSource": "provider",
+                    },
+                ],
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assert read_cached_provider_models("google") is None
+    finally:
+        get_settings.cache_clear()
 
 
 def test_different_processes_preserve_each_provider_cache(

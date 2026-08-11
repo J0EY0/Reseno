@@ -155,7 +155,11 @@ def infer_agent_task_intent(request: AgentChatRequest) -> AgentTaskIntent:
     if not prompt:
         return AgentTaskIntent.ANSWER_ADVICE
 
-    if _matches_intent(prompt, "explain_draft"):
+    if _matches_intent(prompt, "explain_draft") and (
+        _has_pending_draft(request)
+        or _matches_intent(prompt, "draft_reference")
+        or _matches_intent(prompt, "previous_draft_reference")
+    ):
         return AgentTaskIntent.EXPLAIN_DRAFT
 
     if _has_pending_draft(request) and (
@@ -268,7 +272,9 @@ def _read_tools_for_request(
     request: AgentChatRequest,
     intent: AgentTaskIntent,
 ) -> frozenset[str]:
-    tools = set(LOCAL_READ_TOOL_NAMES | CONTROL_TOOL_NAMES)
+    tools = set((LOCAL_READ_TOOL_NAMES - {"draft_diff_summary"}) | CONTROL_TOOL_NAMES)
+    if _has_pending_draft(request):
+        tools.add("draft_diff_summary")
     prompt = _current_prompt(request)
     target_search_forbidden = rejects_target_context_update(prompt)
     if not target_search_forbidden and intent in {

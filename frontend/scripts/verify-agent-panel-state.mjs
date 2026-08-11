@@ -75,6 +75,7 @@ assert(
   panelState.shouldShowAgentDraftActions({
     draft: matchingDraft,
     isResponding: false,
+    isSessionReady: true,
     messageId: "assistant-2",
     response: committedResponse,
   }),
@@ -84,6 +85,17 @@ assert(
   !panelState.shouldShowAgentDraftActions({
     draft: matchingDraft,
     isResponding: false,
+    isSessionReady: false,
+    messageId: "assistant-2",
+    response: committedResponse,
+  }),
+  "Draft actions must stay hidden until session hydration is complete.",
+);
+assert(
+  !panelState.shouldShowAgentDraftActions({
+    draft: matchingDraft,
+    isResponding: false,
+    isSessionReady: true,
     messageId: "assistant-1",
     response: committedResponse,
   }),

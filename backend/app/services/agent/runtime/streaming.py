@@ -3,12 +3,14 @@ import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from sqlite3 import Connection
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
     AgentKnowledgeItem,
+    AgentSource,
     AgentTimelinePart,
 )
 from app.services.agent.request_context import accumulated_transaction_edits
@@ -22,17 +24,31 @@ from app.services.llm import (
     async_stream_chat,
     resolve_agent_llm_config,
 )
+from app.services.llm.types import LlmInputMessage
 
 from ..editing import _string_list
 from ..localization import agent_text
 from ..parsing_patterns import agent_patterns
-from .context import AgentRunAborted, AgentRuntimeContext
+from .compaction import prepare_agent_messages
+from .context import (
+    AgentRunAborted,
+    AgentRuntimeContext,
+    agent_llm_request_context,
+)
 from .loop import async_iter_agent_tool_call_loop
 from .messages import (
-    build_agent_messages,
     has_native_current_request_attachments,
     is_native_attachment_unsupported,
 )
+
+_CITATION_TAG_START_PATTERN = re.compile(r"</?citation\b", flags=re.IGNORECASE)
+_CITATION_OPEN_TAG_PATTERN = re.compile(
+    r'<citation\s+source_ids="([^"]*)"\s*>',
+    flags=re.IGNORECASE,
+)
+_CITATION_CLOSE_TAG_PATTERN = re.compile(r"</citation\s*>", flags=re.IGNORECASE)
+_CITATION_SOURCE_ID_PATTERN = re.compile(r"^source-[a-z0-9]+(?:-[a-z0-9]+)*$")
+_MAX_CITATION_SOURCES = 3
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -97,14 +113,149 @@ def _merge_llm_response(
         if parsed_knowledge:
             knowledge = parsed_knowledge[:4]
 
+    text = _sanitize_response_citations(text, draft.sources)
+    timeline = [
+        part.model_copy(
+            update={
+                "text": _sanitize_response_citations(part.text, draft.sources),
+            },
+        )
+        if part.type == "text"
+        else part
+        for part in draft.timeline
+    ]
+
     return draft.model_copy(
         update={
             "text": text,
+            "timeline": timeline,
             "suggestions": suggestions,
             "knowledge": knowledge,
             "quick_replies": quick_replies,
         },
     )
+
+
+def _sanitize_response_citations(
+    text: str,
+    sources: list[AgentSource],
+) -> str:
+    """Keep only complete claim citations backed by known public web sources."""
+
+    known_source_ids = _known_citation_source_ids(sources)
+    tokens, well_formed = _citation_tag_tokens(text)
+    if not tokens:
+        return text
+
+    pairs: list[tuple[tuple[int, int, str, str], tuple[int, int, str, str]]] = []
+    opening: tuple[int, int, str, str] | None = None
+
+    if well_formed:
+        for token in tokens:
+            if token[2] == "open":
+                if opening is not None:
+                    well_formed = False
+                    break
+                opening = token
+                continue
+            if opening is None:
+                well_formed = False
+                break
+            pairs.append((opening, token))
+            opening = None
+        if opening is not None:
+            well_formed = False
+
+    if not well_formed:
+        return _strip_citation_tokens(text, tokens)
+
+    parts: list[str] = []
+    cursor = 0
+
+    for open_token, close_token in pairs:
+        parts.append(text[cursor : open_token[0]])
+        claim = text[open_token[1] : close_token[0]]
+        raw_ids = [source_id.strip() for source_id in open_token[3].split(",")]
+        cited_ids = list(dict.fromkeys(raw_ids))
+        valid_group = (
+            bool(cited_ids)
+            and len(cited_ids) <= _MAX_CITATION_SOURCES
+            and all(
+                source_id
+                and _CITATION_SOURCE_ID_PATTERN.fullmatch(source_id)
+                and source_id in known_source_ids
+                for source_id in raw_ids
+            )
+        )
+        if valid_group:
+            parts.append(
+                '<citation source_ids="'
+                + ",".join(cited_ids)
+                + '">'
+                + claim
+                + "</citation>",
+            )
+        else:
+            parts.append(claim)
+        cursor = close_token[1]
+
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _known_citation_source_ids(sources: list[AgentSource]) -> set[str]:
+    known_source_ids: set[str] = set()
+    for source in sources:
+        if source.source_type != "web" or not isinstance(source.url, str):
+            continue
+        parsed_url = urlsplit(source.url)
+        if parsed_url.scheme.casefold() in {"http", "https"} and parsed_url.netloc:
+            known_source_ids.add(source.id)
+    return known_source_ids
+
+
+def _citation_tag_tokens(
+    text: str,
+) -> tuple[list[tuple[int, int, str, str]], bool]:
+    """Tokenize citation tags once so malformed output stays linear-time."""
+
+    tokens: list[tuple[int, int, str, str]] = []
+    cursor = 0
+    well_formed = True
+
+    while match := _CITATION_TAG_START_PATTERN.search(text, cursor):
+        tag_end = text.find(">", match.end())
+        if tag_end < 0:
+            tokens.append((match.start(), len(text), "malformed", ""))
+            well_formed = False
+            break
+
+        end = tag_end + 1
+        raw_tag = text[match.start() : end]
+        open_match = _CITATION_OPEN_TAG_PATTERN.fullmatch(raw_tag)
+        if open_match:
+            tokens.append((match.start(), end, "open", open_match.group(1)))
+        elif _CITATION_CLOSE_TAG_PATTERN.fullmatch(raw_tag):
+            tokens.append((match.start(), end, "close", ""))
+        else:
+            tokens.append((match.start(), end, "malformed", ""))
+            well_formed = False
+        cursor = end
+
+    return tokens, well_formed
+
+
+def _strip_citation_tokens(
+    text: str,
+    tokens: list[tuple[int, int, str, str]],
+) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for start, end, _kind, _source_ids in tokens:
+        parts.append(text[cursor:start])
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def _direct_llm_response(
@@ -268,14 +419,18 @@ def _tool_stream_event(event_name: str, tool: dict[str, object]) -> str:
 
 async def _complete_chat_stream_events(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     runtime: AgentRuntimeContext,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Yield provider stream events inside the agent cancellation budget."""
 
     if not config.supports_streaming:
         await runtime.checkpoint()
-        message = await async_complete_chat(config, messages)
+        message = await async_complete_chat(
+            config,
+            messages,
+            request_context=runtime.llm_request_context,
+        )
         await runtime.checkpoint()
         if message.content:
             yield LlmStreamEvent(type="text_delta", delta=message.content)
@@ -283,7 +438,11 @@ async def _complete_chat_stream_events(
         return
 
     await runtime.checkpoint()
-    async for event in async_stream_chat(config, messages):
+    async for event in async_stream_chat(
+        config,
+        messages,
+        request_context=runtime.llm_request_context,
+    ):
         await runtime.checkpoint()
         yield event
 
@@ -476,6 +635,9 @@ async def async_stream_agent_response(
         for chunk in stream_agent_message(message, on_complete):
             yield chunk
         return
+    runtime = runtime.with_llm_request_context(
+        agent_llm_request_context(request, config),
+    )
     draft: AgentChatMessage | None = None
     message_id = f"agent-msg-{uuid4().hex[:12]}"
 
@@ -501,7 +663,7 @@ async def async_stream_agent_response(
 
     try:
         runner = None
-        terminal_loop_text = False
+        terminal_loop_text = ""
         async for event in async_iter_agent_tool_call_loop(
             request,
             config,
@@ -509,11 +671,10 @@ async def async_stream_agent_response(
         ):
             if event.kind == "text":
                 visible_text = _visible_loop_text(event.text)
+                if event.terminal:
+                    terminal_loop_text = visible_text
+                    continue
                 if visible_text:
-                    if event.terminal and not timeline_parts:
-                        terminal_loop_text = True
-                        continue
-
                     separator = "\n\n" if raw_parts else ""
                     visible_delta = f"{separator}{visible_text}"
                     raw_parts.append(visible_delta)
@@ -523,7 +684,6 @@ async def async_stream_agent_response(
                         text="".join(raw_parts),
                         timeline=_timeline_payload(timeline_parts),
                     )
-                terminal_loop_text = terminal_loop_text or event.terminal
                 continue
             if event.kind == "tools":
                 tool_payloads = [
@@ -631,19 +791,21 @@ async def async_stream_agent_response(
             )
             return
 
-        if terminal_loop_text and (draft or (runner and runner.tools)):
-            raw_response = "".join(raw_parts).strip()
-            if not raw_response:
-                raise LlmRequestError("Model provider returned an empty response.")
-            message = (
-                draft.model_copy(
-                    update={
-                        "text": raw_response,
-                        "timeline": timeline_parts,
-                    },
-                )
-                if draft
-                else _direct_llm_response(raw_response, message_id=message_id)
+        terminal_tool_failed = bool(
+            runner
+            and runner.tools
+            and runner.tools[-1].state == "output-error"
+            and runner.non_edit_tool_failure_text(runner.tools[-1])
+        )
+        if (
+            terminal_loop_text
+            and draft
+            and (terminal_tool_failed or not _known_citation_source_ids(draft.sources))
+        ):
+            _append_timeline_text(timeline_parts, terminal_loop_text)
+            message = _merge_llm_response(
+                draft.model_copy(update={"timeline": timeline_parts}),
+                terminal_loop_text,
             )
             yield _sse_event(
                 "message_delta",
@@ -662,6 +824,12 @@ async def async_stream_agent_response(
             )
             return
 
+        if terminal_loop_text and draft:
+            # Public web claims need the one final-response pass that receives
+            # stable citationSources. Preserve the tool-loop summary only as
+            # input context; it is never published as an uncited answer.
+            draft = draft.model_copy(update={"text": terminal_loop_text})
+
         if raw_parts:
             raw_parts.append("\n\n")
         final_part_id = ""
@@ -676,9 +844,10 @@ async def async_stream_agent_response(
         final_timeout_retry_available = True
 
         while True:
-            messages = build_agent_messages(
+            messages = await prepare_agent_messages(
                 request,
                 config,
+                runtime,
                 mode="streaming_final",
                 draft=draft,
                 force_attachment_text=force_attachment_text,

@@ -110,8 +110,14 @@ export function CopilotPanel({
               promptActions={promptActions}
               t={t}
             />
+            <div
+              aria-hidden="true"
+              className="agent-thread-fade pointer-events-none absolute inset-y-0 left-3 right-3 z-[5]"
+              data-slot="agent-thread-fade"
+            />
             <section
               className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3"
+              data-slot="agent-composer"
               ref={composerRef}
             >
               <div className="pointer-events-auto relative">

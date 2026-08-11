@@ -5,7 +5,6 @@ from .operations import (
     _model_edit_suggestions,
     _model_edit_suggestions_with_diagnostics,
     _model_plan_steps,
-    _react_max_iterations,
     _string_list,
 )
 
@@ -16,6 +15,5 @@ __all__ = [
     "_model_edit_suggestions",
     "_model_edit_suggestions_with_diagnostics",
     "_model_plan_steps",
-    "_react_max_iterations",
     "_string_list",
 ]

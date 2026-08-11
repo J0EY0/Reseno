@@ -1364,6 +1364,125 @@ def test_async_search_summary_balances_queries_domains_and_source_quality(
     asyncio.run(run())
 
 
+def test_runner_web_search_can_use_more_than_half_of_integration_budget(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        slow_query = "slow-link-search"
+
+        async def fake_search(query: str):
+            if query == slow_query:
+                await asyncio.sleep(6.1)
+            return (
+                [
+                    agent_web.WebSearchResult(
+                        title=query,
+                        url=f"https://example.com/{query}",
+                        excerpt="Useful search evidence " * 5,
+                    ),
+                ],
+                None,
+            )
+
+        async def fake_fetch(url: str, **_kwargs):
+            return agent_web.WebReference(
+                title=url,
+                excerpt="Fetched reference evidence " * 5,
+                final_url=url,
+            )
+
+        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
+        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+        queries = ["first", "second", "third", "fourth", slow_query]
+        runner = _agent_runner(prompt="请搜索目标公司的公开职位信息")
+        tool, _ = await runner.run(
+            _web_tool_call(
+                "web_search",
+                {
+                    "purpose": "company_reference",
+                    "queries": queries,
+                    "maxResults": 5,
+                },
+            ),
+            AgentRuntimeContext(),
+        )
+
+        assert tool.state == "output-available"
+        assert tool.started_at is not None
+        assert tool.completed_at is not None
+        assert tool.output is not None
+        assert tool.output["queryCount"] == 5
+        assert tool.output["resultCount"] == 5
+        assert tool.output["timedOut"] is False
+        assert tool.output["partial"] is False
+
+    asyncio.run(run())
+
+
+def test_runner_web_search_terminalizes_true_integration_timeout(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        search_started = asyncio.Event()
+        search_cancelled = asyncio.Event()
+
+        async def blocked_search(_query: str):
+            search_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                search_cancelled.set()
+                raise
+
+        async def search_with_short_operation_budget(
+            queries: list[str],
+            max_results: int,
+        ) -> agent_web.WebSearchReference:
+            return await agent_web._async_search_web_reference_summary(
+                queries,
+                max_results,
+                operation_timeout=0.05,
+            )
+
+        monkeypatch.setattr(agent_web, "_async_search_web_results", blocked_search)
+        monkeypatch.setattr(
+            "app.services.agent._async_search_web_reference_summary",
+            search_with_short_operation_budget,
+        )
+
+        runner = _agent_runner(prompt="请搜索目标公司的公开职位信息")
+        tool, _ = await asyncio.wait_for(
+            runner.run(
+                _web_tool_call(
+                    "web_search",
+                    {
+                        "purpose": "company_reference",
+                        "queries": ["first", "second"],
+                        "maxResults": 2,
+                    },
+                ),
+                AgentRuntimeContext(),
+            ),
+            timeout=0.2,
+        )
+
+        assert search_started.is_set()
+        assert search_cancelled.is_set()
+        assert tool.state == "output-error"
+        assert tool.started_at is not None
+        assert tool.completed_at is not None
+        assert tool.output == {
+            "queryCount": 2,
+            "resultCount": 0,
+            "timedOut": True,
+            "partial": False,
+        }
+        assert tool.error_text == "Web search exceeded its operation time budget."
+
+    asyncio.run(run())
+
+
 def test_async_search_summary_returns_partial_results_and_cancels_on_timeout(
     monkeypatch,
 ) -> None:

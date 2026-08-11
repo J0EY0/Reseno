@@ -3,22 +3,6 @@ from typing import Literal
 
 from app.schemas.agent import AgentToolState
 
-PLAN_INTENT_ENUM = [
-    "rewrite_summary",
-    "rewrite_item",
-    "insert_item",
-    "insert_section",
-    "move_item",
-    "split_item",
-    "merge_items",
-    "classify_skills",
-    "delete_item",
-    "delete_section",
-    "reorder_items",
-    "reorder_sections",
-]
-PLAN_INTENT_SET = set(PLAN_INTENT_ENUM)
-
 FINISH_MISSING_ENUM = [
     "pending_draft",
     "url_purpose",

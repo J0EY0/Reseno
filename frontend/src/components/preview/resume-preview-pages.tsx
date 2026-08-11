@@ -56,6 +56,7 @@ function StandardPaginatedResume({
         className="resume-page-content-flow resume-page-content-flow--measure"
         style={model.contentFlowStyle}
         aria-hidden="true"
+        inert
       >
         <StandardResumeContent
           model={model}
@@ -142,6 +143,7 @@ function SidebarPaginatedResume({
         className="resume-page-flow resume-page-flow--measure resume-page-flow--sidebar"
         style={model.pageStyle}
         aria-hidden="true"
+        inert
       >
         <ResumePageContent
           model={model}

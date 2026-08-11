@@ -324,9 +324,6 @@
               ]
             }
           ]
-        },
-        "settings": {
-          "maxIterations": 5
         }
       },
       "expect": {

@@ -149,6 +149,8 @@ export interface ResumeDraftDiff {
   label: string
   sectionId?: string
   itemId?: string
+  beforePreviousId?: string
+  beforeNextId?: string
   before?: unknown
   after?: unknown
 }

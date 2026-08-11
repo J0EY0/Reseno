@@ -16,6 +16,7 @@ from app.services.model_providers import (
     DiscoveredModel,
     enrich_selected_model,
     get_model_provider,
+    resolve_model_provider_base_url,
 )
 
 MODEL_CONFIG_ID_ALPHABET = (
@@ -49,7 +50,11 @@ def _row_to_response(row: Row) -> ModelConfigResponse:
         nickname=row["name"],
         apiKeyPreview=preview,
         model=row["model"],
-        apiUrl=row["base_url"] or "",
+        apiUrl=resolve_model_provider_base_url(
+            row["provider"],
+            row["provider_kind"],
+            row["base_url"] or "",
+        ),
         temperature=row["temperature"],
         topP=row["top_p"],
         maxTokens=row["max_tokens"],
@@ -140,7 +145,11 @@ def _build_upsert_values(
     api_family = str(item.get("apiFamily") or item.get("api_family") or "").strip()
     model = str(item.get("model") or "").strip()
     name = str(item.get("nickname") or item.get("name") or model).strip()
-    base_url = str(item.get("apiUrl") or item.get("base_url") or "").strip()
+    base_url = resolve_model_provider_base_url(
+        provider,
+        provider_kind,
+        str(item.get("apiUrl") or item.get("base_url") or ""),
+    )
     api_key = extract_plain_api_key(item)
     encrypted_api_key = None
     api_key_preview = ""
@@ -152,6 +161,14 @@ def _build_upsert_values(
         else:
             encrypted_api_key = encrypt_api_key(api_key)
             api_key_preview = mask_api_key(api_key)
+    elif (
+        existing is not None
+        and provider_kind == "cloud"
+        and existing["provider"] == provider
+        and existing["api_family"] == api_family
+    ):
+        encrypted_api_key = existing["encrypted_api_key"]
+        api_key_preview = existing["api_key_preview"]
 
     _validate_requested_config(
         provider=provider,

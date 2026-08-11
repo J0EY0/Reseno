@@ -7,7 +7,7 @@ import pytest
 
 from app.services.llm.adapters import openai_responses
 from app.services.llm.errors import LlmRequestError
-from app.services.llm.types import AgentLlmConfig, LlmStreamEvent
+from app.services.llm.types import AgentLlmConfig, LlmRequestContext, LlmStreamEvent
 
 
 class AsyncStream:
@@ -39,6 +39,7 @@ def _config() -> AgentLlmConfig:
         top_p=None,
         max_tokens=None,
         timeout_seconds=12,
+        provider_kind="cloud",
         api_family="openai_responses",
     )
 
@@ -140,6 +141,7 @@ def test_tool_stream_exposes_calls_only_from_completed_response(monkeypatch) -> 
                 _config(),
                 [{"role": "user", "content": "Improve my summary"}],
                 [_tool()],
+                request_context=LlmRequestContext(cache_key="resume-session-1"),
             ),
         ),
     )
@@ -157,6 +159,7 @@ def test_tool_stream_exposes_calls_only_from_completed_response(monkeypatch) -> 
     assert events[-1].message.tool_calls[0].arguments == {"section": "summary"}
     assert events[-1].message.stop_reason == "tool_calls"
     assert client.params["stream"] is True
+    assert client.params["prompt_cache_key"] == "resume-session-1"
     assert client.params["tools"][0]["name"] == "edit_execute"
 
 
@@ -225,7 +228,7 @@ def test_incomplete_response_never_exposes_partial_tool_calls(monkeypatch) -> No
     assert events[-1].message.stop_reason == "length"
 
 
-def test_completed_response_does_not_treat_item_id_as_call_id(monkeypatch) -> None:
+def test_completed_response_rejects_item_id_without_call_id(monkeypatch) -> None:
     provider_stream = AsyncStream(
         [
             SimpleNamespace(
@@ -265,19 +268,16 @@ def test_completed_response_does_not_treat_item_id_as_call_id(monkeypatch) -> No
         lambda _: FakeClient(),
     )
 
-    events = asyncio.run(
-        _collect(
-            openai_responses.stream_tool_call(
-                _config(),
-                [{"role": "user", "content": "Improve my summary"}],
-                [_tool()],
+    with pytest.raises(LlmRequestError, match="invalid function call batch"):
+        asyncio.run(
+            _collect(
+                openai_responses.stream_tool_call(
+                    _config(),
+                    [{"role": "user", "content": "Improve my summary"}],
+                    [_tool()],
+                ),
             ),
-        ),
-    )
-
-    assert events[-1].message is not None
-    assert events[-1].message.tool_calls == []
-    assert events[-1].message.stop_reason == "stop"
+        )
 
 
 def test_output_item_events_are_activity_without_exposing_provider_items(

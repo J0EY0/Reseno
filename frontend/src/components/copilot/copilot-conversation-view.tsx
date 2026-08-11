@@ -5,6 +5,7 @@ import {
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { AppMessages } from '@/i18n'
 import { shouldShowAgentDraftActions } from '@/lib/agent-panel-state'
 import { cn } from '@/lib/utils'
@@ -52,6 +53,25 @@ function AgentSessionLoadError({
   )
 }
 
+function AgentSessionLoading({ t }: { t: AppMessages }) {
+  return (
+    <div
+      aria-live="polite"
+      className="mx-auto grid w-full max-w-[260px] justify-items-center gap-3 text-center"
+      role="status"
+    >
+      <div aria-hidden="true" className="grid w-full gap-2">
+        <Skeleton className="mx-auto h-3 w-4/5" />
+        <Skeleton className="mx-auto h-3 w-3/5" />
+        <Skeleton className="mx-auto h-3 w-2/3" />
+      </div>
+      <p className="text-xs leading-5 text-muted-foreground">
+        {t.agentHistoryLoading}
+      </p>
+    </div>
+  )
+}
+
 export function CopilotConversationView({
   conversation,
   conversationContextRef,
@@ -78,11 +98,20 @@ export function CopilotConversationView({
 }) {
   const {
     isResponding,
+    isSessionReady,
     messages,
     sessionLoadError,
     streamingMessage,
     visibleMessages,
   } = conversation
+  const latestUserMessageId = messages.findLast(
+    (candidate) => candidate.role === 'user',
+  )?.id
+  // Session history and active-run recovery form one hydration boundary. Do
+  // not expose an empty conversation or draft decisions from a partial read.
+  const isSessionLoading = !isSessionReady && !sessionLoadError
+  const showConversationPlaceholder =
+    isSessionLoading || visibleMessages.length === 0
 
   return (
     <Conversation
@@ -94,12 +123,16 @@ export function CopilotConversationView({
       <ConversationContent
         className={cn(
           'agent-thread-safe-area min-w-0 overflow-x-hidden px-3',
-          visibleMessages.length === 0 &&
+          showConversationPlaceholder &&
             'h-full min-h-full flex-1 justify-center',
         )}
         scrollClassName="agent-thread-scroll"
       >
-        {visibleMessages.length === 0 ? (
+        {isSessionLoading ? (
+          <ConversationEmptyState className="px-6 py-10">
+            <AgentSessionLoading t={t} />
+          </ConversationEmptyState>
+        ) : visibleMessages.length === 0 ? (
           <ConversationEmptyState className="px-6 py-10">
             {sessionLoadError ? (
               <AgentSessionLoadError
@@ -169,7 +202,7 @@ export function CopilotConversationView({
                     onSubmitEdit={() => {
                       void messageActions.submitEditedUserMessage(message)
                     }}
-                    retryable={message.id === messages.at(-1)?.id}
+                    retryable={message.id === latestUserMessageId}
                     t={t}
                   />
                 )
@@ -180,12 +213,18 @@ export function CopilotConversationView({
                 shouldShowAgentDraftActions({
                   draft: draft.state,
                   isResponding,
+                  isSessionReady,
                   messageId: message.id,
                   response: message.response,
                 })
 
               return (
                 <AgentAssistantMessageRow
+                  draftDiffs={
+                    draft.state?.sourceMessageId === message.id
+                      ? draft.state.diffs
+                      : undefined
+                  }
                   hasAgentDraft={draft.hasAgentDraft}
                   isStreamingAssistant={
                     isResponding && streamingMessage?.id === message.id

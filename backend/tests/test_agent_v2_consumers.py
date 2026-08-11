@@ -73,6 +73,17 @@ def test_skills_classify_builds_one_rich_text_simple_list_item() -> None:
     ]
 
 
+def test_skills_classify_rejects_unregistered_highlights_alias() -> None:
+    entries, error = classify_skills_entries(
+        {"sections": []},
+        {"groups": [{"title": "Frontend", "highlights": ["React"]}]},
+        locale="en",
+    )
+
+    assert entries == []
+    assert error is not None
+
+
 def test_move_item_rejects_simple_list_structure_changes() -> None:
     resume = {
         "sections": [

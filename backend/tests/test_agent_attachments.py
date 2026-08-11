@@ -114,14 +114,21 @@ def _upload(
     return response.json()["data"]
 
 
-def _user_payload(messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _current_request_files(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     content = messages[-1]["content"]
-    if isinstance(content, list):
-        text_part = next(part for part in content if part.get("type") == "text")
-        content = text_part["text"]
+    if not isinstance(content, list):
+        return []
 
-    assert isinstance(content, str)
-    return json.loads(content)
+    for part in content:
+        if part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if not isinstance(text, str) or not text.lstrip().startswith(
+            '{"currentRequestFiles":',
+        ):
+            continue
+        return json.loads(text)["currentRequestFiles"]
+    return []
 
 
 def _pdf_with_text(text: str) -> bytes:
@@ -189,6 +196,41 @@ def _encrypted_pdf() -> bytes:
     writer.encrypt("secret")
     writer.write(buffer)
     return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_filename", "case_id"),
+    [
+        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf", "underscore"),
+        ("John-Smith-CV.pdf", "[redacted_name]-CV.pdf", "hyphen"),
+        ("John.Smith.CV.pdf", "[redacted_name].CV.pdf", "period"),
+    ],
+)
+def test_current_attachment_filename_hides_resume_name(
+    client: TestClient,
+    filename: str,
+    expected_filename: str,
+    case_id: str,
+) -> None:
+    session_id = f"resume-private-current-filename-{case_id}"
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename=filename,
+        payload=_pdf_with_text("Public project evidence"),
+        media_type="application/pdf",
+    )
+    request = _request(attachment, session_id=session_id)
+    request.resume["basic"]["name"] = "John Smith"
+
+    messages = build_agent_messages(
+        request,
+        _config(),
+        mode="streaming_final",
+        force_attachment_text=True,
+    )
+
+    assert _current_request_files(messages)[0]["filename"] == expected_filename
 
 
 def test_prevalidate_rejects_corrupt_pdf_before_consumption(
@@ -1091,9 +1133,9 @@ def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:
         _config(),
         mode="tools",
     )
-    payload = _user_payload(messages)
+    files = _current_request_files(messages)
 
-    assert expected in payload["files"][0]["excerpt"]
+    assert expected in files[0]["excerpt"]
     assert "blob:" not in json.dumps(attachment)
 
 
@@ -1117,7 +1159,7 @@ def test_uploaded_pdf_keeps_content_beyond_preview_sized_excerpt(
         mode="tools",
     )
 
-    assert expected in _user_payload(messages)["files"][0]["excerpt"]
+    assert expected in _current_request_files(messages)[0]["excerpt"]
 
 
 def test_historical_attachment_is_not_resent_implicitly(
@@ -1158,10 +1200,10 @@ def test_historical_attachment_is_not_resent_implicitly(
     )
 
     messages = build_agent_messages(request, _config(), mode="tools")
-    payload = _user_payload(messages)
+    files = _current_request_files(messages)
 
-    assert payload["files"] == []
-    assert expected not in json.dumps(payload)
+    assert files == []
+    assert expected not in json.dumps(messages)
 
 
 def test_historical_attachment_can_be_explicitly_referenced_again(
@@ -1190,10 +1232,10 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
     )
 
     messages = build_agent_messages(request, _config(), mode="tools")
-    payload = _user_payload(messages)
+    files = _current_request_files(messages)
 
-    assert expected in payload["files"][0]["excerpt"]
-    assert payload["files"][0]["filename"] == "notes.pdf"
+    assert expected in files[0]["excerpt"]
+    assert files[0]["filename"] == "notes.pdf"
 
 
 def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
@@ -1215,7 +1257,7 @@ def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
         mode="tools",
     )
 
-    assert expected in _user_payload(messages)["files"][0]["excerpt"]
+    assert expected in _current_request_files(messages)[0]["excerpt"]
 
 
 def test_uploaded_image_is_mapped_for_every_visual_adapter(
@@ -1845,6 +1887,126 @@ def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
             "data": base64.b64encode(payload).decode("ascii"),
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("source_stem", "expected_stem", "case_id"),
+    [
+        ("John_Smith_CV", "[redacted_name]_CV", "underscore"),
+        ("John-Smith-CV", "[redacted_name]-CV", "hyphen"),
+        ("John.Smith.CV", "[redacted_name].CV", "period"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("extension", "media_type", "part_type"),
+    [
+        ("pdf", "application/pdf", "file"),
+        ("png", "image/png", "image"),
+    ],
+)
+def test_native_attachment_filename_hides_resume_name_without_changing_bytes(
+    client: TestClient,
+    source_stem: str,
+    expected_stem: str,
+    case_id: str,
+    extension: str,
+    media_type: str,
+    part_type: str,
+) -> None:
+    session_id = f"resume-private-native-{extension}-filename-{case_id}"
+    payload = (
+        _pdf_with_text("Public project evidence")
+        if extension == "pdf"
+        else base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+            "/x8AAusB9Wl6Y2sAAAAASUVORK5CYII=",
+        )
+    )
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename=f"{source_stem}.{extension}",
+        payload=payload,
+        media_type=media_type,
+    )
+    request = _request(attachment, session_id=session_id)
+    request.resume["basic"]["name"] = "John Smith"
+
+    messages = build_agent_messages(
+        request,
+        _config(api_family="openai_responses"),
+        mode="tools",
+    )
+    content = messages[-1]["content"]
+
+    assert isinstance(content, list)
+    assert content[1] == {
+        "type": part_type,
+        "filename": f"{expected_stem}.{extension}",
+        "media_type": media_type,
+        "data": base64.b64encode(payload).decode("ascii"),
+    }
+
+    if part_type == "file":
+        _, responses_items = openai_responses.responses_input(messages)
+        provider_part = responses_items[-1]["content"][1]
+        assert provider_part["filename"] == f"{expected_stem}.{extension}"
+        assert f"{source_stem}.{extension}" not in json.dumps(responses_items)
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_filename", "case_id"),
+    [
+        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf", "underscore"),
+        ("John-Smith-CV.pdf", "[redacted_name]-CV.pdf", "hyphen"),
+        ("John.Smith.CV.pdf", "[redacted_name].CV.pdf", "period"),
+    ],
+)
+def test_historical_native_attachment_filename_hides_resume_name_without_bytes(
+    client: TestClient,
+    filename: str,
+    expected_filename: str,
+    case_id: str,
+) -> None:
+    session_id = f"resume-private-native-history-filename-{case_id}"
+    payload = _pdf_with_text("Historical project evidence")
+    attachment = _upload(
+        client,
+        session_id=session_id,
+        filename=filename,
+        payload=payload,
+        media_type="application/pdf",
+    )
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id=f"current-native-history-{case_id}",
+            role="user",
+            text="Use the earlier evidence.",
+        ),
+        messages=[
+            AgentConversationItem(
+                id=f"historical-native-file-{case_id}",
+                role="user",
+                text="Read this evidence.",
+                files=[attachment],
+            ),
+        ],
+        locale="en",
+        resume={"basic": {"name": "John Smith"}, "sections": []},
+        resume_id=session_id,
+        expected_revision=SYNTHETIC_SESSION_REVISION,
+    )
+
+    messages = build_agent_messages(
+        request,
+        _config(api_family="openai_responses"),
+        mode="tools",
+    )
+    serialized = json.dumps(messages)
+
+    assert expected_filename in serialized
+    assert filename not in serialized
+    assert base64.b64encode(payload).decode("ascii") not in serialized
 
 
 def test_more_than_five_current_attachments_is_rejected() -> None:

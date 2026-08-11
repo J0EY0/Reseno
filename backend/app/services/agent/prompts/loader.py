@@ -14,6 +14,7 @@ def load_prompt(filename: str) -> str:
 
 
 CORE_POLICY_PROMPT = load_prompt("core_policy.md")
+COMPACTION_PROMPT = load_prompt("compaction.md")
 TOOL_POLICY_PROMPT = load_prompt("system.md")
 RESUME_EDITING_PLAYBOOK_PROMPT = load_prompt("resume_editing_playbook.md")
 SYSTEM_PROMPT = "\n\n".join(
@@ -23,7 +24,6 @@ SYSTEM_PROMPT = "\n\n".join(
         RESUME_EDITING_PLAYBOOK_PROMPT,
     ),
 )
-FINAL_RESPONSE_PROMPT = load_prompt("final_response.md")
 STREAMING_FINAL_RESPONSE_PROMPT = load_prompt("streaming_final_response.md")
 
 
@@ -44,7 +44,3 @@ def _render_edit_operation_guide(
 
 
 EDIT_OPERATION_GUIDE = _render_edit_operation_guide("edit_operation_guide.md")
-
-DEFAULT_REACT_MAX_ITERATIONS = 5
-MIN_REACT_MAX_ITERATIONS = 1
-MAX_REACT_MAX_ITERATIONS = 8

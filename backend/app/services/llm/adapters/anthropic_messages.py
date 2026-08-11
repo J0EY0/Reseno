@@ -23,6 +23,7 @@ from ..tool_schema import portable_tool_schema
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmInputMessage,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
@@ -37,7 +38,7 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> LlmAssistantMessage:
     """Call Anthropic Messages and require visible text."""
 
@@ -51,7 +52,7 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
 ) -> LlmAssistantMessage:
     """Ask Anthropic Messages to choose zero or more tools."""
@@ -62,7 +63,7 @@ async def complete_tool_call(
 
 async def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream tool input privately until Anthropic authoritatively completes."""
@@ -77,7 +78,7 @@ async def stream_tool_call(
 
 async def stream(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream Anthropic Messages SSE events into the shared LLM contract."""
 
@@ -91,7 +92,7 @@ async def stream(
 
 async def _stream_messages(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     payload = {**_payload(config, messages, tools), "stream": True}
@@ -291,7 +292,7 @@ async def _stream_messages(
 
 async def _post_messages(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return await async_post_json(
@@ -304,10 +305,15 @@ async def _post_messages(
 
 def _payload(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     system, provider_messages = anthropic_messages(messages)
+    prompt_cache_enabled = (
+        config.provider == "anthropic" and config.provider_kind == "cloud"
+    )
+    if prompt_cache_enabled:
+        _mark_last_user_cache_control(provider_messages)
     max_tokens = request_max_output_tokens(config)
     payload: dict[str, Any] = {
         "model": config.model,
@@ -315,7 +321,16 @@ def _payload(
         "messages": provider_messages,
     }
     if system:
-        payload["system"] = system
+        if prompt_cache_enabled:
+            payload["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ]
+        else:
+            payload["system"] = system
 
     # Anthropic extended thinking forbids temperature/top_p; keep that provider
     # rule inside the adapter instead of leaking it into agent code.
@@ -330,21 +345,23 @@ def _payload(
         if config.top_p is not None:
             payload["top_p"] = config.top_p
     if tools:
-        payload["tools"] = _tools(tools)
+        anthropic_tools = _tools(tools)
+        if prompt_cache_enabled and anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        payload["tools"] = anthropic_tools
         payload["tool_choice"] = {"type": "auto"}
 
     return payload
 
 
 def anthropic_messages(
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> tuple[str, list[dict[str, Any]]]:
     system, non_system = system_and_messages(messages)
     converted: list[dict[str, Any]] = []
 
     for message in non_system:
-        role = message.get("role")
-        if role == "tool":
+        if message["role"] == "tool":
             tool_use_id = str(message.get("tool_call_id") or "")
             # Anthropic represents tool results as user-role content blocks
             # keyed by the original tool_use id, not as a separate `tool` role.
@@ -362,7 +379,7 @@ def anthropic_messages(
             )
             continue
 
-        if role == "assistant":
+        if message["role"] == "assistant":
             # Signed thinking blocks are continuation state, not display text.
             # Anthropic requires the original block to precede the matching
             # tool_use block when the tool result is sent back.
@@ -389,7 +406,7 @@ def anthropic_messages(
                 converted.append({"role": "assistant", "content": blocks})
             continue
 
-        if role == "user":
+        if message["role"] == "user":
             converted.append(
                 {
                     "role": "user",
@@ -398,6 +415,38 @@ def anthropic_messages(
             )
 
     return system, converted
+
+
+def _mark_last_user_cache_control(messages: list[dict[str, Any]]) -> None:
+    if not messages or messages[-1]["role"] != "user":
+        return
+
+    last_content = messages[-1]["content"]
+    if isinstance(last_content, str) and last_content.strip():
+        messages[-1]["content"] = [
+            {
+                "type": "text",
+                "text": last_content,
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        return
+
+    if not isinstance(last_content, list):
+        return
+
+    for block in reversed(last_content):
+        if not isinstance(block, dict) or block.get("type") not in {
+            "text",
+            "image",
+            "document",
+            "tool_result",
+        }:
+            continue
+        if block.get("type") == "text" and not str(block.get("text") or "").strip():
+            continue
+        block["cache_control"] = {"type": "ephemeral"}
+        return
 
 
 def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
@@ -504,7 +553,14 @@ def _tool_calls(payload: dict[str, Any]) -> list[LlmToolCall]:
         tool_id = str(block.get("id") or "")
         name = str(block.get("name") or "").strip()
         arguments = block.get("input")
-        if not isinstance(arguments, dict) or not tool_id or not name:
+        # Tool-use blocks form one terminal batch. An unidentifiable block
+        # cannot be paired with a later tool_result, so never discard it while
+        # returning valid siblings for execution.
+        if not tool_id.strip() or not name:
+            raise LlmRequestError(
+                "Model provider returned an invalid tool use batch.",
+            )
+        if not isinstance(arguments, dict):
             continue
         tool_calls.append(
             LlmToolCall(

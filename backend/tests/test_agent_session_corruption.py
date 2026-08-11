@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 from collections.abc import Iterator
@@ -122,6 +123,161 @@ def test_load_agent_session_allows_absent_assistant_response(
     session = agent_sessions.load_agent_session(agent_conn, session_id)
 
     assert session.messages[0].response is None
+
+
+def test_load_agent_session_rejects_checkpoint_with_unknown_boundary(
+    agent_conn: sqlite3.Connection,
+) -> None:
+    session_id = "resume-checkpoint-missing-boundary"
+    message_id = "assistant-checkpoint-missing-boundary"
+    response_json = (
+        '{"id":"assistant-checkpoint-missing-boundary",'
+        '"role":"assistant","text":"Stored response",'
+        '"_conversationCheckpoint":{'
+        '"throughMessageId":"missing-history-message","summary":"Saved"}}'
+    )
+    _insert_stored_message(
+        agent_conn,
+        session_id=session_id,
+        message_id=message_id,
+        role="assistant",
+        response_json=response_json,
+    )
+    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
+        agent_sessions.load_agent_session(agent_conn, session_id)
+
+    error = exc_info.value
+    assert error.session_id == session_id
+    assert error.message_id == message_id
+    assert error.field == "conversationCheckpoint"
+
+
+def test_load_agent_session_rejects_malformed_conversation_checkpoint(
+    agent_conn: sqlite3.Connection,
+) -> None:
+    session_id = "resume-malformed-checkpoint"
+    message_id = "assistant-malformed-checkpoint"
+    response_json = (
+        '{"id":"assistant-malformed-checkpoint",'
+        '"role":"assistant","text":"Stored response",'
+        '"_conversationCheckpoint":{'
+        '"throughMessageId":"history-message",'
+        '"summary":"Saved","unexpectedField":[]}}'
+    )
+    _insert_stored_message(
+        agent_conn,
+        session_id=session_id,
+        message_id=message_id,
+        role="assistant",
+        response_json=response_json,
+    )
+
+    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
+        agent_sessions.load_agent_session(agent_conn, session_id)
+
+    assert exc_info.value.session_id == session_id
+    assert exc_info.value.message_id == message_id
+    assert exc_info.value.field == "conversationCheckpoint"
+
+
+def test_load_agent_session_rejects_workspace_snapshot_for_unknown_turn(
+    agent_conn: sqlite3.Connection,
+) -> None:
+    session_id = "resume-workspace-snapshot-missing-turn"
+    message_id = "assistant-workspace-snapshot-missing-turn"
+    response_json = json.dumps(
+        {
+            "id": message_id,
+            "role": "assistant",
+            "text": "Stored response",
+            "_workspaceSnapshots": {
+                "turnMessageId": "missing-user-turn",
+                "tools": '{"workspaceContext":{}}',
+                "streamingFinal": None,
+            },
+        },
+    )
+    _insert_stored_message(
+        agent_conn,
+        session_id=session_id,
+        message_id=message_id,
+        role="assistant",
+        response_json=response_json,
+    )
+
+    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
+        agent_sessions.load_agent_session(agent_conn, session_id)
+
+    assert exc_info.value.message_id == message_id
+    assert exc_info.value.field == "workspaceSnapshots"
+
+
+def test_load_agent_session_rejects_regressed_conversation_checkpoint(
+    agent_conn: sqlite3.Connection,
+) -> None:
+    session_id = "resume-regressed-checkpoint"
+    _insert_stored_message(
+        agent_conn,
+        session_id=session_id,
+        message_id="checkpoint-boundary-old",
+        role="user",
+    )
+
+    rows = [
+        ("checkpoint-boundary-new", "user", None, 2),
+        (
+            "assistant-checkpoint-new",
+            "assistant",
+            json.dumps(
+                {
+                    "id": "assistant-checkpoint-new",
+                    "role": "assistant",
+                    "text": "Stored newer checkpoint",
+                    "_conversationCheckpoint": {
+                        "throughMessageId": "checkpoint-boundary-new",
+                        "summary": "Newer summary",
+                    },
+                },
+            ),
+            3,
+        ),
+        (
+            "assistant-checkpoint-regressed",
+            "assistant",
+            json.dumps(
+                {
+                    "id": "assistant-checkpoint-regressed",
+                    "role": "assistant",
+                    "text": "Stored regressed checkpoint",
+                    "_conversationCheckpoint": {
+                        "throughMessageId": "checkpoint-boundary-old",
+                        "summary": "Regressed summary",
+                    },
+                },
+            ),
+            4,
+        ),
+    ]
+    agent_conn.executemany(
+        """
+        INSERT INTO agent_messages (
+            id, session_id, role, text, files_json, response_json, sequence
+        )
+        VALUES (?, ?, ?, '', '[]', ?, ?)
+        """,
+        [
+            (message_id, session_id, role, response_json, sequence)
+            for message_id, role, response_json, sequence in rows
+        ],
+    )
+
+    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
+        agent_sessions.load_agent_session(agent_conn, session_id)
+
+    error = exc_info.value
+    assert error.session_id == session_id
+    assert error.message_id == "assistant-checkpoint-regressed"
+    assert error.field == "conversationCheckpoint"
 
 
 def test_replace_agent_session_cannot_delete_existing_corrupt_message(

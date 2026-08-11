@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 
@@ -26,15 +27,31 @@ def validate_tool_calls(
     schemas = _tool_parameter_schemas(tools)
     valid: list[LlmToolCall] = []
     errors: list[LlmToolValidationError] = []
+    call_id_counts = Counter(tool_call.id for tool_call in tool_calls)
 
     for tool_call in tool_calls:
+        if not tool_call.id.strip():
+            errors.append(
+                LlmToolValidationError(
+                    tool_call=tool_call,
+                    message="Tool call id must be non-empty.",
+                ),
+            )
+            continue
+        if call_id_counts[tool_call.id] > 1:
+            errors.append(
+                LlmToolValidationError(
+                    tool_call=tool_call,
+                    message="Tool call ids must be unique within one response.",
+                ),
+            )
+            continue
         if tool_call.parse_error:
             errors.append(
                 LlmToolValidationError(
                     tool_call=tool_call,
                     message=(
-                        "Tool arguments are not valid JSON: "
-                        f"{tool_call.parse_error}"
+                        f"Tool arguments are not valid JSON: {tool_call.parse_error}"
                     ),
                 ),
             )

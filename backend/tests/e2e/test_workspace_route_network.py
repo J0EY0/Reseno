@@ -478,6 +478,584 @@ def test_resume_editor_route_request_allowlist(
     assert Counter(actual_paths) == Counter(expected_paths)
 
 
+def _seed_pending_agent_draft(
+    page: Page,
+    frontend_url: str,
+    *,
+    message_id: str,
+    summary: str,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    assert create_response.ok
+    resume_id = str(create_response.json()["data"]["resume"]["id"])
+    detail = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()["data"]
+    base_resume = detail["resume"]["resume"]
+    candidate_resume = json.loads(json.dumps(base_resume))
+    candidate_resume["basic"]["summary"] = summary
+    session = page.request.get(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+    ).json()["data"]
+    seed_response = page.request.put(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session",
+        data={
+            "locale": "zh",
+            "revision": session["revision"],
+            "messages": [
+                {
+                    "id": message_id,
+                    "role": "assistant",
+                    "text": "草稿等待确认。",
+                    "createdAt": "2026-08-10T00:00:00.000Z",
+                    "response": {
+                        "id": message_id,
+                        "role": "assistant",
+                        "text": "草稿等待确认。",
+                        "edits": [
+                            {
+                                "id": f"edit-{message_id}",
+                                "title": "改写个人总结",
+                                "target": "basic.summary",
+                                "reason": "验证待确认草稿只能由当前页面确认。",
+                                "operation": {
+                                    "type": "replace_field",
+                                    "path": "basic.summary",
+                                    "value": summary,
+                                },
+                                "status": "executed",
+                            }
+                        ],
+                        "draft": {
+                            "baseResume": base_resume,
+                            "status": "pending",
+                        },
+                        "transactionState": "committed",
+                    },
+                }
+            ],
+        },
+    )
+    assert seed_response.ok
+    return resume_id, detail, candidate_resume
+
+
+def _seed_cited_agent_response(page: Page, frontend_url: str) -> str:
+    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    assert create_response.ok
+    resume_id = str(create_response.json()["data"]["resume"]["id"])
+    session = page.request.get(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+    ).json()["data"]
+    message_id = "assistant-inline-citation"
+    citation_text = (
+        "公开岗位样本显示，"
+        '<citation source_ids="source-a">'
+        "React 与 TypeScript 是常见要求"
+        "</citation>。"
+    )
+    seed_response = page.request.put(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session",
+        data={
+            "locale": "zh",
+            "revision": session["revision"],
+            "messages": [
+                {
+                    "id": "user-inline-citation",
+                    "role": "user",
+                    "text": "研究 AI 前端工程师的公开要求。",
+                    "createdAt": "2026-08-10T00:00:00.000Z",
+                },
+                {
+                    "id": message_id,
+                    "role": "assistant",
+                    "text": citation_text,
+                    "createdAt": "2026-08-10T00:00:01.000Z",
+                    "response": {
+                        "id": message_id,
+                        "role": "assistant",
+                        "text": citation_text,
+                        "sources": [
+                            {
+                                "id": "source-a",
+                                "title": "AI Frontend Engineer",
+                                "sourceType": "web",
+                                "url": "https://a.example/jobs/ai-frontend",
+                                "excerpt": (
+                                    "Requirements include React and TypeScript."
+                                ),
+                            },
+                            {
+                                "id": "source-b",
+                                "title": "Unrelated Source",
+                                "sourceType": "web",
+                                "url": "https://b.example/unrelated",
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+    )
+    assert seed_response.ok
+    return resume_id
+
+
+def _seed_long_agent_history(page: Page, frontend_url: str) -> str:
+    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    assert create_response.ok
+    resume_id = str(create_response.json()["data"]["resume"]["id"])
+    session = page.request.get(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+    ).json()["data"]
+    messages: list[dict[str, Any]] = []
+
+    for index in range(12):
+        user_id = f"user-scroll-{index}"
+        assistant_id = f"assistant-scroll-{index}"
+        user_text = f"第 {index + 1} 轮：分析这份简历与目标岗位的匹配情况。"
+        assistant_text = (
+            f"第 {index + 1} 轮分析结果：保留已有事实，"
+            "并从职责、技术栈和可验证成果三个角度说明改进方向。"
+        )
+        messages.extend(
+            [
+                {
+                    "id": user_id,
+                    "role": "user",
+                    "text": user_text,
+                    "createdAt": f"2026-08-10T00:{index * 2:02d}:00.000Z",
+                },
+                {
+                    "id": assistant_id,
+                    "role": "assistant",
+                    "text": assistant_text,
+                    "createdAt": f"2026-08-10T00:{index * 2 + 1:02d}:00.000Z",
+                    "response": {
+                        "id": assistant_id,
+                        "role": "assistant",
+                        "text": assistant_text,
+                    },
+                },
+            ]
+        )
+
+    seed_response = page.request.put(
+        f"{frontend_url}/api/agent/resumes/{resume_id}/session",
+        data={
+            "locale": "zh",
+            "revision": session["revision"],
+            "messages": messages,
+        },
+    )
+    assert seed_response.ok
+    return resume_id
+
+
+def test_agent_history_fades_without_masking_native_scrollbar(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        resume_id = _seed_long_agent_history(page, frontend_url)
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+
+        scroll_owner = page.locator(".agent-thread-scroll")
+        scroll_owner.wait_for(state="visible")
+        fade = page.locator('[data-slot="agent-thread-fade"]')
+        composer = page.locator('[data-slot="agent-composer"]')
+
+        assert fade.count() == 1
+        assert composer.count() == 1
+        metrics = page.locator(".agent-thread-layout").evaluate(
+            """
+            layout => {
+              const scrollOwner = layout.querySelector('.agent-thread-scroll');
+              const fade = layout.querySelector('[data-slot="agent-thread-fade"]');
+              const composer = layout.querySelector('[data-slot="agent-composer"]');
+              const safeArea = layout.querySelector('.agent-thread-safe-area');
+              if (!(scrollOwner instanceof HTMLElement) ||
+                  !(fade instanceof HTMLElement) ||
+                  !(composer instanceof HTMLElement) ||
+                  !(safeArea instanceof HTMLElement)) {
+                throw new Error('Missing Agent thread layout surfaces.');
+              }
+
+              const scrollStyle = getComputedStyle(scrollOwner);
+              const fadeStyle = getComputedStyle(fade);
+              const layoutStyle = getComputedStyle(layout);
+              const scrollRect = scrollOwner.getBoundingClientRect();
+              const fadeRect = fade.getBoundingClientRect();
+              const composerRect = composer.getBoundingClientRect();
+              const safeAreaRect = safeArea.getBoundingClientRect();
+              const safeAreaStyle = getComputedStyle(safeArea);
+              const contentRight =
+                safeAreaRect.right - Number.parseFloat(safeAreaStyle.paddingRight);
+              const midpoint = Number.parseFloat(
+                layoutStyle.getPropertyValue('--agent-composer-midpoint'),
+              );
+              const safeGap = Number.parseFloat(
+                layoutStyle.getPropertyValue('--agent-thread-safe-gap'),
+              );
+              const safePadding = Number.parseFloat(
+                getComputedStyle(safeArea).paddingBottom,
+              );
+
+              scrollOwner.scrollTop = Math.round(
+                (scrollOwner.scrollHeight - scrollOwner.clientHeight) / 2,
+              );
+
+              return {
+                backgroundImage: fadeStyle.backgroundImage,
+                backgroundSize: fadeStyle.backgroundSize,
+                composerHeight: composerRect.height,
+                contentRight,
+                fadeBottom: fadeRect.bottom,
+                fadeIsOutsideScrollOwner:
+                  fade.parentElement === layout && !scrollOwner.contains(fade),
+                fadePointerEvents: fadeStyle.pointerEvents,
+                fadeRightClearance: scrollRect.right - fadeRect.right,
+                fadeRight: fadeRect.right,
+                isScrollable: scrollOwner.scrollHeight > scrollOwner.clientHeight,
+                maskImage: scrollStyle.maskImage,
+                midpoint,
+                overflowY: scrollStyle.overflowY,
+                safeGap,
+                safePadding,
+                scrollBottom: scrollRect.bottom,
+                scrollbarGutter: scrollStyle.scrollbarGutter,
+                scrollTop: scrollOwner.scrollTop,
+                webkitMaskImage: scrollStyle.webkitMaskImage,
+              };
+            }
+            """
+        )
+
+        assert metrics["isScrollable"] is True
+        assert metrics["scrollTop"] > 0
+        assert metrics["overflowY"] == "auto"
+        assert metrics["maskImage"] == "none"
+        assert metrics["webkitMaskImage"] == "none"
+        assert metrics["fadeIsOutsideScrollOwner"] is True
+        assert metrics["fadePointerEvents"] == "none"
+        assert "linear-gradient" in metrics["backgroundImage"]
+        assert metrics["backgroundSize"].endswith(f"100% {metrics['midpoint']}px")
+        assert "stable" in metrics["scrollbarGutter"]
+        assert metrics["fadeRightClearance"] > 0
+        assert abs(metrics["fadeRight"] - metrics["contentRight"]) <= 1
+        assert abs(metrics["fadeBottom"] - metrics["scrollBottom"]) <= 1
+        assert abs(metrics["midpoint"] - metrics["composerHeight"] / 2) <= 1
+        assert (
+            abs(
+                metrics["safePadding"]
+                - (metrics["composerHeight"] + metrics["safeGap"])
+            )
+            <= 1
+        )
+
+        scroll_owner.evaluate(
+            "element => { element.scrollTop = element.scrollHeight; }"
+        )
+        page.wait_for_function(
+            """
+            () => {
+              const owner = document.querySelector('.agent-thread-scroll');
+              return owner instanceof HTMLElement &&
+                Math.abs(
+                  owner.scrollHeight - owner.clientHeight - owner.scrollTop
+                ) <= 1;
+            }
+            """
+        )
+    finally:
+        context.close()
+
+
+def test_agent_claim_citation_opens_above_with_only_its_sources(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        resume_id = _seed_cited_agent_response(page, frontend_url)
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+
+        claim = page.get_by_text("React 与 TypeScript 是常见要求", exact=True)
+        claim.wait_for(state="visible")
+        assert page.get_by_text("source-a", exact=True).count() == 0
+        assert page.get_by_text("Unrelated Source", exact=True).count() == 0
+
+        trigger = page.get_by_text("a.example", exact=True)
+        trigger.hover()
+        card = page.locator('[data-slot="hover-card-content"]')
+        card.wait_for(state="visible")
+
+        assert card.get_attribute("data-side") == "top"
+        assert card.get_by_text("AI Frontend Engineer", exact=True).count() == 1
+        assert card.get_by_text("Unrelated Source", exact=True).count() == 0
+    finally:
+        context.close()
+
+
+def test_pending_agent_draft_page_load_stays_preview_only(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        pending_summary = "Pending Agent preview must never autosave."
+        resume_id, detail_before, _ = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id="assistant-pending-page-load",
+            summary=pending_summary,
+        )
+        formal_resume = detail_before["resume"]["resume"]
+
+        writes: list[ApiRequest] = []
+
+        def record_write(request: Request) -> None:
+            api_request = _api_request(request)
+            if api_request and request.method in {"PATCH", "POST", "PUT", "DELETE"}:
+                writes.append(api_request)
+
+        page.on("request", record_write)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        page.get_by_role("button", name="应用草稿", exact=True).wait_for(
+            state="visible"
+        )
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+
+        # Cross the complete autosave debounce without touching either draft
+        # decision. Hydration may render the candidate, but it is not a user
+        # confirmation and must remain read-only.
+        page.wait_for_timeout(5_500)
+
+        assert writes == []
+        detail_after = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        session_after = page.request.get(
+            f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+        ).json()["data"]
+        assistant_response = session_after["messages"][-1]["response"]
+
+        assert detail_after["versionId"] == detail_before["versionId"]
+        assert detail_after["resume"]["resume"] == formal_resume
+        assert assistant_response["draft"]["status"] == "pending"
+    finally:
+        context.close()
+
+
+def test_pending_agent_draft_waits_for_complete_session_hydration(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        pending_summary = "Pending draft restored after complete hydration."
+        resume_id, _, _ = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id="assistant-pending-hydration",
+            summary=pending_summary,
+        )
+        held_active_run_routes: list[Route] = []
+        active_run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+
+        def hold_active_run(route: Route) -> None:
+            held_active_run_routes.append(route)
+
+        page.route(active_run_pattern, hold_active_run)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="domcontentloaded",
+        )
+
+        loading = page.get_by_text("正在加载 Agent 对话…", exact=True)
+        loading.wait_for(state="visible")
+        page.wait_for_timeout(100)
+        assert held_active_run_routes
+        empty_prompt = page.get_by_text(
+            "我可以帮你润色经历、调整简历结构。", exact=True
+        )
+        assert empty_prompt.count() == 0
+        assert page.get_by_role("button", name="应用草稿", exact=True).count() == 0
+        assert page.get_by_role("button", name="撤回草稿", exact=True).count() == 0
+
+        page.unroute(active_run_pattern, hold_active_run)
+        for route in held_active_run_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                # React Strict Mode may already have aborted an earlier owner.
+                pass
+        held_active_run_routes.clear()
+        loading.wait_for(state="hidden")
+        page.get_by_role("button", name="应用草稿", exact=True).wait_for(
+            state="visible"
+        )
+        assert page.get_by_role("button", name="撤回草稿", exact=True).count() == 1
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+    finally:
+        for route in held_active_run_routes:
+            route.continue_()
+        context.close()
+
+
+def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        message_id = "assistant-queued-apply-unmount"
+        resume_id, detail_before, candidate_resume = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id=message_id,
+            summary="A queued apply must stop when its route owner unmounts.",
+        )
+
+        writes: list[ApiRequest] = []
+
+        def delay_save_and_record_writes(route: Route) -> None:
+            request = route.request
+            api_request = _api_request(request)
+            if api_request and request.method in {"PATCH", "POST", "PUT", "DELETE"}:
+                writes.append(api_request)
+            if (
+                request.method == "PUT"
+                and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+            ):
+                time.sleep(0.8)
+            route.continue_()
+
+        page.route("**/api/**", delay_save_and_record_writes)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        submitted_resume = json.loads(json.dumps(detail_before["resume"]))
+        submitted_resume["title"] = "Save in flight before route unmount"
+        page.evaluate(
+            """
+            async ({ detailBefore, resumeId, submittedResume }) => {
+              const ReactModule = await import('/@id/react');
+              const ReactDomModule = await import('/@id/react-dom/client');
+              const React = ReactModule.default ?? ReactModule;
+              const createRoot =
+                ReactDomModule.createRoot ?? ReactDomModule.default?.createRoot;
+              const { useResumeDetailSave } = await import(
+                '/src/components/workspace/use-resume-detail-save.ts'
+              );
+              const host = document.createElement('div');
+              host.hidden = true;
+              document.body.append(host);
+              if (typeof createRoot !== 'function') {
+                throw new Error('React createRoot is unavailable.');
+              }
+              const root = createRoot(host);
+              window.__queuedApplyHarness = { controller: null, root };
+
+              function Harness() {
+                const controller = useResumeDetailSave({
+                  getSnapshot: () => submittedResume,
+                  initialCheckpoint: {
+                    savedAt: detailBefore.savedAt,
+                    versionId: detailBefore.versionId,
+                  },
+                  initialResume: detailBefore.resume,
+                  isLoading: true,
+                  liveFingerprint: 'queued-apply-harness',
+                  liveResume: submittedResume,
+                  messages: { loadError: 'load error' },
+                  onAdoptSavedResume: () => undefined,
+                  onHydrateResume: () => undefined,
+                  resumeId,
+                });
+                window.__queuedApplyHarness.controller = controller;
+                return null;
+              }
+
+              root.render(React.createElement(Harness));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+            }
+            """,
+            {
+                "detailBefore": detail_before,
+                "resumeId": resume_id,
+                "submittedResume": submitted_resume,
+            },
+        )
+        page.evaluate(
+            """
+            ({ candidateResume, messageId }) => {
+              const harness = window.__queuedApplyHarness;
+              if (!harness?.controller) {
+                throw new Error('The save lifecycle harness is unavailable.');
+              }
+              const save = harness.controller.save('autosave');
+              const decision = harness.controller.resolveAppliedAgentDraft(
+                messageId,
+                candidateResume,
+              );
+              window.__queuedApplyPromises = [save, decision];
+              window.setTimeout(() => harness.root.unmount(), 50);
+            }
+            """,
+            {"candidateResume": candidate_resume, "messageId": message_id},
+        )
+        page.wait_for_timeout(1_800)
+
+        draft_patch = (
+            "PATCH",
+            f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        )
+        assert draft_patch not in writes, writes
+        session_after = page.request.get(
+            f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+        ).json()["data"]
+        assert session_after["messages"][-1]["response"]["draft"]["status"] == (
+            "pending"
+        )
+    finally:
+        context.close()
+
+
 def test_compact_resume_agent_expands_inline_from_right_rail(
     browser: Browser,
     workspace_servers: tuple[str, str],

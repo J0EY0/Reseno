@@ -13,8 +13,21 @@ import {
   InlineCitationSource,
   InlineCitationText,
 } from "@/components/ai-elements/inline-citation";
-import { isPlainAgentText } from "@/lib/agent-message-rendering";
+import {
+  getAgentCitationSourceIds,
+  hasAgentCitationMarkupCandidate,
+  hasCompleteAgentCitationMarkup,
+  isPlainAgentText,
+  stripAgentCitationMarkup,
+} from "@/lib/agent-message-rendering";
 import type { AgentSource } from "@/types/api";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  type ReactNode,
+} from "react";
+import type { Components } from "streamdown";
 
 import {
   AgentPlainResponse,
@@ -27,58 +40,31 @@ function getValidSourceUrl(source: AgentSource) {
   }
 
   try {
-    return new URL(source.url).toString();
+    const url = new URL(source.url);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.toString()
+      : null;
   } catch {
     return null;
   }
 }
 
-function splitTrailingCitationText(text: string) {
-  const trimmedText = text.trimEnd();
-  const trailingWhitespace = text.slice(trimmedText.length);
+type CitableAgentSource = AgentSource & { url: string };
 
-  if (!trimmedText) {
-    return { citationText: "", prefix: "", trailingWhitespace };
-  }
-
-  const boundaryMatch = /[。！？.!?\n](?![\s\S]*[。！？.!?\n])/.exec(
-    trimmedText.slice(0, -1),
+const EMPTY_CITATION_SOURCES = new Map<string, CitableAgentSource>();
+const AgentCitationSourcesContext =
+  createContext<ReadonlyMap<string, CitableAgentSource>>(
+    EMPTY_CITATION_SOURCES,
   );
-  const cutIndex = boundaryMatch ? boundaryMatch.index + 1 : -1;
-  const citationText =
-    cutIndex >= 0 ? trimmedText.slice(cutIndex).trimStart() : trimmedText;
-
-  if (citationText.length < 8) {
-    return { citationText: trimmedText, prefix: "", trailingWhitespace };
-  }
-
-  return {
-    citationText,
-    prefix: cutIndex >= 0 ? trimmedText.slice(0, cutIndex) : "",
-    trailingWhitespace,
-  };
-}
+const AGENT_CITATION_TAGS = { citation: ["source_ids"] };
+const AGENT_LITERAL_TAGS = ["citation"];
 
 function AgentInlineCitationCard({
   sources,
 }: {
-  sources: AgentSource[] | undefined;
+  sources: CitableAgentSource[];
 }) {
-  const citationSources = sources
-    ?.map((source) => {
-      const url = getValidSourceUrl(source);
-
-      return url ? { ...source, url } : null;
-    })
-    .filter((source): source is AgentSource & { url: string } =>
-      Boolean(source),
-    );
-
-  if (!citationSources?.length) {
-    return null;
-  }
-
-  const triggerSources = citationSources.map((source) => source.url);
+  const triggerSources = sources.map((source) => source.url);
 
   return (
     <InlineCitationCard>
@@ -91,9 +77,13 @@ function AgentInlineCitationCard({
             <InlineCitationCarouselIndex />
           </InlineCitationCarouselHeader>
           <InlineCitationCarouselContent>
-            {citationSources.map((source) => (
+            {sources.map((source) => (
               <InlineCitationCarouselItem key={source.id}>
-                <InlineCitationSource title={source.title} url={source.url} />
+                <InlineCitationSource
+                  description={source.excerpt}
+                  title={source.title}
+                  url={source.url}
+                />
               </InlineCitationCarouselItem>
             ))}
           </InlineCitationCarouselContent>
@@ -101,6 +91,50 @@ function AgentInlineCitationCard({
       </InlineCitationCardBody>
     </InlineCitationCard>
   );
+}
+
+function AgentCitationTag({
+  children,
+  source_ids: sourceIdsValue,
+}: Record<string, unknown> & { children?: ReactNode }) {
+  const sourceById = useContext(AgentCitationSourcesContext);
+  const sourceIds = getAgentCitationSourceIds(sourceIdsValue);
+  const sources = sourceIds.flatMap((sourceId) => {
+    const source = sourceById.get(sourceId);
+    return source ? [source] : [];
+  });
+
+  if (!sources.length || sources.length !== sourceIds.length) {
+    return <>{children}</>;
+  }
+
+  return (
+    <InlineCitation>
+      <InlineCitationText>{children}</InlineCitationText>
+      <AgentInlineCitationCard sources={sources} />
+    </InlineCitation>
+  );
+}
+
+const AGENT_CITATION_COMPONENTS: Components = {
+  citation: AgentCitationTag,
+};
+
+function getCitableSourceMap(sources: AgentSource[] | undefined) {
+  const sourceById = new Map<string, CitableAgentSource>();
+
+  for (const source of sources ?? []) {
+    if (source.sourceType !== "web") {
+      continue;
+    }
+
+    const url = getValidSourceUrl(source);
+    if (url) {
+      sourceById.set(source.id, { ...source, url });
+    }
+  }
+
+  return sourceById;
 }
 
 function removeMarkdownTableBlocks(text: string) {
@@ -148,44 +182,38 @@ export function AgentAssistantResponse({
   const responseText = removeMarkdownTables
     ? removeMarkdownTableBlocks(text)
     : text;
+  const sourceById = useMemo(() => getCitableSourceMap(sources), [sources]);
 
   if (!responseText.trim()) {
     return null;
   }
 
-  if (!sources?.some((source) => getValidSourceUrl(source))) {
-    if (isPlainAgentText(responseText)) {
-      return <AgentPlainResponse text={responseText} />;
+  if (hasAgentCitationMarkupCandidate(responseText)) {
+    if (!hasCompleteAgentCitationMarkup(responseText)) {
+      const safeText = stripAgentCitationMarkup(responseText);
+      return isPlainAgentText(safeText) ? (
+        <AgentPlainResponse text={safeText} />
+      ) : (
+        <AgentRichResponse text={safeText} />
+      );
     }
 
-    return <AgentRichResponse text={responseText} />;
-  }
-
-  if (!isPlainAgentText(responseText)) {
     return (
-      <>
-        <AgentRichResponse text={responseText} />
-        <span className="mt-1 inline-block text-sm leading-relaxed">
-          <InlineCitation>
-            <AgentInlineCitationCard sources={sources} />
-          </InlineCitation>
-        </span>
-      </>
+      <AgentCitationSourcesContext.Provider value={sourceById}>
+        <AgentRichResponse
+          allowedTags={AGENT_CITATION_TAGS}
+          components={AGENT_CITATION_COMPONENTS}
+          fallbackText={stripAgentCitationMarkup(responseText)}
+          literalTagContent={AGENT_LITERAL_TAGS}
+          text={responseText}
+        />
+      </AgentCitationSourcesContext.Provider>
     );
   }
 
-  const { citationText, prefix, trailingWhitespace } =
-    splitTrailingCitationText(responseText);
+  if (isPlainAgentText(responseText)) {
+    return <AgentPlainResponse text={responseText} />;
+  }
 
-  return (
-    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-      {prefix}
-      {prefix && !/\s$/.test(prefix) ? " " : null}
-      <InlineCitation>
-        <InlineCitationText>{citationText}</InlineCitationText>
-        <AgentInlineCitationCard sources={sources} />
-      </InlineCitation>
-      {trailingWhitespace}
-    </p>
-  );
+  return <AgentRichResponse text={responseText} />;
 }

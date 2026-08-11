@@ -130,7 +130,14 @@ def test_runtime_prompt_uses_frozen_preferences_without_settings_payload() -> No
     )
 
     messages = build_agent_messages(request, _config(), mode="tools")
-    payload = json.loads(messages[1]["content"])
+    workspace_message = next(
+        message
+        for message in reversed(messages)
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"workspaceContext":')
+    )
+    payload = json.loads(workspace_message["content"])["workspaceContext"]
     system_prompt = messages[0]["content"]
 
     assert payload["responseLanguage"] == "English"

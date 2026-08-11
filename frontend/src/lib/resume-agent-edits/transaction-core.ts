@@ -31,15 +31,15 @@ export interface AgentDraftApplyResult {
 }
 
 export type OperationApplyResult =
-  | { ok: true; diff: ResumeDraftDiff }
+  | { ok: true; diffs: ResumeDraftDiff[] }
   | {
       ok: false;
       reason: Exclude<AgentDraftApplyErrorReason, "missing_operation">;
       target: string;
     };
 
-export function operationApplied(diff: ResumeDraftDiff): OperationApplyResult {
-  return { ok: true, diff };
+export function operationApplied(...diffs: ResumeDraftDiff[]): OperationApplyResult {
+  return { ok: true, diffs };
 }
 
 export function operationRejected(

@@ -226,7 +226,7 @@ def test_follow_up_stream_keeps_prior_edits_in_every_draft_snapshot(
         monkeypatch.setattr(
             streaming,
             "resolve_agent_llm_config",
-            lambda conn, config: SimpleNamespace(),
+            lambda conn, config: SimpleNamespace(provider="custom"),
         )
         monkeypatch.setattr(
             streaming,
@@ -1034,6 +1034,41 @@ def test_explicit_stop_persists_visible_partial_message(
                 "text_delta",
                 {"type": "text_delta", "delta": partial_text},
             )
+            for tool_id, state in (
+                ("tool-input-streaming", "input-streaming"),
+                ("tool-input-available", "input-available"),
+                ("tool-approval-requested", "approval-requested"),
+                ("tool-approval-responded", "approval-responded"),
+            ):
+                yield agent_runs._sse_frame(
+                    "tool_start",
+                    {
+                        "type": "tool_start",
+                        "tool": {
+                            "id": tool_id,
+                            "type": "tool-web_search",
+                            "title": "web_search",
+                            "state": state,
+                            "input": {"query": "staff frontend engineer"},
+                            "startedAt": "2026-08-10T10:00:00Z",
+                        },
+                    },
+                )
+            yield agent_runs._sse_frame(
+                "tool_done",
+                {
+                    "type": "tool_done",
+                    "tool": {
+                        "id": "tool-already-complete",
+                        "type": "tool-resume_analysis",
+                        "title": "resume_analysis",
+                        "state": "output-available",
+                        "output": {"score": 90},
+                        "startedAt": "2026-08-10T09:59:58Z",
+                        "completedAt": "2026-08-10T09:59:59Z",
+                    },
+                },
+            )
             yield agent_runs._sse_frame(
                 "edits",
                 {
@@ -1086,6 +1121,21 @@ def test_explicit_stop_persists_visible_partial_message(
     assert rollback_index < message_done_index < terminal_index
     assert partial_text in events[message_done_index]
     assert "uncommitted-edit" not in events[message_done_index]
+    cancelled_message_payload = agent_runs._event_payload(
+        events[message_done_index],
+    )[1]["message"]
+    cancelled_tools = {tool["id"]: tool for tool in cancelled_message_payload["tools"]}
+    for tool_id in (
+        "tool-input-streaming",
+        "tool-input-available",
+        "tool-approval-requested",
+        "tool-approval-responded",
+    ):
+        assert cancelled_tools[tool_id]["state"] == "output-error"
+        assert cancelled_tools[tool_id]["errorText"] == "Cancelled."
+        assert cancelled_tools[tool_id]["completedAt"] is not None
+    assert cancelled_tools["tool-already-complete"]["state"] == ("output-available")
+    assert cancelled_tools["tool-already-complete"]["output"] == {"score": 90}
     assert '"status":"cancelled"' in events[terminal_index]
 
     session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
@@ -1100,6 +1150,7 @@ def test_explicit_stop_persists_visible_partial_message(
     assert assistant["response"]["transactionState"] == "rolled_back"
     assert assistant["response"]["edits"] == []
     assert assistant["response"].get("draft") is None
+    assert assistant["response"]["tools"] == cancelled_message_payload["tools"]
     execution = session["executions"][-1]
     assert execution["runId"] == run_id
     assert execution["turnId"] == "turn-cancelled-partial"

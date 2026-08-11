@@ -13,6 +13,7 @@ from app.services.llm.adapters import (
     openai_chat,
     openai_responses,
 )
+from app.services.llm.tool_schema import portable_tool_schema
 from app.services.llm.types import AgentLlmConfig
 
 SchemaBuilder = Callable[
@@ -221,6 +222,28 @@ def test_current_agent_tool_schemas_are_portable_for_every_provider(
         assert isinstance(schema.get("properties"), dict)
 
     assert canonical_tools == original_tools
+
+
+def test_gemini_declares_every_current_tool_with_complete_parameters() -> None:
+    canonical_tools = deepcopy(AGENT_TOOL_SCHEMAS)
+
+    payload = google_gemini.gemini_payload(
+        _config(),
+        [{"role": "user", "content": "edit"}],
+        canonical_tools,
+    )
+
+    assert payload["tools"] == [
+        {
+            "type": "function",
+            "name": tool["function"]["name"],
+            "description": tool["function"]["description"],
+            "parameters": portable_tool_schema(
+                tool["function"]["parameters"],
+            ),
+        }
+        for tool in canonical_tools
+    ]
 
 
 def _schema_keywords(value: Any) -> set[str]:

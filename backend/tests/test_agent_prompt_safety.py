@@ -8,7 +8,11 @@ from app.services.agent.policy import (
     AgentTaskIntent,
     capability_policy_for_request,
 )
-from app.services.agent.prompts import CORE_POLICY_PROMPT, TOOL_POLICY_PROMPT
+from app.services.agent.prompts import (
+    CORE_POLICY_PROMPT,
+    STREAMING_FINAL_RESPONSE_PROMPT,
+    TOOL_POLICY_PROMPT,
+)
 
 
 def test_external_content_boundary_applies_to_every_agent_phase() -> None:
@@ -41,6 +45,19 @@ def test_web_content_cannot_redirect_agent_or_expose_sensitive_data() -> None:
     assert "or to invoke tools" in prompt
 
 
+def test_final_response_prompt_requires_claim_level_web_citations() -> None:
+    prompt = STREAMING_FINAL_RESPONSE_PROMPT
+
+    assert '<citation source_ids="source-id">' in prompt
+    assert "only the exact claim supported by those sources" in prompt
+    assert "Use only IDs present in `citationSources`" in prompt
+    assert "`sourceType` is `web` and that have an HTTP(S) URL" in prompt
+    assert "Do not emit a citation tag when no citable web source exists" in prompt
+    assert "smallest set of one to three directly supporting sources" in prompt
+    assert "Do not append a source catalog" in prompt
+    assert "raw URLs or domain names" in prompt
+
+
 @pytest.mark.parametrize(
     "prompt",
     [
@@ -49,7 +66,13 @@ def test_web_content_cannot_redirect_agent_or_expose_sensitive_data() -> None:
         "只给建议，别改",
         "先不要优化，看看这个岗位",
         "帮我匹配目标职位关键词，不要改简历",
+        "不要更新工作经历",
+        "请勿重写我的个人总结",
+        "别把项目描述改短",
         "Do not edit my resume; just tell me what you can do.",
+        "Don't update my experience section.",
+        "Do not shorten my professional summary.",
+        "Never change my project description.",
         "Advice only; don't create a draft.",
         "Review this job description without changing my resume.",
         "List the missing keywords; no edits.",
@@ -85,6 +108,48 @@ def test_jd_keyword_request_without_edit_instruction_is_read_only() -> None:
 
     assert policy.mode == AgentCapabilityMode.READ_ONLY
     assert "edit_execute" not in policy.allowed_tools
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "更新一下目标岗位信息",
+        "What changed in this job description?",
+        "Can you update me on frontend engineering trends?",
+        "Can you update me on my project experience?",
+        "Please update me on the project description requirements.",
+        "Can you expand on what you mean by project description?",
+    ],
+)
+def test_non_resume_updates_do_not_enable_write_tools(prompt: str) -> None:
+    policy = capability_policy_for_request(
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id=f"turn-prompt-safety-non-resume-update-{prompt}",
+                role="user",
+                text=prompt,
+            ),
+            resume={"basic": {}, "sections": []},
+        ),
+    )
+
+    assert policy.mode == AgentCapabilityMode.READ_ONLY
+    assert "edit_execute" not in policy.allowed_tools
+
+
+def test_draft_diff_tool_is_hidden_without_a_pending_draft() -> None:
+    policy = capability_policy_for_request(
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-prompt-safety-no-pending-diff",
+                role="user",
+                text="分析这份简历",
+            ),
+            resume={"basic": {}, "sections": []},
+        ),
+    )
+
+    assert "draft_diff_summary" not in policy.allowed_tools
 
 
 def test_negated_target_search_is_not_exposed_to_the_model() -> None:
@@ -144,7 +209,23 @@ def test_clearing_target_for_general_analysis_does_not_enable_web_search() -> No
         "帮我优化这份简历",
         "根据这个 JD 优化简历",
         "优化这份简历，但不要修改个人信息",
+        "不要更新目标岗位信息，根据现有目标优化简历",
+        "把工作经历改短一点",
+        "把项目描述改成更精炼的版本",
+        "重写我的个人总结",
+        "更新一下工作经历",
+        "根据这个 JD 把简历改短一点",
         "Rewrite my professional summary",
+        "Make my summary shorter",
+        "Shorten my experience section",
+        "Shorten these project bullets",
+        "Condense my project bullets",
+        "Condense those experience bullets",
+        "Expand my project description",
+        "Change my project description",
+        "Modify my work experience",
+        "Update my professional summary",
+        "Update the first project description",
         "Tailor my resume to this job description",
     ],
 )

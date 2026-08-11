@@ -32,7 +32,7 @@ interface AgentUserMessageRowProps {
   t: AppMessages;
 }
 
-/** Owns the user-message display/edit/retry state machine behind one row. */
+/** Owns user-message display, editing, and low-frequency actions behind one row. */
 export function AgentUserMessageRow({
   copied,
   editedText,
@@ -53,14 +53,6 @@ export function AgentUserMessageRow({
   const submitDisabled = isResponding || !editedText.trim();
   const hasText = Boolean(message.text.trim());
   const executionStatus = message.execution?.status;
-  const executionErrorCode = message.execution?.errorCode;
-  const terminalStatusText =
-    executionStatus === "failed" &&
-    executionErrorCode === "AGENT_PROVIDER_TIMEOUT"
-      ? t.agentProviderTimeout
-      : executionStatus === "failed"
-        ? t.agentRunFailed
-        : t.agentRunCancelled;
   const canRetry =
     retryable &&
     (executionStatus === "failed" || executionStatus === "cancelled");
@@ -149,25 +141,6 @@ export function AgentUserMessageRow({
           </MessageContent>
         ) : null}
 
-        {!isEditing && canRetry ? (
-          <div className="mr-1 mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-            <span role="status">
-              {terminalStatusText}
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              className="h-6 rounded-md px-1.5 text-xs hover:bg-muted hover:text-foreground"
-              disabled={isResponding}
-              onClick={onRetry}
-            >
-              <RotateCcw className="size-3" />
-              {t.agentRetry}
-            </Button>
-          </div>
-        ) : null}
-
         {!isEditing ? (
           <MessageActions className="pointer-events-none mr-1 mt-0.5 h-5 justify-end gap-1 opacity-0 transition-opacity duration-150 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 group-focus-within/user-message:pointer-events-auto group-focus-within/user-message:opacity-100">
             <MessageAction
@@ -195,6 +168,19 @@ export function AgentUserMessageRow({
             >
               <Pencil className="size-3" />
             </MessageAction>
+            {canRetry ? (
+              <MessageAction
+                tooltip={t.agentRetry}
+                label={t.agentRetry}
+                variant="ghost"
+                size="icon-xs"
+                className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
+                disabled={isResponding}
+                onClick={onRetry}
+              >
+                <RotateCcw className="size-3" />
+              </MessageAction>
+            ) : null}
           </MessageActions>
         ) : null}
       </div>

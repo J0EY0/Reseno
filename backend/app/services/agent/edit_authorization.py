@@ -174,7 +174,11 @@ class EditAuthorization:
 
         return _outside_scope(operation_type or "unknown operation")
 
-    def plan_target_rejection_reason(self, entry: dict[str, Any]) -> str | None:
+    def plan_target_rejection_reason(
+        self,
+        entry: dict[str, Any],
+        resume: dict[str, Any],
+    ) -> str | None:
         """Authorize a metadata-only plan step before it can be cached."""
 
         if self.allow_all or isinstance(entry.get("operation"), dict):
@@ -189,13 +193,15 @@ class EditAuthorization:
         parts = target.split(".")
         if len(parts) >= 4 and parts[0] == "sections" and parts[2] == "items":
             section_id, item_id = parts[1], parts[3]
-            if self._item_allows(section_id, item_id, "", frozenset()):
+            section_kind = _section_kind(resume, section_id)
+            if self._item_allows(section_id, item_id, section_kind, frozenset()):
                 return None
             return _outside_scope(target)
 
         if len(parts) >= 2 and parts[0] == "sections" and parts[1]:
             section_id = parts[1]
-            if self._section_allows(section_id, "", frozenset()):
+            section_kind = _section_kind(resume, section_id)
+            if self._section_allows(section_id, section_kind, frozenset()):
                 return None
             return _outside_scope(target)
 
@@ -512,6 +518,7 @@ def unauthorized_edit_issues(
 
 def unauthorized_plan_issues(
     authorization: EditAuthorization,
+    resume: dict[str, Any],
     steps: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Return scope failures for plan steps that have no operation yet."""
@@ -520,7 +527,7 @@ def unauthorized_plan_issues(
     for index, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             continue
-        reason = authorization.plan_target_rejection_reason(step)
+        reason = authorization.plan_target_rejection_reason(step, resume)
         if reason:
             issues.append({"index": index, "reason": reason})
     return issues

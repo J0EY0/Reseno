@@ -179,11 +179,14 @@
     "zh": [
       "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:修改|改动|改|编辑|优化|润色|改写)(?=[，。！？；,.!?;]|$)",
       "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:修改|改动|改|编辑|优化|润色|改写)(?:这份|我的|当前|整个|整份)?简历",
+      "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:更新|重写|改短|改长|压缩|扩写)[^，。！？；,.!?;]{0,12}(?:简历|简介|总结|经历|项目|技能|教育|描述|标题|bullet|要点)",
+      "(?:不要|别|请勿|不用|无需|不需要)(?:再)?(?:把|将)?[^，。！？；,.!?;]{0,16}(?:简历|简介|总结|经历|项目|技能|教育|描述|标题|bullet|要点)[^，。！？；,.!?;]{0,12}(?:改短|改长|改成|换成|压缩|重写|更新|扩写)",
       "(?:不要|别|请勿|不用|无需|不需要)(?:生成|创建)(?:任何)?(?:草稿|修改|编辑)",
       "(?:只|仅)(?:给|要|需要)?(?:建议|分析|诊断|评价|说明)"
     ],
     "en": [
       "(?:do not|don['’]?t|never) (?:edit|change|modify|rewrite|optimi[sz]e) (?:(?:my|the|this|current|entire) )?(?:resume|draft)",
+      "(?:do not|don['’]?t|never)\\s+(?:make|change|modify|update|shorten|condense|expand|rewrite)\\s+(?:(?:my|the|this|these|those|current|entire|professional|work|project|first|second|third|last|latest|previous)\\s+){0,3}(?:resume|summary|experience|project|bullets?|description|headline|skills|education|section)",
       "(?:do not|don['’]?t|never) (?:create|generate|make) (?:a )?draft",
       "without (?:editing|changing|modifying|rewriting|optimizing) (?:(?:my|the|this|current|entire) )?(?:resume|draft)",
       "(?:advice|analysis|review|suggestions?) only",
@@ -216,7 +219,9 @@
       "缩短",
       "精简",
       "扩写",
-      "更像"
+      "更像",
+      "(?:把|将|让)?(?:这份)?(?:简历|简介|总结|经历|项目|技能|教育|描述|标题|bullet|要点).{0,16}(?:改短|改长|改成|换成|压缩|重写|更新)",
+      "(?:改短|改长|压缩|重写|更新).{0,12}(?:简历|简介|总结|经历|项目|技能|教育|描述|标题|bullet|要点)"
     ],
     "en": [
       "edit",
@@ -232,7 +237,8 @@
       "split",
       "merge",
       "organize",
-      "classify"
+      "classify",
+      "\\b(?:make|change|modify|update|shorten|condense|expand)\\b\\s+(?:(?:my|the|this|these|those|current|entire|professional|work|project|first|second|third|last|latest|previous)\\s+){0,3}(?:resume|summary|experience|project|bullets?|description|headline|skills|education|section)\\b"
     ]
   },
   "material_generation_request": {

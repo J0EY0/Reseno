@@ -16,6 +16,7 @@ def _config() -> AgentLlmConfig:
         client_id="anthropic-stream-test",
         name="Claude Test",
         provider="anthropic",
+        provider_kind="cloud",
         model="claude-test",
         base_url="https://api.anthropic.com/v1",
         api_key="sk-test-secret",

@@ -110,6 +110,13 @@ _KNOWN_TECHNOLOGY_TERMS = frozenset(
         "zustand",
     },
 )
+_TECHNOLOGY_TERM_ALIASES = {
+    "tailwind css": "Tailwind",
+}
+_TECHNOLOGY_ALIAS_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])tailwind\s+css(?![A-Za-z0-9])",
+    flags=re.IGNORECASE,
+)
 _MATERIAL_ASSERTION_TERMS = (
     "主导",
     "牵头",
@@ -412,6 +419,7 @@ def _matching_before_text(value: object, patch: object) -> str:
 
 def _claims_in_text(value: str) -> set[str]:
     normalized = unicodedata.normalize("NFKC", value)
+    normalized = _TECHNOLOGY_ALIAS_PATTERN.sub("Tailwind", normalized)
     claims = {
         re.sub(r"\s+", "", match.group(0))
         for match in _NUMERIC_CLAIM_PATTERN.finditer(normalized)
@@ -632,16 +640,24 @@ def _operation_tech_stack_claims(
 def _tech_stack_values(value: object) -> set[str]:
     if not isinstance(value, dict):
         return set()
-    claims = set(_string_list(value.get("techStack")))
+    claims = {
+        _canonical_technology_term(claim)
+        for claim in _string_list(value.get("techStack"))
+    }
     items = value.get("items")
     if isinstance(items, list):
         claims.update(
-            claim
+            _canonical_technology_term(claim)
             for item in items
             if isinstance(item, dict)
             for claim in _string_list(item.get("techStack"))
         )
     return claims
+
+
+def _canonical_technology_term(value: str) -> str:
+    key = " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    return _TECHNOLOGY_TERM_ALIASES.get(key, value)
 
 
 def _text_contains_claim(text: str, claim: str) -> bool:

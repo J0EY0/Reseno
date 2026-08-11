@@ -1,5 +1,253 @@
+import type { AgentResumeEditSuggestion } from "@/types/api";
+import type { ResumeDraftDiff } from "@/types/resume";
+import { formatRichTextAsPlainText } from "@/lib/rich-text";
+
 const HIDDEN_DIFF_FIELDS = new Set(["id", "schemaVersion"]);
 const EMPTY_DIFF_VALUE = "—";
+
+function valuesEqual(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function canonicalPathSegments(diff: ResumeDraftDiff) {
+  if (diff.path === "sections") {
+    return ["sections"];
+  }
+
+  if (diff.path.startsWith("basic.")) {
+    return ["basic", diff.path.slice("basic.".length)];
+  }
+
+  if (diff.sectionId) {
+    const sectionPath = `sections.${diff.sectionId}`;
+    const sectionSegments = ["sections", diff.sectionId];
+
+    if (diff.itemId) {
+      const itemPath = `${sectionPath}.items.${diff.itemId}`;
+      const itemSegments = [...sectionSegments, "items", diff.itemId];
+      if (diff.path === itemPath) {
+        return itemSegments;
+      }
+      if (diff.path.startsWith(`${itemPath}.`)) {
+        return [
+          ...itemSegments,
+          ...diff.path.slice(itemPath.length + 1).split("."),
+        ];
+      }
+    } else {
+      if (diff.path === sectionPath) {
+        return sectionSegments;
+      }
+      if (diff.path.startsWith(`${sectionPath}.`)) {
+        return [
+          ...sectionSegments,
+          ...diff.path.slice(sectionPath.length + 1).split("."),
+        ];
+      }
+    }
+  }
+
+  return ["unresolved", diff.sectionId ?? "", diff.itemId ?? "", diff.path];
+}
+
+function canonicalPathKey(diff: ResumeDraftDiff) {
+  return JSON.stringify(canonicalPathSegments(diff));
+}
+
+function isDescendantPath(path: string[], parentPath: string[]) {
+  return (
+    path.length > parentPath.length &&
+    parentPath.every((segment, index) => path[index] === segment)
+  );
+}
+
+function relativePathSegments(diff: ResumeDraftDiff, parent: ResumeDraftDiff) {
+  return canonicalPathSegments(diff).slice(canonicalPathSegments(parent).length);
+}
+
+function replaceSnapshotField(
+  field: string,
+  current: unknown,
+  replacement: unknown,
+): { ok: true; value: unknown } | { ok: false } {
+  if (
+    field !== "items" ||
+    !Array.isArray(current) ||
+    !Array.isArray(replacement) ||
+    !replacement.every((item) => typeof item === "string")
+  ) {
+    return { ok: true, value: replacement };
+  }
+
+  if (
+    !current.every(
+      (item) => isRecord(item) && typeof item.id === "string",
+    )
+  ) {
+    return { ok: false };
+  }
+
+  const itemsById = new Map(current.map((item) => [item.id, item]));
+  if (
+    itemsById.size !== current.length ||
+    replacement.length !== current.length ||
+    new Set(replacement).size !== replacement.length ||
+    replacement.some((itemId) => !itemsById.has(itemId))
+  ) {
+    return { ok: false };
+  }
+
+  return {
+    ok: true,
+    value: replacement.map((itemId) => itemsById.get(itemId)),
+  };
+}
+
+function replaceRecordPath(
+  value: unknown,
+  segments: string[],
+  replacement: unknown,
+): { ok: true; value: unknown } | { ok: false } {
+  if (segments.length === 0) {
+    return { ok: false };
+  }
+
+  const [segment, ...remaining] = segments;
+  if (Array.isArray(value)) {
+    const index = value.findIndex(
+      (item) => isRecord(item) && item.id === segment,
+    );
+    if (index < 0) {
+      return { ok: false };
+    }
+
+    if (remaining.length === 0) {
+      return {
+        ok: true,
+        value: value.map((item, itemIndex) =>
+          itemIndex === index ? replacement : item,
+        ),
+      };
+    }
+
+    const nested = replaceRecordPath(value[index], remaining, replacement);
+    return nested.ok
+      ? {
+          ok: true,
+          value: value.map((item, itemIndex) =>
+            itemIndex === index ? nested.value : item,
+          ),
+        }
+      : nested;
+  }
+
+  if (!isRecord(value)) {
+    return { ok: false };
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(value, segment)) {
+    return { ok: false };
+  }
+
+  if (remaining.length === 0) {
+    const field = replaceSnapshotField(segment, value[segment], replacement);
+    return field.ok
+      ? { ok: true, value: { ...value, [segment]: field.value } }
+      : field;
+  }
+
+  const nested = replaceRecordPath(value[segment], remaining, replacement);
+  return nested.ok
+    ? { ok: true, value: { ...value, [segment]: nested.value } }
+    : nested;
+}
+
+/** Collapse sequential changes to the same canonical path into the net draft. */
+export function compactResumeDraftDiffs(diffs: ResumeDraftDiff[]) {
+  const compactedByPath = new Map<string, ResumeDraftDiff>();
+
+  for (const diff of diffs) {
+    const diffPath = canonicalPathSegments(diff);
+    const diffPathKey = canonicalPathKey(diff);
+    const addedAncestor = [...compactedByPath.values()]
+      .filter(
+        (candidate) =>
+          candidate.kind === "added" &&
+          isDescendantPath(diffPath, canonicalPathSegments(candidate)),
+      )
+      .sort(
+        (left, right) =>
+          canonicalPathSegments(right).length -
+          canonicalPathSegments(left).length,
+      )[0];
+    if (addedAncestor) {
+      const replaced = replaceRecordPath(
+        addedAncestor.after,
+        relativePathSegments(diff, addedAncestor),
+        diff.after,
+      );
+      if (replaced.ok) {
+        compactedByPath.set(canonicalPathKey(addedAncestor), {
+          ...addedAncestor,
+          after: replaced.value,
+        });
+        continue;
+      }
+    }
+
+    const previous = compactedByPath.get(diffPathKey);
+    let compacted = previous
+      ? { ...diff, before: previous.before }
+      : diff;
+
+    if (diff.kind === "deleted" && !valuesEqual(compacted.before, compacted.after)) {
+      const descendants = [...compactedByPath.values()]
+        .filter((candidate) =>
+          isDescendantPath(canonicalPathSegments(candidate), diffPath),
+        )
+        .sort(
+          (left, right) =>
+            relativePathSegments(right, diff).length -
+            relativePathSegments(left, diff).length,
+        );
+      let originalSnapshot = compacted.before;
+      let canCollapseDescendants = true;
+
+      for (const descendant of descendants) {
+        const replaced = replaceRecordPath(
+          originalSnapshot,
+          relativePathSegments(descendant, diff),
+          descendant.before,
+        );
+        if (!replaced.ok) {
+          canCollapseDescendants = false;
+          break;
+        }
+        originalSnapshot = replaced.value;
+      }
+
+      if (canCollapseDescendants) {
+        compacted = { ...compacted, before: originalSnapshot };
+        for (const descendant of descendants) {
+          compactedByPath.delete(canonicalPathKey(descendant));
+        }
+      }
+    }
+
+    if (valuesEqual(compacted.before, compacted.after)) {
+      compactedByPath.delete(diffPathKey);
+      for (const [pathKey, candidate] of compactedByPath) {
+        if (isDescendantPath(canonicalPathSegments(candidate), diffPath)) {
+          compactedByPath.delete(pathKey);
+        }
+      }
+    } else {
+      compactedByPath.set(diffPathKey, compacted);
+    }
+  }
+
+  return [...compactedByPath.values()];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -14,7 +262,10 @@ function indent(value: string) {
 
 function formatValue(value: unknown, seen: WeakSet<object>): string {
   if (typeof value === "string") {
-    return value.trim() || EMPTY_DIFF_VALUE;
+    const richText = formatRichTextAsPlainText(value);
+    return richText === null
+      ? value.trim() || EMPTY_DIFF_VALUE
+      : richText.text || EMPTY_DIFF_VALUE;
   }
 
   if (typeof value === "number" || typeof value === "boolean") {
@@ -26,9 +277,23 @@ function formatValue(value: unknown, seen: WeakSet<object>): string {
       return EMPTY_DIFF_VALUE;
     }
     const items = value
-      .map((item) => formatValue(item, seen))
+      .map((item) => {
+        if (typeof item === "string") {
+          const richText = formatRichTextAsPlainText(item);
+          if (richText !== null) {
+            if (!richText.text) {
+              return "";
+            }
+            return richText.blockKind === "list"
+              ? richText.text
+              : `• ${richText.text.replaceAll("\n", "\n  ")}`;
+          }
+        }
+        const formatted = formatValue(item, seen);
+        return `• ${formatted.replaceAll("\n", "\n  ")}`;
+      })
       .filter(Boolean);
-    return items.map((item) => `• ${item.replaceAll("\n", "\n  ")}`).join("\n");
+    return items.join("\n") || EMPTY_DIFF_VALUE;
   }
 
   if (!isRecord(value) || seen.has(value)) {
@@ -57,16 +322,21 @@ export function formatAgentDiffValue(value: unknown) {
   return formatValue(value, new WeakSet());
 }
 
-/** Resolve the diff owned by this edit identity, never by a descriptive target. */
-export function getAgentEditDiff(edit: AgentResumeEditSuggestion) {
-  const diff = edit.diffs?.find((candidate) => candidate.operationId === edit.id);
-  if (!diff) {
-    return undefined;
-  }
-
-  return {
-    before: formatAgentDiffValue(diff.before),
-    after: formatAgentDiffValue(diff.after),
-  };
+/** Return every real field change owned by this edit, in operation order. */
+export function getAgentEditDiffFields(
+  edit: AgentResumeEditSuggestion,
+  diffs: ResumeDraftDiff[] = edit.diffs ?? [],
+) {
+  return diffs
+    .filter(
+      (diff) =>
+        diff.operationId === edit.id &&
+        JSON.stringify(diff.before) !== JSON.stringify(diff.after),
+    )
+    .map((diff) => ({
+      id: diff.id,
+      label: diff.label,
+      before: formatAgentDiffValue(diff.before),
+      after: formatAgentDiffValue(diff.after),
+    }));
 }
-import type { AgentResumeEditSuggestion } from "@/types/api";

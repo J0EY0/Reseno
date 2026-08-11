@@ -63,49 +63,10 @@ export function toConversationMessage(
     id: message.id,
     response:
       message.role === "assistant" && message.response
-        ? toConversationResponse(message.response)
+        ? message.response
         : undefined,
     role: message.role,
     text: message.text,
-  };
-}
-
-function toConversationResponse(
-  response: AgentChatMessage,
-): AgentConversationMessage["response"] {
-  return {
-    actions: response.actions,
-    draft: response.draft,
-    edits: response.edits?.map((edit) => ({
-      evidenceRefs: edit.evidenceRefs,
-      diffs: edit.diffs,
-      id: edit.id,
-      operation: edit.operation,
-      reason: edit.reason,
-      replacement: edit.replacement,
-      status: edit.status,
-      target: edit.target,
-      title: edit.title,
-    })),
-    finishMissing: response.finishMissing,
-    id: response.id,
-    role: "assistant",
-    targetContext: response.targetContext,
-    sources: response.sources?.map((source) => ({
-      id: source.id,
-      sourceType: source.sourceType,
-      title: source.title,
-      url: source.url,
-    })),
-    text: response.text,
-    timeline: response.timeline,
-    transactionState: response.transactionState,
-    tools: response.tools?.map((tool) => ({
-      id: tool.id,
-      state: tool.state,
-      title: tool.title,
-      type: tool.type,
-    })),
   };
 }
 

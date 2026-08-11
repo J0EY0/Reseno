@@ -189,6 +189,44 @@ const toolDisplay = await loadTypeScriptModule(
     "Structured edit rejection must be displayed as a failed tool outcome.",
   );
 
+  assert(
+    toolDisplay
+      .getVisibleCompletedTools([
+        tool("web_search", "output-available", {
+          id: "search-success-before-failure",
+          input: { purpose: "jd" },
+        }),
+        tool("web_search", "output-error", {
+          id: "search-latest-failure",
+          input: { purpose: "jd" },
+          errorText: "Latest search failed",
+        }),
+      ])
+      .map((item) => item.id)
+      .join(",") ===
+      "search-success-before-failure,search-latest-failure",
+    "An older success must not hide the latest failure in chronological recovery order.",
+  );
+
+  assert(
+    toolDisplay
+      .getVisibleCompletedTools([
+        tool("resume_analysis", "output-available", {
+          id: "analysis-success-1",
+        }),
+        tool("resume_analysis", "output-available", {
+          id: "analysis-success-2",
+        }),
+        tool("resume_analysis", "output-available", {
+          id: "analysis-success-3",
+        }),
+      ])
+      .map((item) => item.id)
+      .join(",") ===
+      "analysis-success-1,analysis-success-2,analysis-success-3",
+    "Distinct successful invocation ids must remain visible for an auditable call count.",
+  );
+
   const unknownTool = tool("future_tool", "input-streaming");
   assert(
     toolDisplay.getAgentToolDisplayCategory(unknownTool) === "processing" &&

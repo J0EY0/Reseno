@@ -161,3 +161,39 @@ def test_conflicting_section_kind_aliases_reject_the_operation() -> None:
 
     assert edits == []
     assert len(rejected) == 1
+
+
+def test_model_adapter_rejects_unregistered_camel_case_section_alias() -> None:
+    edits, rejected = _model_edit_suggestions_with_diagnostics(
+        {
+            "schemaVersion": 2,
+            "basic": {
+                "name": "",
+                "headline": "Engineer",
+                "phone": "",
+                "email": "",
+                "location": "",
+                "avatar": "",
+                "summary": "",
+                "customFields": [],
+            },
+            "sections": [],
+        },
+        [
+            {
+                "title": "Insert projects",
+                "operation": {
+                    "type": "insert_section",
+                    "section": {
+                        "sectionType": "project",
+                        "title": "Projects",
+                        "items": [],
+                    },
+                },
+            },
+        ],
+        locale="en",
+    )
+
+    assert edits == []
+    assert len(rejected) == 1

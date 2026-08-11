@@ -86,13 +86,24 @@ export const InlineCitationCardTrigger = ({
   </HoverCardTrigger>
 );
 
-export type InlineCitationCardBodyProps = ComponentProps<"div">;
+export type InlineCitationCardBodyProps = ComponentProps<
+  typeof HoverCardContent
+>;
 
 export const InlineCitationCardBody = ({
   className,
   ...props
 }: InlineCitationCardBodyProps) => (
-  <HoverCardContent className={cn("relative w-80 p-0", className)} {...props} />
+  <HoverCardContent
+    className={cn(
+      "relative w-80 max-w-[calc(100vw-1.5rem)] p-0",
+      className
+    )}
+    collisionPadding={12}
+    side="top"
+    sideOffset={8}
+    {...props}
+  />
 );
 
 const CarouselApiContext = createContext<CarouselApi | undefined>(undefined);

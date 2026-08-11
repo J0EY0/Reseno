@@ -3,12 +3,17 @@ from typing import Any, Literal
 
 from app.services.resume_document_contract import ITEM_FIELDS_BY_KIND, SECTION_KINDS
 
-from ..models import FINISH_MISSING_ENUM, PLAN_INTENT_ENUM
+from ..models import FINISH_MISSING_ENUM
 from ..operation_contract import assert_model_operation_adapter_compatible
 from ..prompts import EDIT_OPERATION_GUIDE
 from ..section_registry import SECTION_KIND_ENUM
 
 STRING_SCHEMA: dict[str, Any] = {"type": "string"}
+NON_EMPTY_STRING_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "minLength": 1,
+    "pattern": r"\S",
+}
 STRING_LIST_SCHEMA: dict[str, Any] = {
     "type": "array",
     "items": STRING_SCHEMA,
@@ -28,9 +33,15 @@ def _item_schema(
     fill the remaining canonical fields with safe defaults.
     """
 
+    item_properties = {"id": NON_EMPTY_STRING_SCHEMA, **properties}
+    item_properties[identity_field] = {
+        **properties[identity_field],
+        "minLength": 1,
+    }
+
     return {
         "type": "object",
-        "properties": {"id": STRING_SCHEMA, **properties},
+        "properties": item_properties,
         "required": [identity_field],
         "additionalProperties": False,
     }
@@ -114,7 +125,7 @@ ITEM_SCHEMA: dict[str, Any] = {
 SECTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "id": {"type": "string"},
+        "id": NON_EMPTY_STRING_SCHEMA,
         "section_type": {
             "type": "string",
             "enum": SECTION_KIND_ENUM,
@@ -129,7 +140,7 @@ SECTION_SCHEMA: dict[str, Any] = {
             "description": "Canonical Resume V2 section discriminator.",
         },
         "title": {
-            "type": "string",
+            **NON_EMPTY_STRING_SCHEMA,
             "description": (
                 "User-visible section title. Skills, languages, and other custom "
                 "lists use section_type=simple_list with their intended title."
@@ -245,7 +256,7 @@ OPERATION_SCHEMA: dict[str, Any] = {
         _operation_variant(
             "replace_field",
             {
-                "path": {"type": "string"},
+                "path": NON_EMPTY_STRING_SCHEMA,
                 "value": {"type": "string"},
             },
             ["path", "value"],
@@ -261,25 +272,31 @@ OPERATION_SCHEMA: dict[str, Any] = {
         _operation_variant(
             "update_section",
             {
-                "sectionId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
                 "patch": SECTION_PATCH_SCHEMA,
             },
             ["sectionId", "patch"],
         ),
         _operation_variant(
             "delete_section",
-            {"sectionId": {"type": "string"}},
+            {"sectionId": NON_EMPTY_STRING_SCHEMA},
             ["sectionId"],
         ),
         _operation_variant(
             "reorder_sections",
-            {"sectionIds": {"type": "array", "items": {"type": "string"}}},
+            {
+                "sectionIds": {
+                    "type": "array",
+                    "items": NON_EMPTY_STRING_SCHEMA,
+                    "minItems": 1,
+                },
+            },
             ["sectionIds"],
         ),
         _operation_variant(
             "insert_item",
             {
-                "sectionId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
                 "item": ITEM_SCHEMA,
                 "index": {"type": "integer"},
             },
@@ -288,8 +305,8 @@ OPERATION_SCHEMA: dict[str, Any] = {
         _operation_variant(
             "update_item",
             {
-                "sectionId": {"type": "string"},
-                "itemId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
+                "itemId": NON_EMPTY_STRING_SCHEMA,
                 "patch": ITEM_PATCH_SCHEMA,
             },
             ["sectionId", "itemId", "patch"],
@@ -297,16 +314,20 @@ OPERATION_SCHEMA: dict[str, Any] = {
         _operation_variant(
             "delete_item",
             {
-                "sectionId": {"type": "string"},
-                "itemId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
+                "itemId": NON_EMPTY_STRING_SCHEMA,
             },
             ["sectionId", "itemId"],
         ),
         _operation_variant(
             "reorder_items",
             {
-                "sectionId": {"type": "string"},
-                "itemIds": {"type": "array", "items": {"type": "string"}},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
+                "itemIds": {
+                    "type": "array",
+                    "items": NON_EMPTY_STRING_SCHEMA,
+                    "minItems": 1,
+                },
             },
             ["sectionId", "itemIds"],
         ),
@@ -316,6 +337,10 @@ OPERATION_SCHEMA: dict[str, Any] = {
 # Model tools accept an adapter-friendly payload, while API responses use the
 # stricter canonical protocol. Top-level variants must still evolve together.
 assert_model_operation_adapter_compatible(OPERATION_SCHEMA)
+
+OPERATION_TYPE_ENUM = [
+    branch["properties"]["type"]["enum"][0] for branch in OPERATION_SCHEMA["oneOf"]
+]
 
 AgentToolMode = Literal["read", "write", "control"]
 AgentToolExecution = Literal["sync", "async"]
@@ -660,32 +685,22 @@ EDIT_PLAN_SCHEMA: dict[str, Any] = {
                         "properties": {
                             "action": {
                                 "type": "string",
+                                "enum": OPERATION_TYPE_ENUM,
                                 "description": (
                                     "One of replace_field, update_item, insert_item, "
                                     "insert_section, update_section, delete_item, "
                                     "delete_section, reorder_items, reorder_sections."
                                 ),
                             },
-                            "intent": {
-                                "type": "string",
-                                "enum": PLAN_INTENT_ENUM,
-                                "description": (
-                                    "Optional machine-readable edit intent for "
-                                    "draft-changing plans. Do not use this for "
-                                    "explaining an existing draft; use "
-                                    "draft_diff_summary and a natural-language answer "
-                                    "instead."
-                                ),
-                            },
                             "target": {
-                                "type": "string",
+                                **NON_EMPTY_STRING_SCHEMA,
                                 "description": (
                                     "Frontend target path, e.g. basic.summary "
                                     "or sections.<sectionId>.items.<itemId>."
                                 ),
                             },
-                            "reason": {"type": "string"},
-                            "title": {"type": "string"},
+                            "reason": NON_EMPTY_STRING_SCHEMA,
+                            "title": NON_EMPTY_STRING_SCHEMA,
                             "replacement": {
                                 "type": "string",
                                 "description": (
@@ -733,13 +748,13 @@ EDIT_EXECUTE_SCHEMA: dict[str, Any] = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string"},
-                            "target": {"type": "string"},
-                            "reason": {"type": "string"},
+                            "title": NON_EMPTY_STRING_SCHEMA,
+                            "target": NON_EMPTY_STRING_SCHEMA,
+                            "reason": NON_EMPTY_STRING_SCHEMA,
                             "replacement": {"type": "string"},
                             "evidenceRefs": {
                                 "type": "array",
-                                "items": {"type": "string"},
+                                "items": NON_EMPTY_STRING_SCHEMA,
                                 "minItems": 1,
                                 "description": (
                                     "Candidate-owned evidence supporting this edit. "
@@ -786,11 +801,11 @@ EDIT_MOVE_ITEM_SCHEMA: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "fromSectionId": {"type": "string"},
-                "toSectionId": {"type": "string"},
-                "itemId": {"type": "string"},
+                "fromSectionId": NON_EMPTY_STRING_SCHEMA,
+                "toSectionId": NON_EMPTY_STRING_SCHEMA,
+                "itemId": NON_EMPTY_STRING_SCHEMA,
                 "index": {"type": "integer"},
-                "reason": {"type": "string"},
+                "reason": NON_EMPTY_STRING_SCHEMA,
             },
             "required": ["fromSectionId", "toSectionId", "itemId"],
             "additionalProperties": False,
@@ -810,12 +825,12 @@ EDIT_SPLIT_ITEM_SCHEMA: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "sectionId": {"type": "string"},
-                "itemId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
+                "itemId": NON_EMPTY_STRING_SCHEMA,
                 "first": ITEM_PATCH_SCHEMA,
                 "second": ITEM_SCHEMA,
                 "index": {"type": "integer"},
-                "reason": {"type": "string"},
+                "reason": NON_EMPTY_STRING_SCHEMA,
             },
             "required": ["sectionId", "itemId", "first", "second"],
             "additionalProperties": False,
@@ -835,14 +850,14 @@ EDIT_MERGE_ITEMS_SCHEMA: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "sectionId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
                 "itemIds": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": NON_EMPTY_STRING_SCHEMA,
                     "minItems": 2,
                 },
                 "mergedItem": ITEM_PATCH_SCHEMA,
-                "reason": {"type": "string"},
+                "reason": NON_EMPTY_STRING_SCHEMA,
             },
             "required": ["sectionId", "itemIds", "mergedItem"],
             "additionalProperties": False,
@@ -862,16 +877,18 @@ SKILLS_CLASSIFY_SCHEMA: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "sectionId": {"type": "string"},
+                "sectionId": NON_EMPTY_STRING_SCHEMA,
                 "groups": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string"},
+                            "title": NON_EMPTY_STRING_SCHEMA,
                             "skills": {
                                 "type": "array",
-                                "items": {"type": "string"},
+                                "items": NON_EMPTY_STRING_SCHEMA,
+                                "minItems": 1,
                             },
                         },
                         "required": ["title", "skills"],
@@ -879,7 +896,7 @@ SKILLS_CLASSIFY_SCHEMA: dict[str, Any] = {
                     },
                 },
                 "index": {"type": "integer"},
-                "reason": {"type": "string"},
+                "reason": NON_EMPTY_STRING_SCHEMA,
             },
             "required": ["groups"],
             "additionalProperties": False,
@@ -905,9 +922,9 @@ DRAFT_REWRITE_SCHEMA: dict[str, Any] = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string"},
-                            "target": {"type": "string"},
-                            "reason": {"type": "string"},
+                            "title": NON_EMPTY_STRING_SCHEMA,
+                            "target": NON_EMPTY_STRING_SCHEMA,
+                            "reason": NON_EMPTY_STRING_SCHEMA,
                             "replacement": {"type": "string"},
                             "operation": OPERATION_SCHEMA,
                         },
@@ -940,7 +957,7 @@ FINISH_SCHEMA: dict[str, Any] = {
                     "description": "Whether the draft is ready or blocked.",
                 },
                 "reason": {
-                    "type": "string",
+                    **NON_EMPTY_STRING_SCHEMA,
                     "description": "Short reason based on the latest Observation.",
                 },
                 "missing": {

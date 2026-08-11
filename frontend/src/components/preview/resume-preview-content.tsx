@@ -42,7 +42,7 @@ export function StandardResumeContent({
         basic={model.resume.basic}
         settings={model.settings}
         layout={model.layout}
-        summaryDiff={model.diffLookup.summaryDiff}
+        basicDiffByField={model.diffLookup.basicDiffByField}
         enableContactLinks={enableContactLinks}
       />
       <SectionsList
@@ -87,7 +87,7 @@ export function ResumePageContent({
             basic={model.resume.basic}
             settings={model.settings}
             layout={model.layout}
-            summaryDiff={model.diffLookup.summaryDiff}
+            basicDiffByField={model.diffLookup.basicDiffByField}
             enableContactLinks={enableContactLinks}
           />
           <div

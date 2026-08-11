@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   resolveAgentDraftDecision,
   type AgentDraftDecisionResolution,
@@ -339,6 +339,9 @@ export function useResumeAgentDraft({
         { closeButton: true },
       );
     } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
       console.error("Failed to persist the Agent draft decision.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.agentRequestFailed, { closeButton: true });

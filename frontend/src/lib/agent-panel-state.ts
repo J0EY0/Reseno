@@ -32,16 +32,19 @@ export function mergeStreamingAgentMessage<T extends { id: string }>(
 export function shouldShowAgentDraftActions({
   draft,
   isResponding,
+  isSessionReady,
   messageId,
   response,
 }: {
   draft: AgentDraftState | null;
   isResponding: boolean;
+  isSessionReady: boolean;
   messageId: string;
   response: AgentChatMessage | undefined;
 }) {
   return Boolean(
-    !isResponding &&
+    isSessionReady &&
+      !isResponding &&
       draft?.status === "pending" &&
       draft.transactionState === "committed" &&
       draft.sourceMessageId === messageId &&

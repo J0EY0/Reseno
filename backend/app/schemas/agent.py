@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from pydantic_core import PydanticCustomError
 
 from app.agent_locales import AgentLocale
@@ -134,6 +134,43 @@ class AgentCommittedDraft(BaseModel):
     status: AgentDraftStatus = "pending"
 
 
+class AgentConversationCheckpoint(BaseModel):
+    """Durable summary through one authoritative product message.
+
+    The exact tail is deliberately not persisted here. It is always rebuilt
+    from SQLite after ``through_message_id`` so the conversation has one
+    authoritative transcript instead of a checkpoint-owned duplicate.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    through_message_id: str = Field(alias="throughMessageId", min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class AgentTurnWorkspaceSnapshots(BaseModel):
+    """Private, canonical workspace envelopes used for exact prompt replay."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    turn_message_id: str = Field(alias="turnMessageId", min_length=1)
+    tools: str | None = Field(default=None, min_length=1)
+    streaming_final: str | None = Field(
+        default=None,
+        alias="streamingFinal",
+        min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def require_snapshot(self) -> "AgentTurnWorkspaceSnapshots":
+        if self.tools is None and self.streaming_final is None:
+            raise PydanticCustomError(
+                "agent_workspace_snapshot_empty",
+                "At least one workspace snapshot is required.",
+            )
+        return self
+
+
 class AgentChatRequest(BaseModel):
     """A singular current user turn plus prior-only conversation history."""
 
@@ -159,6 +196,26 @@ class AgentChatRequest(BaseModel):
         repr=False,
     )
     stream: bool = True
+
+    # Checkpoints are backend-owned compiler state. Private attributes keep
+    # them out of the HTTP/OpenAPI contract while allowing all prompt phases in
+    # one run to share a single monotonic conversation boundary.
+    _loaded_conversation_checkpoint: AgentConversationCheckpoint | None = PrivateAttr(
+        default=None,
+    )
+    _active_conversation_checkpoint: AgentConversationCheckpoint | None = PrivateAttr(
+        default=None,
+    )
+    # Workspace snapshots are compiler events, not user-controlled API data.
+    # The historical map is loaded only from validated SQLite assistant rows;
+    # the active bundle is persisted only with a successful assistant response.
+    _historical_workspace_snapshots: dict[
+        str,
+        AgentTurnWorkspaceSnapshots,
+    ] = PrivateAttr(default_factory=dict)
+    _active_workspace_snapshots: AgentTurnWorkspaceSnapshots | None = PrivateAttr(
+        default=None,
+    )
 
     @model_validator(mode="after")
     def require_revision_for_persisted_session(self) -> "AgentChatRequest":

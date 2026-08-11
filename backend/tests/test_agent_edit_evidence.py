@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from app.schemas.agent import (
@@ -7,6 +8,7 @@ from app.schemas.agent import (
 )
 from app.services.agent.evidence import ground_edit_evidence
 from app.services.agent.executor import AgentPlanExecutor
+from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import LlmToolCall
 
@@ -220,6 +222,146 @@ def test_summary_technology_labels_are_grounded_by_cited_resume_items() -> None:
         ensure_ascii=False,
     )
     assert runner.draft_resume["basic"]["summary"] == summary
+
+
+def test_existing_tailwind_label_can_be_normalized_through_public_runner() -> None:
+    resume = {
+        "schemaVersion": 2,
+        "basic": {
+            "name": "候选人",
+            "headline": "前端工程师",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "前端工程师。",
+            "customFields": [],
+        },
+        "sections": [
+            {
+                "id": "project",
+                "kind": "project",
+                "title": "项目经历",
+                "items": [
+                    {
+                        "id": "project-1",
+                        "name": "简历编辑器",
+                        "role": "",
+                        "techStack": ["TypeScript · Tailwind"],
+                        "period": "",
+                        "url": "",
+                        "description": "构建结构化简历编辑器。",
+                        "highlights": [],
+                    },
+                ],
+            },
+        ],
+    }
+    request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-normalize-tailwind-label",
+            role="user",
+            text=(
+                "请整理项目经历的技术栈，把已有的 TypeScript · Tailwind "
+                "规范为 TypeScript 和 Tailwind CSS，不要新增事实。"
+            ),
+        ),
+        locale="zh",
+        resume=resume,
+    )
+    runner = AgentToolRunner(AgentPlanExecutor(request))
+    arguments = {
+        "edits": [
+            {
+                "title": "规范项目技术栈",
+                "target": "sections.project.items.project-1.techStack",
+                "reason": "拆分已有技术栈并规范 Tailwind 名称。",
+                "evidenceRefs": ["resume:item:project:project-1"],
+                "operation": {
+                    "type": "update_item",
+                    "sectionId": "project",
+                    "itemId": "project-1",
+                    "patch": {"techStack": ["TypeScript", "Tailwind CSS"]},
+                },
+            },
+        ],
+    }
+
+    async def scenario() -> None:
+        tool, _ = await runner.run(
+            LlmToolCall(
+                id="call-normalize-tailwind-label",
+                name="edit_execute",
+                arguments=arguments,
+                raw_arguments=json.dumps(arguments, ensure_ascii=False),
+            ),
+            AgentRuntimeContext(),
+        )
+
+        assert tool.state == "output-available", json.dumps(
+            tool.output,
+            ensure_ascii=False,
+        )
+        project = runner.draft_resume["sections"][0]["items"][0]
+        assert project["techStack"] == ["TypeScript", "Tailwind CSS"]
+
+    asyncio.run(scenario())
+
+
+def test_tailwind_alias_does_not_ground_other_new_project_claims() -> None:
+    resume = _resume()
+    project = resume["sections"][0]["items"][0]
+    project["role"] = ""
+    project["techStack"] = ["TypeScript · Tailwind"]
+    edit = AgentResumeEditSuggestion(
+        id="edit-tailwind-with-unsupported-claims",
+        title="Reorganize project fields",
+        target="sections.project.items.project-1",
+        reason="Move project details into their structured fields.",
+        operation={
+            "type": "update_item",
+            "sectionId": "project",
+            "itemId": "project-1",
+            "patch": {
+                "role": "前端开发",
+                "techStack": [
+                    "TypeScript",
+                    "Tailwind CSS",
+                    "WCAG",
+                    "Vitest",
+                    "CI",
+                ],
+                "highlights": ["性能提升 30%。"],
+            },
+        },
+        evidenceRefs=["resume:item:project:project-1"],
+        status="executed",
+    )
+
+    _edits, issues = ground_edit_evidence(
+        resume,
+        AgentChatRequest(
+            message=AgentConversationItem(
+                id="turn-tailwind-with-unsupported-claims",
+                role="user",
+                text=(
+                    "请整理项目字段，并添加前端开发、WCAG、Vitest、CI 和性能提升 30%。"
+                ),
+            ),
+        ),
+        [edit],
+    )
+
+    unsupported = [
+        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
+    ]
+    assert unsupported[0]["claims"] == [
+        "30%",
+        "CI",
+        "Vitest",
+        "WCAG",
+        "text:前端开发",
+    ]
 
 
 def _claim_edit(

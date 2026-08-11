@@ -148,6 +148,22 @@ def _is_numeric_url_path_segment(match: re.Match[str]) -> bool:
 
 
 def _replace_hidden_term(text: str, term: str) -> str:
+    western_name_tokens = [
+        token for token in re.split(r"[\s._'’\-]+", term.strip()) if token
+    ]
+    if len(western_name_tokens) >= 2 and all(
+        re.fullmatch(r"[A-Za-z]+", token) for token in western_name_tokens
+    ):
+        normalized_name = r"[\s._'’\-]+".join(
+            re.escape(token) for token in western_name_tokens
+        )
+        return re.sub(
+            rf"(?<![^\W_]){normalized_name}(?![^\W_])",
+            "[redacted_name]",
+            text,
+            flags=re.IGNORECASE,
+        )
+
     if re.fullmatch(r"[\w\s.'-]+", term, flags=re.ASCII):
         pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
         return re.sub(pattern, "[redacted_name]", text)

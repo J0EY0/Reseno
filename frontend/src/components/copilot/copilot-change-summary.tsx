@@ -1,11 +1,15 @@
 import { Button } from "@/components/ui/button";
 import type { AppMessages } from "@/i18n";
-import { getAgentEditDiff } from "@/lib/agent-diff-value";
+import {
+  compactResumeDraftDiffs,
+  getAgentEditDiffFields,
+} from "@/lib/agent-diff-value";
 import { getAgentQualityWarningCount } from "@/lib/agent-panel-state";
 import type {
   AgentChatMessage,
   AgentResumeEditSuggestion,
 } from "@/types/api";
+import type { ResumeDraftDiff } from "@/types/resume";
 import { Check, ChevronDown, ClipboardList, RotateCcw } from "lucide-react";
 
 function formatCountMessage(
@@ -22,11 +26,21 @@ function getEditSummaryLabel(edit: AgentResumeEditSuggestion) {
   return edit.title.trim() || edit.target.trim() || edit.id;
 }
 
+function diffTargetKey(diff: ResumeDraftDiff) {
+  return JSON.stringify([
+    diff.operationId,
+    diff.sectionId ?? "",
+    diff.itemId ?? "",
+    diff.path,
+  ]);
+}
+
 /**
  * Owns the edit observation decoding and all draft-review presentation so the
  * message row only decides where the summary belongs.
  */
 export function AgentChangeSummary({
+  draftDiffs,
   hasAgentDraft,
   onApplyAgentDraft,
   onDiscardAgentDraft,
@@ -34,6 +48,7 @@ export function AgentChangeSummary({
   shouldShowDraftActions,
   t,
 }: {
+  draftDiffs?: ResumeDraftDiff[];
   hasAgentDraft: boolean;
   onApplyAgentDraft: () => void;
   onDiscardAgentDraft: () => void;
@@ -50,6 +65,27 @@ export function AgentChangeSummary({
   const tools = response?.tools ?? [];
   const qualityWarningCount = getAgentQualityWarningCount(tools);
   const isCommitted = response?.transactionState === "committed";
+  const responseDiffs = edits.flatMap((edit) => edit.diffs ?? []);
+  const canonicalLabelByTarget = new Map(
+    responseDiffs.map((diff) => [diffTargetKey(diff), diff.label]),
+  );
+  const visibleDiffs = draftDiffs?.map((diff) => ({
+    ...diff,
+    label: canonicalLabelByTarget.get(diffTargetKey(diff)) ?? diff.label,
+  }));
+  const compactedDiffs = compactResumeDraftDiffs(
+    visibleDiffs ?? responseDiffs,
+  );
+  const editRows = edits
+    .map((edit) => ({
+      edit,
+      fields: getAgentEditDiffFields(edit, compactedDiffs),
+    }))
+    .filter((row) => row.fields.length > 0);
+  const changeCount = editRows.reduce(
+    (count, row) => count + row.fields.length,
+    0,
+  );
 
   return (
     <div className="mt-4 rounded-2xl border border-border/70 bg-muted/25 p-3">
@@ -59,7 +95,7 @@ export function AgentChangeSummary({
       </div>
       {isCommitted ? (
         <p className="mt-2 text-sm font-medium text-foreground">
-          {formatCountMessage(t.agentReviewReady, edits.length)}
+          {formatCountMessage(t.agentReviewReady, changeCount)}
         </p>
       ) : null}
       {hasAgentDraft && isCommitted ? (
@@ -73,9 +109,8 @@ export function AgentChangeSummary({
         </p>
       ) : null}
       <div className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1 text-xs leading-5 text-muted-foreground">
-        {edits.map((edit) => {
-          const observation = getAgentEditDiff(edit);
-          const hasDiff = Boolean(observation?.before || observation?.after);
+        {editRows.map(({ edit, fields }) => {
+          const hasDiff = fields.length > 0;
 
           return (
             <details
@@ -97,26 +132,33 @@ export function AgentChangeSummary({
               </summary>
               {hasDiff ? (
                 <div className="mt-2 grid gap-2">
-                  {observation?.before ? (
-                    <div>
-                      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em]">
-                        {t.agentDiffBefore}
-                      </div>
-                      <p className="whitespace-pre-wrap rounded-lg bg-muted/40 p-2">
-                        {observation.before}
-                      </p>
+                  {fields.map((field) => (
+                    <div
+                      aria-label={field.label}
+                      key={field.id}
+                      className="rounded-lg border border-border/60 bg-background/55 p-2"
+                      role="group"
+                    >
+                      <dl className="grid gap-1.5">
+                        <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-start gap-2">
+                          <dt className="pt-1 text-[10px] font-medium uppercase tracking-[0.12em]">
+                            {t.agentDiffBefore}
+                          </dt>
+                          <dd className="whitespace-pre-wrap rounded-md bg-muted/40 px-2 py-1">
+                            {field.before}
+                          </dd>
+                        </div>
+                        <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-start gap-2">
+                          <dt className="pt-1 text-[10px] font-medium uppercase tracking-[0.12em]">
+                            {t.agentDiffAfter}
+                          </dt>
+                          <dd className="whitespace-pre-wrap rounded-md bg-emerald-500/10 px-2 py-1 text-foreground">
+                            {field.after}
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
-                  ) : null}
-                  {observation?.after ? (
-                    <div>
-                      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em]">
-                        {t.agentDiffAfter}
-                      </div>
-                      <p className="whitespace-pre-wrap rounded-lg bg-emerald-500/10 p-2 text-foreground">
-                        {observation.after}
-                      </p>
-                    </div>
-                  ) : null}
+                  ))}
                 </div>
               ) : null}
             </details>
@@ -149,3 +191,5 @@ export function AgentChangeSummary({
     </div>
   );
 }
+
+export default AgentChangeSummary;

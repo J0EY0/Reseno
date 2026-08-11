@@ -77,6 +77,37 @@ def test_web_source_url_numeric_path_is_not_redacted_as_phone_number() -> None:
     assert sanitize_agent_text(url) == url
 
 
+def test_western_name_is_redacted_across_filename_separator() -> None:
+    for filename, expected in (
+        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf"),
+        ("JOHN-SMITH-CV.pdf", "[redacted_name]-CV.pdf"),
+        ("john.smith.CV.pdf", "[redacted_name].CV.pdf"),
+    ):
+        assert sanitize_agent_text(filename, hidden_terms=("John Smith",)) == expected
+
+
+def test_western_name_separator_matching_respects_token_boundaries() -> None:
+    filename = "NotJohn_Smithson_CV.pdf"
+
+    assert sanitize_agent_text(filename, hidden_terms=("John Smith",)) == filename
+
+
+def test_single_token_western_hidden_term_keeps_exact_boundary_semantics() -> None:
+    filename = "John_CV.pdf"
+
+    assert sanitize_agent_text(filename, hidden_terms=("John",)) == filename
+
+
+def test_cjk_hidden_term_keeps_literal_replacement_semantics() -> None:
+    assert (
+        sanitize_agent_text(
+            "王小明_简历.pdf",
+            hidden_terms=("王小明",),
+        )
+        == "[redacted_name]_简历.pdf"
+    )
+
+
 def test_agent_write_tool_rejects_location_changes() -> None:
     request = AgentChatRequest(
         message=AgentConversationItem(

@@ -217,9 +217,8 @@ function toolRecoveryKey(tool: AgentToolInvocation) {
 
 export function getVisibleCompletedTools(tools: AgentToolInvocation[]) {
   const completedTools = tools.filter((tool) => !isToolRunning(tool.state));
-  const latestSuccessByDisplayKey = new Map<string, number>();
+  const latestSuccessByRecoveryKey = new Map<string, number>();
   const latestErrorByRecoveryKey = new Map<string, number>();
-  const successfulRecoveryKeys = new Set<string>();
 
   completedTools.forEach((tool, index) => {
     const recoveryKey = toolRecoveryKey(tool);
@@ -228,20 +227,20 @@ export function getVisibleCompletedTools(tools: AgentToolInvocation[]) {
       return;
     }
 
-    latestSuccessByDisplayKey.set(toolDisplayKey(tool), index);
-    successfulRecoveryKeys.add(recoveryKey);
+    latestSuccessByRecoveryKey.set(recoveryKey, index);
   });
 
   return completedTools.filter((tool, index) => {
     const recoveryKey = toolRecoveryKey(tool);
     if (isToolFailure(tool)) {
+      const latestSuccess = latestSuccessByRecoveryKey.get(recoveryKey);
       return (
-        !successfulRecoveryKeys.has(recoveryKey) &&
+        (latestSuccess === undefined || latestSuccess < index) &&
         latestErrorByRecoveryKey.get(recoveryKey) === index
       );
     }
 
-    return latestSuccessByDisplayKey.get(toolDisplayKey(tool)) === index;
+    return true;
   });
 }
 

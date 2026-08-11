@@ -54,7 +54,6 @@ from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.prompts import (
     CORE_POLICY_PROMPT,
     EDIT_OPERATION_GUIDE,
-    FINAL_RESPONSE_PROMPT,
     RESUME_EDITING_PLAYBOOK_PROMPT,
     STREAMING_FINAL_RESPONSE_PROMPT,
     SYSTEM_PROMPT,
@@ -431,8 +430,8 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
         ),
         "google": (
             "google_gemini",
-            "https://generativelanguage.googleapis.com/v1beta",
-            "https://generativelanguage.googleapis.com/v1beta/models",
+            "https://generativelanguage.googleapis.com/v1",
+            "https://generativelanguage.googleapis.com/v1/models",
         ),
         "deepseek": (
             "openai_compatible_chat",
@@ -629,6 +628,41 @@ def parse_agent_stream_message(body: str) -> dict:
     return json.loads(message_done_data)["message"]
 
 
+def agent_workspace_context(messages: list[dict]) -> dict:
+    """Read the structured, untrusted workspace envelope from an LLM prompt."""
+
+    for message in reversed(messages):
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, str):
+            continue
+        try:
+            value = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        workspace = value.get("workspaceContext")
+        if isinstance(workspace, dict):
+            return workspace
+    raise AssertionError("Agent prompt has no workspaceContext envelope.")
+
+
+def agent_current_request_files(messages: list[dict]) -> list[dict]:
+    """Read extracted files from the current user turn only."""
+
+    content = messages[-1]["content"]
+    if not isinstance(content, list):
+        return []
+    for part in content:
+        text = part.get("text")
+        if part.get("type") != "text" or not isinstance(text, str):
+            continue
+        marker = '{"currentRequestFiles":'
+        marker_index = text.find(marker)
+        if marker_index < 0:
+            continue
+        return json.loads(text[marker_index:])["currentRequestFiles"]
+    return []
+
+
 def post_agent_chat_stream(
     client: TestClient,
     payload: dict,
@@ -650,7 +684,7 @@ def post_agent_chat_stream(
 
 
 def stub_stream_text(text: str):
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta=text)
         yield LlmStreamEvent(
             type="done",
@@ -747,7 +781,7 @@ def stub_tool_call_batches(
 ):
     pending = list(batches)
 
-    async def call_tools(*_: object) -> LlmAssistantMessage:
+    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
         if pending:
             return LlmAssistantMessage(content="", tool_calls=pending.pop(0))
 
@@ -761,7 +795,7 @@ def stub_tool_call_responses(
 ):
     pending = list(responses)
 
-    async def call_tools(*_: object) -> LlmAssistantMessage:
+    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
         if pending:
             return pending.pop(0)
 
@@ -771,7 +805,7 @@ def stub_tool_call_responses(
 
 
 def stub_terminal_tool_text(text: str):
-    async def call_tools(*_: object) -> LlmAssistantMessage:
+    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
         return LlmAssistantMessage(content=text, tool_calls=[])
 
     return call_tools
@@ -3284,6 +3318,83 @@ def test_cloud_model_config_stores_provider_defaults(
     assert row["supports_streaming"] == 1
 
 
+def test_google_cloud_config_uses_manifest_v1_end_to_end(
+    client: TestClient,
+) -> None:
+    from app.services.llm.config import resolve_agent_llm_config
+
+    write_cached_provider_models(
+        "google",
+        [
+            DiscoveredModel(
+                id="gemini-3.6-flash",
+                label="gemini-3.6-flash",
+                context_window_tokens=1_000_000,
+                max_output_tokens=65_536,
+                supports_image=True,
+                supports_thinking=True,
+                metadata_source="provider",
+            ),
+        ],
+    )
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "google",
+            "providerKind": "cloud",
+            "apiFamily": "google_gemini",
+            "nickname": "Gemini Stable",
+            "apiKey": "google-v1-secret",
+            "model": "gemini-3.6-flash",
+            "apiUrl": "https://obsolete.example/google",
+        },
+    )
+
+    assert response.status_code == 200
+    saved = response.json()["data"]
+    assert saved["apiUrl"] == "https://generativelanguage.googleapis.com/v1"
+    config_id = saved["id"]
+    key_preview = saved["apiKeyPreview"]
+
+    with connect() as conn:
+        stored = conn.execute(
+            "SELECT base_url FROM llm_configs WHERE client_id = ?",
+            (config_id,),
+        ).fetchone()
+        assert stored is not None
+        assert stored["base_url"] == "https://generativelanguage.googleapis.com/v1"
+        conn.execute(
+            "UPDATE llm_configs SET base_url = ? WHERE client_id = ?",
+            ("https://stale.example/google", config_id),
+        )
+        runtime = resolve_agent_llm_config(conn, {"id": config_id})
+
+    assert runtime is not None
+    assert runtime.base_url == "https://generativelanguage.googleapis.com/v1"
+    assert runtime.api_key == "google-v1-secret"
+
+    listed = client.get("/api/model-configs").json()["data"]["configs"]
+    listed_google = next(item for item in listed if item["id"] == config_id)
+    assert listed_google["apiUrl"] == "https://generativelanguage.googleapis.com/v1"
+
+    updated_response = client.post(
+        "/api/model-configs",
+        json={
+            **saved,
+            "nickname": "Gemini Stable Updated",
+            "apiKey": None,
+        },
+    )
+    assert updated_response.status_code == 200
+    assert updated_response.json()["data"]["apiKeyPreview"] == key_preview
+
+    with connect() as conn:
+        updated_runtime = resolve_agent_llm_config(conn, {"id": config_id})
+    assert updated_runtime is not None
+    assert updated_runtime.base_url == "https://generativelanguage.googleapis.com/v1"
+    assert updated_runtime.api_key == "google-v1-secret"
+
+
 def test_local_model_config_stores_manual_capabilities(
     client: TestClient,
 ) -> None:
@@ -3722,6 +3833,37 @@ def test_agent_session_put_replaces_persisted_messages(
                         "role": "assistant",
                         "text": "原来的回答",
                         "quickReplies": ["继续"],
+                        "tools": [
+                            {
+                                "id": "tool-search-success",
+                                "type": "tool-web_search",
+                                "title": "web_search",
+                                "state": "output-available",
+                                "input": {"query": "staff frontend engineer"},
+                                "output": {"resultCount": 2},
+                                "startedAt": "2026-08-10T10:00:00Z",
+                                "completedAt": "2026-08-10T10:00:01Z",
+                            },
+                            {
+                                "id": "tool-fetch-error",
+                                "type": "tool-web_fetch",
+                                "title": "web_fetch",
+                                "state": "output-error",
+                                "input": {"url": "https://example.com/job"},
+                                "errorText": "Fetch failed",
+                                "startedAt": "2026-08-10T10:00:02Z",
+                                "completedAt": "2026-08-10T10:00:03Z",
+                            },
+                        ],
+                        "sources": [
+                            {
+                                "id": "source-public-job",
+                                "title": "Public job description",
+                                "sourceType": "web",
+                                "url": "https://example.com/job",
+                                "excerpt": "Build accessible React products.",
+                            },
+                        ],
                     },
                 },
                 {
@@ -3742,6 +3884,20 @@ def test_agent_session_put_replaces_persisted_messages(
         "agent-user-tail",
     ]
     assert first_messages[1]["response"]["quickReplies"] == ["继续"]
+    assistant_response = first_messages[1]["response"]
+    assert assistant_response["tools"][0]["input"] == {
+        "query": "staff frontend engineer",
+    }
+    assert assistant_response["tools"][0]["output"] == {"resultCount": 2}
+    assert assistant_response["tools"][1]["errorText"] == "Fetch failed"
+    assert assistant_response["tools"][1]["completedAt"] == ("2026-08-10T10:00:03Z")
+    assert assistant_response["sources"][0]["excerpt"] == (
+        "Build accessible React products."
+    )
+    refreshed_first_session = client.get(
+        f"/api/agent/resumes/{resume_id}/session",
+    ).json()["data"]
+    assert refreshed_first_session["messages"] == first_messages
 
     second_response = client.put(
         f"/api/agent/resumes/{resume_id}/session",
@@ -3975,7 +4131,7 @@ def test_provider_failure_keeps_user_message_without_assistant(
     ).json()["data"]
     model_config = create_agent_model_config(client)
 
-    def raise_provider_error(*_: object) -> str:
+    def raise_provider_error(*_: object, **__: object) -> str:
         raise LlmRequestError("provider unavailable")
 
     monkeypatch.setattr(
@@ -4062,15 +4218,28 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
             },
         },
     ]
-    conversation.extend(
-        {
-            "id": f"agent-user-followup-{index}",
-            "role": "user",
-            "text": f"后续补充 {index}"
-            + (("用于触发上下文压缩。" * 80) if index < 4 else ""),
-        }
-        for index in range(8)
-    )
+    for index in range(6):
+        conversation.extend(
+            [
+                {
+                    "id": f"agent-user-followup-{index}",
+                    "role": "user",
+                    # Repeated test input keeps the user-authored semantic
+                    # memory stable; assistant prose supplies the bulk needed
+                    # to exercise deterministic checkpoint compaction.
+                    "text": "继续检查项目经历。",
+                },
+                {
+                    "id": f"agent-assistant-followup-{index}",
+                    "role": "assistant",
+                    "text": (
+                        f"项目补充说明 {index}：" + ("用于触发上下文压缩。" * 80)
+                        if index < 4
+                        else f"最近项目补充说明 {index}。"
+                    ),
+                },
+            ],
+        )
     conversation.append(
         {
             "id": "agent-user-current",
@@ -4135,42 +4304,41 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     )
 
     messages = build_agent_messages(request, config, mode="tools")
-    payload = json.loads(messages[1]["content"])
-    context = payload["conversationContext"]
+    workspace = agent_workspace_context(messages)
+    context = workspace["conversationState"]
 
-    assert payload["responseLanguage"] == "Chinese"
+    assert workspace["responseLanguage"] == "Chinese"
     assert "responseLanguage" in messages[0]["content"]
-    assert context["compression"]["applied"] is True
-    assert (
-        context["compression"]["estimatedInputTokens"]
-        <= context["compression"]["inputBudgetTokens"]
-    )
-    assert context["compressedMessageCount"] > 0
-    assert context["exactMessageCount"] == len(payload["conversation"])
-    assert context["totalMessages"] == len(conversation)
-    assert context["latestDraft"]["messageId"] == "agent-assistant-draft"
-    assert context["latestDraft"]["editCount"] == 1
-    assert context["latestDraft"]["edits"][0]["title"] == "新增项目经历模块"
-    assert context["latestDraft"]["edits"][0]["sectionId"] == "project"
     assert context["currentDraft"]["id"] == "draft-current"
     assert context["currentDraft"]["status"] == "pending"
     assert context["currentDraft"]["diffs"][0]["after"] == "ResuMate"
-    assert context["activeDraft"]["id"] == "draft-current"
-    assert payload["resume"]["sections"][0]["id"] == "project"
+    assert workspace["resume"]["sections"][0]["id"] == "project"
     assert context["appliedActions"] == ["execute"]
-    assistant_states = [
-        item.get("assistantState", {}) for item in context["olderSummary"]
-    ]
-    assistant_states.append(context["lastAssistantState"])
-    assert any(item.get("editCount") == 1 for item in assistant_states)
-    assert any(
-        item.get("sourceRefs")
-        == [{"id": "source-project-brief", "title": "Project brief"}]
-        for item in assistant_states
+    assistant_state = next(
+        json.loads(message["content"])["assistantResponseContext"]
+        for message in messages
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"assistantResponseContext":')
     )
+    assert assistant_state["editCount"] == 1
+    assert assistant_state["edits"][0]["title"] == "新增项目经历模块"
+    assert assistant_state["edits"][0]["sectionId"] == "project"
+    assert assistant_state["actions"] == ["execute"]
+    assert assistant_state["sourceRefs"] == [
+        {
+            "id": "source-project-brief",
+            "title": "Project brief",
+            "sourceType": "attachment",
+        },
+    ]
+    assert messages[-1] == {
+        "role": "user",
+        "content": "把刚才那个版本的第二条再短一点",
+    }
 
 
-def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
+def test_agent_message_builder_remains_a_pure_native_projection() -> None:
     config = AgentLlmConfig(
         client_id="llm-test",
         name="Test Model",
@@ -4207,16 +4375,17 @@ def test_agent_messages_drop_old_summaries_before_provider_call() -> None:
     )
 
     messages = build_agent_messages(request, config, mode="tools")
-    payload = json.loads(messages[1]["content"])
-    context = payload["conversationContext"]
 
-    assert context["compression"]["applied"] is True
-    assert (
-        context["compression"]["estimatedInputTokens"]
-        <= context["compression"]["inputBudgetTokens"]
-    )
-    assert context["omittedMessageCount"] > 0
-    assert payload["conversation"][-1]["content"] == "只保留当前这条请求"
+    assert request._active_conversation_checkpoint is None
+    assert messages[1 : 1 + len(conversation)] == [
+        {"role": item["role"], "content": item["text"]} for item in conversation
+    ]
+    assert json.loads(messages[-2]["content"])["workspaceContext"]
+    assert messages[-1] == {
+        "role": "user",
+        "content": "只保留当前这条请求",
+    }
+    assert conversation[1]["text"] in json.dumps(messages, ensure_ascii=False)
 
 
 def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
@@ -4321,26 +4490,27 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
     )
 
     messages = build_agent_messages(request, config, mode="tools")
-    content = messages[1]["content"]
-    payload = json.loads(content)
+    serialized = json.dumps(messages, ensure_ascii=False)
+    workspace = agent_workspace_context(messages)
+    files = agent_current_request_files(messages)
 
-    assert "王小明" not in content
-    assert "13800138000" not in content
-    assert "xiaoming@example.com" not in content
-    assert "https://avatar.example/wxm.png" not in content
-    assert payload["resume"]["basic"]["name"] == "[hidden]"
-    assert payload["resume"]["basic"]["phone"] == "[hidden]"
-    assert payload["resume"]["basic"]["email"] == "[hidden]"
-    assert payload["resume"]["basic"]["location"] == "[hidden]"
-    assert payload["resume"]["basic"]["avatar"] == "[hidden]"
-    assert payload["resume"]["basicFieldStatus"]["name"] == "present"
-    assert payload["resume"]["basicFieldStatus"]["phone"] == "present"
-    assert payload["resume"]["basicFieldStatus"]["email"] == "present"
-    assert payload["resume"]["basicFieldStatus"]["location"] == "present"
-    assert "[redacted_email]" in payload["resume"]["basic"]["summary"]
-    assert "[redacted_phone]" in payload["resume"]["basic"]["summary"]
-    assert "[redacted_email]" in payload["files"][0]["excerpt"]
-    assert "[redacted_phone]" in payload["files"][0]["excerpt"]
+    assert "王小明" not in serialized
+    assert "13800138000" not in serialized
+    assert "xiaoming@example.com" not in serialized
+    assert "https://avatar.example/wxm.png" not in serialized
+    assert workspace["resume"]["basic"]["name"] == "[hidden]"
+    assert workspace["resume"]["basic"]["phone"] == "[hidden]"
+    assert workspace["resume"]["basic"]["email"] == "[hidden]"
+    assert workspace["resume"]["basic"]["location"] == "[hidden]"
+    assert workspace["resume"]["basic"]["avatar"] == "[hidden]"
+    assert workspace["resume"]["basicFieldStatus"]["name"] == "present"
+    assert workspace["resume"]["basicFieldStatus"]["phone"] == "present"
+    assert workspace["resume"]["basicFieldStatus"]["email"] == "present"
+    assert workspace["resume"]["basicFieldStatus"]["location"] == "present"
+    assert "[redacted_email]" in workspace["resume"]["basic"]["summary"]
+    assert "[redacted_phone]" in workspace["resume"]["basic"]["summary"]
+    assert "[redacted_email]" in files[0]["excerpt"]
+    assert "[redacted_phone]" in files[0]["excerpt"]
 
 
 def test_agent_executor_analyzes_pending_draft_resume() -> None:
@@ -5497,9 +5667,9 @@ def test_agent_supported_locales_cover_resources() -> None:
     supported = set(SUPPORTED_AGENT_LOCALES)
     prompt_dir = Path(__file__).parents[1] / "app/services/agent/prompts"
     expected_prompt_files = {
+        "compaction.md",
         "core_policy.md",
         "edit_operation_guide.md",
-        "final_response.md",
         "resume_editing_playbook.md",
         "streaming_final_response.md",
         "system.md",
@@ -5534,10 +5704,6 @@ def test_agent_supported_locales_cover_resources() -> None:
         ),
     )
     assert (
-        FINAL_RESPONSE_PROMPT
-        == (prompt_dir / "final_response.md").read_text(encoding="utf-8").strip()
-    )
-    assert (
         STREAMING_FINAL_RESPONSE_PROMPT
         == (prompt_dir / "streaming_final_response.md")
         .read_text(encoding="utf-8")
@@ -5548,10 +5714,6 @@ def test_agent_supported_locales_cover_resources() -> None:
 
 def test_agent_system_prompts_are_scoped_to_each_runtime_phase() -> None:
     assert _system_parts("tools") == [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
-    assert _system_parts("final") == [
-        CORE_POLICY_PROMPT,
-        FINAL_RESPONSE_PROMPT,
-    ]
     assert _system_parts("streaming_final") == [
         CORE_POLICY_PROMPT,
         STREAMING_FINAL_RESPONSE_PROMPT,
@@ -5933,7 +6095,7 @@ def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> N
         mode="streaming_final",
         draft=draft,
     )
-    payload = json.loads(messages[1]["content"])
+    payload = agent_workspace_context(messages)
     web_context = payload["toolContext"]["webSearch"][0]
 
     assert draft.edits == []
@@ -6939,7 +7101,7 @@ def test_agent_chat_plain_stream_uses_final_completion(
         stub_terminal_tool_text("工具选择阶段的半截回答"),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="最终")
         yield LlmStreamEvent(type="text_delta", delta="完整回答")
 
@@ -6986,7 +7148,7 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
             (model_config["id"],),
         )
 
-    async def unexpected_tool_call(*_: object) -> object:
+    async def unexpected_tool_call(*_: object, **__: object) -> object:
         raise AssertionError("tool loop should be skipped for this model")
 
     monkeypatch.setattr(ASYNC_COMPLETE_TOOL_CALL_PATH, unexpected_tool_call)
@@ -7033,13 +7195,13 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
             (model_config["id"],),
         )
 
-    async def unexpected_tool_call(*_: object) -> object:
+    async def unexpected_tool_call(*_: object, **__: object) -> object:
         raise AssertionError("tool loop should be skipped for this model")
 
-    async def unexpected_stream(*_: object) -> object:
+    async def unexpected_stream(*_: object, **__: object) -> object:
         raise AssertionError("provider stream should be skipped for this model")
 
-    async def complete_response(*_: object) -> LlmAssistantMessage:
+    async def complete_response(*_: object, **__: object) -> LlmAssistantMessage:
         return LlmAssistantMessage(
             content="这个模型不支持流式，但仍然可以直接回答问题。",
             stop_reason="stop",
@@ -7257,7 +7419,7 @@ def test_agent_model_error_does_not_return_llm_tool(
 ) -> None:
     model_config = create_agent_model_config(client)
 
-    def raise_provider_error(*_: object) -> str:
+    def raise_provider_error(*_: object, **__: object) -> str:
         raise LlmRequestError("provider unavailable")
 
     monkeypatch.setattr(
@@ -7528,7 +7690,7 @@ def test_agent_chat_streams_role_research_web_summary(
         *_: object,
         **__: object,
     ) -> object:
-        payload = json.loads(messages[1]["content"])
+        payload = agent_workspace_context(messages)
         web_context = payload["toolContext"]["webSearch"][0]
         assert web_context["purpose"] == "target_context"
         assert len(web_context["results"]) == 2
@@ -7562,6 +7724,342 @@ def test_agent_chat_streams_role_research_web_summary(
     assert web_tool["input"]["maxResults"] == 10
     assert web_tool["output"]["queryCount"] == 3
     assert web_tool["output"]["personalExperienceEvidence"] is False
+
+
+def test_agent_chat_streams_read_only_research_timeout_without_edit_rollback(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def timed_out_search(
+        queries: list[str],
+        max_results: int = 10,
+    ) -> WebSearchReference:
+        return WebSearchReference(
+            query=queries[0],
+            results=(),
+            query_count=len(queries),
+            result_count=0,
+            error="Web search exceeded its operation time budget.",
+            timed_out=True,
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        timed_out_search,
+    )
+    monkeypatch.setattr(
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-role-research-timeout",
+                    "web_search",
+                    {
+                        "queries": [
+                            "AI application developer responsibilities",
+                            "AI application developer skills",
+                        ],
+                        "maxResults": 10,
+                        "purpose": "target_context",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    async def unexpected_final_stream(*_: object) -> object:
+        raise AssertionError("failed research must not be presented as a result")
+        yield
+
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
+
+    body, message = post_agent_chat_stream(
+        client,
+        {
+            "message": {
+                "id": "agent-user-chat-role-research-timeout",
+                "role": "user",
+                "text": "帮我了解 AI应用开发工程师",
+            },
+            "messages": [],
+            "locale": "zh",
+            "resume": {"basic": {}, "sections": []},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
+    assert web_tool["state"] == "output-error"
+    assert web_tool["output"] == {
+        "queryCount": 2,
+        "resultCount": 0,
+        "timedOut": True,
+        "partial": False,
+    }
+    assert web_tool["errorText"] == "Web search exceeded its operation time budget."
+    assert message["edits"] == []
+    assert message["transactionState"] == "none"
+    assert "检索" in message["text"]
+    assert "超时" in message["text"]
+    assert "重试" in message["text"]
+    assert "草稿" not in message["text"]
+    assert '"transactionState":"rolled_back"' not in body
+
+
+def test_agent_chat_stops_batch_before_edit_after_read_failure(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+
+    def timed_out_search(
+        queries: list[str],
+        max_results: int = 10,
+    ) -> WebSearchReference:
+        return WebSearchReference(
+            query=queries[0],
+            results=(),
+            query_count=len(queries),
+            result_count=0,
+            error="Web search exceeded its operation time budget.",
+            timed_out=True,
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        timed_out_search,
+    )
+    monkeypatch.setattr(
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-web-timeout-before-edit",
+                    "web_search",
+                    {
+                        "queries": [
+                            "frontend engineer responsibilities",
+                            "frontend engineer skills",
+                        ],
+                        "maxResults": 10,
+                        "purpose": "target_context",
+                    },
+                ),
+                tool_call(
+                    "call-edit-after-timeout",
+                    "edit_execute",
+                    {
+                        "edits": [
+                            {
+                                "title": "优化个人简介",
+                                "target": "basic.summary",
+                                "reason": "让已有经历表达更聚焦。",
+                                "operation": {
+                                    "type": "replace_field",
+                                    "path": "basic.summary",
+                                    "value": "聚焦复杂交互与工程质量。",
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ],
+        ),
+    )
+
+    async def unexpected_final_stream(*_: object) -> object:
+        raise AssertionError("failed research must terminate before editing")
+        yield
+
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "message": {
+                "id": "agent-user-chat-read-failure-before-edit",
+                "role": "user",
+                "text": (
+                    "候选人事实：我关注复杂交互与工程质量。"
+                    "请针对前端工程师岗位优化个人简介。"
+                ),
+            },
+            "messages": [],
+            "locale": "zh",
+            "resume": minimal_resume_document(
+                name="王小明",
+                summary="关注工程质量。",
+            ),
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert [tool["title"] for tool in message["tools"]] == ["web_search"]
+    assert message["tools"][0]["state"] == "output-error"
+    assert message["transactionState"] == "none"
+    assert message["edits"] == []
+    assert "超时" in message["text"]
+    assert "重试" in message["text"]
+
+
+def test_agent_chat_target_context_control_failure_is_not_edit_rollback(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    monkeypatch.setattr(
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-ungrounded-target-context",
+                    "update_target_context",
+                    {
+                        "mode": "replace",
+                        "context": {
+                            "kind": "employment",
+                            "target": "量子计算研究员",
+                        },
+                    },
+                ),
+            ],
+        ),
+    )
+
+    async def unexpected_final_stream(*_: object) -> object:
+        raise AssertionError("ungrounded target context must terminate the turn")
+        yield
+
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
+
+    body, message = post_agent_chat_stream(
+        client,
+        {
+            "message": {
+                "id": "agent-user-chat-ungrounded-target-context",
+                "role": "user",
+                "text": "帮我了解 AI应用开发工程师",
+            },
+            "messages": [],
+            "locale": "zh",
+            "resume": {"basic": {}, "sections": []},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    assert [tool["title"] for tool in message["tools"]] == [
+        "update_target_context",
+    ]
+    assert message["tools"][0]["state"] == "output-error"
+    assert message["tools"][0]["errorText"] == (
+        "Target context update is not grounded in this prompt."
+    )
+    assert message["transactionState"] == "none"
+    assert message["edits"] == []
+    assert "目标信息" in message["text"]
+    assert "重试" in message["text"]
+    assert "草稿" not in message["text"]
+    assert '"transactionState":"rolled_back"' not in body
+
+
+def test_agent_chat_streams_partial_research_status_to_final_summary(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    model_config = create_agent_model_config(client)
+    result = WebSearchResult(
+        title="AI Application Developer Responsibilities",
+        url="https://example.test/roles/ai-application-developer",
+        excerpt="AI application developers build and evaluate LLM workflows.",
+    )
+
+    def partial_search(
+        queries: list[str],
+        max_results: int = 10,
+    ) -> WebSearchReference:
+        return WebSearchReference(
+            query=queries[0],
+            results=(result,),
+            query_count=len(queries),
+            result_count=1,
+            timed_out=True,
+            partial=True,
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent._search_web_reference_summary",
+        partial_search,
+    )
+    monkeypatch.setattr(
+        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        stub_tool_call_batches(
+            [
+                tool_call(
+                    "call-role-research-partial",
+                    "web_search",
+                    {
+                        "queries": [
+                            "AI application developer responsibilities",
+                            "AI application developer skills",
+                        ],
+                        "maxResults": 10,
+                        "purpose": "target_context",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    async def stream_partial_summary(
+        _config: AgentLlmConfig,
+        messages: list[dict],
+        *_: object,
+        **__: object,
+    ) -> object:
+        payload = agent_workspace_context(messages)
+        web_context = payload["toolContext"]["webSearch"][0]
+        assert web_context["timedOut"] is True
+        assert web_context["partial"] is True
+        assert len(web_context["results"]) == 1
+        yield LlmStreamEvent(
+            type="text_delta",
+            delta="本次公开检索仅返回部分结果：相关岗位通常需要构建和评估 LLM 工作流。",
+        )
+
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_partial_summary)
+
+    _, message = post_agent_chat_stream(
+        client,
+        {
+            "message": {
+                "id": "agent-user-chat-role-research-partial",
+                "role": "user",
+                "text": "帮我了解 AI应用开发工程师",
+            },
+            "messages": [],
+            "locale": "zh",
+            "resume": {"basic": {}, "sections": []},
+            "appliedActions": [],
+            "modelConfig": model_config,
+            "settings": {},
+        },
+    )
+
+    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
+    assert web_tool["state"] == "output-available"
+    assert web_tool["output"]["timedOut"] is True
+    assert web_tool["output"]["partial"] is True
+    assert message["transactionState"] == "none"
+    assert message["edits"] == []
+    assert "部分结果" in message["text"]
 
 
 def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
@@ -7614,7 +8112,7 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
         *_: object,
         **__: object,
     ) -> object:
-        payload = json.loads(messages[1]["content"])
+        payload = agent_workspace_context(messages)
         analysis_context = payload["toolContext"]["resumeAnalysis"][0]
         assert analysis_context["matchedKeywords"] == ["python"]
         assert analysis_context["missingKeywords"] == ["rag", "evaluation"]
@@ -7724,7 +8222,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
         ),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="流式")
         yield LlmStreamEvent(type="text_delta", delta="真实模型响应")
 
@@ -7875,7 +8373,7 @@ def test_agent_chat_hides_model_narration_between_tool_actions(
         ),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="最后给出草稿建议。")
 
     monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
@@ -7962,7 +8460,7 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
         ),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="下一步会基于这些结果给出草稿。")
 
     monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
@@ -7975,7 +8473,7 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
             "message": {
                 "id": "agent-user-tool-batch",
                 "role": "user",
-                "text": "优化个人简介",
+                "text": "针对前端开发工程师岗位优化个人简介",
             },
             "messages": [],
             "locale": "zh",
@@ -8042,7 +8540,7 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         ),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         raise AssertionError("terminal tool-loop text should not request final stream")
 
     monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
@@ -8161,7 +8659,7 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
         ),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="模型")
         yield LlmStreamEvent(type="text_delta", delta="完成分析")
 
@@ -8175,7 +8673,7 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
             "message": {
                 "id": "agent-user-chat-streams-edit-metadata-when-execute-finishes",
                 "role": "user",
-                "text": "优化个人简介",
+                "text": "针对前端开发工程师岗位优化个人简介",
             },
             "messages": [],
             "locale": "zh",
@@ -8236,7 +8734,7 @@ def test_agent_chat_streams_plain_model_tokens(
         stub_terminal_tool_text("你好，我可以帮你看简历。"),
     )
 
-    async def stream_response(*_: object) -> object:
+    async def stream_response(*_: object, **__: object) -> object:
         yield LlmStreamEvent(type="text_delta", delta="你好，")
         yield LlmStreamEvent(type="text_delta", delta="我可以帮你看简历。")
 

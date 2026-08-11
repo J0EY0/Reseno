@@ -259,25 +259,54 @@ def draft_diff_summary(
     """Return the current draft changes that follow-up prompts can reference."""
 
     if edits:
+        prior_edits = draft_state.edits if draft_state else []
+        combined_edits = [
+            *prior_edits,
+            *(edit.model_dump(mode="python", by_alias=True) for edit in edits),
+        ]
         edit_summaries = [
             {
                 "index": index,
-                "id": edit.id,
-                "title": edit.title,
-                "target": edit.target,
-                "replacement": compact_text(edit.replacement),
-                "operationType": edit.operation.get("type")
-                if isinstance(edit.operation, dict)
-                else None,
+                "id": str(edit.get("id") or ""),
+                "title": compact_text(edit.get("title")),
+                "target": compact_text(edit.get("target")),
+                "replacement": compact_text(edit.get("replacement")),
+                "operationType": _operation_type(edit.get("operation")),
+                "status": compact_text(edit.get("status")),
             }
-            for index, edit in enumerate(edits[:12], start=1)
+            for index, edit in enumerate(combined_edits, start=1)
+            if isinstance(edit, dict)
         ]
-        return {
+        combined_diffs = [
+            *(draft_state.diffs if draft_state else []),
+            *(diff for edit in edits for diff in edit.diffs),
+        ]
+        output: dict[str, Any] = {
             "status": "pending",
-            "editCount": len(edits),
+            "editCount": max(
+                draft_state.edit_count if draft_state else 0,
+                len(prior_edits),
+            )
+            + len(edits),
             "edits": edit_summaries,
+            "diffs": [
+                {
+                    "index": index,
+                    "id": str(diff.get("id") or diff.get("operationId") or ""),
+                    "operationId": str(diff.get("operationId") or ""),
+                    "path": compact_text(diff.get("path")),
+                    "label": compact_text(diff.get("label") or diff.get("title")),
+                    "before": compact_value(diff.get("before")),
+                    "after": compact_value(diff.get("after")),
+                }
+                for index, diff in enumerate(combined_diffs, start=1)
+                if isinstance(diff, dict)
+            ],
             "referenceMap": _draft_reference_map(edit_summaries),
         }
+        if draft_state:
+            output["id"] = draft_state.id
+        return output
 
     if not draft_state:
         return {
@@ -298,7 +327,7 @@ def draft_diff_summary(
             "operationType": _operation_type(edit.get("operation")),
             "status": compact_text(edit.get("status")),
         }
-        for index, edit in enumerate(draft_state.edits[:12], start=1)
+        for index, edit in enumerate(draft_state.edits, start=1)
         if isinstance(edit, dict)
     ]
 
@@ -317,7 +346,7 @@ def draft_diff_summary(
                 "before": compact_value(diff.get("before")),
                 "after": compact_value(diff.get("after")),
             }
-            for index, diff in enumerate(draft_state.diffs[:12], start=1)
+            for index, diff in enumerate(draft_state.diffs, start=1)
             if isinstance(diff, dict)
         ],
         "referenceMap": _draft_reference_map(edit_summaries),
@@ -564,9 +593,7 @@ def classify_skills_entries(
         if not isinstance(group, dict):
             continue
         title = string_arg(group, "title")
-        skills = _string_list(group.get("skills")) or _string_list(
-            group.get("highlights"),
-        )
+        skills = _string_list(group.get("skills"))
         if title and skills:
             separator = "、" if locale == "zh" else ", "
             label_separator = "：" if locale == "zh" else ": "

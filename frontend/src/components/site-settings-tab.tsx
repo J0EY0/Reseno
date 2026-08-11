@@ -75,7 +75,10 @@ export function SiteSettingsTab({
               }
             }}
           >
-            <SelectTrigger aria-label={t.language} className="w-full">
+            <SelectTrigger
+              aria-label={t.language}
+              className="ml-auto w-28 max-w-full"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">

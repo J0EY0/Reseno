@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -8,10 +9,15 @@ from app.schemas.agent import AgentChatRequest, AgentConversationItem
 from app.services import agent_runs, agent_sessions
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.runtime import streaming
+from app.services.agent.runtime.context import (
+    AgentRuntimeContext,
+    agent_llm_request_context,
+)
 from app.services.agent.runtime.messages import is_native_attachment_unsupported
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmRequestContext,
     LlmRequestError,
     LlmStreamEvent,
     LlmTimeoutError,
@@ -200,14 +206,6 @@ def test_agent_tool_loop_does_not_apply_a_total_provider_wall_clock(
             provider_calls += 1
             return LlmAssistantMessage(content="done", stop_reason="stop")
 
-        class RuntimeWithoutWallClock:
-            async def checkpoint(self) -> None:
-                return None
-
-            async def run_provider(self, *args: object, **kwargs: object):
-                del args, kwargs
-                raise AssertionError("provider wall-clock wrapper must not run")
-
         monkeypatch.setattr(
             agent_loop,
             "async_complete_tool_call",
@@ -228,7 +226,7 @@ def test_agent_tool_loop_does_not_apply_a_total_provider_wall_clock(
             async for event in agent_loop.async_iter_agent_tool_call_loop(
                 request,
                 _config(),
-                RuntimeWithoutWallClock(),  # type: ignore[arg-type]
+                AgentRuntimeContext(),
             )
         ]
 
@@ -412,3 +410,147 @@ def test_initial_final_response_timeout_is_retried_before_visible_text(
         assert "AGENT_PROVIDER_TIMEOUT" not in "".join(frames)
 
     asyncio.run(scenario())
+
+
+def test_agent_reuses_opaque_prompt_cache_key_across_retries_and_final_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        current_resume_id = ""
+        attempts: dict[str, int] = {}
+        contexts: dict[str, list[LlmRequestContext | None]] = {}
+
+        async def flaky_tool_response(
+            *args: object,
+            request_context: LlmRequestContext | None = None,
+            **kwargs: object,
+        ) -> LlmAssistantMessage:
+            del args, kwargs
+            contexts[current_resume_id].append(request_context)
+            attempts[current_resume_id] += 1
+            if attempts[current_resume_id] == 1:
+                raise LlmTimeoutError("Model provider request timed out.")
+            return LlmAssistantMessage(content="Tool loop done.", stop_reason="stop")
+
+        async def final_stream(
+            *args: object,
+            request_context: LlmRequestContext | None = None,
+            **kwargs: object,
+        ):
+            del args, kwargs
+            contexts[current_resume_id].append(request_context)
+            message = LlmAssistantMessage(content="Final answer.", stop_reason="stop")
+            yield LlmStreamEvent(type="text_delta", delta=message.content)
+            yield LlmStreamEvent(type="done", message=message)
+
+        monkeypatch.setattr(
+            agent_sessions,
+            "persist_agent_user_message",
+            lambda conn, request: None,
+        )
+        monkeypatch.setattr(
+            streaming,
+            "resolve_agent_llm_config",
+            lambda conn, model_config: replace(_config(), provider_kind="cloud"),
+        )
+        monkeypatch.setattr(
+            agent_loop,
+            "async_complete_tool_call",
+            flaky_tool_response,
+        )
+        monkeypatch.setattr(streaming, "async_stream_chat", final_stream)
+
+        for resume_id in ("resume-cache-a", "resume-cache-b"):
+            current_resume_id = resume_id
+            attempts[resume_id] = 0
+            contexts[resume_id] = []
+            frames = [
+                frame
+                async for frame in streaming.async_stream_agent_response(
+                    AgentChatRequest(
+                        resumeId=resume_id,
+                        expectedRevision="revision-1",
+                        message=AgentConversationItem(
+                            id=f"turn-{resume_id}",
+                            role="user",
+                            text="Review this resume.",
+                        ),
+                        locale="en",
+                        resume={"basic": {}, "sections": []},
+                    ),
+                    object(),
+                )
+            ]
+            assert "Final answer." in "".join(frames)
+
+        first_keys = [
+            context.cache_key
+            for context in contexts["resume-cache-a"]
+            if context is not None
+        ]
+        second_keys = [
+            context.cache_key
+            for context in contexts["resume-cache-b"]
+            if context is not None
+        ]
+        assert len(first_keys) == 3
+        assert len(set(first_keys)) == 1
+        assert len(first_keys[0]) == 64
+        assert "resume-cache-a" not in first_keys[0]
+        assert len(second_keys) == 3
+        assert len(set(second_keys)) == 1
+        assert first_keys[0] != second_keys[0]
+        assert "resume-cache-b" not in second_keys[0]
+
+    asyncio.run(scenario())
+
+
+def test_agent_prompt_cache_context_requires_official_openai_resume_session() -> None:
+    anonymous_request = AgentChatRequest(
+        message=AgentConversationItem(
+            id="turn-anonymous-cache",
+            role="user",
+            text="Review this resume.",
+        ),
+        resume={"basic": {}, "sections": []},
+    )
+    persisted_request = AgentChatRequest(
+        resumeId="resume-cache-provider-boundary",
+        expectedRevision="revision-1",
+        message=AgentConversationItem(
+            id="turn-provider-cache",
+            role="user",
+            text="Review this resume.",
+        ),
+        resume={"basic": {}, "sections": []},
+    )
+
+    assert agent_llm_request_context(anonymous_request, _config()) is None
+    assert (
+        agent_llm_request_context(
+            persisted_request,
+            replace(_config(), provider_kind="cloud"),
+        )
+        is not None
+    )
+    assert (
+        agent_llm_request_context(
+            persisted_request,
+            replace(_config(), provider="xai", api_family="openai_responses"),
+        )
+        is None
+    )
+    assert (
+        agent_llm_request_context(
+            persisted_request,
+            replace(_config(), provider="custom-cloud"),
+        )
+        is None
+    )
+    assert (
+        agent_llm_request_context(
+            persisted_request,
+            replace(_config(), provider_kind="custom"),
+        )
+        is None
+    )

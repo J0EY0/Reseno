@@ -6,19 +6,26 @@ const [
   packageManifest,
   messagePrimitives,
   messageResponse,
+  inlineCitation,
   responseContent,
   presentation,
   assistantResponse,
   toolPresentation,
   changeSummary,
+  conversationView,
   userMessageRow,
   promptInput,
   shimmer,
+  appStyles,
 ] = await Promise.all([
   readFile(new URL("../package.json", import.meta.url), "utf8"),
   readFile(new URL("components/ai-elements/message.tsx", sourceRoot), "utf8"),
   readFile(
     new URL("components/ai-elements/message-response.tsx", sourceRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("components/ai-elements/inline-citation.tsx", sourceRoot),
     "utf8",
   ),
   readFile(
@@ -42,17 +49,43 @@ const [
     "utf8",
   ),
   readFile(
+    new URL("components/copilot/copilot-conversation-view.tsx", sourceRoot),
+    "utf8",
+  ),
+  readFile(
     new URL("components/copilot/copilot-user-message-row.tsx", sourceRoot),
     "utf8",
   ),
   readFile(new URL("components/ai-elements/prompt-input.tsx", sourceRoot), "utf8"),
   readFile(new URL("components/ai-elements/shimmer.tsx", sourceRoot), "utf8"),
+  readFile(new URL("index.css", sourceRoot), "utf8"),
 ]);
+
+const agentThreadScrollRule = appStyles.match(
+  /\.agent-thread-scroll\s*\{(?<body>[\s\S]*?)\n\}/,
+);
+
+assert(agentThreadScrollRule, "The Agent thread scroll style must exist.");
+assert.doesNotMatch(
+  agentThreadScrollRule.groups.body,
+  /(?:-webkit-)?mask(?:-image)?\s*:/,
+  "The native Agent scroll owner must never be masked because the browser applies that mask to its scrollbar too.",
+);
 
 assert(
   !messagePrimitives.includes("streamdown") &&
     !messagePrimitives.includes("@streamdown/"),
   "Lightweight message primitives must not pull rich rendering into the Agent shell.",
+);
+assert(
+  /messages\.findLast\(\s*\(candidate\) => candidate\.role === 'user',?\s*\)\?\.id/.test(
+    conversationView,
+  ) &&
+    /retryable=\{message\.id === latestUserMessageId\}/.test(conversationView) &&
+    !/retryable=\{message\.id === messages\.at\(-1\)\?\.id\}/.test(
+      conversationView,
+    ),
+  "Retry must follow the latest user turn even when a cancelled run persists a partial assistant message after it.",
 );
 assert(
   messageResponse.includes('from "streamdown"') &&
@@ -74,9 +107,27 @@ assert(
   "Plain responses must stay lightweight while Markdown uses the optional renderer.",
 );
 assert(
+  assistantResponse.includes('citation: AgentCitationTag') &&
+    assistantResponse.includes('allowedTags={AGENT_CITATION_TAGS}') &&
+    assistantResponse.includes('literalTagContent={AGENT_LITERAL_TAGS}') &&
+    assistantResponse.includes('description={source.excerpt}') &&
+    !assistantResponse.includes("splitTrailingCitationText"),
+  "Agent citations must bind explicit claim markup to its own source ids without a trailing-source heuristic.",
+);
+assert(
+  /ComponentProps<\s*typeof HoverCardContent\s*>/.test(inlineCitation) &&
+    /side="top"/.test(inlineCitation) &&
+    /sideOffset=\{8\}/.test(inlineCitation) &&
+    /max-w-\[calc\(100vw-1\.5rem\)\]/.test(inlineCitation),
+  "Inline citation cards must prefer the space above while retaining viewport-safe collision placement.",
+);
+assert(
   /memo\(function AgentAssistantMessageRow/.test(presentation) &&
     presentation.includes("AgentMessageTimeline") &&
     presentation.includes("AgentChangeSummary") &&
+    /lazy\(\(\)\s*=>\s*import\("\.\/copilot-change-summary"\)\)/.test(
+      presentation,
+    ) &&
     !presentation.includes("InlineCitation") &&
     !presentation.includes("Collapsible"),
   "The memoized assistant row must remain a small streaming orchestration seam.",
@@ -89,17 +140,28 @@ assert(
 );
 assert(
   /export function AgentChangeSummary/.test(changeSummary) &&
-    changeSummary.includes("getAgentEditDiff") &&
-    changeSummary.includes("getAgentQualityWarningCount"),
+    changeSummary.includes("getAgentEditDiffFields") &&
+    changeSummary.includes("getAgentQualityWarningCount") &&
+    changeSummary.includes("draftDiffs?.map") &&
+    changeSummary.includes("visibleDiffs ?? responseDiffs") &&
+    presentation.includes("draftDiffs={draftDiffs}") &&
+    conversationView.includes(
+      "draft.state?.sourceMessageId === message.id",
+    ),
   "Change-summary decoding and quality warnings must stay behind the summary seam.",
 );
 assert(
   /export function AgentUserMessageRow/.test(userMessageRow) &&
     userMessageRow.includes("<AgentMessageAttachments") &&
+    userMessageRow.includes("const canRetry") &&
     userMessageRow.includes("message.execution?.status") &&
-    userMessageRow.includes("message.execution?.errorCode") &&
-    userMessageRow.includes("agentProviderTimeout"),
-  "User message attachments and precise terminal state must stay owned by the row.",
+    userMessageRow.includes("tooltip={t.agentRetry}") &&
+    userMessageRow.includes("onClick={onRetry}") &&
+    !userMessageRow.includes('role="status"') &&
+    !userMessageRow.includes("agentRunFailed") &&
+    !userMessageRow.includes("agentRunCancelled") &&
+    !userMessageRow.includes("agentProviderTimeout"),
+  "User messages must keep retry available as a hover action without rendering a persistent terminal-status footer.",
 );
 assert(
   !shimmer.includes('from "motion/react"') &&

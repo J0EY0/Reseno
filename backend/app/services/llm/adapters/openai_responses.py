@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
@@ -16,6 +17,7 @@ from ..common import (
     message_content_parts,
     message_content_text,
     object_dict,
+    openai_prompt_cache_key,
     openai_style_function_tools,
     parsed_tool_call,
     raise_openai_error,
@@ -27,10 +29,16 @@ from ..errors import LlmRequestError
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmInputMessage,
+    LlmRequestContext,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
 )
+
+_REASONING_ITEMS_STATE_KEY = "reasoning_items"
+_INVALID_REASONING_STATE = "OpenAI Responses continuation state is invalid."
+_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
 
 def supports_native_attachment(media_type: str) -> bool:
@@ -41,7 +49,9 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
     """Call the OpenAI Responses API and require visible text."""
 
@@ -49,7 +59,11 @@ async def complete(
     try:
         try:
             response = await client.responses.create(
-                **responses_params(config, messages),
+                **responses_params(
+                    config,
+                    messages,
+                    request_context=request_context,
+                ),
             )
         except (
             APIStatusError,
@@ -70,8 +84,10 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
     """Ask the Responses API to choose zero or more function tools."""
 
@@ -79,7 +95,12 @@ async def complete_tool_call(
     try:
         try:
             response = await client.responses.create(
-                **responses_params(config, messages, tools=tools),
+                **responses_params(
+                    config,
+                    messages,
+                    tools=tools,
+                    request_context=request_context,
+                ),
             )
         except (
             APIStatusError,
@@ -96,11 +117,17 @@ async def complete_tool_call(
 
 async def stream(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream OpenAI Responses events into the provider-independent contract."""
 
-    events = _stream_events(config, messages)
+    events = _stream_events(
+        config,
+        messages,
+        request_context=request_context,
+    )
     try:
         async for event in events:
             yield event
@@ -110,12 +137,19 @@ async def stream(
 
 async def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream tool-call activity without exposing partial executable calls."""
 
-    events = _stream_events(config, messages, tools=tools)
+    events = _stream_events(
+        config,
+        messages,
+        tools=tools,
+        request_context=request_context,
+    )
     try:
         async for event in events:
             yield event
@@ -125,9 +159,10 @@ async def stream_tool_call(
 
 async def _stream_events(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     *,
     tools: list[dict[str, Any]] | None = None,
+    request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Own one Responses stream and publish only provider-authoritative state."""
 
@@ -141,7 +176,13 @@ async def _stream_events(
     terminal_event_type = ""
     try:
         stream_response = await client.responses.create(
-            **responses_params(config, messages, tools=tools, stream=True),
+            **responses_params(
+                config,
+                messages,
+                tools=tools,
+                stream=True,
+                request_context=request_context,
+            ),
         )
         async for event in stream_response:
             event_type = str(attr_or_item(event, "type") or "")
@@ -215,10 +256,11 @@ async def _stream_events(
 
 def responses_params(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     *,
     tools: list[dict[str, Any]] | None = None,
     stream: bool = False,
+    request_context: LlmRequestContext | None = None,
 ) -> dict[str, Any]:
     instructions, input_items = responses_input(messages)
     # Responses uses `instructions` plus typed `input` items instead of Chat
@@ -238,8 +280,18 @@ def responses_params(
         params["top_p"] = config.top_p
     if config.max_tokens:
         params["max_output_tokens"] = config.max_tokens
-    if config.supports_thinking and config.thinking_enabled:
-        params["reasoning"] = {"effort": "medium"}
+    if config.supports_thinking:
+        if config.thinking_enabled:
+            params["reasoning"] = {"effort": "medium"}
+        # Both official OpenAI and xAI Responses APIs require the encrypted
+        # reasoning item for a stateless (`store=False`) tool continuation.
+        # Keep this explicit allowlist at the provider boundary: arbitrary
+        # Responses-compatible endpoints must not receive vendor-only fields.
+        if config.provider in {"openai", "xai"} and config.provider_kind == "cloud":
+            params["include"] = ["reasoning.encrypted_content"]
+    cache_key = openai_prompt_cache_key(config, request_context)
+    if cache_key:
+        params["prompt_cache_key"] = cache_key
     if tools:
         params["tools"] = openai_style_function_tools(tools)
         params["tool_choice"] = "auto"
@@ -249,13 +301,12 @@ def responses_params(
 
 
 def responses_input(
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
 ) -> tuple[str, list[dict[str, Any]]]:
     system, non_system = system_and_messages(messages)
     input_items: list[dict[str, Any]] = []
     for message in non_system:
-        role = message.get("role")
-        if role == "tool":
+        if message["role"] == "tool":
             input_items.append(
                 {
                     "type": "function_call_output",
@@ -265,7 +316,10 @@ def responses_input(
             )
             continue
 
-        if role == "assistant":
+        if message["role"] == "assistant":
+            input_items.extend(
+                _reasoning_items_from_state(message.get("provider_state")),
+            )
             content = message_content_text(message.get("content")).strip()
             if content:
                 input_items.append({"role": "assistant", "content": content})
@@ -289,10 +343,10 @@ def responses_input(
                     )
             continue
 
-        if role in {"user", "developer"}:
+        if message["role"] == "user":
             input_items.append(
                 {
-                    "role": role,
+                    "role": "user",
                     "content": _responses_content(message.get("content")),
                 },
             )
@@ -342,6 +396,71 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
         usage=responses_usage(response),
         stop_reason=stop_reason,
         response_id=getattr(response, "id", None),
+        provider_state=_reasoning_provider_state(response),
+    )
+
+
+def _reasoning_provider_state(response: object) -> dict[str, Any]:
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return {}
+
+    reasoning_items = [
+        deepcopy(item_data)
+        for item in output
+        for item_data in [object_dict(item)]
+        if item_data.get("type") == "reasoning"
+    ]
+    return {_REASONING_ITEMS_STATE_KEY: reasoning_items} if reasoning_items else {}
+
+
+def _reasoning_items_from_state(provider_state: Any) -> list[dict[str, Any]]:
+    # `store=False` prevents OpenAI from recovering hidden reasoning by response
+    # id. Keep the exact encrypted output items as adapter-owned continuation:
+    # the Agent may replay this blob unchanged, but it is not display reasoning,
+    # prompt-cache metadata, or state that is portable to another provider/model.
+    if provider_state is None or provider_state == {}:
+        return []
+
+    if not isinstance(provider_state, dict) or set(provider_state) != {
+        _REASONING_ITEMS_STATE_KEY,
+    }:
+        raise LlmRequestError(_INVALID_REASONING_STATE)
+
+    items = provider_state.get(_REASONING_ITEMS_STATE_KEY)
+    if not isinstance(items, list) or not items:
+        raise LlmRequestError(_INVALID_REASONING_STATE)
+
+    validated: list[dict[str, Any]] = []
+    for item in items:
+        if not _valid_reasoning_item(item):
+            raise LlmRequestError(_INVALID_REASONING_STATE)
+        validated.append(deepcopy(item))
+    return validated
+
+
+def _valid_reasoning_item(item: Any) -> bool:
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return False
+    if not isinstance(item.get("id"), str) or not item["id"].strip():
+        return False
+    if not isinstance(item.get("encrypted_content"), str):
+        return False
+    if not item["encrypted_content"].strip():
+        return False
+
+    summary = item.get("summary")
+    if not isinstance(summary, list) or any(
+        not isinstance(block, dict) for block in summary
+    ):
+        return False
+
+    status = item.get("status")
+    if status is not None and status not in _REASONING_STATUSES:
+        return False
+    content = item.get("content")
+    return content is None or (
+        isinstance(content, list) and all(isinstance(block, dict) for block in content)
     )
 
 
@@ -384,7 +503,12 @@ def _response_tool_calls(response: object) -> list[LlmToolCall]:
         call_id = str(data.get("call_id") or "").strip()
         raw_arguments = str(data.get("arguments") or "{}")
         if not name or not call_id:
-            continue
+            # Responses output is an atomic terminal batch. If one function
+            # block cannot be correlated to a name and call id, exposing only
+            # its valid siblings could execute an incomplete provider intent.
+            raise LlmRequestError(
+                "Model provider returned an invalid function call batch.",
+            )
 
         tool_calls.append(
             parsed_tool_call(

@@ -21,6 +21,23 @@ import {
   type OperationApplyResult,
 } from "./transaction-core";
 
+/** Return IDs outside one deterministic longest stable subsequence. */
+function movedIds(beforeIds: string[], afterIds: string[]) {
+  const positions = new Map(beforeIds.map((id, index) => [id, index]));
+  const sequences: string[][] = [];
+  for (const id of afterIds) {
+    const stable = sequences
+      .filter((_, index) =>
+        positions.get(afterIds[index]!)! < positions.get(id)!)
+      .reduce<string[]>((longest, sequence) =>
+        sequence.length > longest.length ? sequence : longest, []);
+    sequences.push([...stable, id]);
+  }
+  const stableIds = new Set(sequences.reduce<string[]>((longest, sequence) =>
+    sequence.length > longest.length ? sequence : longest, []));
+  return new Set(afterIds.filter((id) => !stableIds.has(id)));
+}
+
 function applyReplaceField(
   resume: ResumeData,
   edit: AgentResumeEditSuggestion,
@@ -136,14 +153,14 @@ function applyUpdateSection(
   resume.sections[match.index] = nextSection;
 
   return operationApplied({
-    id: `diff-${edit.id}`,
+    id: `diff-${edit.id}-title`,
     operationId: edit.id,
-    path: sectionPath(operation.sectionId),
+    path: `${sectionPath(operation.sectionId)}.title`,
     kind: "modified",
     label: edit.title,
     sectionId: operation.sectionId,
-    before,
-    after: resume.sections[match.index],
+    before: before.title,
+    after: nextSection.title,
   });
 }
 
@@ -161,6 +178,8 @@ function applyDeleteSection(
     );
   }
 
+  const beforePreviousId = resume.sections[match.index - 1]?.id;
+  const beforeNextId = resume.sections[match.index + 1]?.id;
   const [removed] = resume.sections.splice(match.index, 1);
 
   return operationApplied({
@@ -170,6 +189,8 @@ function applyDeleteSection(
     kind: "deleted",
     label: edit.title || sectionLabel(removed),
     sectionId: operation.sectionId,
+    ...(beforePreviousId ? { beforePreviousId } : {}),
+    ...(beforeNextId ? { beforeNextId } : {}),
     before: removed,
   });
 }
@@ -215,20 +236,23 @@ function applyReorderSections(
     return operationRejected("no_change", "sections");
   }
 
-  const movedSectionId = afterIds.find((sectionId, index) => {
-    return beforeIds[index] !== sectionId;
-  });
-
-  return operationApplied({
-    id: `diff-${edit.id}`,
-    operationId: edit.id,
-    path: "sections",
-    kind: "moved",
-    label: edit.title,
-    sectionId: movedSectionId,
-    before: beforeIds,
-    after: afterIds,
-  });
+  const movedSectionIds = movedIds(beforeIds, afterIds);
+  return operationApplied(
+    ...afterIds.flatMap((sectionId, afterIndex) => {
+      return !movedSectionIds.has(sectionId)
+        ? []
+        : [{
+            id: `diff-${edit.id}-${sectionId}`,
+            operationId: edit.id,
+            path: sectionPath(sectionId),
+            kind: "moved" as const,
+            label: edit.title,
+            sectionId,
+            before: beforeIds.indexOf(sectionId),
+            after: afterIndex,
+          }];
+    }),
+  );
 }
 
 function applyInsertItem(
@@ -341,7 +365,11 @@ function applyUpdateItem(
     );
   }
 
-  const before = { ...itemMatch.item };
+  const changedFields = SECTION_ITEM_FIELDS[sectionMatch.section.kind].filter(
+    (field) =>
+      patchFields.includes(field) &&
+      !isDeepEqual(currentItem[field], patch[field]),
+  );
   const nextItem = {
     ...itemMatch.item,
     ...operation.patch,
@@ -363,17 +391,20 @@ function applyUpdateItem(
     items: nextItems,
   } as ResumeSection;
 
-  return operationApplied({
-    id: `diff-${edit.id}`,
-    operationId: edit.id,
-    path: itemPath(operation.sectionId, operation.itemId),
-    kind: "modified",
-    label: edit.title || itemLabel(itemMatch.item),
-    sectionId: operation.sectionId,
-    itemId: operation.itemId,
-    before,
-    after: nextItem,
-  });
+  const target = itemPath(operation.sectionId, operation.itemId);
+  return operationApplied(
+    ...changedFields.map((field) => ({
+      id: `diff-${edit.id}-${field}`,
+      operationId: edit.id,
+      path: `${target}.${field}`,
+      kind: "modified" as const,
+      label: edit.title || itemLabel(itemMatch.item),
+      sectionId: operation.sectionId,
+      itemId: operation.itemId,
+      before: currentItem[field],
+      after: patch[field],
+    })),
+  );
 }
 
 function applyDeleteItem(
@@ -407,6 +438,8 @@ function applyDeleteItem(
   }
 
   const removed = itemMatch.item;
+  const beforePreviousId = sectionMatch.section.items[itemMatch.index - 1]?.id;
+  const beforeNextId = sectionMatch.section.items[itemMatch.index + 1]?.id;
   resume.sections[sectionMatch.index] = {
     ...sectionMatch.section,
     items: sectionMatch.section.items.filter(
@@ -422,6 +455,8 @@ function applyDeleteItem(
     label: edit.title || itemLabel(removed),
     sectionId: operation.sectionId,
     itemId: operation.itemId,
+    ...(beforePreviousId ? { beforePreviousId } : {}),
+    ...(beforeNextId ? { beforeNextId } : {}),
     before: removed,
   });
 }
@@ -496,21 +531,24 @@ function applyReorderItems(
     );
   }
 
-  const movedItemId = afterIds.find((itemId, index) => {
-    return beforeIds[index] !== itemId;
-  });
-
-  return operationApplied({
-    id: `diff-${edit.id}`,
-    operationId: edit.id,
-    path: `sections.${operation.sectionId}.items`,
-    kind: "moved",
-    label: edit.title,
-    sectionId: operation.sectionId,
-    itemId: movedItemId,
-    before: beforeIds,
-    after: afterIds,
-  });
+  const movedItemIds = movedIds(beforeIds, afterIds);
+  return operationApplied(
+    ...afterIds.flatMap((itemId, afterIndex) => {
+      return !movedItemIds.has(itemId)
+        ? []
+        : [{
+            id: `diff-${edit.id}-${itemId}`,
+            operationId: edit.id,
+            path: itemPath(operation.sectionId, itemId),
+            kind: "moved" as const,
+            label: edit.title,
+            sectionId: operation.sectionId,
+            itemId,
+            before: beforeIds.indexOf(itemId),
+            after: afterIndex,
+          }];
+    }),
+  );
 }
 
 export function applyOperation(

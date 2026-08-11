@@ -1,7 +1,13 @@
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
 
+import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
+import type {
+  ItemDiffLookup,
+  SectionDiffLookup,
+} from "@/components/preview/resume-preview-diffs";
 import {
   getDiffClassName,
+  getDiffLabel,
   getRenderableItems,
   type PaginatedResumeSection,
 } from "@/components/preview/resume-preview-model";
@@ -14,7 +20,6 @@ import type {
 } from "@/lib/resume-sections";
 import { cn } from "@/lib/utils";
 import type {
-  ResumeDraftDiff,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
 } from "@/types/resume";
@@ -86,9 +91,9 @@ function AccentSectionTitle({
 
 interface SectionBlockProps {
   breakBeforeOffset?: number;
-  diff?: ResumeDraftDiff;
+  diff?: SectionDiffLookup;
   isSidebarLayout: boolean;
-  itemDiffById?: Map<string, ResumeDraftDiff>;
+  itemDiffById?: Map<string, ItemDiffLookup>;
   items?: RenderableSectionItem[];
   layout: ResumeTemplateLayout;
   section: RenderableResumeSection;
@@ -110,7 +115,22 @@ function SectionBlock({
   t,
 }: SectionBlockProps) {
   const title = getSectionTitle(section, t);
-  const visibleItems = items ?? getRenderableItems(section);
+  const allVisibleItems = getRenderableItems(section);
+  const visibleItems = items ?? allVisibleItems;
+  const structuralDiff = diff?.structuralDiff;
+  const titleDiff = showTitle ? diff?.titleDiff : undefined;
+  const markerDiff = structuralDiff ?? titleDiff;
+  const sectionClassName = structuralDiff
+    ? getDiffClassName(structuralDiff)
+    : titleDiff
+      ? "resume-diff-anchor"
+      : undefined;
+  const renderedTitle = (
+    <ResumeDiffText
+      value={title}
+      diffs={titleDiff ? [titleDiff] : []}
+    />
+  );
   const sectionStyle =
     breakBeforeOffset > 0 ? { marginTop: breakBeforeOffset } : undefined;
 
@@ -119,10 +139,12 @@ function SectionBlock({
       <section
         className={cn(
           "resume-section relative overflow-hidden border",
-          getDiffClassName(diff),
+          sectionClassName,
         )}
         data-resume-section-id={section.id}
-        data-resume-diff-kind={diff?.kind}
+        data-resume-diff-kind={markerDiff?.kind}
+        data-resume-diff-label={getDiffLabel(markerDiff, t)}
+        data-resume-section-layout={layout.section}
         style={{ ...sectionStyle, borderColor: settings.dividerColor }}
       >
         {showTitle ? (
@@ -141,7 +163,7 @@ function SectionBlock({
                 fontSize: `${settings.sectionTitleScale}em`,
               }}
             >
-              {title}
+              {renderedTitle}
             </h2>
           </div>
         ) : null}
@@ -162,9 +184,11 @@ function SectionBlock({
   if (layout.section === "band") {
     return (
       <section
-        className={cn("resume-section relative", getDiffClassName(diff))}
+        className={cn("resume-section relative", sectionClassName)}
         data-resume-section-id={section.id}
-        data-resume-diff-kind={diff?.kind}
+        data-resume-diff-kind={markerDiff?.kind}
+        data-resume-diff-label={getDiffLabel(markerDiff, t)}
+        data-resume-section-layout={layout.section}
         style={sectionStyle}
       >
         {showTitle ? (
@@ -180,7 +204,7 @@ function SectionBlock({
                 fontSize: `${settings.sectionTitleScale}em`,
               }}
             >
-              {title}
+              {renderedTitle}
             </h2>
           </div>
         ) : null}
@@ -200,9 +224,11 @@ function SectionBlock({
 
   return (
     <section
-      className={cn("resume-section relative", getDiffClassName(diff))}
+      className={cn("resume-section relative", sectionClassName)}
       data-resume-section-id={section.id}
-      data-resume-diff-kind={diff?.kind}
+      data-resume-diff-kind={markerDiff?.kind}
+      data-resume-diff-label={getDiffLabel(markerDiff, t)}
+      data-resume-section-layout={layout.section}
       style={sectionStyle}
     >
       {showTitle ? (
@@ -215,17 +241,19 @@ function SectionBlock({
                 fontSize: `${settings.sectionTitleScale}em`,
               }}
             >
-              {title}
+              {renderedTitle}
             </h2>
           ) : layout.section === "accent" ? (
             <AccentSectionTitle
               settings={settings}
               isSidebarLayout={isSidebarLayout}
             >
-              {title}
+              {renderedTitle}
             </AccentSectionTitle>
           ) : (
-            <RuledSectionTitle settings={settings}>{title}</RuledSectionTitle>
+            <RuledSectionTitle settings={settings}>
+              {renderedTitle}
+            </RuledSectionTitle>
           )}
         </div>
       ) : null}
@@ -257,16 +285,16 @@ export function SectionsList({
   breakBeforeSectionSpacers?: Record<string, number>;
   className?: string;
   isSidebarLayout: boolean;
-  itemDiffById?: Map<string, ResumeDraftDiff>;
+  itemDiffById?: Map<string, ItemDiffLookup>;
   layout: ResumeTemplateLayout;
-  sectionDiffById?: Map<string, ResumeDraftDiff>;
+  sectionDiffById?: Map<string, SectionDiffLookup>;
   sections: PaginatedResumeSection[];
   settings: ResumeTemplateSettings;
   t: AppMessages;
 }) {
   return (
     <div
-      className={cn("grid", className)}
+      className={cn("relative grid", className)}
       data-resume-sections-list="true"
       style={{ gap: `${settings.sectionGap}em` }}
     >

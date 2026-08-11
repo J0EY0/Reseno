@@ -14,10 +14,12 @@ from app.routers import agent as agent_router
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
+    AgentConversationCheckpoint,
     AgentConversationItem,
     AgentDraftDecisionRequest,
     AgentDraftState,
     AgentSessionReplaceRequest,
+    AgentTurnWorkspaceSnapshots,
 )
 from app.services import agent_sessions
 from app.services.agent.attachments import AgentAttachmentError
@@ -221,11 +223,154 @@ def test_prepare_agent_turn_keeps_only_authoritative_prior_messages(
             ),
         )
 
-    assert [message.id for message in prepared.messages] == [
-        "turn-prior-1",
-        "assistant-prior-1",
-    ]
-    assert prepared.message.id == "turn-prior-2"
+        assert [message.id for message in prepared.messages] == [
+            "turn-prior-1",
+            "assistant-prior-1",
+        ]
+        assert prepared.message.id == "turn-prior-2"
+
+
+def test_successful_exchange_persists_private_conversation_checkpoint(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-conversation-checkpoint"
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId="turn-checkpoint-1",
+        summary="Constraints: Never invent facts.",
+    )
+
+    with closing(connect()) as conn:
+        prepared = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-1",
+                text="Keep every claim grounded.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        prepared._active_conversation_checkpoint = checkpoint
+        workspace_snapshots = AgentTurnWorkspaceSnapshots(
+            turnMessageId="turn-checkpoint-1",
+            tools='{"workspaceContext":{"resume":{"sections":[]}}}',
+        )
+        prepared._active_workspace_snapshots = workspace_snapshots
+        request_payload = prepared.model_dump(mode="json", by_alias=True)
+        assert "conversationCheckpoint" not in json.dumps(request_payload)
+        append_agent_exchange(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id="assistant-checkpoint-1",
+                role="assistant",
+                text="Understood.",
+            ),
+        )
+
+        public_session = load_agent_session(conn, resume_id)
+        public_payload = public_session.model_dump(mode="json", by_alias=True)
+        assert "_conversationCheckpoint" not in json.dumps(public_payload)
+        assert "_workspaceSnapshots" not in json.dumps(public_payload)
+
+        next_turn = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-2",
+                text="Continue.",
+                revision=public_session.revision,
+            ),
+        )
+
+    assert next_turn._loaded_conversation_checkpoint == checkpoint
+    assert next_turn._active_conversation_checkpoint == checkpoint
+    assert next_turn._historical_workspace_snapshots == {
+        "turn-checkpoint-1": workspace_snapshots,
+    }
+    assert "_conversationCheckpoint" not in json.dumps(
+        [
+            message.model_dump(mode="json", by_alias=True)
+            for message in next_turn.messages
+        ],
+    )
+
+
+def test_replacing_session_history_clears_private_conversation_checkpoints(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-replaced-conversation-checkpoint"
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId="turn-replaced-checkpoint-1",
+        summary="Constraints: Use only verified evidence.",
+    )
+
+    with closing(connect()) as conn:
+        prepared = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-replaced-checkpoint-1",
+                text="Keep this grounded.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        prepared._active_conversation_checkpoint = checkpoint
+        workspace_snapshots = AgentTurnWorkspaceSnapshots(
+            turnMessageId="turn-replaced-checkpoint-1",
+            tools='{"workspaceContext":{"draftStatus":"pending"}}',
+        )
+        prepared._active_workspace_snapshots = workspace_snapshots
+        append_agent_exchange(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id="assistant-replaced-checkpoint-1",
+                role="assistant",
+                text="Understood.",
+            ),
+        )
+        session = load_agent_session(conn, resume_id)
+        public_messages = [
+            AgentConversationItem(
+                id=message.id,
+                role=message.role,
+                text=message.text,
+                files=message.files,
+                response=(
+                    message.response.model_dump(mode="json", by_alias=True)
+                    if message.response is not None
+                    else None
+                ),
+                createdAt=message.created_at,
+            )
+            for message in session.messages
+        ]
+        assert public_messages[-1].response is not None
+        public_messages[-1].response["_conversationCheckpoint"] = checkpoint.model_dump(
+            mode="json", by_alias=True
+        )
+        replaced = replace_agent_session_messages(
+            conn,
+            resume_id,
+            locale="zh",
+            messages=public_messages,
+            revision=session.revision,
+        )
+        next_turn = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-replaced-checkpoint-2",
+                text="Continue after editing history.",
+                revision=replaced.revision,
+            ),
+        )
+
+    assert next_turn._loaded_conversation_checkpoint is None
+    assert next_turn._active_conversation_checkpoint is None
+    assert next_turn._historical_workspace_snapshots == {}
 
 
 def test_prepare_agent_turn_allows_exact_unfinished_retry_without_duplicate(
@@ -536,6 +681,83 @@ def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
     }
 
 
+def test_committed_draft_persists_every_field_diff_for_one_edit(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-durable-multi-field-diff"
+    edit = {
+        "id": "edit-project-fields",
+        "title": "Update project fields",
+        "target": "sections.project.items.project-1",
+        "reason": "Clarify the existing project.",
+        "operation": {
+            "type": "update_item",
+            "sectionId": "project",
+            "itemId": "project-1",
+            "patch": {
+                "description": "Updated description",
+                "highlights": ["Updated highlight"],
+            },
+        },
+        "status": "executed",
+        "diffs": [
+            {
+                "id": "agent-diff-edit-project-fields-description",
+                "operationId": "edit-project-fields",
+                "path": "sections.project.items.project-1.description",
+                "kind": "modified",
+                "label": "Project description",
+                "sectionId": "project",
+                "itemId": "project-1",
+                "before": "Original description",
+                "after": "Updated description",
+            },
+            {
+                "id": "agent-diff-edit-project-fields-highlights",
+                "operationId": "edit-project-fields",
+                "path": "sections.project.items.project-1.highlights",
+                "kind": "modified",
+                "label": "Project highlights",
+                "sectionId": "project",
+                "itemId": "project-1",
+                "before": ["Original highlight"],
+                "after": ["Updated highlight"],
+            },
+        ],
+    }
+
+    with closing(connect()) as conn:
+        prepared = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-multi-field-diff",
+                text="Update the project description and highlights",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        append_agent_exchange(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id="assistant-multi-field-diff",
+                role="assistant",
+                text="The project update is ready.",
+                edits=[edit],
+                transactionState="committed",
+            ),
+        )
+        session = load_agent_session(conn, resume_id)
+
+    response = session.messages[-1].response
+    assert response is not None
+    assert [diff["path"] for diff in response.edits[0].diffs] == [
+        "sections.project.items.project-1.description",
+        "sections.project.items.project-1.highlights",
+    ]
+
+
 @pytest.mark.parametrize("decision", ["applied", "discarded"])
 def test_agent_draft_decision_updates_only_the_target_response(
     client: object,
@@ -637,6 +859,155 @@ def test_agent_draft_decision_updates_only_the_target_response(
     assert response is not None and response.draft is not None
     assert response.draft.status == decision
     assert response.draft.base_resume == base_resume
+
+
+def test_agent_draft_decision_preserves_private_conversation_checkpoint(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-checkpoint-draft-decision"
+    assistant_id = "assistant-checkpoint-draft-decision"
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId="turn-checkpoint-draft-decision",
+        summary="Decisions: Keep the existing project order.",
+    )
+
+    with closing(connect()) as conn:
+        prepared = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-draft-decision",
+                text="Prepare one grounded edit.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        prepared._active_conversation_checkpoint = checkpoint
+        workspace_snapshots = AgentTurnWorkspaceSnapshots(
+            turnMessageId="turn-checkpoint-draft-decision",
+            tools='{"workspaceContext":{"draftStatus":"pending"}}',
+        )
+        prepared._active_workspace_snapshots = workspace_snapshots
+        append_agent_exchange(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id=assistant_id,
+                role="assistant",
+                text="The edit is ready.",
+                edits=[
+                    {
+                        "id": "edit-checkpoint-draft-decision",
+                        "title": "Update headline",
+                        "target": "basic.headline",
+                        "reason": "Use the requested title.",
+                    },
+                ],
+                transactionState="committed",
+            ),
+        )
+        pending = load_agent_session(conn, resume_id)
+        discarded = update_agent_draft_decision(
+            conn,
+            resume_id,
+            message_id=assistant_id,
+            status="discarded",
+            revision=pending.revision,
+        )
+        next_turn = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-after-checkpoint-draft-decision",
+                text="Continue with the revised plan.",
+                revision=discarded.revision,
+            ),
+        )
+
+    assert next_turn._loaded_conversation_checkpoint == checkpoint
+    assert next_turn._historical_workspace_snapshots == {
+        "turn-checkpoint-draft-decision": workspace_snapshots,
+    }
+
+
+def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
+    client: object,
+) -> None:
+    del client
+    resume_id = "resume-checkpoint-auto-discard"
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId="turn-checkpoint-auto-discard-1",
+        summary="Constraints: Keep every claim grounded.",
+    )
+
+    with closing(connect()) as conn:
+        first = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-auto-discard-1",
+                text="Prepare the first edit.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        first._active_conversation_checkpoint = checkpoint
+        append_agent_exchange(
+            conn,
+            first,
+            AgentChatMessage(
+                id="assistant-checkpoint-auto-discard-1",
+                role="assistant",
+                text="The first edit is ready.",
+                edits=[
+                    {
+                        "id": "edit-checkpoint-auto-discard-1",
+                        "title": "Update headline",
+                        "target": "basic.headline",
+                        "reason": "Use the requested title.",
+                    },
+                ],
+                transactionState="committed",
+            ),
+        )
+
+        second = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-auto-discard-2",
+                text="Prepare a newer edit instead.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+        append_agent_exchange(
+            conn,
+            second,
+            AgentChatMessage(
+                id="assistant-checkpoint-auto-discard-2",
+                role="assistant",
+                text="The newer edit is ready.",
+                edits=[
+                    {
+                        "id": "edit-checkpoint-auto-discard-2",
+                        "title": "Update summary",
+                        "target": "basic.summary",
+                        "reason": "Use the newer request.",
+                    },
+                ],
+                transactionState="committed",
+            ),
+        )
+        third = prepare_agent_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-checkpoint-auto-discard-3",
+                text="Continue.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ),
+        )
+
+    assert third._loaded_conversation_checkpoint == checkpoint
 
 
 def test_agent_draft_decision_rejects_an_active_run(

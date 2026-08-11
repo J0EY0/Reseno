@@ -489,7 +489,6 @@ type AgentChatRequest = {
   draftState?: AgentDraftState | null // 仅用于继续处理当前会话的待确认草稿
   modelConfig: ModelConfig | null
   settings: AgentSettings & {
-    maxReActIterations?: number // 可选；默认 5，后端会限制在 1-8
   }
   stream?: boolean
 }

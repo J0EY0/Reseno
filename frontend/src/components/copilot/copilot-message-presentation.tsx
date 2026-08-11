@@ -3,15 +3,17 @@ import {
   MessageContent,
 } from "@/components/ai-elements/message";
 import type { AppMessages } from "@/i18n";
-import { memo } from "react";
+import type { ResumeDraftDiff } from "@/types/resume";
+import { lazy, memo, Suspense } from "react";
 
 import { AgentAssistantResponse } from "./copilot-assistant-response";
-import { AgentChangeSummary } from "./copilot-change-summary";
 import type { AgentPanelMessage } from "./copilot-message-model";
 import {
   AgentAssistantActivity,
   AgentMessageTimeline,
 } from "./copilot-tool-presentation";
+
+const AgentChangeSummary = lazy(() => import("./copilot-change-summary"));
 
 export { AgentPendingMessage } from "./copilot-tool-presentation";
 export { AgentUserMessageRow } from "./copilot-user-message-row";
@@ -35,6 +37,7 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
  * their object identity and can skip work while only the active row changes.
  */
 export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
+  draftDiffs,
   hasAgentDraft,
   isStreamingAssistant,
   message,
@@ -43,6 +46,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
   shouldShowDraftActions,
   t,
 }: {
+  draftDiffs?: ResumeDraftDiff[];
   hasAgentDraft: boolean;
   isStreamingAssistant: boolean;
   message: AgentPanelMessage;
@@ -90,14 +94,19 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
             />
           </>
         )}
-        <AgentChangeSummary
-          hasAgentDraft={hasAgentDraft}
-          onApplyAgentDraft={onApplyAgentDraft}
-          onDiscardAgentDraft={onDiscardAgentDraft}
-          response={response}
-          shouldShowDraftActions={shouldShowDraftActions}
-          t={t}
-        />
+        {response?.edits?.length ? (
+          <Suspense fallback={null}>
+            <AgentChangeSummary
+              draftDiffs={draftDiffs}
+              hasAgentDraft={hasAgentDraft}
+              onApplyAgentDraft={onApplyAgentDraft}
+              onDiscardAgentDraft={onDiscardAgentDraft}
+              response={response}
+              shouldShowDraftActions={shouldShowDraftActions}
+              t={t}
+            />
+          </Suspense>
+        ) : null}
       </MessageContent>
     </Message>
   );

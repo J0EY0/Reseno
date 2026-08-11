@@ -1,5 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import type {
+  ResumeDiffLookup,
+} from "@/components/preview/resume-preview-diffs";
 import { createResumePreviewStyles } from "@/components/preview/resume-preview-styles";
 import type { AppMessages } from "@/i18n";
 import { projectResumeSections } from "@/lib/resume-sections";
@@ -25,12 +28,6 @@ export interface PaginatedResumeSection {
   showTitle: boolean;
 }
 
-export interface ResumeDiffLookup {
-  sectionDiffById: Map<string, ResumeDraftDiff>;
-  itemDiffById: Map<string, ResumeDraftDiff>;
-  summaryDiff?: ResumeDraftDiff;
-}
-
 export interface ResumePreviewModel {
   contentFlowStyle: ReturnType<
     typeof createResumePreviewStyles
@@ -51,7 +48,11 @@ export interface ResumePreviewModel {
   visibleSections: RenderableResumeSection[];
 }
 
-const emptyDiffs: ResumeDraftDiff[] = [];
+const emptyDiffLookup: ResumeDiffLookup = {
+  basicDiffByField: new Map(),
+  itemDiffById: new Map(),
+  sectionDiffById: new Map(),
+};
 
 function hasRenderableItemContent(item: RenderableSectionItem) {
   return [
@@ -66,7 +67,9 @@ function hasRenderableItemContent(item: RenderableSectionItem) {
   ].some((value) => !isRichTextEmpty(value));
 }
 
-export function getRenderableItems(section: RenderableResumeSection) {
+export function getRenderableItems(
+  section: RenderableResumeSection,
+) {
   return section.items.filter((item) =>
     section.layout === "list"
       ? !isRichTextEmpty(item.content)
@@ -102,28 +105,6 @@ export function getDiffLabel(
   }
 }
 
-function createDiffLookup(diffs: ResumeDraftDiff[]): ResumeDiffLookup {
-  const sectionDiffById = new Map<string, ResumeDraftDiff>();
-  const itemDiffById = new Map<string, ResumeDraftDiff>();
-  let summaryDiff: ResumeDraftDiff | undefined;
-
-  diffs.forEach((diff) => {
-    if (diff.path === "basic.summary") {
-      summaryDiff = diff;
-    }
-
-    if (diff.sectionId && !diff.itemId) {
-      sectionDiffById.set(diff.sectionId, diff);
-    }
-
-    if (diff.itemId) {
-      itemDiffById.set(diff.itemId, diff);
-    }
-  });
-
-  return { sectionDiffById, itemDiffById, summaryDiff };
-}
-
 export function createResumePageClassName(
   model: ResumePreviewModel,
   thumbnail = false,
@@ -156,14 +137,39 @@ export function useResumePreviewModel({
   t: AppMessages;
   template: ResumeTemplateDefinition;
 }): ResumePreviewModel {
+  const [resolvedDiffs, setResolvedDiffs] = useState<
+    [ResumeDraftDiff[], ResumeDiffLookup] | null
+  >(null);
+  useEffect(() => {
+    if (!diffs?.length) {
+      return;
+    }
+    let active = true;
+    void import("@/components/preview/resume-preview-diff-lookup").then(
+      ({ createResumeDiffLookup }) => {
+        if (active) {
+          setResolvedDiffs([diffs, createResumeDiffLookup(diffs)]);
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [diffs]);
+  const rawDiffLookup =
+    resolvedDiffs && resolvedDiffs[0] === diffs
+      ? resolvedDiffs[1]
+      : emptyDiffLookup;
   const projectedSections = useMemo(
     () => projectResumeSections(resume.sections),
     [resume.sections],
   );
+  const diffLookup = rawDiffLookup;
   const visibleSections = useMemo(
     () =>
       projectedSections.filter(
-        (section) => getRenderableItems(section).length > 0,
+        (section) =>
+          getRenderableItems(section).length > 0,
       ),
     [projectedSections],
   );
@@ -175,10 +181,6 @@ export function useResumePreviewModel({
         showTitle: true,
       })),
     [visibleSections],
-  );
-  const diffLookup = useMemo(
-    () => createDiffLookup(diffs ?? emptyDiffs),
-    [diffs],
   );
   const settings = template.settings;
   const layout = template.layout;

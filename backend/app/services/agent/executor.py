@@ -113,7 +113,10 @@ def _agent_file_context(
         media_type = file.get("mediaType")
         file_context.append(
             {
-                "filename": str(filename or "Attachment"),
+                "filename": sanitize_agent_text(
+                    str(filename or "Attachment"),
+                    hidden_terms=hidden_terms,
+                ),
                 "mediaType": str(media_type or ""),
                 "excerpt": excerpt,
             },
@@ -556,12 +559,24 @@ class AgentPlanExecutor:
         )[0]
         return role.strip()[:40]
 
-    def analyze_resume(self) -> ResumeAnalysis:
-        """Extract only the resume facts needed for planning."""
+    def analyze_resume(
+        self,
+        resume: dict[str, Any] | None = None,
+    ) -> ResumeAnalysis:
+        """Extract planning facts from one sanitized resume snapshot."""
 
-        basic = self.visible_resume.get("basic")
+        visible_resume = (
+            self.visible_resume
+            if resume is None
+            else sanitize_agent_resume(resume, hidden_terms=self.hidden_terms)
+        )
+        self.target_match = match_resume_to_target(
+            visible_resume,
+            self.target_context,
+        )
+        basic = visible_resume.get("basic")
         basic_data = basic if isinstance(basic, dict) else {}
-        sections_value = self.visible_resume.get("sections")
+        sections_value = visible_resume.get("sections")
         sections = sections_value if isinstance(sections_value, list) else []
         normalized_sections: list[dict[str, object]] = []
         empty_section_ids: list[str] = []

@@ -1598,9 +1598,9 @@ async def _async_search_web_reference_summary(
     try:
         completed_queries, pending_queries = await asyncio.wait(
             query_tasks,
-            # Reserve half of the total deadline for page retrieval. A slow
-            # search variant must not consume the entire evidence operation.
-            timeout=timeout_budget / 2,
+            # Search links are the required evidence stage. Page retrieval is
+            # an optional enhancement and uses only the deadline that remains.
+            timeout=max(operation_deadline - loop.time(), 0.0),
         )
         search_timed_out = bool(pending_queries)
         if pending_queries:

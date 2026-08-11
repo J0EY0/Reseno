@@ -1,6 +1,6 @@
 import { AvatarPreview } from "@/components/preview/resume-preview-media";
+import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import {
-  getDiffClassName,
   getDiffLabel,
   getResumeFallbackName,
 } from "@/components/preview/resume-preview-model";
@@ -114,19 +114,19 @@ function ContactLine({
 
 interface BasicInfoProps {
   basic: ResumeBasicInfo;
+  basicDiffByField?: Map<string, ResumeDraftDiff>;
   enableContactLinks: boolean;
   layout: ResumeTemplateLayout;
   settings: ResumeTemplateSettings;
-  summaryDiff?: ResumeDraftDiff;
   t: AppMessages;
 }
 
 export function StandardBasicInfo({
   basic,
+  basicDiffByField,
   enableContactLinks,
   layout,
   settings,
-  summaryDiff,
   t,
 }: BasicInfoProps) {
   const isProfile = layout.basicInfo === "profile";
@@ -137,6 +137,8 @@ export function StandardBasicInfo({
   const shouldFloatSideAvatar =
     hasAvatar && layout.basicInfo === "centered" && avatarPosition !== "center";
   const contactItems = getContactItems(basic);
+  const headlineDiff = basicDiffByField?.get("headline");
+  const summaryDiff = basicDiffByField?.get("summary");
   const avatar = hasAvatar ? (
     <AvatarPreview
       basic={basic}
@@ -168,15 +170,22 @@ export function StandardBasicInfo({
       >
         {basic.name || getResumeFallbackName(t)}
       </h1>
-      {basic.headline ? (
+      {basic.headline || headlineDiff ? (
         <p
           className={cn(
-            "resume-tone-muted mt-2 font-medium",
+            "resume-tone-muted font-medium",
+            basic.headline ? "mt-2" : "resume-diff-empty-slot",
             isProfile && "tracking-[0.08em]",
+            headlineDiff && "resume-diff-anchor",
           )}
+          data-resume-diff-kind={headlineDiff?.kind}
+          data-resume-diff-label={getDiffLabel(headlineDiff, t)}
           style={{ fontSize: `${Math.max(0.85, settings.bodyScale)}em` }}
         >
-          {basic.headline}
+          <ResumeDiffText
+            value={basic.headline}
+            diffs={headlineDiff ? [headlineDiff] : []}
+          />
         </p>
       ) : null}
     </>
@@ -260,11 +269,12 @@ export function StandardBasicInfo({
         basicInfoContent
       )}
 
-      {basic.summary ? (
+      {basic.summary || summaryDiff ? (
         <p
           className={cn(
             "resume-tone-body text-left",
-            getDiffClassName(summaryDiff),
+            !basic.summary && "resume-diff-empty-slot",
+            summaryDiff && "resume-diff-anchor",
           )}
           data-resume-diff-kind={summaryDiff?.kind}
           data-resume-diff-label={getDiffLabel(summaryDiff, t)}
@@ -273,7 +283,10 @@ export function StandardBasicInfo({
             lineHeight: settings.bodyLineHeight,
           }}
         >
-          {basic.summary}
+          <ResumeDiffText
+            value={basic.summary}
+            diffs={summaryDiff ? [summaryDiff] : []}
+          />
         </p>
       ) : null}
     </header>
@@ -282,13 +295,15 @@ export function StandardBasicInfo({
 
 export function SidebarBasicInfo({
   basic,
+  basicDiffByField,
   enableContactLinks,
   layout,
   settings,
-  summaryDiff,
   t,
 }: BasicInfoProps) {
   const contactItems = getContactItems(basic);
+  const headlineDiff = basicDiffByField?.get("headline");
+  const summaryDiff = basicDiffByField?.get("summary");
   const avatar =
     layout.avatarPosition === "none" ? null : (
       <AvatarPreview
@@ -318,12 +333,21 @@ export function SidebarBasicInfo({
         >
           {basic.name || getResumeFallbackName(t)}
         </h1>
-        {basic.headline ? (
+        {basic.headline || headlineDiff ? (
           <p
-            className="text-white/75"
+            className={cn(
+              "text-white/75",
+              !basic.headline && "resume-diff-empty-slot",
+              headlineDiff && "resume-diff-anchor",
+            )}
+            data-resume-diff-kind={headlineDiff?.kind}
+            data-resume-diff-label={getDiffLabel(headlineDiff, t)}
             style={{ fontSize: `${settings.bodyScale}em` }}
           >
-            {basic.headline}
+            <ResumeDiffText
+              value={basic.headline}
+              diffs={headlineDiff ? [headlineDiff] : []}
+            />
           </p>
         ) : null}
       </div>
@@ -354,16 +378,22 @@ export function SidebarBasicInfo({
         </div>
       ) : null}
 
-      {basic.summary ? (
+      {basic.summary || summaryDiff ? (
         <div className="grid gap-2">
+          {basic.summary ? (
+            <p
+              className="font-semibold"
+              style={{ fontSize: `${settings.sectionTitleScale}em` }}
+            >
+              {t.resumePreviewSummaryTitle}
+            </p>
+          ) : null}
           <p
-            className="font-semibold"
-            style={{ fontSize: `${settings.sectionTitleScale}em` }}
-          >
-            {t.resumePreviewSummaryTitle}
-          </p>
-          <p
-            className={cn("text-white/80", getDiffClassName(summaryDiff))}
+            className={cn(
+              "text-white/80",
+              !basic.summary && "resume-diff-empty-slot",
+              summaryDiff && "resume-diff-anchor",
+            )}
             data-resume-diff-kind={summaryDiff?.kind}
             data-resume-diff-label={getDiffLabel(summaryDiff, t)}
             style={{
@@ -371,7 +401,10 @@ export function SidebarBasicInfo({
               lineHeight: settings.bodyLineHeight,
             }}
           >
-            {basic.summary}
+            <ResumeDiffText
+              value={basic.summary}
+              diffs={summaryDiff ? [summaryDiff] : []}
+            />
           </p>
         </div>
       ) : null}

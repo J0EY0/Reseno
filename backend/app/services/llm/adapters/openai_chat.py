@@ -24,6 +24,8 @@ from ..errors import LlmRequestError
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmInputMessage,
+    LlmRequestContext,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
@@ -38,7 +40,9 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
     """Call an OpenAI-compatible chat endpoint and require visible text."""
 
@@ -46,7 +50,12 @@ async def complete(
     try:
         try:
             response = await client.chat.completions.create(
-                **chat_completion_params(config, messages, stream=False),
+                **chat_completion_params(
+                    config,
+                    messages,
+                    stream=False,
+                    request_context=request_context,
+                ),
             )
         except (
             APIStatusError,
@@ -67,8 +76,10 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
     """Ask an OpenAI-compatible chat endpoint to choose zero or more tools."""
 
@@ -76,7 +87,12 @@ async def complete_tool_call(
     # executes one assistant turn as a single transaction, then validates every
     # returned call before running any of them.
     client = async_openai_client(config)
-    params = _tool_completion_params(config, messages, tools)
+    params = _tool_completion_params(
+        config,
+        messages,
+        tools,
+        request_context=request_context,
+    )
     try:
         try:
             response = await client.chat.completions.create(**params)
@@ -106,13 +122,20 @@ async def complete_tool_call(
 
 def _tool_completion_params(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> dict[str, Any]:
     """Build provider-facing params without weakening local tool validation."""
 
     return {
-        **chat_completion_params(config, messages, stream=False),
+        **chat_completion_params(
+            config,
+            messages,
+            stream=False,
+            request_context=request_context,
+        ),
         "tools": openai_chat_function_tools(tools),
         "tool_choice": "auto",
         "parallel_tool_calls": False,
@@ -121,7 +144,9 @@ def _tool_completion_params(
 
 async def stream(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream OpenAI-compatible chat deltas into the internal event shape.
 
@@ -139,7 +164,12 @@ async def stream(
     terminal_seen = False
     try:
         stream_response = await client.chat.completions.create(
-            **chat_completion_params(config, messages, stream=True),
+            **chat_completion_params(
+                config,
+                messages,
+                stream=True,
+                request_context=request_context,
+            ),
         )
         async for chunk in stream_response:
             if response_id is None:
@@ -188,8 +218,10 @@ async def stream(
 
 async def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[dict[str, Any]],
+    messages: list[LlmInputMessage],
     tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream tool-call activity and publish only one complete terminal call."""
 
@@ -197,7 +229,15 @@ async def stream_tool_call(
     stream_response = None
     state = ChatCompletionStreamState()
     terminal_reason: LlmStopReason | None = None
-    params = {**_tool_completion_params(config, messages, tools), "stream": True}
+    params = {
+        **_tool_completion_params(
+            config,
+            messages,
+            tools,
+            request_context=request_context,
+        ),
+        "stream": True,
+    }
     try:
         try:
             stream_response = await client.chat.completions.create(**params)
@@ -276,14 +316,20 @@ def _tool_calls_from_message(message: object) -> list[LlmToolCall]:
     tool_calls: list[LlmToolCall] = []
     for tool_call in getattr(message, "tool_calls", None) or []:
         function = getattr(tool_call, "function", None)
-        name = getattr(function, "name", "")
+        call_id = str(getattr(tool_call, "id", "") or "")
+        name = str(getattr(function, "name", "") or "")
         raw_arguments = getattr(function, "arguments", "") or ""
-        if not name:
-            continue
+        # A terminal tool batch is atomic. Silently dropping one malformed
+        # provider block would expose the remaining calls for execution, so
+        # reject the entire batch before schema validation or Agent dispatch.
+        if not call_id.strip() or not name.strip():
+            raise LlmRequestError(
+                "Model provider returned an invalid function call batch.",
+            )
 
         tool_calls.append(
             parsed_tool_call(
-                call_id=tool_call.id,
+                call_id=call_id,
                 name=name,
                 raw_arguments=raw_arguments,
             ),

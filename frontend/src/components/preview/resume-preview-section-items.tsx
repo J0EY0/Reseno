@@ -1,5 +1,16 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
+import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
+import {
+  getCanonicalItemFieldDiffs,
+  getRenderableFieldDiffs,
+  type ItemDiffLookup,
+  type RenderableItemField,
+} from "@/components/preview/resume-preview-diffs";
+import {
+  RichHighlights,
+  RichListDiff,
+} from "@/components/preview/resume-preview-rich-content";
 import {
   getDiffClassName,
   getDiffLabel,
@@ -10,41 +21,111 @@ import type {
   RenderableResumeSection,
   RenderableSectionItem,
 } from "@/lib/resume-sections";
-import {
-  isRichTextEmpty,
-  sanitizeRichTextHtml,
-  serializeHighlightsToHtml,
-} from "@/lib/rich-text";
+import { isRichTextEmpty } from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 import type {
   ResumeDraftDiff,
   ResumeListItemLayout,
+  SectionKind,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
   ResumeTimelineItemLayout,
 } from "@/types/resume";
 
+type RenderableItemTextPart = NonNullable<
+  RenderableSectionItem["subtitleParts"]
+>[number];
+
 interface SectionItemsProps {
-  itemDiffById?: Map<string, ResumeDraftDiff>;
+  itemDiffById?: Map<string, ItemDiffLookup>;
   items: RenderableSectionItem[];
   settings: ResumeTemplateSettings;
   t: AppMessages;
 }
 
+function ItemTextSlot({
+  diff,
+  fallbackDiffs,
+  parts,
+  value,
+}: {
+  diff?: ItemDiffLookup;
+  fallbackDiffs: ResumeDraftDiff[];
+  parts?: RenderableItemTextPart[];
+  value: string;
+}) {
+  if (!parts) {
+    return <ResumeDiffText value={value} diffs={fallbackDiffs} />;
+  }
+
+  return parts.map((part, index) => {
+    const partDiffs = getCanonicalItemFieldDiffs(diff, part.field);
+    if (!part.value && partDiffs.length === 0) {
+      return null;
+    }
+    const hasPreviousText = parts
+      .slice(0, index)
+      .some((candidate) => Boolean(candidate.value));
+
+    return (
+      <Fragment key={part.field}>
+        {part.value && hasPreviousText ? " · " : null}
+        <span
+          className={cn(!part.value && "resume-diff-empty-slot")}
+          data-resume-field={part.field}
+        >
+          <ResumeDiffText value={part.value} diffs={partDiffs} />
+        </span>
+      </Fragment>
+    );
+  });
+}
+
+function hasTextSlot(
+  value: string,
+  fallbackDiffs: ResumeDraftDiff[],
+  parts: RenderableItemTextPart[] | undefined,
+) {
+  return Boolean(
+    value ||
+      fallbackDiffs.length > 0 ||
+      parts?.some((part) => part.value),
+  );
+}
+
 function TimelineItem({
   diff,
   item,
+  kind,
   layout,
   settings,
   t,
 }: {
-  diff?: ResumeDraftDiff;
+  diff?: ItemDiffLookup;
   item: RenderableSectionItem;
+  kind: SectionKind;
   layout: ResumeTimelineItemLayout;
   settings: ResumeTemplateSettings;
   t: AppMessages;
 }) {
-  const highlightsHtml = serializeHighlightsToHtml(item.highlights);
+  const fieldDiffs = (field: RenderableItemField) =>
+    getRenderableFieldDiffs(diff, kind, field);
+  const structuralDiff = diff?.structuralDiff;
+  const modifiedDiff = [...(diff?.fieldDiffByName.values() ?? [])].at(-1);
+  const markerDiff = structuralDiff ?? modifiedDiff;
+  const hasFieldDiff = Boolean(modifiedDiff);
+  const urlDiffs = fieldDiffs("url");
+  const descriptionDiffs = fieldDiffs("description");
+  const subtitleDiffs = fieldDiffs("subtitle");
+  const metaDiffs = fieldDiffs("meta");
+  const periodDiffs = fieldDiffs("period");
+  const hasSubtitle = hasTextSlot(
+    item.subtitle,
+    subtitleDiffs,
+    item.subtitleParts,
+  );
+  const hasMeta = hasTextSlot(item.meta, metaDiffs, item.metaParts);
+  const hasPeriod = Boolean(item.period || periodDiffs.length > 0);
   const title = (
     <h3
       className="min-w-0 break-words font-extrabold"
@@ -53,24 +134,30 @@ function TimelineItem({
         fontSize: `${settings.itemTitleScale}em`,
       }}
     >
-      {item.title}
+      <ResumeDiffText value={item.title} diffs={fieldDiffs("title")} />
     </h3>
   );
-  const subtitle = item.subtitle ? (
+  const subtitle = hasSubtitle ? (
     <p
       className={cn(
         "min-w-0 break-words font-medium",
         layout === "split" && "mt-1",
+        !item.subtitle && "resume-diff-empty-slot",
       )}
       style={{
         color: settings.bodyColor,
         fontSize: `${settings.bodyScale}em`,
       }}
     >
-      {item.subtitle}
+      <ItemTextSlot
+        diff={diff}
+        fallbackDiffs={subtitleDiffs}
+        parts={item.subtitleParts}
+        value={item.subtitle}
+      />
     </p>
   ) : null;
-  const metadata = [item.meta, item.period].filter(Boolean);
+  const hasMetadata = hasMeta || hasPeriod;
 
   let heading: ReactNode;
 
@@ -79,14 +166,27 @@ function TimelineItem({
       <div className="grid gap-1">
         {title}
         {subtitle}
-        {metadata.length > 0 ? (
+        {hasMetadata ? (
           <div
             className="resume-tone-muted flex flex-wrap gap-x-3 gap-y-1"
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            {metadata.map((value, index) => (
-              <span key={`${value}-${index}`}>{value}</span>
-            ))}
+            {hasMeta ? (
+              <span className={cn(!item.meta && "resume-diff-empty-slot")}>
+                <ItemTextSlot
+                  diff={diff}
+                  fallbackDiffs={metaDiffs}
+                  parts={item.metaParts}
+                  value={item.meta}
+                />
+              </span>
+            ) : null}
+            {hasPeriod ? (
+              <ResumeDiffText
+                value={item.period}
+                diffs={periodDiffs}
+              />
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -95,23 +195,37 @@ function TimelineItem({
     heading = (
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1">
         {title}
-        {item.period ? (
+        {hasPeriod ? (
           <span
-            className="resume-tone-muted col-start-2 row-start-1 whitespace-nowrap text-right"
+            className={cn(
+              "resume-tone-muted col-start-2 row-start-1 whitespace-nowrap text-right",
+              !item.period && "resume-diff-empty-slot",
+            )}
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            {item.period}
+            <ResumeDiffText
+              value={item.period}
+              diffs={periodDiffs}
+            />
           </span>
         ) : null}
-        {item.subtitle ? (
+        {hasSubtitle ? (
           <div className="col-start-1 row-start-2">{subtitle}</div>
         ) : null}
-        {item.meta ? (
+        {hasMeta ? (
           <span
-            className="resume-tone-muted col-start-2 row-start-2 whitespace-nowrap text-right"
+            className={cn(
+              "resume-tone-muted col-start-2 row-start-2 whitespace-nowrap text-right",
+              !item.meta && "resume-diff-empty-slot",
+            )}
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            {item.meta}
+            <ItemTextSlot
+              diff={diff}
+              fallbackDiffs={metaDiffs}
+              parts={item.metaParts}
+              value={item.meta}
+            />
           </span>
         ) : null}
       </div>
@@ -123,13 +237,27 @@ function TimelineItem({
           {title}
           {subtitle}
         </div>
-        {metadata.length > 0 ? (
+        {hasMetadata ? (
           <div
             className="resume-tone-muted grid min-w-[170px] gap-1 text-right max-md:min-w-0 max-md:text-left"
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            {item.meta ? <span>{item.meta}</span> : null}
-            {item.period ? <span>{item.period}</span> : null}
+            {hasMeta ? (
+              <span className={cn(!item.meta && "resume-diff-empty-slot")}>
+                <ItemTextSlot
+                  diff={diff}
+                  fallbackDiffs={metaDiffs}
+                  parts={item.metaParts}
+                  value={item.meta}
+                />
+              </span>
+            ) : null}
+            {hasPeriod ? (
+              <ResumeDiffText
+                value={item.period}
+                diffs={periodDiffs}
+              />
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -138,45 +266,61 @@ function TimelineItem({
 
   return (
     <article
-      className={cn("resume-item grid gap-2", getDiffClassName(diff))}
+      className={cn(
+        "resume-item relative grid gap-2",
+        getDiffClassName(structuralDiff),
+        !structuralDiff && hasFieldDiff && "resume-diff-anchor",
+      )}
       data-resume-item-id={item.id}
-      data-resume-diff-kind={diff?.kind}
-      data-resume-diff-label={getDiffLabel(diff, t)}
+      data-resume-diff-kind={markerDiff?.kind}
+      data-resume-diff-label={getDiffLabel(markerDiff, t)}
     >
       {heading}
 
-      {item.url ? (
+      {item.url || urlDiffs.length > 0 ? (
         <p
-          className="resume-tone-muted break-all"
+          className={cn(
+            "resume-tone-muted break-all",
+            !item.url && "resume-diff-empty-slot",
+          )}
           style={{ fontSize: `${settings.metaScale}em` }}
         >
-          {item.url}
+          <ResumeDiffText value={item.url} diffs={urlDiffs} />
         </p>
       ) : null}
 
-      {item.description ? (
+      {item.description || descriptionDiffs.length > 0 ? (
         <p
-          className="resume-tone-body"
+          className={cn(
+            "resume-tone-body",
+            !item.description && "resume-diff-empty-slot",
+          )}
           style={{
             fontSize: `${settings.bodyScale}em`,
             lineHeight: settings.bodyLineHeight,
           }}
         >
-          {item.description}
+          <ResumeDiffText
+            value={item.description}
+            diffs={descriptionDiffs}
+          />
         </p>
       ) : null}
 
-      {!isRichTextEmpty(highlightsHtml) ? (
+      {item.highlights.some((highlight) => !isRichTextEmpty(highlight)) ||
+      fieldDiffs("highlights").length > 0 ? (
         <div
           className="resume-rich-text resume-tone-body"
           style={{
             fontSize: `${settings.bodyScale}em`,
             lineHeight: settings.bodyLineHeight,
           }}
-          dangerouslySetInnerHTML={{
-            __html: sanitizeRichTextHtml(highlightsHtml),
-          }}
-        />
+        >
+          <RichHighlights
+            highlights={item.highlights}
+            diffs={fieldDiffs("highlights")}
+          />
+        </div>
       ) : null}
     </article>
   );
@@ -185,13 +329,17 @@ function TimelineItem({
 function TimelineItems({
   itemDiffById,
   items,
+  kind,
   layout,
   settings,
   t,
-}: SectionItemsProps & { layout: ResumeTimelineItemLayout }) {
+}: SectionItemsProps & {
+  kind: SectionKind;
+  layout: ResumeTimelineItemLayout;
+}) {
   return (
     <div
-      className="grid"
+      className="relative grid"
       data-resume-items-list="true"
       style={{ gap: `${settings.itemGap}em` }}
     >
@@ -199,6 +347,7 @@ function TimelineItems({
         <TimelineItem
           key={item.id}
           item={item}
+          kind={kind}
           t={t}
           settings={settings}
           diff={itemDiffById?.get(item.id)}
@@ -216,12 +365,15 @@ function SimpleListContent({
   settings,
   t,
 }: {
-  diff?: ResumeDraftDiff;
+  diff?: ItemDiffLookup;
   item: RenderableSectionItem;
   layout: ResumeListItemLayout;
   settings: ResumeTemplateSettings;
   t: AppMessages;
 }) {
+  const structuralDiff = diff?.structuralDiff;
+  const contentDiffs = getRenderableFieldDiffs(diff, "simple_list", "content");
+  const markerDiff = structuralDiff ?? contentDiffs.at(-1);
   return (
     <div
       className="resume-tone-body"
@@ -234,17 +386,17 @@ function SimpleListContent({
       <div
         className={cn(
           "resume-item resume-rich-text min-w-0",
-          getDiffClassName(diff),
+          getDiffClassName(structuralDiff),
+          !structuralDiff && contentDiffs.length > 0 && "resume-diff-anchor",
         )}
         data-resume-item-id={item.id}
-        data-resume-diff-kind={diff?.kind}
-        data-resume-diff-label={getDiffLabel(diff, t)}
+        data-resume-diff-kind={markerDiff?.kind}
+        data-resume-diff-label={getDiffLabel(markerDiff, t)}
         data-resume-list-layout={layout}
         style={{ color: settings.bodyColor }}
-        dangerouslySetInnerHTML={{
-          __html: sanitizeRichTextHtml(item.content),
-        }}
-      />
+      >
+        <RichListDiff html={item.content} diffs={contentDiffs} />
+      </div>
     </div>
   );
 }
@@ -257,7 +409,7 @@ export function SectionItems({
   settings,
   t,
 }: {
-  itemDiffById?: Map<string, ResumeDraftDiff>;
+  itemDiffById?: Map<string, ItemDiffLookup>;
   items?: RenderableSectionItem[];
   layout: ResumeTemplateLayout;
   section: RenderableResumeSection;
@@ -286,6 +438,7 @@ export function SectionItems({
   return (
     <TimelineItems
       items={visibleItems}
+      kind={section.kind}
       t={t}
       settings={settings}
       itemDiffById={itemDiffById}
