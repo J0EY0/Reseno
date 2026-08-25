@@ -11,7 +11,7 @@ import {
 import type { WorkspaceView } from "@/types/resume";
 
 /**
- * Freezes prepared or last-known-good data for this mount, then removes the
+ * Freezes prepared or latest committed data for this mount, then removes the
  * one-time token from browser history before paint.
  */
 export function useWorkspaceLateralRouteData<View extends WorkspaceView>(
@@ -56,7 +56,10 @@ export function useRememberWorkspaceLateralRouteData<
 >(view: View, data: WorkspaceLateralRouteDataMap[View] | null) {
   useLayoutEffect(() => {
     if (data) {
-      rememberWorkspaceLateralRoute({ data, view } as PreparedWorkspaceRoute<View>);
+      rememberWorkspaceLateralRoute({
+        data,
+        view,
+      } as PreparedWorkspaceRoute<View>);
     }
   }, [data, view]);
 }

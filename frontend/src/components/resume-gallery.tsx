@@ -6,6 +6,7 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { ResumeGalleryGrid } from "@/components/resume-gallery-grid";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 import { useResumeGalleryController } from "@/components/use-resume-gallery-controller";
@@ -129,6 +130,13 @@ export function ResumeGallery({
           </>
         }
       />
+      {gallery.paginatedResumes.length === 0 ? (
+        <Empty className="min-h-[390px]">
+          <EmptyDescription className="font-medium">
+            {resumes.length === 0 ? t.emptyResumes : t.emptyResumeSearch}
+          </EmptyDescription>
+        </Empty>
+      ) : null}
       <div
         ref={gridRef}
         className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
@@ -136,7 +144,6 @@ export function ResumeGallery({
         <ResumeGalleryGrid
           t={t}
           resumes={gallery.paginatedResumes}
-          totalResumeCount={resumes.length}
           templates={templates}
           isSelecting={gallery.isSelecting}
           selectedIdSet={gallery.selectedIdSet}

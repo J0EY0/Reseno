@@ -1,67 +1,91 @@
 import json
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from datetime import date
+from typing import Any, cast
 
-from app.schemas.agent import (
-    AgentChatMessage,
-    AgentChatRequest,
-    AgentResumeEditSuggestion,
-    AgentTurnWorkspaceSnapshots,
-)
+from app.schemas.agent import AgentChatRequest
 from app.services.llm import (
     AgentLlmConfig,
     LlmRequestError,
     supports_native_attachment,
 )
-from app.services.llm.common import request_max_output_tokens
+from app.services.llm.output_budget import (
+    MIN_CONTEXT_INPUT_TOKENS,
+    compaction_headroom_tokens,
+    estimate_prompt_tokens,
+    input_estimation_safety_tokens,
+)
 from app.services.llm.types import (
-    LlmAssistantInputMessage,
     LlmContent,
     LlmContentPart,
     LlmInputMessage,
+    LlmPrompt,
     LlmUserMessage,
 )
-from app.services.resume_document_contract import ITEM_STRING_FIELDS_BY_KIND
 
 from ..attachments import (
     AgentAttachmentError,
     attachment_content_part,
+    attachment_text,
     current_request_attachments,
     load_agent_attachment,
 )
-from ..executor import (
-    _agent_file_context,
-    _current_prompt,
-)
+from ..contracts import agent_tool_specs_for_request
+from ..draft import DraftTransaction
+from ..evidence import historical_prompt_evidence_ref
 from ..localization import agent_text
-from ..policy import capability_policy_for_request
 from ..preferences import (
     execution_profile_for_request,
     execution_profile_prompt,
 )
-from ..privacy import resume_hidden_terms, sanitize_agent_resume, sanitize_agent_value
-from ..prompts import (
-    CORE_POLICY_PROMPT,
-    EDIT_OPERATION_GUIDE,
-    STREAMING_FINAL_RESPONSE_PROMPT,
-    SYSTEM_PROMPT,
+from ..privacy import (
+    resume_hidden_terms,
+    sanitize_agent_resume,
+    sanitize_agent_text,
+    sanitize_agent_value,
 )
-from ..request_context import active_resume
-from ..target_context import target_context_from_request
-from ..tools.registry import agent_tool_schemas_for_names
+from ..prompt import AGENT_PROMPT
 
-AgentMessageMode = Literal["tools", "streaming_final"]
 CONTEXT_COMPRESSION_RATIO = 0.85
 CONTEXT_CHECKPOINT_TARGET_RATIO = 0.70
-CONTEXT_SAFETY_MARGIN_RATIO = 0.01
-MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 256
+LATEST_TOOL_EXCERPT_CHARS = 800
 DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
-# Native media is opaque at this provider-neutral layer. Image billing varies
-# by resize/tile policy, so 4K is a conservative high-detail reserve without
-# treating transport bytes as text. Documents reuse the existing 32K complete-
-# document budget. Both values are intentionally fixed and additive.
-NATIVE_IMAGE_TOKEN_RESERVE = 4_096
-NATIVE_FILE_TOKEN_RESERVE = DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET
+CHECKPOINT_CONTEXT_TOKEN_BUDGET = 1_200
+CHECKPOINT_EVENT_TEXT_TOKEN_BUDGET = 192
+
+
+def _current_prompt(request: AgentChatRequest) -> str:
+    return request.message.text.strip()
+
+
+def _agent_file_context(
+    session_id: str,
+    files: list[dict[str, Any]],
+    *,
+    hidden_terms: tuple[str, ...] = (),
+) -> list[dict[str, str]]:
+    file_context: list[dict[str, str]] = []
+    for file in files:
+        content = attachment_text(session_id, file)
+        if not content:
+            continue
+        filename = file.get("filename")
+        media_type = file.get("mediaType")
+        file_context.append(
+            {
+                "filename": sanitize_agent_text(
+                    str(filename or "Attachment"),
+                    hidden_terms=hidden_terms,
+                ),
+                "mediaType": str(media_type or ""),
+                "excerpt": sanitize_agent_text(
+                    content,
+                    hidden_terms=hidden_terms,
+                ).strip(),
+            },
+        )
+    return file_context
 
 
 @dataclass(frozen=True)
@@ -70,7 +94,7 @@ class _ContextBudget:
 
     input_tokens: int
     trigger_tokens: int
-    output_reserve_tokens: int
+    compaction_headroom_tokens: int
     tool_schema_tokens: int
     safety_margin_tokens: int
 
@@ -80,8 +104,17 @@ class _ConversationProjection:
     """Conversation state projected behind the public message-builder seam."""
 
     exact_messages: list[LlmInputMessage]
-    summary: str | None
+    stable_prefix_message_counts: tuple[int, ...]
+    checkpoint: dict[str, Any] | None
     state: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ConversationEntries:
+    """Exact history envelopes and stable product-event prefix counts."""
+
+    messages: list[LlmInputMessage]
+    stable_prefix_message_counts: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -96,11 +129,19 @@ class AgentPromptLimits:
 def build_agent_messages(
     request: AgentChatRequest,
     config: AgentLlmConfig,
-    *,
-    mode: AgentMessageMode,
-    draft: AgentChatMessage | None = None,
-    force_attachment_text: bool = False,
 ) -> list[LlmInputMessage]:
+    """Build the model-visible transcript without provider cache metadata."""
+
+    return build_agent_prompt(
+        request,
+        config,
+    ).messages
+
+
+def build_agent_prompt(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+) -> LlmPrompt:
     """Build model messages with current-request attachments only.
 
     Original bytes are included only when the selected adapter explicitly
@@ -111,7 +152,8 @@ def build_agent_messages(
     profile = execution_profile_for_request(request)
     system_content = "\n\n".join(
         [
-            *_system_parts(mode),
+            AGENT_PROMPT,
+            f"Current date: {date.today().isoformat()}.",
             execution_profile_prompt(profile),
         ],
     )
@@ -122,18 +164,16 @@ def build_agent_messages(
         },
     ]
 
-    tool_schema_tokens = _tool_schema_token_reserve(request, config, mode=mode)
+    tool_schema_tokens = _tool_schema_token_reserve(request, config)
     hidden_terms = _request_hidden_terms(request)
     context_files, binary_parts = _current_attachment_payload(
         request,
         config,
-        force_attachment_text=force_attachment_text,
         tool_schema_tokens=tool_schema_tokens,
         hidden_terms=hidden_terms,
     )
     workspace = _workspace_context(
         request,
-        draft=draft,
         hidden_terms=hidden_terms,
     )
     current_prompt = _sanitized_text(
@@ -143,7 +183,6 @@ def build_agent_messages(
     projection = _conversation_projection(
         request,
         config=config,
-        mode=mode,
         tool_schema_tokens=tool_schema_tokens,
         hidden_terms=hidden_terms,
     )
@@ -155,31 +194,31 @@ def build_agent_messages(
         sanitized_state if isinstance(sanitized_state, dict) else {}
     )
 
-    if projection.summary is not None:
+    stable_prefix_message_counts: list[int] = []
+    if projection.checkpoint is not None:
         messages.append(
             {
                 "role": "user",
                 "content": _json_message(
-                    "conversationSummary",
-                    projection.summary,
+                    "conversationCheckpoint",
+                    projection.checkpoint,
                 ),
             },
         )
+        stable_prefix_message_counts.append(len(messages))
+    exact_start = len(messages)
     messages.extend(projection.exact_messages)
+    stable_prefix_message_counts.extend(
+        exact_start + count for count in projection.stable_prefix_message_counts
+    )
 
-    # Workspace is a per-turn compiler event. Putting its immutable snapshot
-    # immediately before the matching native user turn lets the next request
-    # replay this request byte-for-byte even when the live resume or draft has
-    # since changed. It remains user-role data, never a trusted instruction.
-    generated_workspace = _json_message("workspaceContext", workspace)
+    # The model needs one authoritative workspace: the current resume or draft.
+    # Historical turns retain dialogue and evidence references, not stale copies
+    # of the full resume.
     messages.append(
         {
             "role": "user",
-            "content": _active_workspace_content(
-                request,
-                mode=mode,
-                generated=generated_workspace,
-            ),
+            "content": _json_message("workspaceContext", workspace),
         },
     )
 
@@ -196,70 +235,15 @@ def build_agent_messages(
             ),
         },
     )
-    return messages
+    stable_prefix_message_counts.append(len(messages))
+    return LlmPrompt(
+        messages=messages,
+        stable_prefix_message_counts=tuple(stable_prefix_message_counts),
+    )
 
 
 def _json_message(name: str, value: Any) -> str:
     return json.dumps({name: value}, ensure_ascii=False, separators=(",", ":"))
-
-
-def _active_workspace_content(
-    request: AgentChatRequest,
-    *,
-    mode: AgentMessageMode,
-    generated: str,
-) -> str:
-    snapshots = request._active_workspace_snapshots
-    if snapshots is None:
-        return generated
-    if snapshots.turn_message_id != request.message.id:
-        raise LlmRequestError(
-            "The active workspace snapshot belongs to another user turn.",
-        )
-    frozen = snapshots.tools if mode == "tools" else snapshots.streaming_final
-    return frozen or generated
-
-
-def freeze_agent_workspace_snapshot(
-    request: AgentChatRequest,
-    messages: list[LlmInputMessage],
-    *,
-    mode: AgentMessageMode,
-) -> None:
-    """Freeze the canonical current workspace after prompt preparation.
-
-    Provider retries and native-file fallback must see the same compiler event
-    that the first request saw. The bundle remains request-private and is only
-    written to SQLite later, atomically with a successful assistant response.
-    """
-
-    if len(messages) < 2 or messages[-2]["role"] != "user":
-        raise LlmRequestError("The Agent workspace snapshot is missing.")
-    content = messages[-2]["content"]
-    if not isinstance(content, str) or not content.startswith('{"workspaceContext":'):
-        raise LlmRequestError("The Agent workspace snapshot is invalid.")
-
-    turn_message_id = request.message.id
-    assert turn_message_id is not None
-    existing = request._active_workspace_snapshots
-    if existing is not None and existing.turn_message_id != turn_message_id:
-        raise LlmRequestError(
-            "The active workspace snapshot belongs to another user turn.",
-        )
-    tools = existing.tools if existing is not None else None
-    streaming_final = existing.streaming_final if existing is not None else None
-    frozen = tools if mode == "tools" else streaming_final
-    if frozen is not None and frozen != content:
-        raise LlmRequestError("The Agent workspace snapshot changed during retry.")
-    if mode == "tools":
-        tools = content
-    else:
-        streaming_final = content
-    request._active_workspace_snapshots = AgentTurnWorkspaceSnapshots(
-        turnMessageId=turn_message_id,
-        tools=tools,
-        streamingFinal=streaming_final,
-    )
 
 
 def _current_turn_content(
@@ -284,68 +268,10 @@ def _current_turn_content(
     return [*parts, *binary_parts]
 
 
-def has_native_current_request_attachments(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> bool:
-    """Return whether this request would send at least one original file."""
-
-    files = _safe_current_request_attachments(request)
-    if not files:
-        return False
-    session_id = _attachment_session_id(request)
-    for file in files:
-        attachment = load_agent_attachment(session_id, file)
-        if (
-            attachment is not None
-            and attachment.kind != "image"
-            and supports_native_attachment(config, attachment.media_type)
-        ):
-            return True
-    return False
-
-
-def is_native_attachment_unsupported(error: LlmRequestError) -> bool:
-    """Classify only explicit client-side native attachment rejection.
-
-    A fallback is intentionally excluded for auth, throttling, timeouts, and
-    provider/server failures. Those errors need to remain visible as-is.
-    """
-
-    if error.status_code not in {400, 415}:
-        return False
-
-    message = str(error).lower()
-    subject_markers = (
-        "attachment",
-        "document",
-        "file_data",
-        "input_file",
-        "application/pdf",
-        "media type",
-        "mime",
-        "pdf",
-    )
-    rejection_markers = (
-        "unsupported",
-        "not supported",
-        "not allowed",
-        "invalid content",
-        "invalid media",
-        "invalid type",
-        "unknown type",
-        "unrecognized",
-    )
-    return any(marker in message for marker in subject_markers) and any(
-        marker in message for marker in rejection_markers
-    )
-
-
 def _current_attachment_payload(
     request: AgentChatRequest,
     config: AgentLlmConfig,
     *,
-    force_attachment_text: bool,
     tool_schema_tokens: int,
     hidden_terms: tuple[str, ...],
 ) -> tuple[list[dict[str, str]], list[LlmContentPart]]:
@@ -382,9 +308,7 @@ def _current_attachment_payload(
                 )
                 continue
 
-            if not force_attachment_text and supports_native_attachment(
-                config, attachment.media_type
-            ):
+            if supports_native_attachment(config, attachment.media_type):
                 binary_parts.append(
                     cast(
                         LlmContentPart,
@@ -437,55 +361,16 @@ def _attachment_session_id(request: AgentChatRequest) -> str:
     return session_id
 
 
-def _system_parts(
-    mode: AgentMessageMode,
-) -> list[str]:
-    if mode == "tools":
-        return [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
-    return [CORE_POLICY_PROMPT, STREAMING_FINAL_RESPONSE_PROMPT]
-
-
 def _workspace_context(
     request: AgentChatRequest,
     *,
-    draft: AgentChatMessage | None = None,
     hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
-    resume = active_resume(request)
-    target_context = (
-        draft.target_context
-        if draft is not None and draft.target_context is not None
-        else target_context_from_request(request)
-    )
+    resume = DraftTransaction.from_request(request).active_resume
     workspace: dict[str, Any] = {
         "responseLanguage": _locale_name(request),
-        "targetContext": target_context.model_dump(mode="json", by_alias=True)
-        if target_context is not None
-        else None,
         "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
     }
-
-    if draft is not None:
-        workspace.update(
-            {
-                # Only public HTTP(S) references participate in the inline
-                # citation protocol. User attachments and remembered target
-                # context remain available through their dedicated current
-                # request envelopes, but must never be persisted/replayed as
-                # citation excerpts merely because AgentSource permits one.
-                "citationSources": [
-                    source.model_dump(mode="json", by_alias=True)
-                    for source in draft.sources
-                    if source.source_type == "web"
-                    and isinstance(source.url, str)
-                    and source.url.strip().lower().startswith(("http://", "https://"))
-                ],
-                "draftStatusText": draft.text,
-                "draftEditCount": len(draft.edits),
-                "draftEdits": _visible_edit_summaries(draft.edits),
-                "toolContext": _visible_tool_context(draft.tools),
-            },
-        )
 
     sanitized_workspace = sanitize_agent_value(workspace, hidden_terms=hidden_terms)
     return sanitized_workspace if isinstance(sanitized_workspace, dict) else {}
@@ -504,7 +389,9 @@ def _request_hidden_terms(request: AgentChatRequest) -> tuple[str, ...]:
         dict.fromkeys(
             (
                 *resume_hidden_terms(request.resume),
-                *resume_hidden_terms(active_resume(request)),
+                *resume_hidden_terms(
+                    DraftTransaction.from_request(request).active_resume,
+                ),
             ),
         ),
     )
@@ -514,12 +401,11 @@ def _conversation_projection(
     request: AgentChatRequest,
     *,
     config: AgentLlmConfig,
-    mode: AgentMessageMode,
     tool_schema_tokens: int,
     hidden_terms: tuple[str, ...],
 ) -> _ConversationProjection:
     # A persisted checkpoint replaces exactly one authoritative history
-    # prefix. The remaining product messages stay native and ordered, which is
+    # prefix. The remaining product messages stay exact and ordered, which is
     # what lets a later request reuse the previous provider prompt prefix.
     conversation = list(request.messages)
     checkpoint = request._active_conversation_checkpoint
@@ -528,11 +414,9 @@ def _conversation_projection(
         if checkpoint is not None
         else 0
     )
-    exact_messages = _conversation_entries(
+    entries = _conversation_entries(
         conversation[checkpoint_count:],
         hidden_terms=hidden_terms,
-        workspace_snapshots=request._historical_workspace_snapshots,
-        mode=mode,
     )
     context_budget = _context_budget(
         request,
@@ -546,33 +430,33 @@ def _conversation_projection(
         request,
         token_budget=state_token_budget,
     )
-    state = _conversation_state(
-        request,
-        current_draft=current_draft,
-    )
-    summary = (
-        _sanitized_text(checkpoint.summary, hidden_terms=hidden_terms)
+    state = {"currentDraft": current_draft}
+    checkpoint_context = (
+        _checkpoint_context_value(checkpoint.summary, hidden_terms=hidden_terms)
         if checkpoint is not None
         else None
     )
-    if checkpoint is not None and not summary:
-        raise LlmRequestError("The stored conversation checkpoint is empty.")
     return _ConversationProjection(
-        exact_messages=exact_messages,
-        summary=summary,
+        exact_messages=entries.messages,
+        stable_prefix_message_counts=entries.stable_prefix_message_counts,
+        checkpoint=checkpoint_context,
         state=state,
     )
 
 
-def _conversation_state(
-    request: AgentChatRequest,
+def _checkpoint_context_value(
+    value: str,
     *,
-    current_draft: dict[str, Any] | None,
+    hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
-    return {
-        "currentDraft": current_draft,
-        "appliedActions": request.applied_actions,
-    }
+    try:
+        context = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise LlmRequestError("The stored conversation checkpoint is invalid.") from exc
+    sanitized = sanitize_agent_value(context, hidden_terms=hidden_terms)
+    if not isinstance(sanitized, dict) or not sanitized:
+        raise LlmRequestError("The stored conversation checkpoint is invalid.")
+    return sanitized
 
 
 def _checkpoint_message_count(
@@ -589,7 +473,7 @@ def _checkpoint_message_count(
 
 
 def agent_checkpoint_message_count(request: AgentChatRequest) -> int:
-    """Resolve the active summary boundary against authoritative history."""
+    """Resolve the active checkpoint boundary against authoritative history."""
 
     checkpoint = request._active_conversation_checkpoint
     if checkpoint is None:
@@ -630,13 +514,7 @@ def agent_compaction_events(
     start_count: int,
     end_count: int,
 ) -> list[dict[str, Any]]:
-    """Project one ordered history slice into safe summarizer input.
-
-    The compactor receives product-message identity and compact response state,
-    but never attachment bytes, extracted excerpts, raw tool I/O, or provider
-    continuation state. This is intentionally separate from the provider's
-    native exact-tail representation.
-    """
+    """Project history into bounded, untrusted checkpoint data."""
 
     hidden_terms = _request_hidden_terms(request)
     events: list[dict[str, Any]] = []
@@ -644,8 +522,8 @@ def agent_compaction_events(
         role = _conversation_item_role(item)
         message_id = _conversation_item_id(item)
         event: dict[str, Any] = {
-            # This identifier is only descriptive input for the private
-            # summarizer, so it must cross the same privacy boundary as text.
+            # This identifier is model-visible checkpoint data, so it must
+            # cross the same privacy boundary as text.
             # Checkpoint selection separately keeps the untouched product ID.
             "id": (
                 _sanitized_text(message_id, hidden_terms=hidden_terms)
@@ -654,19 +532,22 @@ def agent_compaction_events(
             ),
             "role": role,
         }
+        if role == "user" and message_id is not None:
+            event["evidenceRef"] = historical_prompt_evidence_ref(message_id)
         text = _conversation_item_text(item)
         if text:
             event["text"] = _sanitized_text(text, hidden_terms=hidden_terms)
-        filenames = _conversation_item_filenames(item)
-        if filenames:
+        attachments = _conversation_item_attachment_metadata(item)
+        if attachments:
             event["attachments"] = [
                 {
-                    "filename": _sanitized_text(
-                        filename,
+                    key: _sanitized_text(
+                        value,
                         hidden_terms=hidden_terms,
-                    ),
+                    )
+                    for key, value in attachment.items()
                 }
-                for filename in filenames
+                for attachment in attachments
             ]
         if role == "assistant":
             response = _conversation_item_response(item)
@@ -680,27 +561,106 @@ def agent_compaction_events(
     return events
 
 
-def sanitize_agent_compaction_text(
+def agent_checkpoint_context(
     request: AgentChatRequest,
-    text: str,
+    *,
+    end_count: int,
 ) -> str:
-    """Apply the same identity boundary to a generated checkpoint summary."""
+    """Return one deterministic, bounded checkpoint from authoritative history."""
 
-    return _sanitized_text(text, hidden_terms=_request_hidden_terms(request))
+    selected: list[dict[str, Any]] = []
+    events = agent_compaction_events(
+        request,
+        start_count=0,
+        end_count=end_count,
+    )
+    for event in reversed(events):
+        bounded = _bounded_checkpoint_event(event)
+        if bounded is None:
+            continue
+        candidate = [bounded, *selected]
+        payload = {
+            "trust": "untrusted_history_data",
+            "events": candidate,
+        }
+        if _estimated_json_tokens(payload) > CHECKPOINT_CONTEXT_TOKEN_BUDGET:
+            continue
+        selected = candidate
+
+    return json.dumps(
+        {
+            "trust": "untrusted_history_data",
+            "events": selected,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _bounded_checkpoint_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    role = event.get("role")
+    if role == "user":
+        evidence_ref = event.get("evidenceRef")
+        if not isinstance(evidence_ref, str) or not evidence_ref:
+            return None
+        bounded: dict[str, Any] = {
+            "role": "user",
+            "evidenceRef": evidence_ref,
+        }
+        text = event.get("text")
+        if isinstance(text, str) and text:
+            bounded["text"] = _truncate_to_tokens(
+                text,
+                CHECKPOINT_EVENT_TEXT_TOKEN_BUDGET,
+            )
+        attachments = event.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            bounded["attachments"] = attachments[:4]
+        return bounded
+
+    if role != "assistant":
+        return None
+    bounded = {
+        "role": "assistant",
+        "messageId": event.get("id"),
+    }
+    text = event.get("text")
+    if isinstance(text, str) and text:
+        bounded["text"] = _truncate_to_tokens(
+            text,
+            CHECKPOINT_EVENT_TEXT_TOKEN_BUDGET,
+        )
+    state = event.get("assistantResponseContext")
+    if isinstance(state, dict) and state:
+        bounded_state = {
+            key: value
+            for key, value in state.items()
+            if key not in {"edits", "sourceRefs"}
+        }
+        edits = state.get("edits")
+        if isinstance(edits, list) and edits:
+            bounded_state["edits"] = edits[:4]
+        source_refs = state.get("sourceRefs")
+        if isinstance(source_refs, list) and source_refs:
+            bounded_state["sourceRefs"] = source_refs[:8]
+        bounded["assistantResponseContext"] = bounded_state
+    return (
+        bounded
+        if "text" in bounded or "assistantResponseContext" in bounded
+        else None
+    )
 
 
 def agent_prompt_limits(
     request: AgentChatRequest,
     config: AgentLlmConfig,
-    *,
-    mode: AgentMessageMode,
 ) -> AgentPromptLimits | None:
     """Return the main prompt limits without exposing provider cache details."""
 
     budget = _context_budget(
         request,
         config,
-        tool_schema_tokens=_tool_schema_token_reserve(request, config, mode=mode),
+        tool_schema_tokens=_tool_schema_token_reserve(request, config),
     )
     if budget is None:
         return None
@@ -709,7 +669,10 @@ def agent_prompt_limits(
         trigger_tokens=budget.trigger_tokens,
         target_tokens=max(
             1,
-            int(budget.input_tokens * CONTEXT_CHECKPOINT_TARGET_RATIO),
+            int(
+                (budget.input_tokens - budget.compaction_headroom_tokens)
+                * CONTEXT_CHECKPOINT_TARGET_RATIO
+            ),
         ),
     )
 
@@ -717,109 +680,233 @@ def agent_prompt_limits(
 def estimate_agent_messages_tokens(messages: list[LlmInputMessage]) -> int:
     """Estimate text plus bounded native-media reserves, never base64 bytes."""
 
-    estimated_messages: list[dict[str, Any]] = []
-    media_tokens = 0
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            estimated_messages.append(cast(dict[str, Any], message))
-            continue
+    return estimate_prompt_tokens(LlmPrompt(messages=messages))
 
-        estimated_parts: list[dict[str, Any]] = []
-        for part in content:
-            part_type = part["type"]
-            if part_type in {"image", "file"}:
-                # Base64 is a transport encoding, not model-visible text. Keep
-                # the media metadata in the ordinary JSON estimate and account
-                # for the opaque media through one stable, bounded reserve.
-                estimated_parts.append(
-                    {key: value for key, value in part.items() if key != "data"},
-                )
-                media_tokens += (
-                    NATIVE_IMAGE_TOKEN_RESERVE
-                    if part_type == "image"
-                    else NATIVE_FILE_TOKEN_RESERVE
-                )
-            else:
-                estimated_parts.append(cast(dict[str, Any], part))
-        estimated_messages.append({**message, "content": estimated_parts})
 
-    return _estimated_json_tokens(estimated_messages) + media_tokens
+def fit_agent_model_turn_prompt(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    prompt: LlmPrompt,
+) -> LlmPrompt:
+    """Fit an appended tool transcript before one provider request.
+
+    The durable conversation checkpoint is prepared before the loop. During
+    the loop, only tool observations are appended, so old web excerpts are the
+    only large disposable payload. Preserve tool-call/result pairing, source
+    identity, the latest observation whenever it fits, and every stable prefix
+    boundary.
+    """
+
+    limits = agent_prompt_limits(request, config)
+    if limits is None:
+        return prompt
+
+    estimated_tokens = estimate_agent_messages_tokens(prompt.messages)
+    if estimated_tokens <= limits.trigger_tokens:
+        return prompt
+
+    suffix_start = (
+        prompt.stable_prefix_message_counts[-1]
+        if prompt.stable_prefix_message_counts
+        else 0
+    )
+    tool_indexes = [
+        index
+        for index, message in enumerate(prompt.messages[suffix_start:], suffix_start)
+        if message["role"] == "tool"
+    ]
+    if not tool_indexes:
+        if estimated_tokens > limits.input_tokens:
+            raise _model_turn_context_window_error()
+        return prompt
+
+    messages = deepcopy(prompt.messages)
+    latest_batch_start = max(
+        (
+            index
+            for index, message in enumerate(messages)
+            if index >= suffix_start
+            and message["role"] == "assistant"
+            and message.get("tool_calls")
+        ),
+        default=suffix_start,
+    )
+    earlier_tool_indexes = [
+        index for index in tool_indexes if index < latest_batch_start
+    ]
+    latest_tool_indexes = [
+        index for index in tool_indexes if index > latest_batch_start
+    ]
+
+    changed = False
+    for index in earlier_tool_indexes:
+        changed = _compact_tool_result_excerpts(messages[index]) or changed
+        if (
+            changed
+            and estimate_agent_messages_tokens(messages) <= limits.trigger_tokens
+        ):
+            return LlmPrompt(
+                messages=messages,
+                stable_prefix_message_counts=prompt.stable_prefix_message_counts,
+            )
+
+    estimated_tokens = estimate_agent_messages_tokens(messages)
+    for index in latest_tool_indexes:
+        if estimated_tokens <= limits.input_tokens:
+            break
+        changed = (
+            _compact_tool_result_excerpts(
+                messages[index],
+                excerpt_chars=LATEST_TOOL_EXCERPT_CHARS,
+            )
+            or changed
+        )
+        estimated_tokens = estimate_agent_messages_tokens(messages)
+    if estimated_tokens > limits.input_tokens:
+        raise _model_turn_context_window_error()
+    if not changed:
+        return prompt
+    return LlmPrompt(
+        messages=messages,
+        stable_prefix_message_counts=prompt.stable_prefix_message_counts,
+    )
+
+
+def _compact_tool_result_excerpts(
+    message: LlmInputMessage,
+    *,
+    excerpt_chars: int = 0,
+) -> bool:
+    if message["role"] != "tool":
+        return False
+    try:
+        value = json.loads(message["content"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+
+    compacted = _compact_tool_result_value(value, excerpt_chars=excerpt_chars)
+    if compacted == value:
+        return False
+    message["content"] = json.dumps(
+        compacted,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return True
+
+
+def _compact_tool_result_value(value: Any, *, excerpt_chars: int) -> Any:
+    if isinstance(value, list):
+        return [
+            _compact_tool_result_value(item, excerpt_chars=excerpt_chars)
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    excerpt = value.get("excerpt")
+    if isinstance(value.get("sourceId"), str):
+        compacted = {
+            key: value[key]
+            for key in (
+                "sourceId",
+                "title",
+                "url",
+                "sourceKind",
+                "publishedDate",
+                "validThrough",
+            )
+            if key in value
+        }
+    else:
+        compacted = {
+            key: _compact_tool_result_value(item, excerpt_chars=excerpt_chars)
+            for key, item in value.items()
+            if key not in {"excerpt", "excerptBoundary"}
+        }
+    if excerpt_chars > 0 and isinstance(excerpt, str) and excerpt:
+        compacted["excerpt"] = excerpt[:excerpt_chars]
+        if len(excerpt) > excerpt_chars:
+            compacted["excerptTruncated"] = True
+    return compacted
+
+
+def _model_turn_context_window_error() -> LlmRequestError:
+    return LlmRequestError(
+        "Tool observations exceed the selected model context window. "
+        "Start a new conversation or choose a model with a larger context window.",
+    )
 
 
 def _conversation_entries(
     conversation: list[Any],
     *,
     hidden_terms: tuple[str, ...],
-    workspace_snapshots: dict[str, AgentTurnWorkspaceSnapshots] | None = None,
-    mode: AgentMessageMode = "streaming_final",
-) -> list[LlmInputMessage]:
+) -> _ConversationEntries:
     entries: list[LlmInputMessage] = []
+    stable_prefix_message_counts: list[int] = []
     for item in conversation:
+        item_entry_count = len(entries)
         role = _conversation_item_role(item)
         text = _conversation_item_text(item)
         response = _conversation_item_response(item) if role == "assistant" else None
         response_state = _assistant_response_state(response) if response else {}
         if role == "assistant":
+            assistant_context: dict[str, Any] = {}
             if text:
-                entries.append(
-                    LlmAssistantInputMessage(
-                        role="assistant",
-                        content=_sanitized_text(
-                            text,
-                            hidden_terms=hidden_terms,
-                        ),
-                    ),
-                )
+                assistant_context["text"] = text
             if response_state:
-                response_state["messageId"] = _conversation_item_id(item)
+                assistant_context.update(response_state)
+            if assistant_context:
+                assistant_context["messageId"] = _conversation_item_id(item)
                 entries.append(
                     LlmUserMessage(
                         role="user",
                         content=_sanitized_text(
                             _json_message(
                                 "assistantResponseContext",
-                                response_state,
+                                assistant_context,
                             ),
                             hidden_terms=hidden_terms,
                         ),
                     ),
                 )
+            if len(entries) > item_entry_count:
+                stable_prefix_message_counts.append(len(entries))
             continue
         message_id = _conversation_item_id(item)
-        snapshot = (
-            workspace_snapshots.get(message_id)
-            if workspace_snapshots is not None and message_id is not None
-            else None
-        )
-        snapshot_content = (
-            snapshot.tools
-            if snapshot is not None and mode == "tools"
-            else (
-                snapshot.streaming_final
-                if snapshot is not None and mode == "streaming_final"
+        if text:
+            sanitized_text = _sanitized_text(text, hidden_terms=hidden_terms)
+            evidence_ref = (
+                historical_prompt_evidence_ref(message_id)
+                if message_id is not None
                 else None
             )
-        )
-        if snapshot_content:
             entries.append(
                 LlmUserMessage(
                     role="user",
-                    content=_sanitized_text(
-                        snapshot_content,
-                        hidden_terms=hidden_terms,
+                    content=sanitized_text,
+                ),
+            )
+            if evidence_ref is not None:
+                # The plain historical turn is byte-identical to the current
+                # turn that the provider saw originally. Mark that cacheable
+                # boundary before appending new evidence metadata, then bind
+                # the opaque reference to the immediately preceding user text.
+                stable_prefix_message_counts.append(len(entries))
+                entries.append(
+                    LlmUserMessage(
+                        role="user",
+                        content=_json_message(
+                            "historicalUserEvidence",
+                            {
+                                "appliesToPreviousUserMessage": True,
+                                "evidenceRef": evidence_ref,
+                            },
+                        ),
                     ),
-                ),
-            )
-        if text:
-            entries.append(
-                LlmUserMessage(
-                    role="user",
-                    content=_sanitized_text(text, hidden_terms=hidden_terms),
-                ),
-            )
-        filenames = _conversation_item_filenames(item)
-        if filenames:
+                )
+        attachments = _conversation_item_attachment_metadata(item)
+        if attachments:
             # Historical binary data is never replayed. This adjacent metadata
             # envelope preserves file identity for both attachment-only turns
             # and ordinary text+attachment turns without retaining bytes,
@@ -830,14 +917,19 @@ def _conversation_entries(
                     content=_sanitized_text(
                         _json_message(
                             "historicalAttachments",
-                            [{"filename": filename} for filename in filenames],
+                            attachments,
                         ),
                         hidden_terms=hidden_terms,
                     ),
                 ),
             )
+        if len(entries) > item_entry_count:
+            stable_prefix_message_counts.append(len(entries))
 
-    return entries
+    return _ConversationEntries(
+        messages=entries,
+        stable_prefix_message_counts=tuple(stable_prefix_message_counts),
+    )
 
 
 def _sanitized_text(value: str, *, hidden_terms: tuple[str, ...]) -> str:
@@ -852,25 +944,30 @@ def _append_unique(items: list[Any], value: Any) -> bool:
     return True
 
 
-def _conversation_item_filenames(item: Any) -> list[str]:
+def _conversation_item_attachment_metadata(
+    item: Any,
+) -> list[dict[str, str]]:
     files = item.get("files") if isinstance(item, dict) else getattr(item, "files", [])
     if not isinstance(files, list):
         return []
 
-    filenames: list[str] = []
+    attachments: list[dict[str, str]] = []
     for file in files:
-        value = (
-            file.get("filename")
-            if isinstance(file, dict)
-            else getattr(file, "filename", None)
-        )
-        if isinstance(value, str) and value.strip():
-            _append_unique(filenames, value.strip())
-    return filenames
+        metadata = {
+            key: value.strip()
+            for key in ("id", "filename", "kind")
+            for value in [
+                file.get(key) if isinstance(file, dict) else getattr(file, key, None)
+            ]
+            if isinstance(value, str) and value.strip()
+        }
+        if metadata and metadata not in attachments:
+            attachments.append(metadata)
+    return attachments
 
 
 def _compact_source_reference(source: dict[str, Any]) -> dict[str, str]:
-    """Keep citation identity across turns without replaying source content."""
+    """Keep source identity across turns without replaying source content."""
 
     reference = {
         key: value.strip()
@@ -898,23 +995,28 @@ def _current_draft_state(
     if draft is None:
         return None
 
-    return {
+    state: dict[str, Any] = {
         "id": draft.id,
         "status": draft.status,
         "sourceMessageId": draft.source_message_id,
-        "createdAt": draft.created_at,
-        "updatedAt": draft.updated_at,
         "editCount": draft.edit_count,
-        "edits": _compact_response_edits(
-            draft.edits,
-            token_budget=token_budget,
-        ),
-        "diffs": _compact_draft_diffs(
-            draft.diffs,
-            token_budget=token_budget,
-        ),
-        "resumeOutline": _compact_resume_outline(draft.resume),
+        "edits": [],
+        "diffs": [],
     }
+    collections = (
+        ("edits", _compact_response_edits(draft.edits, token_budget=None)),
+        ("diffs", _compact_draft_diffs(draft.diffs)),
+    )
+    for key, values in collections:
+        for value in values:
+            candidate = {**state, key: [*state[key], value]}
+            if (
+                token_budget is not None
+                and _estimated_json_tokens(candidate) > token_budget
+            ):
+                break
+            state = candidate
+    return state
 
 
 def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
@@ -942,15 +1044,12 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
         draft_status = _string_value(draft.get("status"))
         if draft_status:
             state["draftStatus"] = draft_status
-    actions = _string_list(response.get("actions"))
-    if actions:
-        state["actions"] = actions
     if isinstance(tools, list) and tools:
         state["toolCount"] = len(tools)
     if isinstance(sources, list) and sources:
         state["sourceCount"] = len(sources)
     if source_refs:
-        # Preserve compact citation identity across compression so later turns
+        # Preserve compact source identity across compression so later turns
         # can distinguish grounded evidence from unsupported recollection.
         state["sourceRefs"] = source_refs
     return state
@@ -1000,8 +1099,6 @@ def _compact_response_edits(
 
 def _compact_draft_diffs(
     value: Any,
-    *,
-    token_budget: int | None,
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1025,100 +1122,10 @@ def _compact_draft_diffs(
             if text:
                 diff[key] = text
 
-        before = _compact_unknown_value(item.get("before"), token_budget)
-        after = _compact_unknown_value(item.get("after"), token_budget)
-        if before:
-            diff["before"] = before
-        if after:
-            diff["after"] = after
-
         if diff:
-            candidate = [*diffs, diff]
-            if (
-                token_budget is not None
-                and diffs
-                and _estimated_json_tokens(candidate) > token_budget
-            ):
-                break
             diffs.append(diff)
 
     return diffs
-
-
-def _compact_unknown_value(value: Any, token_budget: int | None) -> str:
-    if value is None:
-        return ""
-
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-    return _truncate_to_tokens(text.strip(), token_budget)
-
-
-def _compact_resume_outline(resume: Any) -> dict[str, Any]:
-    if not isinstance(resume, dict):
-        return {}
-
-    basic = resume.get("basic")
-    basic_data = basic if isinstance(basic, dict) else {}
-    sections_value = resume.get("sections")
-    sections = sections_value if isinstance(sections_value, list) else []
-
-    return {
-        "schemaVersion": resume.get("schemaVersion"),
-        "basic": {
-            "headline": _string_value(basic_data.get("headline")),
-            "hasSummary": bool(_string_value(basic_data.get("summary"))),
-        },
-        "basicFieldStatus": sanitize_agent_resume(resume).get("basicFieldStatus", {}),
-        "sectionCount": len(sections),
-        "sections": [_compact_section_outline(section) for section in sections],
-    }
-
-
-def _compact_section_outline(section: Any) -> dict[str, Any]:
-    if not isinstance(section, dict):
-        return {}
-
-    items = section.get("items")
-    item_list = items if isinstance(items, list) else []
-    kind = _string_value(section.get("kind"))
-
-    return {
-        "id": _string_value(section.get("id")),
-        "kind": kind,
-        "title": _string_value(section.get("title")),
-        "itemCount": len(item_list),
-        "items": [
-            _compact_item_outline(item, section_kind=kind) for item in item_list[:3]
-        ],
-    }
-
-
-def _compact_item_outline(
-    item: Any,
-    *,
-    section_kind: str,
-) -> dict[str, str]:
-    if not isinstance(item, dict):
-        return {}
-
-    outline = {"id": _string_value(item.get("id"))}
-    visible_field_count = 0
-    for field in ITEM_STRING_FIELDS_BY_KIND.get(section_kind, ()):
-        value = _string_value(item.get(field))
-        if not value:
-            continue
-        compact_value = " ".join(value.split())
-        outline[field] = (
-            compact_value if len(compact_value) <= 160 else f"{compact_value[:157]}..."
-        )
-        visible_field_count += 1
-        if visible_field_count >= 3:
-            break
-    return outline
 
 
 def _conversation_item_role(item: Any) -> str:
@@ -1178,29 +1185,41 @@ def _context_budget(
     if window_tokens is None:
         return None
 
-    # Adapters apply a default output cap when max_tokens is unset. Reuse that
-    # exact value so context planning cannot silently spend the output reserve.
-    output_reserve_tokens = max(0, request_max_output_tokens(config))
-    safety_margin_tokens = max(
-        MIN_CONTEXT_SAFETY_MARGIN_TOKENS,
-        int(window_tokens * CONTEXT_SAFETY_MARGIN_RATIO),
-    )
+    # Dispatch and the deterministic context transform use the same bounded
+    # estimator reserve. A prepared prompt must remain valid when the concrete
+    # provider request is assembled.
+    safety_margin_tokens = input_estimation_safety_tokens(window_tokens)
     input_tokens = (
         window_tokens
-        - output_reserve_tokens
         - tool_schema_tokens
         - safety_margin_tokens
+        # A local/custom runtime shares one total context. Retain at least one
+        # token for its dynamically clamped output; official cloud limits are
+        # already explicit input ceilings and need no such deduction.
+        - (1 if config.provider_kind != "cloud" else 0)
     )
     if input_tokens <= 0:
         raise LlmRequestError(
             "The selected model context window is too small after reserving "
-            "output, tool definitions, and runtime safety margin.",
+            "tool definitions and runtime input-estimation safety margin.",
         )
+
+    # The 16K value is product headroom for earlier context folding, not provider
+    # output context. Preserve it where possible without reducing the hard
+    # accepted-input ceiling or leaving less than a useful 4K planning region.
+    compaction_headroom = min(
+        compaction_headroom_tokens(config),
+        max(0, input_tokens - MIN_CONTEXT_INPUT_TOKENS),
+    )
+    compaction_input_tokens = input_tokens - compaction_headroom
 
     return _ContextBudget(
         input_tokens=input_tokens,
-        trigger_tokens=max(1, int(input_tokens * CONTEXT_COMPRESSION_RATIO)),
-        output_reserve_tokens=output_reserve_tokens,
+        trigger_tokens=max(
+            1,
+            int(compaction_input_tokens * CONTEXT_COMPRESSION_RATIO),
+        ),
+        compaction_headroom_tokens=compaction_headroom,
         tool_schema_tokens=tool_schema_tokens,
         safety_margin_tokens=safety_margin_tokens,
     )
@@ -1276,16 +1295,19 @@ def _context_window_tokens(
 def _tool_schema_token_reserve(
     request: AgentChatRequest,
     config: AgentLlmConfig,
-    *,
-    mode: AgentMessageMode,
 ) -> int:
-    """Estimate only schemas that the same frozen policy exposes this turn."""
+    """Estimate only schemas exposed to the model for this turn."""
 
-    if mode != "tools" or not config.supports_tools:
+    if not config.supports_tools:
         return 0
 
-    policy = capability_policy_for_request(request)
-    schemas = agent_tool_schemas_for_names(policy.allowed_tools)
+    schemas = [
+        spec.schema
+        for spec in agent_tool_specs_for_request(
+            request,
+            include_web_tools=not config.use_native_web_search,
+        )
+    ]
     return _estimated_json_tokens(schemas) if schemas else 0
 
 
@@ -1329,143 +1351,6 @@ def _truncate_to_tokens(text: str, token_budget: int | None) -> str:
             high = mid - 1
 
     return f"{text[:low].rstrip()}…"
-
-
-def _visible_edit_summaries(
-    edits: list[AgentResumeEditSuggestion],
-) -> list[dict[str, str]]:
-    summaries: list[dict[str, str]] = []
-    for edit in edits:
-        summary: dict[str, str] = {}
-        if edit.title.strip():
-            summary["title"] = edit.title.strip()
-        if edit.reason.strip():
-            summary["reason"] = edit.reason.strip()
-        if summary:
-            summaries.append(summary)
-
-    return summaries
-
-
-def _visible_tool_context(tools: list[Any]) -> dict[str, Any]:
-    web_searches: list[dict[str, Any]] = []
-    resume_analyses: list[dict[str, Any]] = []
-    for tool in tools:
-        if getattr(tool, "state", "") != "output-available":
-            continue
-
-        output = getattr(tool, "output", None)
-        if not isinstance(output, dict):
-            continue
-
-        title = getattr(tool, "title", "")
-        if title == "web_search":
-            search_context = _visible_web_search_context(output)
-            if search_context:
-                web_searches.append(search_context)
-        elif title == "resume_analysis":
-            analysis_context = _visible_resume_analysis_context(output)
-            if analysis_context:
-                resume_analyses.append(analysis_context)
-
-    context: dict[str, Any] = {}
-    if web_searches:
-        context["webSearch"] = web_searches
-    if resume_analyses:
-        context["resumeAnalysis"] = resume_analyses
-    return context
-
-
-def _visible_web_search_context(output: dict[str, Any]) -> dict[str, Any]:
-    context: dict[str, Any] = {}
-    for key in ("purpose", "query"):
-        text = _string_value(output.get(key))
-        if text:
-            context[key] = text
-
-    for key in ("timedOut", "partial"):
-        value = output.get(key)
-        if isinstance(value, bool):
-            context[key] = value
-
-    queries = _string_list(output.get("queries"))[:5]
-    if queries:
-        context["queries"] = queries
-
-    results = _visible_web_search_results(output.get("results"))
-    if results:
-        context["results"] = results
-    else:
-        single_result = _visible_web_search_result(output)
-        if single_result:
-            context["results"] = [single_result]
-
-    return context
-
-
-def _visible_web_search_results(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-
-    results: list[dict[str, str]] = []
-    for item in value[:10]:
-        result = _visible_web_search_result(item)
-        if result:
-            results.append(result)
-
-    return results
-
-
-def _visible_web_search_result(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-
-    result: dict[str, str] = {}
-    for key in ("title", "url", "excerpt", "sourceKind"):
-        text = _string_value(value.get(key))
-        if text:
-            result[key] = _truncate_to_tokens(text, 180 if key == "excerpt" else 80)
-
-    return result
-
-
-def _visible_resume_analysis_context(output: dict[str, Any]) -> dict[str, Any]:
-    context: dict[str, Any] = {}
-    matched_keywords = _string_list(output.get("matchedKeywords"))[:8]
-    missing_keywords = _string_list(output.get("missingKeywords"))[:8]
-    empty_section_ids = _string_list(output.get("emptySectionIds"))[:8]
-
-    if matched_keywords:
-        context["matchedKeywords"] = matched_keywords
-    if missing_keywords:
-        context["missingKeywords"] = missing_keywords
-    if empty_section_ids:
-        context["emptySectionIds"] = empty_section_ids
-
-    target_fit = output.get("targetFit")
-    if isinstance(target_fit, dict):
-        context["targetFit"] = _visible_target_fit_context(target_fit)
-
-    return context
-
-
-def _visible_target_fit_context(target_fit: dict[str, Any]) -> dict[str, Any]:
-    context: dict[str, Any] = {}
-    for key in ("hasTargetContext", "score"):
-        value = target_fit.get(key)
-        if isinstance(value, (bool, int, float)) and not isinstance(value, str):
-            context[key] = value
-
-    target_role = _string_value(target_fit.get("targetRole"))
-    if target_role:
-        context["targetRole"] = target_role
-
-    for key in ("recommendedTargets", "warnings"):
-        value = target_fit.get(key)
-        if isinstance(value, list):
-            context[key] = value[:6]
-
-    return context
 
 
 def _locale_name(request: AgentChatRequest) -> str:

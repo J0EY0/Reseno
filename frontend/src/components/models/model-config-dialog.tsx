@@ -66,6 +66,7 @@ export function ModelConfigDialog({
     >
       <form
         ref={formRef}
+        noValidate
         className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
         onSubmit={(event) => void handleSubmit(event)}
       >
@@ -79,12 +80,14 @@ export function ModelConfigDialog({
         </DialogHeader>
 
         <FieldGroup
-          aria-busy={!controller.providersLoaded}
+          aria-busy={controller.modelOptionsLoading}
           className="min-h-0 flex-1 gap-5 overflow-y-auto overscroll-contain px-6 py-6"
         >
-          {!controller.providersLoaded ? (
+          {controller.modelOptionsLoading ? (
             <span className="sr-only" role="status">
-              {messages.modelProvidersLoading}
+              {controller.providersLoaded
+                ? messages.fetchingModels
+                : messages.modelProvidersLoading}
             </span>
           ) : null}
           <ModelConfigProviderFields
@@ -108,6 +111,7 @@ export function ModelConfigDialog({
             disabled={
               controller.submitting ||
               controller.discovering ||
+              controller.modelOptionsLoading ||
               !controller.selectedProvider
             }
           >

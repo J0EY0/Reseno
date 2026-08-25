@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from copy import deepcopy
+from dataclasses import replace
 from typing import Any
+
+from app.services.thinking import ThinkingControl
 
 from ..common import (
     ANTHROPIC_VERSION,
@@ -9,16 +13,17 @@ from ..common import (
     async_post_json,
     async_stream_json,
     close_async_stream,
+    make_web_source,
     map_stop_reason,
     message_content_parts,
     message_content_text,
     parsed_tool_call,
     provider_base_url,
-    request_max_output_tokens,
     system_and_messages,
     tool_function,
 )
 from ..errors import LlmRequestError
+from ..output_budget import anthropic_request_output_tokens
 from ..tool_schema import portable_tool_schema
 from ..types import (
     AgentLlmConfig,
@@ -27,6 +32,25 @@ from ..types import (
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
+    LlmUsage,
+    LlmWebSource,
+)
+
+_ANTHROPIC_OFFICIAL_BASE_URL = "https://api.anthropic.com/v1"
+_ANTHROPIC_LEGACY_MIN_THINKING_TOKENS = 1_024
+_ANTHROPIC_AUTO_LEGACY_THINKING_CEILING_TOKENS = 16_000
+_ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT = 4
+_ANTHROPIC_WEB_TOOLS = (
+    {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "allowed_callers": ["direct"],
+    },
+    {
+        "type": "web_fetch_20250910",
+        "name": "web_fetch",
+        "citations": {"enabled": True},
+    },
 )
 
 
@@ -43,7 +67,7 @@ async def complete(
     """Call Anthropic Messages and require visible text."""
 
     payload = await _post_messages(config, messages)
-    message = _message_from_payload(payload)
+    message = _message_from_payload(payload, model=config.model)
     if message.content:
         return message
 
@@ -58,7 +82,7 @@ async def complete_tool_call(
     """Ask Anthropic Messages to choose zero or more tools."""
 
     payload = await _post_messages(config, messages, tools)
-    return _message_from_payload(payload)
+    return _message_from_payload(payload, model=config.model)
 
 
 async def stream_tool_call(
@@ -95,13 +119,86 @@ async def _stream_messages(
     messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
-    payload = {**_payload(config, messages, tools), "stream": True}
-    content_parts: list[str] = []
+    continuation_messages = list(messages)
+    content_blocks: list[dict[str, Any]] = []
     reasoning_parts: list[str] = []
+    usage: LlmUsage | None = None
+
+    for continuation_count in range(
+        _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT + 1,
+    ):
+        terminal: LlmAssistantMessage | None = None
+        events = _stream_messages_once(config, continuation_messages, tools)
+        try:
+            async for event in events:
+                if event.type == "done":
+                    terminal = event.message
+                    continue
+                yield event
+        finally:
+            await close_async_stream(events)
+
+        if terminal is None:
+            raise LlmRequestError("Model provider stream ended before completion.")
+        state_blocks = _content_blocks_from_state(
+            terminal.provider_state,
+            current_model=config.model,
+        )
+        content_blocks.extend(state_blocks)
+        if terminal.reasoning:
+            reasoning_parts.append(terminal.reasoning)
+        usage = _sum_usage(usage, terminal.usage)
+
+        if terminal.stop_reason != "unknown":
+            content, sources = _text_and_sources(content_blocks)
+            yield LlmStreamEvent(
+                type="done",
+                message=replace(
+                    terminal,
+                    content=content,
+                    reasoning="".join(reasoning_parts).strip(),
+                    usage=usage,
+                    provider_state=_content_blocks_provider_state(
+                        content_blocks,
+                        model=config.model,
+                    ),
+                    sources=sources,
+                ),
+            )
+            return
+
+        if continuation_count == _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT:
+            raise LlmRequestError(
+                "Anthropic server tool exceeded its continuation limit.",
+            )
+        continuation_messages.append(
+            {
+                "role": "assistant",
+                "content": terminal.content or None,
+                "provider_state": terminal.provider_state,
+            },
+        )
+        yield LlmStreamEvent(type="activity")
+
+    raise AssertionError("unreachable")
+
+
+async def _stream_messages_once(
+    config: AgentLlmConfig,
+    messages: list[LlmInputMessage],
+    tools: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[LlmStreamEvent]:
+    payload = {
+        **_payload(config, messages, tools),
+        "stream": True,
+    }
+    reasoning_parts: list[str] = []
+    content_blocks_by_index: dict[int, dict[str, Any]] = {}
     thinking_blocks_by_index: dict[int, dict[str, Any]] = {}
     tool_inputs_by_index: dict[int, dict[str, Any]] = {}
     response_id: str | None = None
     stop_reason: LlmStopReason = "unknown"
+    raw_stop_reason = ""
     usage: dict[str, Any] = {}
     provider_stream = async_stream_json(
         f"{provider_base_url(config.base_url)}/messages",
@@ -113,6 +210,14 @@ async def _stream_messages(
     try:
         async for event in provider_stream:
             event_type = str(event.get("type") or "")
+            if event_type == "ping":
+                # A provider heartbeat is observable request activity even when
+                # adaptive thinking is omitted from the visible stream. Passing
+                # it through prevents the shared idle timer from aborting a
+                # healthy long-running reasoning turn.
+                yield LlmStreamEvent(type="activity")
+                continue
+
             if event_type == "message_start":
                 message = event.get("message")
                 if not isinstance(message, dict):
@@ -132,15 +237,41 @@ async def _stream_messages(
                 index = _content_block_index(event)
                 thinking_block = _thinking_block(block)
                 if thinking_block:
-                    thinking_blocks_by_index[index] = thinking_block
+                    preserved_block = deepcopy(block)
+                    content_blocks_by_index[index] = preserved_block
+                    thinking_blocks_by_index[index] = preserved_block
                     if thinking_block.get("type") == "redacted_thinking":
                         yield LlmStreamEvent(type="activity")
                     continue
-                if block.get("type") != "tool_use":
+                block_type = block.get("type")
+                if block_type == "text":
+                    content_blocks_by_index[index] = deepcopy(block)
                     continue
-                if tools is None:
+                if block_type in {
+                    "web_search_tool_result",
+                    "web_fetch_tool_result",
+                }:
+                    if not config.use_native_web_search:
+                        raise LlmRequestError(
+                            "Model provider returned an unexpected server tool result.",
+                        )
+                    content_blocks_by_index[index] = deepcopy(block)
+                    yield LlmStreamEvent(type="activity")
+                    continue
+                if block_type not in {"tool_use", "server_tool_use"}:
+                    raise LlmRequestError(
+                        "Model provider returned invalid assistant content.",
+                    )
+                if block_type == "tool_use" and tools is None:
                     raise LlmRequestError(
                         "Model provider returned an unexpected tool call.",
+                    )
+                if block_type == "server_tool_use" and (
+                    not config.use_native_web_search
+                    or block.get("name") not in {"web_search", "web_fetch"}
+                ):
+                    raise LlmRequestError(
+                        "Model provider returned an unexpected server tool call.",
                     )
                 tool_id = str(block.get("id") or "")
                 name = str(block.get("name") or "").strip()
@@ -151,9 +282,11 @@ async def _stream_messages(
                 tool_inputs_by_index[index] = {
                     "id": tool_id,
                     "name": name,
+                    "type": block_type,
                     "raw_parts": [],
                     "closed": False,
                 }
+                content_blocks_by_index[index] = deepcopy(block)
                 yield LlmStreamEvent(type="activity")
                 continue
 
@@ -165,8 +298,23 @@ async def _stream_messages(
                 if delta_type == "text_delta":
                     text = delta.get("text")
                     if isinstance(text, str) and text:
-                        content_parts.append(text)
+                        block = content_blocks_by_index.setdefault(
+                            _content_block_index(event),
+                            {"type": "text", "text": ""},
+                        )
+                        block["text"] = str(block.get("text") or "") + text
                         yield LlmStreamEvent(type="text_delta", delta=text)
+                    continue
+                if delta_type == "citations_delta":
+                    citation = delta.get("citation")
+                    block = content_blocks_by_index.get(
+                        _content_block_index(event),
+                    )
+                    if isinstance(citation, dict) and block is not None:
+                        citations = block.setdefault("citations", [])
+                        if isinstance(citations, list):
+                            citations.append(citation)
+                            yield LlmStreamEvent(type="activity")
                     continue
                 if delta_type == "thinking_delta":
                     thinking = delta.get("thinking")
@@ -225,10 +373,11 @@ async def _stream_messages(
                 )
                 has_stop_reason = stop_reason_value is not None
                 if has_stop_reason:
+                    raw_stop_reason = str(stop_reason_value)
                     stop_reason = map_stop_reason(stop_reason_value)
                 event_usage = event.get("usage")
                 if isinstance(event_usage, dict):
-                    usage.update(event_usage)
+                    _merge_usage(usage, event_usage)
                 if has_stop_reason or event_usage:
                     yield LlmStreamEvent(type="activity")
                 continue
@@ -239,8 +388,25 @@ async def _stream_messages(
             if event_type != "message_stop":
                 continue
 
-            if stop_reason == "unknown" or (
-                tool_inputs_by_index and stop_reason == "stop"
+            if any(
+                not bool(tool_input["closed"])
+                for tool_input in tool_inputs_by_index.values()
+            ):
+                raise LlmRequestError(
+                    "Model provider stream ended with an incomplete tool call.",
+                )
+            for index, tool_input in tool_inputs_by_index.items():
+                content_blocks_by_index[index]["input"] = _safe_json_object(
+                    "".join(tool_input["raw_parts"]),
+                )
+
+            client_tool_inputs = {
+                index: tool_input
+                for index, tool_input in tool_inputs_by_index.items()
+                if tool_input["type"] == "tool_use"
+            }
+            if (stop_reason == "unknown" and raw_stop_reason != "pause_turn") or (
+                client_tool_inputs and stop_reason == "stop"
             ):
                 raise LlmRequestError(
                     "Model provider returned an invalid stream completion.",
@@ -248,12 +414,9 @@ async def _stream_messages(
 
             tool_calls: list[LlmToolCall] = []
             if stop_reason == "tool_calls":
-                if not tool_inputs_by_index or any(
-                    not bool(tool_input["closed"])
-                    for tool_input in tool_inputs_by_index.values()
-                ):
+                if not client_tool_inputs:
                     raise LlmRequestError(
-                        "Model provider stream ended with an incomplete tool call.",
+                        "Model provider returned an invalid stream completion.",
                     )
                 tool_calls = [
                     parsed_tool_call(
@@ -261,26 +424,30 @@ async def _stream_messages(
                         name=str(tool_input["name"]),
                         raw_arguments="".join(tool_input["raw_parts"]),
                     )
-                    for _, tool_input in sorted(tool_inputs_by_index.items())
+                    for _, tool_input in sorted(client_tool_inputs.items())
                 ]
 
+            blocks = [
+                block
+                for _, block in sorted(
+                    content_blocks_by_index.items(),
+                )
+            ]
+            content, sources = _text_and_sources(blocks)
             yield LlmStreamEvent(
                 type="done",
                 message=LlmAssistantMessage(
-                    content="".join(content_parts).strip(),
+                    content=content,
                     tool_calls=tool_calls,
                     reasoning="".join(reasoning_parts).strip(),
                     usage=anthropic_usage({"usage": usage}),
                     stop_reason=stop_reason,
                     response_id=response_id,
-                    provider_state=_thinking_provider_state(
-                        [
-                            block
-                            for _, block in sorted(
-                                thinking_blocks_by_index.items(),
-                            )
-                        ],
+                    provider_state=_content_blocks_provider_state(
+                        blocks,
+                        model=config.model,
                     ),
+                    sources=sources,
                 ),
             )
             return
@@ -295,12 +462,50 @@ async def _post_messages(
     messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return await async_post_json(
-        f"{provider_base_url(config.base_url)}/messages",
-        headers=_headers(config),
-        payload=_payload(config, messages, tools),
-        timeout_seconds=config.timeout_seconds,
-    )
+    request_payload = _payload(config, messages, tools)
+    content_blocks: list[dict[str, Any]] = []
+    usage: dict[str, Any] = {}
+
+    for continuation_count in range(
+        _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT + 1,
+    ):
+        response = await async_post_json(
+            f"{provider_base_url(config.base_url)}/messages",
+            headers=_headers(config),
+            payload=request_payload,
+            timeout_seconds=config.timeout_seconds,
+        )
+        response_content = response.get("content")
+        if not isinstance(response_content, list):
+            raise LlmRequestError(
+                "Model provider returned invalid assistant content.",
+            )
+        response_blocks = deepcopy(response_content)
+        content_blocks.extend(response_blocks)
+        response_usage = response.get("usage")
+        if isinstance(response_usage, dict):
+            _add_usage(usage, response_usage)
+
+        if response.get("stop_reason") != "pause_turn":
+            completed = deepcopy(response)
+            completed["content"] = content_blocks
+            if usage:
+                completed["usage"] = usage
+            return completed
+
+        if continuation_count == _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT:
+            raise LlmRequestError(
+                "Anthropic server tool exceeded its continuation limit.",
+            )
+        response_blocks = _validated_content_blocks(response_content)
+        request_payload["messages"].append(
+            {
+                "role": "assistant",
+                "content": response_blocks,
+            },
+        )
+
+    raise AssertionError("unreachable")
 
 
 def _payload(
@@ -308,18 +513,29 @@ def _payload(
     messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    system, provider_messages = anthropic_messages(messages)
-    prompt_cache_enabled = (
-        config.provider == "anthropic" and config.provider_kind == "cloud"
+    system, provider_messages = anthropic_messages(messages, model=config.model)
+    official_anthropic_request = (
+        config.provider == "anthropic"
+        and config.provider_kind == "cloud"
+        and config.api_family == "anthropic_messages"
+        and provider_base_url(config.base_url) == _ANTHROPIC_OFFICIAL_BASE_URL
     )
-    if prompt_cache_enabled:
-        _mark_last_user_cache_control(provider_messages)
-    max_tokens = request_max_output_tokens(config)
+    prompt_cache_enabled = official_anthropic_request
+    max_tokens = anthropic_request_output_tokens(config)
+    thinking = _anthropic_auto_thinking(
+        (config.thinking_control if official_anthropic_request else "none"),
+        max_tokens=max_tokens,
+    )
     payload: dict[str, Any] = {
         "model": config.model,
         "max_tokens": max_tokens,
         "messages": provider_messages,
     }
+    if prompt_cache_enabled:
+        # Anthropic's automatic breakpoint follows the growing conversation
+        # while the explicit system/tool breakpoints below preserve the two
+        # slower-changing prefixes independently.
+        payload["cache_control"] = {"type": "ephemeral"}
     if system:
         if prompt_cache_enabled:
             payload["system"] = [
@@ -332,58 +548,121 @@ def _payload(
         else:
             payload["system"] = system
 
-    # Anthropic extended thinking forbids temperature/top_p; keep that provider
-    # rule inside the adapter instead of leaking it into agent code.
-    if config.supports_thinking and config.thinking_enabled:
-        payload["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": min(1024, max(128, max_tokens // 2)),
-        }
+    if thinking is not None:
+        # Product-level Auto projects the model's discovered native protocol.
+        # Sampling overrides and output_config.effort are deliberately absent;
+        # Auto leaves those provider-owned controls at their documented defaults.
+        payload["thinking"] = thinking
     else:
         if config.temperature is not None:
             payload["temperature"] = config.temperature
         if config.top_p is not None:
             payload["top_p"] = config.top_p
-    if tools:
-        anthropic_tools = _tools(tools)
+    anthropic_tools = _tools(
+        tools or [],
+        include_native_web=config.use_native_web_search,
+    )
+    if anthropic_tools:
         if prompt_cache_enabled and anthropic_tools:
             anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
         payload["tools"] = anthropic_tools
-        payload["tool_choice"] = {"type": "auto"}
 
     return payload
 
 
+def _anthropic_auto_thinking(
+    control: ThinkingControl,
+    *,
+    max_tokens: int,
+) -> dict[str, Any] | None:
+    """Project discovered Anthropic capability onto one official request.
+
+    The runtime passes capability, not a model name, so this Adapter never owns
+    a model-ID table. Adaptive models receive Anthropic's provider-managed Auto.
+    Older enabled-only models instead need a manual budget: the official API
+    requires at least 1,024 thinking tokens and, without interleaving, requires
+    that budget to remain strictly below the request's inclusive ``max_tokens``.
+
+    The 16K ceiling is ResuMate's Auto quality policy. It prevents legacy
+    thinking from consuming an arbitrarily large discovered output capability;
+    it is distinct from both a user's max_tokens override and the durable
+    visible-summary budget used by history compaction.
+    """
+
+    if control == "native_auto":
+        return {"type": "adaptive"}
+    if control != "native_budget":
+        return None
+
+    if max_tokens <= _ANTHROPIC_LEGACY_MIN_THINKING_TOKENS:
+        raise LlmRequestError(
+            "Anthropic legacy thinking requires max_tokens greater than 1024.",
+        )
+
+    return {
+        "type": "enabled",
+        "budget_tokens": min(
+            _ANTHROPIC_AUTO_LEGACY_THINKING_CEILING_TOKENS,
+            max(
+                _ANTHROPIC_LEGACY_MIN_THINKING_TOKENS,
+                max_tokens // 2,
+            ),
+        ),
+    }
+
+
 def anthropic_messages(
     messages: list[LlmInputMessage],
+    *,
+    model: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system, non_system = system_and_messages(messages)
     converted: list[dict[str, Any]] = []
+    previous_was_tool = False
 
     for message in non_system:
         if message["role"] == "tool":
             tool_use_id = str(message.get("tool_call_id") or "")
             # Anthropic represents tool results as user-role content blocks
             # keyed by the original tool_use id, not as a separate `tool` role.
-            converted.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": message_content_text(message.get("content")),
-                        },
-                    ],
-                },
-            )
+            # Results for one parallel tool batch must share the immediately
+            # following user content array and retain neutral transcript order.
+            tool_result = {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": message_content_text(message.get("content")),
+            }
+            if previous_was_tool:
+                converted[-1]["content"].append(tool_result)
+            else:
+                converted.append(
+                    {
+                        "role": "user",
+                        "content": [tool_result],
+                    },
+                )
+            previous_was_tool = True
             continue
 
+        previous_was_tool = False
         if message["role"] == "assistant":
-            # Signed thinking blocks are continuation state, not display text.
-            # Anthropic requires the original block to precede the matching
-            # tool_use block when the tool result is sent back.
-            blocks = _thinking_blocks_from_state(message.get("provider_state"))
+            provider_state = message.get("provider_state")
+            if provider_state is not None and provider_state != {}:
+                # Adaptive thinking may interleave signed thinking, visible
+                # text, redacted thinking, and tool calls. Anthropic requires
+                # the exact assistant content sequence before tool results;
+                # rebuilding it from the neutral transcript can invalidate the
+                # continuation even when the visible text is unchanged.
+                replay_blocks = _content_blocks_from_state(
+                    provider_state,
+                    current_model=model,
+                )
+                converted.append(
+                    {"role": "assistant", "content": replay_blocks},
+                )
+                continue
+
+            blocks: list[dict[str, Any]] = []
             text = message_content_text(message.get("content")).strip()
             if text:
                 blocks.append({"type": "text", "text": text})
@@ -415,38 +694,6 @@ def anthropic_messages(
             )
 
     return system, converted
-
-
-def _mark_last_user_cache_control(messages: list[dict[str, Any]]) -> None:
-    if not messages or messages[-1]["role"] != "user":
-        return
-
-    last_content = messages[-1]["content"]
-    if isinstance(last_content, str) and last_content.strip():
-        messages[-1]["content"] = [
-            {
-                "type": "text",
-                "text": last_content,
-                "cache_control": {"type": "ephemeral"},
-            },
-        ]
-        return
-
-    if not isinstance(last_content, list):
-        return
-
-    for block in reversed(last_content):
-        if not isinstance(block, dict) or block.get("type") not in {
-            "text",
-            "image",
-            "document",
-            "tool_result",
-        }:
-            continue
-        if block.get("type") == "text" and not str(block.get("text") or "").strip():
-            continue
-        block["cache_control"] = {"type": "ephemeral"}
-        return
 
 
 def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
@@ -497,7 +744,11 @@ def _headers(config: AgentLlmConfig) -> dict[str, str]:
     }
 
 
-def _tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _tools(
+    tools: list[dict[str, Any]],
+    *,
+    include_native_web: bool = False,
+) -> list[dict[str, Any]]:
     anthropic_tools: list[dict[str, Any]] = []
     for tool in tools:
         function = tool_function(tool)
@@ -514,14 +765,22 @@ def _tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             },
         )
 
+    if include_native_web:
+        anthropic_tools.extend(deepcopy(_ANTHROPIC_WEB_TOOLS))
+
     return anthropic_tools
 
 
-def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
+def _message_from_payload(
+    payload: dict[str, Any],
+    *,
+    model: str,
+) -> LlmAssistantMessage:
     tool_calls = _tool_calls(payload)
     thinking_blocks = _thinking_blocks_from_content(payload.get("content"))
+    text, sources = _text_and_sources(payload.get("content"))
     return LlmAssistantMessage(
-        content=_text(payload),
+        content=text,
         tool_calls=tool_calls,
         reasoning=_thinking_text(thinking_blocks),
         usage=anthropic_usage(payload),
@@ -529,20 +788,128 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
         if tool_calls
         else map_stop_reason(payload.get("stop_reason")),
         response_id=str(payload.get("id") or "") or None,
-        provider_state={"thinking_blocks": thinking_blocks} if thinking_blocks else {},
+        provider_state=_content_blocks_provider_state(
+            payload.get("content"),
+            model=model,
+        ),
+        sources=sources,
     )
 
 
 def _text(payload: dict[str, Any]) -> str:
+    return _text_and_sources(payload.get("content"))[0]
+
+
+def _text_and_sources(content: Any) -> tuple[str, list[LlmWebSource]]:
+    if not isinstance(content, list):
+        return "", []
+
     parts: list[str] = []
-    for block in payload.get("content") or []:
-        if not isinstance(block, dict) or block.get("type") != "text":
+    sources_by_id: dict[str, LlmWebSource] = {}
+    fetched_sources_by_title: dict[str, LlmWebSource] = {}
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        for source in _web_sources_from_block(block):
+            _remember_source(sources_by_id, source)
+            if block.get("type") == "web_fetch_tool_result":
+                fetched_sources_by_title[source.title] = source
+
+        if block.get("type") != "text":
             continue
         text = block.get("text")
-        if isinstance(text, str):
-            parts.append(text)
+        if not isinstance(text, str):
+            continue
 
-    return "".join(parts).strip()
+        parts.append(text)
+        block_citations = block.get("citations")
+        if not isinstance(block_citations, list):
+            continue
+        for citation in block_citations:
+            citation_source = _web_source_from_citation(citation)
+            if citation_source is None and isinstance(citation, dict):
+                document_title = citation.get("document_title")
+                fetched_source = (
+                    fetched_sources_by_title.get(document_title)
+                    if isinstance(document_title, str)
+                    else None
+                )
+                if fetched_source is not None:
+                    cited_text = citation.get("cited_text")
+                    citation_source = make_web_source(
+                        fetched_source.url,
+                        fetched_source.title,
+                        cited_text if isinstance(cited_text, str) else "",
+                    )
+            if citation_source is None:
+                continue
+            _remember_source(sources_by_id, citation_source)
+
+    return "".join(parts).strip(), list(sources_by_id.values())
+
+
+def _web_sources_from_block(block: dict[str, Any]) -> list[LlmWebSource]:
+    block_type = block.get("type")
+    content = block.get("content")
+    if block_type == "web_search_tool_result" and isinstance(content, list):
+        sources: list[LlmWebSource] = []
+        for result in content:
+            if (
+                not isinstance(result, dict)
+                or result.get("type") != "web_search_result"
+            ):
+                continue
+            source = _make_source(
+                url=result.get("url"),
+                title=result.get("title"),
+            )
+            if source is not None:
+                sources.append(source)
+        return sources
+
+    if block_type != "web_fetch_tool_result" or not isinstance(content, dict):
+        return []
+    if content.get("type") != "web_fetch_result":
+        return []
+    document = content.get("content")
+    title = document.get("title") if isinstance(document, dict) else None
+    source = _make_source(url=content.get("url"), title=title)
+    return [source] if source is not None else []
+
+
+def _web_source_from_citation(citation: Any) -> LlmWebSource | None:
+    if not isinstance(citation, dict):
+        return None
+    return _make_source(
+        url=citation.get("url"),
+        title=citation.get("title"),
+        excerpt=citation.get("cited_text"),
+    )
+
+
+def _make_source(
+    *,
+    url: Any,
+    title: Any,
+    excerpt: Any = "",
+) -> LlmWebSource | None:
+    if not isinstance(url, str) or not url.strip():
+        return None
+    return make_web_source(
+        url=url,
+        title=title if isinstance(title, str) else "",
+        excerpt=excerpt if isinstance(excerpt, str) else "",
+    )
+
+
+def _remember_source(
+    sources: dict[str, LlmWebSource],
+    source: LlmWebSource,
+) -> None:
+    existing = sources.get(source.id)
+    if existing is None or (not existing.excerpt and source.excerpt):
+        sources[source.id] = source
 
 
 def _tool_calls(payload: dict[str, Any]) -> list[LlmToolCall]:
@@ -588,10 +955,99 @@ def _thinking_blocks_from_content(content: Any) -> list[dict[str, Any]]:
     return blocks
 
 
-def _thinking_blocks_from_state(provider_state: Any) -> list[dict[str, Any]]:
-    if not isinstance(provider_state, dict):
-        return []
-    return _thinking_blocks_from_content(provider_state.get("thinking_blocks"))
+def _content_blocks_from_state(
+    provider_state: Any,
+    *,
+    current_model: str | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(provider_state, dict) or set(provider_state) != {
+        "model",
+        "content_blocks",
+    }:
+        raise LlmRequestError("Anthropic continuation state is invalid.")
+
+    producing_model = provider_state.get("model")
+    blocks = provider_state.get("content_blocks")
+    if (
+        not isinstance(producing_model, str)
+        or not producing_model
+        or producing_model != current_model
+        or not isinstance(blocks, list)
+        or not blocks
+        or any(not _valid_content_block(block) for block in blocks)
+    ):
+        raise LlmRequestError("Anthropic continuation state is invalid.")
+
+    return deepcopy(blocks)
+
+
+def _content_blocks_provider_state(
+    content: Any,
+    *,
+    model: str,
+) -> dict[str, Any]:
+    if content is None or content == []:
+        return {}
+    blocks = _validated_content_blocks(content)
+
+    return {"model": model, "content_blocks": blocks}
+
+
+def _validated_content_blocks(
+    content: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(content, list) or any(
+        not _valid_content_block(block) for block in content
+    ):
+        raise LlmRequestError(
+            "Model provider returned invalid assistant content.",
+        )
+    return deepcopy(content)
+
+
+def _valid_content_block(block: Any) -> bool:
+    """Validate replay-critical output without rewriting opaque block fields."""
+
+    if not isinstance(block, dict):
+        return False
+
+    block_type = block.get("type")
+    if block_type == "text":
+        citations = block.get("citations")
+        return isinstance(block.get("text"), str) and (
+            "citations" not in block or citations is None or isinstance(citations, list)
+        )
+    if block_type == "thinking":
+        return (
+            isinstance(block.get("thinking"), str)
+            and isinstance(block.get("signature"), str)
+            and bool(block["signature"])
+        )
+    if block_type == "redacted_thinking":
+        return isinstance(block.get("data"), str) and bool(block["data"])
+    if block_type == "tool_use":
+        return (
+            isinstance(block.get("id"), str)
+            and bool(block["id"])
+            and isinstance(block.get("name"), str)
+            and bool(block["name"].strip())
+            and isinstance(block.get("input"), dict)
+        )
+    if block_type == "server_tool_use":
+        return (
+            isinstance(block.get("id"), str)
+            and bool(block["id"])
+            and block.get("name") in {"web_search", "web_fetch"}
+            and isinstance(block.get("input"), dict)
+        )
+    if block_type in {"web_search_tool_result", "web_fetch_tool_result"}:
+        return (
+            isinstance(block.get("tool_use_id"), str)
+            and bool(block["tool_use_id"])
+            and "content" in block
+        )
+
+    return False
 
 
 def _thinking_block(block: dict[str, Any]) -> dict[str, Any] | None:
@@ -623,20 +1079,65 @@ def _thinking_text(blocks: list[dict[str, Any]]) -> str:
     ).strip()
 
 
-def _thinking_provider_state(
-    blocks: list[dict[str, Any]],
-) -> dict[str, Any]:
-    normalized = [
-        thinking_block
-        for block in blocks
-        if (thinking_block := _thinking_block(block)) is not None
-    ]
-    return {"thinking_blocks": normalized} if normalized else {}
-
-
 def _content_block_index(event: dict[str, Any]) -> int:
     index = event.get("index")
     return index if isinstance(index, int) else 0
+
+
+def _merge_usage(target: dict[str, Any], update: dict[str, Any]) -> None:
+    """Merge incremental Anthropic usage without dropping nested details."""
+
+    for key, value in update.items():
+        current = target.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            target[key] = {**current, **value}
+        else:
+            target[key] = value
+
+
+def _add_usage(target: dict[str, Any], update: dict[str, Any]) -> None:
+    """Accumulate usage from separate provider requests in one paused turn."""
+
+    for key, value in update.items():
+        current = target.get(key)
+        if isinstance(value, dict):
+            nested = current if isinstance(current, dict) else {}
+            _add_usage(nested, value)
+            target[key] = nested
+        elif isinstance(value, int) and isinstance(current, int):
+            target[key] = current + value
+        else:
+            target[key] = value
+
+
+def _sum_usage(current: LlmUsage | None, update: LlmUsage | None) -> LlmUsage | None:
+    if current is None:
+        return update
+    if update is None:
+        return current
+
+    def total(left: int | None, right: int | None) -> int | None:
+        if left is None and right is None:
+            return None
+        return (left or 0) + (right or 0)
+
+    return LlmUsage(
+        input_tokens=total(current.input_tokens, update.input_tokens),
+        output_tokens=total(current.output_tokens, update.output_tokens),
+        total_tokens=total(current.total_tokens, update.total_tokens),
+        cached_input_tokens=total(
+            current.cached_input_tokens,
+            update.cached_input_tokens,
+        ),
+        cache_write_input_tokens=total(
+            current.cache_write_input_tokens,
+            update.cache_write_input_tokens,
+        ),
+        reasoning_tokens=total(
+            current.reasoning_tokens,
+            update.reasoning_tokens,
+        ),
+    )
 
 
 def _safe_json_object(raw_arguments: str) -> dict[str, Any]:

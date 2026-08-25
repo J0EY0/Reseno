@@ -1,9 +1,9 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { AppMessages, Locale } from '@/i18n'
 import { loadAgentSession } from '@/lib/agent-session-run-client'
 import { mergeStreamingAgentMessage } from '@/lib/agent-panel-state'
-import type { AgentDraftState } from '@/types/api'
+import type { AgentDraftState, AgentSessionResponse } from '@/types/api'
 import type { ModelConfig, ResumeData } from '@/types/resume'
 
 import {
@@ -24,6 +24,8 @@ import { useAgentSessionHydration } from './use-agent-session-hydration'
 
 export function useAgentConversation({
   agentDraftState,
+  onApplyAgentDraft,
+  onDiscardAgentDraft,
   locale,
   onBeforeSend,
   onPreviewAgentEdits,
@@ -35,6 +37,8 @@ export function useAgentConversation({
   t,
 }: {
   agentDraftState: AgentDraftState | null
+  onApplyAgentDraft: CopilotPanelProps['onApplyAgentDraft']
+  onDiscardAgentDraft: CopilotPanelProps['onDiscardAgentDraft']
   locale: Locale
   onBeforeSend?: () => Promise<void>
   onPreviewAgentEdits: CopilotPanelProps['onPreviewAgentEdits']
@@ -50,8 +54,11 @@ export function useAgentConversation({
     useState<AgentPanelMessage | null>(null)
   const [isResponding, setIsResponding] = useState(false)
   const [isSessionReady, setSessionReady] = useState(false)
+  const [isSessionMutationPending, setIsSessionMutationPending] =
+    useState(false)
   const [sessionLoadError, setSessionLoadError] = useState(false)
   const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0)
+  const sessionMutationPendingRef = useRef(false)
   const updates = useMemo<AgentConversationUpdates>(
     () => ({
       setIsResponding,
@@ -72,13 +79,20 @@ export function useAgentConversation({
     t,
   })
 
-  const refreshAgentSession = useCallback(
-    async (expectedResumeId: string, replaceMessages = false) => {
+  const adoptAgentSession = useCallback(
+    async (
+      expectedResumeId: string,
+      sessionRequest: Promise<AgentSessionResponse>,
+      replaceMessages = false,
+    ) => {
       const runtime = runtimeRef.current
       const { draftSnapshot, panelMessages, session } = await hydrateAgentSession(
-        loadAgentSession(expectedResumeId),
+        sessionRequest,
       )
-      if (expectedResumeId !== runtime.currentResumeId) {
+      if (
+        expectedResumeId !== runtime.currentResumeId ||
+        session.resumeId !== expectedResumeId
+      ) {
         return null
       }
 
@@ -91,6 +105,56 @@ export function useAgentConversation({
       return session
     },
     [runtimeRef],
+  )
+  const refreshAgentSession = useCallback(
+    (expectedResumeId: string, replaceMessages = false) =>
+      adoptAgentSession(
+        expectedResumeId,
+        loadAgentSession(expectedResumeId),
+        replaceMessages,
+      ),
+    [adoptAgentSession],
+  )
+  const adoptSession = useCallback(
+    async (session: AgentSessionResponse) => {
+      const expectedResumeId = runtimeRef.current.currentResumeId
+      if (!expectedResumeId) {
+        return
+      }
+      await adoptAgentSession(
+        expectedResumeId,
+        Promise.resolve(session),
+        true,
+      )
+    },
+    [adoptAgentSession, runtimeRef],
+  )
+  const runAgentDraftDecision = useCallback(
+    async (decision: CopilotPanelProps['onApplyAgentDraft']) => {
+      if (sessionMutationPendingRef.current) {
+        return
+      }
+      sessionMutationPendingRef.current = true
+      setIsSessionMutationPending(true)
+      try {
+        const session = await decision()
+        if (session) {
+          await adoptSession(session)
+        }
+      } finally {
+        sessionMutationPendingRef.current = false
+        setIsSessionMutationPending(false)
+      }
+    },
+    [adoptSession],
+  )
+  const applyAgentDraft = useCallback(
+    () => runAgentDraftDecision(onApplyAgentDraft),
+    [onApplyAgentDraft, runAgentDraftDecision],
+  )
+  const discardAgentDraft = useCallback(
+    () => runAgentDraftDecision(onDiscardAgentDraft),
+    [onDiscardAgentDraft, runAgentDraftDecision],
   )
   const consumeRunStream = useAgentRunStream({
     refreshAgentSession,
@@ -105,6 +169,7 @@ export function useAgentConversation({
       messages,
       onBeforeSend,
       refreshAgentSession,
+      isSessionMutationPending,
       resume,
       resumeId,
       runtimeRef,
@@ -130,8 +195,10 @@ export function useAgentConversation({
   }, [])
 
   return {
+    applyAgentDraft,
+    discardAgentDraft,
     isResponding,
-    isSessionReady,
+    isSessionReady: isSessionReady && !isSessionMutationPending,
     messages,
     retrySession,
     sendPrompt,

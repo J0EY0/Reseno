@@ -96,12 +96,7 @@ def main() -> None:
             assert versions.status_code == 200
             assert versions.json()["data"]["versions"]
             assert (
-                data_dir
-                / "storage"
-                / "resumes"
-                / resume_id
-                / "versions"
-                / "1.json"
+                data_dir / "storage" / "resumes" / resume_id / "versions" / "1.json"
             ).exists()
 
             db_bytes = (data_dir / "app.db").read_bytes()

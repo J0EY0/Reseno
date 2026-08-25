@@ -1,17 +1,36 @@
 from jsonschema import Draft7Validator
 
-from app.services.agent.editing.operations import (
-    _model_edit_suggestions_with_diagnostics,
-)
-from app.services.agent.operation_contract import (
-    assert_model_operation_adapter_compatible,
+from app.services.agent.contracts import (
+    OPERATION_SCHEMA,
     resume_edit_operation_error,
 )
-from app.services.agent.tools.registry import OPERATION_SCHEMA
+from app.services.agent.editing.operations import (
+    parse_edit_batch,
+)
 
 
-def test_model_adapter_matches_canonical_operation_variants() -> None:
-    assert_model_operation_adapter_compatible(OPERATION_SCHEMA)
+def _resume_with_project() -> dict:
+    return {
+        "schemaVersion": 2,
+        "basic": {
+            "name": "",
+            "headline": "Engineer",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "",
+            "customFields": [],
+        },
+        "sections": [
+            {
+                "id": "project",
+                "kind": "project",
+                "title": "Projects",
+                "items": [],
+            },
+        ],
+    }
 
 
 def test_canonical_contract_accepts_normalized_operation() -> None:
@@ -26,6 +45,17 @@ def test_canonical_contract_accepts_normalized_operation() -> None:
     }
 
     assert resume_edit_operation_error(operation) is None
+
+
+def test_canonical_contract_rejects_evidence_delimiters_in_selectors() -> None:
+    operation = {
+        "type": "update_item",
+        "sectionId": "project:archive",
+        "itemId": "project:primary",
+        "patch": {"description": "Updated description."},
+    }
+
+    assert resume_edit_operation_error(operation) is not None
 
 
 def test_canonical_contract_rejects_hidden_location_replacement() -> None:
@@ -95,11 +125,10 @@ def test_normalized_operations_cross_api_boundary_in_canonical_shape() -> None:
         },
         "sections": [],
     }
-    edits, rejected = _model_edit_suggestions_with_diagnostics(
+    edits, rejected = parse_edit_batch(
         resume,
         [
             {
-                "title": "Improve summary",
                 "operation": {
                     "type": "replace_field",
                     "path": "basic.summary",
@@ -112,88 +141,96 @@ def test_normalized_operations_cross_api_boundary_in_canonical_shape() -> None:
 
     assert rejected == []
     assert len(edits) == 1
+    assert edits[0].title == "Update Summary"
+    assert edits[0].target == "basic.summary"
     assert resume_edit_operation_error(edits[0].operation) is None
 
 
-def test_model_insert_section_accepts_both_documented_kind_aliases() -> None:
+def test_model_insert_section_accepts_compact_canonical_fields() -> None:
     validator = Draft7Validator(OPERATION_SCHEMA)
-
-    def operation(section_kind: str, field: str) -> dict:
-        return {
-            "type": "insert_section",
-            "section": {
-                field: section_kind,
-                "title": "Projects",
-                "items": [],
-            },
-        }
-
-    assert validator.is_valid(operation("project", "section_type"))
-    assert validator.is_valid(operation("project", "kind"))
-    assert not validator.is_valid(
-        {
-            "type": "insert_section",
-            "section": {"title": "Projects", "items": []},
+    compact = {
+        "type": "insert_section",
+        "section": {
+            "id": "projects",
+            "kind": "project",
         },
+    }
+    compatibility_alias = {
+        "type": "insert_section",
+        "section": {
+            "id": "projects",
+            "section_type": "project",
+            "title": "Projects",
+            "items": [],
+        },
+    }
+
+    assert validator.is_valid(compact)
+    assert not validator.is_valid(compatibility_alias)
+
+    edits, rejected = parse_edit_batch(
+        {**_resume_with_project(), "sections": []},
+        [{"operation": compact}],
+        locale="en",
     )
+    assert rejected == []
+    assert edits[0].title == "Add Project"
+    assert edits[0].operation is not None
+    assert edits[0].operation["section"]["title"] == ""
+    assert edits[0].operation["section"]["items"] == []
+    assert resume_edit_operation_error(edits[0].operation) is None
 
 
-def test_conflicting_section_kind_aliases_reject_the_operation() -> None:
-    resume = {"basic": {}, "sections": []}
-    edits, rejected = _model_edit_suggestions_with_diagnostics(
+def test_insert_item_still_requires_an_id() -> None:
+    resume = _resume_with_project()
+    incomplete_operation = {
+        "type": "insert_item",
+        "sectionId": "project",
+        "item": {
+            "name": "ResuMate",
+            "highlights": ["Built a resume editor."],
+        },
+    }
+
+    edits, rejected = parse_edit_batch(
         resume,
-        [
-            {
-                "title": "Insert a contradictory section",
-                "operation": {
-                    "type": "insert_section",
-                    "section": {
-                        "section_type": "education",
-                        "kind": "project",
-                        "title": "Projects",
-                        "items": [],
-                    },
-                },
-            },
-        ],
+        [{"operation": incomplete_operation}],
         locale="en",
     )
 
+    assert resume_edit_operation_error(incomplete_operation) is not None
     assert edits == []
     assert len(rejected) == 1
+    assert "Canonical protocol error" in rejected[0]["reason"]
 
 
-def test_model_adapter_rejects_unregistered_camel_case_section_alias() -> None:
-    edits, rejected = _model_edit_suggestions_with_diagnostics(
-        {
-            "schemaVersion": 2,
-            "basic": {
-                "name": "",
-                "headline": "Engineer",
-                "phone": "",
-                "email": "",
-                "location": "",
-                "avatar": "",
-                "summary": "",
-                "customFields": [],
-            },
-            "sections": [],
+def test_compact_project_insert_is_normalized_to_the_frontend_contract() -> None:
+    operation = {
+        "type": "insert_item",
+        "sectionId": "project",
+        "item": {
+            "id": "project-2",
+            "name": "Course schedule",
+            "role": "Frontend developer",
+            "techStack": ["React", "TypeScript"],
+            "period": "2025.03 - 2025.05",
+            "description": "Built course schedule creation and filtering.",
+            "highlights": ["Created and edited schedules", "Filtered schedules"],
         },
-        [
-            {
-                "title": "Insert projects",
-                "operation": {
-                    "type": "insert_section",
-                    "section": {
-                        "sectionType": "project",
-                        "title": "Projects",
-                        "items": [],
-                    },
-                },
-            },
-        ],
+    }
+
+    assert resume_edit_operation_error(operation) == (
+        "item: 'url' is a required property"
+    )
+    assert Draft7Validator(OPERATION_SCHEMA).is_valid(operation)
+
+    edits, rejected = parse_edit_batch(
+        _resume_with_project(),
+        [{"operation": operation}],
         locale="en",
     )
 
-    assert edits == []
-    assert len(rejected) == 1
+    assert rejected == []
+    assert edits[0].operation is not None
+    assert edits[0].operation["item"]["url"] == ""
+    assert resume_edit_operation_error(edits[0].operation) is None

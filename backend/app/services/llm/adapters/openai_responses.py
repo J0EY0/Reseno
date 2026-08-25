@@ -8,11 +8,13 @@ from typing import Any
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 
 from ..common import (
+    DEFAULT_OPENAI_BASE_URL,
     async_openai_client,
     attr_or_item,
     close_async_client,
     close_async_stream,
     image_data_url,
+    make_web_source,
     map_stop_reason,
     message_content_parts,
     message_content_text,
@@ -30,15 +32,23 @@ from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
     LlmInputMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
+    LlmWebSource,
 )
 
-_REASONING_ITEMS_STATE_KEY = "reasoning_items"
-_INVALID_REASONING_STATE = "OpenAI Responses continuation state is invalid."
+_CONTINUATION_ITEMS_STATE_KEY = "continuation_items"
+_INVALID_CONTINUATION_STATE = "OpenAI Responses continuation state is invalid."
 _REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+_WEB_SEARCH_STATUSES = {"in_progress", "searching", "completed", "failed"}
+_EXPLICIT_CACHE_BREAKPOINT = {"mode": "explicit"}
+_ENCRYPTED_REASONING_BASE_URLS = {
+    "openai": DEFAULT_OPENAI_BASE_URL,
+    "xai": "https://api.x.ai/v1",
+}
 
 
 def supports_native_attachment(media_type: str) -> bool:
@@ -49,7 +59,7 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
@@ -61,7 +71,7 @@ async def complete(
             response = await client.responses.create(
                 **responses_params(
                     config,
-                    messages,
+                    prompt,
                     request_context=request_context,
                 ),
             )
@@ -84,7 +94,7 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
@@ -97,7 +107,7 @@ async def complete_tool_call(
             response = await client.responses.create(
                 **responses_params(
                     config,
-                    messages,
+                    prompt,
                     tools=tools,
                     request_context=request_context,
                 ),
@@ -117,7 +127,7 @@ async def complete_tool_call(
 
 async def stream(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
@@ -125,7 +135,7 @@ async def stream(
 
     events = _stream_events(
         config,
-        messages,
+        prompt,
         request_context=request_context,
     )
     try:
@@ -137,7 +147,7 @@ async def stream(
 
 async def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
@@ -146,7 +156,7 @@ async def stream_tool_call(
 
     events = _stream_events(
         config,
-        messages,
+        prompt,
         tools=tools,
         request_context=request_context,
     )
@@ -159,7 +169,7 @@ async def stream_tool_call(
 
 async def _stream_events(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     tools: list[dict[str, Any]] | None = None,
     request_context: LlmRequestContext | None = None,
@@ -178,7 +188,7 @@ async def _stream_events(
         stream_response = await client.responses.create(
             **responses_params(
                 config,
-                messages,
+                prompt,
                 tools=tools,
                 stream=True,
                 request_context=request_context,
@@ -205,6 +215,9 @@ async def _stream_events(
             if event_type in {
                 "response.function_call_arguments.delta",
                 "response.function_call_arguments.done",
+                "response.web_search_call.in_progress",
+                "response.web_search_call.searching",
+                "response.web_search_call.completed",
             }:
                 yield LlmStreamEvent(type="activity")
                 continue
@@ -250,19 +263,26 @@ async def _stream_events(
             stop_reason=message.stop_reason,
             response_id=message.response_id,
             provider_state=message.provider_state,
+            sources=message.sources,
         )
     yield LlmStreamEvent(type="done", message=message)
 
 
 def responses_params(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     tools: list[dict[str, Any]] | None = None,
     stream: bool = False,
     request_context: LlmRequestContext | None = None,
 ) -> dict[str, Any]:
-    instructions, input_items = responses_input(messages)
+    instructions, input_items = responses_input(prompt.messages)
+    cache_key = openai_prompt_cache_key(config, request_context)
+    explicit_cache = (
+        _supports_explicit_prompt_cache(config)
+        and bool(prompt.stable_prefix_message_counts)
+        and _apply_cache_breakpoints(prompt, input_items)
+    )
     # Responses uses `instructions` plus typed `input` items instead of Chat
     # Completions' flat message array. Keep that split here so agent messages
     # remain provider-independent.
@@ -278,26 +298,145 @@ def responses_params(
         params["temperature"] = config.temperature
     if config.top_p is not None:
         params["top_p"] = config.top_p
-    if config.max_tokens:
-        params["max_output_tokens"] = config.max_tokens
-    if config.supports_thinking:
-        if config.thinking_enabled:
-            params["reasoning"] = {"effort": "medium"}
-        # Both official OpenAI and xAI Responses APIs require the encrypted
-        # reasoning item for a stateless (`store=False`) tool continuation.
-        # Keep this explicit allowlist at the provider boundary: arbitrary
-        # Responses-compatible endpoints must not receive vendor-only fields.
-        if config.provider in {"openai", "xai"} and config.provider_kind == "cloud":
-            params["include"] = ["reasoning.encrypted_content"]
-    cache_key = openai_prompt_cache_key(config, request_context)
+    if config.request_max_output_tokens:
+        params["max_output_tokens"] = config.request_max_output_tokens
+
+    # ResuMate's reasoning policy is Auto: omit ``reasoning.effort`` and let
+    # the selected model apply its documented default. A persisted capability
+    # badge cannot safely choose among provider-specific effort vocabularies.
+    expected_reasoning_base_url = _ENCRYPTED_REASONING_BASE_URLS.get(config.provider)
+    # The encrypted item is continuation state for stateless Responses calls,
+    # not a user-facing thinking control. Request it only from the two official
+    # endpoints that define this wire field, regardless of capability metadata.
+    include: list[str] = []
+    if (
+        expected_reasoning_base_url is not None
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_responses"
+        and config.base_url.strip().rstrip("/") == expected_reasoning_base_url
+    ):
+        include.append("reasoning.encrypted_content")
+    if config.use_native_web_search:
+        include.append("web_search_call.action.sources")
+    if include:
+        params["include"] = include
     if cache_key:
         params["prompt_cache_key"] = cache_key
+    if explicit_cache:
+        # The installed SDK predates this GPT-5.6 request field, but forwards
+        # `extra_body` verbatim. Keep the vendor extension at this Adapter edge.
+        params["extra_body"] = {
+            "prompt_cache_options": {"mode": "explicit"},
+        }
+    provider_tools = openai_style_function_tools(tools or [])
+    if config.use_native_web_search:
+        provider_tools.insert(0, {"type": "web_search"})
+    if provider_tools:
+        params["tools"] = provider_tools
     if tools:
-        params["tools"] = openai_style_function_tools(tools)
-        params["tool_choice"] = "auto"
-        params["parallel_tool_calls"] = False
+        # The Agent loop can execute independent reads concurrently and defers
+        # writes that would depend on unseen observations.
+        params["parallel_tool_calls"] = True
 
     return params
+
+
+def _supports_explicit_prompt_cache(config: AgentLlmConfig) -> bool:
+    """Restrict GPT-5.6 cache policy to the official Responses endpoint."""
+
+    model = config.model.strip().lower()
+    return (
+        config.provider == "openai"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_responses"
+        and config.base_url.strip().rstrip("/") == DEFAULT_OPENAI_BASE_URL
+        and (model == "gpt-5.6" or model.startswith("gpt-5.6-"))
+    )
+
+
+def _apply_cache_breakpoints(
+    prompt: LlmPrompt,
+    input_items: list[dict[str, Any]],
+) -> bool:
+    """Project replayable compiler boundaries into OpenAI content blocks.
+
+    Replaying prior boundaries lets GPT-5.6 read an older cached turn while it
+    writes the newest prefix, instead of paying for a new isolated cache entry
+    on every request. OpenAI considers the latest 50 breakpoints for reads and
+    limits writes independently. The compiler owns stability; this Adapter
+    never guesses it from list positions or parses product JSON envelopes.
+    """
+
+    boundary_counts = set(prompt.stable_prefix_message_counts)
+    # Responses hoists every system message into one leading `instructions`
+    # string. A system message after a neutral boundary would therefore move
+    # changing content before that boundary on the wire, so the declared
+    # neutral prefix cannot be represented faithfully.
+    earliest_boundary = prompt.stable_prefix_message_counts[0]
+    if any(
+        message["role"] == "system" for message in prompt.messages[earliest_boundary:]
+    ):
+        raise LlmRequestError(
+            "Declared stable prompt prefix cannot be mapped to an OpenAI "
+            "Responses cache breakpoint.",
+        )
+    boundary_targets: list[tuple[int, list[dict[str, Any]]]] = []
+    projected_item_count = 0
+    for message_count, message in enumerate(prompt.messages, start=1):
+        _, projected_items = responses_input([message])
+        projected_item_count += len(projected_items)
+        if message_count not in boundary_counts:
+            continue
+
+        if not projected_items:
+            raise LlmRequestError(
+                "Declared stable prompt prefix cannot be mapped to an OpenAI "
+                "Responses cache breakpoint.",
+            )
+        item_index = projected_item_count - 1
+        if item_index < 0 or item_index >= len(input_items):
+            raise LlmRequestError(
+                "Declared stable prompt prefix cannot be mapped to an OpenAI "
+                "Responses cache breakpoint.",
+            )
+        item = input_items[item_index]
+        content = (
+            _responses_cacheable_content(item.get("content"))
+            if item.get("role") in {"user", "assistant"}
+            else []
+        )
+        if not content:
+            raise LlmRequestError(
+                "Declared stable prompt prefix cannot be mapped to an OpenAI "
+                "Responses cache breakpoint.",
+            )
+        boundary_targets.append((item_index, content))
+
+    if projected_item_count != len(input_items):
+        raise LlmRequestError(
+            "OpenAI Responses prompt projection is inconsistent.",
+        )
+
+    for item_index, content in boundary_targets[-50:]:
+        item = input_items[item_index]
+        content[-1]["prompt_cache_breakpoint"] = _EXPLICIT_CACHE_BREAKPOINT.copy()
+        item["content"] = content
+    return bool(boundary_targets)
+
+
+def _responses_cacheable_content(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+    if not isinstance(content, list):
+        return []
+    blocks = [dict(block) for block in content if isinstance(block, dict)]
+    if not blocks or blocks[-1].get("type") not in {
+        "input_text",
+        "input_image",
+        "input_file",
+    }:
+        return []
+    return blocks
 
 
 def responses_input(
@@ -318,7 +457,7 @@ def responses_input(
 
         if message["role"] == "assistant":
             input_items.extend(
-                _reasoning_items_from_state(message.get("provider_state")),
+                _continuation_items_from_state(message.get("provider_state")),
             )
             content = message_content_text(message.get("content")).strip()
             if content:
@@ -386,7 +525,7 @@ def _responses_content(content: Any) -> str | list[dict[str, str]]:
 
 
 def _message_from_response(response: object) -> LlmAssistantMessage:
-    content = _response_output_text(response)
+    content, sources = _response_output(response)
     tool_calls = _response_tool_calls(response)
     stop_reason = _response_stop_reason(response, has_tool_calls=bool(tool_calls))
 
@@ -396,47 +535,61 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
         usage=responses_usage(response),
         stop_reason=stop_reason,
         response_id=getattr(response, "id", None),
-        provider_state=_reasoning_provider_state(response),
+        provider_state=_continuation_provider_state(response),
+        sources=sources,
     )
 
 
-def _reasoning_provider_state(response: object) -> dict[str, Any]:
+def _continuation_provider_state(response: object) -> dict[str, Any]:
     output = getattr(response, "output", None)
     if not isinstance(output, list):
         return {}
 
-    reasoning_items = [
+    continuation_items = [
         deepcopy(item_data)
         for item in output
         for item_data in [object_dict(item)]
-        if item_data.get("type") == "reasoning"
+        if item_data.get("type") in {"reasoning", "web_search_call"}
     ]
-    return {_REASONING_ITEMS_STATE_KEY: reasoning_items} if reasoning_items else {}
+    return (
+        {_CONTINUATION_ITEMS_STATE_KEY: continuation_items}
+        if continuation_items
+        else {}
+    )
 
 
-def _reasoning_items_from_state(provider_state: Any) -> list[dict[str, Any]]:
-    # `store=False` prevents OpenAI from recovering hidden reasoning by response
-    # id. Keep the exact encrypted output items as adapter-owned continuation:
-    # the Agent may replay this blob unchanged, but it is not display reasoning,
-    # prompt-cache metadata, or state that is portable to another provider/model.
+def _continuation_items_from_state(provider_state: Any) -> list[dict[str, Any]]:
+    # `store=False` prevents OpenAI from recovering server tool calls and hidden
+    # reasoning by response id. Replay the ordered items unchanged; this state
+    # belongs solely to the Responses adapter.
     if provider_state is None or provider_state == {}:
         return []
 
     if not isinstance(provider_state, dict) or set(provider_state) != {
-        _REASONING_ITEMS_STATE_KEY,
+        _CONTINUATION_ITEMS_STATE_KEY,
     }:
-        raise LlmRequestError(_INVALID_REASONING_STATE)
+        raise LlmRequestError(_INVALID_CONTINUATION_STATE)
 
-    items = provider_state.get(_REASONING_ITEMS_STATE_KEY)
+    items = provider_state.get(_CONTINUATION_ITEMS_STATE_KEY)
     if not isinstance(items, list) or not items:
-        raise LlmRequestError(_INVALID_REASONING_STATE)
+        raise LlmRequestError(_INVALID_CONTINUATION_STATE)
 
     validated: list[dict[str, Any]] = []
     for item in items:
-        if not _valid_reasoning_item(item):
-            raise LlmRequestError(_INVALID_REASONING_STATE)
+        if not _valid_continuation_item(item):
+            raise LlmRequestError(_INVALID_CONTINUATION_STATE)
         validated.append(deepcopy(item))
     return validated
+
+
+def _valid_continuation_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") == "reasoning":
+        return _valid_reasoning_item(item)
+    if item.get("type") == "web_search_call":
+        return _valid_web_search_item(item)
+    return False
 
 
 def _valid_reasoning_item(item: Any) -> bool:
@@ -464,16 +617,41 @@ def _valid_reasoning_item(item: Any) -> bool:
     )
 
 
-def _response_output_text(response: object) -> str:
-    output_text = getattr(response, "output_text", "")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+def _valid_web_search_item(item: dict[str, Any]) -> bool:
+    if not isinstance(item.get("id"), str) or not item["id"].strip():
+        return False
+    if item.get("status") not in _WEB_SEARCH_STATUSES:
+        return False
+    action = item.get("action")
+    return isinstance(action, dict) and action.get("type") in {
+        "search",
+        "open_page",
+        "find_in_page",
+    }
+
+
+def _response_output(response: object) -> tuple[str, list[LlmWebSource]]:
+    sources_by_id = {
+        source.id: source for source in _web_search_call_sources(response)
+    }
+    text, annotation_sources = _response_text_annotations(response)
+    for source in annotation_sources:
+        sources_by_id[source.id] = source
+    return text.strip(), list(sources_by_id.values())
+
+
+def _response_text_annotations(
+    response: object,
+) -> tuple[str, list[LlmWebSource]]:
+    """Return output text plus URL annotations in combined-text coordinates."""
 
     output = getattr(response, "output", None)
     if not isinstance(output, list):
-        return ""
+        output_text = getattr(response, "output_text", "")
+        return (output_text if isinstance(output_text, str) else ""), []
 
     parts: list[str] = []
+    sources: list[LlmWebSource] = []
     for item in output:
         data = object_dict(item)
         if data.get("type") != "message":
@@ -482,10 +660,54 @@ def _response_output_text(response: object) -> str:
             if not isinstance(block, dict):
                 continue
             text = block.get("text") or block.get("output_text")
-            if isinstance(text, str):
-                parts.append(text)
+            if not isinstance(text, str):
+                continue
+            parts.append(text)
+            for annotation in block.get("annotations") or []:
+                annotation_data = object_dict(annotation)
+                if annotation_data.get("type") != "url_citation":
+                    continue
+                url = annotation_data.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    continue
+                source = make_web_source(
+                    url,
+                    title=str(annotation_data.get("title") or ""),
+                )
+                sources.append(source)
 
-    return "".join(parts).strip()
+    if parts:
+        return "".join(parts), sources
+    output_text = getattr(response, "output_text", "")
+    return (output_text if isinstance(output_text, str) else ""), sources
+
+
+def _web_search_call_sources(response: object) -> list[LlmWebSource]:
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return []
+
+    sources: list[LlmWebSource] = []
+    for item in output:
+        data = object_dict(item)
+        if data.get("type") != "web_search_call":
+            continue
+        action = data.get("action")
+        if not isinstance(action, dict):
+            continue
+        candidates = action.get("sources") or []
+        if not isinstance(candidates, list):
+            candidates = []
+        action_url = action.get("url")
+        if isinstance(action_url, str) and action_url.strip():
+            candidates = [*candidates, {"url": action_url}]
+        for candidate in candidates:
+            candidate_data = object_dict(candidate)
+            url = candidate_data.get("url")
+            if isinstance(url, str) and url.strip():
+                sources.append(make_web_source(url))
+
+    return sources
 
 
 def _response_tool_calls(response: object) -> list[LlmToolCall]:

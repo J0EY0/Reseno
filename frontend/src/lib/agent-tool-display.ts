@@ -1,20 +1,16 @@
-import type { AgentToolInvocation } from "@/types/api";
+import type { AgentTimelinePart, AgentToolInvocation } from "@/types/api";
 
 export type AgentToolDisplayPhase = "running" | "complete" | "error";
 
 export type AgentToolDisplayCategory =
   | "fetch-job-reference"
   | "search-job-reference"
-  | "analyze-resume"
-  | "read-resume"
-  | "extract-material"
-  | "plan-edits"
+  | "read-material"
   | "generate-draft"
   | "processing";
 
 interface AgentToolDisplayMetadata {
   category: AgentToolDisplayCategory;
-  purposeCategories?: Partial<Record<string, AgentToolDisplayCategory>>;
 }
 
 /**
@@ -23,26 +19,10 @@ interface AgentToolDisplayMetadata {
  * checks because new tools must receive an explicit, reviewable category.
  */
 const AGENT_TOOL_DISPLAY_METADATA = {
-  web_fetch: {
-    category: "processing",
-    purposeCategories: {
-      jd: "fetch-job-reference",
-    },
-  },
   web_search: { category: "search-job-reference" },
-  material_extract: { category: "extract-material" },
-  resume_analysis: { category: "analyze-resume" },
-  resume_lookup: { category: "read-resume" },
-  draft_diff_summary: { category: "read-resume" },
-  update_target_context: { category: "processing" },
-  edit_plan: { category: "plan-edits" },
+  web_fetch: { category: "fetch-job-reference" },
+  attachment_read: { category: "read-material" },
   edit_execute: { category: "generate-draft" },
-  edit_move_item: { category: "generate-draft" },
-  edit_split_item: { category: "generate-draft" },
-  edit_merge_items: { category: "generate-draft" },
-  skills_classify: { category: "generate-draft" },
-  draft_rewrite: { category: "generate-draft" },
-  finish: { category: "processing" },
 } as const satisfies Record<string, AgentToolDisplayMetadata>;
 
 export type AgentToolName = keyof typeof AGENT_TOOL_DISPLAY_METADATA;
@@ -62,25 +42,10 @@ const AGENT_TOOL_LABEL_KEYS = {
     complete: "agentToolSearchingJobDone",
     error: "agentToolSearchingJobFailed",
   },
-  "analyze-resume": {
-    running: "agentToolAnalyzingResume",
-    complete: "agentToolAnalyzingResumeDone",
-    error: "agentToolAnalyzingResumeFailed",
-  },
-  "read-resume": {
-    running: "agentToolReadingResume",
-    complete: "agentToolReadingResumeDone",
-    error: "agentToolFailed",
-  },
-  "extract-material": {
+  "read-material": {
     running: "agentToolExtractingMaterial",
     complete: "agentToolExtractingMaterialDone",
     error: "agentToolExtractingMaterialFailed",
-  },
-  "plan-edits": {
-    running: "agentToolPlanningEdits",
-    complete: "agentToolPlanningEditsDone",
-    error: "agentToolPlanningEditsFailed",
   },
   "generate-draft": {
     running: "agentToolGeneratingDraft",
@@ -106,6 +71,31 @@ export function isToolRunning(state: AgentToolInvocation["state"]) {
     state === "input-available" ||
     state === "input-streaming"
   );
+}
+
+export function shouldShowTimelineContinuationStatus(
+  parts: AgentTimelinePart[],
+  tools: AgentToolInvocation[],
+  isStreamingAssistant: boolean,
+) {
+  if (
+    !isStreamingAssistant ||
+    tools.some((tool) => isToolRunning(tool.state))
+  ) {
+    return false;
+  }
+
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part.type === "text" && part.text?.trim()) {
+      return false;
+    }
+    if (part.type === "tool_group" && part.toolIds?.length) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function isToolError(state: AgentToolInvocation["state"]) {
@@ -152,12 +142,6 @@ export function getAgentToolName(tool: AgentToolInvocation) {
   return isAgentToolName(type) ? type : undefined;
 }
 
-function toolPurpose(tool: AgentToolInvocation) {
-  return isRecord(tool.input) && typeof tool.input.purpose === "string"
-    ? tool.input.purpose
-    : "";
-}
-
 export function getAgentToolDisplayCategory(
   tool: AgentToolInvocation,
 ): AgentToolDisplayCategory {
@@ -166,11 +150,7 @@ export function getAgentToolDisplayCategory(
     return "processing";
   }
 
-  const metadata: AgentToolDisplayMetadata =
-    AGENT_TOOL_DISPLAY_METADATA[name];
-  return (
-    metadata.purposeCategories?.[toolPurpose(tool)] ?? metadata.category
-  );
+  return AGENT_TOOL_DISPLAY_METADATA[name].category;
 }
 
 export function getAgentToolLabelKey(
@@ -186,14 +166,6 @@ export function isAgentEditExecutionTool(tool: AgentToolInvocation) {
 
 function toolDisplayKey(tool: AgentToolInvocation) {
   const name = getAgentToolName(tool);
-  const purpose = toolPurpose(tool);
-
-  if (name === "web_fetch") {
-    return `web_fetch:${purpose}`;
-  }
-  if (name === "web_search") {
-    return `web_search:${purpose}`;
-  }
   if (name) {
     return name;
   }
@@ -202,16 +174,6 @@ function toolDisplayKey(tool: AgentToolInvocation) {
 }
 
 function toolRecoveryKey(tool: AgentToolInvocation) {
-  const name = getAgentToolName(tool);
-  const purpose = toolPurpose(tool);
-
-  if (
-    (name === "web_fetch" || name === "web_search") &&
-    (purpose === "jd" || purpose === "target_context")
-  ) {
-    return "job_reference";
-  }
-
   return toolDisplayKey(tool);
 }
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
+from hashlib import sha256
 from inspect import isawaitable
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from openai import (
@@ -22,17 +24,88 @@ from .types import (
     LlmFilePart,
     LlmImagePart,
     LlmInputMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStopReason,
     LlmToolCall,
     LlmUsage,
+    LlmWebSource,
 )
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+_PROMPT_CACHE_KEY_TARGETS = {
+    ("openai", "openai_responses"): DEFAULT_OPENAI_BASE_URL,
+    ("xai", "openai_responses"): "https://api.x.ai/v1",
+    ("moonshot", "openai_compatible_chat"): "https://api.moonshot.ai/v1",
+}
 REQUEST_TIMEOUT_SECONDS = 60
 PROVIDER_CONNECT_TIMEOUT_SECONDS = 30.0
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
+QWEN_EXPLICIT_CACHE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# DashScope explicit caching is not a generic OpenAI-compatible extension. It
+# is currently limited to this documented China (Beijing) endpoint/model set,
+# so an unknown deployment must stay on the provider's implicit cache instead
+# of receiving an unsupported wire field.
+QWEN_EXPLICIT_CACHE_MODELS = frozenset(
+    {
+        "qwen3.7-max",
+        "qwen3.7-max-2026-05-20",
+        "qwen3.7-max-2026-06-08",
+        "qwen3.6-max-preview",
+        "qwen3-max",
+        "qwen3.7-plus",
+        "qwen3.7-plus-2026-05-26",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3.5-plus-2026-04-20",
+        "qwen-plus",
+        "qwen3.6-flash",
+        "qwen3.5-flash",
+        "qwen-flash",
+        "qwen3-coder-plus",
+        "qwen3-coder-flash",
+        "qwen3-vl-plus",
+        "qwen3-vl-flash",
+        "deepseek-v3.2",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "glm-5.1",
+    },
+)
+
+
+def make_web_source(
+    url: str,
+    title: str = "",
+    excerpt: str = "",
+) -> LlmWebSource:
+    """Normalize one provider citation into ResuMate's stable source identity."""
+
+    normalized_url = _normalized_web_source_url(url)
+    digest = sha256(normalized_url.encode("utf-8")).hexdigest()[:16]
+    return LlmWebSource(
+        id=f"source-web-{digest}",
+        title=title.strip() or normalized_url,
+        url=normalized_url,
+        excerpt=excerpt.strip(),
+    )
+
+
+def _normalized_web_source_url(url: str) -> str:
+    candidate = url.strip()
+    parsed = urlsplit(candidate)
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return candidate
+    return urlunsplit(
+        (
+            parsed.scheme.casefold(),
+            parsed.netloc.casefold(),
+            parsed.path or "/",
+            parsed.query,
+            "",
+        ),
+    )
 
 
 def openai_base_url(base_url: str) -> str:
@@ -51,6 +124,10 @@ def async_openai_client(config: Any) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=config.api_key or "local",
         base_url=openai_base_url(config.base_url),
+        # The agent loop owns one bounded retry before visible output. Disable
+        # the SDK's hidden retries so one timeout cannot multiply into several
+        # minutes across both layers.
+        max_retries=0,
         timeout=provider_http_timeout(config.timeout_seconds),
     )
 
@@ -153,29 +230,9 @@ def raise_openai_error(error: Exception) -> None:
     raise error
 
 
-def unsupported_parallel_tool_calls(error: APIStatusError) -> bool:
-    """Return whether an OpenAI-compatible provider rejected this parameter."""
-
-    response_text = error.response.text.lower()
-    if "parallel_tool_calls" not in response_text:
-        return False
-
-    return any(
-        marker in response_text
-        for marker in (
-            "unsupported",
-            "not supported",
-            "unknown",
-            "unrecognized",
-            "invalid parameter",
-            "extra inputs",
-        )
-    )
-
-
 def chat_completion_params(
     config: Any,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     stream: bool,
     request_context: LlmRequestContext | None = None,
@@ -184,35 +241,144 @@ def chat_completion_params(
 
     params: dict[str, Any] = {
         "model": config.model,
-        "messages": openai_chat_messages(messages),
+        "messages": _qwen_chat_messages(config, prompt),
         "stream": stream,
     }
     if config.temperature is not None:
         params["temperature"] = config.temperature
     if config.top_p is not None:
         params["top_p"] = config.top_p
-    if config.max_tokens:
-        params["max_tokens"] = config.max_tokens
+    if config.request_max_output_tokens:
+        params["max_tokens"] = config.request_max_output_tokens
     cache_key = openai_prompt_cache_key(config, request_context)
     if cache_key:
         params["prompt_cache_key"] = cache_key
+    extra_body = _openai_chat_thinking_body(config)
+    if extra_body:
+        params["extra_body"] = extra_body
 
     return params
+
+
+def _openai_chat_thinking_body(config: Any) -> dict[str, Any]:
+    """Project runtime Auto onto one verified OpenAI-compatible protocol."""
+
+    if official_minimax_reasoning_split(config):
+        # MiniMax otherwise embeds `<think>` text in visible content. Its
+        # official split mode returns a replayable reasoning_details sequence,
+        # keeping display text and continuation state separate.
+        body: dict[str, Any] = {"reasoning_split": True}
+        if str(config.model).casefold() == "minimax-m3":
+            if config.thinking_control == "native_auto":
+                body["thinking"] = {"type": "adaptive"}
+        return body
+    if config.thinking_control != "native_auto":
+        return {}
+    if (
+        config.provider == "qwen"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_compatible_chat"
+        and provider_base_url(config.base_url) == QWEN_EXPLICIT_CACHE_BASE_URL
+    ):
+        # DashScope exposes a boolean thinking switch outside the OpenAI schema.
+        # Do not send a budget or effort tier: the provider/model keeps ownership
+        # of its native Auto depth, including future tiers we do not know about.
+        return {"enable_thinking": True}
+    if (
+        config.provider == "vllm"
+        and config.provider_kind == "local"
+        and config.api_family == "openai_compatible_chat"
+    ):
+        # vLLM's request-level chat-template switch is model-agnostic: unknown
+        # template kwargs are filtered by the runtime, so capability selection
+        # remains in discovery/config rather than becoming a model-name table.
+        return {"chat_template_kwargs": {"enable_thinking": True}}
+    if (
+        config.provider == "sglang"
+        and config.provider_kind == "local"
+        and config.api_family == "openai_compatible_chat"
+    ):
+        # SGLang expands this provider-native boolean to both common template
+        # keys (`thinking` and `enable_thinking`) without choosing an effort.
+        return {"reasoning": {"enabled": True}}
+
+    return {}
+
+
+def _qwen_chat_messages(
+    config: Any,
+    prompt: LlmPrompt,
+) -> list[dict[str, Any]]:
+    messages = openai_chat_messages(prompt.messages, config=config)
+    if not _supports_qwen_explicit_cache(config):
+        return messages
+
+    # Qwen accepts at most four explicit breakpoints. The compiler supplies
+    # semantic prefix boundaries as message counts; the Adapter alone owns the
+    # provider-specific content-block projection. Copy before annotating so a
+    # later provider attempt sees the original neutral transcript.
+    cached_messages = deepcopy(messages)
+    for message_count in prompt.stable_prefix_message_counts[-4:]:
+        message = cached_messages[message_count - 1]
+        content = message.get("content")
+        cache_control = {"type": "ephemeral"}
+        if isinstance(content, str) and content:
+            message["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": cache_control,
+                },
+            ]
+            continue
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            blocks = deepcopy(content)
+            blocks[-1]["cache_control"] = cache_control
+            message["content"] = blocks
+            continue
+
+        raise LlmRequestError(
+            "Qwen cache boundary must end on a non-empty content block.",
+        )
+
+    return cached_messages
+
+
+def _supports_qwen_explicit_cache(config: Any) -> bool:
+    return (
+        config.provider == "qwen"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_compatible_chat"
+        and provider_base_url(config.base_url) == QWEN_EXPLICIT_CACHE_BASE_URL
+        and config.model.strip() in QWEN_EXPLICIT_CACHE_MODELS
+    )
 
 
 def openai_prompt_cache_key(
     config: Any,
     request_context: LlmRequestContext | None,
 ) -> str | None:
-    """Return an opaque cache key only for the official OpenAI provider."""
+    """Return an opaque key only where the provider officially supports it."""
 
-    if (
-        config.provider != "openai"
-        or config.provider_kind != "cloud"
-        or request_context is None
-    ):
+    if request_context is None or not supports_prompt_cache_key(config):
         return None
+
     return request_context.cache_key
+
+
+def supports_prompt_cache_key(config: Any) -> bool:
+    """Return whether this config is the provider's official cache-key target."""
+
+    if config.provider_kind != "cloud":
+        return False
+
+    expected_base_url = _PROMPT_CACHE_KEY_TARGETS.get(
+        (config.provider, config.api_family),
+    )
+    return (
+        expected_base_url is not None
+        and provider_base_url(config.base_url) == expected_base_url
+    )
 
 
 def openai_style_function_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -324,10 +490,6 @@ def parsed_tool_call(
 
 def provider_base_url(base_url: str) -> str:
     return base_url.strip().rstrip("/")
-
-
-def request_max_output_tokens(config: Any) -> int:
-    return config.max_tokens or DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def http_error_message(exc: httpx.HTTPStatusError) -> str:
@@ -501,6 +663,7 @@ def usage_from_values(
     output_tokens: Any = None,
     total_tokens: Any = None,
     cached_input_tokens: Any = None,
+    cache_write_input_tokens: Any = None,
     reasoning_tokens: Any = None,
 ) -> LlmUsage | None:
     usage = LlmUsage(
@@ -508,6 +671,7 @@ def usage_from_values(
         output_tokens=positive_int(output_tokens),
         total_tokens=positive_int(total_tokens),
         cached_input_tokens=positive_int(cached_input_tokens),
+        cache_write_input_tokens=positive_int(cache_write_input_tokens),
         reasoning_tokens=positive_int(reasoning_tokens),
     )
     if (
@@ -515,6 +679,7 @@ def usage_from_values(
         and usage.output_tokens is None
         and usage.total_tokens is None
         and usage.cached_input_tokens is None
+        and usage.cache_write_input_tokens is None
         and usage.reasoning_tokens is None
     ):
         return None
@@ -529,11 +694,37 @@ def openai_chat_usage(response: object) -> LlmUsage | None:
 
     prompt_details = attr_or_item(usage, "prompt_tokens_details")
     completion_details = attr_or_item(usage, "completion_tokens_details")
+    cached_input_tokens = attr_or_item(prompt_details, "cached_tokens")
+    if cached_input_tokens is None:
+        # DeepSeek's OpenAI-compatible API reports its automatic disk-cache
+        # hits directly on `usage`, rather than in `prompt_tokens_details`.
+        cached_input_tokens = attr_or_item(usage, "prompt_cache_hit_tokens")
+    if cached_input_tokens is None:
+        # Moonshot's Chat Completions response follows its documented compact
+        # shape and reports cache hits directly as `usage.cached_tokens`.
+        cached_input_tokens = attr_or_item(usage, "cached_tokens")
+    cache_write_input_tokens = attr_or_item(prompt_details, "cache_write_tokens")
+    if cache_write_input_tokens is None:
+        # DashScope names tokens written by an explicit Qwen cache breakpoint
+        # `cache_creation_input_tokens` in its OpenAI-compatible usage block.
+        cache_write_input_tokens = attr_or_item(
+            prompt_details,
+            "cache_creation_input_tokens",
+        )
+    if cache_write_input_tokens is None:
+        # Some OpenAI-compatible runtimes report newly materialized prefix
+        # cache tokens as `created_cache_tokens`. Keep it after the standard
+        # and Qwen fields so their documented meanings remain authoritative.
+        cache_write_input_tokens = attr_or_item(
+            prompt_details,
+            "created_cache_tokens",
+        )
     return usage_from_values(
         input_tokens=attr_or_item(usage, "prompt_tokens"),
         output_tokens=attr_or_item(usage, "completion_tokens"),
         total_tokens=attr_or_item(usage, "total_tokens"),
-        cached_input_tokens=attr_or_item(prompt_details, "cached_tokens"),
+        cached_input_tokens=cached_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
         reasoning_tokens=attr_or_item(completion_details, "reasoning_tokens"),
     )
 
@@ -550,6 +741,7 @@ def responses_usage(response: object) -> LlmUsage | None:
         output_tokens=attr_or_item(usage, "output_tokens"),
         total_tokens=attr_or_item(usage, "total_tokens"),
         cached_input_tokens=attr_or_item(input_details, "cached_tokens"),
+        cache_write_input_tokens=attr_or_item(input_details, "cache_write_tokens"),
         reasoning_tokens=attr_or_item(output_details, "reasoning_tokens"),
     )
 
@@ -570,6 +762,12 @@ def anthropic_usage(payload: dict[str, Any]) -> LlmUsage | None:
         else None
     )
     output_tokens = positive_int(usage.get("output_tokens"))
+    output_details = usage.get("output_tokens_details")
+    reasoning_tokens = (
+        output_details.get("thinking_tokens")
+        if isinstance(output_details, dict)
+        else None
+    )
     total_tokens = (
         input_tokens + output_tokens
         if input_tokens is not None and output_tokens is not None
@@ -580,6 +778,8 @@ def anthropic_usage(payload: dict[str, Any]) -> LlmUsage | None:
         output_tokens=output_tokens,
         total_tokens=total_tokens,
         cached_input_tokens=usage.get("cache_read_input_tokens"),
+        cache_write_input_tokens=usage.get("cache_creation_input_tokens"),
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -589,7 +789,13 @@ def map_stop_reason(value: Any) -> LlmStopReason:
         return "stop"
     if reason in {"tool_calls", "tool_use", "function_call"}:
         return "tool_calls"
-    if reason in {"length", "max_tokens", "max_output_tokens", "incomplete"}:
+    if reason in {
+        "length",
+        "max_tokens",
+        "max_output_tokens",
+        "incomplete",
+        "model_context_window_exceeded",
+    }:
         return "length"
     if reason in {"content_filter", "safety", "blocked"}:
         return "content_filter"
@@ -679,6 +885,8 @@ def image_data_url(part: LlmImagePart | LlmFilePart) -> str:
 
 def openai_chat_messages(
     messages: list[LlmInputMessage],
+    *,
+    config: Any = None,
 ) -> list[dict[str, Any]]:
     """Map neutral image blocks to OpenAI-compatible Chat Completions parts."""
 
@@ -693,7 +901,34 @@ def openai_chat_messages(
         if not any(part["type"] == "image" for part in parts):
             # TypedDict messages are ordinary dicts at runtime; this cast only
             # marks the point where the neutral transcript becomes SDK input.
-            converted.append(cast(dict[str, Any], message))
+            provider_message = dict(cast(dict[str, Any], message))
+            provider_state = provider_message.pop("provider_state", None)
+            if (
+                official_minimax_reasoning_split(config)
+                and message["role"] == "assistant"
+            ):
+                # reasoning_content is the runtime's display-neutral summary;
+                # MiniMax requires its complete ordered provider objects for a
+                # tool continuation, not a reconstructed text approximation.
+                provider_message.pop("reasoning_content", None)
+                reasoning_details = minimax_reasoning_details(
+                    provider_state,
+                    model=config.model,
+                )
+                if reasoning_details:
+                    provider_message["reasoning_details"] = reasoning_details
+            if (
+                official_deepseek_thinking(config)
+                and message["role"] == "assistant"
+                and provider_message.get("tool_calls")
+            ):
+                # DeepSeek requires every thinking tool turn to replay the full
+                # reasoning chain and rejects null assistant content. Copy only
+                # at the Adapter projection so neutral history stays portable.
+                provider_message = dict(provider_message)
+                if provider_message.get("content") is None:
+                    provider_message["content"] = ""
+            converted.append(provider_message)
             continue
 
         provider_content: list[dict[str, Any]] = []
@@ -711,6 +946,58 @@ def openai_chat_messages(
         converted.append({**message, "content": provider_content})
 
     return converted
+
+
+def official_deepseek_thinking(config: Any) -> bool:
+    return (
+        config is not None
+        and config.provider == "deepseek"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_compatible_chat"
+        and provider_base_url(config.base_url) == "https://api.deepseek.com"
+        and config.thinking_control != "none"
+    )
+
+
+def official_minimax_reasoning_split(config: Any) -> bool:
+    """Identify MiniMax's official split-reasoning response protocol.
+
+    ``reasoning_split`` changes response representation; it does not enable
+    reasoning. Keep it active even when capability discovery has not populated
+    a thinking control, otherwise MiniMax places ``<think>`` in visible text.
+    """
+
+    return (
+        config is not None
+        and config.provider == "minimax"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_compatible_chat"
+        and provider_base_url(config.base_url) == "https://api.minimaxi.com/v1"
+    )
+
+
+def minimax_reasoning_details(
+    provider_state: object,
+    *,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Return same-model MiniMax continuation blocks or fail closed."""
+
+    if provider_state is None:
+        return []
+    if not isinstance(provider_state, dict) or provider_state.get("model") != model:
+        raise LlmRequestError("MiniMax reasoning continuation state is invalid.")
+    raw_details = provider_state.get("reasoning_details")
+    if not isinstance(raw_details, list):
+        raise LlmRequestError("MiniMax reasoning continuation state is invalid.")
+
+    details: list[dict[str, Any]] = []
+    for value in raw_details:
+        detail = object_dict(value)
+        if not detail or not isinstance(detail.get("text"), str):
+            raise LlmRequestError("MiniMax reasoning continuation state is invalid.")
+        details.append(deepcopy(detail))
+    return details
 
 
 def system_and_messages(

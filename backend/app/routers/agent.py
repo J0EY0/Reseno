@@ -27,7 +27,7 @@ from app.schemas.agent import (
     AgentSessionResponse,
 )
 from app.schemas.common import APP_MESSAGE_BAD_REQUEST, ApiResponse, ok_response
-from app.schemas.resumes import ResumeDetailResponse
+from app.schemas.resumes import ResumeDetailResponse, is_valid_resume_id
 from app.services.agent.attachments import (
     MAX_AGENT_ATTACHMENT_BYTES,
     AgentAttachmentError,
@@ -55,7 +55,6 @@ from app.services.agent_sessions import (
     AgentSessionRevisionConflictError,
     AgentSessionTurnReplayError,
     apply_agent_draft_decision,
-    is_valid_resume_id,
     load_agent_session,
     replace_agent_session_messages,
     update_agent_draft_decision,
@@ -355,12 +354,6 @@ async def post_agent_chat(
     request: AgentChatRequest,
 ) -> Response:
     """Start one background Agent run and subscribe to its event stream."""
-
-    if request.resume_id and not is_valid_resume_id(request.resume_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=APP_MESSAGE_BAD_REQUEST,
-        )
 
     # Freeze persisted preferences before handing the request to the background
     # run. A settings change during this run takes effect on the next turn.

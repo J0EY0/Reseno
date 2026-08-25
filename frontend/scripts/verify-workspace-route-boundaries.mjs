@@ -14,6 +14,7 @@ const [
   resumeDetailRouteSource,
   resumeDetailViewSource,
   resumeDetailLoaderSource,
+  resumeDetailPreferencesSource,
   resumeDetailSaveSource,
   resumeDetailLeaveSource,
   modelsPageSource,
@@ -31,6 +32,7 @@ const [
   lateralRouteDataSource,
   persistenceSource,
   preparedNavigationSource,
+  navigationTransactionSource,
   workspaceRoutePreparationSource,
   workspaceRouteSource,
   workspaceRouteMemorySource,
@@ -42,6 +44,7 @@ const [
   readText("src/components/workspace/use-resume-detail-workspace.ts"),
   readText("src/components/workspace/resume-detail-workspace-view.tsx"),
   readText("src/components/workspace/use-resume-detail-loader.ts"),
+  readText("src/components/workspace/use-resume-detail-preferences.ts"),
   readText("src/components/workspace/use-resume-detail-save.ts"),
   readText("src/components/workspace/use-resume-detail-leave.ts"),
   readText("src/components/workspace/models-workspace-page.tsx"),
@@ -60,6 +63,9 @@ const [
   readText("src/lib/workspace-preferences-persistence.ts"),
   readText(
     "src/components/workspace/use-prepared-workspace-navigation.ts",
+  ),
+  readText(
+    "src/components/workspace/use-workspace-navigation-transaction.ts",
   ),
   readText("src/components/workspace/workspace-route-preparation.ts"),
   readText("src/lib/workspace-route.ts"),
@@ -84,6 +90,15 @@ for (const routeEntry of [
     `${routeEntry} must remain a literal, statically analyzable lazy entry.`,
   );
 }
+const appRouteSuspenseSource = appSource.slice(
+  appSource.indexOf("function AppRouteSuspense"),
+  appSource.indexOf("function DocumentMetadata"),
+);
+assert.doesNotMatch(
+  appRouteSuspenseSource,
+  /ViewTransitionBoundary|slide-(?:up|down)/,
+  "Route Suspense resolution must not animate loading into content; explicit workspace navigation owns route motion.",
+);
 assert.match(appSource, /<Route path="\/resume"/);
 assert.match(appSource, /<Route path="\/resume\/:id"/);
 assert.match(appSource, /<Route path="\/models"/);
@@ -134,18 +149,18 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /Promise\.all\(\[\s*loadWorkspaceRouteModule\(view\),\s*loadWorkspaceRouteData\(view, persistence\),\s*\]\)/,
+  /Promise\.all\(\[\s*preloadWorkspaceRoute\(view\),\s*loadWorkspaceRouteData\(view, persistence, options\),\s*\]\)/,
   "Workspace preparation must load the route module and flushed route data in parallel.",
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /await persistence\.flush\(\)[\s\S]{0,1800}fetchWorkspaceRouteData\("settings",\s*\{\s*notifyOnError:\s*false,?\s*\}\)/,
+  /await persistence\.flush\(\)[\s\S]{0,2200}fetchWorkspaceRouteData\("settings",\s*\{\s*notifyOnError:\s*false,\s*signal:\s*options\.signal/,
   "Prepared route reads must wait for queued preference writes and suppress duplicate error Toasts.",
 );
-assert.doesNotMatch(
+assert.match(
   workspaceRoutePreparationSource,
-  /fetchWorkspaceRouteData\([\s\S]{0,100}signal\s*:/,
-  "Prepared GETs must stay uncancelled so requestApi can share its three-second cache.",
+  /interface RoutePreparationOptions \{\s*signal: AbortSignal;\s*\}/,
+  "Committed preparation must require a caller-owned signal so GETs stay fresh and abortable.",
 );
 assert.match(
   workspaceRoutePreparationSource,
@@ -159,8 +174,8 @@ assert.doesNotMatch(
 );
 assert.match(
   workspaceRouteMemorySource,
-  /WorkspaceLateralRouteHandoffState[\s\S]{0,300}token:\s*string[\s\S]*routeDataByToken = new Map[\s\S]*latestRouteDataByView = new Map[\s\S]*rememberWorkspaceLateralRoute[\s\S]*Object\.prototype\.hasOwnProperty\.call\(candidate, "data"\)/,
-  "Lateral history must contain only a token while validated one-time and per-view data stay in bounded memory.",
+  /WorkspaceLateralRouteHandoffState[\s\S]{0,300}token:\s*string[\s\S]*routeDataByToken = new Map[\s\S]*committedRouteDataByView = new Map<[\s\S]{0,80}WorkspaceView[\s\S]*rememberWorkspaceLateralRoute[\s\S]*Object\.prototype\.hasOwnProperty\.call\(candidate, "data"\)/,
+  "Lateral history must contain only a token while validated one-time and per-view committed data stay in bounded memory.",
 );
 const lateralHistoryStateSource = workspaceRouteMemorySource.slice(
   workspaceRouteMemorySource.indexOf(
@@ -178,7 +193,7 @@ assert.doesNotMatch(
 assert.match(
   lateralRouteDataSource,
   /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceLateralRouteHandoff\(resolution\.tokenToDelete\)[\s\S]{0,300}replace:\s*true, state:\s*null[\s\S]*return resolution\.data/,
-  "The consumer must freeze its first frame from handoff or latest view memory and scrub one-time or dead tokens before paint.",
+  "The consumer must freeze its first frame from a handoff or committed view memory and scrub one-time or dead tokens before paint.",
 );
 assert.match(
   lateralRouteDataSource,
@@ -221,43 +236,123 @@ assert.doesNotMatch(
 );
 assert.match(
   shellSource,
-  /prepareWorkspaceRoute\(view, persistence\)\.catch\(\(\) => undefined\)/,
-  "Sidebar hover and focus preparation must never create an unhandled rejection.",
+  /preloadWorkspaceRoute\(view\)\.catch\(\(\) => undefined\)/,
+  "Sidebar hover and focus must preload only the route module.",
+);
+assert.match(
+  navigationTransactionSource,
+  /let activeNavigation[\s\S]*function beginWorkspaceNavigation[\s\S]*activeNavigation\?\.controller\.abort\(\)[\s\S]*new AbortController\(\)/,
+  "Every workspace navigation owner must share one latest-intent transaction.",
+);
+for (const transactionCapability of [
+  /signal:\s*controller\.signal/,
+  /const isCurrent = \(\) =>/,
+  /cancel:\s*\(\) =>/,
+  /finish:\s*\(\) =>/,
+  /activeNavigation\?\.id !== id/,
+]) {
+  assert.match(
+    navigationTransactionSource,
+    transactionCapability,
+    "The shared transaction must expose guarded cancellation, completion, and staleness checks.",
+  );
+}
+assert.match(
+  navigationTransactionSource,
+  /useEffect\([\s\S]{0,220}cancelNavigation\(\)/,
+  "Unmounting a navigation owner must cancel its still-current transaction.",
+);
+assert.match(
+  navigationTransactionSource,
+  /useLayoutEffect\([\s\S]{0,260}cancelNavigation\(\)[\s\S]{0,120}location\.key/,
+  "Query-only and history navigation must supersede an older owned intent without relying on unmount.",
+);
+for (const navigationOwnerSource of [
+  shellSource,
+  resumeGalleryRouteSource,
+  templateGalleryRouteSource,
+  preparedNavigationSource,
+  resumeDetailRouteSource,
+  templateDetailRouteSource,
+]) {
+  assert.match(
+    navigationOwnerSource,
+    /useWorkspaceNavigationTransaction\(\)/,
+    "Cards, sidebar, detail navigation, and mutation entrances must share the latest-navigation transaction.",
+  );
+}
+const shellViewChangeSource = shellSource.slice(
+  shellSource.indexOf("async function handleViewChange"),
+  shellSource.indexOf("  return ("),
+);
+assert.match(
+  shellViewChangeSource,
+  /const intent = beginNavigation\(\)[\s\S]*prepareWorkspaceRoute\(view, persistence, \{\s*signal: intent\.signal[\s\S]*!intent\.isCurrent\(\)[\s\S]*createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]*intent\.finish\(\)[\s\S]*navigate\(path, \{ state \}\)[\s\S]*WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
+  "Sidebar clicks must commit only fresh prepared route data and surface one stable failure Toast.",
+);
+assert.doesNotMatch(
+  shellViewChangeSource,
+  /catch[\s\S]*navigate\(path\)/,
+  "A failed sidebar preparation must keep the current route mounted.",
+);
+assert.match(
+  shellViewChangeSource,
+  /const intent = beginNavigation\(\);[\s\S]{0,100}if \(view === activeView\) \{[\s\S]{0,80}intent\.finish\(\)/,
+  "Clicking the active sidebar entry must still supersede an older card or mutation intent.",
+);
+assert.doesNotMatch(
+  shellViewChangeSource,
+  /navigationIntentRef|navigationAbortRef|new AbortController\(\)/,
+  "Sidebar navigation must not own a private latest-request counter.",
 );
 assert.match(
   shellSource,
-  /await prepareWorkspaceRoute\(view, persistence\)[\s\S]{0,300}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,160}navigate\(path, \{ state \}\)[\s\S]{0,160}catch[\s\S]{0,180}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,180}navigate\(path\)/,
-  "Sidebar clicks must await preparation and fall back to ordinary target-owned loading without stale state.",
-);
-assert.match(
-  shellSource,
-  /navigationIntentRef[\s\S]{0,500}view === activeView[\s\S]{0,500}navigationIntentRef\.current !== intentId/,
-  "Only the latest non-active sidebar intent may commit an asynchronous navigation.",
+  /function handleLogout\(\) \{[\s\S]{0,120}beginNavigation\(\)[\s\S]{0,80}intent\.finish\(\)[\s\S]{0,80}onLogout\(\)/,
+  "Logout must supersede pending workspace navigation before leaving auth state.",
 );
 assert.match(
   preparedNavigationSource,
-  /prepareWorkspaceRoute\(view, persistence\)\.catch\(\(\) => undefined\)/,
-  "Detail hover and focus preparation must never create an unhandled rejection.",
+  /preloadWorkspaceRoute\(view\)\.catch\(\(\) => undefined\)/,
+  "Detail hover and focus must preload only the route module.",
 );
 assert.match(
   preparedNavigationSource,
-  /requestLeave\(\(\) => \{\s*void prepareWorkspaceRoute\(view, persistence\)\.then\(\s*finishPreparation,\s*\(\) => finishPreparation\(null\)/,
-  "Detail preparation failures must hand ordinary target-owned loading to the destination.",
+  /const prepareFreshRoute = \(\) =>[\s\S]*prepareWorkspaceRoute\(view, persistence, \{\s*signal: intent\.signal[\s\S]{0,1200}WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
+  "Detail navigation must prepare a fresh target after the first leave guard and keep failures local.",
 );
 assert.equal(
-  (preparedNavigationSource.match(/requestLeave\(\(\) =>/g) ?? []).length,
+  (
+    preparedNavigationSource.match(
+      /requestLeave\(prepareFreshRoute, intent\.cancel\)/g,
+    ) ?? []
+  ).length,
   2,
-  "Detail routes must guard immediately and again after preparation.",
+  "Detail navigation must guard before preparation and re-enter the same fresh preparation after late edits.",
 );
 assert.match(
   preparedNavigationSource,
-  /finishPreparation[\s\S]{0,300}requestLeave\(\(\) =>[\s\S]{0,500}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,220}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,120}navigate\(path\)/,
-  "A detail route may allocate its token only inside the final guarded commit and must clean up before fallback.",
+  /if \(requiresLeaveResolution\(\)\) \{[\s\S]{0,180}requestLeave\(prepareFreshRoute, intent\.cancel\)[\s\S]{0,160}return;[\s\S]{0,180}commitPreparedRoute\(prepared\)/,
+  "If editing or checkpoint promotion happens during preparation, leave resolution must trigger another fresh preparation before commit.",
 );
 assert.match(
   preparedNavigationSource,
-  /cancelPending[\s\S]{0,240}useEffect\([\s\S]{0,160}cancelPending\(\)[\s\S]*navigationIntentRef\.current !== intentId/,
-  "Superseded and unmounted detail navigation intents must not commit late.",
+  /const commitPreparedRoute[\s\S]{0,900}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,160}intent\.finish\(\)[\s\S]{0,120}navigate\(path, \{ state \}\)[\s\S]{0,260}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,300}WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
+  "A detail route may allocate its token only inside the final guarded commit and must clean up failed commits.",
+);
+assert.doesNotMatch(
+  preparedNavigationSource,
+  /finishPreparation\(null\)|catch[\s\S]{0,240}navigate\(path\)|navigationIntentRef|navigationAbortRef|new AbortController\(\)/,
+  "Prepared detail navigation must never fall through to an unprepared destination.",
+);
+assert.match(
+  preparedNavigationSource,
+  /cancelPending:\s*cancelNavigation/,
+  "Unmounted detail navigation owners must cancel their own pending transaction.",
+);
+assert.match(
+  preparedNavigationSource,
+  /intent\.isCurrent\(\)/,
+  "Superseded detail navigation intents must not commit late.",
 );
 for (const detailRouteSource of [
   resumeDetailRouteSource,
@@ -265,42 +360,30 @@ for (const detailRouteSource of [
 ]) {
   assert.match(
     detailRouteSource,
-    /usePreparedWorkspaceNavigation\(\{ persistence, requestLeave \}\)/,
+    /usePreparedWorkspaceNavigation\(\{[\s\S]{0,180}preparationErrorMessage:\s*messages\.loadError,[\s\S]{0,100}requestLeave/,
     "Both editable detail routes must share the guarded prepared-navigation owner.",
   );
 }
-for (const [routeSource, expectedMutationCommands] of [
-  [resumeGalleryRouteSource, 4],
-  [templateGalleryRouteSource, 5],
-  [trashRouteSource, 5],
-  [preferencesRouteSource, 4],
+for (const routeSource of [
+  resumeGalleryRouteSource,
+  templateGalleryRouteSource,
+  trashRouteSource,
+  preferencesRouteSource,
 ]) {
   assert.match(
     routeSource,
     /hasLoaded, setHasLoaded\] = useState\(Boolean\(preparedRouteData\)\)[\s\S]{0,180}isLoading, setIsLoading\] = useState\(!preparedRouteData\)/,
-    "A prepared route must keep its first-frame content interactive during background calibration.",
+    "A prepared route must keep its first-frame content interactive.",
   );
   assert.match(
     routeSource,
-    /isPreparedCalibration\s*\? \{ notifyOnError: false \}\s*:\s*\{ notifyOnError: false, signal \}/,
-    "Prepared calibration must reuse the uncancelled shared GET while direct loads remain abortable.",
+    /if \(preparedRouteData && retryKey === 0\)[\s\S]{0,700}return;[\s\S]{0,200}new AbortController\(\)/,
+    "A prepared lateral handoff must return before the direct-URL loader creates transport.",
   );
-  assert.equal(
-    (routeSource.match(
-      /isPreparedCalibration &&\s*routeMutationEpochRef\.current !== mutationEpoch\s*\) \{\s*continue;/g,
-    ) ?? []).length,
-    3,
-    "Prepared calibration must retry pre-GET, post-GET, and failed results after local mutation ownership changes.",
-  );
-  assert.match(
+  assert.doesNotMatch(
     routeSource,
-    /if \(!isPreparedCalibration\) \{\s*setHasLoaded\(false\);\s*setHasLoadError\(true\);\s*\}/,
-    "A failed background calibration must retain valid handoff content while direct loads keep retry UI.",
-  );
-  assert.equal(
-    (routeSource.match(/markRouteMutation\(\);/g) ?? []).length,
-    expectedMutationCommands,
-    "Every current route-local mutation command must advance calibration ownership.",
+    /isPreparedCalibration|routeMutationEpochRef|markRouteMutation/,
+    "Lateral routes must not retain the obsolete background-calibration path.",
   );
 }
 assert.match(
@@ -334,9 +417,56 @@ assert.match(
   "The template gallery must flush queued preferences before reading route data.",
 );
 assert.match(
-  templateGalleryRouteSource,
+  workspaceRoutePreparationSource,
   /import\("@\/components\/workspace\/template-detail-workspace-page"\)/,
-  "The template gallery must preload the independent detail route entry.",
+  "Template preparation must preload the independent detail route entry.",
+);
+const openTemplateSource = templateGalleryRouteSource.slice(
+  templateGalleryRouteSource.indexOf("const openTemplate"),
+  templateGalleryRouteSource.indexOf("const createCustomTemplate"),
+);
+assert.match(
+  openTemplateSource,
+  /prepareTemplateDetailRoute\(templateId, persistence, \{\s*signal: intent\.signal/,
+  "Template card navigation must freshly validate its target with the shared intent.",
+);
+assert.match(
+  openTemplateSource,
+  /commitTemplateDetailNavigation\(\s*intent,\s*templateId,\s*data/,
+  "Template card navigation must commit the complete prepared handoff.",
+);
+assert.equal(
+  (templateGalleryRouteSource.match(/await detailRouteReady;/g) ?? []).length,
+  2,
+  "Template create and import must finish preparing the detail module before navigation.",
+);
+const templateDetailCommitSource = templateGalleryRouteSource.slice(
+  templateGalleryRouteSource.indexOf("const commitTemplateDetailNavigation"),
+  templateGalleryRouteSource.indexOf("const openTemplate"),
+);
+assert.match(
+  templateDetailCommitSource,
+  /!intent\.isCurrent\(\)[\s\S]*intent\.finish\(\)[\s\S]{0,160}navigate\(/,
+  "Template detail commits must be owned by the latest shared intent.",
+);
+for (const [start, end, label] of [
+  ["const createCustomTemplate", "const importTemplates", "creation"],
+  ["const importTemplates", "const deleteTemplates", "import"],
+]) {
+  const mutationSource = templateGalleryRouteSource.slice(
+    templateGalleryRouteSource.indexOf(start),
+    templateGalleryRouteSource.indexOf(end),
+  );
+  assert.match(
+    mutationSource,
+    /const intent = beginNavigation\(\)[\s\S]*setCustomTemplates\([\s\S]{0,180}!intent\.isCurrent\(\)[\s\S]*await detailRouteReady[\s\S]*commitTemplateDetailNavigation\(\s*intent/,
+    `Template ${label} must keep its mutation result but never navigate after a newer intent.`,
+  );
+}
+assert.doesNotMatch(
+  templateGalleryRouteSource,
+  /detailNavigationIntentRef|detailNavigationAbortRef|new AbortController\(\)\.signal/,
+  "Template cards and mutations must not retain private navigation owners.",
 );
 assert.doesNotMatch(
   templateGalleryRouteSource,
@@ -344,9 +474,9 @@ assert.doesNotMatch(
   "Template navigation must not warm the removed Builder-owned detail surface.",
 );
 assert.match(
-  templateDetailRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("template-detail"/,
-  "Template detail must flush queued preferences before its route-owned calibration read.",
+  workspaceRoutePreparationSource,
+  /loadTemplateDetailRouteData[\s\S]{0,500}await persistence\.flush\(\)[\s\S]{0,300}fetchWorkspaceRouteData\("template-detail", \{[\s\S]{0,120}signal: options\.signal/,
+  "Direct template loads and click preparation must share one fresh target-validating read.",
 );
 assert.match(
   templateDetailRouteSource,
@@ -365,8 +495,18 @@ assert.match(
 );
 assert.match(
   templateDetailRouteSource,
-  /priorPersistedFingerprint[\s\S]{0,500}createTemplateFingerprint\(currentTarget\)\s*===\s*priorPersistedFingerprint[\s\S]{0,500}item\.id === templateId \? currentTarget : item[\s\S]{0,300}hydratePersistedTemplate\(targetTemplate\)/,
-  "Server calibration must update the persisted baseline without replacing a handoff draft edited in flight.",
+  /if \(initialDetail && retryKey === 0\)[\s\S]{0,500}setIsLoading\(false\);\s*return;/,
+  "A complete template handoff must skip the direct-URL loader entirely.",
+);
+assert.doesNotMatch(
+  templateDetailRouteSource,
+  /calibrationFingerprintRef|priorPersistedFingerprint/,
+  "Template detail must not retain the retired handoff calibration path.",
+);
+assert.match(
+  templateDetailPageSource,
+  /useState\(routeState\)[\s\S]{0,600}replace:\s*true, state:\s*null[\s\S]{0,500}routeState:\s*initialRouteState/,
+  "Template detail must consume complete handoff state once and scrub it from history.",
 );
 assert.match(
   templateDetailSaveSource,
@@ -377,6 +517,20 @@ assert.match(
   templateDetailLeaveSource,
   /useBlocker\(hasUnsavedChanges\)[\s\S]*beforeunload[\s\S]*saveAndLeave[\s\S]*discardAndLeave/,
   "Template detail must own history, browser-close, save, and discard leave behavior.",
+);
+const templateCopySource = templateDetailRouteSource.slice(
+  templateDetailRouteSource.indexOf("const createCustomTemplate"),
+  templateDetailRouteSource.indexOf("const updateTemplate"),
+);
+assert.match(
+  templateCopySource,
+  /const intent = beginNavigation\(\)[\s\S]*await save\(\)[\s\S]*!intent\.isCurrent\(\)[\s\S]*createTemplateApi\([\s\S]*setCustomTemplates\([\s\S]*!intent\.isCurrent\(\)[\s\S]*adoptPersistedTemplate\([\s\S]*intent\.finish\(\)[\s\S]*navigate\(/,
+  "Creating an editable template copy may update the catalog, but only the latest intent may adopt it or navigate.",
+);
+assert.match(
+  templateDetailRouteSource,
+  /const logout = useCallback\([\s\S]{0,500}const intent = beginNavigation\(\)[\s\S]{0,260}requestLeave\([\s\S]{0,180}intent\.finish\(\)[\s\S]{0,100}onLogout\(\)[\s\S]{0,100}intent\.cancel/,
+  "Template logout must share dirty-state resolution without allowing an older navigation to commit.",
 );
 assert.match(
   resumeGalleryRouteSource,
@@ -400,15 +554,76 @@ assert.match(
   /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale resume gallery requests must exit before retry state and Toast.",
 );
+const openResumeSource = resumeGalleryRouteSource.slice(
+  resumeGalleryRouteSource.indexOf("const openResume"),
+  resumeGalleryRouteSource.indexOf("const createResume"),
+);
 assert.match(
-  resumeGalleryRouteSource,
-  /createResumeDetailRouteHandoff\([\s\S]{0,400}customTemplates:[\s\S]{0,120}defaultTemplateId:[\s\S]{0,120}theme[\s\S]{0,160}resumeOrdinal/,
-  "Resume navigation must hand the selected document and gallery template snapshot to the cold detail route.",
+  openResumeSource,
+  /prepareResumeDetailRoute\(resumeId, persistence, \{\s*signal: intent\.signal/,
+  "Resume card navigation must freshly validate its target with the shared intent.",
+);
+assert.match(
+  openResumeSource,
+  /commitResumeDetailNavigation\(\s*intent,\s*prepared,\s*resumeId/,
+  "Resume card navigation must hand one complete prepared payload to the cold route.",
 );
 assert.match(
   resumeGalleryRouteSource,
+  /createResumeDetailRouteHandoff\(\s*prepared,\s*resumeOrdinal,\s*resumeCount/,
+  "Resume navigation state must contain the complete prepared payload plus gallery position only.",
+);
+assert.equal(
+  (
+    resumeGalleryRouteSource.match(
+      /prepared = await prepareCreatedResumeDetailRoute\(/g,
+    ) ?? []
+  ).length,
+  2,
+  "Resume create and import must combine their mutation response with prepared editor data before navigation.",
+);
+const resumeDetailCommitSource = resumeGalleryRouteSource.slice(
+  resumeGalleryRouteSource.indexOf("const commitResumeDetailNavigation"),
+  resumeGalleryRouteSource.indexOf("const openResume"),
+);
+assert.match(
+  resumeDetailCommitSource,
+  /!intent\.isCurrent\(\)[\s\S]*intent\.finish\(\)[\s\S]{0,160}navigate\(/,
+  "Resume detail commits must be owned by the latest shared intent.",
+);
+for (const [start, end, label] of [
+  ["const createResume", "const importResume", "creation"],
+  ["const importResume", "const moveResumesToTrash", "import"],
+]) {
+  const mutationSource = resumeGalleryRouteSource.slice(
+    resumeGalleryRouteSource.indexOf(start),
+    resumeGalleryRouteSource.indexOf(end),
+  );
+  assert.match(
+    mutationSource,
+    /const intent = beginNavigation\(\)[\s\S]*setResumes\([\s\S]{0,300}!intent\.isCurrent\(\)[\s\S]*prepareCreatedResumeDetailRoute\([\s\S]{0,180}signal: intent\.signal[\s\S]*commitResumeDetailNavigation\(\s*intent/,
+    `Resume ${label} must keep its mutation result but never navigate after a newer intent.`,
+  );
+}
+assert.doesNotMatch(
+  resumeGalleryRouteSource,
+  /detailNavigationIntentRef|detailNavigationAbortRef|new AbortController\(\)\.signal/,
+  "Resume cards and mutations must not retain private navigation owners.",
+);
+assert.match(
+  workspaceRouteSource,
+  /ResumeDetailRouteHandoff \{\s*kind:[\s\S]{0,120}payload: PreparedResumeDetailRouteData;[\s\S]{0,220}createResumeDetailRouteHandoff\(\s*payload:/,
+  "Resume handoff must have one complete payload instead of parallel partial and optional forms.",
+);
+assert.doesNotMatch(
+  workspaceRouteSource,
+  /prepared\?|prepared\s*=\s*false/,
+  "Detail handoffs must not retain a compatibility path that triggers mount calibration.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
   /import\("@\/components\/workspace\/resume-detail-workspace-page"\)/,
-  "The gallery must warm the independent resume-detail route entry.",
+  "Resume preparation must preload the independent resume-detail route entry.",
 );
 assert.doesNotMatch(
   resumeGalleryRouteSource,
@@ -439,9 +654,9 @@ assert.ok(
   "A duplicate must advance the handoff count while title fallback keeps the selected document's gallery ordinal.",
 );
 assert.match(
-  resumeDetailLoaderSource,
-  /await persistence\.flush\(\)[\s\S]{0,700}fetchWorkspaceRouteData\("resume-detail"[\s\S]{0,500}fetchResumeApi\(resumeId[\s\S]{0,500}fetchResumeVersionsApi\(resumeId[\s\S]{0,500}Promise\.all/,
-  "The resume handoff must not replace the parallel abortable server calibration.",
+  workspaceRoutePreparationSource,
+  /loadResumeDetailRouteData[\s\S]{0,600}fetchWorkspaceRouteData\("resume-detail"[\s\S]{0,300}fetchResumeApi\(resumeId[\s\S]{0,300}fetchResumeVersionsApi\(resumeId[\s\S]{0,500}Promise\.all/,
+  "Resume preparation and direct loads must share one parallel abortable read transaction.",
 );
 assert.match(
   resumeDetailLoaderSource,
@@ -449,9 +664,52 @@ assert.match(
   "Resume detail must suppress StrictMode preflight and abort cleanup.",
 );
 assert.match(
+  resumeDetailLoaderSource,
+  /if \(prepared && retryKey === 0\)[\s\S]{0,500}onLoadRef\.current\(prepared\)[\s\S]{0,300}return;/,
+  "A complete resume handoff must be consumed without starting the direct-URL loader.",
+);
+assert.match(
+  resumeDetailPreferencesSource,
+  /initialRouteData\?: ResumeEditorRouteData[\s\S]{0,900}normalizeModelConfigs\(initialRouteData, locale\)[\s\S]{0,900}initialRouteData\?\.agentSettings/,
+  "Prepared model and Agent preferences must initialize synchronously for the first detail frame.",
+);
+const duplicateNavigationSource = resumeDetailRouteSource.slice(
+  resumeDetailRouteSource.indexOf("const navigateToResume"),
+  resumeDetailRouteSource.indexOf("const documentCommands"),
+);
+assert.equal(
+  (
+    duplicateNavigationSource.match(
+      /requestLeave\(prepareFreshRoute, intent\.cancel\)/g,
+    ) ?? []
+  ).length,
+  2,
+  "The delayed duplicate Toast action must guard both before and after target preparation.",
+);
+assert.match(
+  duplicateNavigationSource,
+  /prepareResumeDetailRoute\([\s\S]{0,120}detail\.resume\.id,[\s\S]{0,120}signal: intent\.signal[\s\S]*WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
+  "Viewing a duplicate must freshly validate the delayed target and stay put on failure.",
+);
+assert.match(
+  duplicateNavigationSource,
+  /save\.hasUnsavedChanges\(\)[\s\S]{0,100}save\.requiresCheckpointPromotion\(\)[\s\S]{0,180}requestLeave\(prepareFreshRoute, intent\.cancel\)/,
+  "Viewing a duplicate must reprepare after late edits or checkpoint promotion.",
+);
+assert.match(
+  duplicateNavigationSource,
+  /!intent\.isCurrent\(\)[\s\S]{0,180}intent\.finish\(\)[\s\S]{0,120}navigate\(/,
+  "Only the latest duplicate navigation intent may commit.",
+);
+assert.doesNotMatch(
+  duplicateNavigationSource,
+  /navigationIntentRef|navigationAbortRef|new AbortController\(\)/,
+  "Delayed duplicate navigation must share the global latest-intent transaction.",
+);
+assert.match(
   resumeDetailRouteSource,
-  /hydrateIfUnchanged\(detail\.resume, initialFingerprint\)[\s\S]{0,400}hydratePersistedResume\([\s\S]{0,160}initialFingerprint \?\? undefined/,
-  "Resume calibration must preserve a handoff draft while updating its persisted baseline.",
+  /const logout = useCallback\([\s\S]{0,500}const intent = beginNavigation\(\)[\s\S]{0,260}requestLeave\([\s\S]{0,180}intent\.finish\(\)[\s\S]{0,100}onLogout\(\)[\s\S]{0,100}intent\.cancel/,
+  "Resume logout must share dirty-state resolution without allowing an older navigation to commit.",
 );
 assert.ok(
   /isLoading:\s*isLoading \|\| hasRouteLoadError/.test(
@@ -462,15 +720,10 @@ assert.ok(
     ),
   "A route calibration failure must pause autosave as well as the explicit save shortcut.",
 );
-assert.match(
-  resumeDetailSaveSource,
-  /expectedPersistedFingerprint[\s\S]{0,240}persistedFingerprintRef\.current !== expectedPersistedFingerprint[\s\S]{0,120}persistenceEpochRef\.current !== 0[\s\S]{0,80}return false/,
-  "A same-content checkpoint completed before calibration must prevent stale GET metadata from rolling back the persisted baseline.",
-);
-assert.ok(
-  (resumeDetailSaveSource.match(/persistenceEpochRef\.current \+= 1/g) ?? [])
-    .length >= 3,
-  "Successful saves, restores, and version selections must advance calibration authority.",
+assert.doesNotMatch(
+  resumeDetailRouteSource + resumeDetailSaveSource,
+  /initialFingerprint|expectedPersistedFingerprint|persistenceEpochRef|hydrateIfUnchanged/,
+  "Resume detail must not retain the retired handoff calibration path.",
 );
 assert.match(
   resumeDetailSaveSource,
@@ -508,6 +761,16 @@ assert.ok(
   ) &&
     /promoteCheckpoint[\s\S]*discardAndLeave/.test(resumeDetailLeaveSource),
   "Resume detail must own history, browser-close, checkpoint promotion, and discard behavior.",
+);
+assert.match(
+  resumeDetailLeaveSource,
+  /useRef<Promise<void> \| null>\(null\)[\s\S]*checkpointPromotionInFlightRef\.current \?\?[\s\S]*promotion\.then\(/,
+  "Every leave request must await the shared checkpoint promotion instead of dropping a newer navigation.",
+);
+assert.doesNotMatch(
+  resumeDetailLeaveSource,
+  /if \(checkpointPromotionInFlightRef\.current\) \{\s*return;/,
+  "An in-flight checkpoint must not swallow the latest navigation intent.",
 );
 assert.match(
   templateGalleryRouteSource,

@@ -406,15 +406,23 @@ type ImportTemplatesResponse = {
 
 ### POST `/api/agent/chat`
 
-用途：发送当前简历上下文、模型配置和用户输入，返回 Agent 建议。岗位/JD
-直接从用户 prompt 提取，并通过会话消息中的 `targetContext` 延续、更新或清除；请求不接受
-独立的 `jobBrief` 或 `keywordMatch` 字段。
-同一个接口同时支持普通 JSON 和 SSE 流式响应。
-Agent 使用 ReAct 范式：模型先理解用户意图，再决定是否调用 JD 获取、JD 搜索、
-简历分析、编辑计划或编辑执行工具。每轮遵循 Reasoning → Action → Observation；
-每轮只能执行一个 Action，拿到 Observation 后再决定下一步；
-Observation 来自工具结果，最后必须通过隐藏的 `finish` action 结束循环。不要默认
-先搜索 JD 或分析简历；只有用户提供 JD URL 或明确要求岗位/JD 匹配时才调用 JD 工具。
+用途：发送当前简历、待确认草稿、历史消息、附件、模型配置和当前用户输入，返回
+Agent 的自然语言回复与可选结构化草稿。岗位、JD 和申请目标都是普通上下文，不存在
+独立的目标状态协议；请求也不接受独立的 `jobBrief` 或 `keywordMatch` 字段。
+该接口启动一个后台 run，并立即订阅其 SSE 事件流。
+
+Agent 只有一个开放循环：`模型 → 工具(auto) → observation → 模型 → 自然结束`。
+普通模式始终向模型提供 `web_search`、`web_fetch`、`edit_execute`；`suggestOnly` 不提供
+写工具。支持 hosted search 的 OpenAI Responses、Claude 和 Gemini 模型改用 provider
+原生搜索，只保留客户端 `edit_execute`；其他云模型和本地模型使用本地 Web 工具。模型可以在一轮中并行发出多个工具调用，也可以
+不调用工具直接回答。工具调用前后的模型文本按原始顺序保留在 timeline 中；模型返回
+无工具调用的自然语言响应时，本轮立即结束，不再发起额外的模型完成请求。
+
+完整的脱敏简历、当前待确认草稿、当前附件文本和历史上下文已经由上下文模块直接提供
+给模型，不需要额外的读取或提取步骤。当前公开信息会实质改善结果时，模型可按需搜索；
+`web_fetch` 可读取用户提供、搜索返回或历史保留的任意相关公网 URL。公开网页不能证明
+候选人的个人经历。所有简历修改统一通过 `edit_execute` 提交操作批次。
+
 前端只把返回的结构化修改操作应用到临时 JSON 草稿，用户确认后才写回当前简历。
 后端会使用 SQLite 中已配置并加密保存的大模型配置发起真实模型调用；如果没有
 可用模型配置，接口只返回配置引导，不返回模拟对话。
@@ -423,20 +431,20 @@ Observation 来自工具结果，最后必须通过隐藏的 `finish` action 结
 
 ```txt
 Content-Type: application/json
-Accept: application/json | text/event-stream
+Accept: text/event-stream
 ```
 
-当 `stream: true` 且 `Accept: text/event-stream` 时，后端返回 SSE；否则返回普通 JSON。
+响应始终是 `text/event-stream`，并通过 `X-Agent-Run-Id` 返回可重连的 run ID。
 前端只渲染后端返回的 Agent 消息数据，不再内置示例对话、工具调用或固定建议。
 
 请求：
 
 ```ts
 type AgentChatAttachment = {
-  id?: string
-  filename?: string
-  mediaType?: string
-  url?: string // data URL 或后端可访问的上传文件 URL
+  id: string
+  filename: string
+  mediaType: string
+  kind: "text" | "image"
 }
 
 type AgentConversationMessage = {
@@ -485,27 +493,23 @@ type AgentChatRequest = {
   messages?: AgentConversationMessage[] // 仅当前轮之前的历史，不能包含 message
   locale: "zh" | "en"
   resume: ResumeData
-  appliedActions: string[]
   draftState?: AgentDraftState | null // 仅用于继续处理当前会话的待确认草稿
   modelConfig: ModelConfig | null
-  settings: AgentSettings & {
-  }
-  stream?: boolean
+  settings: AgentSettings
+  stream?: boolean // 不改变传输；POST /chat 始终返回 SSE
 }
 ```
 
 请求没有 `prompt`、顶层 `files`、`conversation` 或 `clientTurnId` 字段；这些旧字段
 不会被兼容，传入时会直接校验失败。`message.id` 是当前轮唯一的幂等键。
 
-普通 JSON 响应：
+最终消息 payload：
 
 ```ts
-type AgentChatActionId = "summary" | "bullet" | "keywords" | "plan" | "execute"
-
 type AgentSource = {
   id: string
   title: string
-  sourceType: "targetContext" | "attachment" | "web"
+  sourceType: "attachment" | "web"
   url?: string
   excerpt?: string
 }
@@ -535,6 +539,7 @@ type AgentResumeEditSuggestion = {
   target: string // 例如 basic.summary 或 sections.project.items.project-1
   reason: string
   replacement?: string
+  evidenceRefs?: string[]
   status?: "planned" | "executed" | "rejected"
   operation?: ResumeEditOperation
   diffs?: ResumeDraftDiff[]
@@ -545,23 +550,15 @@ type AgentCommittedDraft = {
   status: "pending" | "applied" | "discarded"
 }
 
-type AgentTargetContext = {
-  cleared: boolean
-  kind: "employment" | "graduate_study" | "research" | "scholarship" | "general"
-  target: string
-  locations: string[]
-  seniority: string
-  responsibilities: string[]
-  mustHaveSkills: string[]
-  niceToHaveSkills: string[]
-  requirements: string[]
-  description: string
-  exactJobDescription: boolean
-  sourceMessageIds: string[]
+type AgentTimelinePart = {
+  id: string
+  type: "text" | "tool_group"
+  text: string
+  toolIds: string[]
 }
 
 type ResumeEditOperation =
-  | { type: "replace_field"; path: string; value: string | string[] }
+  | { type: "replace_field"; path: "basic.headline" | "basic.summary"; value: string }
   | { type: "insert_section"; section: ResumeSection; index?: number }
   | { type: "update_section"; sectionId: string; patch: Partial<ResumeSection> }
   | { type: "delete_section"; sectionId: string }
@@ -578,7 +575,8 @@ type AgentChatResponse = {
     tone?: "default" | "success"
     text: string
     reasoning?: string
-    plan?: string[] // 可选审计元数据；默认前端主视图不直接展示内部计划
+    timeline?: AgentTimelinePart[]
+    plan?: string[]
     suggestions?: string[]
     knowledge?: Array<{
       title: string
@@ -588,29 +586,8 @@ type AgentChatResponse = {
     sources?: AgentSource[]
     edits?: AgentResumeEditSuggestion[]
     draft?: AgentCommittedDraft
-    targetContext?: AgentTargetContext
     transactionState?: "none" | "provisional" | "committed" | "rolled_back"
-    finishMissing?: Array<
-      | "pending_draft"
-      | "url_purpose"
-      | "resume_target"
-      | "draft_edit_target"
-      | "source_material"
-      | "target_role"
-      | "user_evidence"
-      | "explicit_delete_intent"
-      | "explicit_reorder_intent"
-      | "model_config"
-    >
-    quickReplies?: string[]
-    actions?: AgentChatActionId[]
   }
-  runId: string
-  status: "active" | "completed" | "cancelled" | "failed"
-  executionState: "running" | "succeeded" | "failed" | "cancelled"
-  errorCode: string | null
-  lastEventId: number
-  messageDone: boolean
 }
 ```
 
@@ -625,18 +602,16 @@ type AgentChatStreamEvent =
   | {
       type: "text_delta"
       delta: string
+      timelinePartId: string
     }
   | {
-      type: "reasoning_delta"
-      delta: string
+      type: "tool_start" | "tool_delta" | "tool_done"
+      tool: AgentToolInvocation
+      timelinePartId: string
     }
   | {
-      type: "plan"
-      message: Partial<Pick<AgentChatResponse["message"], "plan">>
-    }
-  | {
-      type: "message_delta"
-      message: Partial<Omit<AgentChatResponse["message"], "id" | "role">>
+      type: "edits"
+      message: Pick<AgentChatResponse["message"], "edits" | "transactionState">
     }
   | {
       type: "message_done"
@@ -644,7 +619,15 @@ type AgentChatStreamEvent =
     }
   | {
       type: "error"
-      message: string
+      error: string
+      errorCode?: string
+    }
+  | {
+      type: "run_done"
+      runId: string
+      status: "completed" | "cancelled" | "failed"
+      executionState: "succeeded" | "cancelled" | "failed"
+      errorCode: string | null
     }
 ```
 
@@ -654,42 +637,33 @@ type AgentChatStreamEvent =
 event: message_start
 data: {"type":"message_start","message":{"id":"agent-msg-xxx","role":"assistant","tone":"default"}}
 
-event: plan
-data: {"type":"plan","message":{"plan":["检查当前简历内容","定位需要调整的模块","生成可预览草稿","汇总修改结果"]}}
+event: text_delta
+data: {"type":"text_delta","delta":"正在整理现有项目事实。","timelinePartId":"timeline-text-1"}
 
-event: tools
-data: {"type":"tools","message":{"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"input-available","input":{}}]}}
+event: tool_start
+data: {"type":"tool_start","timelinePartId":"timeline-tool-2","tool":{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"input-available","input":{"edits":[{"operation":{"type":"update_item","sectionId":"project","itemId":"project-1","patch":{"highlights":["使用 React 与 TypeScript 梳理表单状态并补充键盘交互。"]}}}]}}}
 
-event: tools
-data: {"type":"tools","message":{"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"output-available","input":{},"output":{"sectionCount":2}}]}}
+event: tool_done
+data: {"type":"tool_done","timelinePartId":"timeline-tool-2","tool":{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"output-available","input":{"editCount":1},"output":{"editCount":1,"observations":[{"target":"sections.project.items.project-1"}]}}}
 
 event: edits
-data: {"type":"edits","message":{"edits":[{"id":"edit-1","title":"补强项目经历","target":"sections.project.items.project-1","reason":"用户要求强化项目结果","replacement":"负责推荐链路优化，点击率提升 12%。"}]}}
-
-event: text_delta
-data: {"type":"text_delta","delta":"第一段增量文本"}
-
-event: text_delta
-data: {"type":"text_delta","delta":"，继续输出"}
-
-event: message_delta
-data: {"type":"message_delta","message":{"sources":[{"id":"source-jd-url","title":"目标岗位 JD","sourceType":"web","url":"https://example.com/job"}],"tools":[{"id":"call-1","type":"tool-resume_analysis","title":"resume_analysis","state":"output-available","input":{},"output":{"sectionCount":2}}],"edits":[{"id":"edit-1","title":"补强项目经历","target":"sections.project.items.project-1","reason":"用户要求强化项目结果","replacement":"负责推荐链路优化，点击率提升 12%。"}],"quickReplies":["继续优化项目经历"],"suggestions":["建议 1"],"actions":["execute"]}}
+data: {"type":"edits","message":{"edits":[{"id":"edit-1","title":"更新项目","target":"sections.project.items.project-1","status":"executed","operation":{"type":"update_item","sectionId":"project","itemId":"project-1","patch":{"highlights":["使用 React 与 TypeScript 梳理表单状态并补充键盘交互。"]}}}],"transactionState":"provisional"}}
 
 event: message_done
-data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant","tone":"default","text":"完整文本","reasoning":"完整 reasoning 文本","sources":[],"tools":[],"edits":[],"quickReplies":[],"suggestions":["建议 1"],"actions":["summary","bullet"]}}
+data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant","tone":"success","text":"已更新项目表述，请检查草稿。","timeline":[{"id":"timeline-text-1","type":"text","text":"正在整理现有项目事实。","toolIds":[]},{"id":"timeline-tool-2","type":"tool_group","text":"","toolIds":["call-1"]}],"tools":[{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"output-available"}],"edits":[{"id":"edit-1","title":"更新项目","target":"sections.project.items.project-1","status":"executed"}],"transactionState":"committed"}}
+
+event: run_done
+data: {"type":"run_done","runId":"agent-run-xxx","status":"completed","executionState":"succeeded","errorCode":null}
 ```
 
 约束：
 
 - `message_done.message.text` 必须是完整文本，不能只返回最后一个 delta。
-- `reasoning_delta` 只用于 provider 显式返回的 reasoning 内容，不参与普通正文拼接；
-  前端默认不展示原始 chain-of-thought。主体验只展示“正在阅读简历 / 正在生成草稿”等
-  产品化状态、最终回复和修改摘要。
-- `actions` 只返回 action id，按钮文案由前端本地 i18n 渲染。
-- `plan` 可在可工具化请求的工具事件之前返回，作为审计或调试元数据；默认 Agent 面板主视图不直接展示内部计划，只展示简短确认文案、当前执行 shimmer 和已完成操作折叠行。
-- `tools` 的快照用于生成 Codex-like 当前执行状态和完成后的折叠详情；同一个工具调用的 `id` 在流式过程中应保持稳定。
-- `tools` 中 `input-available` / `input-streaming` 表示该步骤正在执行。前端主视图只展示当前步骤 shimmer，例如
-  “正在阅读简历 / 正在查询岗位参考 / 正在生成草稿”；完成后折叠为
+- `text_delta` 与工具事件使用 `timelinePartId` 增量重建顺序；完整 `text/timeline/tools/sources/edits` 只在 `message_done` 发送。前端不展示
+  原始 chain-of-thought，只展示产品化状态、模型可见文本和修改摘要。
+- `tool_start`、`tool_delta` 和 `tool_done` 用于生成当前执行状态和完成后的折叠详情；同一个工具调用的 `id` 在流式过程中应保持稳定。
+- 工具的 `input-available` / `input-streaming` 表示该步骤正在执行。前端主视图只展示当前步骤 shimmer，例如
+  “正在读取 JD / 正在生成草稿”；完成后折叠为
   “已运行 N 条操作”。折叠详情只展示产品化执行文案，不默认展示底层工具名、参数或原始输出。
 - `sources` 用于引用来源展示；如果来源可打开，返回 `url`，否则只返回标题和摘要。
 - `edits` 是结构化修改建议；后端必须返回 `ResumeEditOperation`，前端先应用到临时草稿并高亮预览。
@@ -697,17 +671,56 @@ data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant",
   应用/撤回按钮只在 `message_done` 之后展示。
 - 前端必须把 `edits` 应用到 pending draft，而不是直接写入正式 `resume`；预览区显示
   draft 并用新增、修改、移动、删除的颜色语义标记变更位置。
-- `edit_execute` 可直接携带 `edits` 执行，不强制要求先调用 `edit_plan`；如果需要现有模块或条目 ID，模型应先调用 `resume_analysis`。
-- `edit_execute.output.observations` 会返回本次草稿操作的目标位置、修改前快照和修改后快照，模型应根据 Observation 判断是否继续修正或调用隐藏 `finish` 结束。
-- `finish` 是后端内部 ReAct 结束 action，不作为前端工具卡展示。
-- `quickReplies` 是后端建议的继续追问，不要由前端硬编码。
+- 模型直接从请求上下文读取完整的 sanitized resume、待确认草稿和当前附件；这些信息
+  不需要额外工具步骤。通用编辑请求由 `edit_execute` 直接携带完整 `edits` 批次执行。
+- 模型侧 edit entry 只提交 `operation`；标题、target、reason、diff 和内部证据引用由
+  `DraftEditEngine` 从操作与权威上下文派生。
+- `edit_execute.output.observations` 会返回本次草稿操作的目标位置、修改前快照和修改后快照，模型应根据 Observation 判断是否继续修正；当没有后续工具调用时，循环自然完成。
+- `edit_execute` 使用 `resume_edit_operation.schema.json` 作为操作协议的唯一事实来源。
+  整批操作只做结构校验和字符串整理，再检查 PII 写入、候选人证据与文档合同；
+  任一硬不变量失败都会拒绝整批，不产生部分草稿。`suggestOnly` 通过工具可见性和执行
+  环境阻止写调用，不从用户自然语言推导另一套授权 workflow。
+- STAR/CAR、篇幅、重复度、片段、时态、关键词覆盖等属于 prompt 写作判断或离线评测，
+  不作为在线编辑拦截条件。
+- 每次成功的 `edit_execute` 先产生 `provisional` 事务状态。模型自然结束后事务变为
+  `committed` 并持久化为待确认草稿；工具拒绝后未修复、取消、超出轮次上限或运行错误
+  都会回滚整轮。正式简历始终由用户在 UI 中确认后另行写入。
+- `web_search` / `web_fetch` 输出是不可信公开参考，不能作为候选人事实证据；本地工具
+  拒绝私网、凭据 URL 和已过期 JobPosting。可读页面 passage 与带正文的搜索 excerpt
+  都返回稳定 `sourceId`；超长聚合页只返回查询相关 passage，而不是整页列表文本。
 - `message` 是当前唯一用户轮，`messages` 只包含它之前的历史；当前 `message.id`
   不能再次出现在 `messages` 中。
 - 传入 `resumeId` 时，后端会把当前用户消息和最终助手消息写入
   `agent_sessions` / `agent_messages`。请求必须同时传入最近一次 GET session 返回的
   `revision` 作为 `expectedRevision`；并发冲突返回 409。
-- 附件 `url` 当前可能是 data URL；大文件接后端后建议先上传，再传后端可访问 URL。
+- 附件先通过 Agent 附件接口上传；聊天请求只携带后端返回的附件引用。
 - 后端发生可恢复错误时可发送 `event: error`，也可以直接返回非 2xx JSON error。
+
+### Agent run 重连与停止
+
+`POST /api/agent/chat` 接受请求后，run 独立于当前 HTTP 订阅继续执行。每个 SSE frame
+都带单调递增的 `id`；网络断开后可通过以下接口恢复：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/agent/resumes/:resumeId/run` | 获取该简历当前仍在运行的 run |
+| `GET` | `/api/agent/runs/:runId/events?after=:lastEventId` | 重放游标之后的事件并继续订阅 |
+| `DELETE` | `/api/agent/runs/:runId` | 显式取消 run，并回滚未完成草稿事务 |
+
+```ts
+type AgentRunResponse = {
+  id: string
+  resumeId: string | null
+  baseResume: ResumeData
+  status: "active" | "completed" | "cancelled" | "failed"
+  executionState: "running" | "succeeded" | "cancelled" | "failed"
+  errorCode: string | null
+  lastEventId: number
+}
+```
+
+run 与事件重放缓冲当前是进程内状态；会话消息、草稿决定和最终执行状态持久化到
+SQLite，但后端重启不会恢复正在执行的 provider 请求。
 
 ### GET `/api/agent/resumes/:resumeId/session`
 
@@ -1013,7 +1026,7 @@ type AgentSettings = {
 - 简历、模板、模型和 Agent 会话通过各自资源接口读写，组件不要自行拼接路径。
 - 文件上传接口需要支持 multipart。
 - 生产环境不要返回明文认证配置；任何环境都不要返回明文 API Key。
-- Agent 普通 JSON 和 SSE 流式响应格式已固定，后端可先返回 JSON，再切到 SSE。
+- Agent chat 只维护一个 SSE 事件投影；会话、run 状态和草稿决定继续使用普通 JSON 资源接口。
 
 ## Runtime Data And Environment
 

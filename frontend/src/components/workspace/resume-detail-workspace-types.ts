@@ -7,6 +7,7 @@ import type {
   AgentDraftState,
   AgentDraftSnapshot,
   AgentResumeEditSuggestion,
+  AgentSessionResponse,
   AgentTransactionState,
   WorkspaceVersionSummary,
 } from "@/types/api";
@@ -81,9 +82,9 @@ export interface ResumeDetailWorkspaceState {
 }
 
 export interface ResumeDetailAgentCommands {
-  applyDraft: () => void;
+  applyDraft: () => Promise<AgentSessionResponse | null>;
   changeSelectedModel: (modelId: string) => void;
-  discardDraft: () => void;
+  discardDraft: () => Promise<AgentSessionResponse | null>;
   flushUserSettings: () => Promise<void>;
   openModelSettings: () => void;
   previewEdits: (

@@ -14,27 +14,58 @@ from app.routers import agent as agent_router
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
+    AgentCommittedDraft,
     AgentConversationCheckpoint,
     AgentConversationItem,
     AgentDraftDecisionRequest,
     AgentDraftState,
     AgentSessionReplaceRequest,
-    AgentTurnWorkspaceSnapshots,
 )
 from app.services import agent_sessions
 from app.services.agent.attachments import AgentAttachmentError
+from app.services.agent.draft import DraftTransaction
 from app.services.agent_runs import AgentRunCapacityError, AgentRunConflictError
 from app.services.agent_sessions import (
     AgentSessionRevisionConflictError,
     AgentSessionTurnReplayError,
-    append_agent_exchange,
     finish_agent_turn_execution,
     load_agent_session,
     prepare_agent_turn,
     replace_agent_session_messages,
     update_agent_draft_decision,
 )
+from app.services.agent_sessions import (
+    append_agent_exchange as _append_agent_exchange,
+)
 from app.services.resumes import save_resume
+
+
+def _resume_id(label: str) -> str:
+    return "".join(
+        character
+        for character in label
+        if character.isascii() and character.isalnum()
+    )
+
+
+def append_agent_exchange(
+    conn: object,
+    request: AgentChatRequest,
+    message: AgentChatMessage,
+) -> None:
+    """Persist the loop-shaped result used by session protocol tests."""
+
+    if message.transaction_state == "committed" and message.edits:
+        transaction = DraftTransaction.from_request(request)
+        message = message.model_copy(
+            update={
+                "draft": AgentCommittedDraft(
+                    baseResume=transaction.base_resume,
+                ),
+                "edits": list(transaction.accumulate(message.edits)),
+            },
+        )
+    _append_agent_exchange(conn, request, message)
 
 
 def _ensure_active_resume(resume_id: str) -> None:
@@ -138,7 +169,7 @@ def test_prepare_agent_turn_rebuilds_history_and_rejects_stale_revision(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-authoritative-turn"
+    resume_id = _resume_id("resume-authoritative-turn")
 
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
@@ -185,7 +216,7 @@ def test_prepare_agent_turn_keeps_only_authoritative_prior_messages(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-authoritative-prior-history"
+    resume_id = _resume_id("resume-authoritative-prior-history")
 
     with closing(connect()) as conn:
         first = prepare_agent_turn(
@@ -234,7 +265,7 @@ def test_successful_exchange_persists_private_conversation_checkpoint(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-conversation-checkpoint"
+    resume_id = _resume_id("resume-conversation-checkpoint")
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="turn-checkpoint-1",
         summary="Constraints: Never invent facts.",
@@ -251,11 +282,6 @@ def test_successful_exchange_persists_private_conversation_checkpoint(
             ),
         )
         prepared._active_conversation_checkpoint = checkpoint
-        workspace_snapshots = AgentTurnWorkspaceSnapshots(
-            turnMessageId="turn-checkpoint-1",
-            tools='{"workspaceContext":{"resume":{"sections":[]}}}',
-        )
-        prepared._active_workspace_snapshots = workspace_snapshots
         request_payload = prepared.model_dump(mode="json", by_alias=True)
         assert "conversationCheckpoint" not in json.dumps(request_payload)
         append_agent_exchange(
@@ -271,7 +297,6 @@ def test_successful_exchange_persists_private_conversation_checkpoint(
         public_session = load_agent_session(conn, resume_id)
         public_payload = public_session.model_dump(mode="json", by_alias=True)
         assert "_conversationCheckpoint" not in json.dumps(public_payload)
-        assert "_workspaceSnapshots" not in json.dumps(public_payload)
 
         next_turn = prepare_agent_turn(
             conn,
@@ -285,9 +310,6 @@ def test_successful_exchange_persists_private_conversation_checkpoint(
 
     assert next_turn._loaded_conversation_checkpoint == checkpoint
     assert next_turn._active_conversation_checkpoint == checkpoint
-    assert next_turn._historical_workspace_snapshots == {
-        "turn-checkpoint-1": workspace_snapshots,
-    }
     assert "_conversationCheckpoint" not in json.dumps(
         [
             message.model_dump(mode="json", by_alias=True)
@@ -300,7 +322,7 @@ def test_replacing_session_history_clears_private_conversation_checkpoints(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-replaced-conversation-checkpoint"
+    resume_id = _resume_id("resume-replaced-conversation-checkpoint")
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="turn-replaced-checkpoint-1",
         summary="Constraints: Use only verified evidence.",
@@ -317,11 +339,6 @@ def test_replacing_session_history_clears_private_conversation_checkpoints(
             ),
         )
         prepared._active_conversation_checkpoint = checkpoint
-        workspace_snapshots = AgentTurnWorkspaceSnapshots(
-            turnMessageId="turn-replaced-checkpoint-1",
-            tools='{"workspaceContext":{"draftStatus":"pending"}}',
-        )
-        prepared._active_workspace_snapshots = workspace_snapshots
         append_agent_exchange(
             conn,
             prepared,
@@ -370,14 +387,13 @@ def test_replacing_session_history_clears_private_conversation_checkpoints(
 
     assert next_turn._loaded_conversation_checkpoint is None
     assert next_turn._active_conversation_checkpoint is None
-    assert next_turn._historical_workspace_snapshots == {}
 
 
 def test_prepare_agent_turn_allows_exact_unfinished_retry_without_duplicate(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-idempotent-turn"
+    resume_id = _resume_id("resume-idempotent-turn")
 
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
@@ -403,7 +419,7 @@ def test_prepare_agent_turn_rejects_changed_or_completed_replay(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-replayed-turn"
+    resume_id = _resume_id("resume-replayed-turn")
 
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
@@ -444,7 +460,7 @@ def test_committed_draft_survives_session_reload_with_its_base(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-durable-agent-draft"
+    resume_id = _resume_id("resume-durable-agent-draft")
     base_resume = {
         "schemaVersion": 2,
         "basic": {"name": "Before", "headline": "Engineer"},
@@ -501,7 +517,7 @@ def test_new_committed_draft_discards_previous_pending_draft(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-latest-committed-draft"
+    resume_id = _resume_id("resume-latest-committed-draft")
 
     with closing(connect()) as conn:
         _persist_committed_draft(
@@ -531,7 +547,7 @@ def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-durable-pending-draft-base"
+    resume_id = _resume_id("resume-durable-pending-draft-base")
     request_resume = {
         "schemaVersion": 2,
         "basic": {"headline": "Engineer", "summary": "Original summary"},
@@ -685,7 +701,7 @@ def test_committed_draft_persists_every_field_diff_for_one_edit(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-durable-multi-field-diff"
+    resume_id = _resume_id("resume-durable-multi-field-diff")
     edit = {
         "id": "edit-project-fields",
         "title": "Update project fields",
@@ -764,7 +780,7 @@ def test_agent_draft_decision_updates_only_the_target_response(
     decision: str,
 ) -> None:
     del client
-    resume_id = f"resume-durable-decision-{decision}"
+    resume_id = _resume_id(f"resume-durable-decision-{decision}")
     base_resume = {
         "schemaVersion": 2,
         "basic": {"name": "Before", "headline": "Engineer"},
@@ -865,7 +881,7 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-checkpoint-draft-decision"
+    resume_id = _resume_id("resume-checkpoint-draft-decision")
     assistant_id = "assistant-checkpoint-draft-decision"
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="turn-checkpoint-draft-decision",
@@ -883,11 +899,6 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
             ),
         )
         prepared._active_conversation_checkpoint = checkpoint
-        workspace_snapshots = AgentTurnWorkspaceSnapshots(
-            turnMessageId="turn-checkpoint-draft-decision",
-            tools='{"workspaceContext":{"draftStatus":"pending"}}',
-        )
-        prepared._active_workspace_snapshots = workspace_snapshots
         append_agent_exchange(
             conn,
             prepared,
@@ -924,17 +935,14 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
             ),
         )
 
-    assert next_turn._loaded_conversation_checkpoint == checkpoint
-    assert next_turn._historical_workspace_snapshots == {
-        "turn-checkpoint-draft-decision": workspace_snapshots,
-    }
+        assert next_turn._loaded_conversation_checkpoint == checkpoint
 
 
 def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-checkpoint-auto-discard"
+    resume_id = _resume_id("resume-checkpoint-auto-discard")
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="turn-checkpoint-auto-discard-1",
         summary="Constraints: Keep every claim grounded.",
@@ -1014,7 +1022,7 @@ def test_agent_draft_decision_rejects_an_active_run(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-decision-active-run"
+    resume_id = _resume_id("resume-draft-decision-active-run")
 
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
@@ -1069,7 +1077,7 @@ def test_agent_draft_decision_route_returns_the_updated_session(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-decision-route"
+    resume_id = _resume_id("resume-draft-decision-route")
     message_id = "assistant-draft-decision-route"
 
     with closing(connect()) as conn:
@@ -1122,7 +1130,7 @@ def test_agent_draft_decision_route_returns_the_updated_session(
 def test_agent_draft_apply_persists_resume_and_decision_together(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-draft-atomic-apply"
+    resume_id = _resume_id("resume-draft-atomic-apply")
     message_id = "assistant-draft-atomic-apply"
     original_payload = _resume_save_payload(headline="Engineer")
     candidate_resume = _resume_save_payload(headline="Staff Engineer")["resume"]
@@ -1167,7 +1175,7 @@ def test_agent_draft_apply_persists_resume_and_decision_together(
 def test_only_latest_committed_draft_can_be_applied(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-latest-draft-apply-only"
+    resume_id = _resume_id("resume-latest-draft-apply-only")
     original_payload = _resume_save_payload(headline="Engineer")
     latest_candidate = _resume_save_payload(headline="Staff Engineer")["resume"]
     superseded_candidate = original_payload["resume"]
@@ -1226,7 +1234,7 @@ def test_only_latest_committed_draft_can_be_applied(
 def test_apply_boundary_rejects_a_non_latest_pending_draft(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-authoritative-latest-draft"
+    resume_id = _resume_id("resume-authoritative-latest-draft")
     original_payload = _resume_save_payload(headline="Engineer")
     _ensure_active_resume(resume_id)
     original_detail = save_resume(resume_id, original_payload)
@@ -1286,7 +1294,7 @@ def test_apply_boundary_rejects_a_non_latest_pending_draft(
 def test_agent_draft_apply_rolls_back_decision_when_resume_save_fails(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-draft-atomic-rollback"
+    resume_id = _resume_id("resume-draft-atomic-rollback")
     message_id = "assistant-draft-atomic-rollback"
 
     _ensure_active_resume(resume_id)
@@ -1324,7 +1332,7 @@ def test_agent_draft_apply_rolls_back_decision_when_resume_save_fails(
 def test_agent_draft_apply_rejects_a_stale_formal_resume_version(
     client: TestClient,
 ) -> None:
-    resume_id = "resume-draft-stale-formal-version"
+    resume_id = _resume_id("resume-draft-stale-formal-version")
     message_id = "assistant-draft-stale-formal-version"
 
     _ensure_active_resume(resume_id)
@@ -1375,7 +1383,7 @@ def test_agent_draft_decision_route_reports_stale_revision(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-decision-stale-route"
+    resume_id = _resume_id("resume-draft-decision-stale-route")
     message_id = "assistant-draft-decision-stale-route"
 
     with closing(connect()) as conn:
@@ -1408,7 +1416,7 @@ def test_stale_draft_decision_after_session_replace_reports_revision_conflict(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-stale-after-replace"
+    resume_id = _resume_id("resume-draft-stale-after-replace")
     message_id = "assistant-draft-stale-after-replace"
 
     with closing(connect()) as conn:
@@ -1450,7 +1458,7 @@ def test_current_draft_decision_reports_unavailable_target_conflict(
     target_kind: str,
 ) -> None:
     del client
-    resume_id = f"resume-draft-unavailable-{target_kind}"
+    resume_id = _resume_id(f"resume-draft-unavailable-{target_kind}")
     message_id = f"assistant-draft-unavailable-{target_kind}"
     _ensure_active_resume(resume_id)
 
@@ -1498,7 +1506,7 @@ def test_agent_draft_decision_route_reports_active_run(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-decision-active-route"
+    resume_id = _resume_id("resume-draft-decision-active-route")
     message_id = "assistant-draft-decision-active-route"
     run_id = "run-draft-decision-active-route"
 
@@ -1536,7 +1544,7 @@ def test_agent_draft_decision_route_preserves_the_existing_terminal_decision(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-draft-opposite-decision-route"
+    resume_id = _resume_id("resume-draft-opposite-decision-route")
     message_id = "assistant-draft-opposite-decision-route"
 
     with closing(connect()) as conn:
@@ -1577,7 +1585,7 @@ def test_agent_session_route_hides_corrupt_message_details(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-corrupt-route-envelope"
+    resume_id = _resume_id("resume-corrupt-route-envelope")
     message_id = "assistant-corrupt-route-envelope"
 
     with closing(connect()) as conn:
@@ -1610,7 +1618,7 @@ def test_agent_session_mutation_routes_hide_corrupt_message_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     del client
-    _ensure_active_resume("resume-corrupt-put")
+    _ensure_active_resume("resumecorruptput")
 
     def raise_corrupt_session(*args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1626,7 +1634,7 @@ def test_agent_session_mutation_routes_hide_corrupt_message_details(
         raise_corrupt_session,
     )
     put_response = agent_router.put_agent_resume_session(
-        "resume-corrupt-put",
+        "resumecorruptput",
         AgentSessionReplaceRequest(revision="revision-corrupt-put"),
     )
 
@@ -1636,7 +1644,7 @@ def test_agent_session_mutation_routes_hide_corrupt_message_details(
         raise_corrupt_session,
     )
     patch_response = agent_router.patch_agent_resume_draft(
-        "resume-corrupt-patch",
+        "resumecorruptpatch",
         "assistant-corrupt-patch",
         AgentDraftDecisionRequest(
             revision="revision-corrupt-patch",
@@ -1658,7 +1666,7 @@ def test_replace_session_rejects_running_execution_without_deleting_it(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-running-replacement"
+    resume_id = _resume_id("resume-running-replacement")
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
         request = prepare_agent_turn(
@@ -1698,8 +1706,8 @@ def test_replace_session_rolls_back_global_message_id_conflict(
     client: object,
 ) -> None:
     del client
-    owner_resume_id = "resume-replacement-message-owner"
-    target_resume_id = "resume-replacement-message-target"
+    owner_resume_id = _resume_id("resume-replacement-message-owner")
+    target_resume_id = _resume_id("resume-replacement-message-target")
     shared_message_id = "turn-replacement-global-conflict"
     _ensure_active_resume(target_resume_id)
 
@@ -1774,7 +1782,7 @@ def test_finishing_missing_running_execution_is_a_persistence_failure(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-missing-execution"
+    resume_id = _resume_id("resume-missing-execution")
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
         request = prepare_agent_turn(
@@ -1913,7 +1921,7 @@ def test_agent_chat_request_preserves_file_only_message_text() -> None:
 def test_resume_chat_requires_expected_revision() -> None:
     with pytest.raises(ValidationError):
         AgentChatRequest(
-            resumeId="resume-revision-required",
+            resumeId="resumerevisionrequired",
             message=AgentConversationItem(
                 id="turn-revision-required",
                 role="user",
@@ -1932,6 +1940,34 @@ def test_agent_chat_request_rejects_blank_resume_id(resume_id: str) -> None:
                 id="turn-blank-resume-id",
                 role="user",
                 text="Do not downgrade this request to stateless chat.",
+            ),
+        )
+
+    assert exc_info.value.errors()[0]["type"] == "agent_resume_id_invalid"
+
+
+@pytest.mark.parametrize(
+    "resume_id",
+    [
+        "resume:1",
+        "resume-1",
+        "resume_1",
+        "resume.1",
+        "简历1",
+        pytest.param("A" * 161, id="overlong"),
+    ],
+)
+def test_agent_chat_request_rejects_non_ascii_alphanumeric_resume_id(
+    resume_id: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AgentChatRequest(
+            resumeId=resume_id,
+            expectedRevision="revision-invalid-resume-id",
+            message=AgentConversationItem(
+                id="turn-invalid-resume-id",
+                role="user",
+                text="Reject identifiers outside the resume id contract.",
             ),
         )
 
@@ -1976,7 +2012,7 @@ def test_agent_chat_route_rejects_blank_resume_id(client: TestClient) -> None:
 def test_missing_resume_revision_validation_details_are_json_serializable() -> None:
     with pytest.raises(ValidationError) as exc_info:
         AgentChatRequest(
-            resumeId="resume-serializable-revision-error",
+            resumeId="resumeserializablerevisionerror",
             message=AgentConversationItem(
                 id="turn-serializable-revision-error",
                 role="user",
@@ -1998,7 +2034,7 @@ def test_prepare_agent_turn_cannot_bypass_missing_revision(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-service-revision-required"
+    resume_id = _resume_id("resume-service-revision-required")
     with closing(connect()) as conn:
         request = _request(
             resume_id,
@@ -2021,7 +2057,7 @@ def test_session_replace_route_reports_running_execution_conflict(
     client: object,
 ) -> None:
     del client
-    resume_id = "resume-route-running-replacement"
+    resume_id = _resume_id("resume-route-running-replacement")
     _ensure_active_resume(resume_id)
     with closing(connect()) as conn:
         initial_revision = load_agent_session(conn, resume_id).revision
@@ -2080,7 +2116,7 @@ def _chat_route_response(
     )
     monkeypatch.setattr(agent_router, "load_agent_settings", lambda: object())
     request = AgentChatRequest(
-        resumeId="resume-route-conflict",
+        resumeId="resumerouteconflict",
         expectedRevision="revision-route-conflict",
         message=AgentConversationItem(
             id="turn-route-conflict",

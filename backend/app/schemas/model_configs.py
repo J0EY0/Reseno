@@ -9,6 +9,10 @@ ApiFamily = Literal[
     "google_gemini",
 ]
 ProviderKind = Literal["cloud", "local", "custom"]
+# Model-config values cross a JSON/JavaScript client before reaching SQLite.
+# Capping user overrides at Number.MAX_SAFE_INTEGER preserves the exact value
+# across that full interface and remains comfortably inside SQLite's int64.
+MAX_USER_MAX_TOKENS = 9_007_199_254_740_991
 
 
 class ModelProviderResponse(BaseModel):
@@ -89,7 +93,17 @@ class ModelConfigUpsertRequest(BaseModel):
     api_url: str = Field(alias="apiUrl")
     temperature: float | None = None
     top_p: float | None = Field(default=None, alias="topP")
-    max_tokens: int | None = Field(default=None, alias="maxTokens")
+    max_tokens: int | None = Field(
+        default=None,
+        alias="maxTokens",
+        strict=True,
+        gt=0,
+        le=MAX_USER_MAX_TOKENS,
+        description=(
+            "Optional per-request output-token override; null delegates the "
+            "limit to ResuMate's automatic runtime policy."
+        ),
+    )
     context_window_tokens: int | None = Field(
         default=None,
         alias="contextWindowTokens",
@@ -98,7 +112,6 @@ class ModelConfigUpsertRequest(BaseModel):
     supports_thinking: bool = Field(default=False, alias="supportsThinking")
     supports_tools: bool = Field(default=True, alias="supportsTools")
     supports_streaming: bool = Field(default=True, alias="supportsStreaming")
-    thinking_enabled: bool = Field(default=True, alias="thinkingEnabled")
 
 
 class ModelConfigResponse(BaseModel):
@@ -124,7 +137,6 @@ class ModelConfigResponse(BaseModel):
     supports_thinking: bool = Field(alias="supportsThinking")
     supports_tools: bool = Field(alias="supportsTools")
     supports_streaming: bool = Field(alias="supportsStreaming")
-    thinking_enabled: bool = Field(alias="thinkingEnabled")
 
 
 class ModelConfigsResponse(BaseModel):

@@ -3,28 +3,15 @@ import { toast } from "sonner";
 
 import { getMessagesSync, type Locale } from "@/i18n";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
-import {
-  fetchResumeApi,
-  fetchResumeVersionsApi,
-  fetchWorkspaceRouteData,
-} from "@/lib/workspace-api";
-import type { ResumeEditorRouteData } from "@/lib/workspace-route-data";
+import { loadResumeDetailRouteData } from "@/components/workspace/workspace-route-preparation";
+import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
-import type {
-  ResumeDetailResponse,
-  WorkspaceVersionSummary,
-} from "@/types/api";
-
-export interface ResumeDetailLoadPayload {
-  detail: ResumeDetailResponse;
-  routeData: ResumeEditorRouteData;
-  versions: WorkspaceVersionSummary[];
-}
 
 interface ResumeDetailLoaderOptions {
   hasHandoff: boolean;
+  initialPreparedData: PreparedResumeDetailRouteData | null;
   locale: Locale;
-  onLoad: (payload: ResumeDetailLoadPayload) => void;
+  onLoad: (payload: PreparedResumeDetailRouteData) => void;
   onLoadErrorChange: (hasLoadError: boolean) => void;
   onLoadingChange: (isLoading: boolean) => void;
   persistence: WorkspacePreferencesPersistence;
@@ -34,6 +21,7 @@ interface ResumeDetailLoaderOptions {
 /** Owns the StrictMode-safe, three-request resume-detail read transaction. */
 export function useResumeDetailLoader({
   hasHandoff,
+  initialPreparedData,
   locale,
   onLoad,
   onLoadErrorChange,
@@ -43,13 +31,15 @@ export function useResumeDetailLoader({
 }: ResumeDetailLoaderOptions) {
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
+  const initialPreparedDataRef = useRef(initialPreparedData);
+  const hasConsumedInitialPreparedDataRef = useRef(false);
   const onLoadRef = useRef(onLoad);
   const onLoadErrorChangeRef = useRef(onLoadErrorChange);
   const onLoadingChangeRef = useRef(onLoadingChange);
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(hasHandoff);
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialPreparedData);
 
   useEffect(() => {
     onLoadRef.current = onLoad;
@@ -69,44 +59,16 @@ export function useResumeDetailLoader({
       void import("@/components/preview/document-preview-card");
 
       try {
-        // Preference writes cross route owners; flush before taking a server
-        // snapshot, then start all independent detail reads together.
-        await persistence.flush();
+        const prepared = await loadResumeDetailRouteData(
+          resumeId,
+          persistence,
+          { signal },
+        );
         if (signal.aborted || requestIdRef.current !== requestId) {
           return;
         }
 
-        const routeDataRequest = fetchWorkspaceRouteData("resume-detail", {
-          notifyOnError: false,
-          signal,
-        });
-        const detailRequest = fetchResumeApi(resumeId, {
-          notifyOnError: false,
-          signal,
-        });
-        const versionsRequest = fetchResumeVersionsApi(resumeId, {
-          notifyOnError: false,
-          signal,
-        }).catch((error) => {
-          if (isAbortError(error)) {
-            throw error;
-          }
-          return { versions: [] as WorkspaceVersionSummary[] };
-        });
-        const [routeSource, detail, versionsPayload] = await Promise.all([
-          routeDataRequest,
-          detailRequest,
-          versionsRequest,
-        ]);
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
-
-        onLoadRef.current({
-          detail,
-          routeData: routeSource.data,
-          versions: versionsPayload.versions,
-        });
+        onLoadRef.current(prepared);
         setHasLoaded(true);
       } catch (error) {
         if (isAbortError(error) || requestIdRef.current !== requestId) {
@@ -133,6 +95,20 @@ export function useResumeDetailLoader({
   );
 
   useEffect(() => {
+    const prepared = initialPreparedDataRef.current;
+    if (prepared && retryKey === 0) {
+      if (!hasConsumedInitialPreparedDataRef.current) {
+        hasConsumedInitialPreparedDataRef.current = true;
+        onLoadRef.current(prepared);
+        setHasLoaded(true);
+        setHasLoadError(false);
+        setIsLoading(false);
+        onLoadErrorChangeRef.current(false);
+        onLoadingChangeRef.current(false);
+      }
+      return;
+    }
+
     const controller = new AbortController();
     // Delay one task so StrictMode's development preflight sends no request.
     const loadTimer = window.setTimeout(() => {

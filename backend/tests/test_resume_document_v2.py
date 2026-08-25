@@ -2,11 +2,11 @@ from copy import deepcopy
 
 import pytest
 
+from app.services.agent.contracts import resume_edit_operation_error
 from app.services.agent.editing.operations import (
     _apply_edit_operation,
-    _normalize_edit_operation,
+    parse_edit_batch,
 )
-from app.services.agent.operation_contract import resume_edit_operation_error
 from app.services.resume_document_contract import (
     RESUME_DOCUMENT_DUPLICATE_ID,
     RESUME_DOCUMENT_INVALID,
@@ -111,6 +111,15 @@ def _resume() -> dict:
     }
 
 
+def _parse_operation(resume: dict, operation: object) -> dict | None:
+    edits, _rejected = parse_edit_batch(
+        resume,
+        [{"operation": operation}],
+        locale="en",
+    )
+    return edits[0].operation if edits else None
+
+
 def test_resume_v2_accepts_every_discriminated_section() -> None:
     resume = _resume()
 
@@ -179,9 +188,9 @@ def test_resume_v2_rejects_duplicate_document_node_ids(duplicate: str) -> None:
     if duplicate == "section":
         resume["sections"][1]["id"] = resume["sections"][0]["id"]
     else:
-        resume["sections"][1]["items"][0]["id"] = resume["sections"][0][
-            "items"
-        ][0]["id"]
+        resume["sections"][1]["items"][0]["id"] = resume["sections"][0]["items"][0][
+            "id"
+        ]
 
     with pytest.raises(ResumeDocumentContractError) as error:
         validate_resume_document(resume)
@@ -189,10 +198,25 @@ def test_resume_v2_rejects_duplicate_document_node_ids(duplicate: str) -> None:
     assert error.value.code == RESUME_DOCUMENT_DUPLICATE_ID
 
 
+@pytest.mark.parametrize("node", ["section", "item"])
+def test_resume_v2_rejects_evidence_delimiters_in_node_ids(node: str) -> None:
+    resume = _resume()
+    target = resume["sections"][0]
+    if node == "section":
+        target["id"] = "education:archive"
+    else:
+        target["items"][0]["id"] = "education:primary"
+
+    with pytest.raises(ResumeDocumentContractError) as error:
+        validate_resume_document(resume)
+
+    assert error.value.code == RESUME_DOCUMENT_INVALID
+
+
 def test_agent_update_item_is_scoped_to_target_section_kind() -> None:
     resume = _resume()
 
-    accepted = _normalize_edit_operation(
+    accepted = _parse_operation(
         resume,
         {
             "type": "update_item",
@@ -201,7 +225,7 @@ def test_agent_update_item_is_scoped_to_target_section_kind() -> None:
             "patch": {"content": "React: expert"},
         },
     )
-    rejected = _normalize_edit_operation(
+    rejected = _parse_operation(
         resume,
         {
             "type": "update_item",
@@ -221,15 +245,24 @@ def test_agent_update_item_is_scoped_to_target_section_kind() -> None:
     assert resume_edit_operation_error(accepted) is None
 
 
-def test_agent_insert_item_normalizes_exact_target_shape() -> None:
+def test_agent_insert_item_accepts_exact_canonical_target_shape() -> None:
     resume = _resume()
 
-    operation = _normalize_edit_operation(
+    operation = _parse_operation(
         resume,
         {
             "type": "insert_item",
             "sectionId": "project",
-            "item": {"id": "project-2", "name": "Compiler", "role": "Author"},
+            "item": {
+                "id": "project-2",
+                "name": "Compiler",
+                "role": "Author",
+                "techStack": [],
+                "period": "",
+                "url": "",
+                "description": "",
+                "highlights": [],
+            },
         },
     )
 
@@ -276,15 +309,14 @@ def test_agent_rejects_simple_list_item_cardinality_changes(
     resume = _resume()
     before = deepcopy(resume)
 
-    assert _normalize_edit_operation(resume, operation) is None
-    _apply_edit_operation(resume, operation)
+    assert _parse_operation(resume, operation) is None
     assert resume == before
 
 
 def test_agent_rejects_wrong_kind_insert_and_raw_kind_patch() -> None:
     resume = _resume()
 
-    wrong_item = _normalize_edit_operation(
+    wrong_item = _parse_operation(
         resume,
         {
             "type": "insert_item",
@@ -292,7 +324,7 @@ def test_agent_rejects_wrong_kind_insert_and_raw_kind_patch() -> None:
             "item": {"id": "project-2", "content": "React: expert"},
         },
     )
-    raw_kind_change = _normalize_edit_operation(
+    raw_kind_change = _parse_operation(
         resume,
         {
             "type": "update_section",
@@ -305,35 +337,10 @@ def test_agent_rejects_wrong_kind_insert_and_raw_kind_patch() -> None:
     assert raw_kind_change is None
 
 
-def test_apply_operation_defensively_rejects_cross_kind_item_data() -> None:
-    resume = _resume()
-    original_project = deepcopy(resume["sections"][2])
-
-    _apply_edit_operation(
-        resume,
-        {
-            "type": "insert_item",
-            "sectionId": "project",
-            "item": {"id": "wrong", "content": "React: expert"},
-        },
-    )
-    _apply_edit_operation(
-        resume,
-        {
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {"content": "React: expert"},
-        },
-    )
-
-    assert resume["sections"][2] == original_project
-
-
 def test_agent_can_only_patch_section_title() -> None:
     resume = _resume()
 
-    operation = _normalize_edit_operation(
+    operation = _parse_operation(
         resume,
         {
             "type": "update_section",

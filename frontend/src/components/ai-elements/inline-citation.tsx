@@ -188,12 +188,12 @@ export const InlineCitationCarouselIndex = ({
       return;
     }
 
-    const frame = window.requestAnimationFrame(syncState);
+    const frame = requestAnimationFrame(syncState);
 
     api.on("select", syncState);
 
     return () => {
-      window.cancelAnimationFrame(frame);
+      cancelAnimationFrame(frame);
       api.off("select", syncState);
     };
   }, [api, syncState]);
@@ -316,7 +316,15 @@ export const InlineCitationSource = ({
       )}
       {url && (
         <div className="flex min-w-0 items-center gap-2 text-muted-foreground text-xs">
-          <p className="min-w-0 flex-1 truncate break-all">{url}</p>
+          <a
+            className="min-w-0 flex-1 truncate break-all underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            href={url}
+            rel="noreferrer"
+            target="_blank"
+            title={url}
+          >
+            {url}
+          </a>
           <button
             aria-label="Copy source link"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"

@@ -5,6 +5,7 @@ import type {
   AgentDraftSnapshot,
   AgentResumeEditSuggestion,
   AgentRunStatus,
+  AgentSessionResponse,
   AgentTransactionState,
 } from '@/types/api'
 import type { ModelConfig, ResumeData } from '@/types/resume'
@@ -30,8 +31,8 @@ export interface CopilotPanelProps {
   ) => void
   onRollbackAgentDraft: (sourceMessageId?: string) => void
   onReconcileAgentDraft: (snapshot: AgentDraftSnapshot | null) => void
-  onApplyAgentDraft: () => void
-  onDiscardAgentDraft: () => void
+  onApplyAgentDraft: () => Promise<AgentSessionResponse | null>
+  onDiscardAgentDraft: () => Promise<AgentSessionResponse | null>
   onOpenModelSettings: () => void
   onBeforeSend?: () => Promise<void>
 }
@@ -58,6 +59,8 @@ export type SendAgentPrompt = (
 ) => AgentSendOperation
 
 export interface AgentConversationController {
+  applyAgentDraft: () => Promise<void>
+  discardAgentDraft: () => Promise<void>
   isResponding: boolean
   isSessionReady: boolean
   messages: AgentPanelMessage[]

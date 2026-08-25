@@ -3,8 +3,9 @@ import {
   MessageContent,
 } from "@/components/ai-elements/message";
 import type { AppMessages } from "@/i18n";
+import { getAgentDisplayFieldLabels } from "@/lib/agent-message-rendering";
 import type { ResumeDraftDiff } from "@/types/resume";
-import { lazy, memo, Suspense } from "react";
+import { lazy, memo, Suspense, useMemo } from "react";
 
 import { AgentAssistantResponse } from "./copilot-assistant-response";
 import type { AgentPanelMessage } from "./copilot-message-model";
@@ -60,12 +61,18 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
   const tools = response?.tools ?? [];
   const timeline = response?.timeline ?? [];
   const shouldRenderTimeline = timeline.length > 0;
+  const fieldLabels = useMemo(
+    () => getAgentDisplayFieldLabels(response?.edits, t.fieldLabels),
+    [response?.edits, t.fieldLabels],
+  );
 
   return (
     <Message from="assistant">
       <MessageContent className="w-full min-w-0 max-w-full px-0 py-1 text-foreground">
         {shouldRenderTimeline ? (
           <AgentMessageTimeline
+            fieldLabels={fieldLabels}
+            isStreamingAssistant={isStreamingAssistant}
             parts={timeline}
             removeMarkdownTables={Boolean(response?.edits?.length)}
             sources={response?.sources}
@@ -77,6 +84,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
             {assistantText ? (
               <div>
                 <AgentAssistantResponse
+                  fieldLabels={fieldLabels}
                   removeMarkdownTables={Boolean(response?.edits?.length)}
                   sources={response?.sources}
                   text={message.text}

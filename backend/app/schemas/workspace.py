@@ -60,7 +60,10 @@ class WorkspacePageResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    theme: ThemeMode | None = None
+    theme: ThemeMode | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class TemplateContextPageResponse(WorkspacePageResponse):

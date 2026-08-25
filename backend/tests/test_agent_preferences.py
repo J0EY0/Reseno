@@ -11,10 +11,7 @@ from app.schemas.agent_settings import (
     AgentResponseLanguage,
     normalize_agent_settings,
 )
-from app.services.agent.policy import (
-    AgentCapabilityMode,
-    capability_policy_for_request,
-)
+from app.services.agent.environment import ResumeToolEnvironment
 from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent_runs import AgentRunManager
@@ -129,7 +126,7 @@ def test_runtime_prompt_uses_frozen_preferences_without_settings_payload() -> No
         ),
     )
 
-    messages = build_agent_messages(request, _config(), mode="tools")
+    messages = build_agent_messages(request, _config())
     workspace_message = next(
         message
         for message in reversed(messages)
@@ -153,12 +150,13 @@ def test_suggest_only_profile_removes_write_tools() -> None:
         normalize_agent_settings({"confirmationMode": "suggestOnly"}),
     )
 
-    policy = capability_policy_for_request(request)
+    environment = ResumeToolEnvironment.open(request)
+    tool_names = {
+        str(schema.get("function", {}).get("name") or "")
+        for schema in environment.tool_schemas
+    }
 
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert policy.reason == "suggest_only"
-    assert "resume_analysis" in policy.allowed_tools
-    assert "edit_execute" not in policy.allowed_tools
+    assert tool_names == {"web_search", "web_fetch"}
 
 
 def test_chat_route_freezes_persisted_settings_for_each_turn(

@@ -15,7 +15,11 @@ from pydantic import ValidationError
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
-from app.schemas.resumes import MAX_RESUME_TITLE_LENGTH, ResumeWorkspaceItemResponse
+from app.schemas.resumes import (
+    MAX_RESUME_TITLE_LENGTH,
+    ResumeWorkspaceItemResponse,
+    is_valid_resume_id,
+)
 from app.services.agent.attachments import delete_agent_session_attachments
 from app.services.resume_document_contract import (
     ResumeDocumentContractError,
@@ -30,7 +34,6 @@ RESUME_COPY_SUFFIX_PATTERN = re.compile(
     r"\s+-\s+(?:(?P<en_label>Copy)(?:\((?P<en_index>\d+)\))?"
     r"|(?P<zh_label>副本)(?:（(?P<zh_index>\d+)）)?)$"
 )
-RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
 DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
@@ -175,12 +178,10 @@ def _utc_now() -> str:
 def _validate_resume_id(resume_id: str) -> str:
     """Validate that a resume id is safe for database and path use."""
 
-    if not RESUME_ID_PATTERN.fullmatch(resume_id):
+    if not is_valid_resume_id(resume_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Resume id may only contain letters, numbers, dot, dash, or underscore."
-            ),
+            detail="Resume id may only contain ASCII letters and numbers.",
         )
 
     return resume_id

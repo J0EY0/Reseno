@@ -1,6 +1,5 @@
 import { memo } from "react";
 
-import { Empty, EmptyDescription } from "@/components/ui/empty";
 import type { AppMessages } from "@/i18n";
 import { getTemplateById } from "@/lib/templates";
 import type {
@@ -13,7 +12,6 @@ import { ResumeGalleryCard } from "./resume-gallery-card";
 export const ResumeGalleryGrid = memo(function ResumeGalleryGrid({
   t,
   resumes,
-  totalResumeCount,
   templates,
   isSelecting,
   selectedIdSet,
@@ -25,7 +23,6 @@ export const ResumeGalleryGrid = memo(function ResumeGalleryGrid({
 }: {
   t: AppMessages;
   resumes: ResumeWorkspaceItem[];
-  totalResumeCount: number;
   templates: ResumeTemplateDefinition[];
   isSelecting: boolean;
   selectedIdSet: Set<string>;
@@ -35,16 +32,6 @@ export const ResumeGalleryGrid = memo(function ResumeGalleryGrid({
   onRequestDelete: (resumeIds: string[]) => void;
   onToggleSelected: (resumeId: string) => void;
 }) {
-  if (resumes.length === 0) {
-    return (
-      <Empty className="col-span-full min-h-[390px] border border-border/70 bg-card/55">
-        <EmptyDescription className="font-medium">
-          {totalResumeCount === 0 ? t.emptyResumes : t.emptyResumeSearch}
-        </EmptyDescription>
-      </Empty>
-    );
-  }
-
   return resumes.map((item) => {
     const isSelected = selectedIdSet.has(item.id);
     return (

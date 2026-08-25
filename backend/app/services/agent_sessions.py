@@ -1,7 +1,6 @@
 import hashlib
 import json
 import logging
-import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,7 +12,6 @@ from uuid import uuid4
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
-    AgentCommittedDraft,
     AgentConversationCheckpoint,
     AgentConversationItem,
     AgentDraftDecisionStatus,
@@ -22,8 +20,8 @@ from app.schemas.agent import (
     AgentTurnErrorCode,
     AgentTurnExecution,
     AgentTurnExecutionStatus,
-    AgentTurnWorkspaceSnapshots,
 )
+from app.schemas.resumes import is_valid_resume_id
 from app.services.agent.attachments import (
     AgentAttachmentError,
     AgentAttachmentSentReceipt,
@@ -33,10 +31,6 @@ from app.services.agent.attachments import (
     prevalidate_agent_attachments,
     prune_sent_agent_attachments,
     rollback_agent_attachments_sent,
-)
-from app.services.agent.request_context import (
-    accumulated_transaction_edits,
-    transaction_base_resume,
 )
 from app.services.agent.resume_owner import require_active_resume
 from app.services.llm.config import resolve_agent_llm_config
@@ -48,15 +42,12 @@ from app.services.resumes import (
     save_resume_document_in_transaction,
 )
 
-RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _CONVERSATION_CHECKPOINT_KEY = "_conversationCheckpoint"
-_WORKSPACE_SNAPSHOTS_KEY = "_workspaceSnapshots"
 logger = logging.getLogger(__name__)
 AgentStoredMessageField = Literal[
     "files",
     "response",
     "conversationCheckpoint",
-    "workspaceSnapshots",
 ]
 
 
@@ -76,7 +67,6 @@ class _PersistedAssistantPayload:
 
     response: AgentChatMessage | None
     checkpoint: AgentConversationCheckpoint | None
-    workspace_snapshots: AgentTurnWorkspaceSnapshots | None
 
 
 class AgentSessionRevisionConflictError(RuntimeError):
@@ -162,12 +152,6 @@ class AgentDraftUnavailableConflictError(RuntimeError):
         self.current_revision = current_revision
 
 
-def is_valid_resume_id(resume_id: str) -> bool:
-    """Return whether a resume id is safe to use as an Agent DB key."""
-
-    return bool(RESUME_ID_PATTERN.fullmatch(resume_id))
-
-
 def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse:
     """Load the Agent conversation attached to one resume."""
 
@@ -203,7 +187,6 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
     # Public session reads hide checkpoints, but still validate their semantic
     # boundary so corrupt internal state cannot survive until a later run.
     _latest_conversation_checkpoint(conn, resume_id)
-    _conversation_workspace_snapshots(conn, resume_id)
     # Timestamps are persisted at millisecond precision. SQLite row order keeps
     # rapid retries deterministic when two executions share the same timestamp.
     execution_rows = conn.execute(
@@ -322,10 +305,6 @@ def prepare_agent_turn(
                 conn,
                 resume_id,
             )
-            workspace_snapshots = _conversation_workspace_snapshots(
-                conn,
-                resume_id,
-            )
     except BaseException:
         _compensate_attachment_state(receipt)
         raise
@@ -343,8 +322,6 @@ def prepare_agent_turn(
     )
     prepared._loaded_conversation_checkpoint = conversation_checkpoint
     prepared._active_conversation_checkpoint = conversation_checkpoint
-    prepared._historical_workspace_snapshots = workspace_snapshots
-    prepared._active_workspace_snapshots = None
     return prepared
 
 
@@ -538,16 +515,15 @@ def append_agent_exchange(
                 current_revision,
             )
 
-        persisted_message = _attach_committed_draft(request, assistant_message)
         now = _now_iso()
         inserted = _insert_message(
             conn,
             session_id=resume_id,
-            message_id=persisted_message.id,
+            message_id=assistant_message.id,
             role="assistant",
-            text=persisted_message.text,
+            text=assistant_message.text,
             files=[],
-            response=persisted_message,
+            response=assistant_message,
             sequence=_next_message_sequence(conn, resume_id),
             created_at=now,
             conversation_checkpoint=(
@@ -556,33 +532,13 @@ def append_agent_exchange(
                 != request._loaded_conversation_checkpoint
                 else None
             ),
-            workspace_snapshots=request._active_workspace_snapshots,
         )
-        if inserted and persisted_message.draft is not None:
+        if inserted and assistant_message.draft is not None:
             _discard_older_pending_drafts(
                 conn,
                 resume_id,
-                current_message_id=persisted_message.id,
+                current_message_id=assistant_message.id,
             )
-
-
-def _attach_committed_draft(
-    request: AgentChatRequest,
-    message: AgentChatMessage,
-) -> AgentChatMessage:
-    """Bind one immutable base and the cumulative edits before storage."""
-
-    if message.transaction_state != "committed" or not message.edits:
-        return message
-
-    return message.model_copy(
-        update={
-            "draft": AgentCommittedDraft(
-                baseResume=transaction_base_resume(request),
-            ),
-            "edits": accumulated_transaction_edits(request, message.edits),
-        },
-    )
 
 
 def _discard_older_pending_drafts(
@@ -633,7 +589,6 @@ def _discard_older_pending_drafts(
                 _encode_persisted_assistant_response(
                     updated_response,
                     persisted.checkpoint,
-                    persisted.workspace_snapshots,
                 ),
                 resume_id,
                 message_id,
@@ -704,7 +659,7 @@ def _update_agent_draft_decision(
             message_id=message_id,
         )
         if row is not None
-        else _PersistedAssistantPayload(None, None, None)
+        else _PersistedAssistantPayload(None, None)
     )
     response = persisted.response
     if response is None or response.draft is None:
@@ -754,7 +709,6 @@ def _update_agent_draft_decision(
             _encode_persisted_assistant_response(
                 updated_response,
                 persisted.checkpoint,
-                persisted.workspace_snapshots,
             ),
             resume_id,
             message_id,
@@ -1259,7 +1213,7 @@ def _decode_persisted_assistant_response(
     """Decode public assistant data and backend-only compiler state."""
 
     if raw_value is None:
-        return _PersistedAssistantPayload(None, None, None)
+        return _PersistedAssistantPayload(None, None)
 
     try:
         value = json.loads(raw_value)
@@ -1279,8 +1233,6 @@ def _decode_persisted_assistant_response(
 
     checkpoint_marker = object()
     raw_checkpoint = value.pop(_CONVERSATION_CHECKPOINT_KEY, checkpoint_marker)
-    snapshots_marker = object()
-    raw_snapshots = value.pop(_WORKSPACE_SNAPSHOTS_KEY, snapshots_marker)
     try:
         response = AgentChatMessage.model_validate(value)
     except ValueError:
@@ -1301,22 +1253,9 @@ def _decode_persisted_assistant_response(
                 field="conversationCheckpoint",
             )
 
-    workspace_snapshots: AgentTurnWorkspaceSnapshots | None = None
-    if raw_snapshots is not snapshots_marker:
-        try:
-            workspace_snapshots = AgentTurnWorkspaceSnapshots.model_validate(
-                raw_snapshots,
-            )
-        except ValueError:
-            _raise_invalid_stored_message_field(
-                session_id=session_id,
-                message_id=message_id,
-                field="workspaceSnapshots",
-            )
     return _PersistedAssistantPayload(
         response,
         checkpoint,
-        workspace_snapshots,
     )
 
 
@@ -1377,77 +1316,9 @@ def _latest_conversation_checkpoint(
     return latest_checkpoint
 
 
-def _conversation_workspace_snapshots(
-    conn: Connection,
-    session_id: str,
-) -> dict[str, AgentTurnWorkspaceSnapshots]:
-    """Load validated per-turn compiler events without exposing them publicly."""
-
-    rows = conn.execute(
-        """
-        SELECT id, response_json, sequence
-        FROM agent_messages
-        WHERE session_id = ? AND role = 'assistant' AND response_json IS NOT NULL
-        ORDER BY sequence ASC
-        """,
-        (session_id,),
-    ).fetchall()
-    snapshots_by_turn: dict[str, AgentTurnWorkspaceSnapshots] = {}
-    for row in rows:
-        message_id = str(row["id"])
-        persisted = _decode_persisted_assistant_response(
-            row["response_json"],
-            session_id=session_id,
-            message_id=message_id,
-        )
-        snapshots = persisted.workspace_snapshots
-        if snapshots is None:
-            continue
-        turn = conn.execute(
-            """
-            SELECT role, sequence
-            FROM agent_messages
-            WHERE session_id = ? AND id = ?
-            """,
-            (session_id, snapshots.turn_message_id),
-        ).fetchone()
-        invalid = (
-            turn is None
-            or turn["role"] != "user"
-            or int(turn["sequence"]) >= int(row["sequence"])
-            or snapshots.turn_message_id in snapshots_by_turn
-            or not all(
-                _is_workspace_snapshot_content(content)
-                for content in (snapshots.tools, snapshots.streaming_final)
-                if content is not None
-            )
-        )
-        if invalid:
-            _raise_invalid_stored_message_field(
-                session_id=session_id,
-                message_id=message_id,
-                field="workspaceSnapshots",
-            )
-        snapshots_by_turn[snapshots.turn_message_id] = snapshots
-    return snapshots_by_turn
-
-
-def _is_workspace_snapshot_content(content: str) -> bool:
-    try:
-        value = json.loads(content)
-    except json.JSONDecodeError:
-        return False
-    return (
-        isinstance(value, dict)
-        and set(value) == {"workspaceContext"}
-        and isinstance(value["workspaceContext"], dict)
-    )
-
-
 def _encode_persisted_assistant_response(
     response: AgentChatMessage,
     checkpoint: AgentConversationCheckpoint | None = None,
-    workspace_snapshots: AgentTurnWorkspaceSnapshots | None = None,
 ) -> str:
     """Serialize public response data with optional private compiler state."""
 
@@ -1456,14 +1327,8 @@ def _encode_persisted_assistant_response(
     # reconstructed from client history can never smuggle internal state back
     # into persistence, even if the public message schema later accepts extras.
     payload.pop(_CONVERSATION_CHECKPOINT_KEY, None)
-    payload.pop(_WORKSPACE_SNAPSHOTS_KEY, None)
     if checkpoint is not None:
         payload[_CONVERSATION_CHECKPOINT_KEY] = checkpoint.model_dump(
-            mode="json",
-            by_alias=True,
-        )
-    if workspace_snapshots is not None:
-        payload[_WORKSPACE_SNAPSHOTS_KEY] = workspace_snapshots.model_dump(
             mode="json",
             by_alias=True,
         )
@@ -1712,7 +1577,6 @@ def _insert_message(
     sequence: int,
     created_at: str,
     conversation_checkpoint: AgentConversationCheckpoint | None = None,
-    workspace_snapshots: AgentTurnWorkspaceSnapshots | None = None,
 ) -> bool:
     """Insert one message and ignore duplicate ids from client retries."""
 
@@ -1720,7 +1584,6 @@ def _insert_message(
         _encode_persisted_assistant_response(
             response,
             conversation_checkpoint,
-            workspace_snapshots,
         )
         if response
         else None

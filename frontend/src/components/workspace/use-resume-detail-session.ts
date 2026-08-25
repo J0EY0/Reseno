@@ -94,7 +94,7 @@ export function useResumeDetailSession({
   });
 
   // A stable getter is required after save/discard awaits. Layout sync keeps
-  // it current before another browser event or calibration response can run.
+  // it current before another browser event or direct route response can run.
   useLayoutEffect(() => {
     latestRef.current = {
       agentDraft,
@@ -149,23 +149,6 @@ export function useResumeDetailSession({
     [],
   );
 
-  const hydrateIfUnchanged = useCallback(
-    (item: ResumeWorkspaceItem, expectedFingerprint: string | null) => {
-      if (
-        expectedFingerprint &&
-        (latestRef.current.agentDraft ||
-          createResumeFingerprint(getSnapshot(item.updatedAt)) !==
-            expectedFingerprint)
-      ) {
-        return false;
-      }
-
-      hydrate(item);
-      return true;
-    },
-    [getSnapshot, hydrate],
-  );
-
   const adoptSavedResume = useCallback(
     (
       item: ResumeWorkspaceItem,
@@ -206,7 +189,6 @@ export function useResumeDetailSession({
     collapsedState,
     getSnapshot,
     hydrate,
-    hydrateIfUnchanged,
     jobBrief,
     liveFingerprint,
     liveResume,

@@ -11,7 +11,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import type { TemplateDetailSaveState } from "@/components/workspace/use-template-detail-save";
 import type { AppMessages, Locale } from "@/i18n";
 import type { WorkspaceVersionSummary } from "@/types/api";
@@ -57,11 +56,6 @@ export function TemplateDetailWorkspaceHeader({
       style={{ viewTransitionName: "persistent-header" }}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <SidebarTrigger
-          className="-ml-1"
-          aria-label={messages.toggleSidebar}
-          title={messages.toggleSidebar}
-        />
         <Button
           type="button"
           variant="outline"

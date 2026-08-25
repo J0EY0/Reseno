@@ -15,6 +15,7 @@ from app.services.llm.types import (
     LlmFilePart,
     LlmImagePart,
     LlmInputMessage,
+    LlmPrompt,
     LlmSystemMessage,
     LlmTextPart,
     LlmToolMessage,
@@ -23,10 +24,7 @@ from app.services.llm.types import (
 
 
 def test_public_llm_input_seam_is_role_and_content_typed() -> None:
-    assert (
-        get_type_hints(dispatch.async_complete_chat)["messages"]
-        == list[LlmInputMessage]
-    )
+    assert get_type_hints(dispatch.async_complete_chat)["prompt"] == LlmPrompt
     assert set(get_args(LlmInputMessage)) == {
         LlmSystemMessage,
         LlmUserMessage,
@@ -43,6 +41,36 @@ def test_public_llm_input_seam_is_role_and_content_typed() -> None:
     for content_part in get_args(LlmContentPart):
         assert "cache_control" not in content_part.__annotations__
         assert "prompt_cache_key" not in content_part.__annotations__
+        assert "prompt_cache_breakpoint" not in content_part.__annotations__
+
+
+def test_prompt_cache_boundaries_are_metadata_not_transcript_messages() -> None:
+    messages: list[LlmInputMessage] = [
+        {"role": "system", "content": "Policy"},
+        {"role": "user", "content": "Historical turn"},
+        {"role": "user", "content": "Current turn"},
+    ]
+    prompt = LlmPrompt(
+        messages=messages,
+        stable_prefix_message_counts=(2, 3),
+    )
+
+    assert prompt.messages == messages
+    assert prompt.stable_prefix_message_counts == (2, 3)
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [(-1,), (0,), (4,), (2, 2), (3, 2)],
+)
+def test_prompt_rejects_invalid_stable_prefix_boundaries(
+    counts: tuple[int, ...],
+) -> None:
+    with pytest.raises(ValueError, match="stable prefix"):
+        LlmPrompt(
+            messages=[{"role": "user", "content": "hello"}],
+            stable_prefix_message_counts=counts,
+        )
 
 
 @pytest.mark.parametrize(
@@ -51,8 +79,6 @@ def test_public_llm_input_seam_is_role_and_content_typed() -> None:
         dispatch.async_complete_tool_call,
         dispatch.async_stream_chat,
         common.chat_completion_params,
-        common.openai_chat_messages,
-        common.system_and_messages,
         openai_chat.complete,
         openai_chat.complete_tool_call,
         openai_chat.stream,
@@ -62,6 +88,19 @@ def test_public_llm_input_seam_is_role_and_content_typed() -> None:
         openai_responses.stream,
         openai_responses.stream_tool_call,
         openai_responses.responses_params,
+    ],
+)
+def test_cache_aware_provider_entry_points_share_the_typed_prompt_seam(
+    entry_point: object,
+) -> None:
+    assert get_type_hints(entry_point)["prompt"] == LlmPrompt
+
+
+@pytest.mark.parametrize(
+    "entry_point",
+    [
+        common.openai_chat_messages,
+        common.system_and_messages,
         openai_responses.responses_input,
         anthropic_messages.complete,
         anthropic_messages.complete_tool_call,
@@ -76,7 +115,7 @@ def test_public_llm_input_seam_is_role_and_content_typed() -> None:
         google_gemini.gemini_input,
     ],
 )
-def test_every_provider_entry_point_shares_the_typed_message_seam(
+def test_message_only_entry_points_share_the_typed_transcript_seam(
     entry_point: object,
 ) -> None:
     assert get_type_hints(entry_point)["messages"] == list[LlmInputMessage]

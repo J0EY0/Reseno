@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Required, TypedDict
 
+from app.services.thinking import ThinkingControl
+
 
 class LlmTextPart(TypedDict):
     """Provider-neutral text inside one user message."""
@@ -112,13 +114,20 @@ class AgentLlmConfig:
     max_tokens: int | None
     timeout_seconds: int
     context_window_tokens: int | None = None
+    # Discovered provider/LiteLLM capability. This is not a user request cap.
+    model_max_output_tokens: int | None = None
+    # Effective per-request projection, recomputed as a tool loop grows. It is
+    # runtime-only and must never be persisted as the user's override.
+    request_max_output_tokens: int | None = None
     provider_kind: str = "custom"
     api_family: str = "openai_compatible_chat"
     supports_image: bool = False
-    supports_thinking: bool = False
+    thinking_control: ThinkingControl = "none"
     supports_tools: bool = True
     supports_streaming: bool = True
-    thinking_enabled: bool = False
+    # Effective request capability selected once from the official endpoint and
+    # the discovered model metadata. Adapters own the hosted-tool wire shape.
+    use_native_web_search: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,37 @@ class LlmRequestContext:
         object.__setattr__(self, "cache_key", cache_key)
 
 
+@dataclass
+class LlmPrompt:
+    """One provider-neutral transcript plus its reusable prefix boundaries.
+
+    Cache placement is compiler metadata, not model-visible conversation data.
+    Each count identifies a prefix ending after that many messages. The Agent
+    may append tool-loop messages while retaining the original stable counts;
+    it must never insert or remove messages before an existing boundary.
+    """
+
+    messages: list[LlmInputMessage]
+    stable_prefix_message_counts: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        counts = self.stable_prefix_message_counts
+        if any(
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            or count > len(self.messages)
+            for count in counts
+        ) or any(
+            current <= previous
+            for previous, current in zip(counts, counts[1:], strict=False)
+        ):
+            raise ValueError(
+                "Prompt stable prefix counts must be strictly increasing and "
+                "refer to existing messages.",
+            )
+
+
 @dataclass(frozen=True)
 class LlmUsage:
     """Provider-normalized token usage without pricing or persistence concerns."""
@@ -146,6 +186,9 @@ class LlmUsage:
     output_tokens: int | None = None
     total_tokens: int | None = None
     cached_input_tokens: int | None = None
+    # A cache write is billed differently from both uncached input and cache reads.
+    # Keep it separate so callers never have to reinterpret provider-specific fields.
+    cache_write_input_tokens: int | None = None
     reasoning_tokens: int | None = None
 
 
@@ -170,6 +213,16 @@ class LlmToolValidationError:
 
 
 @dataclass(frozen=True)
+class LlmWebSource:
+    """One public page cited by a provider-hosted web tool."""
+
+    id: str
+    title: str
+    url: str
+    excerpt: str = ""
+
+
+@dataclass(frozen=True)
 class LlmAssistantMessage:
     """The internal LLM contract consumed by the agent runtime.
 
@@ -187,6 +240,7 @@ class LlmAssistantMessage:
     stop_reason: LlmStopReason = "unknown"
     response_id: str | None = None
     provider_state: dict[str, Any] = field(default_factory=dict)
+    sources: list[LlmWebSource] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

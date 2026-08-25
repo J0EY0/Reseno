@@ -5,13 +5,14 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.config import get_settings
 from app.services.model_providers import DiscoveredModel
+from app.services.thinking import ThinkingControl
 
 MODEL_DISCOVERY_CACHE_NAME = "model-discovery-cache"
-MODEL_DISCOVERY_CACHE_VERSION = 2
+MODEL_DISCOVERY_CACHE_VERSION = 4
 
 
 def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | None:
@@ -113,7 +114,7 @@ def _model_to_cache_item(model: DiscoveredModel) -> dict[str, Any]:
         "contextWindowTokens": model.context_window_tokens,
         "maxOutputTokens": model.max_output_tokens,
         "supportsImage": model.supports_image,
-        "supportsThinking": model.supports_thinking,
+        "thinkingControl": model.thinking_control,
         "supportsTools": model.supports_tools,
         "supportsStreaming": model.supports_streaming,
         "metadataSource": model.metadata_source,
@@ -148,7 +149,7 @@ def _model_from_cache_item(item: object) -> DiscoveredModel | None:
         context_window_tokens=context_window,
         max_output_tokens=max_output,
         supports_image=bool(item.get("supportsImage")),
-        supports_thinking=bool(item.get("supportsThinking")),
+        thinking_control=_thinking_control(item.get("thinkingControl")),
         metadata_source=metadata_source,
         supports_tools=_optional_bool(item.get("supportsTools"), default=True),
         supports_streaming=_optional_bool(item.get("supportsStreaming"), default=True),
@@ -157,3 +158,9 @@ def _model_from_cache_item(item: object) -> DiscoveredModel | None:
 
 def _optional_bool(value: object, *, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _thinking_control(value: object) -> ThinkingControl:
+    if value in {"provider_default", "native_auto", "native_budget"}:
+        return cast(ThinkingControl, value)
+    return "none"

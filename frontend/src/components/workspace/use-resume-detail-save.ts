@@ -88,7 +88,6 @@ export function useResumeDetailSave({
     createResumeFingerprint(initialResume),
   );
   const persistedResumeRef = useRef<ResumeWorkspaceItem | null>(initialResume);
-  const persistenceEpochRef = useRef(0);
   const recentlySavedFingerprintsRef = useRef<Set<string>>(new Set());
   const autosaveBurstStartedAtRef = useRef<number | null>(null);
   const autosaveGenerationRef = useRef(0);
@@ -115,7 +114,6 @@ export function useResumeDetailSave({
     ) => {
       const savedFingerprint = createResumeFingerprint(saved.resume);
       persistedResumeRef.current = saved.resume;
-      persistenceEpochRef.current += 1;
       setPersistedResume(saved.resume);
       persistedFingerprintRef.current = savedFingerprint;
       recentlySavedFingerprintsRef.current = new Set([
@@ -149,16 +147,7 @@ export function useResumeDetailSave({
     (
       detail: ResumeDetailResponse,
       nextVersions: WorkspaceVersionSummary[],
-      expectedPersistedFingerprint?: string,
     ) => {
-      if (
-        expectedPersistedFingerprint &&
-        (persistedFingerprintRef.current !== expectedPersistedFingerprint ||
-          persistenceEpochRef.current !== 0)
-      ) {
-        return false;
-      }
-
       autosaveGenerationRef.current += 1;
       persistedResumeRef.current = detail.resume;
       setPersistedResume(detail.resume);
@@ -176,7 +165,6 @@ export function useResumeDetailSave({
       setVersions(nextVersions);
       setHasVersionLoadError(false);
       setSaveState("saved");
-      return true;
     },
     [],
   );
@@ -395,7 +383,6 @@ export function useResumeDetailSave({
       "checkpoint",
     );
     persistedResumeRef.current = restored.resume;
-    persistenceEpochRef.current += 1;
     setPersistedResume(restored.resume);
     persistedFingerprintRef.current = createResumeFingerprint(restored.resume);
     lastSaveModeRef.current = "checkpoint";
@@ -425,7 +412,6 @@ export function useResumeDetailSave({
         const detail = await fetchResumeVersionApi(resumeId, versionId);
         onHydrateResume(detail.resume);
         hydratePersistedResume(detail, versions);
-        persistenceEpochRef.current += 1;
       } catch (error) {
         console.error("Failed to load resume version.", error);
         setHasVersionLoadError(true);

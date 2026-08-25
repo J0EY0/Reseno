@@ -3,7 +3,6 @@ import {
   MessageContent,
 } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -16,6 +15,7 @@ import {
   getVisibleToolIds,
   isToolFailure,
   isToolRunning,
+  shouldShowTimelineContinuationStatus,
 } from "@/lib/agent-tool-display";
 import { cn } from "@/lib/utils";
 import type {
@@ -114,31 +114,25 @@ function AgentToolDetailsDisclosure({
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen} className="text-xs">
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="group/details h-auto max-w-full gap-1.5 px-1 py-0.5 text-xs font-medium leading-5 text-muted-foreground"
-        >
-          <SquareTerminal className="size-3.5" />
-          <span>
-            {formatCountMessage(
-              failedToolCount === completedTools.length
-                ? t.agentToolDetailsFailed
-                : failedToolCount > 0
-                  ? t.agentToolDetailsPartial
-                  : t.agentToolDetailsComplete,
-              completedTools.length,
-              failedToolCount,
-            )}
-          </span>
-          <ChevronRight
-            className={cn(
-              "size-3.5 transition-transform duration-200",
-              isOpen && "rotate-90",
-            )}
-          />
-        </Button>
+      <CollapsibleTrigger className="group/details inline-flex h-auto max-w-full items-center justify-center gap-1.5 rounded-md bg-transparent px-1 py-0.5 text-xs font-medium leading-5 text-muted-foreground shadow-none transition-colors outline-none hover:bg-transparent hover:text-foreground hover:shadow-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+        <SquareTerminal className="size-3.5" />
+        <span>
+          {formatCountMessage(
+            failedToolCount === completedTools.length
+              ? t.agentToolDetailsFailed
+              : failedToolCount > 0
+                ? t.agentToolDetailsPartial
+                : t.agentToolDetailsComplete,
+            completedTools.length,
+            failedToolCount,
+          )}
+        </span>
+        <ChevronRight
+          className={cn(
+            "size-3.5 transition-transform duration-200",
+            isOpen && "rotate-90",
+          )}
+        />
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-1 space-y-1 pl-6 text-xs leading-5 text-muted-foreground">
         {completedTools.map((tool) => {
@@ -184,12 +178,16 @@ function AgentTimelineToolPart({
 
 /** Renders the interleaved text/tool order emitted by the streaming protocol. */
 export function AgentMessageTimeline({
+  fieldLabels,
+  isStreamingAssistant,
   parts,
   removeMarkdownTables,
   sources,
   tools,
   t,
 }: {
+  fieldLabels?: ReadonlyMap<string, string>;
+  isStreamingAssistant: boolean;
   parts: AgentTimelinePart[];
   removeMarkdownTables?: boolean;
   sources: AgentSource[] | undefined;
@@ -207,6 +205,11 @@ export function AgentMessageTimeline({
     .reverse()
     .find((part) => part.type === "text")?.id;
   const visibleToolIds = getVisibleToolIds(tools);
+  const showContinuationStatus = shouldShowTimelineContinuationStatus(
+    visibleParts,
+    tools,
+    isStreamingAssistant,
+  );
 
   if (visibleParts.length === 0) {
     return null;
@@ -219,6 +222,7 @@ export function AgentMessageTimeline({
           return (
             <div key={part.id}>
               <AgentAssistantResponse
+                fieldLabels={fieldLabels}
                 removeMarkdownTables={removeMarkdownTables}
                 sources={part.id === lastTextPartId ? sources : undefined}
                 text={part.text ?? ""}
@@ -239,6 +243,12 @@ export function AgentMessageTimeline({
 
         return <AgentTimelineToolPart key={part.id} tools={partTools} t={t} />;
       })}
+      {showContinuationStatus ? (
+        <AgentToolShimmerStatus
+          className="text-sm"
+          label={t.agentToolContinuing}
+        />
+      ) : null}
     </div>
   );
 }

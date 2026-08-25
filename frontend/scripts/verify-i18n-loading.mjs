@@ -172,6 +172,12 @@ assert.ok(
 const enMessages = JSON.parse(enSource);
 const zhMessages = JSON.parse(zhSource);
 assert.equal(
+  Object.hasOwn(enMessages, "thinkingEnabled") ||
+    Object.hasOwn(zhMessages, "thinkingEnabled"),
+  false,
+  "Model settings must not retain copy for the removed Thinking toggle.",
+);
+assert.equal(
   enMessages.apiMessages.AGENT_DRAFT_DECISION_CONFLICT,
   "This draft was already resolved elsewhere.",
   "English must localize durable draft decision conflicts.",
@@ -180,6 +186,21 @@ assert.equal(
   zhMessages.apiMessages.AGENT_DRAFT_DECISION_CONFLICT,
   "该草稿已在其他位置处理。",
   "Chinese must localize durable draft decision conflicts.",
+);
+assert.deepEqual(
+  {
+    enInvalid: enMessages.apiMessages.MODEL_CONFIG_MAX_TOKENS_INVALID,
+    enExceeded: enMessages.apiMessages.MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT,
+    zhInvalid: zhMessages.apiMessages.MODEL_CONFIG_MAX_TOKENS_INVALID,
+    zhExceeded: zhMessages.apiMessages.MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT,
+  },
+  {
+    enInvalid: "Enter an integer greater than 0.",
+    enExceeded: "The output limit exceeds this model's maximum.",
+    zhInvalid: "请输入大于 0 的整数",
+    zhExceeded: "输出上限超过该模型允许的最大值",
+  },
+  "Backend output-limit validation errors must be localized in both catalogs.",
 );
 const enTransient = enMessages.agentTransientModelStatusTexts[0];
 const zhTransient = zhMessages.agentTransientModelStatusTexts[0];

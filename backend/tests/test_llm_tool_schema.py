@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.services.agent.tools.registry import AGENT_TOOL_SCHEMAS
+from app.services.agent.contracts import AGENT_TOOL_SCHEMAS, OPERATION_SCHEMA
 from app.services.llm.adapters import (
     anthropic_messages,
     google_gemini,
@@ -14,7 +14,7 @@ from app.services.llm.adapters import (
     openai_responses,
 )
 from app.services.llm.tool_schema import portable_tool_schema
-from app.services.llm.types import AgentLlmConfig
+from app.services.llm.types import AgentLlmConfig, LlmPrompt
 
 SchemaBuilder = Callable[
     [AgentLlmConfig, list[dict[str, Any]]],
@@ -118,7 +118,7 @@ def _openai_chat_schema(
 ) -> dict[str, Any]:
     params = openai_chat._tool_completion_params(
         config,
-        [{"role": "user", "content": "edit"}],
+        LlmPrompt(messages=[{"role": "user", "content": "edit"}]),
         tools,
     )
     return params["tools"][0]["function"]["parameters"]
@@ -130,7 +130,7 @@ def _openai_responses_schema(
 ) -> dict[str, Any]:
     params = openai_responses.responses_params(
         config,
-        [{"role": "user", "content": "edit"}],
+        LlmPrompt(messages=[{"role": "user", "content": "edit"}]),
         tools=tools,
     )
     return params["tools"][0]["parameters"]
@@ -222,6 +222,64 @@ def test_current_agent_tool_schemas_are_portable_for_every_provider(
         assert isinstance(schema.get("properties"), dict)
 
     assert canonical_tools == original_tools
+
+
+def test_agent_insert_item_projection_explains_compact_canonical_input() -> None:
+    edit_tool = next(
+        tool
+        for tool in AGENT_TOOL_SCHEMAS
+        if tool["function"]["name"] == "edit_execute"
+    )
+    schema = portable_tool_schema(edit_tool["function"]["parameters"])
+    operation = schema["properties"]["edits"]["items"]["properties"]["operation"]
+    item = operation["properties"]["item"]
+
+    assert operation["description"].startswith(
+        "Normalized Resume V2 edit operation exchanged by the backend and frontend."
+    )
+    assert "target section kind" in item["description"]
+    assert "may be omitted" in item["description"]
+    assert "canonical ResumeDocument shape" in item["description"]
+
+
+def test_agent_operation_projection_keeps_branch_specific_input_guidance() -> None:
+    edit_tool = next(
+        tool
+        for tool in AGENT_TOOL_SCHEMAS
+        if tool["function"]["name"] == "edit_execute"
+    )
+    schema = portable_tool_schema(edit_tool["function"]["parameters"])
+    operation = schema["properties"]["edits"]["items"]["properties"]["operation"]
+    description = operation["description"]
+
+    # Provider-compatible projection intentionally flattens oneOf, so this
+    # schema-derived summary is where the model learns each variant's inputs.
+    assert operation["required"] == ["type"]
+    for branch in OPERATION_SCHEMA["oneOf"]:
+        operation_type = branch["properties"]["type"]["const"]
+        inputs = ", ".join(
+            field for field in branch["required"] if field != "type"
+        )
+        assert f"{operation_type}({inputs})" in description
+
+
+def test_agent_operation_projection_keeps_resume_field_writing_guidance() -> None:
+    edit_tool = next(
+        tool
+        for tool in AGENT_TOOL_SCHEMAS
+        if tool["function"]["name"] == "edit_execute"
+    )
+    schema = portable_tool_schema(edit_tool["function"]["parameters"])
+    operation = schema["properties"]["edits"]["items"]["properties"]["operation"]
+    patch = operation["properties"]["patch"]["properties"]
+
+    assert "Move non-technology contribution facts" in patch["techStack"][
+        "description"
+    ]
+    assert "do not collapse unrelated contributions" in patch["description"][
+        "description"
+    ]
+    assert "Recover contribution facts" in patch["highlights"]["description"]
 
 
 def test_gemini_declares_every_current_tool_with_complete_parameters() -> None:

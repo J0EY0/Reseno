@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages, Locale } from "@/i18n";
+import { isApiErrorCode } from "@/lib/api-client";
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from "@/lib/model-config";
 import {
   discoverModels,
@@ -34,6 +35,29 @@ interface UseModelConfigDialogOptions {
   onSaved: (config: ModelConfig) => void;
 }
 
+export function classifyModelConfigSaveFailure(
+  error: unknown,
+  messages: Pick<AppMessages, "validationRequired">,
+) {
+  const message =
+    error instanceof Error ? error.message : messages.validationRequired;
+  const isOutputLimitError =
+    isApiErrorCode(error, "MODEL_CONFIG_MAX_TOKENS_INVALID") ||
+    isApiErrorCode(error, "MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT");
+
+  if (isOutputLimitError) {
+    return {
+      status: "invalid",
+      errors: { maxTokens: message },
+    } as const;
+  }
+
+  return {
+    status: "failed",
+    errors: { discovery: message },
+  } as const;
+}
+
 export function useModelConfigDialog({
   initialConfig,
   locale,
@@ -49,6 +73,7 @@ export function useModelConfigDialog({
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>(
     () => discoveredFromConfig(initialConfig),
   );
+  const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [errors, setErrors] = useState<ModelConfigErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -63,6 +88,8 @@ export function useModelConfigDialog({
   const canDiscoverModels =
     draft.providerKind === "cloud" &&
     Boolean(selectedProvider?.supportsModelDiscovery);
+  const modelOptionsLoading =
+    !providersLoaded || (canDiscoverModels && !modelOptionsLoaded);
 
   const applyDiscoveredModels = useCallback(
     (models: DiscoveredModel[]) => {
@@ -88,7 +115,6 @@ export function useModelConfigDialog({
           supportsThinking: false,
           supportsTools: true,
           supportsStreaming: true,
-          thinkingEnabled: false,
         };
       });
       setErrors((current) => {
@@ -109,12 +135,22 @@ export function useModelConfigDialog({
     void getModelProviders()
       .then((response) => {
         if (!cancelled) {
+          const nextDraft = createDialogModelConfigDraft(
+            locale,
+            initialConfig,
+            response.providers,
+          );
+          const nextProvider = providerById(
+            response.providers,
+            nextDraft.provider,
+          );
+
           setProviders(response.providers);
-          setDraft(
-            createDialogModelConfigDraft(
-              locale,
-              initialConfig,
-              response.providers,
+          setDraft(nextDraft);
+          setModelOptionsLoaded(
+            !(
+              nextDraft.providerKind === "cloud" &&
+              nextProvider?.supportsModelDiscovery
             ),
           );
           setProvidersLoaded(true);
@@ -123,6 +159,7 @@ export function useModelConfigDialog({
       .catch((error) => {
         if (!cancelled) {
           console.error("Failed to load model providers.", error);
+          setModelOptionsLoaded(true);
           setProvidersLoaded(true);
         }
       });
@@ -134,10 +171,12 @@ export function useModelConfigDialog({
 
   useEffect(() => {
     if (!canDiscoverModels || !modelDiscoveryApiUrl) {
+      setModelOptionsLoaded(true);
       return;
     }
 
     let cancelled = false;
+    setModelOptionsLoaded(false);
     void discoverModels({
       provider: draft.provider,
       apiFamily: draft.apiFamily,
@@ -147,10 +186,14 @@ export function useModelConfigDialog({
       .then((response) => {
         if (!cancelled) {
           applyDiscoveredModels(response.models);
+          setModelOptionsLoaded(true);
         }
       })
       .catch((error) => {
-        console.error("Failed to load cached models.", error);
+        if (!cancelled) {
+          console.error("Failed to load cached models.", error);
+          setModelOptionsLoaded(true);
+        }
       });
 
     return () => {
@@ -193,6 +236,9 @@ export function useModelConfigDialog({
 
       setDraft((current) => changeDraftProvider(current, provider));
       setDiscoveredModels([]);
+      setModelOptionsLoaded(
+        provider.kind !== "cloud" || !provider.supportsModelDiscovery,
+      );
       setErrors({});
     },
     [providers],
@@ -272,7 +318,6 @@ export function useModelConfigDialog({
           supportsThinking: false,
           supportsTools: selectedProvider?.supportsTools ?? true,
           supportsStreaming: selectedProvider?.supportsStreaming ?? true,
-          thinkingEnabled: false,
         }));
       }
       setErrors((current) => ({
@@ -326,12 +371,9 @@ export function useModelConfigDialog({
       );
       return { status: "saved" } as const;
     } catch (error) {
-      setErrors((current) => ({
-        ...current,
-        discovery:
-          error instanceof Error ? error.message : messages.validationRequired,
-      }));
-      return { status: "failed" } as const;
+      const result = classifyModelConfigSaveFailure(error, messages);
+      setErrors((current) => ({ ...current, ...result.errors }));
+      return result;
     } finally {
       setSubmitting(false);
     }
@@ -351,6 +393,7 @@ export function useModelConfigDialog({
     discoveredModels,
     draft,
     errors,
+    modelOptionsLoading,
     providers,
     providersLoaded,
     refreshModels,

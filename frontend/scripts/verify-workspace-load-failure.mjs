@@ -13,6 +13,7 @@ const [
   resumeDetailLoaderSource,
   resumeDetailViewSource,
   workspaceRouteErrorSource,
+  workspaceRoutePreparationSource,
   templateDetailRouteSource,
   modelConfigPanelSource,
   modelConfigPopoverSource,
@@ -27,6 +28,7 @@ const [
     readText("src/components/workspace/use-resume-detail-loader.ts"),
     readText("src/components/workspace/resume-detail-workspace-view.tsx"),
     readText("src/components/workspace/workspace-route-error.tsx"),
+    readText("src/components/workspace/workspace-route-preparation.ts"),
     readText("src/components/workspace/use-template-detail-workspace.ts"),
     readText("src/components/model-config-panel.tsx"),
     readText("src/components/model-config-form-popover.tsx"),
@@ -74,7 +76,7 @@ assert.match(
   "Template-detail initialization failures must remain route-owned.",
 );
 assert.match(
-  templateDetailRouteSource,
+  workspaceRoutePreparationSource,
   /fetchWorkspaceRouteData\("template-detail",\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal/,
   "Template detail must defer Toast handling to its route loader.",
 );
@@ -94,17 +96,17 @@ assert.match(
   "A failed route initialization must render an error state instead of workspace content.",
 );
 assert.match(
-  resumeDetailLoaderSource,
+  workspaceRoutePreparationSource,
   /fetchWorkspaceRouteData\("resume-detail",[\s\S]{0,120}notifyOnError:\s*false/,
   "Workspace route data must defer Toast handling to the route loader.",
 );
 assert.match(
-  resumeDetailLoaderSource,
+  workspaceRoutePreparationSource,
   /fetchResumeApi\(\s*resumeId,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
   "Resume detail initialization must defer Toast handling to the route loader.",
 );
 assert.match(
-  resumeDetailLoaderSource,
+  workspaceRoutePreparationSource,
   /fetchResumeVersionsApi\(\s*resumeId,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal,[\s\S]{0,20}\}\s*\)/,
   "Resume version initialization must defer Toast handling to the route loader.",
 );
@@ -199,12 +201,12 @@ assert.match(
 
 assert.match(
   modelConfigPopoverSource,
-  /import\("@\/components\/models\/model-config-dialog"\)/,
-  "/models must keep the provider-backed dialog behind a dynamic import.",
+  /import\s*\{\s*ModelConfigDialog\s*\}\s*from\s*["']@\/components\/models\/model-config-dialog["']/,
+  "/models must include the dialog in its already-lazy route chunk so first open has one stable surface.",
 );
 assert.match(
   modelConfigPopoverSource,
-  /\{open \? \([\s\S]*?<LazyModelConfigDialog/,
+  /\{open \? \([\s\S]*?<ModelConfigDialog/,
   "/models must not mount the provider loader before the dialog opens.",
 );
 assert.match(
@@ -224,16 +226,30 @@ const agentSessionLoaderSource = agentSessionRunClientSource.slice(
     "export async function replaceAgentSession",
   ),
 );
+const activeAgentRunLoaderSource = agentSessionRunClientSource.slice(
+  agentSessionRunClientSource.indexOf("export function loadActiveAgentRun"),
+  agentSessionRunClientSource.indexOf("export function stopAgentRun"),
+);
 
 assert.match(
   agentSessionLoaderSource,
-  /signal\?: AbortSignal[\s\S]*signal: options\.signal/,
-  "Agent session reads must accept the owning panel's cancellation signal.",
+  /notifyOnError\?: boolean[\s\S]*signal\?: AbortSignal[\s\S]*notifyOnError: options\.notifyOnError[\s\S]*signal: options\.signal/,
+  "Agent session reads must forward caller-owned cancellation and notification policy.",
+);
+assert.match(
+  activeAgentRunLoaderSource,
+  /notifyOnError\?: boolean[\s\S]*signal\?: AbortSignal[\s\S]*notifyOnError: options\.notifyOnError[\s\S]*signal: options\.signal/,
+  "Active Agent run reads must forward caller-owned cancellation and notification policy.",
 );
 assert.match(
   agentSessionHydrationSource,
-  /loadAgentSession\(resumeId,\s*\{\s*signal: abortController\.signal,?\s*\}\)/,
-  "Copilot cleanup must cancel StrictMode's stale session read.",
+  /loadAgentSession\(resumeId,\s*\{\s*notifyOnError: false,\s*signal: abortController\.signal,?\s*\}\)/,
+  "Copilot hydration must silently cancel or surface its session read locally.",
+);
+assert.match(
+  agentSessionHydrationSource,
+  /loadActiveAgentRun\(resumeId,\s*\{\s*notifyOnError: false,\s*signal: abortController\.signal,?\s*\}\)/,
+  "Copilot hydration must silently cancel or surface its active-run read locally.",
 );
 
 console.log("Workspace load failure behavior verified.");

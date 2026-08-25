@@ -14,21 +14,35 @@ from ..common import (
     close_async_stream,
     delta_text,
     map_stop_reason,
+    minimax_reasoning_details,
+    object_dict,
+    official_minimax_reasoning_split,
     openai_chat_function_tools,
     openai_chat_usage,
     parsed_tool_call,
     raise_openai_error,
-    unsupported_parallel_tool_calls,
 )
 from ..errors import LlmRequestError
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
-    LlmInputMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
+)
+
+_STREAM_USAGE_TARGETS = frozenset(
+    {
+        ("cloud", "deepseek"),
+        ("cloud", "minimax"),
+        ("cloud", "moonshot"),
+        ("cloud", "qwen"),
+        ("local", "ollama"),
+        ("local", "sglang"),
+        ("local", "vllm"),
+    },
 )
 
 
@@ -40,7 +54,7 @@ def supports_native_attachment(media_type: str) -> bool:
 
 async def complete(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
@@ -52,7 +66,7 @@ async def complete(
             response = await client.chat.completions.create(
                 **chat_completion_params(
                     config,
-                    messages,
+                    prompt,
                     stream=False,
                     request_context=request_context,
                 ),
@@ -65,7 +79,7 @@ async def complete(
         ) as exc:
             raise_openai_error(exc)
 
-        message = _message_from_response(response)
+        message = _message_from_response(response, config=config)
         if message.content:
             return message
 
@@ -76,75 +90,75 @@ async def complete(
 
 async def complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
 ) -> LlmAssistantMessage:
     """Ask an OpenAI-compatible chat endpoint to choose zero or more tools."""
 
-    # Disable parallel tool calls at the provider boundary. The agent loop
-    # executes one assistant turn as a single transaction, then validates every
-    # returned call before running any of them.
+    # Let the model batch independent reads. The Agent loop validates the whole
+    # batch, runs reads concurrently, and defers writes that would depend on
+    # observations the model has not seen yet.
     client = async_openai_client(config)
     params = _tool_completion_params(
         config,
-        messages,
+        prompt,
         tools,
         request_context=request_context,
     )
     try:
         try:
             response = await client.chat.completions.create(**params)
-        except APIStatusError as exc:
-            if not unsupported_parallel_tool_calls(exc):
-                raise_openai_error(exc)
-
-            # Several OpenAI-compatible local/cloud endpoints reject the OpenAI
-            # parallel-tool flag even though they support ordinary tool calls.
-            params.pop("parallel_tool_calls", None)
-            try:
-                response = await client.chat.completions.create(**params)
-            except (
-                APIStatusError,
-                APITimeoutError,
-                APIConnectionError,
-                APIError,
-            ) as fallback_exc:
-                raise_openai_error(fallback_exc)
-        except (APITimeoutError, APIConnectionError, APIError) as exc:
+        except (
+            APIStatusError,
+            APITimeoutError,
+            APIConnectionError,
+            APIError,
+        ) as exc:
             raise_openai_error(exc)
 
-        return _message_from_response(response)
+        return _message_from_response(response, config=config)
     finally:
         await close_async_client(client)
 
 
 def _tool_completion_params(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
 ) -> dict[str, Any]:
     """Build provider-facing params without weakening local tool validation."""
 
-    return {
+    params = {
         **chat_completion_params(
             config,
-            messages,
+            prompt,
             stream=False,
             request_context=request_context,
         ),
         "tools": openai_chat_function_tools(tools),
-        "tool_choice": "auto",
-        "parallel_tool_calls": False,
     }
+    if not (
+        config.provider == "deepseek"
+        and config.provider_kind == "cloud"
+        and config.api_family == "openai_compatible_chat"
+        and config.thinking_control != "none"
+        and config.base_url.strip().rstrip("/") == "https://api.deepseek.com"
+    ):
+        # `auto` permits either text or tools; it does not force a call. Keep it
+        # for compatible runtimes such as vLLM whose protocol default is `none`.
+        # Official DeepSeek thinking rejects the field, so only that exact
+        # provider projection relies on its own default tool-selection mode.
+        params["tool_choice"] = "auto"
+    return params
 
 
 async def stream(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
@@ -161,19 +175,22 @@ async def stream(
     reasoning_parts: list[str] = []
     stop_reason: LlmStopReason = "unknown"
     response_id: str | None = None
+    usage = None
     terminal_seen = False
+    minimax_reasoning = ""
     try:
         stream_response = await client.chat.completions.create(
-            **chat_completion_params(
+            **_stream_completion_params(
                 config,
-                messages,
-                stream=True,
+                prompt,
                 request_context=request_context,
             ),
         )
         async for chunk in stream_response:
             if response_id is None:
                 response_id = getattr(chunk, "id", None)
+            if chunk_usage := openai_chat_usage(chunk):
+                usage = chunk_usage
             if not chunk.choices:
                 continue
 
@@ -185,6 +202,25 @@ async def stream(
 
             delta = choice.delta
             reasoning = delta_text(delta, ("reasoning_content", "reasoning"))
+            if official_minimax_reasoning_split(config):
+                details = object_dict(delta).get("reasoning_details")
+                if details is not None:
+                    verified_details = minimax_reasoning_details(
+                        {
+                            "model": config.model,
+                            "reasoning_details": details,
+                        },
+                        model=config.model,
+                    )
+                    current_reasoning = "".join(
+                        str(detail["text"]) for detail in verified_details
+                    )
+                    reasoning = (
+                        current_reasoning[len(minimax_reasoning) :]
+                        if current_reasoning.startswith(minimax_reasoning)
+                        else current_reasoning
+                    )
+                    minimax_reasoning = current_reasoning
             if reasoning:
                 reasoning_parts.append(reasoning)
                 yield LlmStreamEvent(type="reasoning_delta", delta=reasoning)
@@ -209,16 +245,41 @@ async def stream(
         type="done",
         message=LlmAssistantMessage(
             content="".join(content_parts).strip(),
-            reasoning="".join(reasoning_parts).strip(),
+            reasoning=(minimax_reasoning or "".join(reasoning_parts)).strip(),
+            usage=usage,
             stop_reason=stop_reason,
             response_id=response_id,
         ),
     )
 
 
+def _stream_completion_params(
+    config: AgentLlmConfig,
+    prompt: LlmPrompt,
+    *,
+    request_context: LlmRequestContext | None = None,
+) -> dict[str, Any]:
+    params = chat_completion_params(
+        config,
+        prompt,
+        stream=True,
+        request_context=request_context,
+    )
+    if _supports_stream_usage(config):
+        params["stream_options"] = {"include_usage": True}
+    return params
+
+
+def _supports_stream_usage(config: AgentLlmConfig) -> bool:
+    return (
+        config.provider_kind,
+        config.provider,
+    ) in _STREAM_USAGE_TARGETS and config.api_family == "openai_compatible_chat"
+
+
 async def stream_tool_call(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
@@ -229,25 +290,55 @@ async def stream_tool_call(
     stream_response = None
     state = ChatCompletionStreamState()
     terminal_reason: LlmStopReason | None = None
+    minimax_details: list[dict[str, Any]] = []
+    minimax_reasoning = ""
     params = {
         **_tool_completion_params(
             config,
-            messages,
+            prompt,
             tools,
             request_context=request_context,
         ),
         "stream": True,
     }
+    if _supports_stream_usage(config):
+        params["stream_options"] = {"include_usage": True}
     try:
-        try:
-            stream_response = await client.chat.completions.create(**params)
-        except APIStatusError as exc:
-            if not unsupported_parallel_tool_calls(exc):
-                raise_openai_error(exc)
-            params.pop("parallel_tool_calls", None)
-            stream_response = await client.chat.completions.create(**params)
+        stream_response = await client.chat.completions.create(**params)
 
         async for chunk in stream_response:
+            if official_minimax_reasoning_split(config):
+                for choice in chunk.choices:
+                    details = object_dict(choice.delta).get("reasoning_details")
+                    if details is not None:
+                        # MiniMax emits cumulative reasoning_details snapshots,
+                        # while OpenAI's generic accumulator expects indexed
+                        # list deltas. Preserve the latest verified snapshot
+                        # here and remove it before generic tool accumulation.
+                        minimax_details = minimax_reasoning_details(
+                            {
+                                "model": config.model,
+                                "reasoning_details": details,
+                            },
+                            model=config.model,
+                        )
+                        current_reasoning = "".join(
+                            str(detail["text"]) for detail in minimax_details
+                        )
+                        reasoning_delta = (
+                            current_reasoning[len(minimax_reasoning) :]
+                            if current_reasoning.startswith(minimax_reasoning)
+                            else current_reasoning
+                        )
+                        minimax_reasoning = current_reasoning
+                        choice.delta.model_extra.pop("reasoning_details", None)
+                        if reasoning_delta:
+                            yield LlmStreamEvent(
+                                type="reasoning_delta",
+                                delta=reasoning_delta,
+                            )
+                        else:
+                            yield LlmStreamEvent(type="activity")
             state.handle_chunk(chunk)
             if not chunk.choices:
                 continue
@@ -280,7 +371,19 @@ async def stream_tool_call(
     if terminal_reason is None:
         raise LlmRequestError("Model provider stream ended before completion.")
 
-    message = _message_from_response(state.current_completion_snapshot)
+    message = _message_from_response(
+        state.current_completion_snapshot,
+        config=config,
+    )
+    if minimax_details:
+        message = replace(
+            message,
+            reasoning="".join(str(detail["text"]) for detail in minimax_details),
+            provider_state={
+                "model": config.model,
+                "reasoning_details": minimax_details,
+            },
+        )
     if terminal_reason != "tool_calls" and message.tool_calls:
         message = replace(message, tool_calls=[])
     yield LlmStreamEvent(
@@ -289,7 +392,11 @@ async def stream_tool_call(
     )
 
 
-def _message_from_response(response: object) -> LlmAssistantMessage:
+def _message_from_response(
+    response: object,
+    *,
+    config: AgentLlmConfig,
+) -> LlmAssistantMessage:
     choices = getattr(response, "choices", None)
     if not choices:
         raise LlmRequestError("Model provider returned an empty response.")
@@ -297,7 +404,26 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
     choice = choices[0]
     sdk_message = choice.message
     content = sdk_message.content if isinstance(sdk_message.content, str) else ""
-    reasoning = delta_text(sdk_message, ("reasoning_content", "reasoning"))
+    raw_reasoning_details = getattr(sdk_message, "reasoning_details", None)
+    if raw_reasoning_details is None:
+        raw_reasoning_details = object_dict(sdk_message).get("reasoning_details")
+    reasoning_details = (
+        minimax_reasoning_details(
+            {
+                "model": config.model,
+                "reasoning_details": raw_reasoning_details,
+            },
+            model=config.model,
+        )
+        if official_minimax_reasoning_split(config)
+        and raw_reasoning_details is not None
+        else []
+    )
+    reasoning = (
+        "".join(str(detail["text"]) for detail in reasoning_details)
+        if reasoning_details
+        else delta_text(sdk_message, ("reasoning_content", "reasoning"))
+    )
     tool_calls = _tool_calls_from_message(sdk_message)
     finish_reason = getattr(choice, "finish_reason", None)
     stop_reason = map_stop_reason(finish_reason)
@@ -309,6 +435,14 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
         usage=openai_chat_usage(response),
         stop_reason=stop_reason,
         response_id=getattr(response, "id", None),
+        provider_state=(
+            {
+                "model": config.model,
+                "reasoning_details": reasoning_details,
+            }
+            if reasoning_details
+            else {}
+        ),
     )
 
 

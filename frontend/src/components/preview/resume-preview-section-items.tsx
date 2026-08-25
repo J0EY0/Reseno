@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 
+import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import {
   getCanonicalItemFieldDiffs,
@@ -113,7 +114,6 @@ function TimelineItem({
   const structuralDiff = diff?.structuralDiff;
   const modifiedDiff = [...(diff?.fieldDiffByName.values() ?? [])].at(-1);
   const markerDiff = structuralDiff ?? modifiedDiff;
-  const hasFieldDiff = Boolean(modifiedDiff);
   const urlDiffs = fieldDiffs("url");
   const descriptionDiffs = fieldDiffs("description");
   const subtitleDiffs = fieldDiffs("subtitle");
@@ -269,12 +269,13 @@ function TimelineItem({
       className={cn(
         "resume-item relative grid gap-2",
         getDiffClassName(structuralDiff),
-        !structuralDiff && hasFieldDiff && "resume-diff-anchor",
+        markerDiff && "resume-diff-label-host",
       )}
       data-resume-item-id={item.id}
       data-resume-diff-kind={markerDiff?.kind}
       data-resume-diff-label={getDiffLabel(markerDiff, t)}
     >
+      <ResumeDiffBadge diff={markerDiff} t={t} />
       {heading}
 
       {item.url || urlDiffs.length > 0 ? (
@@ -387,7 +388,7 @@ function SimpleListContent({
         className={cn(
           "resume-item resume-rich-text min-w-0",
           getDiffClassName(structuralDiff),
-          !structuralDiff && contentDiffs.length > 0 && "resume-diff-anchor",
+          markerDiff && "resume-diff-label-host",
         )}
         data-resume-item-id={item.id}
         data-resume-diff-kind={markerDiff?.kind}
@@ -395,6 +396,7 @@ function SimpleListContent({
         data-resume-list-layout={layout}
         style={{ color: settings.bodyColor }}
       >
+        <ResumeDiffBadge diff={markerDiff} t={t} />
         <RichListDiff html={item.content} diffs={contentDiffs} />
       </div>
     </div>

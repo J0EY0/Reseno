@@ -21,7 +21,7 @@ from app.schemas.agent import (
     AgentTurnErrorCode,
     AgentTurnExecutionStatus,
 )
-from app.services.agent.request_context import transaction_base_resume
+from app.services.agent.draft import DraftTransaction
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.streaming import async_stream_agent_response
 from app.services.agent_sessions import (
@@ -29,8 +29,9 @@ from app.services.agent_sessions import (
     finish_agent_turn_execution,
     prepare_agent_turn,
 )
+from app.services.llm import LlmUsage
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 MAX_RETAINED_AGENT_RUNS: Final = 24
 MAX_ACTIVE_AGENT_RUNS: Final = 4
@@ -84,12 +85,143 @@ class AgentRun:
         return AgentRunResponse(
             id=self.id,
             resumeId=self.resume_id,
-            baseResume=transaction_base_resume(self.request),
+            baseResume=DraftTransaction.from_request(self.request).base_resume,
             status=self.status,
             executionState=self.execution_state,
             errorCode=self.error_code,
             lastEventId=self.next_sequence - 1,
         )
+
+
+@dataclass
+class _AgentRunMetrics:
+    run_started_monotonic: float = field(default_factory=monotonic, repr=False)
+    model_attempts: int = 0
+    model_responses: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    first_event_elapsed_ms: int | None = None
+    _model_started_monotonic: float | None = field(default=None, repr=False)
+    _model_elapsed_seconds: float = field(default=0.0, repr=False)
+    _tool_intervals_by_name: dict[str, list[tuple[float, float]]] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _observed_tool_ids: set[str] = field(default_factory=set, repr=False)
+
+    def record_model_attempt(self) -> None:
+        self.model_attempts += 1
+        if self._model_started_monotonic is None:
+            self._model_started_monotonic = monotonic()
+
+    def record_model_response(
+        self,
+        usage: LlmUsage | None,
+        _stop_reason: object,
+    ) -> None:
+        self.model_responses += 1
+        self.finish_model_timing()
+        if usage is None:
+            return
+        self.input_tokens = _add_optional_usage(
+            self.input_tokens,
+            usage.input_tokens,
+        )
+        self.output_tokens = _add_optional_usage(
+            self.output_tokens,
+            usage.output_tokens,
+        )
+        self.total_tokens = _add_optional_usage(
+            self.total_tokens,
+            usage.total_tokens,
+        )
+        self.cached_input_tokens = _add_optional_usage(
+            self.cached_input_tokens,
+            usage.cached_input_tokens,
+        )
+        self.cache_write_input_tokens = _add_optional_usage(
+            self.cache_write_input_tokens,
+            usage.cache_write_input_tokens,
+        )
+        self.reasoning_tokens = _add_optional_usage(
+            self.reasoning_tokens,
+            usage.reasoning_tokens,
+        )
+
+    def finish_model_timing(self) -> None:
+        """Close one model interval, including retries before its response."""
+
+        if self._model_started_monotonic is None:
+            return
+        self._model_elapsed_seconds += monotonic() - self._model_started_monotonic
+        self._model_started_monotonic = None
+
+    def record_tool_loop_event(self, event: object) -> None:
+        """Observe timings only; never inspect tool input or output payloads."""
+
+        if (
+            self.first_event_elapsed_ms is None
+            and getattr(event, "kind", None) != "done"
+        ):
+            self.first_event_elapsed_ms = round(
+                (monotonic() - self.run_started_monotonic) * 1000,
+            )
+
+        tools = getattr(event, "tools", None)
+        if not isinstance(tools, list):
+            return
+        for tool in tools:
+            tool_id = getattr(tool, "id", None)
+            name = getattr(tool, "title", None)
+            started_at = _timestamp_seconds(getattr(tool, "started_at", None))
+            completed_at = _timestamp_seconds(getattr(tool, "completed_at", None))
+            if (
+                not isinstance(tool_id, str)
+                or not tool_id
+                or tool_id in self._observed_tool_ids
+                or not isinstance(name, str)
+                or not name
+                or started_at is None
+                or completed_at is None
+                or completed_at < started_at
+            ):
+                continue
+            self._observed_tool_ids.add(tool_id)
+            self._tool_intervals_by_name.setdefault(name, []).append(
+                (started_at, completed_at),
+            )
+
+    @property
+    def model_elapsed_ms(self) -> int:
+        return round(self._model_elapsed_seconds * 1000)
+
+    @property
+    def tool_elapsed_ms(self) -> int:
+        return _merged_interval_ms(
+            [
+                interval
+                for intervals in self._tool_intervals_by_name.values()
+                for interval in intervals
+            ],
+        )
+
+    @property
+    def tool_elapsed_ms_by_name(self) -> dict[str, int]:
+        return {
+            name: _merged_interval_ms(intervals)
+            for name, intervals in sorted(self._tool_intervals_by_name.items())
+        }
+
+    @property
+    def tool_calls_by_name(self) -> dict[str, int]:
+        return {
+            name: len(intervals)
+            for name, intervals in sorted(self._tool_intervals_by_name.items())
+        }
 
 
 class AgentRunManager:
@@ -112,6 +244,7 @@ class AgentRunManager:
         self._shutting_down = False
 
     async def start(self, request: AgentChatRequest) -> AgentRun:
+        started_monotonic = monotonic()
         resume_id = request.resume_id.strip() if request.resume_id else None
         run_id = f"agent-run-{uuid4().hex[:16]}"
         async with self._lock:
@@ -146,6 +279,7 @@ class AgentRunManager:
                 id=run_id,
                 request=request,
                 resume_id=resume_id,
+                started_monotonic=started_monotonic,
             )
             async with self._lock:
                 self._runs[run.id] = run
@@ -230,7 +364,10 @@ class AgentRunManager:
             # Provider work may need task cancellation to unblock promptly.
             # Durable terminalization is different: a user stop must not turn
             # its retry into a running DB ghost.
-            if run.task is not None and (self._shutting_down or not run.terminalizing):
+            if run.task is not None and (
+                self._shutting_down
+                or (not run.has_terminal_message and not run.terminalizing)
+            ):
                 asyncio.get_running_loop().call_soon(run.task.cancel)
         return run
 
@@ -285,7 +422,13 @@ class AgentRunManager:
         async def is_cancelled() -> bool:
             return run.cancel_event.is_set()
 
-        runtime = AgentRuntimeContext(is_aborted=is_cancelled)
+        metrics = _AgentRunMetrics(run_started_monotonic=run.started_monotonic)
+        runtime = AgentRuntimeContext(
+            is_aborted=is_cancelled,
+            on_llm_attempt=metrics.record_model_attempt,
+            on_llm_response=metrics.record_model_response,
+            on_tool_loop_event=metrics.record_tool_loop_event,
+        )
         final_status: AgentRunStatus = "failed"
         try:
             with closing(connect()) as conn:
@@ -350,6 +493,10 @@ class AgentRunManager:
             await self._rollback_provisional_edits(run)
             final_status = "failed"
         finally:
+            # A failed/cancelled provider turn has no response callback. Close
+            # its interval before terminal persistence so it is not counted as
+            # model latency.
+            metrics.finish_model_timing()
             terminal_published = False
             try:
                 await self._publish_terminal(
@@ -361,14 +508,41 @@ class AgentRunManager:
                 if terminal_published:
                     await self._release(run)
                     logger.info(
-                        "Finished Agent run run_id=%s resume_id=%s status=%s "
-                        "error_code=%s duration_ms=%d tools=%s",
-                        run.id,
-                        run.resume_id or "-",
-                        run.status,
-                        run.error_code or "-",
-                        round((monotonic() - run.started_monotonic) * 1000),
-                        _replay_tool_states(run.replay_message),
+                        "Agent run summary %s",
+                        json.dumps(
+                            {
+                                "event": "agent_run_finished",
+                                "run_id": run.id,
+                                "resume_id": run.resume_id,
+                                "status": run.status,
+                                "error_code": run.error_code,
+                                "duration_ms": round(
+                                    (monotonic() - run.started_monotonic) * 1000,
+                                ),
+                                "first_event_elapsed_ms": (
+                                    metrics.first_event_elapsed_ms
+                                ),
+                                "model_elapsed_ms": metrics.model_elapsed_ms,
+                                "model_attempts": metrics.model_attempts,
+                                "model_responses": metrics.model_responses,
+                                "input_tokens": metrics.input_tokens,
+                                "output_tokens": metrics.output_tokens,
+                                "total_tokens": metrics.total_tokens,
+                                "cached_input_tokens": metrics.cached_input_tokens,
+                                "cache_write_input_tokens": (
+                                    metrics.cache_write_input_tokens
+                                ),
+                                "reasoning_tokens": metrics.reasoning_tokens,
+                                "tool_calls_by_name": metrics.tool_calls_by_name,
+                                "tool_elapsed_ms": metrics.tool_elapsed_ms,
+                                "tool_elapsed_ms_by_name": (
+                                    metrics.tool_elapsed_ms_by_name
+                                ),
+                                "tools": _replay_tool_states(run.replay_message),
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
                     )
 
     async def _rollback_provisional_edits(self, run: AgentRun) -> None:
@@ -600,6 +774,40 @@ def _replay_tool_states(message: dict[str, object]) -> str:
     return ",".join(outcomes) or "-"
 
 
+def _add_optional_usage(current: int | None, value: int | None) -> int | None:
+    if value is None:
+        return current
+    return (current or 0) + value
+
+
+def _timestamp_seconds(value: object) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _merged_interval_ms(intervals: list[tuple[float, float]]) -> int:
+    """Return wall time covered by intervals without double-counting overlap."""
+
+    if not intervals:
+        return 0
+
+    ordered = sorted(intervals)
+    current_start, current_end = ordered[0]
+    elapsed_seconds = 0.0
+    for started_at, completed_at in ordered[1:]:
+        if started_at > current_end:
+            elapsed_seconds += current_end - current_start
+            current_start, current_end = started_at, completed_at
+        else:
+            current_end = max(current_end, completed_at)
+    elapsed_seconds += current_end - current_start
+    return round(elapsed_seconds * 1000)
+
+
 def _with_event_id(frame: str, sequence: int) -> str:
     """Add a replay cursor without changing the existing event-first format."""
 
@@ -660,6 +868,76 @@ def _merge_replay_tool(
     message["tools"] = current_tools
 
 
+def _append_replay_timeline_text(
+    message: dict[str, object],
+    part_id: object,
+    delta: str,
+) -> None:
+    if not isinstance(part_id, str) or not part_id:
+        return
+
+    timeline = message.get("timeline")
+    parts = (
+        [part for part in timeline if isinstance(part, dict)]
+        if isinstance(timeline, list)
+        else []
+    )
+    if parts and parts[-1].get("id") == part_id:
+        current_text = parts[-1].get("text")
+        prefix = current_text if isinstance(current_text, str) else ""
+        parts[-1]["text"] = f"{prefix}{delta}"
+    else:
+        parts.append(
+            {
+                "id": part_id,
+                "type": "text",
+                "text": delta,
+                "toolIds": [],
+            },
+        )
+    message["timeline"] = parts
+
+
+def _append_replay_timeline_tool(
+    message: dict[str, object],
+    part_id: object,
+    tool_id: object,
+) -> None:
+    if (
+        not isinstance(part_id, str)
+        or not part_id
+        or not isinstance(tool_id, str)
+        or not tool_id
+    ):
+        return
+
+    timeline = message.get("timeline")
+    parts = (
+        [part for part in timeline if isinstance(part, dict)]
+        if isinstance(timeline, list)
+        else []
+    )
+    if parts and parts[-1].get("id") == part_id:
+        raw_tool_ids = parts[-1].get("toolIds")
+        tool_ids = (
+            [value for value in raw_tool_ids if isinstance(value, str)]
+            if isinstance(raw_tool_ids, list)
+            else []
+        )
+        if tool_id not in tool_ids:
+            parts[-1]["toolIds"] = [*tool_ids, tool_id]
+    else:
+        parts.append(
+            {
+                "id": part_id,
+                "type": "tool_group",
+                "text": "",
+                "toolIds": [tool_id],
+            },
+        )
+    message["timeline"] = parts
+
+
 def _merge_replay_message(
     message: dict[str, object],
     frame: str,
@@ -680,14 +958,20 @@ def _merge_replay_message(
         delta = payload.get("delta")
         if isinstance(delta, str):
             message["text"] = f"{message.get('text', '')}{delta}"
-    elif event_name == "reasoning_delta":
-        delta = payload.get("delta")
-        if isinstance(delta, str):
-            message["reasoning"] = f"{message.get('reasoning', '')}{delta}"
+            _append_replay_timeline_text(
+                message,
+                payload.get("timelinePartId"),
+                delta,
+            )
     elif event_name in {"tool_start", "tool_delta", "tool_done"}:
         tool = payload.get("tool")
         if isinstance(tool, dict):
             _merge_replay_tool(message, tool)
+            _append_replay_timeline_tool(
+                message,
+                payload.get("timelinePartId"),
+                tool.get("id"),
+            )
     elif event_name == "error" and not message.get("text"):
         error_text = payload.get("message") or payload.get("error")
         if isinstance(error_text, str):
@@ -798,12 +1082,8 @@ def _cancelled_replay_message(run: AgentRun) -> AgentChatMessage | None:
         ]
     payload.update(
         {
-            "actions": [],
             "draft": None,
             "edits": [],
-            "finishMissing": [],
-            "quickReplies": [],
-            "targetContext": None,
         },
     )
     return AgentChatMessage.model_validate(payload)
@@ -819,6 +1099,8 @@ def _provider_error_code(frame: str) -> AgentTurnErrorCode:
 
     _, payload = _event_payload(frame)
     explicit_code = payload.get("errorCode")
+    if explicit_code == "AGENT_INTERNAL_ERROR":
+        return "AGENT_INTERNAL_ERROR"
     if explicit_code == "AGENT_PROVIDER_AUTH_ERROR":
         return "AGENT_PROVIDER_AUTH_ERROR"
     if explicit_code == "AGENT_PROVIDER_TIMEOUT":

@@ -1,4 +1,5 @@
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,7 @@ from jsonschema.exceptions import best_match  # type: ignore[import-untyped]
 
 RESUME_DOCUMENT_INVALID = "RESUME_DOCUMENT_INVALID"
 RESUME_DOCUMENT_DUPLICATE_ID = "RESUME_DOCUMENT_DUPLICATE_ID"
+RESUME_NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 _SCHEMA_PATH = Path(__file__).with_name("resume_document.schema.json")
 
@@ -65,7 +67,7 @@ def is_resume_item_for_kind(value: object, kind: str) -> bool:
     if set(value) != set(ITEM_FIELDS_BY_KIND[kind]):
         return False
     item_id = value.get("id")
-    if not isinstance(item_id, str) or not item_id:
+    if not isinstance(item_id, str) or not RESUME_NODE_ID_PATTERN.fullmatch(item_id):
         return False
     if any(
         not isinstance(value.get(field), str)

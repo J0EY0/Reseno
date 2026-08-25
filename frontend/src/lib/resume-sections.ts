@@ -12,7 +12,7 @@ import type {
   SimpleListItem,
 } from '@/types/resume'
 
-import { createId } from './resume-id'
+import { createId, isResumeNodeId } from './resume-id'
 
 export interface RenderableSectionItem {
   id: string
@@ -98,7 +98,7 @@ export function isSectionItemForKind<K extends SectionKind>(
   kind: K,
   value: unknown,
 ): value is SectionItemByKind[K] {
-  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) {
+  if (!isRecord(value) || !isResumeNodeId(value.id)) {
     return false
   }
 
@@ -165,8 +165,7 @@ export function isCanonicalResumeSection(value: unknown): value is ResumeSection
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ['id', 'kind', 'title', 'items']) ||
-    typeof value.id !== 'string' ||
-    !value.id ||
+    !isResumeNodeId(value.id) ||
     typeof value.title !== 'string' ||
     typeof value.kind !== 'string' ||
     !Object.hasOwn(SECTION_ITEM_FIELDS, value.kind) ||

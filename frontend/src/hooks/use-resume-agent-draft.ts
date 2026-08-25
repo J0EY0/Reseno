@@ -270,26 +270,26 @@ export function useResumeAgentDraft({
 
   const applyAgentDraft = useCallback(async () => {
     if (!agentDraft || agentDraft.transactionState !== "committed") {
-      return;
+      return null;
     }
 
     const draftBase = agentDraftBaseRef.current;
     if (!draftBase || draftBase.draftId !== agentDraft.id) {
-      return;
+      return null;
     }
 
     const candidate = mergeCommittedAgentDraft(agentDraft, draftBase.resume);
     if (!candidate) {
-      return;
+      return null;
     }
 
     if (!resumeId || !agentDraft.sourceMessageId) {
       toast.error(messages.agentRequestFailed, { closeButton: true });
-      return;
+      return null;
     }
 
     if (draftDecisionTokenRef.current) {
-      return;
+      return null;
     }
     const decisionToken = Symbol("agent-draft-decision");
     draftDecisionTokenRef.current = decisionToken;
@@ -303,11 +303,11 @@ export function useResumeAgentDraft({
         draftDecisionTokenRef.current !== decisionToken ||
         agentDraftRef.current?.id !== agentDraft.id
       ) {
-        return;
+        return null;
       }
 
       if (resolution.status === "pending") {
-        return;
+        return resolution.session;
       }
       let resolvedResume = agentDraft.resume;
       if (resolution.status === "applied") {
@@ -321,7 +321,7 @@ export function useResumeAgentDraft({
         agentDraftBaseRef.current = null;
         setAgentDraft(null);
         setLastAgentDraft(null);
-        return;
+        return resolution.session;
       }
 
       setLastAgentDraft({
@@ -338,14 +338,16 @@ export function useResumeAgentDraft({
           : messages.agentDraftDiscarded,
         { closeButton: true },
       );
+      return resolution.session;
     } catch (error) {
       if (isAbortError(error)) {
-        return;
+        return null;
       }
       console.error("Failed to persist the Agent draft decision.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.agentRequestFailed, { closeButton: true });
       }
+      return null;
     } finally {
       if (draftDecisionTokenRef.current === decisionToken) {
         draftDecisionTokenRef.current = null;
@@ -362,20 +364,20 @@ export function useResumeAgentDraft({
 
   const discardAgentDraft = useCallback(async () => {
     if (!agentDraft || agentDraft.transactionState !== "committed") {
-      return;
+      return null;
     }
 
     const draftBase = agentDraftBaseRef.current;
     if (!draftBase || draftBase.draftId !== agentDraft.id) {
-      return;
+      return null;
     }
 
     if (!resumeId || !agentDraft.sourceMessageId) {
       toast.error(messages.agentRequestFailed, { closeButton: true });
-      return;
+      return null;
     }
     if (draftDecisionTokenRef.current) {
-      return;
+      return null;
     }
     const decisionToken = Symbol("agent-draft-decision");
     draftDecisionTokenRef.current = decisionToken;
@@ -390,17 +392,17 @@ export function useResumeAgentDraft({
         draftDecisionTokenRef.current !== decisionToken ||
         agentDraftRef.current?.id !== agentDraft.id
       ) {
-        return;
+        return null;
       }
 
       if (resolution.status === "pending") {
-        return;
+        return resolution.session;
       }
       if (!resolution.status) {
         agentDraftBaseRef.current = null;
         setAgentDraft(null);
         setLastAgentDraft(null);
-        return;
+        return resolution.session;
       }
 
       let resolvedResume = agentDraft.resume;
@@ -426,11 +428,13 @@ export function useResumeAgentDraft({
           : messages.agentDraftDiscarded,
         { closeButton: true },
       );
+      return resolution.session;
     } catch (error) {
       console.error("Failed to persist the Agent draft decision.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.agentRequestFailed, { closeButton: true });
       }
+      return null;
     } finally {
       if (draftDecisionTokenRef.current === decisionToken) {
         draftDecisionTokenRef.current = null;

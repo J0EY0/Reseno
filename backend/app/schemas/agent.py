@@ -5,9 +5,12 @@ from pydantic_core import PydanticCustomError
 
 from app.agent_locales import AgentLocale
 from app.schemas.agent_settings import AgentExecutionProfile
-from app.schemas.resumes import ResumeDetailResponse
+from app.schemas.resumes import (
+    RESUME_ID_PATTERN,
+    ResumeDetailResponse,
+    is_valid_resume_id,
+)
 
-AgentAction = Literal["summary", "bullet", "keywords", "plan", "execute"]
 AgentDraftDecisionStatus = Literal["applied", "discarded"]
 AgentDraftStatus = Literal["pending", "applied", "discarded"]
 AgentTransactionState = Literal["none", "provisional", "committed", "rolled_back"]
@@ -21,18 +24,6 @@ AgentTurnErrorCode = Literal[
     "AGENT_RUN_CANCELLED",
     "AGENT_EDIT_TRANSACTION_INCOMPLETE",
 ]
-AgentFinishMissing = Literal[
-    "pending_draft",
-    "url_purpose",
-    "resume_target",
-    "draft_edit_target",
-    "source_material",
-    "target_role",
-    "user_evidence",
-    "explicit_delete_intent",
-    "explicit_reorder_intent",
-    "model_config",
-]
 AgentToolState = Literal[
     "input-streaming",
     "input-available",
@@ -42,47 +33,6 @@ AgentToolState = Literal[
     "approval-responded",
     "output-denied",
 ]
-AgentTargetOpportunityKind = Literal[
-    "employment",
-    "graduate_study",
-    "research",
-    "scholarship",
-    "general",
-]
-
-
-class AgentTargetContext(BaseModel):
-    """Structured opportunity context remembered by one Agent conversation."""
-
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
-
-    cleared: bool = False
-    kind: AgentTargetOpportunityKind = "general"
-    target: str = Field(default="", max_length=160)
-    locations: list[str] = Field(default_factory=list, max_length=12)
-    seniority: str = Field(default="", max_length=80)
-    responsibilities: list[str] = Field(default_factory=list, max_length=24)
-    must_have_skills: list[str] = Field(
-        default_factory=list,
-        alias="mustHaveSkills",
-        max_length=40,
-    )
-    nice_to_have_skills: list[str] = Field(
-        default_factory=list,
-        alias="niceToHaveSkills",
-        max_length=40,
-    )
-    requirements: list[str] = Field(default_factory=list, max_length=40)
-    description: str = Field(default="", max_length=12_000)
-    exact_job_description: bool = Field(
-        default=False,
-        alias="exactJobDescription",
-    )
-    source_message_ids: list[str] = Field(
-        default_factory=list,
-        alias="sourceMessageIds",
-        max_length=40,
-    )
 
 
 class AgentAttachmentResponse(BaseModel):
@@ -135,7 +85,7 @@ class AgentCommittedDraft(BaseModel):
 
 
 class AgentConversationCheckpoint(BaseModel):
-    """Durable summary through one authoritative product message.
+    """Durable bounded context through one authoritative product message.
 
     The exact tail is deliberately not persisted here. It is always rebuilt
     from SQLite after ``through_message_id`` so the conversation has one
@@ -148,35 +98,16 @@ class AgentConversationCheckpoint(BaseModel):
     summary: str = Field(min_length=1)
 
 
-class AgentTurnWorkspaceSnapshots(BaseModel):
-    """Private, canonical workspace envelopes used for exact prompt replay."""
-
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
-
-    turn_message_id: str = Field(alias="turnMessageId", min_length=1)
-    tools: str | None = Field(default=None, min_length=1)
-    streaming_final: str | None = Field(
-        default=None,
-        alias="streamingFinal",
-        min_length=1,
-    )
-
-    @model_validator(mode="after")
-    def require_snapshot(self) -> "AgentTurnWorkspaceSnapshots":
-        if self.tools is None and self.streaming_final is None:
-            raise PydanticCustomError(
-                "agent_workspace_snapshot_empty",
-                "At least one workspace snapshot is required.",
-            )
-        return self
-
-
 class AgentChatRequest(BaseModel):
     """A singular current user turn plus prior-only conversation history."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    resume_id: str | None = Field(default=None, alias="resumeId")
+    resume_id: str | None = Field(
+        default=None,
+        alias="resumeId",
+        json_schema_extra={"pattern": RESUME_ID_PATTERN.pattern},
+    )
     expected_revision: str | None = Field(
         default=None,
         alias="expectedRevision",
@@ -186,7 +117,6 @@ class AgentChatRequest(BaseModel):
     messages: list[AgentConversationItem] = Field(default_factory=list)
     locale: AgentLocale = "zh"
     resume: dict[str, Any] = Field(default_factory=dict)
-    applied_actions: list[str] = Field(default_factory=list, alias="appliedActions")
     draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
     model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
     settings: dict[str, Any] = Field(default_factory=dict)
@@ -206,25 +136,15 @@ class AgentChatRequest(BaseModel):
     _active_conversation_checkpoint: AgentConversationCheckpoint | None = PrivateAttr(
         default=None,
     )
-    # Workspace snapshots are compiler events, not user-controlled API data.
-    # The historical map is loaded only from validated SQLite assistant rows;
-    # the active bundle is persisted only with a successful assistant response.
-    _historical_workspace_snapshots: dict[
-        str,
-        AgentTurnWorkspaceSnapshots,
-    ] = PrivateAttr(default_factory=dict)
-    _active_workspace_snapshots: AgentTurnWorkspaceSnapshots | None = PrivateAttr(
-        default=None,
-    )
 
     @model_validator(mode="after")
     def require_revision_for_persisted_session(self) -> "AgentChatRequest":
         """Require optimistic ownership whenever chat targets a resume session."""
 
-        if self.resume_id is not None and not self.resume_id.strip():
+        if self.resume_id is not None and not is_valid_resume_id(self.resume_id):
             raise PydanticCustomError(
                 "agent_resume_id_invalid",
-                "resumeId must contain a non-whitespace identifier.",
+                "resumeId must contain only ASCII letters and numbers.",
             )
         if self.resume_id is not None and self.expected_revision is None:
             raise PydanticCustomError(
@@ -285,13 +205,6 @@ class AgentRunResponse(BaseModel):
     last_event_id: int = Field(default=0, alias="lastEventId")
 
 
-class AgentKnowledgeItem(BaseModel):
-    """One knowledge item returned with an agent response."""
-
-    title: str
-    detail: str
-
-
 class AgentSource(BaseModel):
     """One source used to generate an agent response."""
 
@@ -299,7 +212,7 @@ class AgentSource(BaseModel):
 
     id: str
     title: str
-    source_type: Literal["targetContext", "attachment", "web"] = Field(
+    source_type: Literal["attachment", "web"] = Field(
         alias="sourceType",
     )
     url: str | None = None
@@ -358,31 +271,15 @@ class AgentChatMessage(BaseModel):
     role: Literal["assistant"]
     tone: Literal["default", "success"] | None = "default"
     text: str
-    reasoning: str = ""
-    updates: list[str] = Field(default_factory=list)
     timeline: list[AgentTimelinePart] = Field(default_factory=list)
-    plan: list[str] = Field(default_factory=list)
-    suggestions: list[str] = Field(default_factory=list)
-    knowledge: list[AgentKnowledgeItem] = Field(default_factory=list)
     tools: list[AgentToolInvocation] = Field(default_factory=list)
     sources: list[AgentSource] = Field(default_factory=list)
     edits: list[AgentResumeEditSuggestion] = Field(default_factory=list)
     draft: AgentCommittedDraft | None = None
-    target_context: AgentTargetContext | None = Field(
-        default=None,
-        alias="targetContext",
-        exclude_if=lambda value: value is None,
-    )
     transaction_state: AgentTransactionState = Field(
         default="none",
         alias="transactionState",
     )
-    finish_missing: list[AgentFinishMissing] = Field(
-        default_factory=list,
-        alias="finishMissing",
-    )
-    quick_replies: list[str] = Field(default_factory=list, alias="quickReplies")
-    actions: list[AgentAction] = Field(default_factory=list)
 
 
 class AgentChatResponse(BaseModel):

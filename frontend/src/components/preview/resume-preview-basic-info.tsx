@@ -1,4 +1,5 @@
 import { AvatarPreview } from "@/components/preview/resume-preview-media";
+import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import {
   getDiffLabel,
@@ -176,12 +177,13 @@ export function StandardBasicInfo({
             "resume-tone-muted font-medium",
             basic.headline ? "mt-2" : "resume-diff-empty-slot",
             isProfile && "tracking-[0.08em]",
-            headlineDiff && "resume-diff-anchor",
+            headlineDiff && "resume-diff-label-host",
           )}
           data-resume-diff-kind={headlineDiff?.kind}
           data-resume-diff-label={getDiffLabel(headlineDiff, t)}
           style={{ fontSize: `${Math.max(0.85, settings.bodyScale)}em` }}
         >
+          <ResumeDiffBadge diff={headlineDiff} t={t} />
           <ResumeDiffText
             value={basic.headline}
             diffs={headlineDiff ? [headlineDiff] : []}
@@ -274,7 +276,7 @@ export function StandardBasicInfo({
           className={cn(
             "resume-tone-body text-left",
             !basic.summary && "resume-diff-empty-slot",
-            summaryDiff && "resume-diff-anchor",
+            summaryDiff && "resume-diff-label-host",
           )}
           data-resume-diff-kind={summaryDiff?.kind}
           data-resume-diff-label={getDiffLabel(summaryDiff, t)}
@@ -283,6 +285,7 @@ export function StandardBasicInfo({
             lineHeight: settings.bodyLineHeight,
           }}
         >
+          <ResumeDiffBadge diff={summaryDiff} t={t} />
           <ResumeDiffText
             value={basic.summary}
             diffs={summaryDiff ? [summaryDiff] : []}
@@ -338,12 +341,13 @@ export function SidebarBasicInfo({
             className={cn(
               "text-white/75",
               !basic.headline && "resume-diff-empty-slot",
-              headlineDiff && "resume-diff-anchor",
+              headlineDiff && "resume-diff-label-host",
             )}
             data-resume-diff-kind={headlineDiff?.kind}
             data-resume-diff-label={getDiffLabel(headlineDiff, t)}
             style={{ fontSize: `${settings.bodyScale}em` }}
           >
+            <ResumeDiffBadge diff={headlineDiff} t={t} />
             <ResumeDiffText
               value={basic.headline}
               diffs={headlineDiff ? [headlineDiff] : []}
@@ -392,7 +396,7 @@ export function SidebarBasicInfo({
             className={cn(
               "text-white/80",
               !basic.summary && "resume-diff-empty-slot",
-              summaryDiff && "resume-diff-anchor",
+              summaryDiff && "resume-diff-label-host",
             )}
             data-resume-diff-kind={summaryDiff?.kind}
             data-resume-diff-label={getDiffLabel(summaryDiff, t)}
@@ -401,6 +405,7 @@ export function SidebarBasicInfo({
               lineHeight: settings.bodyLineHeight,
             }}
           >
+            <ResumeDiffBadge diff={summaryDiff} t={t} />
             <ResumeDiffText
               value={basic.summary}
               diffs={summaryDiff ? [summaryDiff] : []}

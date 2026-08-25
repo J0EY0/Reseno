@@ -8,6 +8,10 @@ import type {
   ResumeWorkspaceItem,
   ThemeMode,
 } from "@/types/resume";
+import type {
+  ResumeDetailResponse,
+  WorkspaceVersionSummary,
+} from "@/types/api";
 
 export type WorkspaceRouteDataKind =
   | "resume-gallery"
@@ -44,6 +48,12 @@ export interface ResumeEditorRouteData
   extends WorkspaceTemplateRouteData {
   modelConfigs: ModelConfig[];
   agentSettings: AgentSettings;
+}
+
+export interface PreparedResumeDetailRouteData {
+  detail: ResumeDetailResponse;
+  routeData: ResumeEditorRouteData;
+  versions: WorkspaceVersionSummary[];
 }
 
 export type TemplateRouteData = WorkspaceTemplateRouteData;

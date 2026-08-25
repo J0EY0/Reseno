@@ -122,18 +122,63 @@ assert(
   }),
   "Accepted runs own their persisted user message and must not be rolled back.",
 );
+const qualityWarnings = panelState.getAgentQualityWarnings([
+  {
+    state: "output-available",
+    output: {
+      qualityIssues: [
+        {
+          code: "target_requirements_not_covered",
+          severity: "warning",
+          target: "resume",
+        },
+        {
+          code: "unsupported_edit_claim",
+          severity: "warning",
+          target: "basic.summary",
+        },
+      ],
+    },
+  },
+  {
+    state: "output-error",
+    output: {
+      qualityIssues: [
+        {
+          code: "must-not-surface",
+          severity: "warning",
+          target: "resume",
+        },
+      ],
+    },
+  },
+]);
 assert(
-  panelState.getAgentQualityWarningCount([
+  qualityWarnings.map((issue) => issue.code).join(",") ===
+    "target_requirements_not_covered,unsupported_edit_claim",
+  "Only advisory issues from completed tool outputs may be shown.",
+);
+assert(
+  panelState.getAgentQualityWarnings([
     {
       state: "output-available",
-      output: { qualityIssueCount: 2 },
+      output: {
+        qualityIssues: [
+          {
+            code: "mixed_resume_languages",
+            severity: "warning",
+            target: "resume",
+          },
+          {
+            code: "mixed_resume_languages",
+            severity: "warning",
+            target: "resume",
+          },
+        ],
+      },
     },
-    {
-      state: "output-error",
-      output: { qualityIssueCount: 9 },
-    },
-  ]) === 2,
-  "Only completed tool outputs may contribute quality warnings.",
+  ]).length === 1,
+  "Repeated quality diagnostics must render only once.",
 );
 assert(
   panelState.canSubmitAgentPrompt({

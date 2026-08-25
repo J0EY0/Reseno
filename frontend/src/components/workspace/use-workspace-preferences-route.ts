@@ -49,7 +49,6 @@ export function useWorkspacePreferencesRoute({
     normalizeModelConfigs(preparedRouteData, locale),
   );
   const requestIdRef = useRef(0);
-  const routeMutationEpochRef = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -78,10 +77,6 @@ export function useWorkspacePreferencesRoute({
     () => ({ agentSettings, modelConfigs, theme }),
     [agentSettings, modelConfigs, theme],
   );
-  const markRouteMutation = useCallback(() => {
-    routeMutationEpochRef.current += 1;
-  }, []);
-
   useEffect(() => {
     const root = document.documentElement;
     const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -110,103 +105,70 @@ export function useWorkspacePreferencesRoute({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
+    async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      if (!isPreparedCalibration) {
-        setIsLoading(true);
-        setHasLoadError(false);
-        toast.dismiss("workspace-load-error");
-      }
+      setIsLoading(true);
+      setHasLoadError(false);
+      toast.dismiss("workspace-load-error");
 
       try {
-        while (!signal.aborted && requestIdRef.current === requestId) {
-          const mutationEpoch = routeMutationEpochRef.current;
-          try {
-            // A previous route may still be committing a full settings snapshot.
-            await persistence.flush();
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const source = await fetchWorkspaceRouteData(
-              kind,
-              isPreparedCalibration
-                ? { notifyOnError: false }
-                : { notifyOnError: false, signal },
-            );
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const nextModelConfigs = normalizeModelConfigs(
-              source.data,
-              initialLocaleRef.current,
-            );
-            const nextAgentSettings = normalizeAgentSettings(
-              source.data.agentSettings,
-              nextModelConfigs,
-            );
-            const nextTheme = normalizeWorkspaceTheme(source.data.theme);
-            const snapshot: WorkspacePreferencesSnapshot = {
-              locale: initialLocaleRef.current,
-              theme: nextTheme,
-              agentSettings: nextAgentSettings,
-            };
-
-            setTheme(nextTheme);
-            setModelConfigs(nextModelConfigs);
-            setAgentSettings(nextAgentSettings);
-            persistence.hydrate(snapshot);
-            setHasLoaded(true);
-            return;
-          } catch (error) {
-            if (signal.aborted || isAbortError(error)) {
-              return;
-            }
-            if (requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            console.error(`Failed to load the ${kind} workspace route.`, error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(
-                getMessagesSync(initialLocaleRef.current).apiMessages
-                  .REQUEST_FAILED,
-                {
-                  closeButton: true,
-                  id: "workspace-load-error",
-                },
-              );
-            }
-            if (!isPreparedCalibration) {
-              setHasLoaded(false);
-              setHasLoadError(true);
-            }
-            return;
-          }
+        await persistence.flush();
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
         }
+
+        const source = await fetchWorkspaceRouteData(kind, {
+          notifyOnError: false,
+          signal,
+        });
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
+        }
+
+        const nextModelConfigs = normalizeModelConfigs(
+          source.data,
+          initialLocaleRef.current,
+        );
+        const nextAgentSettings = normalizeAgentSettings(
+          source.data.agentSettings,
+          nextModelConfigs,
+        );
+        const nextTheme = normalizeWorkspaceTheme(source.data.theme);
+        const snapshot: WorkspacePreferencesSnapshot = {
+          locale: initialLocaleRef.current,
+          theme: nextTheme,
+          agentSettings: nextAgentSettings,
+        };
+
+        setTheme(nextTheme);
+        setModelConfigs(nextModelConfigs);
+        setAgentSettings(nextAgentSettings);
+        persistence.hydrate(snapshot);
+        setHasLoaded(true);
+      } catch (error) {
+        if (
+          signal.aborted ||
+          isAbortError(error) ||
+          requestIdRef.current !== requestId
+        ) {
+          return;
+        }
+
+        console.error(`Failed to load the ${kind} workspace route.`, error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(
+            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+            {
+              closeButton: true,
+              id: "workspace-load-error",
+            },
+          );
+        }
+        setHasLoaded(false);
+        setHasLoadError(true);
       } finally {
         if (
-          !isPreparedCalibration &&
           !signal.aborted &&
           requestIdRef.current === requestId
         ) {
@@ -218,8 +180,7 @@ export function useWorkspacePreferencesRoute({
   );
 
   useEffect(() => {
-    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
-    if (isPreparedCalibration && preparedRouteData) {
+    if (preparedRouteData && retryKey === 0) {
       const preparedModelConfigs = normalizeModelConfigs(
         preparedRouteData,
         initialLocaleRef.current,
@@ -232,14 +193,13 @@ export function useWorkspacePreferencesRoute({
           preparedModelConfigs,
         ),
       });
+      return;
     }
 
     const controller = new AbortController();
-    // Defer transport so StrictMode's development preflight can abort before
-    // a duplicate route request leaves the browser.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal, isPreparedCalibration);
+        void loadRouteData(controller.signal);
       }
     }, 0);
 
@@ -297,7 +257,6 @@ export function useWorkspacePreferencesRoute({
 
   const changeLocale = useCallback(
     (nextLocale: Locale) => {
-      markRouteMutation();
       onLocaleChange(nextLocale);
       persistSnapshot({
         locale: nextLocale,
@@ -305,12 +264,11 @@ export function useWorkspacePreferencesRoute({
         agentSettings,
       });
     },
-    [agentSettings, markRouteMutation, onLocaleChange, persistSnapshot, theme],
+    [agentSettings, onLocaleChange, persistSnapshot, theme],
   );
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
-      markRouteMutation();
       setTheme(nextTheme);
       persistSnapshot({
         locale,
@@ -318,12 +276,11 @@ export function useWorkspacePreferencesRoute({
         agentSettings,
       });
     },
-    [agentSettings, locale, markRouteMutation, persistSnapshot],
+    [agentSettings, locale, persistSnapshot],
   );
 
   const changeAgentSettings = useCallback(
     (nextSettings: AgentSettings) => {
-      markRouteMutation();
       const normalizedSettings = normalizeAgentSettings(
         nextSettings,
         modelConfigs,
@@ -335,12 +292,11 @@ export function useWorkspacePreferencesRoute({
         agentSettings: normalizedSettings,
       });
     },
-    [locale, markRouteMutation, modelConfigs, persistSnapshot, theme],
+    [locale, modelConfigs, persistSnapshot, theme],
   );
 
   const changeModelConfigs = useCallback(
     (nextModelConfigs: ModelConfig[]) => {
-      markRouteMutation();
       const normalizedSettings = normalizeAgentSettings(
         agentSettings,
         nextModelConfigs,
@@ -361,7 +317,7 @@ export function useWorkspacePreferencesRoute({
         );
       }
     },
-    [agentSettings, locale, markRouteMutation, persistSnapshot, theme],
+    [agentSettings, locale, persistSnapshot, theme],
   );
 
   return {

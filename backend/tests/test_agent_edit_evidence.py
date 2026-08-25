@@ -1,147 +1,32 @@
-import asyncio
-import json
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+import pytest
 
 from app.schemas.agent import (
     AgentChatRequest,
     AgentConversationItem,
     AgentResumeEditSuggestion,
 )
-from app.services.agent.evidence import ground_edit_evidence
-from app.services.agent.executor import AgentPlanExecutor
-from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.tools.runner import AgentToolRunner
-from app.services.llm import LlmToolCall
+from app.services.agent.evidence import (
+    ground_edit_evidence,
+    historical_prompt_evidence_ref,
+)
 
 
-def _resume() -> dict[str, object]:
+def _resume() -> dict[str, Any]:
     return {
-        "basic": {"summary": "Frontend engineer."},
-        "sections": [
-            {
-                "id": "project",
-                "kind": "project",
-                "items": [
-                    {
-                        "id": "project-1",
-                        "title": "Resume editor",
-                        "highlights": ["Built an accessible editor."],
-                    },
-                ],
-            },
-        ],
-    }
-
-
-def _edit(
-    *,
-    evidence_refs: list[str] | None = None,
-) -> AgentResumeEditSuggestion:
-    return AgentResumeEditSuggestion(
-        id="edit-1",
-        title="Tighten project bullet",
-        target="sections.project.items.project-1",
-        reason="Make the verified contribution clearer.",
-        operation={
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {"highlights": ["Built an accessible resume editor."]},
-        },
-        evidenceRefs=evidence_refs or [],
-        status="executed",
-    )
-
-
-def test_missing_model_evidence_is_inferred_from_operation() -> None:
-    edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-inferred",
-                role="user",
-                text="Rewrite the existing project bullet.",
-            ),
-        ),
-        [_edit()],
-    )
-
-    assert issues == []
-    assert edits[0].evidence_refs == [
-        "resume:item:project:project-1",
-        "prompt:current",
-    ]
-
-
-def test_current_attachment_is_valid_candidate_evidence() -> None:
-    edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-attachment",
-                role="user",
-                text="Use the attached project notes.",
-                files=[
-                    {
-                        "id": "attachment-1",
-                        "filename": "notes.pdf",
-                        "mediaType": "application/pdf",
-                    },
-                ],
-            ),
-        ),
-        [_edit(evidence_refs=["attachment:attachment-1"])],
-    )
-
-    assert issues == []
-    assert edits[0].evidence_refs == ["attachment:attachment-1"]
-
-
-def test_public_target_source_cannot_be_candidate_evidence() -> None:
-    edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-public-source",
-                role="user",
-                text="Tailor this bullet to the role.",
-            ),
-        ),
-        [_edit(evidence_refs=["web:https://example.com/job"])],
-    )
-
-    assert edits[0].evidence_refs == ["web:https://example.com/job"]
-    assert issues == [
-        {
-            "code": "invalid_edit_evidence",
-            "severity": "error",
-            "target": "sections.project.items.project-1",
-            "scope": "evidence",
-            "operationIndex": 1,
-            "invalidEvidenceRefs": ["web:https://example.com/job"],
-        },
-    ]
-
-
-def test_edit_response_serializes_public_evidence_refs_alias() -> None:
-    payload = _edit(
-        evidence_refs=["resume:item:project:project-1"],
-    ).model_dump(by_alias=True)
-
-    assert payload["evidenceRefs"] == ["resume:item:project:project-1"]
-    assert "evidence_refs" not in payload
-
-
-def test_summary_technology_labels_are_grounded_by_cited_resume_items() -> None:
-    resume = {
         "schemaVersion": 2,
         "basic": {
             "name": "候选人",
             "headline": "前端工程师",
             "phone": "",
             "email": "",
-            "location": "",
+            "location": "杭州",
             "avatar": "",
-            "summary": "前端工程师，重视可维护性、性能与用户体验。",
+            "summary": "专注前端产品体验。",
             "customFields": [],
         },
         "sections": [
@@ -151,14 +36,24 @@ def test_summary_technology_labels_are_grounded_by_cited_resume_items() -> None:
                 "title": "项目经历",
                 "items": [
                     {
-                        "id": "project-1",
-                        "name": "AI 应用",
+                        "id": "target",
+                        "name": "Resume editor",
                         "role": "前端工程师",
                         "techStack": ["React", "TypeScript"],
-                        "period": "",
+                        "period": "2024",
                         "url": "",
-                        "description": "专注前端工程与 AI 应用落地。",
-                        "highlights": [],
+                        "description": "Built an accessible editor.",
+                        "highlights": ["Reduced regression time by 30%."],
+                    },
+                    {
+                        "id": "sibling",
+                        "name": "Event platform",
+                        "role": "平台工程师",
+                        "techStack": ["Kafka"],
+                        "period": "2023",
+                        "url": "",
+                        "description": "Processed event streams.",
+                        "highlights": ["Handled 40k events."],
                     },
                 ],
             },
@@ -166,607 +61,745 @@ def test_summary_technology_labels_are_grounded_by_cited_resume_items() -> None:
                 "id": "skills",
                 "kind": "simple_list",
                 "title": "技能",
-                "items": [
-                    {
-                        "id": "skills-1",
-                        "content": "React、TypeScript",
-                    },
-                ],
-            },
-        ],
-    }
-    request = AgentChatRequest(
-        message=AgentConversationItem(
-            id="turn-summary-cited-technologies",
-            role="user",
-            text="请根据项目和技能事实修改 summary。",
-        ),
-        locale="zh",
-        resume=resume,
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    summary = (
-        "专注前端工程与 AI 应用落地，熟悉 React 与 TypeScript 技术栈，"
-        "重视可维护性、性能与用户体验。"
-    )
-    arguments = {
-        "edits": [
-            {
-                "title": "更新个人简介",
-                "target": "basic.summary",
-                "reason": "汇总简历已有事实。",
-                "evidenceRefs": [
-                    "resume:item:project:project-1",
-                    "resume:item:skills:skills-1",
-                ],
-                "operation": {
-                    "type": "replace_field",
-                    "path": "basic.summary",
-                    "value": summary,
-                },
+                "items": [{"id": "skills-1", "content": "Python、Docker"}],
             },
         ],
     }
 
-    tool, _ = runner._run_local_tool(
-        LlmToolCall(
-            id="call-summary-cited-technologies",
-            name="edit_execute",
-            arguments=arguments,
-            raw_arguments=json.dumps(arguments, ensure_ascii=False),
-        ),
-    )
 
-    assert tool.state == "output-available", json.dumps(
-        tool.output,
-        ensure_ascii=False,
-    )
-    assert runner.draft_resume["basic"]["summary"] == summary
-
-
-def test_existing_tailwind_label_can_be_normalized_through_public_runner() -> None:
-    resume = {
-        "schemaVersion": 2,
-        "basic": {
-            "name": "候选人",
-            "headline": "前端工程师",
-            "phone": "",
-            "email": "",
-            "location": "",
-            "avatar": "",
-            "summary": "前端工程师。",
-            "customFields": [],
-        },
-        "sections": [
-            {
-                "id": "project",
-                "kind": "project",
-                "title": "项目经历",
-                "items": [
-                    {
-                        "id": "project-1",
-                        "name": "简历编辑器",
-                        "role": "",
-                        "techStack": ["TypeScript · Tailwind"],
-                        "period": "",
-                        "url": "",
-                        "description": "构建结构化简历编辑器。",
-                        "highlights": [],
-                    },
-                ],
-            },
-        ],
-    }
-    request = AgentChatRequest(
-        message=AgentConversationItem(
-            id="turn-normalize-tailwind-label",
-            role="user",
-            text=(
-                "请整理项目经历的技术栈，把已有的 TypeScript · Tailwind "
-                "规范为 TypeScript 和 Tailwind CSS，不要新增事实。"
-            ),
-        ),
-        locale="zh",
-        resume=resume,
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    arguments = {
-        "edits": [
-            {
-                "title": "规范项目技术栈",
-                "target": "sections.project.items.project-1.techStack",
-                "reason": "拆分已有技术栈并规范 Tailwind 名称。",
-                "evidenceRefs": ["resume:item:project:project-1"],
-                "operation": {
-                    "type": "update_item",
-                    "sectionId": "project",
-                    "itemId": "project-1",
-                    "patch": {"techStack": ["TypeScript", "Tailwind CSS"]},
-                },
-            },
-        ],
-    }
-
-    async def scenario() -> None:
-        tool, _ = await runner.run(
-            LlmToolCall(
-                id="call-normalize-tailwind-label",
-                name="edit_execute",
-                arguments=arguments,
-                raw_arguments=json.dumps(arguments, ensure_ascii=False),
-            ),
-            AgentRuntimeContext(),
-        )
-
-        assert tool.state == "output-available", json.dumps(
-            tool.output,
-            ensure_ascii=False,
-        )
-        project = runner.draft_resume["sections"][0]["items"][0]
-        assert project["techStack"] == ["TypeScript", "Tailwind CSS"]
-
-    asyncio.run(scenario())
-
-
-def test_tailwind_alias_does_not_ground_other_new_project_claims() -> None:
-    resume = _resume()
-    project = resume["sections"][0]["items"][0]
-    project["role"] = ""
-    project["techStack"] = ["TypeScript · Tailwind"]
-    edit = AgentResumeEditSuggestion(
-        id="edit-tailwind-with-unsupported-claims",
-        title="Reorganize project fields",
-        target="sections.project.items.project-1",
-        reason="Move project details into their structured fields.",
-        operation={
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {
-                "role": "前端开发",
-                "techStack": [
-                    "TypeScript",
-                    "Tailwind CSS",
-                    "WCAG",
-                    "Vitest",
-                    "CI",
-                ],
-                "highlights": ["性能提升 30%。"],
-            },
-        },
-        evidenceRefs=["resume:item:project:project-1"],
-        status="executed",
-    )
-
-    _edits, issues = ground_edit_evidence(
-        resume,
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-tailwind-with-unsupported-claims",
-                role="user",
-                text=(
-                    "请整理项目字段，并添加前端开发、WCAG、Vitest、CI 和性能提升 30%。"
-                ),
-            ),
-        ),
-        [edit],
-    )
-
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert unsupported[0]["claims"] == [
-        "30%",
-        "CI",
-        "Vitest",
-        "WCAG",
-        "text:前端开发",
-    ]
-
-
-def _claim_edit(
+def _request(
     text: str,
     *,
+    resume: dict[str, Any] | None = None,
+    messages: list[AgentConversationItem] | None = None,
+    files: list[dict[str, Any]] | None = None,
+    resume_id: str | None = None,
+) -> AgentChatRequest:
+    return AgentChatRequest(
+        message=AgentConversationItem(
+            id="current-turn",
+            role="user",
+            text=text,
+            files=files or [],
+        ),
+        messages=messages or [],
+        resume=resume or _resume(),
+        resumeId=resume_id,
+        expectedRevision="1" if resume_id else None,
+        locale="zh",
+    )
+
+
+def _edit(
+    operation: dict[str, Any],
+    *,
     evidence_refs: list[str] | None = None,
+    target: str = "sections.project.items.target",
+    edit_id: str = "edit-1",
 ) -> AgentResumeEditSuggestion:
     return AgentResumeEditSuggestion(
-        id="edit-claim",
-        title="Rewrite project claim",
-        target="sections.project.items.project-1",
-        reason="Make the contribution concrete.",
-        operation={
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {"highlights": [text]},
-        },
+        id=edit_id,
+        title="Edit resume",
+        target=target,
+        reason="Execute the requested edit.",
+        operation=operation,
         evidenceRefs=evidence_refs or [],
         status="executed",
     )
 
 
-def test_instruction_text_is_not_evidence_for_new_claims() -> None:
-    edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-unsupported-claim",
-                role="user",
-                text=(
-                    "为了匹配岗位，请直接加上 WCAG、Vitest 和 CI，"
-                    "再写性能提升 30%，这些经历目前没有证据。"
-                ),
-            ),
-        ),
-        [_claim_edit("基于 WCAG，引入 Vitest 和 CI，性能提升 30%。")],
+def _update_target(
+    patch: dict[str, Any],
+    *,
+    evidence_refs: list[str] | None = None,
+    edit_id: str = "edit-target",
+) -> AgentResumeEditSuggestion:
+    return _edit(
+        {
+            "type": "update_item",
+            "sectionId": "project",
+            "itemId": "target",
+            "patch": patch,
+        },
+        evidence_refs=evidence_refs,
+        edit_id=edit_id,
     )
 
+
+def _unsupported(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(issue for issue in issues if issue["code"] == "unsupported_edit_claim")
+
+
+def test_missing_model_refs_are_inferred_from_operation_target() -> None:
+    edits, issues = ground_edit_evidence(
+        _resume(),
+        _request("Rewrite the existing description."),
+        [_update_target({"description": "Made the editor easier to use."})],
+    )
+
+    assert issues == []
     assert edits[0].evidence_refs == [
-        "resume:item:project:project-1",
+        "resume:item:project:target",
         "prompt:current",
     ]
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert unsupported == [
-        {
-            "code": "unsupported_edit_claim",
-            "severity": "error",
-            "target": "sections.project.items.project-1",
-            "scope": "evidence",
-            "operationIndex": 1,
-            "claims": ["30%", "CI", "Vitest", "WCAG"],
-        },
-    ]
 
 
-def test_imperative_claim_wording_is_not_a_candidate_fact() -> None:
-    _edits, issues = ground_edit_evidence(
+def test_invalid_ref_is_rejected() -> None:
+    _, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-imperative-claim",
-                role="user",
-                text=(
-                    "为了匹配岗位，请写成：负责 WCAG、Vitest、CI、Kafka 和 Playwright，"
-                    "并把性能提升写成 30%。"
-                ),
-            ),
-        ),
+        _request("Rewrite the description."),
         [
-            _claim_edit(
-                "负责 WCAG、Vitest、CI、Kafka 和 Playwright，性能提升 30%。",
+            _update_target(
+                {"description": "Made the editor easier to use."},
+                evidence_refs=["web:https://example.com/job"],
             ),
         ],
     )
 
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert unsupported[0]["claims"] == [
-        "30%",
-        "CI",
-        "Kafka",
-        "Playwright",
-        "Vitest",
-        "WCAG",
-    ]
-
-
-def test_unknown_tech_stack_entry_requires_candidate_evidence() -> None:
-    edit = AgentResumeEditSuggestion(
-        id="edit-unknown-stack",
-        title="Update project stack",
-        target="sections.project.items.project-1",
-        reason="Add a requested technology.",
-        operation={
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {"techStack": ["NicheDB"]},
+    assert issues == [
+        {
+            "code": "invalid_edit_evidence",
+            "severity": "error",
+            "target": "sections.project.items.target",
+            "scope": "evidence",
+            "operationIndex": 1,
+            "invalidEvidenceRefs": ["web:https://example.com/job"],
         },
-        status="executed",
-    )
-    _edits, issues = ground_edit_evidence(
+    ]
+
+
+def test_operation_without_an_inferable_ref_is_rejected() -> None:
+    _, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-unknown-stack",
-                role="user",
-                text="为了匹配岗位，请直接把 NicheDB 加到技术栈。",
+        _request("Keep the current order."),
+        [
+            _edit(
+                {"type": "reorder_sections", "sectionIds": []},
+                target="sections",
             ),
-        ),
-        [edit],
+        ],
     )
 
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert unsupported[0]["claims"] == ["NicheDB"]
+    assert [issue["code"] for issue in issues] == ["missing_edit_evidence"]
 
 
-def test_strengthened_ownership_and_chinese_metric_require_evidence() -> None:
-    _edits, issues = ground_edit_evidence(
+def test_current_user_message_supports_objective_material() -> None:
+    prompt = "候选人事实：项目角色是 AI 工程师，使用 Kafka，吞吐提升 45%。"
+    _, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-strengthened-ownership",
-                role="user",
-                text=("为了匹配岗位，请改成主导跨部门交付，并写效率提升百分之三十。"),
+        _request(prompt),
+        [
+            _update_target(
+                {
+                    "role": "AI 工程师",
+                    "techStack": ["React", "TypeScript", "Kafka"],
+                    "highlights": ["吞吐提升 45%。"],
+                },
+                evidence_refs=[
+                    "resume:item:project:target",
+                    "prompt:current",
+                ],
             ),
-        ),
-        [_claim_edit("主导跨部门交付，效率提升百分之三十。")],
-    )
-
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert set(unsupported[0]["claims"]) == {"主导", "跨部门", "百分之三十"}
-
-
-def test_unrelated_business_facts_are_rejected_without_candidate_evidence() -> None:
-    claims = [
-        "设计并落地客户增长平台，推动跨区域业务协同。",
-        "获得年度最佳员工奖并负责十人团队。",
-        "负责支付结算核心链路，保障高峰稳定性。",
-    ]
-
-    for index, claim in enumerate(claims):
-        _edits, issues = ground_edit_evidence(
-            _resume(),
-            AgentChatRequest(
-                message=AgentConversationItem(
-                    id=f"turn-edit-evidence-unrelated-business-{index}",
-                    role="user",
-                    text=f"为了匹配岗位，请直接写成：{claim}",
-                ),
-            ),
-            [_claim_edit(claim)],
-        )
-
-        unsupported = [
-            issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-        ]
-        assert unsupported
-
-
-def test_grounded_prefix_cannot_hide_an_invented_business_fact() -> None:
-    resume = _resume()
-    resume["sections"][0]["items"][0]["highlights"] = ["负责平台开发。"]
-    claims = [
-        "负责平台开发，获得年度最佳员工并管理十人团队。",
-        "负责平台开发，搭建支付核心链路并推动公司上市。",
-        "负责平台开发并搭建支付核心链路。",
-        "负责平台开发且覆盖全球客户。",
-        "负责平台开发与公司战略落地。",
-    ]
-
-    for index, claim in enumerate(claims):
-        _edits, issues = ground_edit_evidence(
-            resume,
-            AgentChatRequest(
-                message=AgentConversationItem(
-                    id=f"turn-edit-evidence-grounded-prefix-{index}",
-                    role="user",
-                    text="请改得更有影响力，但不要编造。",
-                ),
-            ),
-            [_claim_edit(claim)],
-        )
-
-        unsupported = [
-            issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-        ]
-        assert unsupported
-
-
-def test_generic_grounded_prefix_cannot_support_an_unrelated_suffix() -> None:
-    resume = _resume()
-    resume["sections"][0]["items"][0]["highlights"] = ["负责平台开发。"]
-    claims = [
-        "负责平台支付核心链路。",
-        "负责平台全球客户交付。",
-        "负责平台人工智能推荐系统。",
-        "负责平台安全架构。",
-        "负责平台开发安全架构。",
-        "负责移动端平台开发。",
-    ]
-
-    for index, claim in enumerate(claims):
-        _edits, issues = ground_edit_evidence(
-            resume,
-            AgentChatRequest(
-                message=AgentConversationItem(
-                    id=f"turn-edit-evidence-generic-prefix-{index}",
-                    role="user",
-                    text="请优化这条项目描述，不要编造。",
-                ),
-            ),
-            [_claim_edit(claim)],
-        )
-
-        unsupported = [
-            issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-        ]
-        assert unsupported
-
-
-def test_factual_prefix_does_not_turn_an_imperative_suffix_into_evidence() -> None:
-    resume = _resume()
-    resume["sections"][0]["items"][0]["highlights"] = ["负责平台开发。"]
-    _edits, issues = ground_edit_evidence(
-        resume,
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-imperative-suffix",
-                role="user",
-                text="我负责平台开发，请写成我推动公司上市。",
-            ),
-        ),
-        [_claim_edit("我推动公司上市。")],
-    )
-
-    unsupported = [
-        issue for issue in issues if issue["code"] == "unsupported_edit_claim"
-    ]
-    assert unsupported
-
-
-def test_explicit_business_fact_in_prompt_can_be_rewritten() -> None:
-    _edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-factual-business",
-                role="user",
-                text=(
-                    "候选人事实：我负责支付结算核心链路，保障高峰稳定性。请据此改写。"
-                ),
-            ),
-        ),
-        [_claim_edit("负责支付结算核心链路，保障高峰稳定性。")],
+        ],
     )
 
     assert issues == []
 
 
-def test_denial_clause_does_not_erase_a_separate_candidate_fact() -> None:
-    _edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-fact-with-denial",
-                role="user",
-                text="我负责支付链路，请不要编造其他内容，帮我优化。",
-            ),
+def test_historical_user_message_supports_material_without_phrase_routing() -> None:
+    source_id = "history-material"
+    source_ref = historical_prompt_evidence_ref(source_id)
+    messages = [
+        AgentConversationItem(
+            id=source_id,
+            role="user",
+            text="Please add Kafka and the measured 45% improvement.",
         ),
-        [_claim_edit("负责支付链路。")],
-    )
-
-    assert issues == []
-
-
-def test_denied_unknown_skills_do_not_erase_a_confirmed_skill() -> None:
-    edit = AgentResumeEditSuggestion(
-        id="edit-confirmed-stack",
-        title="Update project stack",
-        target="sections.project.items.project-1",
-        reason="Add the confirmed technology.",
-        operation={
-            "type": "update_item",
-            "sectionId": "project",
-            "itemId": "project-1",
-            "patch": {"techStack": ["React"]},
-        },
-        status="executed",
-    )
-    _edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-skill-with-denial",
-                role="user",
-                text=(
-                    "我在项目中使用了 React，不要添加我没做过的技能，"
-                    "请把 React 加入技术栈。"
-                ),
-            ),
-        ),
-        [edit],
-    )
-
-    assert issues == []
-
-
-def test_factual_prompt_can_support_ownership_and_chinese_metric() -> None:
-    _edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-factual-ownership",
-                role="user",
-                text=("候选人事实：我主导跨部门交付，效率提升百分之三十。请据此改写。"),
-            ),
-        ),
-        [_claim_edit("主导跨部门交付，效率提升百分之三十。")],
-    )
-
-    assert issues == []
-
-
-def test_factual_prompt_can_support_new_metrics_and_technology_claims() -> None:
-    _edits, issues = ground_edit_evidence(
-        _resume(),
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-supported-prompt",
-                role="user",
-                text=(
-                    "补充候选人事实：我在这个项目中依据 WCAG 改进可访问性，"
-                    "使用 Vitest 并接入 CI，回归耗时降低 30%。请据此改写。"
-                ),
-            ),
-        ),
-        [_claim_edit("依据 WCAG，引入 Vitest 和 CI，回归耗时降低 30%。")],
-    )
-
-    assert issues == []
-
-
-def test_existing_resume_claims_remain_valid_evidence() -> None:
-    resume = _resume()
-    resume["sections"][0]["items"][0]["highlights"] = [
-        "依据 WCAG，使用 Vitest 接入 CI，回归耗时降低 30%。",
     ]
 
-    _edits, issues = ground_edit_evidence(
-        resume,
-        AgentChatRequest(
-            message=AgentConversationItem(
-                id="turn-edit-evidence-existing-claim",
-                role="user",
-                text="精简现有项目要点，不要新增事实。",
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Use my earlier details.", messages=messages),
+        [
+            _update_target(
+                {
+                    "techStack": ["React", "TypeScript", "Kafka"],
+                    "highlights": ["Improved throughput by 45%."],
+                },
+                evidence_refs=["resume:item:project:target", source_ref],
             ),
-        ),
-        [_claim_edit("使用 WCAG、Vitest 和 CI，将回归耗时降低 30%。")],
+        ],
     )
 
     assert issues == []
 
 
-def test_current_attachment_can_support_new_claims(
-    monkeypatch,
+def test_assistant_history_is_not_candidate_evidence() -> None:
+    assistant_id = "assistant-material"
+    assistant_ref = historical_prompt_evidence_ref(assistant_id)
+    messages = [
+        AgentConversationItem(
+            id=assistant_id,
+            role="assistant",
+            text="You used Kafka and improved throughput by 45%.",
+        ),
+    ]
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Use verified facts.", messages=messages),
+        [
+            _update_target(
+                {
+                    "techStack": ["React", "TypeScript", "Kafka"],
+                    "highlights": ["Improved throughput by 45%."],
+                },
+                evidence_refs=[assistant_ref],
+            ),
+        ],
+    )
+
+    assert {issue["code"] for issue in issues} == {
+        "invalid_edit_evidence",
+        "unsupported_edit_claim",
+    }
+
+
+def test_duplicate_historical_user_ids_are_not_addressable() -> None:
+    source_ref = historical_prompt_evidence_ref("duplicate")
+    messages = [
+        AgentConversationItem(
+            id="duplicate",
+            role="user",
+            text="I used Kafka.",
+        ),
+        AgentConversationItem(
+            id="duplicate",
+            role="user",
+            text="I did not use Kafka.",
+        ),
+    ]
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Use verified facts.", messages=messages),
+        [
+            _update_target(
+                {"techStack": ["React", "TypeScript", "Kafka"]},
+                evidence_refs=[source_ref],
+            ),
+        ],
+    )
+
+    assert {issue["code"] for issue in issues} == {
+        "invalid_edit_evidence",
+        "unsupported_edit_claim",
+    }
+
+
+def test_attachment_supports_objective_material(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "app.services.agent.evidence.attachment_text",
-        lambda _session_id, _file: (
-            "项目事实：依据 WCAG 改进可访问性，使用 Vitest 接入 CI，回归耗时降低 30%。"
-        ),
+        lambda _session_id, _file: "Project used Kafka and improved throughput by 45%.",
     )
-    _edits, issues = ground_edit_evidence(
+    files = [
+        {"id": "notes", "filename": "notes.pdf", "mediaType": "application/pdf"},
+    ]
+
+    _, issues = ground_edit_evidence(
         _resume(),
-        AgentChatRequest(
-            resumeId="resume-1",
-            expectedRevision="revision-1",
-            message=AgentConversationItem(
-                id="turn-edit-evidence-supported-attachment",
-                role="user",
-                text="根据附件中的项目事实改写这条经历。",
-                files=[
-                    {
-                        "id": "attachment-1",
-                        "filename": "facts.txt",
-                        "mediaType": "text/plain",
-                    },
-                ],
-            ),
-        ),
+        _request("Use the attachment.", files=files, resume_id="resume1"),
         [
-            _claim_edit(
-                "依据 WCAG，引入 Vitest 和 CI，回归耗时降低 30%。",
-                evidence_refs=["attachment:attachment-1"],
+            _update_target(
+                {
+                    "techStack": ["React", "TypeScript", "Kafka"],
+                    "highlights": ["Improved throughput by 45%."],
+                },
+                evidence_refs=[
+                    "resume:item:project:target",
+                    "attachment:notes",
+                ],
             ),
         ],
     )
 
     assert issues == []
+
+
+def test_unsupported_number_technology_and_identity_are_rejected() -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Improve the existing project wording."),
+        [
+            _update_target(
+                {
+                    "role": "平台工程师",
+                    "techStack": ["React", "TypeScript", "Kafka"],
+                    "highlights": ["Improved throughput by 45%."],
+                },
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert set(_unsupported(issues)["claims"]) == {
+        "45%",
+        "Kafka",
+        "identity:role:平台工程师",
+    }
+
+
+def test_number_claim_spacing_before_percent_is_not_new_evidence() -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("只修复百分号前的空格。"),
+        [
+            _update_target(
+                {"highlights": ["Reduced regression time by 30 %."]},
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+def test_number_claim_spacing_before_unit_is_not_new_evidence() -> None:
+    resume = _resume()
+    resume["sections"][0]["items"][0]["highlights"].append(
+        "Completed the render in 120ms.",
+    )
+
+    _, issues = ground_edit_evidence(
+        resume,
+        _request("只修复单位前的空格。", resume=resume),
+        [
+            _update_target(
+                {
+                    "highlights": [
+                        "Reduced regression time by 30%.",
+                        "Completed the render in 120 ms.",
+                    ],
+                },
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+def test_changed_number_with_unit_still_requires_evidence() -> None:
+    resume = _resume()
+    resume["sections"][0]["items"][0]["highlights"].append(
+        "Completed the render in 120ms.",
+    )
+
+    _, issues = ground_edit_evidence(
+        resume,
+        _request("优化项目描述。", resume=resume),
+        [
+            _update_target(
+                {
+                    "highlights": [
+                        "Reduced regression time by 30%.",
+                        "Completed the render in 121 ms.",
+                    ],
+                },
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert _unsupported(issues)["claims"] == ["121ms"]
+
+
+def test_identity_matching_ignores_only_latin_cjk_boundary_spacing() -> None:
+    resume = _resume()
+    resume["sections"][0]["items"][0]["name"] = (
+        "ResuMate AI Agent简历制作网站"
+    )
+
+    _, spacing_issues = ground_edit_evidence(
+        resume,
+        _request("修复项目字段错位。", resume=resume),
+        [
+            _update_target(
+                {"name": "ResuMate AI Agent 简历制作网站"},
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+    _, changed_identity_issues = ground_edit_evidence(
+        resume,
+        _request("修复项目字段错位。", resume=resume),
+        [
+            _update_target(
+                {"name": "ResuMate AI Assistant 简历制作网站"},
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert spacing_issues == []
+    assert _unsupported(changed_identity_issues)["claims"] == [
+        "identity:name:ResuMate AI Assistant 简历制作网站",
+    ]
+
+
+def test_free_text_wording_is_not_an_online_claim_gate() -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("重组现有腾讯实习内容并提升信息密度，不添加客观事实。"),
+        [
+            _update_target(
+                {
+                    "description": "负责梳理后台管理系统，并通过联调提升体验一致性。",
+                    "highlights": [
+                        "优化页面状态管理，从而降低状态复杂度。",
+                        "覆盖样式相关的回归场景。",
+                        "与测试、设计进行联调。",
+                        "对应页面状态管理相关代码。",
+                        "协同设计与 QA 把控 UI 一致性与回归质量。",
+                    ],
+                },
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+def test_headline_can_synthesize_existing_resume_evidence() -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Summarize the existing resume in the headline."),
+        [
+            _edit(
+                {
+                    "type": "replace_field",
+                    "path": "basic.headline",
+                    "value": "React 与 TypeScript 前端开发者",
+                },
+                target="basic.headline",
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+def test_summary_prose_is_ignored_but_objective_material_is_checked() -> None:
+    prose_edit = _edit(
+        {
+            "type": "replace_field",
+            "path": "basic.summary",
+            "value": "Turns complex product needs into clear experiences.",
+        },
+        evidence_refs=["resume:basic:summary"],
+        target="basic.summary",
+        edit_id="summary-prose",
+    )
+    material_edit = _edit(
+        {
+            "type": "replace_field",
+            "path": "basic.summary",
+            "value": "Built Kafka systems with 45% higher throughput.",
+        },
+        evidence_refs=["resume:basic:summary"],
+        target="basic.summary",
+        edit_id="summary-material",
+    )
+
+    _, prose_issues = ground_edit_evidence(
+        _resume(),
+        _request("Rewrite the summary."),
+        [prose_edit],
+    )
+    _, material_issues = ground_edit_evidence(
+        _resume(),
+        _request("Rewrite the summary."),
+        [material_edit],
+    )
+
+    assert prose_issues == []
+    assert set(_unsupported(material_issues)["claims"]) == {"45%"}
+
+
+def test_target_item_can_support_reorganized_material() -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Reorganize the current project facts."),
+        [
+            _update_target(
+                {
+                    "description": (
+                        "Built the editor with React and reduced regression "
+                        "time by 30%."
+                    ),
+                },
+                evidence_refs=["resume:item:project:target"],
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+@pytest.mark.parametrize(
+    "foreign_ref",
+    (
+        "resume:item:project:sibling",
+        "resume:section:skills",
+    ),
+)
+def test_foreign_resume_scope_cannot_prove_target_item_material(
+    foreign_ref: str,
+) -> None:
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Update the target project."),
+        [
+            _update_target(
+                {"techStack": ["React", "TypeScript", "Kafka"]},
+                evidence_refs=[foreign_ref],
+            ),
+        ],
+    )
+
+    assert _unsupported(issues)["claims"] == ["Kafka"]
+
+
+def test_complete_merge_can_use_deleted_source_item() -> None:
+    update = _update_target(
+        {
+            "techStack": ["React", "TypeScript", "Kafka"],
+            "highlights": ["Handled 40k events."],
+        },
+        evidence_refs=[
+            "resume:item:project:target",
+            "resume:item:project:sibling",
+        ],
+        edit_id="merge-target",
+    )
+    delete = _edit(
+        {
+            "type": "delete_item",
+            "sectionId": "project",
+            "itemId": "sibling",
+        },
+        evidence_refs=["resume:item:project:sibling"],
+        target="sections.project.items.sibling",
+        edit_id="merge-delete",
+    )
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Merge the sibling project into the target."),
+        [update, delete],
+    )
+
+    assert issues == []
+
+
+def test_incomplete_merge_cannot_borrow_source_item() -> None:
+    update = _update_target(
+        {"techStack": ["React", "TypeScript", "Kafka"]},
+        evidence_refs=[
+            "resume:item:project:target",
+            "resume:item:project:sibling",
+        ],
+    )
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Update the target project."),
+        [update],
+    )
+
+    assert _unsupported(issues)["claims"] == ["Kafka"]
+
+
+def _split_item() -> dict[str, Any]:
+    return {
+        "id": "split",
+        "name": "Accessibility module",
+        "role": "前端工程师",
+        "techStack": ["React"],
+        "period": "2024",
+        "url": "",
+        "description": "Reduced regression time by 30%.",
+        "highlights": [],
+    }
+
+
+def test_split_insert_can_use_its_paired_source_item() -> None:
+    source_ref = "resume:item:project:target"
+    source_update = _update_target(
+        {"description": "Built an accessible editor."},
+        evidence_refs=[source_ref],
+        edit_id="split-source",
+    )
+    insert = _edit(
+        {
+            "type": "insert_item",
+            "sectionId": "project",
+            "item": _split_item(),
+        },
+        evidence_refs=[source_ref, "prompt:current"],
+        target="sections.project.items.split",
+        edit_id="split-insert",
+    )
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Split out an Accessibility module."),
+        [source_update, insert],
+    )
+
+    assert issues == []
+
+
+def test_unpaired_insert_cannot_borrow_a_sibling_item() -> None:
+    insert = _edit(
+        {
+            "type": "insert_item",
+            "sectionId": "project",
+            "item": _split_item(),
+        },
+        evidence_refs=[
+            "resume:item:project:target",
+            "prompt:current",
+        ],
+        target="sections.project.items.split",
+    )
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Add an Accessibility module."),
+        [insert],
+    )
+
+    assert set(_unsupported(issues)["claims"]) >= {"30%", "React"}
+
+
+@pytest.mark.parametrize("restoration_kind", ("item", "section"))
+def test_exact_formal_restoration_is_allowed(restoration_kind: str) -> None:
+    formal = _resume()
+    active = deepcopy(formal)
+    if restoration_kind == "item":
+        restored = formal["sections"][0]["items"][1]
+        active["sections"][0]["items"] = active["sections"][0]["items"][:1]
+        operation = {
+            "type": "insert_item",
+            "sectionId": "project",
+            "item": restored,
+        }
+        target = "sections.project.items.sibling"
+    else:
+        restored = formal["sections"][1]
+        active["sections"] = active["sections"][:1]
+        operation = {"type": "insert_section", "section": restored}
+        target = "sections.skills"
+
+    _, issues = ground_edit_evidence(
+        active,
+        _request("Restore the removed content.", resume=formal),
+        [_edit(operation, target=target)],
+    )
+
+    assert issues == []
+
+
+@pytest.mark.parametrize("restoration_kind", ("item", "section"))
+def test_changed_formal_restoration_is_rejected(restoration_kind: str) -> None:
+    formal = _resume()
+    active = deepcopy(formal)
+    if restoration_kind == "item":
+        restored = deepcopy(formal["sections"][0]["items"][1])
+        restored["description"] = "Changed restoration prose."
+        active["sections"][0]["items"] = active["sections"][0]["items"][:1]
+        operation = {
+            "type": "insert_item",
+            "sectionId": "project",
+            "item": restored,
+        }
+        target = "sections.project.items.sibling"
+    else:
+        restored = deepcopy(formal["sections"][1])
+        restored["title"] = "Changed title"
+        active["sections"] = active["sections"][:1]
+        operation = {"type": "insert_section", "section": restored}
+        target = "sections.skills"
+
+    _, issues = ground_edit_evidence(
+        active,
+        _request("Restore the removed content.", resume=formal),
+        [_edit(operation, target=target)],
+    )
+
+    assert _unsupported(issues)["claims"] == ["restoration_content_mismatch"]
+
+
+def test_user_corrections_are_not_interpreted_by_the_online_gate() -> None:
+    source_id = "old-kafka-fact"
+    source_ref = historical_prompt_evidence_ref(source_id)
+    messages = [
+        AgentConversationItem(
+            id=source_id,
+            role="user",
+            text="I used Kafka in this project.",
+        ),
+        AgentConversationItem(
+            id="new-correction",
+            role="user",
+            text="Correction: I did not use Kafka in this project.",
+        ),
+    ]
+
+    _, issues = ground_edit_evidence(
+        _resume(),
+        _request("Rewrite the project.", messages=messages),
+        [
+            _update_target(
+                {"techStack": ["React", "TypeScript", "Kafka"]},
+                evidence_refs=["resume:item:project:target", source_ref],
+            ),
+        ],
+    )
+
+    assert issues == []
+
+
+def test_delete_and_reorder_have_provenance_but_no_material_gate() -> None:
+    edits, issues = ground_edit_evidence(
+        _resume(),
+        _request("Delete and reorder the projects."),
+        [
+            _edit(
+                {
+                    "type": "delete_item",
+                    "sectionId": "project",
+                    "itemId": "sibling",
+                },
+                target="sections.project.items.sibling",
+                edit_id="delete",
+            ),
+            _edit(
+                {
+                    "type": "reorder_items",
+                    "sectionId": "project",
+                    "itemIds": ["target", "sibling"],
+                },
+                target="sections.project.items",
+                edit_id="reorder",
+            ),
+        ],
+    )
+
+    assert issues == []
+    assert edits[0].evidence_refs == ["resume:item:project:sibling"]
+    assert edits[1].evidence_refs == ["resume:section:project"]

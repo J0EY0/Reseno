@@ -42,7 +42,7 @@ export interface WorkspaceLateralRouteResolution<
 }
 
 const routeDataByToken = new Map<string, PreparedWorkspaceRoute>();
-const latestRouteDataByView = new Map<
+const committedRouteDataByView = new Map<
   WorkspaceView,
   PreparedWorkspaceRoute
 >();
@@ -99,15 +99,15 @@ function hasWorkspaceLateralRouteData(
   }
 }
 
-function getLatestRouteData<View extends WorkspaceView>(view: View) {
-  const prepared = latestRouteDataByView.get(view);
+function getCommittedRouteData<View extends WorkspaceView>(view: View) {
+  const prepared = committedRouteDataByView.get(view);
   return prepared?.view === view &&
     hasWorkspaceLateralRouteData(view, prepared.data)
     ? (prepared.data as WorkspaceLateralRouteDataMap[View])
     : null;
 }
 
-/** Keeps one last-known-good snapshot per view for the current auth session. */
+/** Keeps at most one committed snapshot for each of the five lateral views. */
 export function rememberWorkspaceLateralRoute<View extends WorkspaceView>(
   prepared: PreparedWorkspaceRoute<View>,
 ) {
@@ -115,7 +115,7 @@ export function rememberWorkspaceLateralRoute<View extends WorkspaceView>(
     return;
   }
 
-  latestRouteDataByView.set(
+  committedRouteDataByView.set(
     prepared.view,
     prepared as PreparedWorkspaceRoute,
   );
@@ -143,7 +143,7 @@ export function resolveWorkspaceLateralRoute<
 >(state: unknown, view: View): WorkspaceLateralRouteResolution<View> {
   if (!state || typeof state !== "object") {
     return {
-      data: getLatestRouteData(view),
+      data: getCommittedRouteData(view),
       shouldScrubHistory: false,
       tokenToDelete: null,
     };
@@ -157,7 +157,7 @@ export function resolveWorkspaceLateralRoute<
   };
   if (candidate.kind !== "workspace-lateral-handoff") {
     return {
-      data: getLatestRouteData(view),
+      data: getCommittedRouteData(view),
       shouldScrubHistory: false,
       tokenToDelete: null,
     };
@@ -180,7 +180,7 @@ export function resolveWorkspaceLateralRoute<
   }
 
   return {
-    data: getLatestRouteData(view),
+    data: getCommittedRouteData(view),
     shouldScrubHistory: true,
     tokenToDelete: token,
   };
@@ -194,5 +194,5 @@ export function deleteWorkspaceLateralRouteHandoff(token: string | null) {
 
 export function clearWorkspaceLateralRouteMemory() {
   routeDataByToken.clear();
-  latestRouteDataByView.clear();
+  committedRouteDataByView.clear();
 }

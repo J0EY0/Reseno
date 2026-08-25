@@ -71,17 +71,12 @@ export function toConversationMessage(
 }
 
 function isCitationSource(source: AgentSource) {
-  if (source.id === "source-jd-search-query") {
-    return false;
-  }
-
   if (source.sourceType === "web" && !source.url) {
     return false;
   }
 
   return (
     source.sourceType === "web" ||
-    source.sourceType === "targetContext" ||
     source.sourceType === "attachment"
   );
 }
@@ -104,7 +99,6 @@ function sanitizeAgentResponse(
   return {
     ...message,
     text: stripTransientModelStatus(message.text, transientStatusTexts),
-    updates: [],
     sources: message.sources?.filter(isCitationSource),
   };
 }

@@ -46,33 +46,19 @@ class TemplateSettings(ArtifactModel):
     item_gap: float = Field(alias="itemGap", ge=0.4, le=1.8)
     body_line_height: float = Field(alias="bodyLineHeight", ge=1.4, le=2.2)
     name_scale: float = Field(alias="nameScale", ge=1.6, le=2.8)
-    section_title_scale: float = Field(
-        alias="sectionTitleScale", ge=0.75, le=1.6
-    )
+    section_title_scale: float = Field(alias="sectionTitleScale", ge=0.75, le=1.6)
     item_title_scale: float = Field(alias="itemTitleScale", ge=0.85, le=1.4)
     meta_scale: float = Field(alias="metaScale", ge=0.75, le=1.15)
     body_scale: float = Field(alias="bodyScale", ge=0.85, le=1.2)
     page_background: HexColor = Field(
         alias="pageBackground", pattern=r"^#[0-9a-fA-F]{6}$"
     )
-    surface_color: HexColor = Field(
-        alias="surfaceColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
-    heading_color: HexColor = Field(
-        alias="headingColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
-    body_color: HexColor = Field(
-        alias="bodyColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
-    muted_color: HexColor = Field(
-        alias="mutedColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
-    divider_color: HexColor = Field(
-        alias="dividerColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
-    divider_thickness: float = Field(
-        alias="dividerThickness", ge=0.5, le=3
-    )
+    surface_color: HexColor = Field(alias="surfaceColor", pattern=r"^#[0-9a-fA-F]{6}$")
+    heading_color: HexColor = Field(alias="headingColor", pattern=r"^#[0-9a-fA-F]{6}$")
+    body_color: HexColor = Field(alias="bodyColor", pattern=r"^#[0-9a-fA-F]{6}$")
+    muted_color: HexColor = Field(alias="mutedColor", pattern=r"^#[0-9a-fA-F]{6}$")
+    divider_color: HexColor = Field(alias="dividerColor", pattern=r"^#[0-9a-fA-F]{6}$")
+    divider_thickness: float = Field(alias="dividerThickness", ge=0.5, le=3)
 
 
 class TemplateSettingsOverrides(ArtifactModel):
@@ -87,28 +73,20 @@ class TemplateSettingsOverrides(ArtifactModel):
     page_padding_bottom: float | None = Field(
         default=None, alias="pagePaddingBottom", ge=8, le=18
     )
-    section_gap: float | None = Field(
-        default=None, alias="sectionGap", ge=0.8, le=2.4
-    )
+    section_gap: float | None = Field(default=None, alias="sectionGap", ge=0.8, le=2.4)
     item_gap: float | None = Field(default=None, alias="itemGap", ge=0.4, le=1.8)
     body_line_height: float | None = Field(
         default=None, alias="bodyLineHeight", ge=1.4, le=2.2
     )
-    name_scale: float | None = Field(
-        default=None, alias="nameScale", ge=1.6, le=2.8
-    )
+    name_scale: float | None = Field(default=None, alias="nameScale", ge=1.6, le=2.8)
     section_title_scale: float | None = Field(
         default=None, alias="sectionTitleScale", ge=0.75, le=1.6
     )
     item_title_scale: float | None = Field(
         default=None, alias="itemTitleScale", ge=0.85, le=1.4
     )
-    meta_scale: float | None = Field(
-        default=None, alias="metaScale", ge=0.75, le=1.15
-    )
-    body_scale: float | None = Field(
-        default=None, alias="bodyScale", ge=0.85, le=1.2
-    )
+    meta_scale: float | None = Field(default=None, alias="metaScale", ge=0.75, le=1.15)
+    body_scale: float | None = Field(default=None, alias="bodyScale", ge=0.85, le=1.2)
     page_background: HexColor | None = Field(
         default=None, alias="pageBackground", pattern=r"^#[0-9a-fA-F]{6}$"
     )
@@ -134,8 +112,7 @@ class TemplateSettingsOverrides(ArtifactModel):
     @model_validator(mode="after")
     def reject_explicit_nulls(self) -> "TemplateSettingsOverrides":
         if any(
-            getattr(self, field_name) is None
-            for field_name in self.model_fields_set
+            getattr(self, field_name) is None for field_name in self.model_fields_set
         ):
             raise ValueError("Template setting overrides cannot be null.")
         return self
@@ -145,11 +122,7 @@ class TemplateSettingsOverrides(ArtifactModel):
         self,
         handler: SerializerFunctionWrapHandler,
     ) -> dict[str, Any]:
-        return {
-            key: value
-            for key, value in handler(self).items()
-            if value is not None
-        }
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class TemplateImageElement(ArtifactModel):
@@ -163,9 +136,7 @@ class TemplateImageElement(ArtifactModel):
     height: float = Field(ge=6, le=120)
     opacity: float = Field(ge=0.05, le=1)
     border_width: float = Field(alias="borderWidth", ge=0, le=8)
-    border_color: HexColor = Field(
-        alias="borderColor", pattern=r"^#[0-9a-fA-F]{6}$"
-    )
+    border_color: HexColor = Field(alias="borderColor", pattern=r"^#[0-9a-fA-F]{6}$")
     border_radius: float = Field(alias="borderRadius", ge=0, le=32)
     object_fit: Literal["contain", "cover"] = Field(alias="objectFit")
     visible: bool
@@ -186,8 +157,8 @@ class TemplateImageElement(ArtifactModel):
 
 
 class TemplateLayout(ArtifactModel):
-    basic_info: Literal["centered", "left", "split", "profile", "sidebar"] = (
-        Field(alias="basicInfo")
+    basic_info: Literal["centered", "left", "split", "profile", "sidebar"] = Field(
+        alias="basicInfo"
     )
     section: Literal["ruled", "boxed", "accent", "plain", "band"]
     timeline_item_layout: Literal["split", "stacked", "compact"] = Field(
@@ -199,9 +170,7 @@ class TemplateLayout(ArtifactModel):
     avatar_position: Literal["none", "right", "left", "center"] = Field(
         alias="avatarPosition"
     )
-    avatar_shape: Literal["rounded", "circle", "square"] = Field(
-        alias="avatarShape"
-    )
+    avatar_shape: Literal["rounded", "circle", "square"] = Field(alias="avatarShape")
     avatar_width: float = Field(alias="avatarWidth", ge=16, le=48)
     avatar_height: float = Field(alias="avatarHeight", ge=16, le=56)
     avatar_offset_x: float = Field(alias="avatarOffsetX", ge=-40, le=40)

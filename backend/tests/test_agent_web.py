@@ -1,83 +1,1198 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import socket
-from datetime import UTC, datetime
-from hashlib import sha256
-from urllib.parse import urlparse
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from app.schemas.agent import AgentChatRequest, AgentConversationItem
-from app.services.agent.executor import AgentPlanExecutor
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentConversationItem,
+    AgentToolInvocation,
+)
+from app.services.agent.adapters.web import WebToolAdapter
 from app.services.agent.integrations import web as agent_web
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.tools.runner import AgentToolRunner
 from app.services.llm import LlmToolCall
 
 
-class _FakeNetworkStream:
-    """Expose the peer metadata that httpcore attaches to real responses."""
-
-    def __init__(self, address: str) -> None:
-        self.address = address
-
-    def get_extra_info(self, key: str):
-        if key == "server_addr":
-            return (self.address, 443)
-        return None
-
-
-def _peer_extensions(address: str = "93.184.216.34") -> dict[str, object]:
-    return {"network_stream": _FakeNetworkStream(address)}
-
-
-def _web_tool_call(name: str, arguments: dict[str, object]) -> LlmToolCall:
+def _web_tool_call(
+    name: str,
+    arguments: dict[str, object],
+    *,
+    call_id: str | None = None,
+) -> LlmToolCall:
     return LlmToolCall(
-        id=f"call-{name}",
+        id=call_id or f"call-{name}",
         name=name,
         arguments=arguments,
         raw_arguments="{}",
     )
 
 
-def _agent_runner(
+def _web_adapter(
     *,
     prompt: str,
-    target_description: str = "",
-) -> AgentToolRunner:
-    messages = (
-        [
-            AgentConversationItem(
-                id="assistant-agent-web-target",
-                role="assistant",
-                text="目标已更新。",
-                response={
-                    "id": "assistant-agent-web-target",
-                    "role": "assistant",
-                    "text": "目标已更新。",
-                    "targetContext": {
-                        "kind": "general",
-                        "description": target_description,
-                    },
-                },
-            ),
-        ]
-        if target_description
-        else []
-    )
+    resume: dict[str, object] | None = None,
+    hidden_terms: tuple[str, ...] = (),
+    messages: list[dict[str, object]] | None = None,
+) -> WebToolAdapter:
     request = AgentChatRequest(
         message=AgentConversationItem(
             id=f"turn-agent-web-{prompt}",
             role="user",
             text=prompt,
         ),
-        messages=messages,
+        messages=messages or [],
         locale="zh",
-        resume={"basic": {}, "sections": []},
+        resume=resume or {"basic": {}, "sections": []},
     )
-    return AgentToolRunner(AgentPlanExecutor(request))
+    return WebToolAdapter.open(request, prompt, hidden_terms)
+
+
+def test_web_search_parses_duckduckgo_results_without_a_search_sdk() -> None:
+    html = b"""
+        <div class="result results_links web-result">
+          <h2 class="result__title">
+            <a class="result__a"
+               href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcareers.example%2Fjobs%2F7%3Futm_source%3Dddg">
+              Frontend Intern
+            </a>
+          </h2>
+          <span>2026-08-01T08:00:00.0000000</span>
+          <a class="result__snippet">React and TypeScript responsibilities.</a>
+        </div>
+        <div class="result results_links web-result">
+          <h2 class="result__title">
+            <a class="result__a" href="https://careers.example/jobs/7">
+              Duplicate
+            </a>
+          </h2>
+          <a class="result__snippet">Duplicate result.</a>
+        </div>
+    """
+
+    results = agent_web._parse_duckduckgo_results(html, "utf-8")
+
+    assert results == [
+        agent_web.WebSearchResult(
+            url="https://careers.example/jobs/7",
+            title="Frontend Intern",
+            excerpt="React and TypeScript responsibilities.",
+            published_date="2026-08-01T08:00:00.0000000",
+        ),
+    ]
+
+
+def test_web_fetch_extracts_the_query_relevant_page_passage_locally() -> None:
+    html = b"""
+        <html>
+          <head><title>Frontend Intern</title></head>
+          <body>
+            <nav>Home Products About News Careers Contact</nav>
+            <main>
+              <h1>Frontend Intern</h1>
+              <p>Join our product engineering team in Shanghai.</p>
+              <h2>Responsibilities</h2>
+              <p>Build accessible web interfaces with React and TypeScript.</p>
+              <h2>Requirements</h2>
+              <p>Understand browser performance, HTML, CSS, and testing.</p>
+            </main>
+          </body>
+        </html>
+    """
+
+    reference = agent_web._web_reference_from_response(
+        "https://careers.example/jobs/7",
+        html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query="React TypeScript frontend intern requirements",
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is not None
+    assert reference.title == "Frontend Intern"
+    assert "Build accessible web interfaces with React and TypeScript" in (
+        reference.excerpt
+    )
+    assert "Home Products About" not in reference.excerpt
+
+
+def test_web_fetch_keeps_relevant_passages_from_multiple_job_sections() -> None:
+    responsibilities = " ".join(
+        [
+            "Build React and TypeScript interfaces with product and design partners."
+            for _ in range(14)
+        ],
+    )
+    requirements = " ".join(
+        [
+            "Understand accessibility, automated testing, and browser performance."
+            for _ in range(14)
+        ],
+    )
+    html = f"""
+        <html>
+          <head><title>Frontend Intern</title></head>
+          <body><main>
+            <h1>Frontend Intern</h1>
+            <h2>Responsibilities</h2>
+            <p>{responsibilities}</p>
+            <h2>Requirements</h2>
+            <p>{requirements}</p>
+          </main></body>
+        </html>
+    """.encode()
+
+    reference = agent_web._web_reference_from_response(
+        "https://careers.example/jobs/7",
+        html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query=(
+            "React TypeScript frontend intern accessibility testing performance"
+        ),
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is not None
+    assert {passage.section for passage in reference.passages} >= {
+        "Responsibilities",
+        "Requirements",
+    }
+    assert any(
+        "Build React and TypeScript" in passage.text for passage in reference.passages
+    )
+    assert any("automated testing" in passage.text for passage in reference.passages)
+
+
+def test_web_fetch_drops_leading_job_board_chrome_from_the_excerpt() -> None:
+    html = b"""
+        <html>
+          <head><title>Frontend Intern</title></head>
+          <body>
+            <div>Campus Jobs</div>
+            <div>Intern TV</div>
+            <div>Career Wiki</div>
+            <div>Employer Portal</div>
+            <div>Sign in or register</div>
+            <div>Frontend Intern</div>
+            <div>12:26:09 refreshed, 200-300 per day, Shanghai</div>
+            <div>Job description</div>
+            <div>Responsibilities</div>
+            <p>Build and maintain React interfaces for the core frontend system.</p>
+            <p>Develop reusable React components and TypeScript modules.</p>
+            <div>Requirements</div>
+            <p>Understand JavaScript, browser APIs, testing, and web performance.</p>
+          </body>
+        </html>
+    """
+
+    reference = agent_web._web_reference_from_response(
+        "https://jobs.example/positions/7",
+        html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query="React TypeScript frontend intern",
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is not None
+    assert reference.excerpt.startswith("Build and maintain React interfaces")
+    assert "Sign in or register" not in reference.excerpt
+    assert "12:26:09 refreshed" not in reference.excerpt
+    assert "Understand JavaScript" in reference.excerpt
+
+
+def test_web_fetch_focuses_a_relevant_passage_inside_one_large_listing_block() -> None:
+    unrelated_before = " ".join(
+        f"岗位 {index} Java 后端开发，负责微服务和数据库。" for index in range(120)
+    )
+    target = (
+        "前端开发实习生，使用 React 和 TypeScript 开发无障碍 Web 界面，"
+        "与产品和设计协作，并编写自动化测试。"
+    )
+    unrelated_after = " ".join(
+        f"岗位 {index} 财务分析，负责报表和预算。" for index in range(120)
+    )
+    html = (
+        "<html><head><title>校园招聘职位列表</title></head><body><main><p>"
+        f"{unrelated_before} {target} {unrelated_after}"
+        "</p></main></body></html>"
+    ).encode()
+
+    reference = agent_web._web_reference_from_response(
+        "https://jobs.example/search",
+        html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query="React TypeScript 前端开发实习生",
+        reference_title="校园招聘职位列表",
+    )
+
+    assert reference is not None
+    assert target in reference.excerpt
+    assert "岗位 0 Java 后端开发" not in reference.excerpt
+    assert "岗位 119 财务分析" not in reference.excerpt
+
+
+def test_web_fetch_reads_job_posting_dates_and_rejects_expired_roles() -> None:
+    current_html = b"""
+        <html>
+          <head>
+            <title>Frontend Intern</title>
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "JobPosting",
+                "title": "Frontend Intern",
+                "datePosted": "2026-08-20",
+                "validThrough": "2099-09-30T23:59:59+08:00"
+              }
+            </script>
+          </head>
+          <body><main>
+            <p>Build accessible React and TypeScript interfaces.</p>
+            <p>Work with product engineers on browser performance.</p>
+          </main></body>
+        </html>
+    """
+    expired_html = current_html.replace(
+        b"2099-09-30T23:59:59+08:00",
+        b"2000-08-01T23:59:59+08:00",
+    )
+
+    reference = agent_web._web_reference_from_response(
+        "https://careers.example/jobs/7",
+        current_html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query="React TypeScript frontend intern",
+    )
+    expired = agent_web._web_reference_from_response(
+        "https://careers.example/jobs/7",
+        expired_html,
+        "text/html; charset=utf-8",
+        "utf-8",
+        relevance_query="React TypeScript frontend intern",
+    )
+
+    assert reference is not None
+    assert reference.published_date == "2026-08-20"
+    assert reference.valid_through == "2099-09-30T23:59:59+08:00"
+    assert expired is None
+
+
+def test_web_fetch_downloads_and_extracts_a_public_page_without_an_sdk(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    page = b"""
+        <html><head><title>Frontend Intern</title></head><body><main>
+        <p>Build React and TypeScript interfaces for the recruiting product.</p>
+        <p>Write accessible, tested, and maintainable frontend code.</p>
+        </main></body></html>
+    """
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            content=page,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        ),
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+
+    reference = asyncio.run(
+        agent_web._async_fetch_web_reference(
+            "https://careers.example/jobs/7",
+            "React TypeScript frontend",
+            "Frontend Intern",
+        ),
+    )
+
+    assert reference is not None
+    assert reference.final_url == "https://careers.example/jobs/7"
+    assert "Build React and TypeScript interfaces" in reference.excerpt
+
+
+def test_web_search_reads_top_result_pages_before_returning_to_the_model(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    search_html = b"""
+        <div class="result results_links web-result">
+          <h2><a class="result__a" href="https://careers.example/jobs/7">
+            Frontend Intern
+          </a></h2>
+          <a class="result__snippet">Short discovery snippet.</a>
+        </div>
+    """
+    job_html = b"""
+        <html><head><title>Frontend Intern</title></head><body><main>
+          <h1>Frontend Intern</h1>
+          <p>Build React and TypeScript interfaces for the recruiting product.</p>
+          <p>Understand accessibility, testing, and browser performance.</p>
+        </main></body></html>
+    """
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "html.duckduckgo.com":
+            form = parse_qs(request.content.decode())
+            assert request.method == "POST"
+            assert "site:careers.example" in form["q"][0]
+            assert form["df"] == ["y"]
+            assert form["kl"] == ["cn-zh"]
+            body = search_html
+        else:
+            assert str(request.url) == "https://careers.example/jobs/7"
+            body = job_html
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        )
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+
+    response = asyncio.run(
+        agent_web._async_search_web(
+            "上海 React TypeScript 前端实习",
+            "year",
+            ("careers.example",),
+        ),
+    )
+
+    assert response.error_reason == ""
+    assert response.results == (
+        agent_web.WebSearchResult(
+            url="https://careers.example/jobs/7",
+            title="Frontend Intern",
+            excerpt=(
+                "Build React and TypeScript interfaces for the recruiting "
+                "product. Understand accessibility, testing, and browser "
+                "performance."
+            ),
+            source_kind="fetched_page",
+            passages=(
+                agent_web.WebPassage(
+                    section="Frontend Intern",
+                    text=(
+                        "Build React and TypeScript interfaces for the recruiting "
+                        "product."
+                    ),
+                ),
+                agent_web.WebPassage(
+                    section="Frontend Intern",
+                    text=(
+                        "Understand accessibility, testing, and browser performance."
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert [passage.text for passage in response.results[0].passages] == [
+        "Build React and TypeScript interfaces for the recruiting product.",
+        "Understand accessibility, testing, and browser performance.",
+    ]
+
+
+def test_web_search_reads_at_most_five_candidates_concurrently(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    urls = [f"https://careers.example/jobs/{index}" for index in range(6)]
+    search_html = "".join(
+        f"""
+        <div class="result results_links web-result">
+          <h2><a class="result__a" href="{url}">
+            React Frontend Role {index}
+          </a></h2>
+          <a class="result__snippet">
+            React TypeScript frontend responsibilities for role {index}.
+          </a>
+        </div>
+        """
+        for index, url in enumerate(urls)
+    ).encode()
+    started_urls: list[str] = []
+    all_five_started = asyncio.Event()
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "html.duckduckgo.com":
+            body = search_html
+        else:
+            requested_url = str(request.url)
+            started_urls.append(requested_url)
+            if len(started_urls) == 5:
+                all_five_started.set()
+            try:
+                await asyncio.wait_for(all_five_started.wait(), timeout=0.25)
+            except TimeoutError:
+                pass
+            index = int(request.url.path.rsplit("/", 1)[-1])
+            body = (
+                f"""
+                    <html><head><title>React Frontend Role {index}</title></head>
+                    <body><main>
+                      <p>
+                        Build React and TypeScript frontend interfaces for role {index}.
+                      </p>
+                      <p>Improve accessibility, testing, and browser performance.</p>
+                    </main></body></html>
+                """.encode()
+                if index >= 3
+                else b"<html><body><nav>Home Sign in Contact</nav></body></html>"
+            )
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        )
+
+    async def no_browser_results(
+        _requests: list[tuple[str, str, str]],
+        _browser: agent_web.WebBrowser | None,
+    ) -> dict[str, agent_web.WebReference]:
+        raise AssertionError("two static references must stop browser fallback")
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(
+        agent_web,
+        "_async_render_web_references",
+        no_browser_results,
+    )
+
+    response = asyncio.run(
+        agent_web._async_search_web("React TypeScript frontend roles"),
+    )
+
+    assert set(started_urls) == set(urls[:5])
+    assert len(response.results) == 5
+    assert [result.url for result in response.results] == urls[:5]
+    assert [result.source_kind for result in response.results] == [
+        "search_snippet",
+        "search_snippet",
+        "search_snippet",
+        "fetched_page",
+        "fetched_page",
+    ]
+
+
+def test_web_search_renders_a_result_when_static_html_is_only_site_chrome(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    url = "https://jobs.example/positions/7"
+    search_html = f"""
+        <div class="result results_links web-result">
+          <h2><a class="result__a" href="{url}">
+            Frontend Intern in Shanghai
+          </a></h2>
+          <a class="result__snippet">React internship responsibilities.</a>
+        </div>
+    """.encode()
+    shell_html = b"""
+        <html><head><title>Join us</title></head><body><nav>
+          Home Campus Programs Teams Benefits News Sign in Contact us
+        </nav></body></html>
+    """
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = search_html if request.url.host == "html.duckduckgo.com" else shell_html
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        )
+
+    async def render(
+        requests: list[tuple[str, str, str]],
+        _browser: agent_web.WebBrowser | None,
+    ):
+        assert requests == [
+            (
+                url,
+                "Shanghai React frontend intern",
+                "Frontend Intern in Shanghai",
+            ),
+        ]
+        return {
+            url: agent_web.WebReference(
+                title="Frontend Intern in Shanghai",
+                excerpt=(
+                    "Build React and TypeScript interfaces in Shanghai. "
+                    "Improve accessibility and browser performance."
+                ),
+                final_url=url,
+            ),
+        }
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(agent_web, "_async_render_web_references", render)
+
+    response = asyncio.run(
+        agent_web._async_search_web("Shanghai React frontend intern"),
+    )
+
+    assert response.results[0].source_kind == "fetched_page"
+    assert "Build React and TypeScript interfaces" in response.results[0].excerpt
+
+
+def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
+    launch_options: dict[str, object] = {}
+
+    class Chromium:
+        async def launch(self, **options: object):
+            launch_options.update(options)
+            raise agent_web.PlaywrightError("stop after launch")
+
+    class Playwright:
+        chromium = Chromium()
+
+        async def stop(self) -> None:
+            return None
+
+    class PlaywrightContext:
+        async def start(self):
+            return Playwright()
+
+    monkeypatch.setattr(
+        agent_web,
+        "async_playwright",
+        lambda: PlaywrightContext(),
+    )
+
+    rendered = asyncio.run(
+        agent_web._async_render_web_references(
+            [("https://jobs.example/positions/7", "frontend", "Frontend")],
+        ),
+    )
+
+    assert rendered == {}
+    assert launch_options == {"headless": True}
+
+
+def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
+    calls = {"start": 0, "launch": 0, "new_context": 0, "close": 0, "stop": 0}
+
+    class Context:
+        async def close(self) -> None:
+            calls["close"] += 1
+
+    context = Context()
+
+    class Browser:
+        async def new_context(self, **_options: object) -> Context:
+            calls["new_context"] += 1
+            return context
+
+        async def close(self) -> None:
+            return None
+
+    class Chromium:
+        async def launch(self, **_options: object) -> Browser:
+            calls["launch"] += 1
+            return Browser()
+
+    class Playwright:
+        chromium = Chromium()
+
+        async def stop(self) -> None:
+            calls["stop"] += 1
+
+    class PlaywrightContext:
+        async def start(self) -> Playwright:
+            calls["start"] += 1
+            return Playwright()
+
+    monkeypatch.setattr(agent_web, "async_playwright", lambda: PlaywrightContext())
+
+    async def scenario() -> None:
+        browser = agent_web.WebBrowser()
+        assert await browser.context() is context
+        assert await browser.context() is context
+        await browser.close()
+
+    asyncio.run(scenario())
+
+    assert calls == {
+        "start": 1,
+        "launch": 1,
+        "new_context": 1,
+        "close": 1,
+        "stop": 1,
+    }
+
+
+def test_web_fetch_rejects_login_and_closed_position_pages() -> None:
+    for body in (
+        (
+            "找工作 在线职位及时沟通 APP扫码登录 验证码登录/注册 "
+            "首次验证通过即注册账号 我要找工作 我要招聘 用户协议 隐私政策"
+        ),
+        (
+            "首页 职位 校招答疑 登录 该职位已下线 查看工作机会 "
+            "公司介绍 联系我们 隐私政策 用户协议"
+        ),
+    ):
+        reference = agent_web._web_reference_from_response(
+            "https://jobs.example/positions/7",
+            f"<html><body><main><p>{body}</p></main></body></html>".encode(),
+            "text/html; charset=utf-8",
+            "utf-8",
+            relevance_query="React frontend intern",
+            reference_title="Frontend Intern",
+        )
+
+        assert reference is None
+
+
+def test_search_does_not_promote_an_unrelated_landing_page() -> None:
+    discovered = agent_web.WebSearchResult(
+        url="https://jobs.example/positions/7",
+        title="Frontend Intern - Product Engineering",
+        excerpt=(
+            "Build React and TypeScript interfaces, improve accessibility, "
+            "and collaborate with product engineers in Shanghai."
+        ),
+    )
+    login_page = agent_web.WebReference(
+        title="Sign in",
+        excerpt=(
+            "Find jobs, talk to recruiters, scan the app code, read the user "
+            "agreement and privacy policy, then sign in or register."
+        ),
+        final_url="https://jobs.example/sign-in",
+    )
+
+    assert not agent_web._reference_matches_result(discovered, login_page)
+
+
+def test_search_does_not_promote_a_matching_title_with_footer_only_text() -> None:
+    discovered = agent_web.WebSearchResult(
+        url="https://jobs.example/positions/7",
+        title="Frontend Intern",
+        excerpt="Build React and TypeScript interfaces for a recruiting product.",
+    )
+    footer_only = agent_web.WebReference(
+        title="Frontend Intern",
+        excerpt="Copyright 2015-2026 Example Intern. Contact us and legal notice.",
+        final_url="https://jobs.example/positions/7",
+    )
+
+    assert not agent_web._reference_matches_result(discovered, footer_only)
+
+
+def test_search_does_not_promote_a_job_redirected_to_the_site_homepage() -> None:
+    discovered = agent_web.WebSearchResult(
+        url="https://jobs.example/positions/react-frontend-7",
+        title="React Frontend Engineer",
+        excerpt="Build React and TypeScript interfaces for a recruiting product.",
+    )
+    keyword_rich_homepage = agent_web.WebReference(
+        title="Example Jobs",
+        excerpt=(
+            "Find React frontend engineer jobs, TypeScript roles, and other "
+            "current recruiting opportunities."
+        ),
+        final_url="https://jobs.example/",
+    )
+
+    assert not agent_web._reference_matches_result(
+        discovered,
+        keyword_rich_homepage,
+    )
+
+
+def test_web_search_reports_duckduckgo_challenge_as_rate_limited(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            202,
+            content=b'<form id="challenge-form">CAPTCHA</form>',
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        ),
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+
+    response = asyncio.run(agent_web._async_search_web("frontend intern"))
+
+    assert response == agent_web.WebSearchResponse(error_reason="rate_limited")
+
+
+def test_web_search_keeps_discovery_results_when_one_page_read_fails(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    search_html = b"""
+        <a class="result__a" href="https://slow.example/jobs/7">Slow role</a>
+        <a class="result__snippet">Frontend internship discovery text.</a>
+        <a class="result__a" href="https://careers.example/jobs/8">React role</a>
+        <a class="result__snippet">React TypeScript frontend internship.</a>
+    """
+    job_html = b"""
+        <html><head><title>React role</title></head><body><main>
+          <p>Build React and TypeScript frontend interfaces for job seekers.</p>
+          <p>Improve accessibility, tests, and browser performance.</p>
+        </main></body></html>
+    """
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "html.duckduckgo.com":
+            body = search_html
+        elif request.url.host == "slow.example":
+            raise httpx.ReadTimeout("page timed out", request=request)
+        else:
+            body = job_html
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        )
+
+    async def no_browser_results(
+        _requests: list[tuple[str, str, str]],
+        _browser: agent_web.WebBrowser | None,
+    ):
+        return {}
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(
+        agent_web,
+        "_async_render_web_references",
+        no_browser_results,
+    )
+
+    response = asyncio.run(agent_web._async_search_web("React frontend intern"))
+
+    assert response.error_reason == ""
+    assert [result.source_kind for result in response.results] == [
+        "search_snippet",
+        "fetched_page",
+    ]
+
+
+def test_web_search_keeps_static_references_when_browser_fallback_times_out(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    first_url = "https://careers.example/jobs/7"
+    second_url = "https://careers.example/jobs/8"
+    search_html = f"""
+        <a class="result__a" href="{first_url}">React Frontend Role</a>
+        <a class="result__snippet">React TypeScript frontend responsibilities.</a>
+        <a class="result__a" href="{second_url}">Frontend Internship</a>
+        <a class="result__snippet">Frontend internship requirements.</a>
+    """.encode()
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            content=search_html,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        ),
+    )
+
+    async def read_static(
+        _client: httpx.AsyncClient,
+        url: str,
+        _query: str,
+        _title: str,
+    ) -> agent_web.WebReference | None:
+        if url != first_url:
+            return None
+        return agent_web.WebReference(
+            title="React Frontend Role",
+            excerpt="Build React and TypeScript frontend interfaces.",
+            final_url=url,
+            passages=(
+                agent_web.WebPassage(
+                    section="Responsibilities",
+                    text="Build React and TypeScript frontend interfaces.",
+                ),
+            ),
+        )
+
+    async def slow_browser(
+        _requests: list[tuple[str, str, str]],
+        _browser: agent_web.WebBrowser | None,
+    ) -> dict[str, agent_web.WebReference]:
+        await asyncio.sleep(1)
+        return {}
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(agent_web, "_async_fetch_with_client", read_static)
+    monkeypatch.setattr(agent_web, "_async_render_web_references", slow_browser)
+    monkeypatch.setattr(agent_web, "SEARCH_TIMEOUT_SECONDS", 0.1)
+
+    response = asyncio.run(agent_web._async_search_web("React frontend role"))
+
+    assert response.error_reason == ""
+    assert [result.source_kind for result in response.results] == [
+        "fetched_page",
+        "search_snippet",
+    ]
+
+
+def test_web_fetch_revalidates_redirect_before_following_it(monkeypatch) -> None:
+    real_client = httpx.AsyncClient
+    requested_urls: list[str] = []
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    def redirect(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"location": "http://127.0.0.1/private"},
+            extensions={"network_stream": PublicPeer()},
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    transport = httpx.MockTransport(redirect)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+
+    reference = asyncio.run(
+        agent_web._async_fetch_web_reference("https://careers.example/start"),
+    )
+
+    assert reference is None
+    assert requested_urls == ["https://careers.example/start"]
+
+
+def test_web_network_allows_tun_fake_ip_only_after_public_hostname_resolution(
+    monkeypatch,
+) -> None:
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.157", port)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert agent_web._safe_web_target_addresses(
+        "https://html.duckduckgo.com/html/",
+    ) == frozenset({"198.18.0.157"})
+    assert (
+        agent_web._safe_web_target_addresses(
+            "https://198.18.0.157/private",
+        )
+        is None
+    )
+
+
+def test_web_fetch_renders_a_dynamic_page_when_static_html_has_no_passage(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    url = "https://jobs.example/positions/7"
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            content=b"<html><body><div id='app'></div></body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        ),
+    )
+
+    async def render(
+        requests: list[tuple[str, str, str]],
+        _browser: agent_web.WebBrowser | None,
+    ):
+        assert requests == [(url, "React frontend requirements", "Frontend Intern")]
+        return {
+            url: agent_web.WebReference(
+                title="Frontend Intern",
+                excerpt=(
+                    "Build React interfaces and improve browser performance. "
+                    "Write tested and accessible TypeScript code."
+                ),
+                final_url=url,
+            ),
+        }
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(agent_web, "_async_render_web_references", render)
+
+    reference = asyncio.run(
+        agent_web._async_fetch_web_reference(
+            url,
+            "React frontend requirements",
+            "Frontend Intern",
+        ),
+    )
+
+    assert reference is not None
+    assert "accessible TypeScript code" in reference.excerpt
+
+
+def test_rendered_visible_text_is_reduced_to_a_relevant_passage() -> None:
+    reference = agent_web._web_reference_from_visible_text(
+        "https://jobs.example/positions/7",
+        "Frontend Intern",
+        """
+        Home
+        Products
+        About us
+        Frontend Intern
+        Responsibilities
+        Build React interfaces for the recruiting product.
+        Improve accessibility and browser performance.
+        Requirements
+        Write tested and maintainable TypeScript code.
+        Privacy
+        Terms
+        """,
+        relevance_query="React TypeScript frontend requirements",
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is not None
+    assert "Build React interfaces" in reference.excerpt
+    assert "maintainable TypeScript code" in reference.excerpt
+    assert "Home Products About us" not in reference.excerpt
+    passage_text = " ".join(passage.text for passage in reference.passages)
+    assert "Build React interfaces" in passage_text
+    assert "maintainable TypeScript code" in passage_text
+
+
+def test_rendered_job_page_excerpt_starts_with_job_content_not_site_chrome() -> None:
+    reference = agent_web._web_reference_from_visible_text(
+        "https://jobs.example/positions/7",
+        "Frontend Intern",
+        """
+        Campus Jobs Intern TV Career Wiki Employer Portal
+        Sign in or register
+        Frontend Intern
+        12:26:09 refreshed, 200-300 per day, Shanghai
+        Job description
+        Responsibilities
+        Build and maintain React interfaces for the core frontend system.
+        Develop reusable React components and TypeScript modules.
+        Requirements
+        Understand JavaScript, browser APIs, testing, and web performance.
+        """,
+        relevance_query="React TypeScript frontend intern",
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is not None
+    assert reference.excerpt.startswith("Build and maintain React interfaces")
+    assert "Sign in or register" not in reference.excerpt
+    assert "12:26:09 refreshed" not in reference.excerpt
+    assert "Understand JavaScript" in reference.excerpt
+
+
+def test_rendered_search_result_rejects_footer_only_text() -> None:
+    reference = agent_web._web_reference_from_visible_text(
+        "https://jobs.example/positions/7",
+        "Frontend Intern - Example Intern",
+        "Copyright 2015-2026 Example Intern. Contact us and legal notice.",
+        relevance_query="React TypeScript frontend intern 2026",
+        reference_title="Frontend Intern",
+    )
+
+    assert reference is None
+
+
+async def _invoke(
+    adapter: WebToolAdapter,
+    tool_call: LlmToolCall,
+) -> AgentToolInvocation:
+    return await adapter.invoke(tool_call, AgentRuntimeContext())
 
 
 @pytest.mark.parametrize(
@@ -88,1496 +1203,551 @@ def _agent_runner(
         "http://10.0.0.1/private",
         "http://169.254.169.254/latest/meta-data",
         "http://100.100.100.200/latest/meta-data",
-        "http://198.18.0.157/fake-ip-must-not-be-addressable-directly",
+        "http://198.18.0.157/fake-ip",
         "http://224.0.0.1/multicast",
         "http://0.0.0.0/unspecified",
         "http://240.0.0.1/reserved",
         "http://[::1]/private",
         "http://metadata.google.internal/computeMetadata/v1",
+        "file:///etc/passwd",
+        "https://user:password@example.com/private",
     ),
 )
-def test_fetch_web_reference_rejects_non_public_targets_before_request(
-    monkeypatch,
-    url: str,
-) -> None:
-    real_client = httpx.Client
+def test_fetch_rejects_non_public_urls_before_network(url: str) -> None:
+    reference = asyncio.run(agent_web._async_fetch_web_reference(url))
 
-    def fail_if_requested(_request: httpx.Request) -> httpx.Response:
-        raise AssertionError("Non-public targets must not reach the HTTP client.")
-
-    transport = httpx.MockTransport(fail_if_requested)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    assert agent_web._fetch_web_reference(url) is None
+    assert reference is None
 
 
-def test_fetch_web_reference_rejects_domain_when_any_dns_address_is_private(
-    monkeypatch,
-) -> None:
-    real_client = httpx.Client
+def test_web_fetch_allows_any_public_url_selected_by_the_model(monkeypatch) -> None:
+    adapter = _web_adapter(prompt="请优化目标岗位简历")
+    url = "https://careers.example/jobs/123"
 
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", port)),
-        ]
-
-    def fail_if_requested(_request: httpx.Request) -> httpx.Response:
-        raise AssertionError("Unsafe DNS targets must not reach the HTTP client.")
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    transport = httpx.MockTransport(fail_if_requested)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/resume") is None
-
-
-def test_fetch_web_reference_accepts_tun_fake_ip_for_external_hostname(
-    monkeypatch,
-) -> None:
-    real_client = httpx.Client
-    body = (
-        b"<html><head><title>External careers</title></head><body>"
-        + (b"Frontend engineering role requirements and responsibilities. " * 8)
-        + b"</body></html>"
-    )
-
-    def fake_getaddrinfo(
-        host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        assert host == "careers.example"
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.157", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            content=body,
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions=_peer_extensions("198.18.0.157"),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    reference = agent_web._fetch_web_reference(
-        "https://careers.example/frontend-engineer",
-    )
-
-    assert reference is not None
-    assert reference.title == "External careers"
-
-
-def test_fetch_web_reference_rejects_unresolved_fake_ip_peer(monkeypatch) -> None:
-    real_client = httpx.Client
-
-    class UnreadableStream(httpx.SyncByteStream):
-        def __iter__(self):
-            raise AssertionError("An unbound fake-IP response body must not be read.")
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            stream=UnreadableStream(),
-            extensions=_peer_extensions("198.18.0.157"),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/rebound") is None
-
-
-def test_fetch_web_reference_revalidates_redirect_targets(monkeypatch) -> None:
-    real_client = httpx.Client
-    requested_urls: list[str] = []
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_to_private(request: httpx.Request) -> httpx.Response:
-        requested_urls.append(str(request.url))
-        if request.url.host == "public.example":
-            return httpx.Response(
-                302,
-                headers={"location": "http://127.0.0.1/private"},
-                extensions=_peer_extensions(),
-            )
-        return httpx.Response(
-            200,
-            text="<html><body>" + ("private metadata " * 20) + "</body></html>",
-            extensions=_peer_extensions(),
+    async def fake_fetch(
+        requested_url: str,
+        relevance_query: str,
+        reference_title: str,
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebReference:
+        assert requested_url == url
+        assert relevance_query == "请优化目标岗位简历"
+        assert reference_title == ""
+        return agent_web.WebReference(
+            title="Official careers page",
+            excerpt="Current public role information.",
+            final_url=requested_url,
         )
 
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    transport = httpx.MockTransport(redirect_to_private)
     monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/start") is None
-    assert requested_urls == ["https://public.example/start"]
-
-
-def test_fetch_web_reference_records_final_public_redirect_url(monkeypatch) -> None:
-    real_client = httpx.Client
-    body = b"<html><body>" + (b"Public resume evidence. " * 10) + b"</body></html>"
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_to_public(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/start":
-            return httpx.Response(
-                302,
-                headers={"location": "/final"},
-                extensions=_peer_extensions(),
-            )
-        return httpx.Response(
-            200,
-            content=body,
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions=_peer_extensions(),
-        )
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    transport = httpx.MockTransport(redirect_to_public)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    reference = agent_web._fetch_web_reference("https://public.example/start")
-
-    assert reference is not None
-    assert reference.final_url == "https://public.example/final"
-    assert reference.status_code == 200
-    assert reference.content_sha256 == sha256(body).hexdigest()
-
-
-def test_web_reference_selects_relevant_jd_content_near_page_end() -> None:
-    early_filler = "Generic company introduction without role details. " * 30
-    html = f"""
-        <html>
-          <head><title>Staff Platform Engineer</title></head>
-          <body>
-            <nav>Home Careers About Contact</nav>
-            <main>
-              <article>
-                <p>{early_filler}</p>
-                <h2>Qualifications</h2>
-                <p>
-                  Build Kubernetes platform services and improve observability
-                  for production Go workloads.
-                </p>
-              </article>
-            </main>
-          </body>
-        </html>
-    """.encode()
-
-    reference = agent_web._web_reference_from_response(
-        "https://jobs.example/roles/platform",
-        html,
-        "text/html; charset=utf-8",
-        "utf-8",
-        status_code=200,
-        fetched_at="2026-07-28T00:00:00Z",
-        content_sha256=sha256(html).hexdigest(),
-        relevance_query="platform engineer Kubernetes observability Go",
-        reference_title="Staff Platform Engineer",
-    )
-
-    assert reference is not None
-    assert "Kubernetes platform services" in reference.excerpt
-    assert "Generic company introduction" not in reference.excerpt
-    assert reference.final_url == "https://jobs.example/roles/platform"
-    assert reference.excerpt_section == "Qualifications"
-    assert reference.excerpt_start > 0
-    assert reference.excerpt_end > reference.excerpt_start
-
-
-def test_web_fetch_rejects_model_invented_url_before_network(monkeypatch) -> None:
-    runner = _agent_runner(prompt="请优化目标岗位简历")
-
-    def fail_if_network_boundary_is_reached() -> object:
-        raise AssertionError("An untrusted model URL reached the network boundary.")
-
-    monkeypatch.setattr(
-        "app.services.agent.tools.runner.get_agent_api",
-        fail_if_network_boundary_is_reached,
+        agent_web,
+        "_async_fetch_web_reference",
+        fake_fetch,
     )
 
     tool = asyncio.run(
-        runner.run_web_fetch_async(
+        _invoke(
+            adapter,
             _web_tool_call(
                 "web_fetch",
-                {
-                    "url": "https://invented.example/jobs/123",
-                    "purpose": "jd",
-                },
+                {"url": url},
             ),
-            AgentRuntimeContext(),
         ),
     )
 
-    assert tool.state == "output-error"
-    assert tool.output == {"blocked": True, "reason": "url_not_authorized"}
+    assert tool.state == "output-available"
 
 
-@pytest.mark.parametrize("source_field", ("prompt", "target_context"))
-def test_web_fetch_allows_url_from_user_context(
+def test_web_fetch_reuses_a_verified_source_from_conversation_history(
     monkeypatch,
-    source_field: str,
 ) -> None:
-    url = "https://portfolio.example/projects/search"
-    runner = _agent_runner(
-        prompt=f"请查看 {url}" if source_field == "prompt" else "请查看项目材料",
-        target_description=url if source_field == "target_context" else "",
+    source_url = "https://careers.example/jobs/frontend-intern"
+    adapter = _web_adapter(
+        prompt="继续按刚才找到的岗位修改。",
+        messages=[
+            {
+                "id": "assistant-with-source",
+                "role": "assistant",
+                "text": "已找到岗位页面。",
+                "response": {
+                    "sources": [
+                        {
+                            "id": "source-job",
+                            "title": "Frontend Intern",
+                            "sourceType": "web",
+                            "url": source_url,
+                        },
+                    ],
+                },
+            },
+        ],
     )
 
-    def fake_fetch(requested_url: str) -> agent_web.WebReference:
+    async def fake_fetch(
+        requested_url: str,
+        relevance_query: str,
+        reference_title: str,
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebReference:
+        assert requested_url == source_url
+        assert "刚才找到的岗位" in relevance_query
+        assert reference_title == "Frontend Intern"
+        return agent_web.WebReference(
+            title=reference_title,
+            excerpt="Build React interfaces with TypeScript.",
+            final_url=requested_url,
+        )
+
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+    tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_fetch", {"url": source_url}),
+        ),
+    )
+
+    assert tool.state == "output-available"
+
+
+def test_web_search_sanitizes_query_and_reuses_result_context_for_fetch(
+    monkeypatch,
+) -> None:
+    adapter = _web_adapter(
+        prompt="请搜索前端实习岗位，邮箱 xiaoming@example.com",
+        resume={"basic": {"name": "王小明"}, "sections": []},
+        hidden_terms=("王小明",),
+    )
+    result_url = "https://careers.example/jobs/frontend-intern"
+    safe_query = "[redacted_name] [redacted_email] 前端实习 JD"
+    seen_queries: list[tuple[str, str | None, tuple[str, ...]]] = []
+
+    async def fake_search(
+        query: str,
+        time_range: str | None,
+        include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        seen_queries.append((query, time_range, include_domains))
+        return agent_web.WebSearchResponse(
+            results=(
+                agent_web.WebSearchResult(
+                    url=result_url,
+                    title="Frontend Intern",
+                    excerpt="React and TypeScript internship responsibilities.",
+                    published_date="2026-08-02",
+                    source_kind="fetched_page",
+                    passages=(
+                        agent_web.WebPassage(
+                            section="Responsibilities",
+                            text=("React and TypeScript internship responsibilities."),
+                        ),
+                    ),
+                ),
+                agent_web.WebSearchResult(
+                    url="https://careers.example/jobs/undated",
+                    title="Undated Frontend Role",
+                    excerpt="No publication date was supplied by the provider.",
+                ),
+            ),
+        )
+
+    async def fake_fetch(*_args: object) -> agent_web.WebReference:
+        raise AssertionError("web_fetch must reuse the page already read by search")
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+    search_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call(
+                "web_search",
+                {
+                    "query": "王小明 xiaoming@example.com 前端实习 JD",
+                    "timeRange": "month",
+                    "includeDomains": ["careers.example"],
+                },
+            ),
+        ),
+    )
+    fetch_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_fetch", {"url": result_url}),
+        ),
+    )
+
+    assert seen_queries == [(safe_query, "month", ("careers.example",))]
+    assert search_tool.input == {
+        "query": safe_query,
+        "timeRange": "month",
+        "includeDomains": ["careers.example"],
+    }
+    assert search_tool.state == "output-available"
+    assert search_tool.output
+    search_result = search_tool.output["references"][0]
+    assert search_result["url"] == result_url
+    assert search_result["sourceId"].startswith("source-web-")
+    assert search_result["publishedDate"] == "2026-08-02"
+    assert "publishedDate" not in search_tool.output["candidates"][0]
+    assert "sourceId" not in search_tool.output["candidates"][0]
+    search_sources = adapter.sources((search_tool,))
+    assert [source.url for source in search_sources] == [result_url]
+    assert fetch_tool.state == "output-available"
+    assert fetch_tool.output["references"][0]["passages"] == [
+        {
+            "section": "Responsibilities",
+            "text": "React and TypeScript internship responsibilities.",
+        },
+    ]
+
+
+def test_web_search_observation_caps_references_and_distributes_passage_budget(
+    monkeypatch,
+) -> None:
+    adapter = _web_adapter(prompt="搜索前端岗位要求")
+    urls = [f"https://careers.example/jobs/{index}" for index in range(6)]
+
+    async def fake_search(
+        _query: str,
+        _time_range: str | None,
+        _include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        return agent_web.WebSearchResponse(
+            results=tuple(
+                agent_web.WebSearchResult(
+                    url=url,
+                    title=f"Frontend Role {index}",
+                    excerpt=f"Frontend role {index} responsibilities and requirements.",
+                    source_kind="fetched_page",
+                    passages=(
+                        tuple(
+                            agent_web.WebPassage(
+                                section=(
+                                    "S" * 5_000
+                                    if index == 0 and passage_index == 0
+                                    else f"Section {passage_index}"
+                                ),
+                                text=f"Reference {index} passage {passage_index}.",
+                            )
+                            for passage_index in range(4)
+                        )
+                        if index != 4
+                        else ()
+                    ),
+                )
+                for index, url in enumerate(urls)
+            ),
+        )
+
+    async def fail_if_fetched(*_args: object) -> agent_web.WebReference:
+        raise AssertionError("web_fetch must reuse the full search reference cache")
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fail_if_fetched)
+
+    search_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_search", {"query": "frontend requirements"}),
+        ),
+    )
+    fetch_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_fetch", {"url": urls[0]}),
+        ),
+    )
+
+    assert search_tool.output
+    references = search_tool.output["references"]
+    passage_counts = [len(reference["passages"]) for reference in references]
+    assert [reference["url"] for reference in references] == urls[:5]
+    assert all(count >= 1 for count in passage_counts)
+    assert sum(passage_counts) <= 8
+    assert all(
+        len(passage["section"]) <= 160
+        for reference in references
+        for passage in reference["passages"]
+    )
+    assert fetch_tool.output
+    assert len(fetch_tool.output["references"][0]["passages"]) == 4
+
+
+def test_web_search_keeps_hidden_terms_explicitly_entered_in_current_prompt(
+    monkeypatch,
+) -> None:
+    adapter = _web_adapter(
+        prompt="请搜索上海的前端实习岗位。",
+        hidden_terms=("王小明", "上海"),
+    )
+    seen_queries: list[str] = []
+
+    async def fake_search(
+        query: str,
+        _time_range: str | None,
+        _include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        seen_queries.append(query)
+        return agent_web.WebSearchResponse()
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+
+    tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call(
+                "web_search",
+                {"query": "上海 王小明 前端实习"},
+            ),
+        ),
+    )
+
+    assert tool.state == "output-available"
+    assert seen_queries == ["上海 [redacted_name] 前端实习"]
+
+
+def test_web_search_drops_results_whose_url_would_leak_hidden_terms(
+    monkeypatch,
+) -> None:
+    adapter = _web_adapter(
+        prompt="搜索目标岗位",
+        resume={"basic": {"name": "王小明"}, "sections": []},
+        hidden_terms=("王小明",),
+    )
+
+    async def fake_search(
+        _query: str,
+        _time_range: str | None,
+        _include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        return agent_web.WebSearchResponse(
+            results=(
+                agent_web.WebSearchResult(
+                    url="https://example.com/people/王小明",
+                    title="Potential match",
+                    excerpt="Public profile",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+
+    tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_search", {"query": "王小明 前端"}),
+        ),
+    )
+
+    assert tool.state == "output-available"
+    assert tool.output == {"references": [], "candidates": []}
+
+
+def test_web_search_drops_sensitive_include_domains_before_provider(
+    monkeypatch,
+) -> None:
+    adapter = _web_adapter(
+        prompt="搜索目标岗位",
+        hidden_terms=("王小明",),
+    )
+    seen_domains: list[tuple[str, ...]] = []
+
+    async def fake_search(
+        _query: str,
+        _time_range: str | None,
+        include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        seen_domains.append(include_domains)
+        return agent_web.WebSearchResponse()
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+
+    tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call(
+                "web_search",
+                {
+                    "query": "前端实习",
+                    "includeDomains": [
+                        "王小明.example",
+                        "https://invalid.example/jobs",
+                        "careers.example",
+                    ],
+                },
+            ),
+        ),
+    )
+
+    assert seen_domains == [("careers.example",)]
+    assert tool.input == {
+        "query": "前端实习",
+        "includeDomains": ["careers.example"],
+    }
+
+
+def test_failed_web_search_does_not_block_a_known_public_url(monkeypatch) -> None:
+    adapter = _web_adapter(prompt="搜索目标岗位")
+    result_url = "https://careers.example/jobs/frontend-intern"
+
+    async def fake_search(
+        _query: str,
+        _time_range: str | None,
+        _include_domains: tuple[str, ...],
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebSearchResponse:
+        return agent_web.WebSearchResponse(
+            error_reason="rate_limited",
+        )
+
+    async def fake_fetch(
+        requested_url: str,
+        relevance_query: str,
+        reference_title: str,
+        _browser: agent_web.WebBrowser,
+    ) -> agent_web.WebReference:
+        assert requested_url == result_url
+        assert relevance_query == "搜索目标岗位"
+        assert reference_title == ""
+        return agent_web.WebReference(
+            title="Frontend Intern",
+            excerpt="Current public frontend internship requirements.",
+            final_url=result_url,
+        )
+
+    monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        fake_fetch,
+    )
+
+    search_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_search", {"query": "前端实习 JD"}),
+        ),
+    )
+    fetch_tool = asyncio.run(
+        _invoke(
+            adapter,
+            _web_tool_call("web_fetch", {"url": result_url}),
+        ),
+    )
+
+    assert search_tool.state == "output-error"
+    assert search_tool.output == {"reason": "rate_limited"}
+    assert fetch_tool.state == "output-available"
+
+
+def test_web_fetch_allows_url_from_current_user_prompt(monkeypatch) -> None:
+    url = "https://portfolio.example/people/王小明"
+    adapter = _web_adapter(
+        prompt=f"请查看 {url}。",
+        hidden_terms=("王小明",),
+    )
+
+    async def fake_fetch(
+        requested_url: str,
+        *_context: str,
+    ) -> agent_web.WebReference:
         assert requested_url == url
         return agent_web.WebReference(
             title="Search project",
             excerpt="Implemented a public search project with measurable outcomes.",
             final_url=url,
-            excerpt_end=62,
+            passages=(
+                agent_web.WebPassage(
+                    section="Search project",
+                    text=(
+                        "Implemented a public search project with measurable outcomes."
+                    ),
+                ),
+            ),
         )
 
-    monkeypatch.setattr(
-        "app.services.agent._fetch_web_reference",
-        fake_fetch,
-    )
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
 
     tool = asyncio.run(
-        runner.run_web_fetch_async(
-            _web_tool_call(
-                "web_fetch",
-                {"url": url, "purpose": "project_reference"},
-            ),
-            AgentRuntimeContext(),
+        _invoke(
+            adapter,
+            _web_tool_call("web_fetch", {"url": url}),
         ),
     )
 
     assert tool.state == "output-available"
-    assert tool.output and tool.output["url"] == url
+    assert tool.output
+    result = tool.output["references"][0]
+    assert result["url"] == url
+    assert re.fullmatch(r"source-web-[0-9a-f]{16}", result["sourceId"])
 
 
-def test_web_fetch_allows_url_returned_by_current_web_search(monkeypatch) -> None:
-    url = "https://company.example/careers/platform"
-    runner = _agent_runner(prompt="请搜索并分析目标公司")
-    search_result = agent_web.WebSearchResult(
-        title="Platform careers",
-        url=url,
-        excerpt="Public company platform engineering information.",
-    )
+def test_web_fetch_uses_a_provider_public_final_url(monkeypatch) -> None:
+    original_url = "https://careers.example/jobs/latest"
+    final_url = "https://jobs.example-ats.com/frontend-intern"
+    adapter = _web_adapter(prompt=f"请查看 {original_url}。")
 
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference",
-        lambda _query: (search_result, 1, None),
-    )
-    search_tool = asyncio.run(
-        runner.run_web_search_async(
-            _web_tool_call(
-                "web_search",
-                {
-                    "query": "company platform engineering",
-                    "purpose": "company_reference",
-                },
+    async def fake_fetch(
+        requested_url: str,
+        *_context: str,
+    ) -> agent_web.WebReference:
+        assert requested_url == original_url
+        return agent_web.WebReference(
+            title="Frontend Intern",
+            excerpt="Frontend internship responsibilities and requirements.",
+            final_url=final_url,
+            passages=(
+                agent_web.WebPassage(
+                    section="Frontend Intern",
+                    text="Frontend internship responsibilities and requirements.",
+                ),
             ),
-            AgentRuntimeContext(),
-        ),
-    )
-    assert search_tool.state == "output-available"
+        )
 
-    monkeypatch.setattr(
-        "app.services.agent._fetch_web_reference",
-        lambda requested_url: agent_web.WebReference(
-            title="Platform careers",
-            excerpt="Detailed public company platform engineering information.",
-            final_url=requested_url,
-            excerpt_end=56,
-        ),
-    )
-    fetch_tool = asyncio.run(
-        runner.run_web_fetch_async(
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+
+    tool = asyncio.run(
+        _invoke(
+            adapter,
             _web_tool_call(
                 "web_fetch",
-                {"url": url, "purpose": "company_reference"},
+                {"url": original_url},
+                call_id="fetch-original",
             ),
-            AgentRuntimeContext(),
         ),
     )
-
-    assert fetch_tool.state == "output-available"
-    assert fetch_tool.output and fetch_tool.output["url"] == url
-
-
-def test_fetch_web_reference_limits_redirect_count(monkeypatch) -> None:
-    real_client = httpx.Client
-    requested_urls: list[str] = []
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_forever(request: httpx.Request) -> httpx.Response:
-        requested_urls.append(str(request.url))
-        hop = int(request.url.path.rsplit("/", 1)[-1])
-        return httpx.Response(
-            302,
-            headers={"location": f"/hop/{hop + 1}"},
-            extensions=_peer_extensions(),
-        )
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    transport = httpx.MockTransport(redirect_forever)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/hop/0") is None
-    assert len(requested_urls) == agent_web.MAX_WEB_REDIRECTS + 1
+    assert tool.state == "output-available"
+    assert tool.output
+    assert tool.output["references"][0]["url"] == final_url
 
 
-def test_fetch_web_reference_allows_public_target_and_records_metadata(
+def test_web_fetch_does_not_send_a_sensitive_model_url_to_provider(
     monkeypatch,
 ) -> None:
-    real_client = httpx.Client
-    body = (
-        b"<html><head><title>Public resume guide</title></head><body>"
-        + (b"Evidence-based resume guidance for applicants. " * 8)
-        + b"</body></html>"
+    adapter = _web_adapter(
+        prompt="查看目标页面",
+        hidden_terms=("王小明",),
     )
 
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
+    async def fail_if_called(*_args: object) -> object:
+        raise AssertionError("A sensitive URL reached the provider.")
 
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            content=body,
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions=_peer_extensions(),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fail_if_called)
 
-    reference = agent_web._fetch_web_reference(
-        "https://public.example/resume-guide",
-    )
-
-    assert reference is not None
-    assert reference.final_url == "https://public.example/resume-guide"
-    assert reference.status_code == 200
-    assert reference.content_sha256 == sha256(body).hexdigest()
-    assert datetime.fromisoformat(reference.fetched_at.replace("Z", "+00:00"))
-
-
-def test_web_reference_rejects_binary_pdf_content() -> None:
-    raw = b"%PDF-1.7\n" + (b"apparently readable resume evidence " * 10)
-
-    reference = agent_web._web_reference_from_response(
-        "https://public.example/resume.pdf",
-        raw,
-        "application/pdf",
-        "utf-8",
-        status_code=200,
-        fetched_at="2026-07-27T08:00:00Z",
-        content_sha256=sha256(raw).hexdigest(),
-    )
-
-    assert reference is None
-
-
-def test_fetch_web_reference_rejects_private_connected_peer_before_body_read(
-    monkeypatch,
-) -> None:
-    real_client = httpx.Client
-
-    class UnreadableStream(httpx.SyncByteStream):
-        def __iter__(self):
-            raise AssertionError("A private peer response body must not be read.")
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            stream=UnreadableStream(),
-            extensions=_peer_extensions("10.0.0.8"),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/rebound") is None
-
-
-def test_fetch_web_reference_rejects_missing_connected_peer_before_body_read(
-    monkeypatch,
-) -> None:
-    real_client = httpx.Client
-
-    class UnreadableStream(httpx.SyncByteStream):
-        def __iter__(self):
-            raise AssertionError("An unverifiable peer response body must not be read.")
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(200, stream=UnreadableStream()),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    assert agent_web._fetch_web_reference("https://public.example/no-peer") is None
-
-
-def test_fetch_web_reference_stops_reading_at_response_limit(monkeypatch) -> None:
-    real_client = httpx.Client
-    prefix = (
-        b"<html><head><title>Bounded page</title></head><body>"
-        + (b"Public resume evidence. " * 8)
-        + b"</body></html>"
-    )
-    second_chunk = b"x" * agent_web.FETCH_MAX_BYTES
-
-    class GuardedStream(httpx.SyncByteStream):
-        def __init__(self) -> None:
-            self.chunks_read = 0
-
-        def __iter__(self):
-            self.chunks_read += 1
-            yield prefix
-            self.chunks_read += 1
-            yield second_chunk
-            raise AssertionError("The response body limit was not enforced.")
-
-    stream = GuardedStream()
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            stream=stream,
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions=_peer_extensions(),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    reference = agent_web._fetch_web_reference("https://public.example/large")
-
-    expected_body = (prefix + second_chunk)[: agent_web.FETCH_MAX_BYTES]
-    assert reference is not None
-    assert stream.chunks_read == 2
-    assert reference.content_sha256 == sha256(expected_body).hexdigest()
-
-
-def test_search_web_results_revalidates_redirect_targets(monkeypatch) -> None:
-    real_client = httpx.Client
-    requested_urls: list[str] = []
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_to_private(request: httpx.Request) -> httpx.Response:
-        requested_urls.append(str(request.url))
-        if request.url.host == "search.example":
-            return httpx.Response(
-                302,
-                headers={"location": "http://127.0.0.1/private-search"},
-                extensions=_peer_extensions(),
-            )
-        return httpx.Response(
-            200,
-            text=(
-                '<a class="result__a" href="https://public.example/result">'
-                "Public result</a>"
-            ),
-            extensions=_peer_extensions(),
-        )
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web,
-        "SEARCH_PROVIDERS",
-        (("https://search.example/?q={query}", "html"),),
-    )
-    transport = httpx.MockTransport(redirect_to_private)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "Client",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    results, error = agent_web._search_web_results("resume")
-
-    assert results == []
-    assert error
-    assert requested_urls == ["https://search.example/?q=resume"]
-
-
-def test_parse_search_results_canonicalizes_urls_before_deduplication() -> None:
-    raw = b"""
-        <a class="result__a"
-           href="https://Careers.Example:443/jobs/frontend?utm_source=search&amp;team=web#apply">
-          Frontend Engineer
-        </a>
-        <a class="result__a"
-           href="https://careers.example/jobs/frontend?team=web&amp;utm_medium=email">
-          Duplicate Frontend Engineer
-        </a>
-    """
-
-    results, error = agent_web._parse_search_results(raw, "utf-8")
-
-    assert error is None
-    assert [result.url for result in results] == [
-        "https://careers.example/jobs/frontend?team=web",
-    ]
-
-
-def test_parse_rss_search_results_extracts_canonical_links_and_text() -> None:
-    raw = b"""<?xml version="1.0" encoding="utf-8"?>
-        <rss version="2.0"><channel>
-          <item>
-            <title>Frontend Engineer</title>
-            <link>https://Careers.Example:443/jobs/frontend?utm_source=bing&amp;team=web#apply</link>
-            <description>
-              &lt;b&gt;React&lt;/b&gt; and TypeScript role requirements.
-            </description>
-          </item>
-          <item>
-            <title>Duplicate</title>
-            <link>https://careers.example/jobs/frontend?team=web</link>
-            <description>Duplicate result.</description>
-          </item>
-        </channel></rss>
-    """
-
-    results, error = agent_web._parse_rss_search_results(raw, "utf-8")
-
-    assert error is None
-    assert len(results) == 1
-    assert results[0].url == "https://careers.example/jobs/frontend?team=web"
-    assert results[0].excerpt == "React and TypeScript role requirements."
-
-
-def test_repeated_search_survives_one_provider_becoming_unavailable(
-    monkeypatch,
-) -> None:
-    duckduckgo_successes_remaining = 1
-
-    async def fake_get_bounded_response(
-        _client: httpx.AsyncClient,
-        url: str,
-        _byte_limit: int,
-    ) -> agent_web._BoundedWebResponse | None:
-        nonlocal duckduckgo_successes_remaining
-        hostname = urlparse(url).hostname or ""
-        if hostname.endswith("duckduckgo.com"):
-            if duckduckgo_successes_remaining == 0:
-                return None
-            duckduckgo_successes_remaining -= 1
-            raw = b"""
-                <a class="result__a" href="https://careers.alpha.example/jobs/frontend">
-                  Alpha Frontend Engineer
-                </a>
-                <div class="result__snippet">
-                  Alpha frontend responsibilities and current role requirements.
-                </div>
-            """
-            content_type = "text/html; charset=utf-8"
-        elif hostname == "www.bing.com":
-            raw = b"""<?xml version="1.0" encoding="utf-8"?>
-                <rss version="2.0"><channel><item>
-                  <title>Beta Frontend Engineer</title>
-                  <link>https://jobs.beta.example/openings/frontend</link>
-                  <description>
-                    Beta frontend responsibilities and current role requirements.
-                  </description>
-                </item></channel></rss>
-            """
-            content_type = "application/rss+xml; charset=utf-8"
-        else:
-            raise AssertionError(f"Unexpected search provider URL: {url}")
-
-        return agent_web._BoundedWebResponse(
-            raw=raw,
-            content_type=content_type,
-            charset="utf-8",
-            final_url=url,
-            status_code=200,
-            fetched_at="2026-08-10T00:00:00Z",
-            content_sha256=sha256(raw).hexdigest(),
-        )
-
-    monkeypatch.setattr(
-        agent_web,
-        "_async_get_bounded_web_response",
-        fake_get_bounded_response,
-    )
-
-    async def run() -> list[tuple[list[agent_web.WebSearchResult], str | None]]:
-        return [
-            await agent_web._async_search_web_results("frontend engineer role")
-            for _ in range(5)
-        ]
-
-    attempts = asyncio.run(run())
-
-    assert [len(results) for results, _error in attempts] == [1, 1, 1, 1, 1]
-    assert [error for _results, error in attempts] == [None] * 5
-
-
-def test_async_fetch_web_reference_revalidates_redirect_targets(monkeypatch) -> None:
-    real_client = httpx.AsyncClient
-    requested_urls: list[str] = []
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_to_private(request: httpx.Request) -> httpx.Response:
-        requested_urls.append(str(request.url))
-        return httpx.Response(
-            302,
-            headers={"location": "http://127.0.0.1/private"},
-            extensions=_peer_extensions(),
-        )
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    transport = httpx.MockTransport(redirect_to_private)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    reference = asyncio.run(
-        agent_web._async_fetch_web_reference("https://public.example/start"),
-    )
-
-    assert reference is None
-    assert requested_urls == ["https://public.example/start"]
-
-
-def test_async_fetch_web_reference_accepts_public_connected_peer(
-    monkeypatch,
-) -> None:
-    real_client = httpx.AsyncClient
-    body = (
-        b"<html><head><title>Public peer</title></head><body>"
-        + (b"Public resume evidence. " * 8)
-        + b"</body></html>"
-    )
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            content=body,
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions=_peer_extensions(),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "AsyncClient",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    reference = asyncio.run(
-        agent_web._async_fetch_web_reference(
-            "https://public.example/public-peer",
-        ),
-    )
-
-    assert reference is not None
-    assert reference.content_sha256 == sha256(body).hexdigest()
-
-
-def test_async_fetch_web_reference_rejects_private_connected_peer_before_body_read(
-    monkeypatch,
-) -> None:
-    real_client = httpx.AsyncClient
-
-    class UnreadableStream(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            raise AssertionError("A private peer response body must not be read.")
-            yield b""  # pragma: no cover
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            200,
-            stream=UnreadableStream(),
-            extensions=_peer_extensions("10.0.0.8"),
-        ),
-    )
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "AsyncClient",
-        lambda **_kwargs: real_client(transport=transport),
-    )
-
-    reference = asyncio.run(
-        agent_web._async_fetch_web_reference(
-            "https://public.example/rebound",
-        ),
-    )
-
-    assert reference is None
-
-
-def test_async_search_web_results_revalidates_redirect_targets(monkeypatch) -> None:
-    real_client = httpx.AsyncClient
-    requested_urls: list[str] = []
-
-    def fake_getaddrinfo(
-        _host: str,
-        port: int,
-        *_args,
-        **_kwargs,
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-        ]
-
-    def redirect_to_private(request: httpx.Request) -> httpx.Response:
-        requested_urls.append(str(request.url))
-        return httpx.Response(
-            302,
-            headers={"location": "http://127.0.0.1/private-search"},
-            extensions=_peer_extensions(),
-        )
-
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(
-        agent_web,
-        "SEARCH_PROVIDERS",
-        (("https://search.example/?q={query}", "html"),),
-    )
-    transport = httpx.MockTransport(redirect_to_private)
-    monkeypatch.setattr(
-        agent_web.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_client(
-            transport=transport,
-            follow_redirects=kwargs.get("follow_redirects", False),
-        ),
-    )
-
-    results, error = asyncio.run(agent_web._async_search_web_results("resume"))
-
-    assert results == []
-    assert error
-    assert requested_urls == ["https://search.example/?q=resume"]
-
-
-def test_search_web_reference_preserves_fetched_evidence_metadata(
-    monkeypatch,
-) -> None:
-    search_result = agent_web.WebSearchResult(
-        title="Search title",
-        url="https://public.example/redirect",
-        excerpt="Search snippet",
-    )
-    fetched_at = "2026-07-26T08:00:00Z"
-    content_sha256 = "a" * 64
-
-    monkeypatch.setattr(
-        agent_web,
-        "_search_web_results",
-        lambda _query: ([search_result], None),
-    )
-    monkeypatch.setattr(
-        agent_web,
-        "_fetch_web_reference",
-        lambda _url, **_kwargs: agent_web.WebReference(
-            title="Fetched title",
-            excerpt="Fetched evidence " * 10,
-            final_url="https://public.example/final",
-            status_code=200,
-            fetched_at=fetched_at,
-            content_sha256=content_sha256,
-        ),
-    )
-
-    result, result_count, error = agent_web._search_web_reference("resume")
-
-    assert error is None
-    assert result_count == 1
-    assert result is not None
-    assert result.url == "https://public.example/final"
-    assert result.final_url == "https://public.example/final"
-    assert result.status_code == 200
-    assert result.fetched_at == fetched_at
-    assert result.content_sha256 == content_sha256
-    assert result.source_kind == "fetched_page"
-
-
-def test_search_web_reference_marks_search_snippet_fallback(monkeypatch) -> None:
-    search_result = agent_web.WebSearchResult(
-        title="Search title",
-        url="https://public.example/result",
-        excerpt="Useful search result evidence for the target role. " * 4,
-    )
-    monkeypatch.setattr(
-        agent_web,
-        "_search_web_results",
-        lambda _query: ([search_result], None),
-    )
-    monkeypatch.setattr(
-        agent_web,
-        "_fetch_web_reference",
-        lambda _url, **_kwargs: None,
-    )
-
-    result, result_count, error = agent_web._search_web_reference("resume")
-
-    assert error is None
-    assert result_count == 1
-    assert result is not None
-    assert result.source_kind == "search_snippet"
-    assert result.final_url == ""
-    assert result.status_code is None
-
-
-def test_async_search_summary_bounds_query_concurrency(monkeypatch) -> None:
-    async def run() -> None:
-        release = asyncio.Event()
-        concurrency_reached = asyncio.Event()
-        active = 0
-        maximum_active = 0
-        started = 0
-
-        async def fake_search(query: str):
-            nonlocal active, maximum_active, started
-            active += 1
-            started += 1
-            maximum_active = max(maximum_active, active)
-            if active == 2:
-                concurrency_reached.set()
-            try:
-                await release.wait()
-            finally:
-                active -= 1
-            return (
-                [
-                    agent_web.WebSearchResult(
-                        title=query,
-                        url=f"https://example.com/{query}",
-                        excerpt="Useful search evidence " * 5,
-                    ),
-                ],
-                None,
-            )
-
-        async def fake_fetch(url: str, **_kwargs):
-            return agent_web.WebReference(
-                title=url,
-                excerpt="Fetched reference evidence " * 5,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "WEB_SEARCH_MAX_CONCURRENCY", 2)
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        task = asyncio.create_task(
-            agent_web._async_search_web_reference_summary(
-                ["first", "second", "third"],
-            ),
-        )
-        await asyncio.wait_for(concurrency_reached.wait(), timeout=0.2)
-
-        assert started == 2
-        assert maximum_active == 2
-
-        release.set()
-        summary = await asyncio.wait_for(task, timeout=0.2)
-
-        assert [result.title for result in summary.results] == [
-            "https://example.com/first",
-            "https://example.com/second",
-            "https://example.com/third",
-        ]
-
-    asyncio.run(run())
-
-
-def test_async_search_summary_bounds_page_fetches_and_preserves_order(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        release = asyncio.Event()
-        concurrency_reached = asyncio.Event()
-        active = 0
-        maximum_active = 0
-        started = 0
-
-        search_results = [
-            agent_web.WebSearchResult(
-                title=f"result-{index}",
-                url=f"https://example.com/{index}",
-                excerpt="Useful search evidence " * 5,
-            )
-            for index in range(4)
-        ]
-
-        async def fake_search(_query: str):
-            return search_results, None
-
-        async def fake_fetch(url: str, **_kwargs):
-            nonlocal active, maximum_active, started
-            active += 1
-            started += 1
-            maximum_active = max(maximum_active, active)
-            if active == 2:
-                concurrency_reached.set()
-            try:
-                await release.wait()
-            finally:
-                active -= 1
-            return agent_web.WebReference(
-                title=url,
-                excerpt="Fetched reference evidence " * 5,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "WEB_SEARCH_MAX_CONCURRENCY", 2)
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        task = asyncio.create_task(
-            agent_web._async_search_web_reference_summary(["resume"]),
-        )
-        await asyncio.wait_for(concurrency_reached.wait(), timeout=0.2)
-
-        assert started == 2
-        assert maximum_active == 2
-
-        release.set()
-        summary = await asyncio.wait_for(task, timeout=0.2)
-
-        assert [result.url for result in summary.results] == [
-            f"https://example.com/{index}" for index in range(4)
-        ]
-
-    asyncio.run(run())
-
-
-def test_async_search_summary_uses_one_round_robin_fetch_budget(monkeypatch) -> None:
-    async def run() -> None:
-        query_results = {
-            "first": [
-                ("shared", "https://example.com/shared"),
-                ("first-2", "https://example.com/first-2"),
-                ("first-3", "https://example.com/first-3"),
-            ],
-            "second": [
-                ("shared duplicate", "https://example.com/shared"),
-                ("second-2", "https://example.com/second-2"),
-                ("second-3", "https://example.com/second-3"),
-            ],
-            "third": [
-                ("third-1", "https://example.com/third-1"),
-                ("third-2", "https://example.com/third-2"),
-                ("third-3", "https://example.com/third-3"),
-            ],
-        }
-        fetched_urls: list[str] = []
-
-        async def fake_search(query: str):
-            return (
-                [
-                    agent_web.WebSearchResult(
-                        title=title,
-                        url=url,
-                        excerpt="Useful search evidence " * 5,
-                    )
-                    for title, url in query_results[query]
-                ],
-                None,
-            )
-
-        async def fake_fetch(url: str, **_kwargs):
-            fetched_urls.append(url)
-            return agent_web.WebReference(
-                title=url,
-                excerpt="Fetched reference evidence " * 5,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        summary = await agent_web._async_search_web_reference_summary(
-            ["first", "second", "third"],
-            max_results=4,
-        )
-
-        expected_urls = [
-            "https://example.com/shared",
-            "https://example.com/third-1",
-            "https://example.com/second-2",
-            "https://example.com/first-2",
-        ]
-        assert fetched_urls == expected_urls
-        assert [result.url for result in summary.results] == expected_urls
-
-    asyncio.run(run())
-
-
-def test_async_search_summary_balances_queries_domains_and_source_quality(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        current_year = datetime.now(UTC).year
-        query_results = {
-            "role": [
-                agent_web.WebSearchResult(
-                    title=f"Frontend job roundup {current_year - 2}",
-                    url="https://board.example/frontend?utm_source=search",
-                    excerpt="Third-party frontend job roundup and role summary. " * 3,
-                ),
-                agent_web.WebSearchResult(
-                    title=f"Acme Frontend Engineer {current_year}",
-                    url="https://careers.acme.example/jobs/frontend?team=web",
-                    excerpt="Official Acme frontend engineering responsibilities. " * 3,
-                ),
-            ],
-            "skills": [
-                agent_web.WebSearchResult(
-                    title=f"Beta Frontend Engineer {current_year}",
-                    url="https://jobs.beta.example/openings/frontend",
-                    excerpt="Official Beta frontend engineering requirements. " * 3,
-                ),
-                agent_web.WebSearchResult(
-                    title="Acme duplicate",
-                    url=(
-                        "https://careers.acme.example/jobs/frontend"
-                        "?utm_medium=email&team=web#apply"
-                    ),
-                    excerpt="Duplicate official Acme role result. " * 3,
-                ),
-            ],
-            "practice": [
-                agent_web.WebSearchResult(
-                    title=f"Frontend engineering practices {current_year - 1}",
-                    url="https://engineering.example/frontend-guide",
-                    excerpt=(
-                        "Current frontend engineering practices and expectations. " * 3
-                    ),
-                ),
-            ],
-        }
-
-        async def fake_search(query: str):
-            return query_results[query], None
-
-        async def fake_fetch(url: str, **_kwargs):
-            return agent_web.WebReference(
-                title=url,
-                excerpt="Fetched role evidence and engineering requirements. " * 4,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        summary = await agent_web._async_search_web_reference_summary(
-            ["role", "skills", "practice"],
-            max_results=4,
-        )
-
-        assert [result.url for result in summary.results] == [
-            "https://jobs.beta.example/openings/frontend",
-            "https://careers.acme.example/jobs/frontend?team=web",
-            "https://engineering.example/frontend-guide",
-            "https://board.example/frontend",
-        ]
-        assert len({urlparse(result.url).hostname for result in summary.results}) == 4
-
-    asyncio.run(run())
-
-
-def test_runner_web_search_can_use_more_than_half_of_integration_budget(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        slow_query = "slow-link-search"
-
-        async def fake_search(query: str):
-            if query == slow_query:
-                await asyncio.sleep(6.1)
-            return (
-                [
-                    agent_web.WebSearchResult(
-                        title=query,
-                        url=f"https://example.com/{query}",
-                        excerpt="Useful search evidence " * 5,
-                    ),
-                ],
-                None,
-            )
-
-        async def fake_fetch(url: str, **_kwargs):
-            return agent_web.WebReference(
-                title=url,
-                excerpt="Fetched reference evidence " * 5,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        queries = ["first", "second", "third", "fourth", slow_query]
-        runner = _agent_runner(prompt="请搜索目标公司的公开职位信息")
-        tool, _ = await runner.run(
+    tool = asyncio.run(
+        _invoke(
+            adapter,
             _web_tool_call(
-                "web_search",
-                {
-                    "purpose": "company_reference",
-                    "queries": queries,
-                    "maxResults": 5,
-                },
+                "web_fetch",
+                {"url": "https://example.com/people/王小明"},
             ),
-            AgentRuntimeContext(),
-        )
+        ),
+    )
 
-        assert tool.state == "output-available"
-        assert tool.started_at is not None
-        assert tool.completed_at is not None
-        assert tool.output is not None
-        assert tool.output["queryCount"] == 5
-        assert tool.output["resultCount"] == 5
-        assert tool.output["timedOut"] is False
-        assert tool.output["partial"] is False
-
-    asyncio.run(run())
-
-
-def test_runner_web_search_terminalizes_true_integration_timeout(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        search_started = asyncio.Event()
-        search_cancelled = asyncio.Event()
-
-        async def blocked_search(_query: str):
-            search_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                search_cancelled.set()
-                raise
-
-        async def search_with_short_operation_budget(
-            queries: list[str],
-            max_results: int,
-        ) -> agent_web.WebSearchReference:
-            return await agent_web._async_search_web_reference_summary(
-                queries,
-                max_results,
-                operation_timeout=0.05,
-            )
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", blocked_search)
-        monkeypatch.setattr(
-            "app.services.agent._async_search_web_reference_summary",
-            search_with_short_operation_budget,
-        )
-
-        runner = _agent_runner(prompt="请搜索目标公司的公开职位信息")
-        tool, _ = await asyncio.wait_for(
-            runner.run(
-                _web_tool_call(
-                    "web_search",
-                    {
-                        "purpose": "company_reference",
-                        "queries": ["first", "second"],
-                        "maxResults": 2,
-                    },
-                ),
-                AgentRuntimeContext(),
-            ),
-            timeout=0.2,
-        )
-
-        assert search_started.is_set()
-        assert search_cancelled.is_set()
-        assert tool.state == "output-error"
-        assert tool.started_at is not None
-        assert tool.completed_at is not None
-        assert tool.output == {
-            "queryCount": 2,
-            "resultCount": 0,
-            "timedOut": True,
-            "partial": False,
-        }
-        assert tool.error_text == "Web search exceeded its operation time budget."
-
-    asyncio.run(run())
-
-
-def test_async_search_summary_returns_partial_results_and_cancels_on_timeout(
-    monkeypatch,
-) -> None:
-    async def run() -> None:
-        slow_query_started = asyncio.Event()
-        slow_query_cancelled = asyncio.Event()
-        slow_fetch_cancelled = asyncio.Event()
-
-        async def fake_search(query: str):
-            if query == "slow":
-                slow_query_started.set()
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    slow_query_cancelled.set()
-                    raise
-
-            return (
-                [
-                    agent_web.WebSearchResult(
-                        title="fast",
-                        url="https://example.com/fast",
-                        excerpt="Useful search evidence " * 5,
-                    ),
-                    agent_web.WebSearchResult(
-                        title="slow page",
-                        url="https://example.com/slow-page",
-                        excerpt="short",
-                    ),
-                ],
-                None,
-            )
-
-        async def fake_fetch(url: str, **_kwargs):
-            if url.endswith("/slow-page"):
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    slow_fetch_cancelled.set()
-                    raise
-
-            return agent_web.WebReference(
-                title="fast fetched",
-                excerpt="Fetched reference evidence " * 5,
-                final_url=url,
-            )
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-        monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
-
-        summary = await asyncio.wait_for(
-            agent_web._async_search_web_reference_summary(
-                ["fast", "slow"],
-                operation_timeout=0.05,
-            ),
-            timeout=0.2,
-        )
-
-        assert slow_query_started.is_set()
-        assert slow_query_cancelled.is_set()
-        assert slow_fetch_cancelled.is_set()
-        assert summary.timed_out is True
-        assert summary.partial is True
-        assert [result.url for result in summary.results] == [
-            "https://example.com/fast",
-        ]
-        assert summary.error is None
-
-    asyncio.run(run())
-
-
-def test_async_search_summary_propagates_external_cancellation(monkeypatch) -> None:
-    async def run() -> None:
-        started = asyncio.Event()
-        cancelled = asyncio.Event()
-
-        async def fake_search(_query: str):
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                cancelled.set()
-                raise
-
-        monkeypatch.setattr(agent_web, "_async_search_web_results", fake_search)
-
-        task = asyncio.create_task(
-            agent_web._async_search_web_reference_summary(["resume"]),
-        )
-        await asyncio.wait_for(started.wait(), timeout=0.2)
-        task.cancel()
-
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert cancelled.is_set()
-
-    asyncio.run(run())
+    assert tool.state == "output-error"
+    assert tool.output == {"reason": "invalid_url"}

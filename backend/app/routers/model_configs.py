@@ -38,6 +38,8 @@ def post_model_config(
                 "MODEL_DISCOVERY_FAILED",
                 "MODEL_CONFIG_INVALID_PROVIDER",
                 "MODEL_CONFIG_MODEL_NOT_DISCOVERED",
+                "MODEL_CONFIG_MAX_TOKENS_INVALID",
+                "MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT",
             }:
                 detail = "BAD_REQUEST"
             raise HTTPException(status_code=400, detail=detail) from exc

@@ -34,10 +34,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
-import { formatResumeTitleForToolbar } from "@/lib/resume-title";
 
 function ResumeDetailEditorActions({
   locale,
@@ -130,6 +128,7 @@ function ResumeDetailEditorActions({
           <Button
             type="button"
             variant="outline"
+            className="min-w-32"
             disabled={state.isExporting || state.isLoading}
           >
             {state.isExporting ? (
@@ -149,7 +148,10 @@ function ResumeDetailEditorActions({
             ) : null}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
+        <DropdownMenuContent
+          align="end"
+          className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[var(--radix-dropdown-menu-trigger-width)]"
+        >
           <DropdownMenuGroup>
             <DropdownMenuItem onSelect={() => void commands.exportPdf()}>
               <FileText />
@@ -256,11 +258,6 @@ export function ResumeDetailWorkspaceHeader({
       style={{ viewTransitionName: "persistent-header" }}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <SidebarTrigger
-          className="-ml-1"
-          aria-label={messages.toggleSidebar}
-          title={messages.toggleSidebar}
-        />
         <Button
           type="button"
           variant="outline"
@@ -273,10 +270,10 @@ export function ResumeDetailWorkspaceHeader({
         {!state.hasLoadError ? (
           <div className="flex min-w-0 items-center gap-1">
             <h1
-              className="max-w-36 truncate text-sm font-medium text-foreground"
+              className="max-w-[min(26vw,32rem)] truncate text-sm font-medium text-foreground"
               title={toolbarTitle}
             >
-              {formatResumeTitleForToolbar(toolbarTitle)}
+              {toolbarTitle}
             </h1>
             <Button
               type="button"

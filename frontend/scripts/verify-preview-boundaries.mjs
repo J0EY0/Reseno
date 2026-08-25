@@ -85,6 +85,8 @@ const [
   previewDiffPrecision,
   previewRichDiff,
   previewPages,
+  previewBasicInfo,
+  previewDiffBadge,
   previewSectionItems,
   previewSections,
 ] =
@@ -101,6 +103,8 @@ const [
     readSource("components/preview/resume-preview-diff-precision.tsx"),
     readSource("components/preview/resume-preview-rich-diff.tsx"),
     readSource("components/preview/resume-preview-pages.tsx"),
+    readSource("components/preview/resume-preview-basic-info.tsx"),
+    readSource("components/preview/resume-preview-diff-badge.tsx"),
     readSource("components/preview/resume-preview-section-items.tsx"),
     readSource("components/preview/resume-preview-sections.tsx"),
   ]);
@@ -142,29 +146,37 @@ assert(
 );
 
 const diffBaseRule = readCssRule(indexCss, ".resume-diff");
-const diffAnchorRule = readCssRule(indexCss, ".resume-diff-anchor");
-const diffLabelRule = readCssRule(
-  indexCss,
-  ":is(.resume-diff, .resume-diff-anchor)::after",
-);
+const diffLabelHostRule = readCssRule(indexCss, ".resume-diff-label-host");
+const diffBadgeRule = readCssRule(indexCss, ".resume-diff-badge");
 const diffFieldRule = readCssRule(indexCss, ".resume-diff-field");
 const diffInlineRule = readCssRule(indexCss, ".resume-diff-inline");
 const boxedSectionDiffRule = readCssRule(
   indexCss,
   '.resume-section[data-resume-section-layout="boxed"].resume-diff',
 );
-const boxedSectionDiffLabelRule = readCssRule(
-  indexCss,
-  '.resume-section[data-resume-section-layout="boxed"].resume-diff::after',
-);
 const diffSurfaceRules = ["added", "moved"].map(
   (kind) => readCssRule(indexCss, `.resume-diff--${kind}`),
 );
 
 assert(
-  !/margin-inline|padding-inline|outline(?:-offset)?\s*:/.test(diffBaseRule) &&
-    !/padding|background|box-shadow/.test(diffAnchorRule),
-  "Resume diff locators must not change text width, pagination, or tint an unchanged item.",
+  !/margin-inline|padding-inline|outline(?:-offset)?\s*:/.test(diffBaseRule),
+  "Structural diff locators must not change text width or pagination.",
+);
+assert(
+  /padding-top:\s*1rem/.test(diffLabelHostRule) &&
+    !/padding-inline|margin-inline/.test(diffLabelHostRule) &&
+    /position:\s*absolute/.test(diffBadgeRule) &&
+    /top:\s*0/.test(diffBadgeRule) &&
+    /height:\s*0\.875rem/.test(diffBadgeRule),
+  "Resume diff labels must occupy a measured top lane instead of covering resume text.",
+);
+assert(
+  /from\s+["']@\/components\/ui\/badge["']/.test(previewDiffBadge) &&
+    /data-resume-diff-badge/.test(previewDiffBadge) &&
+    [previewBasicInfo, previewSectionItems, previewSections].every((source) =>
+      /ResumeDiffBadge/.test(source),
+    ),
+  "Every resume preview surface must render the shared visible diff badge.",
 );
 assert(
   !/\.resume-diff::before|@keyframes\s+resume-diff-scan/.test(indexCss),
@@ -210,18 +222,16 @@ assert(
   "Resume previews must never place deletion controls over candidate text; deleted values belong in the change summary.",
 );
 assert(
-  /font-size:\s*7px/.test(diffLabelRule),
+  /font-size:\s*7px/.test(diffBadgeRule),
   "Resume diff labels must remain readable after the A4 preview is scaled down.",
 );
 assert(
   /box-shadow:\s*none/.test(boxedSectionDiffRule) &&
-    /top:\s*0\.35rem/.test(boxedSectionDiffLabelRule) &&
-    /right:\s*0\.35rem/.test(boxedSectionDiffLabelRule) &&
     (previewSections.match(/data-resume-diff-label=\{getDiffLabel\(markerDiff, t\)\}/g)
       ?.length ?? 0) === 3 &&
     (previewSections.match(/data-resume-section-layout=\{layout\.section\}/g)
       ?.length ?? 0) === 3,
-  "Section-level diffs must expose an unclipped status label without disturbing or doubling the boxed template border.",
+  "Section-level diffs must expose one in-bounds status label without doubling the boxed template border.",
 );
 
 const thumbnailClosure = await collectThumbnailPreviewClosure();

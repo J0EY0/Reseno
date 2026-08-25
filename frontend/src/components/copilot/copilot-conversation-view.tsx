@@ -17,10 +17,7 @@ import type { StickToBottomContext } from 'use-stick-to-bottom'
 import { AgentAssistantMessageRow } from './copilot-message-presentation'
 import { AgentPendingMessage } from './copilot-tool-presentation'
 import { AgentUserMessageRow } from './copilot-user-message-row'
-import type {
-  AgentConversationController,
-  CopilotPanelProps,
-} from './copilot-panel-types'
+import type { AgentConversationController } from './copilot-panel-types'
 import type { AgentMessageActions } from './use-agent-message-actions'
 import type { AgentPromptActions } from './use-agent-prompt-actions'
 
@@ -87,8 +84,8 @@ export function CopilotConversationView({
   draft: {
     hasAgentDraft: boolean
     state: AgentDraftState | null
-    onApply: CopilotPanelProps['onApplyAgentDraft']
-    onDiscard: CopilotPanelProps['onDiscardAgentDraft']
+    onApply: AgentConversationController['applyAgentDraft']
+    onDiscard: AgentConversationController['discardAgentDraft']
   }
   hasConfiguredModel: boolean
   messageActions: AgentMessageActions

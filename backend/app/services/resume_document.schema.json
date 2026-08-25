@@ -14,6 +14,10 @@
   "required": ["schemaVersion", "basic", "sections"],
   "additionalProperties": false,
   "definitions": {
+    "nodeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]+$"
+    },
     "customField": {
       "type": "object",
       "properties": {
@@ -58,7 +62,7 @@
     "educationItem": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "school": { "type": "string" },
         "degree": { "type": "string" },
         "major": { "type": "string" },
@@ -87,7 +91,7 @@
     "experienceItem": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "company": { "type": "string" },
         "position": { "type": "string" },
         "location": { "type": "string" },
@@ -112,7 +116,7 @@
     "projectItem": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "name": { "type": "string" },
         "role": { "type": "string" },
         "techStack": {
@@ -142,7 +146,7 @@
     "achievementItem": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "name": { "type": "string" },
         "issuer": { "type": "string" },
         "date": { "type": "string" },
@@ -155,8 +159,11 @@
     "simpleListItem": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "content": { "type": "string" }
+        "id": { "$ref": "#/definitions/nodeId" },
+        "content": {
+          "type": "string",
+          "description": "Canonical sanitized rich-text HTML for the simple-list section. Tags render structure, not literal text or defects. Preserve HTML when editing; use <ul>/<ol> with <li> for lists and <p> for paragraphs."
+        }
       },
       "required": ["id", "content"],
       "additionalProperties": false
@@ -164,7 +171,7 @@
     "educationSection": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "kind": { "const": "education" },
         "title": { "type": "string" },
         "items": {
@@ -178,7 +185,7 @@
     "experienceSection": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "kind": { "const": "experience" },
         "title": { "type": "string" },
         "items": {
@@ -192,7 +199,7 @@
     "projectSection": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "kind": { "const": "project" },
         "title": { "type": "string" },
         "items": {
@@ -206,7 +213,7 @@
     "achievementSection": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "kind": { "const": "achievement" },
         "title": { "type": "string" },
         "items": {
@@ -220,7 +227,7 @@
     "simpleListSection": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": { "$ref": "#/definitions/nodeId" },
         "kind": { "const": "simple_list" },
         "title": { "type": "string" },
         "items": {

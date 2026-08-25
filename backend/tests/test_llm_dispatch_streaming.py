@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from types import ModuleType
 from typing import Any
@@ -15,10 +16,12 @@ from app.services.llm.adapters import (
 from app.services.llm.types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStreamEvent,
     LlmToolCall,
 )
+from app.services.llm.validation import validate_tool_calls
 
 PROVIDERS: tuple[tuple[str, ModuleType], ...] = (
     ("openai_compatible_chat", openai_chat),
@@ -77,6 +80,12 @@ def _terminal_message() -> LlmAssistantMessage:
     )
 
 
+async def _collect_events(
+    events: AsyncIterator[LlmStreamEvent],
+) -> list[LlmStreamEvent]:
+    return [event async for event in events]
+
+
 @pytest.mark.parametrize(("api_family", "adapter"), PROVIDERS)
 def test_streaming_provider_uses_private_tool_activity_stream(
     monkeypatch: pytest.MonkeyPatch,
@@ -100,13 +109,66 @@ def test_streaming_provider_uses_private_tool_activity_stream(
     message = asyncio.run(
         dispatch.async_complete_tool_call(
             _config(api_family, supports_streaming=True),
-            [{"role": "user", "content": "lookup"}],
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
             _tools(),
         ),
     )
 
     assert stream_calls == 1
     assert [call.name for call in message.tool_calls] == ["lookup"]
+
+
+@pytest.mark.parametrize(("api_family", "adapter"), PROVIDERS)
+def test_streaming_tool_dispatch_forwards_events_and_validates_done(
+    monkeypatch: pytest.MonkeyPatch,
+    api_family: str,
+    adapter: ModuleType,
+) -> None:
+    forwarded = [
+        LlmStreamEvent(type="text_delta", delta="Checking"),
+        LlmStreamEvent(type="reasoning_delta", delta="Private reasoning"),
+        LlmStreamEvent(type="activity"),
+    ]
+    invalid_call = LlmToolCall(
+        id="call-invalid",
+        name="lookup",
+        arguments={},
+        raw_arguments="{}",
+    )
+
+    async def fake_stream_tool_call(*_: object, **__: object):
+        for event in forwarded:
+            yield event
+        yield LlmStreamEvent(
+            type="done",
+            message=LlmAssistantMessage(
+                content="Checking",
+                tool_calls=[invalid_call],
+                stop_reason="tool_calls",
+            ),
+        )
+
+    monkeypatch.setattr(adapter, "stream_tool_call", fake_stream_tool_call)
+
+    events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config(api_family, supports_streaming=True),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            ),
+        ),
+    )
+
+    assert events[:3] == forwarded
+    assert all(
+        actual is expected for actual, expected in zip(events, forwarded, strict=False)
+    )
+    terminal = events[3].message
+    assert terminal is not None
+    assert terminal.tool_calls == [invalid_call]
+    assert len(terminal.validation_errors) == 1
+    assert terminal.validation_errors[0].tool_call is invalid_call
 
 
 @pytest.mark.parametrize(("api_family", "adapter"), PROVIDERS)
@@ -134,13 +196,167 @@ def test_non_streaming_provider_uses_complete_response_without_wall_clock(
     message = asyncio.run(
         dispatch.async_complete_tool_call(
             _config(api_family, supports_streaming=False),
-            [{"role": "user", "content": "lookup"}],
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
             _tools(),
         ),
     )
 
     assert complete_calls == 1
     assert [call.name for call in message.tool_calls] == ["lookup"]
+
+
+@pytest.mark.parametrize(("api_family", "adapter"), PROVIDERS)
+def test_non_streaming_tool_dispatch_synthesizes_text_and_done(
+    monkeypatch: pytest.MonkeyPatch,
+    api_family: str,
+    adapter: ModuleType,
+) -> None:
+    terminal_message = replace(_terminal_message(), content="Completed")
+
+    async def fake_complete_tool_call(
+        *_: object,
+        **__: object,
+    ) -> LlmAssistantMessage:
+        return terminal_message
+
+    def forbidden_stream(*_: object, **__: object):
+        raise AssertionError("non-streaming providers must not open a stream")
+
+    monkeypatch.setattr(adapter, "complete_tool_call", fake_complete_tool_call)
+    monkeypatch.setattr(adapter, "stream_tool_call", forbidden_stream)
+
+    events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config(api_family, supports_streaming=False),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            ),
+        ),
+    )
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    assert events[0].delta == "Completed"
+    assert events[1].message is not None
+    assert [call.name for call in events[1].message.tool_calls] == ["lookup"]
+
+
+def test_complete_tool_call_consumes_provider_neutral_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream_calls = 0
+    terminal_message = _terminal_message()
+
+    async def fake_stream_tool_call(*_: object, **__: object):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield LlmStreamEvent(type="activity")
+        yield LlmStreamEvent(type="done", message=terminal_message)
+
+    monkeypatch.setattr(dispatch, "async_stream_tool_call", fake_stream_tool_call)
+
+    message = asyncio.run(
+        dispatch.async_complete_tool_call(
+            _config("openai_compatible_chat", supports_streaming=True),
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+            _tools(),
+        ),
+    )
+
+    assert stream_calls == 1
+    assert message is terminal_message
+
+
+def test_dispatch_validates_union_arguments_against_provider_projection() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "payload": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "mode": {"const": "insert"},
+                                        "title": {"type": "string"},
+                                    },
+                                    "required": ["mode", "title"],
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "mode": {"const": "update"},
+                                        "patch": {"type": "string"},
+                                    },
+                                    "required": ["mode", "patch"],
+                                },
+                            ],
+                        },
+                    },
+                    "required": ["payload"],
+                },
+            },
+        },
+    ]
+    call = LlmToolCall(
+        id="call-edit",
+        name="edit",
+        arguments={"payload": {"mode": "insert"}},
+        raw_arguments='{"payload":{"mode":"insert"}}',
+    )
+
+    strict_calls, strict_errors = validate_tool_calls([call], tools)
+    message = dispatch._validated_tool_message(
+        _config("openai_compatible_chat", supports_streaming=True),
+        LlmAssistantMessage(tool_calls=[call], stop_reason="tool_calls"),
+        tools,
+    )
+
+    assert strict_calls == []
+    assert len(strict_errors) == 1
+    assert message.tool_calls == [call]
+    assert message.validation_errors == []
+
+
+@pytest.mark.parametrize(
+    ("case", "error_pattern"),
+    [
+        ("missing_done", "ended before completion"),
+        ("empty_done", "empty response"),
+        ("after_done", "events after completion"),
+    ],
+)
+def test_streaming_tool_dispatch_preserves_terminal_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    error_pattern: str,
+) -> None:
+    async def fake_stream_tool_call(*_: object, **__: object):
+        if case == "missing_done":
+            yield LlmStreamEvent(type="activity")
+            return
+        if case == "empty_done":
+            yield LlmStreamEvent(type="done")
+            return
+        yield LlmStreamEvent(type="done", message=_terminal_message())
+        yield LlmStreamEvent(type="activity")
+
+    monkeypatch.setattr(openai_chat, "stream_tool_call", fake_stream_tool_call)
+
+    with pytest.raises(dispatch.LlmRequestError, match=error_pattern):
+        asyncio.run(
+            _collect_events(
+                dispatch.async_stream_tool_call(
+                    _config("openai_compatible_chat", supports_streaming=True),
+                    LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                    _tools(),
+                ),
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -174,7 +390,7 @@ def test_streaming_openai_dispatch_forwards_request_context(
                 _config(api_family, supports_streaming=True),
                 provider="openai",
             ),
-            [{"role": "user", "content": "lookup"}],
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
             _tools(),
             request_context=request_context,
         ),
@@ -212,12 +428,12 @@ def test_dispatch_rejects_duplicate_tool_call_ids_without_losing_identity(
     message = asyncio.run(
         dispatch.async_complete_tool_call(
             _config("openai_compatible_chat", supports_streaming=False),
-            [{"role": "user", "content": "lookup"}],
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
             _tools(),
         ),
     )
 
-    assert message.tool_calls == []
+    assert message.tool_calls == calls
     assert len(message.validation_errors) == 2
     assert message.validation_errors[0].tool_call is calls[0]
     assert message.validation_errors[1].tool_call is calls[1]
@@ -247,12 +463,12 @@ def test_dispatch_rejects_blank_tool_call_id(
     message = asyncio.run(
         dispatch.async_complete_tool_call(
             _config("openai_compatible_chat", supports_streaming=False),
-            [{"role": "user", "content": "lookup"}],
+            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
             _tools(),
         ),
     )
 
-    assert message.tool_calls == []
+    assert message.tool_calls == [call]
     assert len(message.validation_errors) == 1
     assert message.validation_errors[0].tool_call is call
     assert "non-empty" in message.validation_errors[0].message

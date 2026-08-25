@@ -17,7 +17,7 @@ MODEL_METADATA_URL = (
 MODEL_METADATA_CACHE_NAME = "model-metadata/litellm_context_windows.json"
 MODEL_METADATA_FETCH_TIMEOUT_SECONDS = 1.5
 MODEL_METADATA_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
-MODEL_METADATA_CACHE_VERSION = 1
+MODEL_METADATA_CACHE_VERSION = 2
 MODEL_METADATA_CACHE_SOURCE = "litellm:model_prices_and_context_window"
 
 LITELLM_PROVIDER_ALIASES: dict[str, set[str]] = {
@@ -45,6 +45,7 @@ class ModelMetadata:
     supports_thinking: bool | None = None
     supports_tools: bool | None = None
     supports_streaming: bool | None = None
+    supports_web_search: bool | None = None
 
 
 def resolve_model_metadata(provider: str, model: str) -> ModelMetadata | None:
@@ -92,9 +93,7 @@ def ensure_provider_model_metadata(provider: str, model_ids: list[str]) -> bool:
 
     provider_key = provider.strip().lower()
     normalized_targets = {
-        _normalize_model_name(model_id)
-        for model_id in model_ids
-        if model_id.strip()
+        _normalize_model_name(model_id) for model_id in model_ids if model_id.strip()
     }
     if not provider_key or not normalized_targets:
         return False
@@ -102,10 +101,7 @@ def ensure_provider_model_metadata(provider: str, model_ids: list[str]) -> bool:
     cache_path = _cache_path()
     cache = _load_cache()
     provider_models = _cache_provider_models(cache, provider_key)
-    cached_names = {
-        _normalize_model_name(model_id)
-        for model_id in provider_models
-    }
+    cached_names = {_normalize_model_name(model_id) for model_id in provider_models}
     has_miss = not normalized_targets.issubset(cached_names)
     if provider_models and not has_miss and _cache_is_fresh(cache_path):
         return True
@@ -223,6 +219,7 @@ def _lightweight_item_from_catalog_item(
     _set_optional_bool(item, "supportsImage", value.get("supports_vision"))
     _set_optional_bool(item, "supportsThinking", value.get("supports_reasoning"))
     _set_optional_bool(item, "supportsStreaming", value.get("supports_streaming"))
+    _set_optional_bool(item, "supportsWebSearch", value.get("supports_web_search"))
 
     supports_tools = _optional_bool(value.get("supports_function_calling"))
     if supports_tools is None:
@@ -241,6 +238,7 @@ def _metadata_from_lightweight_item(value: dict[str, Any]) -> ModelMetadata | No
         supports_thinking=_optional_bool(value.get("supportsThinking")),
         supports_tools=_optional_bool(value.get("supportsTools")),
         supports_streaming=_optional_bool(value.get("supportsStreaming")),
+        supports_web_search=_optional_bool(value.get("supportsWebSearch")),
     )
     if any(
         field is not None
@@ -251,6 +249,7 @@ def _metadata_from_lightweight_item(value: dict[str, Any]) -> ModelMetadata | No
             metadata.supports_thinking,
             metadata.supports_tools,
             metadata.supports_streaming,
+            metadata.supports_web_search,
         )
     ):
         return metadata

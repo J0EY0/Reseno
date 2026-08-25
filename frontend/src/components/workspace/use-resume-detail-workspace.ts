@@ -7,26 +7,30 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 
 import { useResumeDetailAgentLayout } from "@/components/workspace/use-resume-detail-agent-layout";
 import { useResumeDetailCommands } from "@/components/workspace/use-resume-detail-commands";
 import { useResumeDetailExport } from "@/components/workspace/use-resume-detail-export";
 import { useResumeDetailLeave } from "@/components/workspace/use-resume-detail-leave";
-import {
-  useResumeDetailLoader,
-  type ResumeDetailLoadPayload,
-} from "@/components/workspace/use-resume-detail-loader";
+import { useResumeDetailLoader } from "@/components/workspace/use-resume-detail-loader";
 import { useResumeDetailPreferences } from "@/components/workspace/use-resume-detail-preferences";
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
+import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
+import {
+  prepareResumeDetailRoute,
+  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+} from "@/components/workspace/workspace-route-preparation";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
 import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
+import { isAbortError } from "@/lib/api-client";
 import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
 import { runViewTransition } from "@/lib/view-transition";
-import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 import {
   createResumeDetailRouteHandoff,
   getResumeDetailRouteHandoff,
@@ -36,7 +40,6 @@ import type { ResumeDetailResponse } from "@/types/api";
 import type {
   ResumeData,
   ResumeTemplateDefinition,
-  ResumeTemplateId,
   WorkspaceView,
 } from "@/types/resume";
 
@@ -70,26 +73,16 @@ export function useResumeDetailWorkspace({
   routeState,
 }: ResumeDetailWorkspaceOptions) {
   const navigate = useNavigate();
+  const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialDetail = useMemo(
     () => getResumeDetailRouteHandoff(routeState, resumeId),
     [resumeId, routeState],
   );
-  const initialFingerprint = useMemo(
-    () =>
-      initialDetail
-        ? createResumeFingerprint(initialDetail.resume)
-        : null,
-    [initialDetail],
-  );
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialDetail);
   const [hasRouteLoadError, setHasRouteLoadError] = useState(false);
-  const [defaultTemplateId, setDefaultTemplateId] =
-    useState<ResumeTemplateId>(
-      initialDetail?.data.defaultTemplateId ?? "minimal",
-    );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
-  >(initialDetail?.data.customTemplates ?? []);
+  >(initialDetail?.payload.routeData.customTemplates ?? []);
   const resolveAppliedDraftRef = useRef<ResolveAppliedDraft | null>(null);
   const resolveAppliedDraft = useCallback<ResolveAppliedDraft>(
     (messageId, resume) => {
@@ -102,13 +95,13 @@ export function useResumeDetailWorkspace({
     [],
   );
   const session = useResumeDetailSession({
-    initialResume: initialDetail?.resume ?? null,
+    initialResume: initialDetail?.payload.detail.resume ?? null,
     messages,
     onResolveAppliedDraft: resolveAppliedDraft,
   });
   const readIsLoading = useCallback(() => isLoading, [isLoading]);
   const preferences = useResumeDetailPreferences({
-    initialTheme: initialDetail?.data.theme,
+    initialRouteData: initialDetail?.payload.routeData,
     isLoading: readIsLoading,
     locale,
     messages,
@@ -117,10 +110,10 @@ export function useResumeDetailWorkspace({
   });
   const initialCheckpoint = useMemo(
     () =>
-      initialDetail?.savedAt && initialDetail.versionId
+      initialDetail
         ? {
-            savedAt: initialDetail.savedAt,
-            versionId: initialDetail.versionId,
+            savedAt: initialDetail.payload.detail.savedAt,
+            versionId: initialDetail.payload.detail.versionId,
           }
         : undefined,
     [initialDetail],
@@ -128,7 +121,7 @@ export function useResumeDetailWorkspace({
   const save = useResumeDetailSave({
     getSnapshot: session.getSnapshot,
     initialCheckpoint,
-    initialResume: initialDetail?.resume ?? null,
+    initialResume: initialDetail?.payload.detail.resume ?? null,
     isLoading: isLoading || hasRouteLoadError,
     liveFingerprint: session.liveFingerprint,
     liveResume: session.liveResume,
@@ -149,7 +142,7 @@ export function useResumeDetailWorkspace({
       detail,
       routeData,
       versions,
-    }: ResumeDetailLoadPayload) => {
+    }: PreparedResumeDetailRouteData) => {
       const nextTemplateCatalog = getTemplateCatalog(
         messages,
         routeData.customTemplates,
@@ -160,7 +153,6 @@ export function useResumeDetailWorkspace({
         ? routeData.defaultTemplateId
         : "minimal";
 
-      setDefaultTemplateId(nextDefaultTemplateId);
       setCustomTemplates(routeData.customTemplates);
       preferences.hydrateRoutePreferences(routeData);
       if (
@@ -169,21 +161,14 @@ export function useResumeDetailWorkspace({
         session.setTemplate(nextDefaultTemplateId);
       }
 
-      // A gallery handoff paints immediately. The calibration GET may replace
-      // it only while the user still owns that exact handoff snapshot.
-      session.hydrateIfUnchanged(detail.resume, initialFingerprint);
-      // A checkpoint completed from the handoff has already advanced the
-      // persistence authority, so stale GET metadata must not roll it back.
-      save.hydratePersistedResume(
-        detail,
-        versions,
-        initialFingerprint ?? undefined,
-      );
+      session.hydrate(detail.resume);
+      save.hydratePersistedResume(detail, versions);
     },
-    [initialFingerprint, messages, preferences, save, session],
+    [messages, preferences, save, session],
   );
   const loader = useResumeDetailLoader({
     hasHandoff: Boolean(initialDetail),
+    initialPreparedData: initialDetail?.payload ?? null,
     locale,
     onLoad: handleRouteLoad,
     onLoadErrorChange: setHasRouteLoadError,
@@ -244,40 +229,98 @@ export function useResumeDetailWorkspace({
   });
   const { requestLeave } = leave;
   const {
-    cancelPending: cancelPendingWorkspaceNavigation,
     preload: preloadWorkspaceView,
     request: requestWorkspaceNavigation,
-  } = usePreparedWorkspaceNavigation({ persistence, requestLeave });
+  } = usePreparedWorkspaceNavigation({
+    persistence,
+    preparationErrorMessage: messages.loadError,
+    requestLeave,
+    requiresLeaveResolution: () =>
+      save.hasUnsavedChanges() || save.requiresCheckpointPromotion(),
+  });
 
   const navigateToResume = useCallback(
     (detail: ResumeDetailResponse) => {
+      const intent = beginNavigation();
       const nextResumeOrdinal = initialDetail
         ? initialDetail.resumeCount + 1
         : 1;
-      runViewTransition(
-        () =>
+
+      const commitPreparedRoute = (
+        prepared: PreparedResumeDetailRouteData,
+      ) => {
+        if (!intent.isCurrent()) {
+          return;
+        }
+
+        runViewTransition(() => {
+          if (!intent.isCurrent()) {
+            return;
+          }
+          intent.finish();
           navigate(getResumePath(detail.resume.id), {
             state: createResumeDetailRouteHandoff(
-              detail.resume,
-              {
-                customTemplates,
-                defaultTemplateId,
-                theme: preferences.theme,
-              },
+              prepared,
               nextResumeOrdinal,
               nextResumeOrdinal,
-              { savedAt: detail.savedAt, versionId: detail.versionId },
             ),
-          }),
-        "nav-forward",
-      );
+          });
+        }, "nav-forward");
+      };
+
+      const prepareFreshRoute = () => {
+        if (!intent.isCurrent()) {
+          return;
+        }
+
+        toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+        void prepareResumeDetailRoute(
+          detail.resume.id,
+          persistence,
+          { signal: intent.signal },
+        )
+          .then((prepared) => {
+            if (!intent.isCurrent()) {
+              return;
+            }
+
+            if (
+              save.hasUnsavedChanges() ||
+              save.requiresCheckpointPromotion()
+            ) {
+              requestLeave(prepareFreshRoute, intent.cancel);
+              return;
+            }
+
+            commitPreparedRoute(prepared);
+          })
+          .catch((error) => {
+            if (
+              intent.signal.aborted ||
+              isAbortError(error) ||
+              !intent.isCurrent()
+            ) {
+              return;
+            }
+            intent.finish();
+            console.error("Failed to prepare the duplicated resume route.", error);
+            toast.error(messages.loadError, {
+              closeButton: true,
+              id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+            });
+          });
+      };
+
+      requestLeave(prepareFreshRoute, intent.cancel);
     },
     [
-      customTemplates,
-      defaultTemplateId,
+      beginNavigation,
       initialDetail,
+      messages.loadError,
       navigate,
-      preferences.theme,
+      persistence,
+      requestLeave,
+      save,
     ],
   );
   const documentCommands = useResumeDetailCommands({
@@ -314,10 +357,19 @@ export function useResumeDetailWorkspace({
   );
   const logout = useCallback(
     () => {
-      cancelPendingWorkspaceNavigation();
-      requestLeave(onLogout);
+      const intent = beginNavigation();
+      requestLeave(
+        () => {
+          if (!intent.isCurrent()) {
+            return;
+          }
+          intent.finish();
+          onLogout();
+        },
+        intent.cancel,
+      );
     },
-    [cancelPendingWorkspaceNavigation, onLogout, requestLeave],
+    [beginNavigation, onLogout, requestLeave],
   );
   const openModelSettings = useCallback(
     () => {

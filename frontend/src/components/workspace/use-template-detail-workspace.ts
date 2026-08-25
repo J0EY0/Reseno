@@ -9,6 +9,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
+import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
@@ -24,7 +25,6 @@ import { createTemplateFingerprint } from "@/lib/workspace-change-tracking";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
   createTemplateApi,
-  fetchWorkspaceRouteData,
   saveDefaultTemplateApi,
   saveUserSettingsApi,
 } from "@/lib/workspace-api";
@@ -42,6 +42,7 @@ import type {
 import { useTemplateDetailLeave } from "@/components/workspace/use-template-detail-leave";
 import { useTemplateDetailSave } from "@/components/workspace/use-template-detail-save";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
+import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 
 interface TemplateDetailWorkspaceOptions {
   locale: Locale;
@@ -86,6 +87,7 @@ export function useTemplateDetailWorkspace({
   templateId,
 }: TemplateDetailWorkspaceOptions) {
   const navigate = useNavigate();
+  const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialLocaleRef = useRef(locale);
   const initialDetail = useMemo(
     () => resolveInitialTemplate(messages, routeState, templateId),
@@ -98,7 +100,7 @@ export function useTemplateDetailWorkspace({
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(initialDetail));
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialDetail);
   const [isCreating, setIsCreating] = useState(false);
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
@@ -117,9 +119,6 @@ export function useTemplateDetailWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.data.customTemplates ?? []);
-  const calibrationFingerprintRef = useRef(
-    createTemplateFingerprint(initialDetail?.template ?? null),
-  );
   const themeRef = useRef(theme);
   themeRef.current = theme;
 
@@ -216,57 +215,34 @@ export function useTemplateDetailWorkspace({
       void import("@/components/preview/document-preview-card");
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
-
-        const source = await fetchWorkspaceRouteData("template-detail", {
-          notifyOnError: false,
-          signal,
-        });
+        const routeData = await loadTemplateDetailRouteData(
+          templateId,
+          persistence,
+          { signal },
+        );
         if (signal.aborted || requestIdRef.current !== requestId) {
           return;
         }
 
         const targetTemplate = getTemplateCatalog(
           messages,
-          source.data.customTemplates,
+          routeData.customTemplates,
         ).find((item) => item.id === templateId);
         if (!targetTemplate) {
-          navigate("/templates", { replace: true });
-          return;
+          throw new Error("Template target is unavailable.");
         }
 
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
+        const nextTheme = routeData.theme
+          ? normalizeWorkspaceTheme(routeData.theme)
           : themeRef.current;
         const agentSettings =
           persistence.getSnapshot()?.agentSettings ??
           createDefaultAgentSettings();
 
         setTheme(nextTheme);
-        setDefaultTemplateId(source.data.defaultTemplateId);
-        const priorPersistedFingerprint = calibrationFingerprintRef.current;
-        setCustomTemplates((current) => {
-          const currentTarget = current.find((item) => item.id === templateId);
-          if (
-            !currentTarget ||
-            createTemplateFingerprint(currentTarget) ===
-              priorPersistedFingerprint
-          ) {
-            return source.data.customTemplates;
-          }
-
-          // The handoff made this draft editable before calibration finished.
-          // Merge server catalog metadata without replacing a newer local edit.
-          return source.data.customTemplates.map((item) =>
-            item.id === templateId ? currentTarget : item,
-          );
-        });
+        setDefaultTemplateId(routeData.defaultTemplateId);
+        setCustomTemplates(routeData.customTemplates);
         hydratePersistedTemplate(targetTemplate);
-        calibrationFingerprintRef.current =
-          createTemplateFingerprint(targetTemplate);
         persistence.hydrate({
           agentSettings,
           locale: initialLocaleRef.current,
@@ -294,7 +270,6 @@ export function useTemplateDetailWorkspace({
     },
     [
       messages,
-      navigate,
       persistence,
       hydratePersistedTemplate,
       templateId,
@@ -302,6 +277,22 @@ export function useTemplateDetailWorkspace({
   );
 
   useEffect(() => {
+    if (initialDetail && retryKey === 0) {
+      persistence.hydrate({
+        agentSettings:
+          persistence.getSnapshot()?.agentSettings ??
+          createDefaultAgentSettings(),
+        locale: initialLocaleRef.current,
+        theme: initialDetail.data.theme
+          ? normalizeWorkspaceTheme(initialDetail.data.theme)
+          : themeRef.current,
+      });
+      setHasLoaded(true);
+      setHasLoadError(false);
+      setIsLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
@@ -313,7 +304,7 @@ export function useTemplateDetailWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, retryKey]);
+  }, [initialDetail, loadRouteData, persistence, retryKey]);
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
@@ -370,6 +361,7 @@ export function useTemplateDetailWorkspace({
       return;
     }
 
+    const intent = beginNavigation();
     const draftTemplate = createCustomTemplateFromBase(template, {
       name: `${messages.customTemplate} ${customTemplates.length + 1}`,
     });
@@ -377,24 +369,39 @@ export function useTemplateDetailWorkspace({
     setIsCreating(true);
     try {
       await save();
+      if (!intent.isCurrent()) {
+        return;
+      }
+
       const result = await createTemplateApi(draftTemplate);
       const nextCustomTemplates = [...customTemplates, result.template];
-
       setCustomTemplates((current) => [...current, result.template]);
+      if (!intent.isCurrent()) {
+        return;
+      }
+
       adoptPersistedTemplate(result.template);
       runViewTransition(
-        () =>
+        () => {
+          if (!intent.isCurrent()) {
+            return;
+          }
+          intent.finish();
           navigate(getTemplatePath(result.template.id), {
             state: createTemplateDetailRouteHandoff(result.template.id, {
               customTemplates: nextCustomTemplates,
               defaultTemplateId,
               theme,
             }),
-          }),
+          });
+        },
         "nav-forward",
       );
       toast.success(messages.templateCreated, { closeButton: true });
     } catch (error) {
+      if (intent.isCurrent()) {
+        intent.finish();
+      }
       console.error("Failed to create template in backend.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.loadError, { closeButton: true });
@@ -404,6 +411,7 @@ export function useTemplateDetailWorkspace({
       setIsCreating(false);
     }
   }, [
+    beginNavigation,
     customTemplates,
     defaultTemplateId,
     isLoading,
@@ -504,10 +512,14 @@ export function useTemplateDetailWorkspace({
   });
   const { requestLeave } = leave;
   const {
-    cancelPending: cancelPendingWorkspaceNavigation,
     preload: preloadWorkspaceView,
     request: requestWorkspaceNavigation,
-  } = usePreparedWorkspaceNavigation({ persistence, requestLeave });
+  } = usePreparedWorkspaceNavigation({
+    persistence,
+    preparationErrorMessage: messages.loadError,
+    requestLeave,
+    requiresLeaveResolution: hasUnsavedChanges,
+  });
   const changeView = useCallback(
     (view: WorkspaceView) => {
       void requestWorkspaceNavigation(view);
@@ -522,10 +534,19 @@ export function useTemplateDetailWorkspace({
   );
   const logout = useCallback(
     () => {
-      cancelPendingWorkspaceNavigation();
-      requestLeave(onLogout);
+      const intent = beginNavigation();
+      requestLeave(
+        () => {
+          if (!intent.isCurrent()) {
+            return;
+          }
+          intent.finish();
+          onLogout();
+        },
+        intent.cancel,
+      );
     },
-    [cancelPendingWorkspaceNavigation, onLogout, requestLeave],
+    [beginNavigation, onLogout, requestLeave],
   );
 
   return {

@@ -15,24 +15,3 @@ export function normalizeResumeTitle(value: unknown, fallback: string) {
 
   return truncateResumeTitle(title || fallback);
 }
-
-export function formatResumeTitleForToolbar(value: string) {
-  const copySuffix =
-    value.match(
-      /\s+-\s+(?:副本|Copy)(?:\s*\(\d+\)|\s*（\d+）|\s+\d+)?$/,
-    )?.[0] ?? "";
-  const baseTitle = copySuffix
-    ? value.slice(0, -copySuffix.length).trimEnd()
-    : value;
-  const characters = Array.from(baseTitle);
-  const visibleBaseCharacterCount = copySuffix ? 4 : 6;
-
-  if (characters.length <= visibleBaseCharacterCount) {
-    return value;
-  }
-
-  return `${characters
-    .slice(0, visibleBaseCharacterCount)
-    .join("")
-    .trimEnd()}...${copySuffix}`;
-}

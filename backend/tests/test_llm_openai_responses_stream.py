@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -7,7 +8,12 @@ import pytest
 
 from app.services.llm.adapters import openai_responses
 from app.services.llm.errors import LlmRequestError
-from app.services.llm.types import AgentLlmConfig, LlmRequestContext, LlmStreamEvent
+from app.services.llm.types import (
+    AgentLlmConfig,
+    LlmPrompt,
+    LlmRequestContext,
+    LlmStreamEvent,
+)
 
 
 class AsyncStream:
@@ -139,7 +145,7 @@ def test_tool_stream_exposes_calls_only_from_completed_response(monkeypatch) -> 
         _collect(
             openai_responses.stream_tool_call(
                 _config(),
-                [{"role": "user", "content": "Improve my summary"}],
+                LlmPrompt(messages=[{"role": "user", "content": "Improve my summary"}]),
                 [_tool()],
                 request_context=LlmRequestContext(cache_key="resume-session-1"),
             ),
@@ -161,6 +167,152 @@ def test_tool_stream_exposes_calls_only_from_completed_response(monkeypatch) -> 
     assert client.params["stream"] is True
     assert client.params["prompt_cache_key"] == "resume-session-1"
     assert client.params["tools"][0]["name"] == "edit_execute"
+
+
+def test_native_web_search_is_hosted_and_coexists_with_client_tools() -> None:
+    params = openai_responses.responses_params(
+        replace(_config(), use_native_web_search=True),
+        LlmPrompt(messages=[{"role": "user", "content": "Find current roles"}]),
+        tools=[_tool()],
+    )
+
+    assert params["tools"] == [
+        {"type": "web_search"},
+        {
+            "type": "function",
+            "name": "edit_execute",
+            "description": "Apply one edit",
+            "parameters": _tool()["function"]["parameters"],
+            "strict": False,
+        },
+    ]
+    assert params["include"] == [
+        "reasoning.encrypted_content",
+        "web_search_call.action.sources",
+    ]
+    assert params["parallel_tool_calls"] is True
+
+
+def test_native_web_search_normalizes_activity_sources_citations_and_state(
+    monkeypatch,
+) -> None:
+    cited_text = "Current backend roles"
+    text = f"{cited_text} emphasize Python."
+    cited_url = "https://jobs.example.com/backend-role"
+    consulted_url = "https://engineering.example.com/hiring"
+    web_search_call = {
+        "type": "web_search_call",
+        "id": "search-1",
+        "status": "completed",
+        "action": {
+            "type": "search",
+            "query": "current backend engineer jobs",
+            "sources": [
+                {"type": "url", "url": cited_url},
+                {"type": "url", "url": consulted_url},
+            ],
+        },
+    }
+    provider_stream = AsyncStream(
+        [
+            SimpleNamespace(type="response.web_search_call.in_progress"),
+            SimpleNamespace(type="response.web_search_call.searching"),
+            SimpleNamespace(type="response.web_search_call.completed"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="response-search-1",
+                    output_text=text,
+                    output=[
+                        web_search_call,
+                        {
+                            "type": "message",
+                            "id": "message-search-1",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": text,
+                                    "annotations": [
+                                        {
+                                            "type": "url_citation",
+                                            "start_index": 0,
+                                            "end_index": len(cited_text),
+                                            "url": cited_url,
+                                            "title": "Backend Engineer",
+                                        },
+                                    ],
+                                },
+                            ],
+                            "status": "completed",
+                            "role": "assistant",
+                        },
+                    ],
+                    status="completed",
+                    incomplete_details=None,
+                    usage=None,
+                ),
+            ),
+        ],
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **_: Any) -> AsyncStream:
+            return provider_stream
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        openai_responses,
+        "async_openai_client",
+        lambda _: FakeClient(),
+    )
+
+    events = asyncio.run(
+        _collect(
+            openai_responses.stream_tool_call(
+                replace(_config(), use_native_web_search=True),
+                LlmPrompt(messages=[{"role": "user", "content": "Find roles"}]),
+                [_tool()],
+            ),
+        ),
+    )
+
+    assert [event.type for event in events] == [
+        "activity",
+        "activity",
+        "activity",
+        "done",
+    ]
+    message = events[-1].message
+    assert message is not None
+    cited_source = openai_responses.make_web_source(
+        cited_url,
+        title="Backend Engineer",
+    )
+    assert message.content == f"{cited_text} emphasize Python."
+    assert message.sources == [
+        cited_source,
+        openai_responses.make_web_source(consulted_url),
+    ]
+    assert message.provider_state == {
+        "continuation_items": [web_search_call],
+    }
+    assert openai_responses.responses_input(
+        [
+            {
+                "role": "assistant",
+                "content": message.content,
+                "provider_state": message.provider_state,
+            },
+        ],
+    )[1] == [
+        web_search_call,
+        {"role": "assistant", "content": message.content},
+    ]
 
 
 def test_incomplete_response_never_exposes_partial_tool_calls(monkeypatch) -> None:
@@ -216,7 +368,7 @@ def test_incomplete_response_never_exposes_partial_tool_calls(monkeypatch) -> No
         _collect(
             openai_responses.stream_tool_call(
                 _config(),
-                [{"role": "user", "content": "Improve my summary"}],
+                LlmPrompt(messages=[{"role": "user", "content": "Improve my summary"}]),
                 [_tool()],
             ),
         ),
@@ -273,7 +425,9 @@ def test_completed_response_rejects_item_id_without_call_id(monkeypatch) -> None
             _collect(
                 openai_responses.stream_tool_call(
                     _config(),
-                    [{"role": "user", "content": "Improve my summary"}],
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Improve my summary"}]
+                    ),
                     [_tool()],
                 ),
             ),
@@ -323,7 +477,7 @@ def test_output_item_events_are_activity_without_exposing_provider_items(
         _collect(
             openai_responses.stream_tool_call(
                 _config(),
-                [{"role": "user", "content": "Improve my summary"}],
+                LlmPrompt(messages=[{"role": "user", "content": "Improve my summary"}]),
                 [_tool()],
             ),
         ),
@@ -367,7 +521,9 @@ def test_tool_stream_rejects_eof_without_authoritative_terminal(monkeypatch) -> 
             _collect(
                 openai_responses.stream_tool_call(
                     _config(),
-                    [{"role": "user", "content": "Improve my summary"}],
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Improve my summary"}]
+                    ),
                     [_tool()],
                 ),
             ),
@@ -407,7 +563,7 @@ def test_tool_stream_early_close_releases_provider_stream_and_client(
     async def consume_one_event() -> None:
         events = openai_responses.stream_tool_call(
             _config(),
-            [{"role": "user", "content": "Improve my summary"}],
+            LlmPrompt(messages=[{"role": "user", "content": "Improve my summary"}]),
             [_tool()],
         )
         event = await anext(events)
@@ -460,7 +616,9 @@ def test_tool_stream_cancellation_releases_provider_stream_and_client(
             _collect(
                 openai_responses.stream_tool_call(
                     _config(),
-                    [{"role": "user", "content": "Improve my summary"}],
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Improve my summary"}]
+                    ),
                     [_tool()],
                 ),
             ),

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 5,
   "cases": [
     {
       "id": "advice_only_no_edits",
@@ -8,24 +8,34 @@
         "message": {
           "id": "advice-only-current",
           "role": "user",
-          "text": "只分析这份简历针对前端岗位的优缺点并给出建议，不要修改简历，也不要生成草稿。"
+          "text": "只分析这份简历针对前端岗位的优缺点，不要修改简历，也不要生成草稿。请按优先级给出 5 条可执行建议，并明确标注 P1、P2、P3、P4、P5。"
         },
         "locale": "zh",
         "resume": {
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "关注前端工程与可访问性。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端工程与可访问性。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "project",
               "kind": "project",
-              "layout": "timeline",
+              "title": "项目经历",
               "items": [
                 {
                   "id": "project-1",
-                  "title": "校园服务平台",
+                  "name": "校园服务平台",
+                  "role": "前端开发",
+                  "techStack": [],
+                  "period": "",
+                  "url": "",
                   "description": "负责表单交互与无障碍改进。",
                   "highlights": [
                     "整理表单状态并补充键盘交互。"
@@ -39,9 +49,10 @@
       "expect": {
         "maxEdits": 0,
         "transactionState": "none",
-        "runnerTransactionState": "none",
-        "finishStatus": "ready",
-        "minResponseChars": 20
+        "minResponseChars": 20,
+        "requiredResponseRegex": [
+          "(?s)P1.*P2.*P3.*P4.*P5"
+        ]
       }
     },
     {
@@ -58,17 +69,27 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "关注前端开发。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端开发。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "project",
               "kind": "project",
-              "layout": "timeline",
+              "title": "项目经历",
               "items": [
                 {
                   "id": "project-1",
-                  "title": "校园服务平台",
+                  "name": "校园服务平台",
+                  "role": "前端开发",
+                  "techStack": [],
+                  "period": "",
+                  "url": "",
                   "description": "负责表单交互与无障碍改进。",
                   "highlights": [
                     "整理表单状态并补充键盘交互。"
@@ -81,14 +102,17 @@
       },
       "expect": {
         "minEdits": 1,
-        "transactionState": "provisional",
-        "runnerTransactionState": "committed",
-        "finishStatus": "ready",
+        "transactionState": "committed",
         "requiredEditTargets": [
           "basic.summary"
         ],
         "requiredEditRegex": [
           "可访问性|无障碍|工程质量"
+        ],
+        "forbiddenResponseStrings": [
+          "改写后的内容：",
+          "description：",
+          "highlights："
         ]
       }
     },
@@ -106,17 +130,30 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": ""
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "project",
               "kind": "project",
-              "layout": "timeline",
+              "title": "项目经历",
               "items": [
                 {
                   "id": "project-1",
-                  "title": "校园服务平台",
+                  "name": "校园服务平台",
+                  "role": "前端开发参与者",
+                  "techStack": [
+                    "React",
+                    "TypeScript"
+                  ],
+                  "period": "",
+                  "url": "",
                   "description": "参与表单模块开发。",
                   "highlights": [
                     "梳理表单状态并补充键盘交互。"
@@ -130,16 +167,22 @@
       "expect": {
         "minEdits": 1,
         "maxEdits": 2,
-        "transactionState": "provisional",
-        "runnerTransactionState": "committed",
-        "finishStatus": "ready",
+        "transactionState": "committed",
         "requiredEditTargets": [
           "sections.project.items.project-1"
+        ],
+        "minDistinctHighlights": 2,
+        "requiredEditStrings": [
+          "键盘交互"
+        ],
+        "requiredEditRegex": [
+          "表单.{0,12}状态|状态.{0,12}表单"
         ],
         "minResponseChars": 12,
         "forbiddenEditRegex": [
           "\\b\\d+(?:\\.\\d+)?\\s*%",
-          "\\b\\d+\\+?\\s*(?:users?|customers?|用户|客户)\\b"
+          "\\b\\d+\\+?\\s*(?:users?|customers?|用户|客户)\\b",
+          "(?:主导|牵头|独立负责|全权负责)"
         ]
       }
     },
@@ -157,19 +200,30 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "希望继续学习人机交互。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "希望继续学习人机交互。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "education",
               "kind": "education",
-              "layout": "timeline",
+              "title": "教育经历",
               "items": [
                 {
                   "id": "education-1",
-                  "title": "示例学院",
-                  "subtitle": "软件工程",
-                  "description": "学习数据结构与人机交互。"
+                  "school": "示例学院",
+                  "degree": "本科",
+                  "major": "软件工程",
+                  "gpa": "",
+                  "location": "",
+                  "period": "",
+                  "description": "学习数据结构与人机交互。",
+                  "highlights": []
                 }
               ]
             }
@@ -179,12 +233,17 @@
       "expect": {
         "maxEdits": 0,
         "transactionState": "none",
-        "runnerTransactionState": "none",
-        "finishStatus": "ready",
         "minResponseChars": 20,
         "requiredResponseRegex": [
-          "研究|科研|导师|课程",
-          "硕士|研究生|申请"
+          "研究问题|研究方向|问题意识",
+          "方法|研究设计|实验|分析",
+          "贡献|参与|职责",
+          "产出|论文|报告|原型|展示",
+          "准备度|学习|研究兴趣|导师匹配"
+        ],
+        "forbiddenResponseRegex": [
+          "\\b(?:STAR|CAR|ATS)\\b",
+          "商业影响|业务指标|营收|转化率|用户增长|岗位竞争力|求职"
         ]
       }
     },
@@ -202,17 +261,27 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "持续学习软件工程。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "持续学习软件工程。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "project",
               "kind": "project",
-              "layout": "timeline",
+              "title": "项目经历",
               "items": [
                 {
                   "id": "project-1",
-                  "title": "学习互助项目",
+                  "name": "学习互助项目",
+                  "role": "项目参与者",
+                  "techStack": [],
+                  "period": "",
+                  "url": "",
                   "description": "整理课程笔记并参与同伴辅导。",
                   "highlights": [
                     "维护共享资料并协助同学定位问题。"
@@ -225,17 +294,18 @@
       },
       "expect": {
         "minEdits": 1,
-        "transactionState": "provisional",
-        "runnerTransactionState": "committed",
-        "finishStatus": "ready",
+        "transactionState": "committed",
         "requiredEditTargets": [
           "basic.summary"
         ],
         "requiredEditRegex": [
-          "奖学金|学习|辅导|贡献"
+          "学业|课程|学习",
+          "社区|同伴|辅导|协作",
+          "贡献|服务|成长"
         ],
         "forbiddenEditRegex": [
-          "一等奖|二等奖|排名第|GPA\\s*[=:：]?\\s*\\d"
+          "一等奖|二等奖|排名第|GPA\\s*[=:：]?\\s*\\d",
+          "\\b(?:STAR|CAR|ATS)\\b|商业影响|业务指标|营收|转化率|用户增长|岗位竞争力|求职"
         ]
       }
     },
@@ -253,8 +323,14 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "待补充。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "待补充。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": []
         }
       },
@@ -274,9 +350,7 @@
       ],
       "expect": {
         "minEdits": 1,
-        "transactionState": "provisional",
-        "runnerTransactionState": "committed",
-        "finishStatus": "ready",
+        "transactionState": "committed",
         "requiredEditTargets": [
           "basic.summary"
         ],
@@ -305,17 +379,27 @@
           "basic": {
             "name": "示例候选人",
             "headline": "软件工程学生",
-            "summary": "关注前端开发。"
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端开发。",
+            "customFields": []
           },
+          "schemaVersion": 2,
           "sections": [
             {
               "id": "project",
               "kind": "project",
-              "layout": "timeline",
+              "title": "项目经历",
               "items": [
                 {
                   "id": "project-1",
-                  "title": "校园服务平台",
+                  "name": "校园服务平台",
+                  "role": "前端开发参与者",
+                  "techStack": [],
+                  "period": "",
+                  "url": "",
                   "description": "参与表单模块开发。",
                   "highlights": [
                     "梳理表单状态。"
@@ -328,20 +412,490 @@
       },
       "expect": {
         "minEdits": 2,
-        "transactionState": "provisional",
-        "runnerTransactionState": "committed",
-        "finishStatus": "ready",
+        "transactionState": "committed",
         "requiredEditTargets": [
           "basic.summary",
           "sections.project.items.project-1"
         ],
         "requiredToolSequence": [
           "edit_execute",
-          "edit_execute",
-          "finish"
+          "edit_execute"
         ],
         "minToolErrors": 1,
         "requireNoRejectedEdits": true
+      }
+    },
+    {
+      "id": "cross_module_grounded_enrichment",
+      "description": "A page-conscious broad optimization must repair obvious field and list corruption while prioritizing grounded experience and project evidence over the optional summary.",
+      "request": {
+        "message": {
+          "id": "cross-module-grounded-enrichment-current",
+          "role": "user",
+          "text": "请把这份简历当作真实的前端实习投递稿来整理并生成待确认草稿。先修复最影响理解的字段错位，再选择最影响岗位匹配度的 1–2 处做必要改写；页面空间有限，优先保留能证明能力的具体事实。不得新增地点、项目角色、技术、职责、数字、性能结论或成果；只在其他条目出现的事实不能搬过来。"
+        },
+        "locale": "zh",
+        "resume": {
+          "schemaVersion": 2,
+          "basic": {
+            "name": "示例候选人",
+            "headline": "",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端工程与 AI 应用。",
+            "customFields": []
+          },
+          "sections": [
+            {
+              "id": "education-1",
+              "kind": "education",
+              "title": "教育经历",
+              "items": [
+                {
+                  "id": "education-item-1",
+                  "school": "示例大学",
+                  "degree": "计算机科学本科",
+                  "major": "",
+                  "gpa": "",
+                  "location": "",
+                  "period": "2019 - 2023",
+                  "description": "学习前端工程、软件工程与机器学习相关课程。",
+                  "highlights": []
+                }
+              ]
+            },
+            {
+              "id": "experience-1",
+              "kind": "experience",
+              "title": "工作 / 实习经历",
+              "items": [
+                {
+                  "id": "experience-item-1",
+                  "company": "企业协同产品线",
+                  "position": "示例科技",
+                  "location": "前端开发实习生",
+                  "period": "2022.07 - 2022.09",
+                  "description": "参与后台管理系统和内容编辑器的体验优化。",
+                  "highlights": [
+                    "负责编辑器表单模块重构，页面状态管理复杂度下降。",
+                    "联动设计与测试完善交互细节，减少样式回归问题。"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "project-1",
+              "kind": "project",
+              "title": "项目经历",
+              "items": [
+                {
+                  "id": "project-item-1",
+                  "name": "React",
+                  "role": "TypeScript · Tailwind",
+                  "techStack": [
+                    "shadcn/ui 示例 AI 简历工具 实现实时编辑"
+                  ],
+                  "period": "2026.03 - 至今",
+                  "url": "",
+                  "description": "A4预览可折叠section",
+                  "highlights": []
+                }
+              ]
+            },
+            {
+              "id": "skills-1",
+              "kind": "simple_list",
+              "title": "技能",
+              "items": [
+                {
+                  "id": "skills-item-1",
+                  "content": "<ul><li>React</li><li>TypeScript</li><li>Node.js</li><li>Prompt Engineering 语言：英语CET-6（544）</li><li>雅思6.5</li></ul>"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "minEdits": 3,
+        "maxEdits": 3,
+        "transactionState": "committed",
+        "requiredEditTargets": [
+          "sections.experience-1.items.experience-item-1",
+          "sections.project-1.items.project-item-1",
+          "sections.skills-1.items.skills-item-1"
+        ],
+        "requiredChangedPaths": [
+          "sections.experience-1.items.experience-item-1.company",
+          "sections.experience-1.items.experience-item-1.position",
+          "sections.experience-1.items.experience-item-1.location",
+          "sections.experience-1.items.experience-item-1.description",
+          "sections.project-1.items.project-item-1.name",
+          "sections.project-1.items.project-item-1.role",
+          "sections.project-1.items.project-item-1.techStack",
+          "sections.project-1.items.project-item-1.description",
+          "sections.project-1.items.project-item-1.highlights",
+          "sections.skills-1.items.skills-item-1.content"
+        ],
+        "requiredChangedValues": {
+          "sections.experience-1.items.experience-item-1.company": "示例科技",
+          "sections.experience-1.items.experience-item-1.position": "前端开发实习生",
+          "sections.experience-1.items.experience-item-1.location": "",
+          "sections.project-1.items.project-item-1.name": "示例 AI 简历工具",
+          "sections.project-1.items.project-item-1.role": "",
+          "sections.project-1.items.project-item-1.techStack": [
+            "React",
+            "TypeScript",
+            "Tailwind",
+            "shadcn/ui"
+          ]
+        },
+        "requiredEditStrings": [
+          "示例科技",
+          "企业协同产品线",
+          "前端开发实习生",
+          "示例 AI 简历工具",
+          "React",
+          "TypeScript",
+          "Tailwind",
+          "shadcn/ui",
+          "A4",
+          "可折叠",
+          "实时编辑",
+          "Node.js",
+          "Prompt Engineering",
+          "英语",
+          "CET-6",
+          "544",
+          "雅思",
+          "6.5"
+        ],
+        "requiredEditRegex": [
+          "<li\\b[^>]*>(?:(?!</li>)[\\s\\S])*Prompt Engineering(?:(?!</li>)[\\s\\S])*</li>",
+          "<li\\b[^>]*>(?:(?!</li>)[\\s\\S])*(?:CET-6(?:(?!</li>)[\\s\\S])*(?:雅思|IELTS)|(?:雅思|IELTS)(?:(?!</li>)[\\s\\S])*CET-6)(?:(?!</li>)[\\s\\S])*</li>"
+        ],
+        "requiredToolSequence": [
+          "edit_execute"
+        ],
+        "minDistinctHighlights": 4,
+        "forbiddenEditStrings": [
+          "页面回流",
+          "页面性能",
+          "一线用户体验",
+          "面向求职者",
+          "面向求职场景",
+          "简历生成"
+        ],
+        "forbiddenEditRegex": [
+          "\\b\\d+(?:\\.\\d+)?\\s*%",
+          "\\b\\d+\\+?\\s*(?:users?|customers?|用户|客户)\\b",
+          "主导|牵头|架构师|负责人",
+          "<li\\b[^>]*>(?:(?!</li>)[\\s\\S])*(?:Prompt Engineering(?:(?!</li>)[\\s\\S])*(?:语言|英语|CET-6|雅思)|(?:语言|英语|CET-6|雅思)(?:(?!</li>)[\\s\\S])*Prompt Engineering)(?:(?!</li>)[\\s\\S])*</li>"
+        ]
+      }
+    },
+    {
+      "id": "current_web_jd_tailoring",
+      "description": "A current-JD request must search the web before creating a grounded draft.",
+      "request": {
+        "message": {
+          "id": "current-web-jd-tailoring-current",
+          "role": "user",
+          "text": "请搜索当前仍在招聘、页面可读取的 React / TypeScript 前端实习岗位要求，选一个具体 JD 作为目标语境，再把个人简介改成更匹配该岗位的版本并生成草稿。只能强调这份简历已有的 React、TypeScript、无障碍和键盘交互，不能添加新的技能、职责、数字或成果。最终答复明确说明选了哪个岗位，并引用该来源。"
+        },
+        "locale": "zh",
+        "resume": {
+          "schemaVersion": 2,
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端开发。",
+            "customFields": []
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "title": "项目经历",
+              "items": [
+                {
+                  "id": "project-1",
+                  "name": "校园服务平台",
+                  "role": "前端开发参与者",
+                  "techStack": [
+                    "React",
+                    "TypeScript"
+                  ],
+                  "period": "",
+                  "url": "",
+                  "description": "参与表单模块开发。",
+                  "highlights": [
+                    "梳理表单状态并补充无障碍键盘交互。"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "minEdits": 1,
+        "maxEdits": 1,
+        "transactionState": "committed",
+        "requiredEditTargets": [
+          "basic.summary"
+        ],
+        "minSources": 1,
+        "requiredToolSequence": [
+          "web_search",
+          "edit_execute"
+        ],
+        "requiredResponseRegex": [
+          "(?:选|目标).{0,80}(?:岗位|实习|JD)"
+        ],
+        "forbiddenResponseRegex": [
+          "<citation",
+          "source_ids"
+        ],
+        "requiredEditRegex": [
+          "React",
+          "TypeScript",
+          "无障碍|键盘交互"
+        ],
+        "forbiddenEditRegex": [
+          "\\b\\d+(?:\\.\\d+)?\\s*%",
+          "主导|牵头|负责人"
+        ]
+      }
+    },
+    {
+      "id": "historical_attachment_grounded_edit",
+      "description": "A prior text attachment is read on demand and grounds a project edit.",
+      "request": {
+        "message": {
+          "id": "historical-attachment-grounded-edit-current",
+          "role": "user",
+          "text": "请读取上一轮的项目复盘材料，并用其中已验证的事实更新流式数据平台：把使用的消息技术加入技术栈，把延迟变化写成一条亮点，然后生成草稿。"
+        },
+        "locale": "zh",
+        "resume": {
+          "schemaVersion": 2,
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "",
+            "customFields": []
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "title": "项目经历",
+              "items": [
+                {
+                  "id": "project-1",
+                  "name": "流式数据平台",
+                  "role": "后端开发参与者",
+                  "techStack": [
+                    "Python"
+                  ],
+                  "period": "",
+                  "url": "",
+                  "description": "实现数据处理流程。",
+                  "highlights": []
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "attachments": [
+        {
+          "scope": "history",
+          "filename": "streaming-project-retrospective.txt",
+          "mediaType": "text/plain",
+          "content": "候选人在流式数据平台中使用 Apache Kafka 构建事件管道，并将批处理延迟从 12 分钟降低到 4 分钟。"
+        }
+      ],
+      "expect": {
+        "minEdits": 1,
+        "maxEdits": 1,
+        "transactionState": "committed",
+        "requiredEditTargets": [
+          "sections.project.items.project-1"
+        ],
+        "requiredChangedPaths": [
+          "sections.project.items.project-1.techStack",
+          "sections.project.items.project-1.highlights"
+        ],
+        "requiredEditStrings": [
+          "Kafka",
+          "12",
+          "4"
+        ],
+        "requiredToolSequence": [
+          "attachment_read",
+          "edit_execute"
+        ],
+        "forbiddenEditRegex": [
+          "主导|牵头|负责人"
+        ]
+      }
+    },
+    {
+      "id": "insufficient_experience_requests_evidence",
+      "description": "A project containing isolated technologies and feature labels must trigger focused evidence questions before enrichment.",
+      "request": {
+        "message": {
+          "id": "insufficient-experience-current",
+          "role": "user",
+          "text": "请把这段项目经历扩写成更有技术细节的正式前端实习投递稿，并生成待确认草稿。"
+        },
+        "locale": "zh",
+        "resume": {
+          "schemaVersion": 2,
+          "basic": {
+            "name": "示例候选人",
+            "headline": "软件工程学生",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "",
+            "customFields": []
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "title": "项目经历",
+              "items": [
+                {
+                  "id": "project-shell",
+                  "name": "React",
+                  "role": "TypeScript · Tailwind",
+                  "techStack": [
+                    "shadcn/ui ResuMate AI Agent简历制作网站 实现实时编辑"
+                  ],
+                  "period": "2026.03 - 至今",
+                  "url": "",
+                  "description": "A4预览可折叠section",
+                  "highlights": []
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "maxEdits": 0,
+        "transactionState": "none",
+        "requiredResponseRegex": [
+          "实际.{0,12}(角色|职责)|你.{0,16}(角色|负责|贡献|做|实现)|本人.{0,12}(负责|贡献|实现)|做了什么|如何实现|怎么做|实现方式",
+          "请.{0,12}(补充|说明|确认|提供)|能否|哪些|什么|[？?]"
+        ],
+        "forbiddenResponseRegex": [
+          "项目类型|个人项目|课程项目|团队项目|是否.{0,8}(上线|部署)|公开链接|访问链接",
+          "代码规模|组件数量|模块数量|代码行数|\\bLOC\\b",
+          "选最贴近|可选项|从以下.{0,12}(选择|选)|A[)）].{0,120}B[)）]"
+        ]
+      }
+    },
+    {
+      "id": "jd_context_does_not_become_candidate_evidence",
+      "description": "A public JD may guide wording but must not become candidate project evidence.",
+      "request": {
+        "message": {
+          "id": "jd-context-grounding-current",
+          "role": "user",
+          "text": "请把这份简历当作真实投递稿来优化：先搜索一个当前可发现、页面可读的 React / TypeScript 前端实习岗位作为唯一目标语境，再只优化现有项目经历这一条并生成待确认草稿。只能使用简历已有事实，不能新增候选人技能、职责、数字、成果、性能结论或用户影响；缺证据的内容不要硬补。最终简短说明为什么这样改，并引用实际使用的岗位来源。不要应用草稿。"
+        },
+        "locale": "zh",
+        "resume": {
+          "schemaVersion": 2,
+          "basic": {
+            "name": "示例候选人",
+            "headline": "",
+            "phone": "",
+            "email": "",
+            "location": "",
+            "avatar": "",
+            "summary": "关注前端工程与 AI 应用。",
+            "customFields": []
+          },
+          "sections": [
+            {
+              "id": "project",
+              "kind": "project",
+              "title": "项目经历",
+              "items": [
+                {
+                  "id": "project-1",
+                  "name": "React",
+                  "role": "TypeScript · Tailwind",
+                  "techStack": [
+                    "shadcn/ui 示例 AI 简历工具 实现实时编辑"
+                  ],
+                  "period": "2026.03 - 至今",
+                  "url": "",
+                  "description": "A4预览可折叠section",
+                  "highlights": []
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "minEdits": 1,
+        "maxEdits": 1,
+        "transactionState": "committed",
+        "requiredEditTargets": [
+          "sections.project.items.project-1"
+        ],
+        "requiredChangedPaths": [
+          "sections.project.items.project-1.role",
+          "sections.project.items.project-1.techStack",
+          "sections.project.items.project-1.description",
+          "sections.project.items.project-1.highlights"
+        ],
+        "requiredChangedValues": {
+          "sections.project.items.project-1.role": "",
+          "sections.project.items.project-1.techStack": [
+            "React",
+            "TypeScript",
+            "Tailwind",
+            "shadcn/ui"
+          ]
+        },
+        "minSources": 1,
+        "requiredEditStrings": [
+          "React",
+          "TypeScript",
+          "Tailwind",
+          "shadcn/ui",
+          "A4",
+          "可折叠",
+          "实时编辑"
+        ],
+        "forbiddenEditRegex": [
+          "状态管理|页面回流|流畅度|页面性能|性能优化|研发效率|代码质量|用户影响|用户体验|类型化数据流|组件复用|视图同步|原型|React Hooks|组件抽象|工程化|深圳|面向求职(?:者|场景)",
+          "主导|牵头|负责人",
+          "\\b\\d+(?:\\.\\d+)?\\s*%"
+        ],
+        "forbiddenResponseRegex": [
+          "operation type|sectionId|itemId|Runtime Preferences|字段归位规则|现有事实盘点|edit_execute"
+        ]
       }
     }
   ]

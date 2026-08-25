@@ -8,7 +8,6 @@ import {
   type RefObject,
 } from "react";
 
-import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
 import type { DocumentPreviewHandle } from "@/components/preview/document-preview-card";
@@ -150,13 +149,6 @@ export function ResumeDetailWorkspaceView({
       <AppToaster theme={model.state.theme} position="bottom-right" />
       <ResumeDetailTitleDialog messages={messages} model={model} />
       <ResumeDetailLeaveDialog messages={messages} model={model} />
-      <AppSidebar
-        t={messages}
-        activeView="resume"
-        onViewChange={model.commands.changeView}
-        onViewPreload={model.commands.preloadView}
-      />
-
       <SidebarInset
         id="main-content"
         tabIndex={-1}

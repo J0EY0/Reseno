@@ -159,7 +159,7 @@ assert.match(sendController, /AGENT_REQUEST_DEBOUNCE_MS/);
 assert.doesNotMatch(
   sendController,
   /\b(?:isLikelyJobBriefPrompt|onJobBriefChange|getKeywordMatch|jobBrief|keywordMatch)\b/,
-  "Agent prompts must update conversation targetContext, never resume.jobBrief or client keyword scoring.",
+  "Agent prompts must not mutate resume.jobBrief or client keyword scoring.",
 );
 assert.match(promptActions, /for \(const file of preparedFiles\)/);
 assert.match(promptActions, /deletePendingUploads/);

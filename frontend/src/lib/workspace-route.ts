@@ -1,7 +1,10 @@
 import { matchPath } from "react-router-dom";
 
-import type { ResumeWorkspaceItem, WorkspaceView } from "@/types/resume";
-import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
+import type { WorkspaceView } from "@/types/resume";
+import type {
+  PreparedResumeDetailRouteData,
+  WorkspaceTemplateRouteData,
+} from "@/lib/workspace-route-data";
 
 export type WorkspaceRoute =
   | { kind: "resume-gallery" }
@@ -20,31 +23,24 @@ export interface TemplateDetailRouteHandoff {
 }
 
 export interface ResumeDetailRouteHandoff {
-  data: WorkspaceTemplateRouteData;
   kind: "resume-detail-handoff";
-  resume: ResumeWorkspaceItem;
+  payload: PreparedResumeDetailRouteData;
   resumeCount: number;
   resumeId: string;
   resumeOrdinal: number;
-  savedAt?: string;
-  versionId?: string;
 }
 
 export function createResumeDetailRouteHandoff(
-  resume: ResumeWorkspaceItem,
-  data: WorkspaceTemplateRouteData,
+  payload: PreparedResumeDetailRouteData,
   resumeOrdinal: number,
   resumeCount: number,
-  checkpoint?: { savedAt: string; versionId: string },
 ): ResumeDetailRouteHandoff {
   return {
-    data,
     kind: "resume-detail-handoff",
-    resume,
+    payload,
     resumeCount,
-    resumeId: resume.id,
+    resumeId: payload.detail.resume.id,
     resumeOrdinal,
-    ...checkpoint,
   };
 }
 
@@ -57,23 +53,21 @@ export function getResumeDetailRouteHandoff(
   }
 
   const candidate = state as Partial<ResumeDetailRouteHandoff>;
-  const hasCheckpoint =
-    typeof candidate.savedAt === "string" &&
-    typeof candidate.versionId === "string";
+  const payload = candidate.payload;
   if (
     candidate.kind !== "resume-detail-handoff" ||
     candidate.resumeId !== resumeId ||
-    !candidate.resume ||
-    candidate.resume.id !== resumeId ||
+    payload?.detail?.resume?.id !== resumeId ||
+    !payload.routeData ||
+    typeof payload.routeData.defaultTemplateId !== "string" ||
+    !Array.isArray(payload.routeData.customTemplates) ||
+    !Array.isArray(payload.routeData.modelConfigs) ||
+    !payload.routeData.agentSettings ||
+    !Array.isArray(payload.versions) ||
     !Number.isInteger(candidate.resumeCount) ||
     !Number.isInteger(candidate.resumeOrdinal) ||
     Number(candidate.resumeOrdinal) < 1 ||
-    Number(candidate.resumeCount) < Number(candidate.resumeOrdinal) ||
-    !candidate.data ||
-    typeof candidate.data.defaultTemplateId !== "string" ||
-    !Array.isArray(candidate.data.customTemplates) ||
-    ((candidate.savedAt !== undefined || candidate.versionId !== undefined) &&
-      !hasCheckpoint)
+    Number(candidate.resumeCount) < Number(candidate.resumeOrdinal)
   ) {
     return null;
   }

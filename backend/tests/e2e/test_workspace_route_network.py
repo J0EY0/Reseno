@@ -30,6 +30,7 @@ from playwright.sync_api import (
     Page,
     Request,
     Route,
+    expect,
     sync_playwright,
 )
 from playwright.sync_api import Error as PlaywrightError
@@ -223,12 +224,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
 @pytest.fixture(scope="module")
 def browser() -> Iterator[Browser]:
     with sync_playwright() as playwright:
-        try:
-            instance = playwright.chromium.launch(headless=True)
-        except PlaywrightError:
-            # Local development often already has Chrome while the optional
-            # Playwright-managed browser bundle has not been downloaded.
-            instance = playwright.chromium.launch(channel="chrome", headless=True)
+        instance = playwright.chromium.launch(headless=True)
         try:
             yield instance
         finally:
@@ -328,19 +324,20 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 ".resume-workspace .resume-preview-scale-frame",
               );
               const templateGallery = visibleElement(
-                'main main a[href="/template/minimal"]',
+                '[data-slot="sidebar-inset"] a[href="/template/minimal"]',
               );
               const templateDetail = visibleElement(
                 ".template-workspace .resume-preview-card article.resume-page",
               );
               const trashContent = visibleElement(
-                'main main section [data-slot="tabs-trigger"]',
+                '[data-slot="sidebar-inset"] section [data-slot="tabs-trigger"]',
               );
               const modelsContent = visibleElement(
-                'main main [data-slot="empty-title"]',
+                '[data-slot="sidebar-inset"] [data-slot="empty-title"]',
               );
               const settingsContent = visibleElement(
-                'main main [data-slot="tabs-trigger"][data-state="active"]',
+                '[data-slot="sidebar-inset"] ' +
+                '[data-slot="tabs-trigger"][data-state="active"]',
               );
               const resumePreviewFits = Boolean(
                 resumeDetail &&
@@ -538,20 +535,15 @@ def _seed_pending_agent_draft(
     return resume_id, detail, candidate_resume
 
 
-def _seed_cited_agent_response(page: Page, frontend_url: str) -> str:
+def _seed_sourced_agent_response(page: Page, frontend_url: str) -> str:
     create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
     assert create_response.ok
     resume_id = str(create_response.json()["data"]["resume"]["id"])
     session = page.request.get(
         f"{frontend_url}/api/agent/resumes/{resume_id}/session"
     ).json()["data"]
-    message_id = "assistant-inline-citation"
-    citation_text = (
-        "公开岗位样本显示，"
-        '<citation source_ids="source-a">'
-        "React 与 TypeScript 是常见要求"
-        "</citation>。"
-    )
+    message_id = "assistant-sources"
+    response_text = "**公开岗位样本**显示常见要求。\n\n"
     seed_response = page.request.put(
         f"{frontend_url}/api/agent/resumes/{resume_id}/session",
         data={
@@ -559,7 +551,7 @@ def _seed_cited_agent_response(page: Page, frontend_url: str) -> str:
             "revision": session["revision"],
             "messages": [
                 {
-                    "id": "user-inline-citation",
+                    "id": "user-sources",
                     "role": "user",
                     "text": "研究 AI 前端工程师的公开要求。",
                     "createdAt": "2026-08-10T00:00:00.000Z",
@@ -567,27 +559,51 @@ def _seed_cited_agent_response(page: Page, frontend_url: str) -> str:
                 {
                     "id": message_id,
                     "role": "assistant",
-                    "text": citation_text,
+                    "text": response_text,
                     "createdAt": "2026-08-10T00:00:01.000Z",
                     "response": {
                         "id": message_id,
                         "role": "assistant",
-                        "text": citation_text,
+                        "text": response_text,
                         "sources": [
                             {
                                 "id": "source-a",
                                 "title": "AI Frontend Engineer",
                                 "sourceType": "web",
-                                "url": "https://a.example/jobs/ai-frontend",
+                                "url": "https://aiqicha.baidu.com/details/unknown",
                                 "excerpt": (
                                     "Requirements include React and TypeScript."
                                 ),
                             },
                             {
                                 "id": "source-b",
-                                "title": "Unrelated Source",
+                                "title": "Duplicate Source",
                                 "sourceType": "web",
-                                "url": "https://b.example/unrelated",
+                                "url": "https://aiqicha.baidu.com/details/unknown",
+                            },
+                            {
+                                "id": "source-c",
+                                "title": "Frontend role guide",
+                                "sourceType": "web",
+                                "url": "https://b.example/frontend-guide",
+                            },
+                            {
+                                "id": "source-d",
+                                "title": "Frontend role sample C",
+                                "sourceType": "web",
+                                "url": "https://c.example/frontend-guide",
+                            },
+                            {
+                                "id": "source-e",
+                                "title": "Frontend role sample D",
+                                "sourceType": "web",
+                                "url": "https://d.example/frontend-guide",
+                            },
+                            {
+                                "id": "source-f",
+                                "title": "Frontend role sample E",
+                                "sourceType": "web",
+                                "url": "https://e.example/frontend-guide",
                             },
                         ],
                     },
@@ -776,7 +792,7 @@ def test_agent_history_fades_without_masking_native_scrollbar(
         context.close()
 
 
-def test_agent_claim_citation_opens_above_with_only_its_sources(
+def test_agent_sources_render_once_after_the_response(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
@@ -786,24 +802,183 @@ def test_agent_claim_citation_opens_above_with_only_its_sources(
         viewport={"width": 1672, "height": 870},
     )
     page = context.new_page()
+    page.add_init_script(
+        """
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.__copiedSourceUrl = value;
+            },
+          },
+        });
+        """
+    )
 
     try:
-        resume_id = _seed_cited_agent_response(page, frontend_url)
+        resume_id = _seed_sourced_agent_response(page, frontend_url)
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
 
-        claim = page.get_by_text("React 与 TypeScript 是常见要求", exact=True)
+        claim = page.get_by_text(
+            "公开岗位样本显示常见要求。",
+            exact=True,
+        )
         claim.wait_for(state="visible")
-        assert page.get_by_text("source-a", exact=True).count() == 0
-        assert page.get_by_text("Unrelated Source", exact=True).count() == 0
+        assert claim.locator('[data-streamdown="strong"]').count() == 1
+        assert page.get_by_role("button", name="Sources (1)").count() == 0
+        trigger = page.get_by_text("aiqicha.baidu.com +4", exact=True)
+        assert trigger.count() == 1
 
-        trigger = page.get_by_text("a.example", exact=True)
+        claim_tail_box = claim.evaluate(
+            """
+            (element) => {
+              const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+              );
+              let tail = null;
+              for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                if (node.textContent) {
+                  tail = node;
+                }
+              }
+              const range = document.createRange();
+              range.setStart(tail, tail.textContent.length - 1);
+              range.setEnd(tail, tail.textContent.length);
+              const rect = range.getBoundingClientRect();
+              return {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              };
+            }
+            """
+        )
+        trigger_box = trigger.bounding_box()
+        assert trigger_box is not None
+        assert abs(
+            (claim_tail_box["y"] + claim_tail_box["height"] / 2)
+            - (trigger_box["y"] + trigger_box["height"] / 2)
+        ) <= 4
+        tail_gap = trigger_box["x"] - (
+            claim_tail_box["x"] + claim_tail_box["width"]
+        )
+        assert 0 <= tail_gap <= 16
+
         trigger.hover()
         card = page.locator('[data-slot="hover-card-content"]')
         card.wait_for(state="visible")
 
-        assert card.get_attribute("data-side") == "top"
+        card_box = card.bounding_box()
+        viewport = page.viewport_size
+        assert card_box is not None
+        assert viewport is not None
+        assert card_box["x"] >= 12
+        assert card_box["x"] + card_box["width"] <= viewport["width"] - 12
+
+        source_url = "https://aiqicha.baidu.com/details/unknown"
+        source_link = card.locator(f'a[href="{source_url}"]')
+        copy_buttons = card.get_by_role(
+            "button",
+            name="Copy source link",
+            exact=True,
+        )
+        copy_button = copy_buttons.first
+        page.evaluate(
+            """
+            () => {
+              window.__citationCardStates = [];
+              let lastState = null;
+              const record = () => {
+                const content = document.querySelector(
+                  '[data-slot="hover-card-content"]',
+                );
+                const state = content?.getAttribute("data-state") ?? "unmounted";
+                if (state !== lastState) {
+                  window.__citationCardStates.push(state);
+                  lastState = state;
+                }
+              };
+              record();
+              new MutationObserver(record).observe(document.body, {
+                attributeFilter: ["data-state"],
+                attributes: true,
+                childList: true,
+                subtree: true,
+              });
+            }
+            """
+        )
+        page.mouse.move(
+            trigger_box["x"] + trigger_box["width"] / 2,
+            trigger_box["y"] + trigger_box["height"] / 2,
+        )
+        page.mouse.move(
+            trigger_box["x"] + trigger_box["width"] / 2,
+            (card_box["y"] + card_box["height"] + trigger_box["y"]) / 2,
+        )
+        page.wait_for_timeout(60)
+        gap_state = (
+            card.get_attribute("data-state") if card.count() else "unmounted"
+        )
+        page.mouse.move(
+            card_box["x"] + card_box["width"] / 2,
+            card_box["y"] + card_box["height"] / 2,
+            steps=12,
+        )
+        page.wait_for_timeout(280)
+        arrival_state = (
+            card.get_attribute("data-state") if card.count() else "unmounted"
+        )
+        assert {
+            "arrivalState": arrival_state,
+            "copyButtonCount": copy_buttons.count(),
+            "cardStates": page.evaluate("window.__citationCardStates"),
+            "gapState": gap_state,
+            "linkCount": source_link.count(),
+        } == {
+            "arrivalState": "open",
+            "copyButtonCount": 5,
+            "cardStates": ["open"],
+            "gapState": "open",
+            "linkCount": 1,
+        }
+
+        copy_button.click()
+        page.wait_for_function(
+            "expected => window.__copiedSourceUrl === expected",
+            arg=source_url,
+        )
+        assert source_link.get_attribute("target") == "_blank"
+        assert source_link.get_attribute("rel") == "noreferrer"
+        context.route(
+            source_url,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/plain",
+                body="source",
+            ),
+        )
+        with page.expect_popup() as source_page_info:
+            source_link.click()
+        source_page = source_page_info.value
+        source_page.wait_for_load_state("domcontentloaded")
+        assert source_page.url == source_url
+        source_page.close()
+        trigger.hover()
+        card.wait_for(state="visible")
+
         assert card.get_by_text("AI Frontend Engineer", exact=True).count() == 1
-        assert card.get_by_text("Unrelated Source", exact=True).count() == 0
+        expect(card.get_by_text("1/5", exact=True)).to_be_visible()
+        assert page.get_by_text("Duplicate Source", exact=True).count() == 0
+        assert card.get_by_text(
+            "Requirements include React and TypeScript.",
+            exact=True,
+        ).count() == 0
+        card.get_by_role("button", name="Next", exact=True).click()
+        expect(card.get_by_text("Frontend role guide", exact=True)).to_be_visible()
+        expect(card.get_by_text("2/5", exact=True)).to_be_visible()
     finally:
         context.close()
 
@@ -815,6 +990,7 @@ def test_pending_agent_draft_page_load_stays_preview_only(
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
         browser,
+        locale="zh-CN",
         viewport={"width": 1672, "height": 870},
     )
     page = context.new_page()
@@ -874,6 +1050,7 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
         browser,
+        locale="zh-CN",
         viewport={"width": 1672, "height": 870},
     )
     page = context.new_page()
@@ -925,6 +1102,197 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
         assert page.get_by_text(pending_summary, exact=True).count() > 0
     finally:
         for route in held_active_run_routes:
+            route.continue_()
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("decision_button_name", "decision_id"),
+    [("应用草稿", "apply"), ("撤回草稿", "discard")],
+)
+def test_agent_draft_decision_revision_is_used_by_next_prompt(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    decision_button_name: str,
+    decision_id: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        model_response = page.request.post(
+            f"{frontend_url}/api/model-configs",
+            data={
+                "id": "llm-agent-draft-revision",
+                "provider": "openai",
+                "providerKind": "custom",
+                "apiFamily": "openai_compatible_chat",
+                "nickname": "Agent draft revision",
+                "apiKey": "test-key",
+                "model": "test-model",
+                "apiUrl": "http://127.0.0.1:9/v1",
+                "temperature": None,
+                "topP": None,
+                "maxTokens": 512,
+            },
+        )
+        assert model_response.ok
+        message_id = f"assistant-{decision_id}-next-prompt"
+        resume_id, _, _ = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id=message_id,
+            summary="Discard this draft before the next prompt.",
+        )
+        decision_path = (
+            f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft"
+        )
+
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        decision_button = page.get_by_role(
+            "button",
+            name=decision_button_name,
+            exact=True,
+        )
+        decision_button.wait_for(state="visible")
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PATCH"
+                and urlparse(response.url).path == decision_path
+            )
+        ) as decision_response_info:
+            decision_button.click()
+
+        decision_response = decision_response_info.value
+        assert decision_response.ok
+        decision_session = decision_response.json()["data"]["session"]
+        decision_button.wait_for(state="hidden")
+
+        prompt = page.get_by_role(
+            "textbox",
+            name="你想了解什么？",
+            exact=True,
+        )
+        prompt.fill("继续检查这份简历。")
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and urlparse(response.url).path == "/api/agent/chat"
+            )
+        ) as chat_response_info:
+            with page.expect_request(
+                lambda request: (
+                    request.method == "POST"
+                    and urlparse(request.url).path == "/api/agent/chat"
+                )
+            ) as chat_request_info:
+                prompt.press("Enter")
+
+        chat_request = chat_request_info.value
+        chat_response = chat_response_info.value
+        request_payload = json.loads(chat_request.post_data or "{}")
+        assert request_payload["expectedRevision"] == decision_session["revision"]
+        assert chat_response.status == 200
+    finally:
+        context.close()
+
+
+def test_agent_draft_decision_blocks_a_concurrent_prompt(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    held_decision_routes: list[Route] = []
+    held_chat_routes: list[Route] = []
+
+    def hold_decision(route: Route) -> None:
+        held_decision_routes.append(route)
+
+    def hold_chat(route: Route) -> None:
+        held_chat_routes.append(route)
+
+    try:
+        model_response = page.request.post(
+            f"{frontend_url}/api/model-configs",
+            data={
+                "id": "llm-agent-draft-decision-gate",
+                "provider": "openai",
+                "providerKind": "custom",
+                "apiFamily": "openai_compatible_chat",
+                "nickname": "Agent draft decision gate",
+                "apiKey": "test-key",
+                "model": "test-model",
+                "apiUrl": "http://127.0.0.1:9/v1",
+                "temperature": None,
+                "topP": None,
+                "maxTokens": 512,
+            },
+        )
+        assert model_response.ok
+        message_id = "assistant-decision-gates-prompt"
+        resume_id, _, _ = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id=message_id,
+            summary="Keep the next prompt behind this decision.",
+        )
+        decision_path = (
+            f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft"
+        )
+        decision_pattern = f"**{decision_path}"
+        chat_pattern = "**/api/agent/chat"
+
+        page.route(decision_pattern, hold_decision)
+        page.route(chat_pattern, hold_chat)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        prompt = page.get_by_role(
+            "textbox",
+            name="你想了解什么？",
+            exact=True,
+        )
+        prompt.fill("这条消息必须等草稿决策完成。")
+        discard_button = page.get_by_role(
+            "button",
+            name="撤回草稿",
+            exact=True,
+        )
+        discard_button.click()
+        page.wait_for_timeout(100)
+        assert held_decision_routes
+
+        prompt.evaluate("element => element.form?.requestSubmit()")
+        page.wait_for_timeout(600)
+
+        assert held_chat_routes == []
+        assert prompt.is_disabled()
+
+        page.unroute(decision_pattern, hold_decision)
+        for route in held_decision_routes:
+            route.continue_()
+        held_decision_routes.clear()
+        discard_button.wait_for(state="hidden")
+        expect(prompt).to_be_enabled()
+    finally:
+        page.unroute("**/api/agent/chat", hold_chat)
+        for route in held_chat_routes:
+            route.abort()
+        for route in held_decision_routes:
             route.continue_()
         context.close()
 
@@ -1566,6 +1934,35 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         context.close()
 
 
+def test_format_popover_focuses_template_without_opening_defaults_tooltip(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        format_button = page.get_by_role("button", name="格式", exact=True)
+        format_button.click()
+
+        template_select = page.get_by_role(
+            "combobox",
+            name="应用模板",
+            exact=True,
+        )
+        page.wait_for_timeout(250)
+
+        assert template_select.evaluate("element => element === document.activeElement")
+        assert not page.get_by_role(
+            "tooltip",
+            name="当前已是模板默认设置",
+        ).is_visible()
+    finally:
+        context.close()
+
+
 def test_format_reset_restores_current_template_defaults_and_persists(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -2071,96 +2468,299 @@ def test_workspace_load_error_can_retry_same_route(
         context.close()
 
 
-def test_resume_route_failure_blocks_seed_checkpoint_and_autosave(
+def test_resume_navigation_stays_on_gallery_when_target_preparation_fails(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        context.route("**/api/**", lambda route: route.abort())
+
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        error_toasts = page.locator(
+            '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
+        )
+        error_toasts.first.wait_for(state="visible")
+        page.wait_for_timeout(250)
+
+        assert page.url == f"{frontend_url}/resume"
+        assert error_toasts.count() == 1
+        assert page.get_by_role("button", name="重试", exact=True).count() == 0
+        assert page.get_by_role("dialog").count() == 0
+    finally:
+        context.close()
+
+
+def test_template_navigation_stays_on_gallery_when_target_preparation_fails(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/templates", wait_until="networkidle")
+        page.route("**/api/workspace/pages/templates", lambda route: route.abort())
+
+        page.locator('a[href="/template/minimal"]').click()
+        error_toasts = page.locator(
+            '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
+        )
+        error_toasts.first.wait_for(state="visible")
+        page.wait_for_timeout(250)
+
+        assert page.url == f"{frontend_url}/templates"
+        assert error_toasts.count() == 1
+        assert page.get_by_role("button", name="重试", exact=True).count() == 0
+    finally:
+        context.close()
+
+
+def test_lateral_navigation_stays_on_current_page_when_preparation_fails(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.route("**/api/workspace/pages/models", lambda route: route.abort())
+
+        page.locator('a[href="/models"]').first.click()
+        error_toasts = page.locator(
+            '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
+        )
+        error_toasts.first.wait_for(state="visible")
+        page.wait_for_timeout(250)
+
+        assert page.url == f"{frontend_url}/resume"
+        assert error_toasts.count() == 1
+        assert page.get_by_role("button", name="重试", exact=True).count() == 0
+    finally:
+        context.close()
+
+
+def test_latest_workspace_navigation_wins_across_card_and_sidebar_owners(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    def delay_models(route: Route) -> None:
+        time.sleep(0.6)
+        route.continue_()
+
+    page.route("**/api/workspace/pages/models", delay_models)
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate(
+            """
+            (resumeId) => {
+              const resume = document.querySelector(
+                `a[href="/resume/${resumeId}"]`,
+              );
+              const models = document.querySelector('a[href="/models"]');
+              if (!(resume instanceof HTMLAnchorElement) ||
+                  !(models instanceof HTMLAnchorElement)) {
+                throw new Error("Workspace navigation targets are unavailable.");
+              }
+              resume.click();
+              models.click();
+            }
+            """,
+            resume_id,
+        )
+
+        page.wait_for_url(f"{frontend_url}/models", timeout=5_000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(300)
+
+        assert page.url == f"{frontend_url}/models"
+        assert page.locator(f'a[href="/resume/{resume_id}"]').count() == 0
+    finally:
+        context.close()
+
+
+def test_active_sidebar_click_cancels_pending_card_navigation(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate(
+            """
+            (resumeId) => {
+              const resume = document.querySelector(
+                `a[href="/resume/${resumeId}"]`,
+              );
+              const activeResume = document.querySelector('a[href="/resume"]');
+              if (!(resume instanceof HTMLAnchorElement) ||
+                  !(activeResume instanceof HTMLAnchorElement)) {
+                throw new Error("Workspace navigation targets are unavailable.");
+              }
+              resume.click();
+              activeResume.click();
+            }
+            """,
+            resume_id,
+        )
+        page.wait_for_timeout(1_000)
+
+        assert page.url == f"{frontend_url}/resume"
+        assert page.locator('input[name="resume-search"]').is_visible()
+    finally:
+        context.close()
+
+
+def test_delayed_resume_create_cannot_hijack_newer_workspace_route(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    created_resume_id: str | None = None
+
+    def delay_create(route: Route) -> None:
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        response = route.fetch()
+        time.sleep(0.8)
+        route.fulfill(response=response)
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.route("**/api/resumes", delay_create)
+
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and urlparse(response.url).path == "/api/resumes"
+            )
+        ) as create_response_info:
+            page.evaluate(
+                """
+                () => {
+                  const create = [...document.querySelectorAll("button")].find(
+                    (button) => button.textContent?.trim() === "新建",
+                  );
+                  const models = document.querySelector('a[href="/models"]');
+                  if (!(create instanceof HTMLButtonElement) ||
+                      !(models instanceof HTMLAnchorElement)) {
+                    throw new Error("Workspace mutation targets are unavailable.");
+                  }
+                  create.click();
+                  models.click();
+                }
+                """
+            )
+
+        create_response = create_response_info.value
+        assert create_response.ok
+        created_resume_id = create_response.json()["data"]["resume"]["id"]
+        page.wait_for_url(f"{frontend_url}/models", timeout=5_000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(800)
+
+        assert page.url == f"{frontend_url}/models"
+    finally:
+        if created_resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{created_resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{created_resume_id}")
+        context.close()
+
+
+def test_resume_detail_retry_owns_a_single_error_notification(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.route("**/api/workspace/pages/resume-editor", lambda route: route.abort())
+        page.route(f"**/api/resumes/{resume_id}*", lambda route: route.abort())
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="domcontentloaded")
+        retry_button = page.get_by_role("button", name="重试", exact=True)
+        retry_button.wait_for(state="visible")
+        error_toasts = page.locator(
+            '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
+        )
+        error_toasts.first.wait_for(state="visible")
+
+        retry_button.click()
+        page.wait_for_timeout(500)
+
+        assert page.url == f"{frontend_url}/resume/{resume_id}"
+        assert retry_button.is_visible()
+        assert error_toasts.count() == 1
+    finally:
+        context.close()
+
+
+def test_agent_hydration_failure_stays_local_without_error_notification(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
     context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
-    resume_put_requests = 0
+    agent_requests: list[ApiRequest] = []
 
-    def count_resume_put(request: Request) -> None:
-        nonlocal resume_put_requests
-        if (
-            request.method == "PUT"
-            and urlparse(request.url).path == f"/api/resumes/{resume_id}"
-        ):
-            resume_put_requests += 1
+    def fail_agent_read(route: Route) -> None:
+        request = _api_request(route.request)
+        assert request is not None
+        agent_requests.append(request)
+        route.abort()
 
-    def fail_route_calibration(route: Route) -> None:
-        # The typed handoff is interactive before calibration settles.
-        time.sleep(1)
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "code": 50000,
-                    "message": "INTERNAL_SERVER_ERROR",
-                    "data": None,
-                }
-            ),
-        )
-
-    page.on("request", count_resume_put)
     page.route(
-        "**/api/workspace/pages/resume-editor",
-        fail_route_calibration,
+        f"**/api/agent/resumes/{resume_id}/session",
+        fail_agent_read,
+    )
+    page.route(
+        f"**/api/agent/resumes/{resume_id}/run",
+        fail_agent_read,
     )
 
     try:
-        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
-        page.evaluate(
-            f"""
-            () => {{
-              const deadline = performance.now() + 800;
-              let openedBasicInfo = false;
-              const editSeed = () => {{
-                const input = document.querySelector('input[name="name"]');
-                if (
-                  window.location.pathname === "/resume/{resume_id}" &&
-                  input instanceof HTMLInputElement
-                ) {{
-                  const valueSetter = Object.getOwnPropertyDescriptor(
-                    HTMLInputElement.prototype,
-                    "value",
-                  )?.set;
-                  valueSetter?.call(input, "Must Not Persist After Load Error");
-                  input.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                  return;
-                }}
-                if (
-                  window.location.pathname === "/resume/{resume_id}" &&
-                  !openedBasicInfo
-                ) {{
-                  const trigger = [...document.querySelectorAll("button")]
-                    .find((candidate) =>
-                      candidate.getAttribute("aria-label") ===
-                      "基本信息: 展开或收起模块",
-                    );
-                  if (trigger instanceof HTMLButtonElement) {{
-                    openedBasicInfo = true;
-                    trigger.click();
-                  }}
-                }}
-                if (performance.now() < deadline) {{
-                  requestAnimationFrame(editSeed);
-                }}
-              }};
-              requestAnimationFrame(editSeed);
-            }}
-            """
-        )
-        page.locator(f'a[href="/resume/{resume_id}"]').click()
-        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
-        page.get_by_role("button", name="重试", exact=True).wait_for(state="visible")
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="domcontentloaded")
+        page.get_by_text("对话加载失败", exact=True).wait_for(state="visible")
+        page.wait_for_timeout(250)
 
-        page.keyboard.press("Control+S")
-        # Also cross the autosave delay: neither persistence path may write an
-        # uncalibrated navigation seed after the route read failed.
-        page.wait_for_timeout(5_500)
-        assert resume_put_requests == 0
+        request_counts = Counter(agent_requests)
+        session_request = ("GET", f"/api/agent/resumes/{resume_id}/session")
+        active_run_request = ("GET", f"/api/agent/resumes/{resume_id}/run")
+        # Strict Mode may start and cancel a preflight owner. The notification
+        # contract only requires that both hydration reads actually failed.
+        assert request_counts[session_request] >= 1
+        assert request_counts[active_run_request] >= 1
+        assert (
+            page.locator(
+                '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
+            ).count()
+            == 0
+        )
     finally:
         context.close()
 
@@ -2251,7 +2851,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
     [False, True],
     ids=["same-content-checkpoint", "edited-checkpoint"],
 )
-def test_resume_calibration_does_not_rollback_handoff_checkpoint(
+def test_resume_preparation_establishes_checkpoint_before_editor_mount(
     browser: Browser,
     workspace_servers: tuple[str, str],
     edit_before_checkpoint: bool,
@@ -2260,7 +2860,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
     context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
     resume_id: str | None = None
-    calibration_requests = 0
+    preparation_requests = 0
     checkpoint_responses = 0
     checkpoint_saved_at: str | None = None
 
@@ -2274,22 +2874,22 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
             checkpoint_responses += 1
             checkpoint_saved_at = response.json()["data"]["savedAt"]
 
-    def capture_calibration(request: Request) -> None:
-        nonlocal calibration_requests
+    def capture_preparation(request: Request) -> None:
+        nonlocal preparation_requests
         if (
             resume_id
             and request.method == "GET"
             and urlparse(request.url).path == f"/api/resumes/{resume_id}"
         ):
-            calibration_requests += 1
+            preparation_requests += 1
 
     page.on("response", capture_checkpoint)
-    page.on("request", capture_calibration)
+    page.on("request", capture_preparation)
 
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Calibration checkpoint regression"},
+            data={"title": "Prepared checkpoint regression"},
         )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
@@ -2301,8 +2901,8 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
         page.evaluate(
             f"""
             () => {{
-              window.__resumeCalibrationCheckpointSent = false;
-              window.__resumeCalibrationReleased = false;
+              window.__resumePreparationCheckpointSent = false;
+              window.__resumePreparationReleased = false;
               const originalFetch = window.fetch.bind(window);
               window.fetch = async (input, init) => {{
                 const request = new Request(input, init);
@@ -2312,10 +2912,10 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
                   new URL(request.url).pathname ===
                     "/api/resumes/{resume_id}"
                 ) {{
-                  // Capture the old response, but yield the browser event loop
-                  // so the handoff-owned PUT can complete first.
+                  // Hold the prepared response after transport completes. The
+                  // click must keep the gallery URL until this promise settles.
                   await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-                  window.__resumeCalibrationReleased = true;
+                  window.__resumePreparationReleased = true;
                 }}
                 return response;
               }};
@@ -2344,7 +2944,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
                   ) {{
                     valueSetter.call(
                       input,
-                      "Saved Before Calibration Returned",
+                      "Saved After Preparation Returned",
                     );
                     input.dispatchEvent(
                       new Event("input", {{ bubbles: true }}),
@@ -2352,7 +2952,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
                   }}
                   window.setTimeout(() => {{
                     saveButton.click();
-                    window.__resumeCalibrationCheckpointSent = true;
+                    window.__resumePreparationCheckpointSent = true;
                   }}, 100);
                   return;
                 }}
@@ -2381,23 +2981,25 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
         )
 
         page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_timeout(250)
+        assert page.url == f"{frontend_url}/resume"
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
         deadline = time.monotonic() + 8
         while (
-            calibration_requests < 1 or checkpoint_responses < 1
+            preparation_requests < 1 or checkpoint_responses < 1
         ) and time.monotonic() < deadline:
             page.wait_for_timeout(50)
         page.wait_for_timeout(150)
 
-        assert calibration_requests == 1
+        assert preparation_requests == 1
         assert checkpoint_responses == 1
         assert checkpoint_saved_at is not None
-        assert page.evaluate("window.__resumeCalibrationCheckpointSent") is True
-        page.wait_for_function("window.__resumeCalibrationReleased === true")
+        assert page.evaluate("window.__resumePreparationCheckpointSent") is True
+        page.wait_for_function("window.__resumePreparationReleased === true")
         page.wait_for_timeout(100)
         if edit_before_checkpoint:
             assert page.locator('input[name="name"]').input_value() == (
-                "Saved Before Calibration Returned"
+                "Saved After Preparation Returned"
             )
         page.get_by_role("button", name="保存状态", exact=True).hover()
         page.get_by_text("有未保存更改", exact=True).wait_for(state="detached")
@@ -2419,7 +3021,7 @@ def test_resume_calibration_does_not_rollback_handoff_checkpoint(
         if edit_before_checkpoint:
             assert (
                 persisted_response.json()["data"]["resume"]["resume"]["basic"]["name"]
-                == "Saved Before Calibration Returned"
+                == "Saved After Preparation Returned"
             )
     finally:
         if resume_id:
@@ -2487,14 +3089,14 @@ def test_template_navigation_keeps_cached_views_mounted(
         context.close()
 
 
-def test_template_calibration_preserves_handoff_edit(
+def test_template_preparation_finishes_before_detail_becomes_editable(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
     context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
     page = context.new_page()
-    calibration_requests = 0
+    preparation_requests = 0
 
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
@@ -2513,21 +3115,21 @@ def test_template_calibration_preserves_handoff_edit(
         page.wait_for_url(f"{frontend_url}/templates")
         page.wait_for_load_state("networkidle")
 
-        # Expire the shared template-catalog cache so detail performs its
-        # route-owned calibration while the handoff draft is already visible.
+        # Expire the shared template-catalog cache so the click must perform a
+        # fresh target preparation before it can commit the detail URL.
         page.wait_for_timeout(3_200)
 
-        def delay_calibration(route: Route) -> None:
-            nonlocal calibration_requests
-            calibration_requests += 1
+        def delay_preparation(route: Route) -> None:
+            nonlocal preparation_requests
+            preparation_requests += 1
             time.sleep(1)
             route.continue_()
 
-        page.route("**/api/workspace/pages/templates", delay_calibration)
+        page.route("**/api/workspace/pages/templates", delay_preparation)
         page.evaluate(
             f"""
             () => {{
-              window.__templateCalibrationDraftEdited = false;
+              window.__templatePreparationDraftEdited = false;
               const deadline = performance.now() + 5_000;
               let openedTemplateInfo = false;
               const editWhenReady = () => {{
@@ -2545,9 +3147,9 @@ def test_template_calibration_preserves_handoff_edit(
                   input instanceof HTMLInputElement &&
                   valueSetter
                 ) {{
-                  valueSetter.call(input, "Local Edit During Calibration");
+                  valueSetter.call(input, "Local Edit After Preparation");
                   input.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                  window.__templateCalibrationDraftEdited = true;
+                  window.__templatePreparationDraftEdited = true;
                   return;
                 }}
                 if (
@@ -2578,14 +3180,14 @@ def test_template_calibration_preserves_handoff_edit(
         page.locator(f'a[href="/template/{template_id}"]').click()
         page.wait_for_url(f"{frontend_url}/template/{template_id}")
         deadline = time.monotonic() + 5
-        while calibration_requests < 1 and time.monotonic() < deadline:
+        while preparation_requests < 1 and time.monotonic() < deadline:
             page.wait_for_timeout(50)
         page.wait_for_timeout(100)
 
-        assert calibration_requests == 1
-        assert page.evaluate("window.__templateCalibrationDraftEdited") is True
+        assert preparation_requests == 1
+        assert page.evaluate("window.__templatePreparationDraftEdited") is True
         assert page.get_by_label("模板名称", exact=True).input_value() == (
-            "Local Edit During Calibration"
+            "Local Edit After Preparation"
         )
     finally:
         context.close()
@@ -4208,6 +4810,105 @@ def test_template_return_checks_unsaved_changes_before_navigation(
         context.close()
 
 
+def test_leave_reprepares_gallery_after_edit_during_target_load(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    resume_id: str | None = None
+    gallery_request_count = 0
+    updated_name = "Saved During Target Preparation"
+
+    def hold_first_gallery_snapshot(route: Route) -> None:
+        nonlocal gallery_request_count
+        gallery_request_count += 1
+        if gallery_request_count > 1:
+            route.continue_()
+            return
+
+        response = route.fetch()
+        time.sleep(0.45)
+        route.fulfill(response=response)
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Before Target Preparation"},
+        )
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        page.route(
+            "**/api/workspace/pages/resumes",
+            hold_first_gallery_snapshot,
+        )
+        page.evaluate(
+            """
+            (nextName) => {
+              const back = [...document.querySelectorAll("button")].find(
+                (button) => button.textContent?.includes("返回简历列表"),
+              );
+              const name = document.querySelector('input[name="name"]');
+              const valueSetter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype,
+                "value",
+              )?.set;
+              if (!(back instanceof HTMLButtonElement) ||
+                  !(name instanceof HTMLInputElement) ||
+                  !valueSetter) {
+                throw new Error("Resume leave targets are unavailable.");
+              }
+              back.click();
+              valueSetter.call(name, nextName);
+              name.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+            """,
+            updated_name,
+        )
+
+        page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).wait_for(state="visible")
+        assert gallery_request_count == 1
+
+        page.get_by_role(
+            "button",
+            name="保存并离开",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/resume", timeout=5_000)
+        page.wait_for_load_state("networkidle")
+
+        assert gallery_request_count == 2
+        assert (
+            page.locator(f'a[href="/resume/{resume_id}"]')
+            .get_by_text(
+                updated_name,
+                exact=True,
+            )
+            .count()
+            == 1
+        )
+    finally:
+        if resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -4250,6 +4951,82 @@ def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
         assert len(save_urls) == 2, save_urls
         assert "saveMode=checkpoint" in save_urls[1]
     finally:
+        context.close()
+
+
+def test_latest_navigation_waits_for_active_checkpoint_promotion(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    page = context.new_page()
+    resume_id: str | None = None
+
+    try:
+        create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+                and parse_qs(urlparse(response.url).query).get("saveMode")
+                == ["autosave"]
+            ),
+            timeout=8_000,
+        ) as autosave_response_info:
+            page.locator('input[name="name"]').fill(
+                "Autosaved Before Superseded Navigation"
+            )
+        assert autosave_response_info.value.ok
+        page.wait_for_load_state("networkidle")
+
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+                and parse_qs(urlparse(response.url).query).get("saveMode")
+                == ["checkpoint"]
+            )
+        ) as checkpoint_response_info:
+            page.evaluate(
+                """
+                () => {
+                  const back = [...document.querySelectorAll("button")].find(
+                    (button) => button.textContent?.includes("返回简历列表"),
+                  );
+                  const logout = [...document.querySelectorAll("button")].find(
+                    (button) => button.textContent?.trim() === "退出登录",
+                  );
+                  if (!(back instanceof HTMLButtonElement) ||
+                      !(logout instanceof HTMLButtonElement)) {
+                    throw new Error("Resume navigation targets are unavailable.");
+                  }
+                  back.click();
+                  logout.click();
+                }
+                """
+            )
+        assert checkpoint_response_info.value.ok
+
+        page.wait_for_url(f"{frontend_url}/login", timeout=5_000)
+        page.wait_for_load_state("networkidle")
+        assert page.url == f"{frontend_url}/login"
+    finally:
+        if resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
         context.close()
 
 
@@ -4560,14 +5337,14 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
         page.wait_for_url(f"{frontend_url}/templates")
         page.wait_for_load_state("networkidle")
 
-        def delay_back_calibration(route: Route) -> None:
+        def delay_back_loader(route: Route) -> None:
             current_response = route.fetch()
             time.sleep(2)
             route.fulfill(response=current_response)
 
         page.route(
             f"**/api/resumes/{resume_id}",
-            delay_back_calibration,
+            delay_back_loader,
         )
         page.evaluate(
             f"""

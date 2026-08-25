@@ -1,19 +1,33 @@
 import json
+from dataclasses import replace
+from datetime import date
 
 import pytest
 
 from app.schemas.agent import (
-    AgentChatMessage,
     AgentChatRequest,
     AgentConversationCheckpoint,
     AgentDraftState,
 )
+from app.schemas.agent_settings import normalize_agent_settings
+from app.services.agent.evidence import historical_prompt_evidence_ref
+from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.runtime.messages import (
     _context_budget,
     _tool_schema_token_reserve,
+    agent_prompt_limits,
     build_agent_messages,
+    build_agent_prompt,
+    estimate_agent_messages_tokens,
+    fit_agent_model_turn_prompt,
 )
-from app.services.llm import AgentLlmConfig
+from app.services.llm import AgentLlmConfig, LlmRequestError
+from app.services.llm.output_budget import (
+    estimate_prompt_tokens,
+    input_estimation_safety_tokens,
+    resolve_request_output_budget,
+)
+from app.services.llm.types import LlmPrompt
 
 
 def _config(
@@ -51,13 +65,47 @@ def _request(
         messages=messages or [],
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
-        appliedActions=[],
         modelConfig=None,
         settings={},
     )
 
 
-def test_agent_context_projects_native_history_and_current_prompt_once() -> None:
+def _ascii_prompt_at_or_below(token_limit: int) -> LlmPrompt:
+    """Build a deterministic text prompt immediately below an estimated limit."""
+
+    low = 0
+    high = token_limit * 4
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = LlmPrompt(
+            messages=[{"role": "user", "content": "x" * middle}],
+        )
+        if estimate_prompt_tokens(candidate) <= token_limit:
+            low = middle
+        else:
+            high = middle - 1
+    return LlmPrompt(messages=[{"role": "user", "content": "x" * low}])
+
+
+def _checkpoint_context(events: list[dict[str, object]]) -> str:
+    return json.dumps(
+        {"trust": "untrusted_history_data", "events": events},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def test_agent_system_prompt_includes_current_date_for_time_sensitive_search() -> None:
+    messages = build_agent_messages(
+        _request(prompt="查找当前岗位。"),
+        _config(context_window_tokens=16_000, max_tokens=2_048),
+    )
+
+    assert messages[0]["role"] == "system"
+    assert f"Current date: {date.today().isoformat()}." in messages[0]["content"]
+
+
+def test_agent_context_projects_exact_history_and_current_prompt_once() -> None:
     request = _request(
         prompt="Shorten the second project bullet.",
         messages=[
@@ -77,7 +125,6 @@ def test_agent_context_projects_native_history_and_current_prompt_once() -> None
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
 
     workspace_message = next(
@@ -92,14 +139,129 @@ def test_agent_context_projects_native_history_and_current_prompt_once() -> None
     assert "userPrompt" not in workspace
     assert messages[1:] == [
         {"role": "user", "content": "Review my project section."},
-        {"role": "assistant", "content": "The second bullet is too long."},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "historicalUserEvidence": {
+                        "appliesToPreviousUserMessage": True,
+                        "evidenceRef": historical_prompt_evidence_ref(
+                            "agent-user-earlier-context",
+                        ),
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "assistantResponseContext": {
+                        "text": "The second bullet is too long.",
+                        "messageId": "agent-assistant-earlier-context",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        },
         workspace_message,
         {"role": "user", "content": "Shorten the second project bullet."},
     ]
     assert json.dumps(messages, ensure_ascii=False).count(request.message.text) == 1
 
 
-def test_agent_context_appends_native_history_before_the_current_workspace() -> None:
+def test_agent_context_labels_only_historical_user_messages_as_evidence() -> None:
+    messages = build_agent_messages(
+        _request(
+            prompt="Use the verified project fact from earlier.",
+            messages=[
+                {
+                    "id": "history-user-project-fact",
+                    "role": "user",
+                    "text": "Project fact: I used TypeScript.",
+                },
+                {
+                    "id": "history-assistant-project-claim",
+                    "role": "assistant",
+                    "text": "You led the project.",
+                },
+            ],
+        ),
+        _config(context_window_tokens=16_000, max_tokens=2_048),
+    )
+
+    assert messages[1] == {
+        "role": "user",
+        "content": "Project fact: I used TypeScript.",
+    }
+    historical_user_evidence = json.loads(str(messages[2]["content"]))[
+        "historicalUserEvidence"
+    ]
+    assert historical_user_evidence == {
+        "appliesToPreviousUserMessage": True,
+        "evidenceRef": historical_prompt_evidence_ref(
+            "history-user-project-fact",
+        ),
+    }
+    assert historical_prompt_evidence_ref(
+        "history-assistant-project-claim",
+    ) not in json.dumps(
+        messages,
+        ensure_ascii=False,
+    )
+
+
+def test_compacted_fact_keeps_a_copyable_original_user_evidence_ref() -> None:
+    evidence_ref = historical_prompt_evidence_ref("compacted-project-fact")
+    request = _request(
+        prompt="Use the retained project fact.",
+        messages=[
+            {
+                "id": "compacted-project-fact",
+                "role": "user",
+                "text": "Project fact: I used TypeScript.",
+            },
+            {
+                "id": "compacted-project-ack",
+                "role": "assistant",
+                "text": "Fact recorded.",
+            },
+        ],
+    )
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId="compacted-project-ack",
+        summary=_checkpoint_context(
+            [
+                {
+                    "role": "user",
+                    "text": "Project fact: I used TypeScript.",
+                    "evidenceRef": evidence_ref,
+                },
+            ],
+        ),
+    )
+    request._loaded_conversation_checkpoint = checkpoint
+    request._active_conversation_checkpoint = checkpoint
+
+    messages = build_agent_messages(
+        request,
+        _config(context_window_tokens=16_000, max_tokens=2_048),
+    )
+    serialized = json.dumps(messages, ensure_ascii=False)
+
+    assert evidence_ref in serialized
+    assert serialized.count("Project fact: I used TypeScript.") == 1
+    assert not any(
+        message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"historicalUserEvidence":')
+        for message in messages
+    )
+    assert "conversationCheckpoint" in serialized
+
+
+def test_agent_context_appends_exact_history_before_the_current_workspace() -> None:
     config = _config(context_window_tokens=16_000, max_tokens=2_048)
     first_request = _request(
         prompt="Review the project section.",
@@ -115,7 +277,6 @@ def test_agent_context_appends_native_history_before_the_current_workspace() -> 
     first_projection = build_agent_messages(
         first_request,
         config,
-        mode="streaming_final",
     )
 
     second_request = _request(
@@ -136,7 +297,7 @@ def test_agent_context_appends_native_history_before_the_current_workspace() -> 
                         {
                             "id": "call-review",
                             "state": "output-available",
-                            "title": "resume_analysis",
+                            "title": "resume_lookup",
                         },
                     ],
                     "sources": [
@@ -155,25 +316,22 @@ def test_agent_context_appends_native_history_before_the_current_workspace() -> 
     second_projection = build_agent_messages(
         second_request,
         config,
-        mode="streaming_final",
     )
 
     # The production tools/streaming-final compiler persists workspace
     # snapshots to guarantee byte-stable replay. This direct projection still
-    # proves the provider sees native turns, not a conversation JSON blob.
-    assert second_projection[:3] == first_projection[:3]
-    assert second_projection[3] == {
+    # proves the provider sees exact product events, not one lossy conversation
+    # blob.
+    assert second_projection[:4] == first_projection[:4]
+    assert second_projection[4] == {
         "role": "user",
         "content": "Review the project section.",
     }
-    assert second_projection[4] == {
-        "role": "assistant",
-        "content": "The second bullet can be shorter.",
-    }
-    assistant_context = json.loads(second_projection[5]["content"])[
+    assistant_context = json.loads(second_projection[6]["content"])[
         "assistantResponseContext"
     ]
     assert assistant_context["messageId"] == "first-assistant-answer"
+    assert assistant_context["text"] == "The second bullet can be shorter."
     assert assistant_context["sourceRefs"] == [
         {
             "id": "source-review",
@@ -188,21 +346,23 @@ def test_agent_context_appends_native_history_before_the_current_workspace() -> 
     }
 
 
-@pytest.mark.parametrize("mode", ["tools", "streaming_final"])
-def test_agent_prompt_marks_projected_context_as_untrusted_data(mode: str) -> None:
+def test_projected_context_is_not_placed_in_the_system_message() -> None:
     messages = build_agent_messages(
         _request(prompt="Review this resume."),
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode=mode,
     )
 
-    system = messages[0]["content"]
-    assert "`workspaceContext`" in system
-    assert "`conversationSummary`" in system
-    assert "untrusted reference material" in system
+    assert messages[0]["role"] == "system"
+    assert '"workspaceContext"' not in messages[0]["content"]
+    assert any(
+        message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"workspaceContext":')
+        for message in messages[1:]
+    )
 
 
-def test_agent_context_sanitizes_every_native_role_message() -> None:
+def test_agent_context_sanitizes_every_exact_history_message() -> None:
     request = _request(
         prompt="Email xiaoming@example.com about 测试用户.",
         messages=[
@@ -234,7 +394,6 @@ def test_agent_context_sanitizes_every_native_role_message() -> None:
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -270,11 +429,11 @@ def test_agent_context_hides_identity_from_base_and_pending_draft() -> None:
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
 
-    assert "王小明" not in json.dumps(messages, ensure_ascii=False)
-    assert "[hidden]" in json.dumps(messages, ensure_ascii=False)
+    serialized = json.dumps(messages, ensure_ascii=False)
+    assert "王小明" not in serialized
+    assert "[redacted_name]" in serialized
 
 
 def test_agent_context_preserves_attachment_only_history_as_safe_metadata() -> None:
@@ -306,13 +465,321 @@ def test_agent_context_preserves_attachment_only_history_as_safe_metadata() -> N
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
     assert "project-report.pdf" in serialized
     assert "raw private content must not be replayed" not in serialized
-    assert {"role": "assistant", "content": "我已读取项目报告。"} in messages
+    historical_metadata = next(
+        json.loads(str(message["content"]))["historicalAttachments"]
+        for message in messages
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"historicalAttachments":')
+    )
+    assert historical_metadata == [
+        {
+            "id": "private-report",
+            "filename": "project-report.pdf",
+            "kind": "text",
+        },
+    ]
+    assistant_context = next(
+        json.loads(str(message["content"]))["assistantResponseContext"]
+        for message in messages
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"assistantResponseContext":')
+    )
+    assert assistant_context["text"] == "我已读取项目报告。"
+
+
+def test_recent_assistant_prose_is_context_not_a_behavior_example() -> None:
+    stale_claim = "预览区会先显示临时草稿，确认后才会正式修改。"
+    messages = build_agent_messages(
+        _request(
+            prompt="现在请改写腾讯实习经历。",
+            messages=[
+                {
+                    "id": "previous-edit-request",
+                    "role": "user",
+                    "text": "改写腾讯实习经历。",
+                },
+                {
+                    "id": "previous-false-completion",
+                    "role": "assistant",
+                    "text": stale_claim,
+                    "response": {
+                        "id": "previous-false-completion",
+                        "role": "assistant",
+                        "text": stale_claim,
+                        "tools": [],
+                        "edits": [],
+                    },
+                },
+            ],
+        ),
+        _config(context_window_tokens=16_000, max_tokens=2_048),
+    )
+
+    assert not any(message["role"] == "assistant" for message in messages)
+    context = next(
+        json.loads(str(message["content"]))["assistantResponseContext"]
+        for message in messages
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"assistantResponseContext":')
+    )
+    assert context == {
+        "text": stale_claim,
+        "messageId": "previous-false-completion",
+    }
+
+
+def test_each_model_turn_compacts_old_web_excerpts_without_moving_prefix() -> None:
+    request = _request(prompt="Research the target role.")
+    config = _config(context_window_tokens=32_000, max_tokens=2_048)
+    prompt = build_agent_prompt(request, config)
+    prefix_counts = prompt.stable_prefix_message_counts
+    old_excerpt = "old evidence " * 12_000
+    latest_excerpt = "latest evidence must remain exact"
+
+    for call_id, excerpt in (
+        ("old-fetch", old_excerpt),
+        ("latest-fetch", latest_excerpt),
+    ):
+        prompt.messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "web_fetch",
+                                "arguments": json.dumps(
+                                    {"url": f"https://example.test/{call_id}"},
+                                ),
+                            },
+                        },
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(
+                        {
+                            "state": "output-available",
+                            "output": {
+                                "data": {
+                                    "results": [
+                                        {
+                                            "sourceId": f"source-{call_id}",
+                                            "title": f"Result {call_id}",
+                                            "url": f"https://example.test/{call_id}",
+                                            "sourceKind": "fetched_page",
+                                            "excerpt": excerpt,
+                                            "excerptBoundary": {
+                                                "start": 0,
+                                                "end": len(excerpt),
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                    ),
+                },
+            ],
+        )
+
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+    assert estimate_agent_messages_tokens(prompt.messages) > limits.input_tokens
+
+    fitted = fit_agent_model_turn_prompt(request, config, prompt)
+
+    assert fitted.stable_prefix_message_counts == prefix_counts
+    assert fitted.messages[: prefix_counts[-1]] == prompt.messages[: prefix_counts[-1]]
+    old_result = json.loads(str(fitted.messages[-3]["content"]))
+    latest_result = json.loads(str(fitted.messages[-1]["content"]))
+    assert "excerpt" not in old_result["output"]["data"]["results"][0]
+    assert latest_result["output"]["data"]["results"][0]["excerpt"] == (latest_excerpt)
+    assert estimate_agent_messages_tokens(fitted.messages) <= limits.trigger_tokens
+
+
+def test_each_model_turn_preserves_every_observation_in_the_latest_parallel_batch() -> (
+    None
+):
+    request = _request(prompt="Compare both current sources.")
+    config = _config(context_window_tokens=32_000, max_tokens=2_048)
+    prompt = build_agent_prompt(request, config)
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+
+    # Bring the prepared turn close to its compaction trigger, as a real long
+    # conversation would be immediately before two bounded fetch results land.
+    base_tokens = estimate_agent_messages_tokens(prompt.messages)
+    padding_tokens = max(0, limits.trigger_tokens - base_tokens - 800)
+    system_content = str(prompt.messages[0]["content"])
+    prompt.messages[0]["content"] = system_content + ("x" * padding_tokens * 4)
+
+    excerpts = {
+        "fetch-a": "A" * 2_400,
+        "fetch-b": "B" * 2_400,
+    }
+    prompt.messages.append(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "web_fetch",
+                        "arguments": json.dumps(
+                            {"url": f"https://example.test/{call_id}"},
+                        ),
+                    },
+                }
+                for call_id in excerpts
+            ],
+        },
+    )
+    for call_id, excerpt in excerpts.items():
+        prompt.messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(
+                    {
+                        "output": {
+                            "data": {
+                                "results": [
+                                    {
+                                        "sourceId": f"source-{call_id}",
+                                        "url": f"https://example.test/{call_id}",
+                                        "excerpt": excerpt,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                ),
+            },
+        )
+
+    estimated_tokens = estimate_agent_messages_tokens(prompt.messages)
+    assert limits.trigger_tokens < estimated_tokens <= limits.input_tokens
+
+    fitted = fit_agent_model_turn_prompt(request, config, prompt)
+
+    for message, expected_excerpt in zip(
+        fitted.messages[-2:],
+        excerpts.values(),
+        strict=True,
+    ):
+        result = json.loads(str(message["content"]))
+        assert result["output"]["data"]["results"][0]["excerpt"] == (expected_excerpt)
+
+
+def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -> None:
+    request = _request(prompt="Tailor the resume to this current job description.")
+    config = _config(context_window_tokens=16_000, max_tokens=2_048)
+    prompt = build_agent_prompt(request, config)
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+
+    base_tokens = estimate_agent_messages_tokens(prompt.messages)
+    padding_tokens = max(0, limits.input_tokens - base_tokens - 1_000)
+    prompt.messages[0]["content"] = str(prompt.messages[0]["content"]) + (
+        "x" * padding_tokens * 4
+    )
+    excerpt = "React TypeScript accessibility " * 500
+    prompt.messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "latest-jd",
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": '{"url":"https://example.test/job"}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "latest-jd",
+                "content": json.dumps(
+                    {
+                        "output": {
+                            "results": [
+                                {
+                                    "sourceId": "source-latest-jd",
+                                    "title": "Frontend Engineer",
+                                    "url": "https://example.test/job",
+                                    "sourceKind": "fetched_page",
+                                    "publishedDate": "2026-08-20",
+                                    "validThrough": "2026-09-20",
+                                    "excerpt": excerpt,
+                                },
+                            ],
+                        },
+                    },
+                ),
+            },
+        ],
+    )
+
+    fitted = fit_agent_model_turn_prompt(request, config, prompt)
+    result = json.loads(str(fitted.messages[-1]["content"]))["output"]["results"][0]
+
+    assert result["excerpt"]
+    assert len(result["excerpt"]) == 800
+    assert result["excerptTruncated"] is True
+    assert result["publishedDate"] == "2026-08-20"
+    assert result["validThrough"] == "2026-09-20"
+    assert estimate_agent_messages_tokens(fitted.messages) <= limits.input_tokens
+
+
+def test_each_model_turn_rejects_an_uncompactable_oversized_observation() -> None:
+    request = _request(prompt="Inspect the tool result.")
+    config = _config(context_window_tokens=16_000, max_tokens=2_048)
+    prompt = build_agent_prompt(request, config)
+    prompt.messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "opaque-result",
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": "{}",
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "opaque-result",
+                "content": json.dumps({"output": {"opaque": "x" * 80_000}}),
+            },
+        ],
+    )
+
+    with pytest.raises(LlmRequestError, match="Tool observations exceed"):
+        fit_agent_model_turn_prompt(request, config, prompt)
 
 
 def test_agent_context_preserves_named_attachment_metadata_beside_user_text() -> None:
@@ -339,7 +806,6 @@ def test_agent_context_preserves_named_attachment_metadata_beside_user_text() ->
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -383,7 +849,6 @@ def test_agent_context_hides_resume_name_in_historical_attachment_filename(
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -391,14 +856,13 @@ def test_agent_context_hides_resume_name_in_historical_attachment_filename(
     assert expected_filename in serialized
 
 
-def test_agent_context_budget_reserves_output_tools_and_safety_margin() -> None:
-    config = _config(context_window_tokens=16_000, max_tokens=2_048)
+def test_agent_context_budget_separates_compaction_tools_and_safety_margin() -> None:
+    config = _config(context_window_tokens=32_000, max_tokens=2_048)
     request = _request(prompt="根据我的材料修改项目经历")
 
     tool_schema_tokens = _tool_schema_token_reserve(
         request,
         config,
-        mode="tools",
     )
     budget = _context_budget(
         request,
@@ -407,19 +871,32 @@ def test_agent_context_budget_reserves_output_tools_and_safety_margin() -> None:
     )
 
     assert budget is not None
-    assert budget.output_reserve_tokens == 2_048
+    assert budget.compaction_headroom_tokens == 2_048
     assert budget.tool_schema_tokens > 0
     assert budget.safety_margin_tokens > 0
     assert budget.input_tokens == (
-        16_000
-        - budget.output_reserve_tokens
-        - budget.tool_schema_tokens
-        - budget.safety_margin_tokens
+        32_000 - budget.tool_schema_tokens - budget.safety_margin_tokens - 1
     )
-    assert budget.trigger_tokens == int(budget.input_tokens * 0.85)
+    assert budget.trigger_tokens == int(
+        (budget.input_tokens - budget.compaction_headroom_tokens) * 0.85,
+    )
 
 
-def test_agent_context_budget_uses_provider_default_output_reserve() -> None:
+def test_tool_schema_reserve_uses_the_canonical_request_catalog() -> None:
+    config = _config(context_window_tokens=32_000, max_tokens=2_048)
+    request = _request(prompt="按需优化这份简历。")
+    suggest_only = prepare_agent_request(
+        request,
+        normalize_agent_settings({"confirmationMode": "suggestOnly"}),
+    )
+
+    all_tools = _tool_schema_token_reserve(request, config)
+    read_tools = _tool_schema_token_reserve(suggest_only, config)
+
+    assert 0 < read_tools < all_tools
+
+
+def test_agent_context_budget_clamps_auto_reserve_for_a_small_context_window() -> None:
     request = _request(prompt="检查项目经历")
     budget = _context_budget(
         request,
@@ -428,10 +905,54 @@ def test_agent_context_budget_uses_provider_default_output_reserve() -> None:
     )
 
     assert budget is not None
-    assert budget.output_reserve_tokens == 4096
+    # Manual custom context is shared. After retaining estimation safety, one
+    # provider-output token, and a separate 4K hard-input tail, the remaining
+    # room becomes optional compaction headroom.
+    assert budget.compaction_headroom_tokens == budget.input_tokens - 4_096
+    assert budget.safety_margin_tokens == input_estimation_safety_tokens(16_000)
+    assert budget.input_tokens == 16_000 - 256 - 1
 
 
-def test_agent_pure_projection_keeps_history_until_async_compaction() -> None:
+def test_planner_accepted_prompt_always_has_room_at_dispatch() -> None:
+    request = _request(prompt="检查项目经历")
+    config = _config(context_window_tokens=16_000, max_tokens=2_048)
+    budget = _context_budget(request, config, tool_schema_tokens=0)
+
+    assert budget is not None
+    prompt = _ascii_prompt_at_or_below(budget.input_tokens)
+    assert estimate_prompt_tokens(prompt) <= budget.input_tokens
+    assert estimate_prompt_tokens(prompt) >= budget.input_tokens - 1
+
+    resolved = resolve_request_output_budget(config, prompt)
+
+    # Manual custom context is shared; an input accepted at the hard edge still
+    # retains a valid (possibly dynamically clamped) output allowance.
+    assert resolved.request_max_output_tokens is not None
+    assert resolved.request_max_output_tokens >= 1
+
+
+def test_agent_context_budget_uses_the_provider_independent_auto_reserve() -> None:
+    request = _request(prompt="检查项目经历")
+    config = replace(
+        _config(context_window_tokens=32_000, max_tokens=None),
+        provider="anthropic",
+        provider_kind="cloud",
+        api_family="anthropic_messages",
+        base_url="https://api.anthropic.com/v1",
+        thinking_control="native_auto",
+    )
+
+    budget = _context_budget(
+        request,
+        config,
+        tool_schema_tokens=0,
+    )
+
+    assert budget is not None
+    assert budget.compaction_headroom_tokens == 16_384
+
+
+def test_agent_pure_projection_keeps_history_until_context_preparation() -> None:
     old_messages: list[dict[str, object]] = [
         {
             "id": "goal",
@@ -510,7 +1031,6 @@ def test_agent_pure_projection_keeps_history_until_async_compaction() -> None:
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=6_000, max_tokens=512),
-        mode="streaming_final",
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -518,7 +1038,7 @@ def test_agent_pure_projection_keeps_history_until_async_compaction() -> None:
     assert not any(
         message["role"] == "user"
         and isinstance(message["content"], str)
-        and message["content"].startswith('{"conversationSummary":')
+        and message["content"].startswith('{"conversationCheckpoint":')
         for message in messages
     )
     assert "目标：申请分布式系统方向的研究生项目。" in serialized
@@ -526,7 +1046,7 @@ def test_agent_pure_projection_keeps_history_until_async_compaction() -> None:
     assert "Load-test evidence" not in serialized
 
 
-def test_agent_native_projection_preserves_unclassified_user_constraints() -> None:
+def test_agent_exact_projection_preserves_unclassified_user_constraints() -> None:
     # Deliberately avoid the explicit constraint keywords used by the
     # deterministic classifier. A durable user instruction must not become
     # disposable merely because it is phrased as ordinary natural language.
@@ -553,12 +1073,11 @@ def test_agent_native_projection_preserves_unclassified_user_constraints() -> No
     messages = build_agent_messages(
         _request(prompt="Continue.", messages=history),
         _config(context_window_tokens=5_000, max_tokens=512),
-        mode="streaming_final",
     )
     assert constraint in json.dumps(messages, ensure_ascii=False)
 
 
-def test_agent_native_projection_preserves_assistant_proposals() -> None:
+def test_agent_exact_projection_preserves_assistant_proposals() -> None:
     proposal = "Option two keeps the Redis migration bullet."
     history: list[dict[str, object]] = [
         {
@@ -591,7 +1110,6 @@ def test_agent_native_projection_preserves_assistant_proposals() -> None:
     messages = build_agent_messages(
         _request(prompt="Use option two.", messages=history),
         _config(context_window_tokens=5_000, max_tokens=512),
-        mode="streaming_final",
     )
     assert proposal in json.dumps(messages, ensure_ascii=False)
 
@@ -608,7 +1126,6 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
                     "id": "silent-structured-response",
                     "role": "assistant",
                     "text": "",
-                    "actions": ["execute"],
                     "transactionState": "committed",
                     "draft": {
                         "baseResume": {"basic": {}, "sections": []},
@@ -647,7 +1164,6 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
     )
     contexts = [
         json.loads(message["content"])["assistantResponseContext"]
@@ -664,50 +1180,6 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
     assert [source["id"] for source in contexts[0]["sourceRefs"]] == [
         f"silent-source-{index}" for index in range(1, 7)
     ]
-
-
-def test_final_workspace_never_replays_attachment_source_excerpts() -> None:
-    draft = AgentChatMessage(
-        id="assistant-source-privacy",
-        role="assistant",
-        text="Grounded result.",
-        sources=[
-            {
-                "id": "source-private-file",
-                "title": "Private evidence.pdf",
-                "sourceType": "attachment",
-                "excerpt": "private attachment evidence must remain current-turn only",
-            },
-            {
-                "id": "source-public-role",
-                "title": "Public role page",
-                "sourceType": "web",
-                "url": "https://example.test/role",
-                "excerpt": "Public React requirement",
-            },
-        ],
-    )
-
-    messages = build_agent_messages(
-        _request(prompt="Summarize the evidence."),
-        _config(context_window_tokens=16_000, max_tokens=2_048),
-        mode="streaming_final",
-        draft=draft,
-    )
-    workspace_message = next(
-        message
-        for message in reversed(messages)
-        if message["role"] == "user"
-        and isinstance(message["content"], str)
-        and message["content"].startswith('{"workspaceContext":')
-    )
-    workspace = json.loads(workspace_message["content"])["workspaceContext"]
-
-    assert [source["id"] for source in workspace["citationSources"]] == [
-        "source-public-role",
-    ]
-    assert "private attachment evidence" not in json.dumps(messages)
-    assert workspace["citationSources"][0]["excerpt"] == "Public React requirement"
 
 
 def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
@@ -730,24 +1202,23 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
     )
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="checkpoint-history-5",
-        summary="Goal: inspect the resume project section.",
+        summary=_checkpoint_context([]),
     )
     first_request._loaded_conversation_checkpoint = checkpoint
     first_request._active_conversation_checkpoint = checkpoint
     first_projection = build_agent_messages(
         first_request,
         config,
-        mode="streaming_final",
     )
     summary_message = next(
         message
         for message in first_projection
         if message["role"] == "user"
         and isinstance(message["content"], str)
-        and message["content"].startswith('{"conversationSummary":')
+        and message["content"].startswith('{"conversationCheckpoint":')
     )
     agent_summary = json.loads(summary_message["content"])
-    assert "conversationSummary" in agent_summary
+    assert "conversationCheckpoint" in agent_summary
 
     second_request = _request(
         prompt="继续检查技能部分。",
@@ -771,10 +1242,9 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
     second_projection = build_agent_messages(
         second_request,
         config,
-        mode="streaming_final",
     )
 
-    # The persisted summary and native exact tail remain byte-stable. Full
+    # The persisted summary and exact tail remain byte-stable. Full
     # tools/final-stream prompt prefix replay is covered by the workspace
     # snapshot tests, because this pure ``final`` mode does not persist one.
     stable_prefix_length = len(first_projection) - 2
@@ -786,10 +1256,16 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
         "role": "user",
         "content": "检查当前项目。",
     }
-    assert second_projection[stable_prefix_length + 1] == {
-        "role": "assistant",
-        "content": "项目部分已检查。",
-    }
+    historical_evidence = json.loads(
+        str(second_projection[stable_prefix_length + 1]["content"]),
+    )["historicalUserEvidence"]
+    assert historical_evidence["evidenceRef"] == historical_prompt_evidence_ref(
+        "agent-user-current-context",
+    )
+    assistant_context = json.loads(
+        str(second_projection[stable_prefix_length + 2]["content"]),
+    )["assistantResponseContext"]
+    assert assistant_context["text"] == "项目部分已检查。"
     assert second_projection[-1] == {
         "role": "user",
         "content": "继续检查技能部分。",
@@ -817,11 +1293,11 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
     first_request = _request(prompt="检查当前项目。", messages=history)
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="stable-boundary-5",
-        summary="Goal: inspect the current project section.",
+        summary=_checkpoint_context([]),
     )
     first_request._loaded_conversation_checkpoint = checkpoint
     first_request._active_conversation_checkpoint = checkpoint
-    build_agent_messages(first_request, compact_config, mode="streaming_final")
+    build_agent_messages(first_request, compact_config)
 
     next_request = _request(
         prompt="继续检查。",
@@ -833,7 +1309,6 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
     projection = build_agent_messages(
         next_request,
         _config(context_window_tokens=64_000, max_tokens=4_096),
-        mode="streaming_final",
     )
 
     summary_message = next(
@@ -841,9 +1316,9 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
         for message in projection
         if message["role"] == "user"
         and isinstance(message["content"], str)
-        and message["content"].startswith('{"conversationSummary":')
+        and message["content"].startswith('{"conversationCheckpoint":')
     )
-    assert json.loads(summary_message["content"])["conversationSummary"]
+    assert json.loads(summary_message["content"])["conversationCheckpoint"]
     assert next_request._active_conversation_checkpoint == checkpoint
     assert not any(
         message.get("content") == history[0]["text"] for message in projection
@@ -851,7 +1326,9 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
 
 
 def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
-    config = _config(context_window_tokens=3_250, max_tokens=512)
+    # Keep the same useful prompt headroom after the runtime's mandatory 4K
+    # transport safety reserve was made explicit.
+    config = _config(context_window_tokens=7_100, max_tokens=512)
     history: list[dict[str, object]] = [
         {
             "id": f"headroom-history-{index}",
@@ -863,11 +1340,11 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
     request = _request(prompt="initial prompt", messages=history)
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="headroom-history-3",
-        summary="Goal: preserve the current resume task.",
+        summary=_checkpoint_context([]),
     )
     request._loaded_conversation_checkpoint = checkpoint
     request._active_conversation_checkpoint = checkpoint
-    build_agent_messages(request, config, mode="streaming_final")
+    build_agent_messages(request, config)
     initial_boundary = checkpoint.through_message_id
 
     for index in range(1, 6):
@@ -888,7 +1365,7 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
         )
         request._loaded_conversation_checkpoint = checkpoint
         request._active_conversation_checkpoint = checkpoint
-        build_agent_messages(request, config, mode="streaming_final")
+        build_agent_messages(request, config)
         assert request._active_conversation_checkpoint == checkpoint
         assert request._active_conversation_checkpoint.through_message_id == (
             initial_boundary
@@ -912,7 +1389,6 @@ def test_agent_pure_projection_never_drops_recent_exact_messages() -> None:
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=6_000, max_tokens=512),
-        mode="streaming_final",
     )
 
     for recent in recent_messages:

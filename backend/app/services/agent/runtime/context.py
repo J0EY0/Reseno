@@ -1,18 +1,26 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import anyio
 
 from app.schemas.agent import AgentChatRequest
 from app.services.llm import (
     AgentLlmConfig,
+    LlmAssistantMessage,
     LlmRequestContext,
     LlmRequestError,
+    LlmUsage,
 )
+from app.services.llm.common import supports_prompt_cache_key
+from app.services.llm.types import LlmStopReason
+
+if TYPE_CHECKING:
+    from .loop import AgentToolLoopEvent
 
 DEFAULT_BLOCKING_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_MODEL_TURNS = 16
 
 T = TypeVar("T")
 
@@ -27,7 +35,11 @@ class AgentRuntimeContext:
 
     is_aborted: Callable[[], Awaitable[bool]] | None = None
     blocking_timeout_seconds: float = DEFAULT_BLOCKING_TIMEOUT_SECONDS
+    max_model_turns: int = DEFAULT_MAX_MODEL_TURNS
     llm_request_context: LlmRequestContext | None = None
+    on_llm_attempt: Callable[[], None] | None = None
+    on_llm_response: Callable[[LlmUsage | None, LlmStopReason], None] | None = None
+    on_tool_loop_event: Callable[["AgentToolLoopEvent"], None] | None = None
 
     def with_llm_request_context(
         self,
@@ -36,6 +48,24 @@ class AgentRuntimeContext:
         """Bind one provider request identity to every call in this run."""
 
         return replace(self, llm_request_context=request_context)
+
+    def record_llm_response(self, message: LlmAssistantMessage) -> None:
+        """Publish provider-neutral response metadata to an optional observer."""
+
+        if self.on_llm_response is not None:
+            self.on_llm_response(message.usage, message.stop_reason)
+
+    def record_llm_attempt(self) -> None:
+        """Record one provider transport attempt before it begins."""
+
+        if self.on_llm_attempt is not None:
+            self.on_llm_attempt()
+
+    def record_tool_loop_event(self, event: "AgentToolLoopEvent") -> None:
+        """Publish one tool-loop event to an optional request observer."""
+
+        if self.on_tool_loop_event is not None:
+            self.on_tool_loop_event(event)
 
     async def checkpoint(self) -> None:
         """Yield control and stop after an explicit cancellation request."""
@@ -97,10 +127,10 @@ def agent_llm_request_context(
     request: AgentChatRequest,
     config: AgentLlmConfig,
 ) -> LlmRequestContext | None:
-    """Derive one opaque cache identity for an official OpenAI resume run."""
+    """Derive one opaque cache identity for an official cache-aware resume run."""
 
     resume_id = (request.resume_id or "").strip()
-    if config.provider != "openai" or config.provider_kind != "cloud" or not resume_id:
+    if not supports_prompt_cache_key(config) or not resume_id:
         return None
 
     cache_key = sha256(

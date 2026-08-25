@@ -11,6 +11,7 @@ from app.services.model_metadata import (
     ensure_provider_model_metadata,
     resolve_model_metadata,
 )
+from app.services.thinking import ThinkingControl
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
 DISCOVERY_TIMEOUT_SECONDS = 12
@@ -48,7 +49,7 @@ class DiscoveredModel:
     context_window_tokens: int
     max_output_tokens: int | None
     supports_image: bool
-    supports_thinking: bool
+    thinking_control: ThinkingControl
     metadata_source: str
     supports_tools: bool = True
     supports_streaming: bool = True
@@ -459,15 +460,10 @@ def _normalize_discovered_model(
     raw: dict[str, Any],
 ) -> DiscoveredModel:
     model_id = _model_id_from_raw(raw)
-    provider_context = _positive_int(
-        raw.get("context_window")
-        or raw.get("context_length")
-        or raw.get("max_context_length")
-        or raw.get("inputTokenLimit")
-        or raw.get("input_token_limit"),
-    )
+    provider_context = _provider_context_limit(provider_id, raw)
     provider_output = _positive_int(
         raw.get("max_output_tokens")
+        or raw.get("max_tokens")
         or raw.get("maxOutputTokens")
         or raw.get("outputTokenLimit")
         or raw.get("output_token_limit"),
@@ -496,7 +492,7 @@ def _normalize_discovered_model(
             raw,
             litellm_metadata,
         ),
-        supports_thinking=_supports_thinking(
+        thinking_control=_thinking_control(
             provider_id,
             model_id,
             raw,
@@ -511,6 +507,27 @@ def _normalize_discovered_model(
             litellm_metadata,
         ),
     )
+
+
+def _provider_context_limit(
+    provider_id: str,
+    raw: dict[str, Any],
+) -> int | None:
+    """Return only context fields whose meaning matches the provider kind."""
+
+    # Prefer an explicit input limit when both shapes are present. Providers
+    # such as Gemini expose input and output limits independently, whereas
+    # generic `context_length` fields describe one shared total context.
+    for key in ("max_input_tokens", "inputTokenLimit", "input_token_limit"):
+        if value := _positive_int(raw.get(key)):
+            return value
+
+    provider = get_model_provider(provider_id)
+    if provider is not None and provider.kind != "cloud":
+        for key in ("context_window", "context_length", "max_context_length"):
+            if value := _positive_int(raw.get(key)):
+                return value
+    return None
 
 
 def _model_id_from_raw(raw: dict[str, Any]) -> str:
@@ -583,29 +600,63 @@ def _supports_image(
     return explicit if explicit is not None else value
 
 
-def _supports_thinking(
+def _thinking_control(
     provider_id: str,
     model_id: str,
     raw: dict[str, Any],
     metadata: ModelMetadata | None,
-) -> bool:
-    lowered = model_id.lower()
-    heuristic = False
-    if provider_id == "openai":
-        heuristic = lowered.startswith(("o1", "o3", "o4", "gpt-5"))
-    elif provider_id == "anthropic":
-        heuristic = "3.7" in lowered or "4" in lowered or "sonnet" in lowered
-    elif provider_id == "google":
-        heuristic = "2.5" in lowered or "thinking" in lowered
-    elif provider_id in {"deepseek", "qwen", "glm", "minimax"}:
-        heuristic = "reason" in lowered or "thinking" in lowered or "-r1" in lowered
+) -> ThinkingControl:
+    if provider_id == "minimax" and model_id.casefold() == "minimax-m3":
+        return "native_auto"
+
+    if provider_id == "anthropic":
+        # Anthropic's Models API distinguishes legacy manual thinking from
+        # adaptive thinking. Preserve that protocol distinction so the Adapter
+        # never infers a wire shape from a generic capability badge.
+        adaptive = _nested_bool(
+            raw,
+            "capabilities",
+            "thinking",
+            "types",
+            "adaptive",
+            "supported",
+        )
+        if adaptive is True:
+            return "native_auto"
+        enabled = _nested_bool(
+            raw,
+            "capabilities",
+            "thinking",
+            "types",
+            "enabled",
+            "supported",
+        )
+        return "native_budget" if enabled is True else "none"
 
     explicit = _explicit_bool(raw, "supports_reasoning", "supportsThinking")
-    value = _metadata_bool(
-        metadata.supports_thinking if metadata is not None else None,
-        heuristic,
+    supported = (
+        explicit
+        if explicit is not None
+        else metadata.supports_thinking
+        if metadata is not None
+        else None
     )
-    return explicit if explicit is not None else value
+    if supported is not True:
+        return "none"
+
+    # DashScope exposes a verified per-request `enable_thinking` switch. Other
+    # official cloud providers either think by model/default or are projected
+    # by their Adapter without a generic explicit toggle.
+    return "native_auto" if provider_id == "qwen" else "provider_default"
+
+
+def _nested_bool(value: object, *path: str) -> bool | None:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, bool) else None
 
 
 def _supports_tools(

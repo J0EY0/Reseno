@@ -29,10 +29,19 @@ separately in `~/.resumate/auth.db`; the resume database remains unchanged.
 ```bash
 cd backend
 uv sync
+uv run playwright install --only-shell chromium
 uv run uvicorn app.main:app --reload
 ```
 
 The backend listens on `http://127.0.0.1:8000`.
+
+Playwright's Chromium renders dynamic job pages and resume exports. It does not
+require Google Chrome to be installed. On a Linux server, install Chromium and
+its system dependencies during the build instead:
+
+```bash
+uv run playwright install --with-deps --only-shell chromium
+```
 
 ## Start The Frontend
 

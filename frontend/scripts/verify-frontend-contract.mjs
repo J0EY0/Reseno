@@ -122,6 +122,15 @@ const resumeFormatPopover = await readFile(
   join(srcDir, "components", "editor", "resume-format-popover.tsx"),
   "utf8",
 );
+const resumeDetailWorkspaceHeader = await readFile(
+  join(
+    srcDir,
+    "components",
+    "workspace",
+    "resume-detail-workspace-header.tsx",
+  ),
+  "utf8",
+);
 const templateTypographyTab = await readFile(
   join(srcDir, "components", "templates", "editor", "typography-tab.tsx"),
   "utf8",
@@ -150,6 +159,77 @@ assert(
     zhMessages.fontSerif === "思源宋体" &&
     enMessages.fontSerif === "Noto Serif SC",
   "Both font selectors must expose the localized Noto Sans SC option.",
+);
+const resumeFormatSelectTriggers =
+  resumeFormatPopover.match(/<SelectTrigger\b[^>]*>/g) ?? [];
+const resumeFormatSelectContents =
+  resumeFormatPopover.match(/<SelectContent\b[^>]*>/g) ?? [];
+const hasStaticClass = (tag, className) =>
+  (tag.match(/\bclassName="([^"]*)"/)?.[1].split(/\s+/) ?? []).includes(
+    className,
+  );
+const getStaticClasses = (tag) =>
+  tag.match(/\bclassName="([^"]*)"/)?.[1].split(/\s+/) ?? [];
+const getResumeFormatTrigger = (label) =>
+  resumeFormatSelectTriggers.find((tag) =>
+    tag.includes(`aria-label={t.${label}}`),
+  );
+const hasExactBaseWidth = (tag, width) => {
+  const widths = getStaticClasses(tag).filter((name) =>
+    /^w-(?:\d+|\[)/.test(name),
+  );
+
+  return widths.length === 1 && widths[0] === width;
+};
+const exportMenuTriggerButton =
+  resumeDetailWorkspaceHeader.match(
+    /<DropdownMenuTrigger asChild>\s*(<Button\b[^>]*>)/,
+  )?.[1] ?? "";
+const exportMenuContent =
+  resumeDetailWorkspaceHeader.match(/<DropdownMenuContent\b[^>]*>/)?.[0] ?? "";
+
+assert(
+  hasStaticClass(exportMenuTriggerButton, "min-w-32") &&
+    hasStaticClass(
+      exportMenuContent,
+      "w-[var(--radix-dropdown-menu-trigger-width)]",
+    ) &&
+    hasStaticClass(
+      exportMenuContent,
+      "min-w-[var(--radix-dropdown-menu-trigger-width)]",
+    ),
+  "Resume export menu must exactly match its trigger width.",
+);
+
+assert(
+  resumeFormatSelectTriggers.length === 3 &&
+    [
+      ["applyTemplate", "w-32"],
+      ["fontFamily", "w-36"],
+      ["fontSize", "w-24"],
+    ].every(([label, width]) => {
+      const trigger = getResumeFormatTrigger(label);
+
+      return (
+        trigger?.includes('size="sm"') && hasExactBaseWidth(trigger, width)
+      );
+    }) &&
+    hasStaticClass(
+      getResumeFormatTrigger("fontFamily") ?? "",
+      "[&:lang(zh)]:w-28",
+    ),
+  "Resume format select triggers must use content-sized compact widths.",
+);
+assert(
+  resumeFormatSelectContents.length === 3 &&
+    resumeFormatSelectContents.every(
+      (tag) =>
+        tag.includes('align="end"') &&
+        tag.includes('position="popper"') &&
+        !tag.includes("--radix-select-trigger-width"),
+    ) &&
+    !resumeFormatPopover.includes("sideOffset="),
+  "Resume format select poppers must use shared width and standard spacing.",
 );
 
 assert(
@@ -294,7 +374,7 @@ assert(
   "Session replacement must include the current message while chat history contains prior messages only.",
 );
 assert(
-  /if\s*\(\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.isResponding\)/.test(
+  /if\s*\(\s*\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.isResponding/.test(
     agentSendController,
   ) &&
     /const\s+userMessage:[\s\S]{0,240}\bfiles,?[\s\S]{0,240}\btext:\s*prompt/.test(
@@ -422,50 +502,43 @@ for (const file of files) {
 }
 
 const { getVisibleCompletedTools } = await loadAgentToolDisplayHelpers();
-const {
-  getAgentCitationSourceIds,
-  hasAgentCitationMarkupCandidate,
-  hasCompleteAgentCitationMarkup,
-  isPlainAgentText,
-  stripAgentCitationMarkup,
-} =
-  await loadAgentMessageRenderingHelpers();
-const tool = (id, title, state, purpose = "jd") => ({
+const { isPlainAgentText } = await loadAgentMessageRenderingHelpers();
+const tool = (id, title, state, url = "https://example.com/job") => ({
   id,
   type: `tool-${title}`,
   title,
   state,
-  input: { purpose },
+  input: { url },
 });
 
 assert(
   getVisibleCompletedTools([
-    tool("search-1", "web_search", "output-available"),
-    tool("fetch-error", "web_fetch", "output-error"),
-    tool("search-2", "web_search", "output-available"),
     tool("fetch-1", "web_fetch", "output-available"),
-    tool("search-error", "web_search", "output-error"),
-    tool("search-3", "web_search", "output-available"),
+    tool("fetch-error-1", "web_fetch", "output-error"),
     tool("fetch-2", "web_fetch", "output-available"),
+    tool("fetch-3", "web_fetch", "output-available"),
+    tool("fetch-error-2", "web_fetch", "output-error"),
+    tool("fetch-4", "web_fetch", "output-available"),
+    tool("fetch-5", "web_fetch", "output-available"),
   ])
     .map((item) => item.id)
-    .join(",") === "search-1,search-2,fetch-1,search-3,fetch-2",
+    .join(",") === "fetch-1,fetch-2,fetch-3,fetch-4,fetch-5",
   "Recovered failures should be hidden while every successful invocation remains auditable.",
 );
 
 assert(
   getVisibleCompletedTools([
-    tool("search-error-1", "web_search", "output-error"),
-    tool("search-error-2", "web_search", "output-error"),
+    tool("fetch-error-1", "web_fetch", "output-error"),
+    tool("fetch-error-2", "web_fetch", "output-error"),
   ])
     .map((item) => item.id)
-    .join(",") === "search-error-2",
+    .join(",") === "fetch-error-2",
   "Unrecovered agent tool failures should be collapsed to the latest failure.",
 );
 
 assert(
   isPlainAgentText("根据招聘信息，这个岗位主要要求如下。"),
-  "Plain agent text should stay eligible for inline citation rendering.",
+  "Plain agent text should stay eligible for lightweight rendering.",
 );
 
 assert(
@@ -490,52 +563,7 @@ assert(
 
 assert(
   isPlainAgentText("熟悉 A* 搜索算法。"),
-  "Plain text with a non-Markdown asterisk should keep inline citation rendering.",
-);
-
-assert(
-  getAgentCitationSourceIds(
-    "source-jd-search, source-jd-search-2,source-jd-search",
-  ).join(",") === "source-jd-search,source-jd-search-2",
-  "Claim-level citations must preserve stable source ids and remove duplicates.",
-);
-assert(
-  getAgentCitationSourceIds(
-    "source-jd-search,https://malicious.test,unknown",
-  ).length === 0,
-  "A citation with any malformed source id must fail closed.",
-);
-assert(
-  getAgentCitationSourceIds(
-    "source-a,source-b,source-c,source-d",
-  ).length === 0,
-  "One claim must never render more than three citation sources.",
-);
-assert(
-  hasCompleteAgentCitationMarkup(
-    '<citation source_ids="source-a">Supported claim</citation>',
-  ) &&
-    !hasCompleteAgentCitationMarkup(
-      '<citation source_ids="source-a">Streaming claim',
-    ) &&
-    !hasCompleteAgentCitationMarkup(
-      '<citation source_ids="source-a">Outer <citation source_ids="source-b">inner</citation></citation>',
-    ),
-  "Only complete, non-nested citation markup may activate inline source UI.",
-);
-assert(
-  ["<", "<ci", "<citatio", "</ci"].every(
-    (prefix) =>
-      hasAgentCitationMarkupCandidate(prefix) &&
-      stripAgentCitationMarkup(prefix) === "",
-  ) &&
-    !hasCompleteAgentCitationMarkup(
-      '<citation source_ids="source-a">Supported</citation><ci',
-    ) &&
-    stripAgentCitationMarkup(
-      '<citation source_ids="source-a">Supported</citation><ci',
-    ) === "Supported",
-  "Streaming citation prefixes must stay hidden until the protocol tag is complete.",
+  "Plain text with a non-Markdown asterisk should keep lightweight rendering.",
 );
 
 console.log(`Frontend contract verified across ${files.length} source files.`);

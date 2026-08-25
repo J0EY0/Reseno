@@ -297,13 +297,13 @@ assert(
   "A send must not roll back messages from another resume session.",
 );
 
-const refreshSource = extractBetween(
+const adoptionSource = extractBetween(
   conversationSource,
+  "const adoptAgentSession = useCallback(",
   "const refreshAgentSession = useCallback(",
-  "const consumeRunStream = useAgentRunStream(",
 );
 assert(
-  refreshSource.includes("runtime.optimisticMessageOwner = null"),
+  adoptionSource.includes("runtime.optimisticMessageOwner = null"),
   "Replacing messages from the server must revoke provisional ownership.",
 );
 

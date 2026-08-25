@@ -29,9 +29,11 @@ const [
   avatarCanvas,
   resumeGallery,
   resumeGalleryCard,
+  resumeGalleryGrid,
   resumeGalleryController,
   templateGallery,
   templateGalleryCard,
+  templateGalleryGrid,
   templateGalleryController,
   codeBlock,
   codeBlockHighlighter,
@@ -46,9 +48,11 @@ const [
   readSource("components/editor/avatar-crop-canvas.tsx"),
   readSource("components/resume-gallery.tsx"),
   readSource("components/resume-gallery-card.tsx"),
+  readSource("components/resume-gallery-grid.tsx"),
   readSource("components/use-resume-gallery-controller.ts"),
   readSource("components/templates/template-gallery.tsx"),
   readSource("components/templates/template-gallery-card.tsx"),
+  readSource("components/templates/template-gallery-grid.tsx"),
   readSource("components/templates/use-template-gallery-controller.ts"),
   readSource("components/ai-elements/code-block.tsx"),
   readSource("components/ai-elements/code-block-highlighter.ts"),
@@ -127,6 +131,58 @@ for (const [entry, card, controller, name] of [
       card.includes("event.metaKey") &&
       card.includes('event.key === " "'),
     `The ${name} gallery must retain memoized cards, preview transitions, selection, and pagination ownership.`,
+  );
+}
+const getStaticClassTokens = (tag) =>
+  tag.match(/\bclassName="([^"]*)"/)?.[1].split(/\s+/) ?? [];
+for (const [
+  gallery,
+  grid,
+  paginatedListName,
+  totalListName,
+  emptyKey,
+  searchKey,
+  name,
+] of [
+  [
+    resumeGallery,
+    resumeGalleryGrid,
+    "paginatedResumes",
+    "resumes",
+    "emptyResumes",
+    "emptyResumeSearch",
+    "resume",
+  ],
+  [
+    templateGallery,
+    templateGalleryGrid,
+    "paginatedTemplates",
+    "templates",
+    "emptyTemplates",
+    "emptyTemplateSearch",
+    "template",
+  ],
+]) {
+  const emptyTag = gallery.match(/<Empty\b[^>]*>/)?.[0] ?? "";
+  const emptyClasses = getStaticClassTokens(emptyTag);
+
+  assert(
+    /<section\b[^>]*className="[^"]*\bborder\b/.test(gallery) &&
+      gallery.includes(`gallery.${paginatedListName}.length === 0`) &&
+      !grid.includes("<Empty") &&
+      !grid.includes('from "@/components/ui/empty"') &&
+      !emptyClasses.some(
+        (token) =>
+          token === "border" ||
+          token.startsWith("border-") ||
+          token.startsWith("bg-") ||
+          token.startsWith("shadow"),
+      ) &&
+      new RegExp(
+        `${totalListName}\\.length\\s*===\\s*0\\s*\\?\\s*t\\.${emptyKey}\\s*:\\s*t\\.${searchKey}`,
+      ).test(gallery) &&
+      gallery.indexOf("<Empty") < gallery.indexOf("ref={gridRef}"),
+    `The ${name} gallery empty state must remain flat inside its single bordered surface.`,
   );
 }
 const literalShikiImports = [

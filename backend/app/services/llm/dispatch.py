@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from .activity import iter_with_activity_timeout
 from .adapters import anthropic_messages, google_gemini, openai_chat, openai_responses
-from .common import close_async_stream
+from .common import close_async_stream, tool_function
 from .errors import LlmRequestError
+from .output_budget import resolve_request_output_budget
+from .tool_schema import portable_tool_schema
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
-    LlmInputMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStreamEvent,
-    LlmToolCall,
-    LlmToolValidationError,
 )
 from .validation import validate_tool_calls
 
@@ -39,188 +39,248 @@ def supports_native_attachment(
 
 async def async_complete_chat(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
+    on_provider_attempt: Callable[[], None] | None = None,
 ) -> LlmAssistantMessage:
     """Call the configured provider family and return one assistant message."""
 
+    config = resolve_request_output_budget(config, prompt)
+    _record_provider_attempt(on_provider_attempt)
     if config.api_family == "openai_responses":
         return await openai_responses.complete(
             config,
-            messages,
+            prompt,
             request_context=request_context,
         )
     if config.api_family == "anthropic_messages":
-        return await anthropic_messages.complete(config, messages)
+        return await anthropic_messages.complete(config, prompt.messages)
     if config.api_family == "google_gemini":
-        return await google_gemini.complete(config, messages)
+        return await google_gemini.complete(config, prompt.messages)
 
     return await openai_chat.complete(
         config,
-        messages,
+        prompt,
         request_context=request_context,
     )
 
 
 async def async_complete_tool_call(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     tools: list[dict[str, Any]],
     *,
     request_context: LlmRequestContext | None = None,
+    on_provider_attempt: Callable[[], None] | None = None,
 ) -> LlmAssistantMessage:
-    """Ask the configured provider family to choose tools, then validate them."""
-
-    if config.supports_streaming:
-        if config.api_family == "openai_responses":
-            stream = openai_responses.stream_tool_call(
-                config,
-                messages,
-                tools,
-                request_context=request_context,
-            )
-        elif config.api_family == "anthropic_messages":
-            stream = anthropic_messages.stream_tool_call(config, messages, tools)
-        elif config.api_family == "google_gemini":
-            stream = google_gemini.stream_tool_call(config, messages, tools)
-        else:
-            stream = openai_chat.stream_tool_call(
-                config,
-                messages,
-                tools,
-                request_context=request_context,
-            )
-        message = await _complete_streamed_tool_call(
-            stream,
-            idle_timeout_seconds=config.timeout_seconds,
-        )
-    elif config.api_family == "openai_responses":
-        message = await openai_responses.complete_tool_call(
-            config,
-            messages,
-            tools,
-            request_context=request_context,
-        )
-    elif config.api_family == "anthropic_messages":
-        message = await anthropic_messages.complete_tool_call(config, messages, tools)
-    elif config.api_family == "google_gemini":
-        message = await google_gemini.complete_tool_call(config, messages, tools)
-    else:
-        message = await openai_chat.complete_tool_call(
-            config,
-            messages,
-            tools,
-            request_context=request_context,
-        )
-
-    return _validated_tool_message(message, tools)
-
-
-async def _complete_streamed_tool_call(
-    stream: AsyncIterator[LlmStreamEvent],
-    *,
-    idle_timeout_seconds: float,
-) -> LlmAssistantMessage:
-    """Consume activity privately and expose exactly one terminal message."""
+    """Return the validated terminal message from the neutral tool stream."""
 
     terminal_message: LlmAssistantMessage | None = None
-    terminal_seen = False
-    async for event in iter_with_activity_timeout(
-        stream,
-        first_event_timeout_seconds=PROVIDER_FIRST_EVENT_TIMEOUT_SECONDS,
-        idle_timeout_seconds=idle_timeout_seconds,
+    async for event in async_stream_tool_call(
+        config,
+        prompt,
+        tools,
+        request_context=request_context,
+        on_provider_attempt=on_provider_attempt,
     ):
-        if terminal_seen:
-            raise LlmRequestError("Model provider returned events after completion.")
-        if event.type != "done":
-            continue
-        if event.message is None:
-            raise LlmRequestError("Model provider returned an empty response.")
-        terminal_message = event.message
-        terminal_seen = True
+        if event.type == "done":
+            terminal_message = event.message
 
     if terminal_message is None:
         raise LlmRequestError("Model provider stream ended before completion.")
     return terminal_message
 
 
+async def async_stream_tool_call(
+    config: AgentLlmConfig,
+    prompt: LlmPrompt,
+    tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None = None,
+    on_provider_attempt: Callable[[], None] | None = None,
+) -> AsyncIterator[LlmStreamEvent]:
+    """Stream one provider-neutral, validated model turn with tools available."""
+
+    config = resolve_request_output_budget(config, prompt, tools)
+    _record_provider_attempt(on_provider_attempt)
+
+    if not config.supports_streaming:
+        message = await _complete_provider_tool_call(
+            config,
+            prompt,
+            tools,
+            request_context=request_context,
+        )
+        validated = _validated_tool_message(config, message, tools)
+        yield LlmStreamEvent(type="text_delta", delta=validated.content)
+        yield LlmStreamEvent(type="done", message=validated)
+        return
+
+    stream = _provider_tool_stream(
+        config,
+        prompt,
+        tools,
+        request_context=request_context,
+    )
+    guarded_stream = iter_with_activity_timeout(
+        stream,
+        first_event_timeout_seconds=PROVIDER_FIRST_EVENT_TIMEOUT_SECONDS,
+        idle_timeout_seconds=config.timeout_seconds,
+    )
+    terminal_seen = False
+    try:
+        async for event in guarded_stream:
+            if terminal_seen:
+                raise LlmRequestError(
+                    "Model provider returned events after completion.",
+                )
+            if event.type != "done":
+                yield event
+                continue
+            if event.message is None:
+                raise LlmRequestError("Model provider returned an empty response.")
+            terminal_seen = True
+            yield LlmStreamEvent(
+                type="done",
+                message=_validated_tool_message(config, event.message, tools),
+            )
+
+        if not terminal_seen:
+            raise LlmRequestError("Model provider stream ended before completion.")
+    finally:
+        await close_async_stream(guarded_stream)
+
+
+def _provider_tool_stream(
+    config: AgentLlmConfig,
+    prompt: LlmPrompt,
+    tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None,
+) -> AsyncIterator[LlmStreamEvent]:
+    if config.api_family == "openai_responses":
+        return openai_responses.stream_tool_call(
+            config,
+            prompt,
+            tools,
+            request_context=request_context,
+        )
+    if config.api_family == "anthropic_messages":
+        return anthropic_messages.stream_tool_call(config, prompt.messages, tools)
+    if config.api_family == "google_gemini":
+        return google_gemini.stream_tool_call(config, prompt.messages, tools)
+    return openai_chat.stream_tool_call(
+        config,
+        prompt,
+        tools,
+        request_context=request_context,
+    )
+
+
+async def _complete_provider_tool_call(
+    config: AgentLlmConfig,
+    prompt: LlmPrompt,
+    tools: list[dict[str, Any]],
+    *,
+    request_context: LlmRequestContext | None,
+) -> LlmAssistantMessage:
+    if config.api_family == "openai_responses":
+        return await openai_responses.complete_tool_call(
+            config,
+            prompt,
+            tools,
+            request_context=request_context,
+        )
+    if config.api_family == "anthropic_messages":
+        return await anthropic_messages.complete_tool_call(
+            config,
+            prompt.messages,
+            tools,
+        )
+    if config.api_family == "google_gemini":
+        return await google_gemini.complete_tool_call(
+            config,
+            prompt.messages,
+            tools,
+        )
+    return await openai_chat.complete_tool_call(
+        config,
+        prompt,
+        tools,
+        request_context=request_context,
+    )
+
+
 def _validated_tool_message(
+    _config: AgentLlmConfig,
     message: LlmAssistantMessage,
     tools: list[dict[str, Any]],
 ) -> LlmAssistantMessage:
-    valid_tool_calls, validation_errors = validate_tool_calls(message.tool_calls, tools)
-    if validation_errors:
-        # Tool execution is all-or-nothing for one assistant turn. Executing only
-        # the valid subset risks duplicate side effects when the model retries.
-        # Return one observation for every proposed call so the retry history
-        # explicitly records that the valid calls were not executed either.
-        valid_tool_calls = []
-        validation_errors = _complete_batch_retry_errors(
-            message.tool_calls,
-            validation_errors,
-        )
+    _, validation_errors = validate_tool_calls(
+        message.tool_calls,
+        _portable_validation_tools(tools),
+    )
 
     return LlmAssistantMessage(
         content=message.content,
-        tool_calls=valid_tool_calls,
+        tool_calls=list(message.tool_calls),
         validation_errors=validation_errors,
         reasoning=message.reasoning,
         usage=message.usage,
         stop_reason=message.stop_reason,
         response_id=message.response_id,
-        provider_state=_provider_state_for_validation_retry(
-            message.provider_state,
-            validation_errors,
-        ),
+        provider_state=message.provider_state,
+        sources=list(message.sources),
     )
 
 
-def _complete_batch_retry_errors(
-    tool_calls: list[LlmToolCall],
-    validation_errors: list[LlmToolValidationError],
-) -> list[LlmToolValidationError]:
-    """Describe an all-or-nothing retry without losing valid tool proposals."""
+def _portable_validation_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate model output against the same schema subset it received."""
 
-    errors_by_call_identity = {
-        id(error.tool_call): error for error in validation_errors
-    }
-    return [
-        errors_by_call_identity.get(id(tool_call))
-        or LlmToolValidationError(
-            tool_call=tool_call,
-            message=(
-                "This tool call was not executed because another call in the "
-                "same batch failed validation. Resubmit the complete batch "
-                "after correcting every invalid call."
-            ),
+    projected: list[dict[str, Any]] = []
+    for tool in tools:
+        function = tool_function(tool)
+        if not function:
+            continue
+        projected.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "parameters": portable_tool_schema(function.get("parameters")),
+                },
+            },
         )
-        for tool_call in tool_calls
-    ]
-
+    return projected
 
 async def async_stream_chat(
     config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
+    prompt: LlmPrompt,
     *,
     request_context: LlmRequestContext | None = None,
+    on_provider_attempt: Callable[[], None] | None = None,
 ) -> AsyncIterator[LlmStreamEvent]:
     """Stream provider events; final event contains the unified message."""
 
+    config = resolve_request_output_budget(config, prompt)
+    _record_provider_attempt(on_provider_attempt)
     if config.api_family == "openai_responses":
         stream = openai_responses.stream(
             config,
-            messages,
+            prompt,
             request_context=request_context,
         )
     elif config.api_family == "anthropic_messages":
-        stream = anthropic_messages.stream(config, messages)
+        stream = anthropic_messages.stream(config, prompt.messages)
     elif config.api_family == "google_gemini":
-        stream = google_gemini.stream(config, messages)
+        stream = google_gemini.stream(config, prompt.messages)
     else:
         stream = openai_chat.stream(
             config,
-            messages,
+            prompt,
             request_context=request_context,
         )
 
@@ -236,39 +296,8 @@ async def async_stream_chat(
         await close_async_stream(guarded_stream)
 
 
-def _provider_state_for_validation_retry(
-    provider_state: dict[str, Any],
-    validation_errors: list[LlmToolValidationError],
-) -> dict[str, Any]:
-    """Keep provider continuation state aligned with all-or-nothing validation.
+def _record_provider_attempt(callback: Callable[[], None] | None) -> None:
+    """Record one outbound transport attempt without coupling to evaluation."""
 
-    The agent never executes a partial set of tool calls: if any call is invalid,
-    every call must be retried. Gemini provider state can contain several
-    function_call steps, so retain the complete rejected batch for the model's
-    repair turn; every retained call has a matching "not executed" observation.
-    """
-
-    if not provider_state or not validation_errors:
-        return provider_state
-
-    retry_call_ids = {error.tool_call.id for error in validation_errors}
-    steps = provider_state.get("steps")
-    if not isinstance(steps, list):
-        return provider_state
-
-    filtered_steps: list[dict[str, Any]] = []
-    retained_function_call = False
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        if step.get("type") == "function_call":
-            call_id = str(step.get("id") or step.get("call_id") or "")
-            if call_id not in retry_call_ids:
-                continue
-            retained_function_call = True
-        filtered_steps.append(step)
-
-    if not retained_function_call:
-        return {}
-
-    return {**provider_state, "steps": filtered_steps}
+    if callback is not None:
+        callback()

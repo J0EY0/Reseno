@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -6,6 +7,13 @@ from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
 
 JsonObject = dict[str, Any]
 MAX_RESUME_TITLE_LENGTH = 50
+RESUME_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{1,160}$")
+
+
+def is_valid_resume_id(value: str) -> bool:
+    """Return whether a workspace resume id uses the canonical alphabet."""
+
+    return bool(RESUME_ID_PATTERN.fullmatch(value))
 
 
 class ResumeWorkspaceItemResponse(BaseModel):

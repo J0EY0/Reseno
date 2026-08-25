@@ -559,11 +559,14 @@ const {
     tools: [
       {
         id: "tool-success",
-        type: "tool-web_search",
-        title: "web_search",
+        type: "tool-web_fetch",
+        title: "web_fetch",
         state: "output-available",
-        input: { query: "staff frontend engineer" },
-        output: { resultCount: 2 },
+        input: { url: "https://example.com/job" },
+        output: {
+          sourceId: "source-public-job",
+          url: "https://example.com/job",
+        },
         startedAt: "2026-08-10T10:00:00.000Z",
         completedAt: "2026-08-10T10:00:01.000Z",
       },
@@ -586,16 +589,8 @@ const {
         url: "https://example.com/job",
         excerpt: "Build accessible React and TypeScript products.",
       },
-      {
-        id: "source-jd-search-query",
-        title: "Internal search query",
-        sourceType: "targetContext",
-        excerpt: "Must be removed by sanitization.",
-      },
     ],
     transactionState: "none",
-    quickReplies: ["Continue"],
-    actions: ["summary"],
   };
   const hydrated = await hydrateAgentSession(
     Promise.resolve({
@@ -620,12 +615,11 @@ const {
 
   assert(
     JSON.stringify(replacementResponse) === JSON.stringify(sanitizedResponse) &&
-      replacementResponse.updates.length === 0 &&
       replacementResponse.sources.length === 1 &&
       replacementResponse.sources[0].excerpt ===
         "Build accessible React and TypeScript products." &&
-      replacementResponse.tools[0].input.query === "staff frontend engineer" &&
-      replacementResponse.tools[0].output.resultCount === 2 &&
+      replacementResponse.tools[0].input.url === "https://example.com/job" &&
+      replacementResponse.tools[0].output.sourceId === "source-public-job" &&
       replacementResponse.tools[1].errorText === "Fetch failed" &&
       replacementResponse.tools[1].completedAt ===
         "2026-08-10T10:00:03.000Z",

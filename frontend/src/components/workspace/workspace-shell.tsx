@@ -1,6 +1,7 @@
 import { Languages, LogOut, Moon, Sun } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
@@ -20,8 +21,14 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { ViewTransitionBoundary } from "@/components/view-transition";
-import { prepareWorkspaceRoute } from "@/components/workspace/workspace-route-preparation";
+import {
+  prepareWorkspaceRoute,
+  preloadWorkspaceRoute,
+  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+} from "@/components/workspace/workspace-route-preparation";
+import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import type { AppMessages, Locale } from "@/i18n";
+import { isAbortError } from "@/lib/api-client";
 import {
   createWorkspaceLateralRouteHandoff,
   deleteWorkspaceLateralRouteHandoff,
@@ -70,46 +77,71 @@ export function WorkspaceShell({
   theme: ThemeMode;
 }) {
   const navigate = useNavigate();
-  const navigationIntentRef = useRef(0);
+  const { beginNavigation } = useWorkspaceNavigationTransaction();
   const pageTitle = getWorkspacePageTitle(activeView, messages);
 
-  useEffect(
-    () => () => {
-      navigationIntentRef.current += 1;
-    },
-    [],
-  );
-
   function handleViewPreload(view: WorkspaceView) {
-    void prepareWorkspaceRoute(view, persistence).catch(() => undefined);
+    void preloadWorkspaceRoute(view).catch(() => undefined);
   }
 
   async function handleViewChange(view: WorkspaceView) {
+    const intent = beginNavigation();
     if (view === activeView) {
+      intent.finish();
       return;
     }
 
-    const intentId = navigationIntentRef.current + 1;
-    navigationIntentRef.current = intentId;
     const path = getWorkspacePath(view);
-    let handoffToken: string | null = null;
+    toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+    let prepared;
     try {
-      const prepared = await prepareWorkspaceRoute(view, persistence);
-      if (navigationIntentRef.current !== intentId) {
+      prepared = await prepareWorkspaceRoute(view, persistence, {
+        signal: intent.signal,
+      });
+    } catch (error) {
+      if (
+        intent.signal.aborted ||
+        isAbortError(error) ||
+        !intent.isCurrent()
+      ) {
         return;
       }
+      intent.finish();
+      console.error("Failed to prepare the workspace route.", error);
+      toast.error(messages.loadError, {
+        closeButton: true,
+        id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+      });
+      return;
+    }
+
+    if (!intent.isCurrent()) {
+      return;
+    }
+
+    let handoffToken: string | null = null;
+    try {
       const state = createWorkspaceLateralRouteHandoff(prepared);
       handoffToken = state.token;
+      intent.finish();
       navigate(path, { state });
-    } catch {
+    } catch (error) {
       if (handoffToken) {
         deleteWorkspaceLateralRouteHandoff(handoffToken);
       }
-      if (navigationIntentRef.current !== intentId) {
-        return;
-      }
-      navigate(path);
+      intent.finish();
+      console.error("Failed to prepare the workspace route.", error);
+      toast.error(messages.loadError, {
+        closeButton: true,
+        id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+      });
     }
+  }
+
+  function handleLogout() {
+    const intent = beginNavigation();
+    intent.finish();
+    onLogout();
   }
 
   return (
@@ -197,7 +229,7 @@ export function WorkspaceShell({
                 </Button>
               </>
             ) : null}
-            <Button type="button" variant="outline" onClick={onLogout}>
+            <Button type="button" variant="outline" onClick={handleLogout}>
               <LogOut className="size-4" />
               {messages.logout}
             </Button>

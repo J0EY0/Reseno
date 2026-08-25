@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, CSSProperties } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
@@ -14,6 +14,14 @@ export function AppToaster({ toastOptions, ...props }: AppToasterProps) {
       visibleToasts={4}
       toastOptions={{
         ...toastOptions,
+        style: {
+          "--error-bg":
+            "color-mix(in oklab, var(--destructive) 5%, var(--popover))",
+          "--error-border":
+            "color-mix(in oklab, var(--destructive) 30%, var(--border))",
+          "--error-text": "var(--destructive)",
+          ...toastOptions?.style,
+        } as CSSProperties,
         classNames: {
           ...toastOptions?.classNames,
           toast: cn("pr-12!", toastOptions?.classNames?.toast),

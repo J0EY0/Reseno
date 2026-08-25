@@ -6,6 +6,7 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
 import type {
@@ -132,6 +133,15 @@ export function TemplateGallery({
           </>
         }
       />
+      {gallery.paginatedTemplates.length === 0 ? (
+        <Empty className="min-h-[390px]">
+          <EmptyDescription className="font-medium">
+            {templates.length === 0
+              ? t.emptyTemplates
+              : t.emptyTemplateSearch}
+          </EmptyDescription>
+        </Empty>
+      ) : null}
       <div
         ref={gridRef}
         className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
@@ -140,7 +150,6 @@ export function TemplateGallery({
           t={t}
           previewResume={previewResume}
           templates={gallery.paginatedTemplates}
-          totalTemplateCount={templates.length}
           defaultTemplateId={defaultTemplateId}
           isSelecting={gallery.isSelecting}
           selectedIdSet={gallery.selectedIdSet}

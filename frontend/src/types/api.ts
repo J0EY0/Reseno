@@ -232,26 +232,6 @@ export interface AgentCommittedDraft {
   status: AgentDraftStatus;
 }
 
-export interface AgentTargetContext {
-  cleared: boolean;
-  kind:
-    | "employment"
-    | "graduate_study"
-    | "research"
-    | "scholarship"
-    | "general";
-  target: string;
-  locations: string[];
-  seniority: string;
-  responsibilities: string[];
-  mustHaveSkills: string[];
-  niceToHaveSkills: string[];
-  requirements: string[];
-  description: string;
-  exactJobDescription: boolean;
-  sourceMessageIds: string[];
-}
-
 export interface AgentDraftSnapshot extends AgentCommittedDraft {
   edits: AgentResumeEditSuggestion[];
   sourceMessageId: string;
@@ -265,35 +245,15 @@ export interface AgentChatRequest {
   messages: AgentConversationMessage[];
   locale: Locale;
   resume: ResumeData;
-  appliedActions: string[];
   draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
   stream?: true;
 }
 
-export type AgentChatActionId =
-  | "summary"
-  | "bullet"
-  | "keywords"
-  | "plan"
-  | "execute";
-
-export type AgentFinishMissing =
-  | "pending_draft"
-  | "url_purpose"
-  | "resume_target"
-  | "draft_edit_target"
-  | "source_material"
-  | "target_role"
-  | "user_evidence"
-  | "explicit_delete_intent"
-  | "explicit_reorder_intent"
-  | "model_config";
-
 export interface AgentSource {
   id: string;
   title: string;
-  sourceType: "targetContext" | "attachment" | "web";
+  sourceType: "attachment" | "web";
   url?: string;
   excerpt?: string;
 }
@@ -341,24 +301,12 @@ export interface AgentChatMessage {
   role: "assistant";
   tone?: "default" | "success";
   text: string;
-  reasoning?: string;
-  updates?: string[];
   timeline?: AgentTimelinePart[];
-  plan?: string[];
-  suggestions?: string[];
-  knowledge?: Array<{
-    title: string;
-    detail: string;
-  }>;
   tools?: AgentToolInvocation[];
   sources?: AgentSource[];
   edits?: AgentResumeEditSuggestion[];
   draft?: AgentCommittedDraft;
-  targetContext?: AgentTargetContext;
   transactionState?: AgentTransactionState;
-  finishMissing?: AgentFinishMissing[];
-  quickReplies?: string[];
-  actions?: AgentChatActionId[];
 }
 
 export interface AgentChatResponse {
@@ -434,58 +382,22 @@ export type AgentChatStreamEvent =
   | {
       type: "text_delta";
       delta: string;
-    }
-  | {
-      type: "reasoning_delta";
-      delta: string;
+      timelinePartId: string;
     }
   | {
       type: "message_delta";
       message: Partial<Omit<AgentChatMessage, "id" | "role">>;
     }
   | {
-      type: "plan";
-      message: Partial<Pick<AgentChatMessage, "plan">>;
-    }
-  | {
-      type: "updates";
-      message: Partial<Pick<AgentChatMessage, "updates">>;
-    }
-  | {
-      type: "timeline";
-      message: Partial<Pick<AgentChatMessage, "text" | "timeline">>;
-    }
-  | {
-      type: "suggestions";
-      message: Partial<Pick<AgentChatMessage, "suggestions">>;
-    }
-  | {
-      type: "knowledge";
-      message: Partial<Pick<AgentChatMessage, "knowledge">>;
-    }
-  | {
-      type: "tools";
-      message: Partial<Pick<AgentChatMessage, "text" | "tools" | "timeline">>;
-    }
-  | {
       type: "tool_start" | "tool_delta" | "tool_done";
       tool: AgentToolInvocation;
-    }
-  | {
-      type: "sources";
-      message: Partial<Pick<AgentChatMessage, "sources">>;
+      timelinePartId: string;
     }
   | {
       type: "edits";
-      message: Partial<Pick<AgentChatMessage, "edits">>;
-    }
-  | {
-      type: "quickReplies";
-      message: Partial<Pick<AgentChatMessage, "quickReplies">>;
-    }
-  | {
-      type: "actions";
-      message: Partial<Pick<AgentChatMessage, "actions">>;
+      message: Partial<
+        Pick<AgentChatMessage, "edits" | "transactionState">
+      >;
     }
   | {
       type: "message_done";

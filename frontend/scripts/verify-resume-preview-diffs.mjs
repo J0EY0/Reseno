@@ -307,6 +307,11 @@ try {
   );
   assert.match(
     rendered,
+    /data-resume-diff-label="已修改"/,
+    "A field edit must keep the visible modified status badge on its resume item.",
+  );
+  assert.match(
+    rendered,
     /<h3[^>]*><span>腾讯<\/span><\/h3>/,
     "The unchanged company must render without a diff marker.",
   );

@@ -1,89 +1,26 @@
 import json
-import re
 from collections.abc import AsyncIterator, Callable, Iterator
 from sqlite3 import Connection
-from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
-    AgentKnowledgeItem,
-    AgentSource,
     AgentTimelinePart,
 )
-from app.services.agent.request_context import accumulated_transaction_edits
 from app.services.llm import (
     AgentLlmConfig,
-    LlmAssistantMessage,
     LlmRequestError,
-    LlmStreamEvent,
     LlmTimeoutError,
-    async_complete_chat,
-    async_stream_chat,
     resolve_agent_llm_config,
 )
-from app.services.llm.types import LlmInputMessage
 
-from ..editing import _string_list
 from ..localization import agent_text
-from ..parsing_patterns import agent_patterns
-from .compaction import prepare_agent_messages
 from .context import (
     AgentRunAborted,
     AgentRuntimeContext,
-    agent_llm_request_context,
 )
-from .loop import async_iter_agent_tool_call_loop
-from .messages import (
-    has_native_current_request_attachments,
-    is_native_attachment_unsupported,
-)
-
-_CITATION_TAG_START_PATTERN = re.compile(r"</?citation\b", flags=re.IGNORECASE)
-_CITATION_OPEN_TAG_PATTERN = re.compile(
-    r'<citation\s+source_ids="([^"]*)"\s*>',
-    flags=re.IGNORECASE,
-)
-_CITATION_CLOSE_TAG_PATTERN = re.compile(r"</citation\s*>", flags=re.IGNORECASE)
-_CITATION_SOURCE_ID_PATTERN = re.compile(r"^source-[a-z0-9]+(?:-[a-z0-9]+)*$")
-_MAX_CITATION_SOURCES = 3
-
-
-def _parse_json_object(text: str) -> dict[str, Any] | None:
-    """Parse a JSON object from a model response when possible."""
-
-    value = text.strip()
-    if value.startswith("```"):
-        value = re.sub(r"^```(?:json)?", "", value, flags=re.IGNORECASE).strip()
-        value = re.sub(r"```$", "", value).strip()
-
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return None
-
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _knowledge_items(value: object) -> list[AgentKnowledgeItem]:
-    """Convert model-provided knowledge items into schema objects."""
-
-    if not isinstance(value, list):
-        return []
-
-    items: list[AgentKnowledgeItem] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-
-        title = item.get("title")
-        detail = item.get("detail")
-        if isinstance(title, str) and isinstance(detail, str):
-            items.append(AgentKnowledgeItem(title=title, detail=detail))
-
-    return items
+from .loop import AgentModelTurnLimitError, async_iter_agent_tool_call_loop
 
 
 def _merge_llm_response(
@@ -92,177 +29,17 @@ def _merge_llm_response(
 ) -> AgentChatMessage:
     """Merge real model text with deterministic executable draft operations."""
 
-    parsed = _parse_json_object(raw_text)
-    text = raw_text
-    suggestions = draft.suggestions
-    knowledge = draft.knowledge
-    quick_replies = draft.quick_replies
-
-    if parsed:
-        parsed_text = parsed.get("text")
-        parsed_suggestions = _string_list(parsed.get("suggestions"))
-        parsed_quick_replies = _string_list(parsed.get("quickReplies"))
-        parsed_knowledge = _knowledge_items(parsed.get("knowledge"))
-
-        if isinstance(parsed_text, str) and parsed_text.strip():
-            text = parsed_text.strip()
-        if parsed_suggestions:
-            suggestions = parsed_suggestions[:4]
-        if parsed_quick_replies:
-            quick_replies = parsed_quick_replies[:4]
-        if parsed_knowledge:
-            knowledge = parsed_knowledge[:4]
-
-    text = _sanitize_response_citations(text, draft.sources)
-    timeline = [
-        part.model_copy(
-            update={
-                "text": _sanitize_response_citations(part.text, draft.sources),
-            },
-        )
-        if part.type == "text"
-        else part
-        for part in draft.timeline
-    ]
-
     return draft.model_copy(
         update={
-            "text": text,
-            "timeline": timeline,
-            "suggestions": suggestions,
-            "knowledge": knowledge,
-            "quick_replies": quick_replies,
+            "text": raw_text,
         },
     )
-
-
-def _sanitize_response_citations(
-    text: str,
-    sources: list[AgentSource],
-) -> str:
-    """Keep only complete claim citations backed by known public web sources."""
-
-    known_source_ids = _known_citation_source_ids(sources)
-    tokens, well_formed = _citation_tag_tokens(text)
-    if not tokens:
-        return text
-
-    pairs: list[tuple[tuple[int, int, str, str], tuple[int, int, str, str]]] = []
-    opening: tuple[int, int, str, str] | None = None
-
-    if well_formed:
-        for token in tokens:
-            if token[2] == "open":
-                if opening is not None:
-                    well_formed = False
-                    break
-                opening = token
-                continue
-            if opening is None:
-                well_formed = False
-                break
-            pairs.append((opening, token))
-            opening = None
-        if opening is not None:
-            well_formed = False
-
-    if not well_formed:
-        return _strip_citation_tokens(text, tokens)
-
-    parts: list[str] = []
-    cursor = 0
-
-    for open_token, close_token in pairs:
-        parts.append(text[cursor : open_token[0]])
-        claim = text[open_token[1] : close_token[0]]
-        raw_ids = [source_id.strip() for source_id in open_token[3].split(",")]
-        cited_ids = list(dict.fromkeys(raw_ids))
-        valid_group = (
-            bool(cited_ids)
-            and len(cited_ids) <= _MAX_CITATION_SOURCES
-            and all(
-                source_id
-                and _CITATION_SOURCE_ID_PATTERN.fullmatch(source_id)
-                and source_id in known_source_ids
-                for source_id in raw_ids
-            )
-        )
-        if valid_group:
-            parts.append(
-                '<citation source_ids="'
-                + ",".join(cited_ids)
-                + '">'
-                + claim
-                + "</citation>",
-            )
-        else:
-            parts.append(claim)
-        cursor = close_token[1]
-
-    parts.append(text[cursor:])
-    return "".join(parts)
-
-
-def _known_citation_source_ids(sources: list[AgentSource]) -> set[str]:
-    known_source_ids: set[str] = set()
-    for source in sources:
-        if source.source_type != "web" or not isinstance(source.url, str):
-            continue
-        parsed_url = urlsplit(source.url)
-        if parsed_url.scheme.casefold() in {"http", "https"} and parsed_url.netloc:
-            known_source_ids.add(source.id)
-    return known_source_ids
-
-
-def _citation_tag_tokens(
-    text: str,
-) -> tuple[list[tuple[int, int, str, str]], bool]:
-    """Tokenize citation tags once so malformed output stays linear-time."""
-
-    tokens: list[tuple[int, int, str, str]] = []
-    cursor = 0
-    well_formed = True
-
-    while match := _CITATION_TAG_START_PATTERN.search(text, cursor):
-        tag_end = text.find(">", match.end())
-        if tag_end < 0:
-            tokens.append((match.start(), len(text), "malformed", ""))
-            well_formed = False
-            break
-
-        end = tag_end + 1
-        raw_tag = text[match.start() : end]
-        open_match = _CITATION_OPEN_TAG_PATTERN.fullmatch(raw_tag)
-        if open_match:
-            tokens.append((match.start(), end, "open", open_match.group(1)))
-        elif _CITATION_CLOSE_TAG_PATTERN.fullmatch(raw_tag):
-            tokens.append((match.start(), end, "close", ""))
-        else:
-            tokens.append((match.start(), end, "malformed", ""))
-            well_formed = False
-        cursor = end
-
-    return tokens, well_formed
-
-
-def _strip_citation_tokens(
-    text: str,
-    tokens: list[tuple[int, int, str, str]],
-) -> str:
-    parts: list[str] = []
-    cursor = 0
-    for start, end, _kind, _source_ids in tokens:
-        parts.append(text[cursor:start])
-        cursor = end
-    parts.append(text[cursor:])
-    return "".join(parts)
 
 
 def _direct_llm_response(
     raw_text: str,
     *,
     message_id: str | None = None,
-    reasoning: str = "",
 ) -> AgentChatMessage:
     """Return a plain assistant response with no tool-call metadata."""
 
@@ -271,16 +48,9 @@ def _direct_llm_response(
         role="assistant",
         tone="default",
         text=raw_text,
-        reasoning=reasoning,
-        updates=[],
-        plan=[],
-        suggestions=[],
-        knowledge=[],
         tools=[],
         sources=[],
         edits=[],
-        quickReplies=[],
-        actions=[],
     )
 
 
@@ -288,22 +58,15 @@ def _model_setup_message(request: AgentChatRequest) -> AgentChatMessage:
     """Build a direct setup guide when no usable model config exists."""
 
     text = agent_text(request.locale, "model.setup.text")
-    quick_replies = [agent_text(request.locale, "model.setup.quick_reply")]
 
     return AgentChatMessage(
         id=f"agent-msg-{uuid4().hex[:12]}",
         role="assistant",
         tone="default",
         text=text,
-        updates=[],
-        plan=[],
-        suggestions=[],
-        knowledge=[],
         tools=[],
         sources=[],
         edits=[],
-        quickReplies=quick_replies,
-        actions=[],
     )
 
 
@@ -329,21 +92,17 @@ def _model_error_message(
         role="assistant",
         tone="default",
         text=text,
-        updates=[],
-        plan=[],
-        suggestions=[],
-        knowledge=[],
         tools=[],
         sources=[],
         edits=[],
-        quickReplies=[],
-        actions=[],
     )
 
 
 def _llm_error_detail(error: LlmRequestError) -> str:
     """Return a stable error without exposing provider-controlled text."""
 
+    if isinstance(error, AgentModelTurnLimitError):
+        return "Agent model turn limit reached."
     if isinstance(error.status_code, int):
         return f"Model provider returned HTTP {error.status_code}."
 
@@ -360,6 +119,8 @@ def _llm_error_detail(error: LlmRequestError) -> str:
 def _llm_error_code(error: LlmRequestError) -> str:
     """Return the durable public classification for one provider failure."""
 
+    if isinstance(error, AgentModelTurnLimitError):
+        return "AGENT_INTERNAL_ERROR"
     if error.status_code in {401, 403}:
         return "AGENT_PROVIDER_AUTH_ERROR"
     if isinstance(error, LlmTimeoutError):
@@ -374,28 +135,7 @@ def _sse_event(event_name: str, payload: dict[str, object]) -> str:
     return f"event: {event_name}\ndata: {data}\n\n"
 
 
-def _message_delta_payload(message: AgentChatMessage) -> dict[str, object]:
-    """Return mutable assistant fields for an SSE message_delta event."""
-
-    message_payload = message.model_dump(mode="json", by_alias=True)
-    return {
-        "text": message_payload["text"],
-        "reasoning": message_payload["reasoning"],
-        "updates": message_payload["updates"],
-        "timeline": message_payload["timeline"],
-        "plan": message_payload["plan"],
-        "suggestions": message_payload["suggestions"],
-        "knowledge": message_payload["knowledge"],
-        "tools": message_payload["tools"],
-        "sources": message_payload["sources"],
-        "edits": message_payload["edits"],
-        "transactionState": message_payload["transactionState"],
-        "quickReplies": message_payload["quickReplies"],
-        "actions": message_payload["actions"],
-    }
-
-
-def _message_delta_event(event_name: str, **fields: object) -> str:
+def _message_patch_event(event_name: str, **fields: object) -> str:
     """Return an SSE event that patches visible assistant message fields."""
 
     return _sse_event(
@@ -407,101 +147,28 @@ def _message_delta_event(event_name: str, **fields: object) -> str:
     )
 
 
-def _tool_stream_event(event_name: str, tool: dict[str, object]) -> str:
+def _text_stream_event(delta: str, timeline_part_id: str) -> str:
+    return _sse_event(
+        "text_delta",
+        {
+            "type": "text_delta",
+            "delta": delta,
+            "timelinePartId": timeline_part_id,
+        },
+    )
+
+
+def _tool_stream_event(
+    event_name: str,
+    tool: dict[str, object],
+    timeline_part_id: str,
+) -> str:
     return _sse_event(
         event_name,
         {
             "type": event_name,
             "tool": tool,
-        },
-    )
-
-
-async def _complete_chat_stream_events(
-    config: AgentLlmConfig,
-    messages: list[LlmInputMessage],
-    runtime: AgentRuntimeContext,
-) -> AsyncIterator[LlmStreamEvent]:
-    """Yield provider stream events inside the agent cancellation budget."""
-
-    if not config.supports_streaming:
-        await runtime.checkpoint()
-        message = await async_complete_chat(
-            config,
-            messages,
-            request_context=runtime.llm_request_context,
-        )
-        await runtime.checkpoint()
-        if message.content:
-            yield LlmStreamEvent(type="text_delta", delta=message.content)
-        yield LlmStreamEvent(type="done", message=message)
-        return
-
-    await runtime.checkpoint()
-    async for event in async_stream_chat(
-        config,
-        messages,
-        request_context=runtime.llm_request_context,
-    ):
-        await runtime.checkpoint()
-        yield event
-
-
-def _is_tool_running_state(state: str) -> bool:
-    """Return whether a tool state represents a pending/running action."""
-
-    return state in {
-        "approval-requested",
-        "input-available",
-        "input-streaming",
-    }
-
-
-def _visible_loop_text(text: str | None) -> str:
-    """Return safe user-visible loop narration from a tool-choice response."""
-
-    if not text:
-        return ""
-
-    blocked_prefixes = agent_patterns("streaming.blocked_visible_loop_prefixes")
-    lines = []
-    for raw_line in text.strip().splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        lowered = line.lower()
-        if any(lowered.startswith(prefix) for prefix in blocked_prefixes):
-            continue
-        lines.append(line)
-
-    visible = "\n".join(lines).strip()
-    if len(visible) <= 220:
-        return visible
-
-    sentence_parts = re.split(r"(?<=[。！？.!?])\s*", visible)
-    compact = ""
-    for sentence in sentence_parts:
-        if not sentence:
-            continue
-        next_text = f"{compact}{sentence}" if compact else sentence
-        if len(next_text) > 220:
-            break
-        compact = next_text
-
-    if compact:
-        return compact
-
-    return f"{visible[:220].rstrip()}..."
-
-
-def _text_delta(text: str) -> str:
-    """Return one visible text delta SSE frame."""
-
-    return _sse_event(
-        "text_delta",
-        {
-            "type": "text_delta",
-            "delta": text,
+            "timelinePartId": timeline_part_id,
         },
     )
 
@@ -523,28 +190,38 @@ def _timeline_tool_part(part_id: str, tool_ids: list[str]) -> AgentTimelinePart:
     )
 
 
-def _timeline_payload(parts: list[AgentTimelinePart]) -> list[dict[str, object]]:
-    """Return timeline parts as SSE-safe JSON payloads."""
-
-    return [part.model_dump(mode="json", by_alias=True) for part in parts]
-
-
-def _append_timeline_text(
+def _append_timeline_delta(
     parts: list[AgentTimelinePart],
-    text: str,
-) -> None:
-    """Append text at the current stream position."""
+    text_chunks: dict[str, list[str]],
+    delta: str,
+) -> str:
+    """Append one model delta at the current stream position."""
 
-    if not text.strip():
-        return
+    if not delta:
+        return ""
 
     if parts and parts[-1].type == "text":
-        separator = "\n\n" if parts[-1].text.strip() else ""
-        parts[-1].text = f"{parts[-1].text}{separator}{text}"
-        return
+        part_id = parts[-1].id
+    else:
+        part_id = f"timeline-text-{len(parts) + 1}"
+        parts.append(_timeline_text_part(part_id, ""))
 
-    part_id = f"timeline-text-{len(parts) + 1}"
-    parts.append(_timeline_text_part(part_id, text))
+    text_chunks.setdefault(part_id, []).append(delta)
+    return part_id
+
+
+def _materialize_timeline_text(
+    parts: list[AgentTimelinePart],
+    text_chunks: dict[str, list[str]],
+) -> list[AgentTimelinePart]:
+    """Join streamed text once when building the terminal snapshot."""
+
+    return [
+        part.model_copy(update={"text": "".join(text_chunks.get(part.id, []))})
+        if part.type == "text"
+        else part
+        for part in parts
+    ]
 
 
 def _append_timeline_tools(
@@ -590,21 +267,11 @@ def stream_agent_message(
 
     chunk_size = 24
     for index in range(0, len(text), chunk_size):
-        yield _sse_event(
-            "text_delta",
-            {
-                "type": "text_delta",
-                "delta": text[index : index + chunk_size],
-            },
+        yield _text_stream_event(
+            text[index : index + chunk_size],
+            "timeline-text-1",
         )
 
-    yield _sse_event(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "message": _message_delta_payload(message),
-        },
-    )
     on_complete_message(on_complete, message)
     yield _sse_event(
         "message_done",
@@ -635,10 +302,25 @@ async def async_stream_agent_response(
         for chunk in stream_agent_message(message, on_complete):
             yield chunk
         return
-    runtime = runtime.with_llm_request_context(
-        agent_llm_request_context(request, config),
-    )
-    draft: AgentChatMessage | None = None
+
+    async for frame in async_stream_resolved_agent_response(
+        request,
+        config,
+        on_complete=on_complete,
+        runtime=runtime,
+    ):
+        yield frame
+
+
+async def async_stream_resolved_agent_response(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    on_complete: Callable[[AgentChatMessage], None] | None = None,
+    runtime: AgentRuntimeContext | None = None,
+) -> AsyncIterator[str]:
+    """Project one model/tool loop into the public SSE protocol."""
+
+    runtime = runtime or AgentRuntimeContext()
     message_id = f"agent-msg-{uuid4().hex[:12]}"
 
     yield _sse_event(
@@ -650,61 +332,42 @@ async def async_stream_agent_response(
                 "role": "assistant",
                 "tone": "default",
                 "text": "",
-                "reasoning": "",
             },
         },
     )
 
-    raw_parts: list[str] = []
     timeline_parts: list[AgentTimelinePart] = []
+    timeline_text_chunks: dict[str, list[str]] = {}
     tool_part_ids: dict[str, str] = {}
     started_tool_ids: set[str] = set()
     completed_tool_ids: set[str] = set()
 
     try:
-        runner = None
+        turn_result = None
         terminal_loop_text = ""
         async for event in async_iter_agent_tool_call_loop(
             request,
             config,
             runtime,
         ):
-            if event.kind == "text":
-                visible_text = _visible_loop_text(event.text)
-                if event.terminal:
-                    terminal_loop_text = visible_text
-                    continue
-                if visible_text:
-                    separator = "\n\n" if raw_parts else ""
-                    visible_delta = f"{separator}{visible_text}"
-                    raw_parts.append(visible_delta)
-                    _append_timeline_text(timeline_parts, visible_text)
-                    yield _message_delta_event(
-                        "timeline",
-                        text="".join(raw_parts),
-                        timeline=_timeline_payload(timeline_parts),
+            if event.kind == "text_delta":
+                delta = event.text or ""
+                if delta:
+                    part_id = _append_timeline_delta(
+                        timeline_parts,
+                        timeline_text_chunks,
+                        delta,
                     )
+                    yield _text_stream_event(delta, part_id)
+                continue
+            if event.kind == "terminal":
+                terminal_loop_text = (event.text or "").strip()
                 continue
             if event.kind == "tools":
                 tool_payloads = [
                     tool.model_dump(mode="json", by_alias=True)
                     for tool in event.tools or []
                 ]
-                for tool_payload in tool_payloads:
-                    tool_id = str(tool_payload.get("id") or "")
-                    if not tool_id:
-                        continue
-                    if tool_id not in started_tool_ids:
-                        started_tool_ids.add(tool_id)
-                        yield _tool_stream_event("tool_start", tool_payload)
-                    yield _tool_stream_event("tool_delta", tool_payload)
-                    state = str(tool_payload.get("state") or "")
-                    if (
-                        state.startswith("output-")
-                        and tool_id not in completed_tool_ids
-                    ):
-                        completed_tool_ids.add(tool_id)
-                        yield _tool_stream_event("tool_done", tool_payload)
                 new_tool_ids = [
                     tool.id
                     for tool in event.tools or []
@@ -717,238 +380,101 @@ async def async_stream_agent_response(
                     )
                     for tool_id in new_tool_ids:
                         tool_part_ids[tool_id] = part_id
-                # Tool state is streamed through the ID-addressed events above.
-                # Only the timeline needs a message patch here; the terminal
-                # message still carries a complete tool snapshot for replay.
-                yield _message_delta_event(
-                    "timeline",
-                    text="".join(raw_parts),
-                    timeline=_timeline_payload(timeline_parts),
-                )
+                for tool_payload in tool_payloads:
+                    tool_id = str(tool_payload.get("id") or "")
+                    if not tool_id:
+                        continue
+                    timeline_part_id = tool_part_ids[tool_id]
+                    state = str(tool_payload.get("state") or "")
+                    terminal = state.startswith("output-")
+                    if tool_id not in started_tool_ids:
+                        started_tool_ids.add(tool_id)
+                        event_name = "tool_done" if terminal else "tool_start"
+                        if terminal:
+                            completed_tool_ids.add(tool_id)
+                        yield _tool_stream_event(
+                            event_name,
+                            tool_payload,
+                            timeline_part_id,
+                        )
+                    elif terminal and tool_id not in completed_tool_ids:
+                        completed_tool_ids.add(tool_id)
+                        yield _tool_stream_event(
+                            "tool_done",
+                            tool_payload,
+                            timeline_part_id,
+                        )
+                    elif not terminal:
+                        yield _tool_stream_event(
+                            "tool_delta",
+                            tool_payload,
+                            timeline_part_id,
+                        )
                 continue
             if event.kind == "edits":
-                streamed_edits = accumulated_transaction_edits(
-                    request,
-                    event.edits or [],
-                )
-                yield _message_delta_event(
+                yield _message_patch_event(
                     "edits",
                     edits=[
                         edit.model_dump(mode="json", by_alias=True)
-                        for edit in streamed_edits
+                        for edit in event.edits or []
                     ],
                     transactionState=event.transaction_state,
                 )
                 continue
             if event.kind == "done":
-                runner = event.runner
+                turn_result = event.result
+                if turn_result and not terminal_loop_text:
+                    terminal_loop_text = turn_result.terminal_text.strip()
 
-        if runner and (runner.tools or runner.finish_status):
-            draft = runner.build_message(message_id=message_id)
-            if draft.edits:
-                draft = draft.model_copy(
-                    update={
-                        "edits": accumulated_transaction_edits(
-                            request,
-                            draft.edits,
-                        ),
-                    },
-                )
-
-        if draft and runner and runner.transaction_failed:
-            yield _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "message": _message_delta_payload(draft),
-                },
-            )
-            on_complete_message(on_complete, draft)
-            yield _sse_event(
-                "message_done",
-                {
-                    "type": "message_done",
-                    "message": draft.model_dump(mode="json", by_alias=True),
-                },
-            )
-            return
-
-        if draft and runner and runner.finish_status and not runner.tools:
-            yield _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "message": _message_delta_payload(draft),
-                },
-            )
-            on_complete_message(on_complete, draft)
-            yield _sse_event(
-                "message_done",
-                {
-                    "type": "message_done",
-                    "message": draft.model_dump(mode="json", by_alias=True),
-                },
-            )
-            return
-
-        terminal_tool_failed = bool(
-            runner
-            and runner.tools
-            and runner.tools[-1].state == "output-error"
-            and runner.non_edit_tool_failure_text(runner.tools[-1])
-        )
-        if (
-            terminal_loop_text
-            and draft
-            and (terminal_tool_failed or not _known_citation_source_ids(draft.sources))
-        ):
-            _append_timeline_text(timeline_parts, terminal_loop_text)
-            message = _merge_llm_response(
-                draft.model_copy(update={"timeline": timeline_parts}),
-                terminal_loop_text,
-            )
-            yield _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "message": _message_delta_payload(message),
-                },
-            )
-            on_complete_message(on_complete, message)
-            yield _sse_event(
-                "message_done",
-                {
-                    "type": "message_done",
-                    "message": message.model_dump(mode="json", by_alias=True),
-                },
-            )
-            return
-
-        if terminal_loop_text and draft:
-            # Public web claims need the one final-response pass that receives
-            # stable citationSources. Preserve the tool-loop summary only as
-            # input context; it is never published as an uncited answer.
-            draft = draft.model_copy(update={"text": terminal_loop_text})
-
-        if raw_parts:
-            raw_parts.append("\n\n")
-        final_part_id = ""
-        stream_message: LlmAssistantMessage | None = None
-        force_attachment_text = bool(
-            runner and runner.native_attachment_text_fallback_used
-        )
-        native_fallback_available = (
-            not force_attachment_text
-            and has_native_current_request_attachments(request, config)
-        )
-        final_timeout_retry_available = True
-
-        while True:
-            messages = await prepare_agent_messages(
-                request,
-                config,
-                runtime,
-                mode="streaming_final",
-                draft=draft,
-                force_attachment_text=force_attachment_text,
-            )
-            final_output_started = False
-            try:
-                async for stream_event in _complete_chat_stream_events(
-                    config,
-                    messages,
-                    runtime,
-                ):
-                    if stream_event.type == "done":
-                        stream_message = stream_event.message
-                        continue
-                    if stream_event.type == "reasoning_delta":
-                        # Reasoning is transient backend metadata; it is
-                        # intentionally not persisted or shown to users.
-                        continue
-
-                    if not stream_event.delta:
-                        continue
-
-                    final_output_started = True
-                    raw_parts.append(stream_event.delta)
-                    if timeline_parts:
-                        if not final_part_id:
-                            final_part_id = f"timeline-text-{len(timeline_parts) + 1}"
-                            timeline_parts.append(
-                                _timeline_text_part(final_part_id, ""),
-                            )
-                        timeline_parts[-1].text = (
-                            timeline_parts[-1].text + stream_event.delta
-                        )
-                        yield _message_delta_event(
-                            "timeline",
-                            text="".join(raw_parts),
-                            timeline=_timeline_payload(timeline_parts),
-                        )
-                        continue
-
-                    yield _sse_event(
-                        "text_delta",
-                        {
-                            "type": "text_delta",
-                            "delta": stream_event.delta,
-                        },
-                    )
-                break
-            except LlmTimeoutError:
-                if final_output_started or not final_timeout_retry_available:
-                    raise
-
-                # A final request that timed out before its first visible token
-                # has no tool or UI side effect and is safe to replay once.
-                final_timeout_retry_available = False
-                stream_message = None
-                continue
-            except LlmRequestError as exc:
-                if (
-                    final_output_started
-                    or not native_fallback_available
-                    or not is_native_attachment_unsupported(exc)
-                ):
-                    raise
-
-                # A provider may advertise a compatible API family while
-                # rejecting native files for one endpoint/model. Retry once
-                # with the cached complete extraction before any visible text.
-                force_attachment_text = True
-                native_fallback_available = False
-                if runner:
-                    runner.native_attachment_text_fallback_used = True
-                stream_message = None
-                continue
-
-        if stream_message and stream_message.stop_reason == "length":
-            raise LlmRequestError(
-                "Model output was truncated. Increase max output tokens or use "
-                "a model with a larger output budget.",
-            )
-
-        raw_response = "".join(raw_parts).strip()
-        if not raw_response:
+        if turn_result is None:
+            raise LlmRequestError("Agent loop ended before completion.")
+        if not terminal_loop_text:
             raise LlmRequestError("Model provider returned an empty response.")
+
+        if turn_result.message is not None:
+            message = turn_result.message.model_copy(update={"id": message_id})
+            message = _merge_llm_response(message, terminal_loop_text)
+        else:
+            message = _direct_llm_response(
+                terminal_loop_text,
+                message_id=message_id,
+            )
+        message = message.model_copy(
+            update={
+                "timeline": _materialize_timeline_text(
+                    timeline_parts,
+                    timeline_text_chunks,
+                ),
+            },
+        )
     except AgentRunAborted:
         return
     except LlmRequestError as exc:
-        message = _model_error_message(request, config, exc)
+        if isinstance(exc, AgentModelTurnLimitError):
+            if exc.result.message is not None:
+                message = exc.result.message.model_copy(update={"id": message_id})
+                message = _merge_llm_response(message, exc.result.terminal_text)
+            else:
+                message = _direct_llm_response(
+                    exc.result.terminal_text,
+                    message_id=message_id,
+                )
+            message = message.model_copy(
+                update={
+                    "timeline": _materialize_timeline_text(
+                        timeline_parts,
+                        timeline_text_chunks,
+                    ),
+                },
+            )
+        else:
+            message = _model_error_message(request, config, exc)
         yield _sse_event(
             "error",
             {
                 "type": "error",
                 "error": _llm_error_detail(exc) or "Agent request failed.",
                 "errorCode": _llm_error_code(exc),
-            },
-        )
-        yield _sse_event(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "message": _message_delta_payload(message),
             },
         )
         yield _sse_event(
@@ -964,26 +490,7 @@ async def async_stream_agent_response(
         # and this transient error, making a retry duplicate the prompt.
         return
 
-    if draft:
-        message = _merge_llm_response(
-            draft.model_copy(update={"timeline": timeline_parts}),
-            raw_response,
-        )
-    else:
-        message = _direct_llm_response(
-            raw_response,
-            message_id=message_id,
-        )
-
-    yield _sse_event(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "message": _message_delta_payload(message),
-        },
-    )
-    # `message_done` tells clients the turn is authoritative. Run persistence
-    # first so a failed SQLite/filesystem commit cannot look completed in UI.
+    # Persist before telling clients that the turn is authoritative.
     on_complete_message(on_complete, message)
     yield _sse_event(
         "message_done",

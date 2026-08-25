@@ -53,9 +53,9 @@ const routeOwnerSources = new Map(
   await Promise.all(
     [
       ["resume-gallery", "src/components/workspace/use-resume-gallery-workspace.ts"],
-      ["resume-detail", "src/components/workspace/use-resume-detail-loader.ts"],
+      ["resume-detail", "src/components/workspace/workspace-route-preparation.ts"],
       ["template-gallery", "src/components/workspace/use-template-gallery-workspace.ts"],
-      ["template-detail", "src/components/workspace/use-template-detail-workspace.ts"],
+      ["template-detail", "src/components/workspace/workspace-route-preparation.ts"],
       ["trash", "src/components/workspace/use-trash-workspace.ts"],
       ["models", "src/components/workspace/use-workspace-preferences-route.ts"],
       ["settings", "src/components/workspace/use-workspace-preferences-route.ts"],

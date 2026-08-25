@@ -21,7 +21,6 @@ import { createWorkspacePreferencesPersistence } from "@/lib/workspace-preferenc
 import { clearWorkspaceLateralRouteMemory } from "@/lib/workspace-route-memory";
 import { useAuthGate } from "@/hooks/use-auth-gate";
 import { Spinner } from "@/components/ui/spinner";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import { clearDynamicImportReloadGuard } from "@/lib/dynamic-import-recovery";
 
 const loadAuthStatusErrorPage = () =>
@@ -106,17 +105,9 @@ function DynamicImportRecoveryReset() {
 
 function AppRouteSuspense({ children }: { children: ReactNode }) {
   return (
-    <Suspense
-      fallback={
-        <ViewTransitionBoundary exit="slide-down">
-          <AppRouteFallback />
-        </ViewTransitionBoundary>
-      }
-    >
-      <ViewTransitionBoundary enter="slide-up" default="none">
-        {children}
-        <DynamicImportRecoveryReset />
-      </ViewTransitionBoundary>
+    <Suspense fallback={<AppRouteFallback />}>
+      {children}
+      <DynamicImportRecoveryReset />
     </Suspense>
   );
 }

@@ -34,7 +34,7 @@ export function useResumeDetailLeave({
   const [pendingAction, setPendingAction] =
     useState<PendingLeaveAction | null>(null);
   const handledBlockedNavigationKeyRef = useRef<string | null>(null);
-  const checkpointPromotionInFlightRef = useRef(false);
+  const checkpointPromotionInFlightRef = useRef<Promise<void> | null>(null);
 
   const requestLeave = useCallback(
     (run: () => void, cancel?: () => void) => {
@@ -47,41 +47,42 @@ export function useResumeDetailLeave({
         run();
         return;
       }
-      if (checkpointPromotionInFlightRef.current) {
-        return;
+
+      const promotion =
+        checkpointPromotionInFlightRef.current ??
+        promoteCheckpoint()
+          .then(() => undefined)
+          .catch((error) => {
+            console.warn(
+              "Failed to checkpoint autosaved resume before leaving.",
+              error,
+            );
+
+            // Autosave already owns the current content. A history-only
+            // failure must not trap this or a newer navigation request.
+            markCheckpointPromotionSkipped();
+            toast.warning(messages.checkpointPromotionFailed, {
+              closeButton: true,
+              id: "checkpoint-promotion-failed",
+            });
+          });
+
+      if (!checkpointPromotionInFlightRef.current) {
+        checkpointPromotionInFlightRef.current = promotion;
+        void promotion.finally(() => {
+          if (checkpointPromotionInFlightRef.current === promotion) {
+            checkpointPromotionInFlightRef.current = null;
+          }
+        });
       }
 
-      checkpointPromotionInFlightRef.current = true;
-      void promoteCheckpoint()
-        .then(() => {
-          if (hasUnsavedChanges()) {
-            setPendingAction({ cancel, run });
-            return;
-          }
-          run();
-        })
-        .catch((error) => {
-          console.warn(
-            "Failed to checkpoint autosaved resume before leaving.",
-            error,
-          );
-          if (hasUnsavedChanges()) {
-            setPendingAction({ cancel, run });
-            return;
-          }
-
-          // Autosave already owns the current content. A history-only failure
-          // must not trap the user on this route.
-          markCheckpointPromotionSkipped();
-          toast.warning(messages.checkpointPromotionFailed, {
-            closeButton: true,
-            id: "checkpoint-promotion-failed",
-          });
-          run();
-        })
-        .finally(() => {
-          checkpointPromotionInFlightRef.current = false;
-        });
+      void promotion.then(() => {
+        if (hasUnsavedChanges()) {
+          setPendingAction({ cancel, run });
+          return;
+        }
+        run();
+      });
     },
     [
       hasUnsavedChanges,

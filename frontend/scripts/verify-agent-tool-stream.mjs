@@ -50,20 +50,61 @@ const toolDisplay = await loadTypeScriptModule(
 
 {
   let message = {
+    id: "assistant-streaming",
+    role: "assistant",
+    text: "",
+    timeline: [],
+    tools: [],
+  };
+  message = messageCodec.applyAgentTextStreamEvent(message, {
+    delta: "先读取岗位",
+    timelinePartId: "timeline-text-1",
+  });
+  message = messageCodec.applyAgentTextStreamEvent(message, {
+    delta: "要求。",
+    timelinePartId: "timeline-text-1",
+  });
+  message = messageCodec.applyAgentToolStreamEvent(message, {
+    timelinePartId: "timeline-tool-1",
+    tool: tool("web_fetch", "input-available", { id: "call-fetch" }),
+  });
+  message = messageCodec.applyAgentTextStreamEvent(message, {
+    delta: "改写完成。",
+    timelinePartId: "timeline-text-3",
+  });
+
+  assert(
+    message.text === "先读取岗位要求。改写完成。",
+    "Text deltas must append without receiving an accumulated message snapshot.",
+  );
+  assert(
+    message.timeline.map((part) => part.type).join(",") ===
+      "text,tool_group,text" &&
+      message.timeline[0].text === "先读取岗位要求。" &&
+      message.timeline[1].toolIds.join(",") === "call-fetch" &&
+      message.timeline[2].text === "改写完成。",
+    "Incremental text and tool events must preserve the visible timeline order.",
+  );
+}
+
+{
+  const fetchUrl = "https://example.com/job";
+  let message = {
     id: "assistant-message",
     role: "assistant",
     text: "",
     tools: [],
   };
-  const started = tool("resume_analysis", "input-streaming", {
-    input: { target: "resume" },
+  const started = tool("web_fetch", "input-streaming", {
+    input: { url: fetchUrl },
   });
-  const progressed = tool("resume_analysis", "input-available", {
-    input: { target: "resume" },
+  const progressed = tool("web_fetch", "input-available", {
+    input: { url: fetchUrl },
   });
-  const completed = tool("resume_analysis", "output-available", {
+  const completed = tool("web_fetch", "output-available", {
+    input: { url: fetchUrl },
     completedAt: "2026-07-26T10:00:00Z",
-    output: { score: 90 },
+    output: { sourceId: "source-public-job", url: fetchUrl },
   });
 
   message = messageCodec.applyAgentToolStreamEvent(message, { tool: started });
@@ -77,21 +118,21 @@ const toolDisplay = await loadTypeScriptModule(
   );
   assert(
     message.tools[0].state === "output-available" &&
-      message.tools[0].output.score === 90,
+      message.tools[0].output.url === fetchUrl,
     "tool_done must preserve the terminal state and output.",
   );
 
   message = messageCodec.applyAgentToolStreamEvent(message, {
-    tool: tool("edit_plan", "input-streaming"),
+    tool: tool("edit_execute", "input-streaming"),
   });
   const reconciled = messageCodec.mergeAgentToolInvocations(message.tools, [
-    tool("edit_plan", "output-available", { output: { editCount: 2 } }),
-    tool("resume_analysis", "input-available"),
+    tool("edit_execute", "output-available", { output: { editCount: 2 } }),
+    tool("web_fetch", "input-available", { input: { url: fetchUrl } }),
   ]);
 
   assert(
     reconciled.map((item) => item.id).join(",") ===
-      "call-resume_analysis,call-edit_plan",
+      "call-web_fetch,call-edit_execute",
     "A snapshot must reconcile by id without changing first-seen order.",
   );
   assert(
@@ -112,8 +153,7 @@ const toolDisplay = await loadTypeScriptModule(
       "app",
       "services",
       "agent",
-      "tools",
-      "registry.py",
+      "contracts.py",
     ),
     "utf8",
   );
@@ -125,10 +165,6 @@ const toolDisplay = await loadTypeScriptModule(
     toolDisplay.REGISTERED_AGENT_TOOL_NAMES,
   );
 
-  assert(
-    backendToolNames.length === 15,
-    `Expected 15 backend Agent tools, found ${backendToolNames.length}.`,
-  );
   assert(
     JSON.stringify([...frontendToolNames].sort()) ===
       JSON.stringify([...backendToolNames].sort()),
@@ -153,15 +189,25 @@ const toolDisplay = await loadTypeScriptModule(
 
   assert(
     toolDisplay.getAgentToolDisplayCategory(
-      tool("web_fetch", "input-streaming", { input: { purpose: "jd" } }),
+      tool("web_search", "input-streaming", {
+        input: { query: "frontend engineer job description" },
+      }),
+    ) === "search-job-reference",
+    "Web searches must use a status distinct from fetching a selected page.",
+  );
+  assert(
+    toolDisplay.getAgentToolDisplayCategory(
+      tool("web_fetch", "input-streaming", {
+        input: { url: "https://example.com/job" },
+      }),
     ) === "fetch-job-reference",
     "JD fetches must retain their dedicated user-facing status.",
   );
   assert(
     toolDisplay.getAgentToolDisplayCategory(
-      tool("edit_merge_items", "input-streaming"),
+      tool("edit_execute", "input-streaming"),
     ) === "generate-draft",
-    "Resume mutation tools must use the draft-generation status.",
+    "The general resume mutation tool must use the draft-generation status.",
   );
   assert(
     toolDisplay.isAgentEditExecutionTool(
@@ -189,41 +235,79 @@ const toolDisplay = await loadTypeScriptModule(
     "Structured edit rejection must be displayed as a failed tool outcome.",
   );
 
+  const completedTool = tool("web_fetch", "output-available");
+  const runningTool = tool("web_fetch", "input-available");
+  const completedToolPart = [
+    { id: "timeline-tool-1", type: "tool_group", toolIds: [completedTool.id] },
+  ];
+  assert(
+    toolDisplay.shouldShowTimelineContinuationStatus(
+      completedToolPart,
+      [completedTool],
+      true,
+    ),
+    "A live stream paused after a completed tool must show continuation feedback.",
+  );
+  assert(
+    !toolDisplay.shouldShowTimelineContinuationStatus(
+      completedToolPart,
+      [runningTool],
+      true,
+    ) &&
+      !toolDisplay.shouldShowTimelineContinuationStatus(
+        completedToolPart,
+        [completedTool],
+        false,
+      ) &&
+      !toolDisplay.shouldShowTimelineContinuationStatus(
+        [
+          ...completedToolPart,
+          { id: "timeline-text-2", type: "text", text: "改写完成。" },
+        ],
+        [completedTool],
+        true,
+      ),
+    "Running tools, completed messages, and active text output must not duplicate the continuation shimmer.",
+  );
+
   assert(
     toolDisplay
       .getVisibleCompletedTools([
-        tool("web_search", "output-available", {
-          id: "search-success-before-failure",
-          input: { purpose: "jd" },
+        tool("web_fetch", "output-available", {
+          id: "fetch-success-before-failure",
+          input: { url: "https://example.com/job" },
         }),
-        tool("web_search", "output-error", {
-          id: "search-latest-failure",
-          input: { purpose: "jd" },
-          errorText: "Latest search failed",
+        tool("web_fetch", "output-error", {
+          id: "fetch-latest-failure",
+          input: { url: "https://example.com/job" },
+          errorText: "Latest fetch failed",
         }),
       ])
       .map((item) => item.id)
       .join(",") ===
-      "search-success-before-failure,search-latest-failure",
+      "fetch-success-before-failure,fetch-latest-failure",
     "An older success must not hide the latest failure in chronological recovery order.",
   );
 
   assert(
     toolDisplay
       .getVisibleCompletedTools([
-        tool("resume_analysis", "output-available", {
-          id: "analysis-success-1",
+        tool("web_fetch", "output-available", {
+          id: "fetch-success-1",
+          input: { url: "https://example.com/job-1" },
         }),
-        tool("resume_analysis", "output-available", {
-          id: "analysis-success-2",
+        tool("web_fetch", "output-available", {
+          id: "fetch-success-2",
+          input: { url: "https://example.com/job-2" },
         }),
-        tool("resume_analysis", "output-available", {
-          id: "analysis-success-3",
+        tool("web_fetch", "output-available", {
+          id: "fetch-success-3",
+          input: { url: "https://example.com/job-3" },
         }),
       ])
       .map((item) => item.id)
       .join(",") ===
-      "analysis-success-1,analysis-success-2,analysis-success-3",
+      "fetch-success-1,fetch-success-2,fetch-success-3",
     "Distinct successful invocation ids must remain visible for an auditable call count.",
   );
 

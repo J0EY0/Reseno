@@ -4,7 +4,10 @@ from sqlite3 import Connection
 from typing import Any
 
 from app.services.llm_secrets import decrypt_api_key
+from app.services.model_discovery_cache import get_cached_provider_model
+from app.services.model_metadata import resolve_model_metadata
 from app.services.model_providers import resolve_model_provider_base_url
+from app.services.thinking import ThinkingControl
 
 from .common import DEFAULT_OPENAI_BASE_URL, REQUEST_TIMEOUT_SECONDS
 from .types import AgentLlmConfig
@@ -43,8 +46,7 @@ def resolve_agent_llm_config(
                 supports_image,
                 supports_thinking,
                 supports_tools,
-                supports_streaming,
-                thinking_enabled
+                supports_streaming
             FROM llm_configs
             WHERE client_id = ? AND enabled = 1
             """,
@@ -70,8 +72,7 @@ def resolve_agent_llm_config(
                 supports_image,
                 supports_thinking,
                 supports_tools,
-                supports_streaming,
-                thinking_enabled
+                supports_streaming
             FROM llm_configs
             WHERE enabled = 1
             ORDER BY is_default DESC, created_at DESC, id DESC
@@ -84,6 +85,34 @@ def resolve_agent_llm_config(
 
     encrypted_api_key = row["encrypted_api_key"]
     api_key = decrypt_api_key(encrypted_api_key) if encrypted_api_key else ""
+
+    discovered = get_cached_provider_model(row["provider"], row["model"])
+    model_max_output_tokens = (
+        discovered.max_output_tokens if discovered is not None else None
+    )
+    metadata = resolve_model_metadata(row["provider"], row["model"])
+    if model_max_output_tokens is None:
+        # Provider discovery is freshest and already normalized; LiteLLM is a
+        # capability fallback for configs loaded before (or without) discovery.
+        model_max_output_tokens = (
+            metadata.max_output_tokens if metadata is not None else None
+        )
+    thinking_control: ThinkingControl = "none"
+    if row["provider_kind"] == "cloud":
+        # A cloud config's persisted boolean is presentation data and may have
+        # been written by an older heuristic. Runtime behavior trusts only the
+        # current, versioned discovery snapshot.
+        if discovered is not None:
+            thinking_control = discovered.thinking_control
+    elif bool(row["supports_thinking"]):
+        # Custom and Ollama deployments own their model defaults; a checked
+        # capability therefore means "leave the provider default alone". vLLM
+        # and SGLang expose a verified explicit Auto control instead.
+        thinking_control = (
+            "native_auto"
+            if row["provider_kind"] == "local" and row["provider"] in {"vllm", "sglang"}
+            else "provider_default"
+        )
 
     return AgentLlmConfig(
         client_id=row["client_id"],
@@ -105,9 +134,44 @@ def resolve_agent_llm_config(
         max_tokens=row["max_tokens"],
         timeout_seconds=int(row["timeout_seconds"] or REQUEST_TIMEOUT_SECONDS),
         context_window_tokens=row["context_window_tokens"],
+        model_max_output_tokens=model_max_output_tokens,
         supports_image=bool(row["supports_image"]),
-        supports_thinking=bool(row["supports_thinking"]),
+        thinking_control=thinking_control,
         supports_tools=bool(row["supports_tools"]),
         supports_streaming=bool(row["supports_streaming"]),
-        thinking_enabled=bool(row["thinking_enabled"]),
+        use_native_web_search=_use_native_web_search(
+            provider=str(row["provider"]),
+            provider_kind=str(row["provider_kind"]),
+            api_family=str(row["api_family"]),
+            model=str(row["model"]),
+            model_supports_web_search=(
+                metadata.supports_web_search is True
+                if metadata is not None
+                else False
+            ),
+        ),
     )
+
+
+def _use_native_web_search(
+    *,
+    provider: str,
+    provider_kind: str,
+    api_family: str,
+    model: str,
+    model_supports_web_search: bool,
+) -> bool:
+    """Select one hosted-search protocol before the Agent loop starts."""
+
+    if provider_kind != "cloud" or not model_supports_web_search:
+        return False
+    if provider == "openai" and api_family == "openai_responses":
+        return True
+    if provider == "anthropic" and api_family == "anthropic_messages":
+        return True
+    if provider == "google" and api_family == "google_gemini":
+        # Gemini currently combines built-in and custom tools only on the
+        # Gemini 3 family. Older searchable models use the local web tools so
+        # edit_execute remains available in the same model turn.
+        return model.strip().removeprefix("models/").startswith("gemini-3")
+    return False

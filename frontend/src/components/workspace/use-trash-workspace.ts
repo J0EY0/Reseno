@@ -28,6 +28,7 @@ import type {
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   ResumeTemplateDefinition,
+  ResumeTemplateId,
   ThemeMode,
 } from "@/types/resume";
 
@@ -49,7 +50,6 @@ export function useTrashWorkspace({
   const preparedRouteData = useWorkspaceLateralRouteData("trash");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
-  const routeMutationEpochRef = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -66,9 +66,10 @@ export function useTrashWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(() => preparedRouteData?.customTemplates ?? []);
-  const [defaultTemplateId, setDefaultTemplateId] = useState(
-    () => preparedRouteData?.defaultTemplateId ?? "minimal",
-  );
+  const [defaultTemplateId, setDefaultTemplateId] =
+    useState<ResumeTemplateId>(
+      () => preparedRouteData?.defaultTemplateId ?? "minimal",
+    );
   const [deletedResumes, setDeletedResumes] = useState<
     DeletedResumeWorkspaceItem[]
   >(() => preparedRouteData?.deletedResumes ?? []);
@@ -87,15 +88,17 @@ export function useTrashWorkspace({
       deletedTemplates,
       theme,
     }),
-    [customTemplates, defaultTemplateId, deletedResumes, deletedTemplates, theme],
+    [
+      customTemplates,
+      defaultTemplateId,
+      deletedResumes,
+      deletedTemplates,
+      theme,
+    ],
   );
   const templatePreviewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
-  const markRouteMutation = useCallback(() => {
-    routeMutationEpochRef.current += 1;
-  }, []);
-
   useEffect(() => {
     const root = document.documentElement;
     const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -122,98 +125,65 @@ export function useTrashWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
+    async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      if (!isPreparedCalibration) {
-        setIsLoading(true);
-        setHasLoadError(false);
-        toast.dismiss("workspace-load-error");
-      }
+      setIsLoading(true);
+      setHasLoadError(false);
+      toast.dismiss("workspace-load-error");
 
       try {
-        while (!signal.aborted && requestIdRef.current === requestId) {
-          const mutationEpoch = routeMutationEpochRef.current;
-          try {
-            await persistence.flush();
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const source = await fetchWorkspaceRouteData(
-              "trash",
-              isPreparedCalibration
-                ? { notifyOnError: false }
-                : { notifyOnError: false, signal },
-            );
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const persistedPreferences = persistence.getSnapshot();
-            const nextTheme = source.data.theme
-              ? normalizeWorkspaceTheme(source.data.theme)
-              : persistedPreferences?.theme ?? "light";
-            const persistedAgentSettings =
-              persistedPreferences?.agentSettings ??
-              createDefaultAgentSettings();
-
-            setTheme(nextTheme);
-            setCustomTemplates(source.data.customTemplates);
-            setDefaultTemplateId(source.data.defaultTemplateId);
-            setDeletedResumes(source.data.deletedResumes);
-            setDeletedTemplates(source.data.deletedTemplates);
-            persistence.hydrate({
-              locale: initialLocaleRef.current,
-              theme: nextTheme,
-              agentSettings: persistedAgentSettings,
-            });
-            setHasLoaded(true);
-            return;
-          } catch (error) {
-            if (signal.aborted || isAbortError(error)) {
-              return;
-            }
-            if (requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            console.error("Failed to load the trash workspace route.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(
-                getMessagesSync(initialLocaleRef.current).apiMessages
-                  .REQUEST_FAILED,
-                { closeButton: true, id: "workspace-load-error" },
-              );
-            }
-            if (!isPreparedCalibration) {
-              setHasLoaded(false);
-              setHasLoadError(true);
-            }
-            return;
-          }
+        await persistence.flush();
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
         }
+
+        const source = await fetchWorkspaceRouteData("trash", {
+          notifyOnError: false,
+          signal,
+        });
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
+        }
+
+        const persistedPreferences = persistence.getSnapshot();
+        const nextTheme = source.data.theme
+          ? normalizeWorkspaceTheme(source.data.theme)
+          : persistedPreferences?.theme ?? "light";
+        const persistedAgentSettings =
+          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
+
+        setTheme(nextTheme);
+        setCustomTemplates(source.data.customTemplates);
+        setDefaultTemplateId(source.data.defaultTemplateId);
+        setDeletedResumes(source.data.deletedResumes);
+        setDeletedTemplates(source.data.deletedTemplates);
+        persistence.hydrate({
+          locale: initialLocaleRef.current,
+          theme: nextTheme,
+          agentSettings: persistedAgentSettings,
+        });
+        setHasLoaded(true);
+      } catch (error) {
+        if (
+          signal.aborted ||
+          isAbortError(error) ||
+          requestIdRef.current !== requestId
+        ) {
+          return;
+        }
+
+        console.error("Failed to load the trash workspace route.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(
+            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+            { closeButton: true, id: "workspace-load-error" },
+          );
+        }
+        setHasLoaded(false);
+        setHasLoadError(true);
       } finally {
         if (
-          !isPreparedCalibration &&
           !signal.aborted &&
           requestIdRef.current === requestId
         ) {
@@ -225,8 +195,7 @@ export function useTrashWorkspace({
   );
 
   useEffect(() => {
-    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
-    if (isPreparedCalibration && preparedRouteData) {
+    if (preparedRouteData && retryKey === 0) {
       const persistedPreferences = persistence.getSnapshot();
       persistence.hydrate({
         locale: initialLocaleRef.current,
@@ -236,14 +205,13 @@ export function useTrashWorkspace({
         agentSettings:
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
       });
+      return;
     }
 
     const controller = new AbortController();
-    // Suppress StrictMode's development preflight before transport begins,
-    // then abort a real request when route ownership changes.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal, isPreparedCalibration);
+        void loadRouteData(controller.signal);
       }
     }, 0);
 
@@ -255,7 +223,6 @@ export function useTrashWorkspace({
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
-      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -289,7 +256,7 @@ export function useTrashWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
   );
 
   const restoreResumes = useCallback(
@@ -313,7 +280,6 @@ export function useTrashWorkspace({
         return false;
       }
 
-      markRouteMutation();
       startTransition(() => {
         setDeletedResumes((current) =>
           current.filter((item) => !resumeIds.includes(item.id)),
@@ -325,7 +291,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [deletedResumes, markRouteMutation, messages],
+    [deletedResumes, messages],
   );
 
   const permanentlyDeleteResumes = useCallback(
@@ -346,7 +312,6 @@ export function useTrashWorkspace({
         return false;
       }
 
-      markRouteMutation();
       startTransition(() => {
         setDeletedResumes((current) =>
           current.filter((item) => !resumeIds.includes(item.id)),
@@ -360,7 +325,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [markRouteMutation, messages],
+    [messages],
   );
 
   const restoreTemplates = useCallback(
@@ -387,7 +352,6 @@ export function useTrashWorkspace({
         return false;
       }
 
-      markRouteMutation();
       startTransition(() => {
         setDeletedTemplates((current) =>
           current.filter((item) => !templateIds.includes(item.id)),
@@ -402,7 +366,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [deletedTemplates, markRouteMutation, messages],
+    [deletedTemplates, messages],
   );
 
   const permanentlyDeleteTemplates = useCallback(
@@ -423,7 +387,6 @@ export function useTrashWorkspace({
         return false;
       }
 
-      markRouteMutation();
       startTransition(() => {
         setDeletedTemplates((current) =>
           current.filter((item) => !templateIds.includes(item.id)),
@@ -437,7 +400,7 @@ export function useTrashWorkspace({
       );
       return true;
     },
-    [markRouteMutation, messages],
+    [messages],
   );
 
   return {

@@ -167,6 +167,7 @@ def test_anthropic_tool_stream_assembles_arguments_only_after_message_stop(
         "activity",
         "activity",
         "activity",
+        "activity",
         "done",
     ]
     terminal = events[-1].message
@@ -277,11 +278,19 @@ def test_anthropic_tool_stream_preserves_text_thinking_and_signature(
     assert terminal.content == "Checking."
     assert terminal.reasoning == "Inspect first."
     assert terminal.provider_state == {
-        "thinking_blocks": [
+        "model": "claude-test",
+        "content_blocks": [
             {
                 "type": "thinking",
                 "thinking": "Inspect first.",
                 "signature": "signed-state",
+            },
+            {"type": "text", "text": "Checking."},
+            {
+                "type": "tool_use",
+                "id": "toolu-thinking",
+                "name": "resume_lookup",
+                "input": {"query": "experience"},
             },
         ],
     }
@@ -575,7 +584,10 @@ def test_anthropic_tool_stream_keeps_stop_reason_across_usage_only_deltas(
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": "tool_use"},
-                "usage": {"output_tokens": 4},
+                "usage": {
+                    "output_tokens": 4,
+                    "output_tokens_details": {"thinking_tokens": 2},
+                },
             },
             {
                 "type": "message_delta",
@@ -602,3 +614,4 @@ def test_anthropic_tool_stream_keeps_stop_reason_across_usage_only_deltas(
     assert terminal is not None
     assert terminal.stop_reason == "tool_calls"
     assert terminal.usage and terminal.usage.total_tokens == 8
+    assert terminal.usage.reasoning_tokens == 2

@@ -5,18 +5,24 @@ import { toast } from "sonner";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
-import { importResumePayload } from "@/lib/import-api";
-import {
-  createDefaultResumeTitle,
-  normalizeResumeTitle,
-} from "@/lib/resume-title";
+import { createDefaultResumeTitle } from "@/lib/resume-title";
 import { getTemplateCatalog } from "@/lib/templates";
 import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { importResumesIntoWorkspace } from "@/components/workspace/resume-gallery-import";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
+  prepareCreatedResumeDetailRoute,
+  prepareResumeDetailRoute,
+  preloadResumeDetailRoute,
+  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+} from "@/components/workspace/workspace-route-preparation";
+import {
+  useWorkspaceNavigationTransaction,
+  type WorkspaceNavigationIntent,
+} from "@/components/workspace/use-workspace-navigation-transaction";
+import {
   createResumeApi,
-  createTemplateApi,
   fetchWorkspaceRouteData,
   moveResumeToTrashApi,
   saveUserSettingsApi,
@@ -28,24 +34,12 @@ import {
 import type {
   ResumeTemplateDefinition,
   ResumeTemplateId,
-  ResumeTypographySettings,
   ResumeWorkspaceItem,
   ThemeMode,
 } from "@/types/resume";
-import type { ResumeDetailResponse } from "@/types/api";
+import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 
 const defaultTemplateId: ResumeTemplateId = "minimal";
-const defaultTypography: ResumeTypographySettings = {
-  fontFamily: "inter",
-  fontSize: 16,
-};
-
-function preloadResumeDetailWorkspace() {
-  return Promise.all([
-    import("@/components/workspace/resume-detail-workspace-page"),
-    import("@/components/preview/document-preview-card"),
-  ]);
-}
 
 function normalizeWorkspaceTheme(value: unknown): ThemeMode {
   return value === "dark" || value === "system" ? value : "light";
@@ -66,9 +60,9 @@ export function useResumeGalleryWorkspace({
   const preparedRouteData = useWorkspaceLateralRouteData("resume");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
-  const routeMutationEpochRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
+  const { beginNavigation } = useWorkspaceNavigationTransaction();
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -107,10 +101,6 @@ export function useResumeGalleryWorkspace({
     }),
     [activeDefaultTemplateId, customTemplates, resumes, theme],
   );
-  const markRouteMutation = useCallback(() => {
-    routeMutationEpochRef.current += 1;
-  }, []);
-
   useEffect(() => {
     const root = document.documentElement;
     const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -137,96 +127,63 @@ export function useResumeGalleryWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
+    async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      if (!isPreparedCalibration) {
-        setIsLoading(true);
-        setHasLoadError(false);
-        toast.dismiss("workspace-load-error");
-      }
+      setIsLoading(true);
+      setHasLoadError(false);
+      toast.dismiss("workspace-load-error");
 
       try {
-        while (!signal.aborted && requestIdRef.current === requestId) {
-          const mutationEpoch = routeMutationEpochRef.current;
-          try {
-            await persistence.flush();
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const source = await fetchWorkspaceRouteData(
-              "resume-gallery",
-              isPreparedCalibration
-                ? { notifyOnError: false }
-                : { notifyOnError: false, signal },
-            );
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const persistedPreferences = persistence.getSnapshot();
-            const nextTheme = source.data.theme
-              ? normalizeWorkspaceTheme(source.data.theme)
-              : persistedPreferences?.theme ?? "light";
-
-            setTheme(nextTheme);
-            setResumes(source.data.resumes);
-            setActiveDefaultTemplateId(source.data.defaultTemplateId);
-            setCustomTemplates(source.data.customTemplates);
-            persistence.hydrate({
-              locale: initialLocaleRef.current,
-              theme: nextTheme,
-              agentSettings:
-                persistedPreferences?.agentSettings ??
-                createDefaultAgentSettings(),
-            });
-            setHasLoaded(true);
-            return;
-          } catch (error) {
-            if (signal.aborted || isAbortError(error)) {
-              return;
-            }
-            if (requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            console.error("Failed to load the resume gallery route.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(
-                getMessagesSync(initialLocaleRef.current).apiMessages
-                  .REQUEST_FAILED,
-                { closeButton: true, id: "workspace-load-error" },
-              );
-            }
-            if (!isPreparedCalibration) {
-              setHasLoaded(false);
-              setHasLoadError(true);
-            }
-            return;
-          }
+        await persistence.flush();
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
         }
+
+        const source = await fetchWorkspaceRouteData("resume-gallery", {
+          notifyOnError: false,
+          signal,
+        });
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
+        }
+
+        const persistedPreferences = persistence.getSnapshot();
+        const nextTheme = source.data.theme
+          ? normalizeWorkspaceTheme(source.data.theme)
+          : persistedPreferences?.theme ?? "light";
+
+        setTheme(nextTheme);
+        setResumes(source.data.resumes);
+        setActiveDefaultTemplateId(source.data.defaultTemplateId);
+        setCustomTemplates(source.data.customTemplates);
+        persistence.hydrate({
+          locale: initialLocaleRef.current,
+          theme: nextTheme,
+          agentSettings:
+            persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
+        });
+        setHasLoaded(true);
+      } catch (error) {
+        if (
+          signal.aborted ||
+          isAbortError(error) ||
+          requestIdRef.current !== requestId
+        ) {
+          return;
+        }
+
+        console.error("Failed to load the resume gallery route.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(
+            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+            { closeButton: true, id: "workspace-load-error" },
+          );
+        }
+        setHasLoaded(false);
+        setHasLoadError(true);
       } finally {
         if (
-          !isPreparedCalibration &&
           !signal.aborted &&
           requestIdRef.current === requestId
         ) {
@@ -238,8 +195,7 @@ export function useResumeGalleryWorkspace({
   );
 
   useEffect(() => {
-    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
-    if (isPreparedCalibration && preparedRouteData) {
+    if (preparedRouteData && retryKey === 0) {
       const persistedPreferences = persistence.getSnapshot();
       persistence.hydrate({
         locale: initialLocaleRef.current,
@@ -249,14 +205,13 @@ export function useResumeGalleryWorkspace({
         agentSettings:
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
       });
+      return;
     }
 
     const controller = new AbortController();
-    // Suppress StrictMode's development preflight before transport begins,
-    // then abort a real in-flight read when this route releases ownership.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal, isPreparedCalibration);
+        void loadRouteData(controller.signal);
       }
     }, 0);
 
@@ -268,7 +223,6 @@ export function useResumeGalleryWorkspace({
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
-      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -302,61 +256,100 @@ export function useResumeGalleryWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
   );
 
   const buildResumeDetailHandoff = useCallback(
     (
-      resume: ResumeWorkspaceItem,
+      prepared: PreparedResumeDetailRouteData,
       resumeOrdinal: number,
       resumeCount: number,
-      nextCustomTemplates: ResumeTemplateDefinition[] = customTemplates,
-      checkpoint?: { savedAt: string; versionId: string },
     ) =>
       createResumeDetailRouteHandoff(
-        resume,
-        {
-          customTemplates: nextCustomTemplates,
-          defaultTemplateId: activeDefaultTemplateId,
-          theme,
-        },
+        prepared,
         resumeOrdinal,
         resumeCount,
-        checkpoint,
       ),
-    [activeDefaultTemplateId, customTemplates, theme],
+    [],
+  );
+
+  const commitResumeDetailNavigation = useCallback(
+    (
+      intent: WorkspaceNavigationIntent,
+      prepared: PreparedResumeDetailRouteData,
+      resumeId: string,
+      resumeOrdinal: number,
+      resumeCount: number,
+    ) => {
+      if (!intent.isCurrent()) {
+        return;
+      }
+
+      runViewTransition(() => {
+        if (!intent.isCurrent()) {
+          return;
+        }
+        intent.finish();
+        navigate(getResumePath(resumeId), {
+          state: buildResumeDetailHandoff(
+            prepared,
+            resumeOrdinal,
+            resumeCount,
+          ),
+        });
+      }, "nav-forward");
+    },
+    [buildResumeDetailHandoff, navigate],
   );
 
   const openResume = useCallback(
     async (resumeId: string) => {
+      const intent = beginNavigation();
       const targetIndex = resumes.findIndex((item) => item.id === resumeId);
       const targetResume = resumes[targetIndex];
       if (!targetResume) {
+        intent.finish();
         return;
       }
 
+      toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+      let prepared: PreparedResumeDetailRouteData;
       try {
-        // Resolve both cold detail seams before the transition captures them.
-        await preloadResumeDetailWorkspace();
+        prepared = await prepareResumeDetailRoute(resumeId, persistence, {
+          signal: intent.signal,
+        });
       } catch (error) {
-        console.error("Failed to preload the resume detail route.", error);
-        toast.error(messages.loadError, { closeButton: true });
+        if (
+          intent.signal.aborted ||
+          isAbortError(error) ||
+          !intent.isCurrent()
+        ) {
+          return;
+        }
+        intent.finish();
+        console.error("Failed to prepare the resume detail route.", error);
+        toast.error(messages.loadError, {
+          closeButton: true,
+          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+        });
         return;
       }
 
-      runViewTransition(
-        () =>
-          navigate(getResumePath(resumeId), {
-            state: buildResumeDetailHandoff(
-              targetResume,
-              targetIndex + 1,
-              resumes.length,
-            ),
-          }),
-        "nav-forward",
+      commitResumeDetailNavigation(
+        intent,
+        prepared,
+        resumeId,
+        targetIndex + 1,
+        resumes.length,
       );
     },
-    [buildResumeDetailHandoff, messages.loadError, navigate, resumes],
+    [
+      beginNavigation,
+      commitResumeDetailNavigation,
+      messages.loadError,
+      persistence,
+      resumes,
+    ],
   );
 
   const createResume = useCallback(async () => {
@@ -364,9 +357,10 @@ export function useResumeGalleryWorkspace({
       return;
     }
 
+    const intent = beginNavigation();
     createInFlightRef.current = true;
     setIsCreating(true);
-    void preloadResumeDetailWorkspace().catch((error) => {
+    void preloadResumeDetailRoute().catch((error) => {
       console.warn("Failed to warm the resume detail route.", error);
     });
 
@@ -375,25 +369,45 @@ export function useResumeGalleryWorkspace({
         title: createDefaultResumeTitle(messages, resumes.length + 1),
         template: activeDefaultTemplateId,
       });
-      markRouteMutation();
       setResumes((current) => [...current, result.resume]);
-      runViewTransition(
-        () =>
-          navigate(getResumePath(result.resume.id), {
-            state: buildResumeDetailHandoff(
-              result.resume,
-              resumes.length + 1,
-              resumes.length + 1,
-              customTemplates,
-              {
-                savedAt: result.savedAt,
-                versionId: result.versionId,
-              },
-            ),
-          }),
-        "nav-forward",
+      if (!intent.isCurrent()) {
+        return;
+      }
+
+      let prepared: PreparedResumeDetailRouteData;
+      try {
+        prepared = await prepareCreatedResumeDetailRoute(
+          result,
+          persistence,
+          { signal: intent.signal },
+        );
+      } catch (error) {
+        if (
+          intent.signal.aborted ||
+          isAbortError(error) ||
+          !intent.isCurrent()
+        ) {
+          return;
+        }
+        intent.finish();
+        console.error("Failed to prepare the created resume route.", error);
+        toast.error(messages.loadError, {
+          closeButton: true,
+          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+        });
+        return;
+      }
+      commitResumeDetailNavigation(
+        intent,
+        prepared,
+        result.resume.id,
+        resumes.length + 1,
+        resumes.length + 1,
       );
     } catch (error) {
+      if (intent.isCurrent()) {
+        intent.finish();
+      }
       console.error("Failed to create resume in backend.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.loadError, { closeButton: true });
@@ -404,12 +418,11 @@ export function useResumeGalleryWorkspace({
     }
   }, [
     activeDefaultTemplateId,
-    buildResumeDetailHandoff,
-    customTemplates,
+    beginNavigation,
+    commitResumeDetailNavigation,
     isLoading,
-    markRouteMutation,
     messages,
-    navigate,
+    persistence,
     resumes.length,
   ]);
 
@@ -419,75 +432,23 @@ export function useResumeGalleryWorkspace({
         return;
       }
 
+      const intent = beginNavigation();
       importInFlightRef.current = true;
       setIsImporting(true);
-      void preloadResumeDetailWorkspace().catch((error) => {
+      void preloadResumeDetailRoute().catch((error) => {
         console.warn("Failed to warm the resume detail route.", error);
       });
 
       try {
-        const isPdfImport =
-          file.type === "application/pdf" ||
-          file.name.toLowerCase().endsWith(".pdf");
-        const importedBundle = await (async () => {
-          if (!isPdfImport) {
-            return importResumePayload(file);
-          }
-
-          // The parser and PDF.js are loaded only after PDF intent is known.
-          const { importResumeFromPdf } = await import(
-            "@/lib/pdf-resume-import"
-          );
-
-          return {
-            templates: [],
-            resumes: [
-              {
-                title: normalizeResumeTitle(
-                  file.name.replace(/\.pdf$/i, ""),
-                  createDefaultResumeTitle(messages, resumes.length + 1),
-                ),
-                resume: await importResumeFromPdf(
-                  file,
-                  messages.importedResumeFallbackSection,
-                ),
-                jobBrief: "",
-                typography: defaultTypography,
-                template: activeDefaultTemplateId,
-                templateSettings: null,
-              },
-            ],
-          };
-        })();
-        if (importedBundle.resumes.length === 0) {
-          throw new Error("No valid resume documents found in the imported file.");
-        }
-
-        const templateIdByArtifactRef = new Map<string, string>();
-        const savedTemplates: ResumeTemplateDefinition[] = [];
-        for (const embeddedTemplate of importedBundle.templates) {
-          const result = await createTemplateApi(embeddedTemplate.definition);
-          templateIdByArtifactRef.set(embeddedTemplate.ref, result.template.id);
-          savedTemplates.push(result.template);
-        }
-
-        const savedImports: ResumeDetailResponse[] = [];
-        for (const item of importedBundle.resumes) {
-          const mappedTemplateId = templateIdByArtifactRef.get(item.template);
-          if (item.template.startsWith("custom:") && !mappedTemplateId) {
-            throw new Error("Imported resume references an unknown template.");
-          }
-          savedImports.push(
-            await createResumeApi({
-              title: item.title,
-              resume: item.resume,
-              jobBrief: item.jobBrief,
-              typography: item.typography,
-              template: mappedTemplateId ?? item.template,
-              templateSettings: item.templateSettings ?? null,
-            }),
-          );
-        }
+        const { savedImports, savedTemplates } =
+          await importResumesIntoWorkspace(file, {
+            defaultTemplateId: activeDefaultTemplateId,
+            fallbackResumeTitle: createDefaultResumeTitle(
+              messages,
+              resumes.length + 1,
+            ),
+            fallbackSectionTitle: messages.importedResumeFallbackSection,
+          });
 
         const firstSavedImport = savedImports[0];
         if (!firstSavedImport) {
@@ -495,7 +456,6 @@ export function useResumeGalleryWorkspace({
         }
 
         const nextCustomTemplates = [...customTemplates, ...savedTemplates];
-        markRouteMutation();
         setResumes((current) => [
           ...current,
           ...savedImports.map((item) => item.resume),
@@ -503,24 +463,45 @@ export function useResumeGalleryWorkspace({
         if (savedTemplates.length > 0) {
           setCustomTemplates(nextCustomTemplates);
         }
-        runViewTransition(
-          () =>
-            navigate(getResumePath(firstSavedImport.resume.id), {
-              state: buildResumeDetailHandoff(
-                firstSavedImport.resume,
-                resumes.length + 1,
-                resumes.length + savedImports.length,
-                nextCustomTemplates,
-                {
-                  savedAt: firstSavedImport.savedAt,
-                  versionId: firstSavedImport.versionId,
-                },
-              ),
-            }),
-          "nav-forward",
+        if (!intent.isCurrent()) {
+          return;
+        }
+
+        let prepared: PreparedResumeDetailRouteData;
+        try {
+          prepared = await prepareCreatedResumeDetailRoute(
+            firstSavedImport,
+            persistence,
+            { signal: intent.signal },
+          );
+        } catch (error) {
+          if (
+            intent.signal.aborted ||
+            isAbortError(error) ||
+            !intent.isCurrent()
+          ) {
+            return;
+          }
+          intent.finish();
+          console.error("Failed to prepare the imported resume route.", error);
+          toast.error(messages.loadError, {
+            closeButton: true,
+            id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+          });
+          return;
+        }
+        commitResumeDetailNavigation(
+          intent,
+          prepared,
+          firstSavedImport.resume.id,
+          resumes.length + 1,
+          resumes.length + savedImports.length,
         );
         toast.success(messages.importResumeSuccess, { closeButton: true });
       } catch (error) {
+        if (intent.isCurrent()) {
+          intent.finish();
+        }
         console.error("Failed to import resume.", error);
         if (!isApiErrorToastShown(error)) {
           toast.error(messages.importResumeFailed, { closeButton: true });
@@ -532,11 +513,11 @@ export function useResumeGalleryWorkspace({
     },
     [
       activeDefaultTemplateId,
-      buildResumeDetailHandoff,
+      beginNavigation,
+      commitResumeDetailNavigation,
       customTemplates,
       messages,
-      markRouteMutation,
-      navigate,
+      persistence,
       resumes.length,
     ],
   );
@@ -564,7 +545,6 @@ export function useResumeGalleryWorkspace({
         return;
       }
 
-      markRouteMutation();
       setResumes((current) =>
         current.filter((item) => !resumeIds.includes(item.id)),
       );
@@ -573,7 +553,7 @@ export function useResumeGalleryWorkspace({
         { closeButton: true },
       );
     },
-    [markRouteMutation, messages, resumes],
+    [messages, resumes],
   );
 
   return {

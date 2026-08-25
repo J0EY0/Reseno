@@ -93,6 +93,7 @@ function ownsAgentSendPreflight(
 export function useAgentSendController({
   agentDraftState,
   consumeRunStream,
+  isSessionMutationPending,
   locale,
   messages,
   onBeforeSend,
@@ -105,6 +106,7 @@ export function useAgentSendController({
 }: {
   agentDraftState: AgentDraftState | null
   consumeRunStream: ConsumeAgentRunStream
+  isSessionMutationPending: boolean
   locale: Locale
   messages: AgentPanelMessage[]
   onBeforeSend?: () => Promise<void>
@@ -232,7 +234,11 @@ export function useAgentSendController({
         const runtime = runtimeRef.current
         const prompt = text.trim()
 
-        if ((!prompt && files.length === 0) || runtime.isResponding) {
+        if (
+          (!prompt && files.length === 0) ||
+          runtime.isResponding ||
+          isSessionMutationPending
+        ) {
           return 'cancelled'
         }
 
@@ -373,7 +379,6 @@ export function useAgentSendController({
                     (streamOptions) =>
                       sendAgentChatMessage(
                         {
-                          appliedActions: [],
                           expectedRevision,
                           locale,
                           message: currentMessage,
@@ -499,6 +504,7 @@ export function useAgentSendController({
       agentDraftState,
       cancelScheduledSend,
       consumeRunStream,
+      isSessionMutationPending,
       locale,
       messages,
       onBeforeSend,

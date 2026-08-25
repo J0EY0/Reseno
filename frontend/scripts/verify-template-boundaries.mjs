@@ -17,6 +17,7 @@ const [
   galleryRoute,
   detailPage,
   detailRoute,
+  routePreparation,
   detailView,
   detailSave,
   detailLeave,
@@ -46,6 +47,10 @@ const [
     "utf8",
   ),
   readFile(
+    new URL("components/workspace/workspace-route-preparation.ts", srcDir),
+    "utf8",
+  ),
+  readFile(
     new URL("components/workspace/template-detail-workspace-view.tsx", srcDir),
     "utf8",
   ),
@@ -68,6 +73,23 @@ const [
     "utf8",
   ),
 ]);
+
+const galleryDetailCommit = galleryRoute.slice(
+  galleryRoute.indexOf("const commitTemplateDetailNavigation"),
+  galleryRoute.indexOf("const openTemplate"),
+);
+const galleryOpenTemplate = galleryRoute.slice(
+  galleryRoute.indexOf("const openTemplate"),
+  galleryRoute.indexOf("const createCustomTemplate"),
+);
+const galleryCreateTemplate = galleryRoute.slice(
+  galleryRoute.indexOf("const createCustomTemplate"),
+  galleryRoute.indexOf("const importTemplates"),
+);
+const galleryImportTemplates = galleryRoute.slice(
+  galleryRoute.indexOf("const importTemplates"),
+  galleryRoute.indexOf("const deleteTemplates"),
+);
 
 assert(
   app.includes(
@@ -96,10 +118,10 @@ assert(
   "The route page must statically compose only the gallery and its route-owned controller.",
 );
 assert(
-  galleryRoute.includes(
+  routePreparation.includes(
     'import("@/components/workspace/template-detail-workspace-page")',
   ) &&
-    galleryRoute.includes(
+    routePreparation.includes(
       'import("@/components/preview/document-preview-card")',
     ) &&
     !/from\s+["']@\/components\/templates\/template-editor["']/.test(
@@ -109,10 +131,16 @@ assert(
   "Gallery intent may preload detail modules only through literal dynamic imports.",
 );
 assert(
-  /await preloadTemplateDetailWorkspace\(\)[\s\S]{0,500}runViewTransition[\s\S]{0,180}navigate\(getTemplatePath/.test(
-    galleryRoute,
-  ),
-  "Cold gallery navigation must resolve the detail route before its view transition.",
+  /await prepareTemplateDetailRoute\(templateId, persistence, \{[\s\S]{0,120}signal: intent\.signal/.test(
+    galleryOpenTemplate,
+  ) &&
+    /commitTemplateDetailNavigation\(\s*intent,\s*templateId,\s*data/.test(
+      galleryOpenTemplate,
+    ) &&
+    /runViewTransition[\s\S]{0,240}intent\.finish\(\)[\s\S]{0,120}navigate\(getTemplatePath/.test(
+      galleryDetailCommit,
+    ),
+  "Cold gallery navigation must resolve fresh detail data and modules before its view transition.",
 );
 assert(
   /await persistence\.flush\(\)[\s\S]{0,1000}fetchWorkspaceRouteData\(\s*"template-gallery"/.test(
@@ -124,11 +152,11 @@ assert(
   "The gallery route must flush shared preferences and own an abortable StrictMode-safe load.",
 );
 assert(
-  /createCustomTemplateFromBase[\s\S]*createTemplateApi[\s\S]*navigate\(getTemplatePath/.test(
-    galleryRoute,
+  /createCustomTemplateFromBase[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
+    galleryCreateTemplate,
   ) &&
-    /importTemplatePayload[\s\S]*for \(const item of payload\.templates\)[\s\S]*createTemplateApi[\s\S]*navigate\(getTemplatePath/.test(
-      galleryRoute,
+    /importTemplatePayload[\s\S]*for \(const item of payload\.templates\)[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
+      galleryImportTemplates,
     ),
   "Create and import must persist templates before navigating to template detail.",
 );
@@ -158,19 +186,19 @@ assert(
   "TemplateEditor must keep its identity across template-detail navigation.",
 );
 assert(
-  /await persistence\.flush\(\)[\s\S]{0,500}fetchWorkspaceRouteData\("template-detail"/.test(
-    detailRoute,
+  /loadTemplateDetailRouteData[\s\S]{0,500}await persistence\.flush\(\)[\s\S]{0,300}fetchWorkspaceRouteData\("template-detail"/.test(
+    routePreparation,
   ) &&
     /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/.test(
       detailRoute,
     ),
-  "Template detail must own an abortable, StrictMode-safe calibration read.",
+  "Template detail must own an abortable, StrictMode-safe direct-URL read.",
 );
 assert(
-  /priorPersistedFingerprint[\s\S]*createTemplateFingerprint\(currentTarget\)[\s\S]*item\.id === templateId \? currentTarget : item[\s\S]*hydratePersistedTemplate\(targetTemplate\)/.test(
+  /if \(initialDetail && retryKey === 0\)[\s\S]{0,500}setIsLoading\(false\);\s*return;/.test(
     detailRoute,
   ),
-  "Calibration must preserve a handoff draft edited before the server response.",
+  "A complete template handoff must skip the direct-URL read.",
 );
 assert(
   /activeRequestRef[\s\S]*submittedFingerprint[\s\S]*acceptedFingerprints[\s\S]*onAdoptSavedTemplateRef/.test(

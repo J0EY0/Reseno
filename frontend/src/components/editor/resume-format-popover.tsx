@@ -1,5 +1,5 @@
 import { RotateCcw, SlidersHorizontal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -195,6 +195,8 @@ export function ResumeFormatPopover({
   onTypographyChange: (typography: ResumeTypographySettings) => void;
   onTemplateSettingsChange: (patch: Partial<ResumeTemplateSettings>) => void;
 }) {
+  const templateSelectTriggerRef = useRef<HTMLButtonElement>(null);
+
   return (
     <Popover>
       <PopoverTrigger
@@ -204,7 +206,14 @@ export function ResumeFormatPopover({
         <SlidersHorizontal className="size-4" />
         {t.format}
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[340px] p-3">
+      <PopoverContent
+        align="end"
+        className="w-[340px] p-3"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          templateSelectTriggerRef.current?.focus();
+        }}
+      >
         <div className="grid gap-2.5">
           <div className="flex min-h-8 items-center justify-between gap-3">
             <span className="text-sm font-medium text-foreground">
@@ -244,12 +253,14 @@ export function ResumeFormatPopover({
               </TooltipProvider>
               <Select value={template} onValueChange={onTemplateChange}>
                 <SelectTrigger
+                  ref={templateSelectTriggerRef}
                   aria-label={t.applyTemplate}
-                  className="h-8 min-w-[104px] max-w-[132px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  className="w-32 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  size="sm"
                 >
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent align="end" position="popper" sideOffset={6}>
+                <SelectContent align="end" position="popper">
                   <SelectGroup>
                     {templates.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
@@ -280,11 +291,12 @@ export function ResumeFormatPopover({
               >
                 <SelectTrigger
                   aria-label={t.fontFamily}
-                  className="h-8 w-[128px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  className="w-36 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent [&:lang(zh)]:w-28"
+                  size="sm"
                 >
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent align="end" position="popper">
                   <SelectGroup>
                     {Object.entries(fontLabels).map(([value, labelKey]) => (
                       <SelectItem key={value} value={value}>
@@ -311,11 +323,12 @@ export function ResumeFormatPopover({
               >
                 <SelectTrigger
                   aria-label={t.fontSize}
-                  className="h-8 w-[104px] justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  className="w-24 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  size="sm"
                 >
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent align="end" position="popper">
                   {resumeFontSizeOptions.map((size) => (
                     <SelectItem key={size} value={String(size)}>
                       {getResumeFontSizeInPoints(size)} pt

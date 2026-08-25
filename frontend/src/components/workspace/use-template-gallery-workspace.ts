@@ -16,12 +16,22 @@ import { importTemplatePayload } from "@/lib/import-api";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
+  prepareTemplateDetailRoute,
+  preloadTemplateDetailRoute,
+  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+} from "@/components/workspace/workspace-route-preparation";
+import {
+  useWorkspaceNavigationTransaction,
+  type WorkspaceNavigationIntent,
+} from "@/components/workspace/use-workspace-navigation-transaction";
+import {
   createCustomTemplateFromBase,
   getTemplateById,
   getTemplateCatalog,
 } from "@/lib/templates";
 import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
 import {
   createTemplateApi,
   fetchWorkspaceRouteData,
@@ -40,13 +50,6 @@ import type {
 } from "@/types/resume";
 
 const baseTemplateId: ResumeTemplateId = "minimal";
-
-function preloadTemplateDetailWorkspace() {
-  return Promise.all([
-    import("@/components/workspace/template-detail-workspace-page"),
-    import("@/components/preview/document-preview-card"),
-  ]);
-}
 
 function normalizeWorkspaceTheme(value: unknown): ThemeMode {
   return value === "dark" || value === "system" ? value : "light";
@@ -67,10 +70,10 @@ export function useTemplateGalleryWorkspace({
   const preparedRouteData = useWorkspaceLateralRouteData("templates");
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
-  const routeMutationEpochRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
   const setDefaultInFlightRef = useRef(false);
+  const { beginNavigation } = useWorkspaceNavigationTransaction();
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -107,10 +110,6 @@ export function useTemplateGalleryWorkspace({
   const previewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
-  const markRouteMutation = useCallback(() => {
-    routeMutationEpochRef.current += 1;
-  }, []);
-
   useEffect(() => {
     const root = document.documentElement;
     const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -137,96 +136,63 @@ export function useTemplateGalleryWorkspace({
   }, [theme]);
 
   const loadRouteData = useCallback(
-    async (signal: AbortSignal, isPreparedCalibration: boolean) => {
+    async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      if (!isPreparedCalibration) {
-        setIsLoading(true);
-        setHasLoadError(false);
-        toast.dismiss("workspace-load-error");
-      }
+      setIsLoading(true);
+      setHasLoadError(false);
+      toast.dismiss("workspace-load-error");
 
       try {
-        while (!signal.aborted && requestIdRef.current === requestId) {
-          const mutationEpoch = routeMutationEpochRef.current;
-          try {
-            await persistence.flush();
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const source = await fetchWorkspaceRouteData(
-              "template-gallery",
-              isPreparedCalibration
-                ? { notifyOnError: false }
-                : { notifyOnError: false, signal },
-            );
-            if (signal.aborted || requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            const persistedPreferences = persistence.getSnapshot();
-            const nextTheme = source.data.theme
-              ? normalizeWorkspaceTheme(source.data.theme)
-              : persistedPreferences?.theme ?? "light";
-            const persistedAgentSettings =
-              persistedPreferences?.agentSettings ??
-              createDefaultAgentSettings();
-
-            setTheme(nextTheme);
-            setDefaultTemplateId(source.data.defaultTemplateId);
-            setCustomTemplates(source.data.customTemplates);
-            persistence.hydrate({
-              locale: initialLocaleRef.current,
-              theme: nextTheme,
-              agentSettings: persistedAgentSettings,
-            });
-            setHasLoaded(true);
-            return;
-          } catch (error) {
-            if (signal.aborted || isAbortError(error)) {
-              return;
-            }
-            if (requestIdRef.current !== requestId) {
-              return;
-            }
-            if (
-              isPreparedCalibration &&
-              routeMutationEpochRef.current !== mutationEpoch
-            ) {
-              continue;
-            }
-
-            console.error("Failed to load the template gallery route.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(
-                getMessagesSync(initialLocaleRef.current).apiMessages
-                  .REQUEST_FAILED,
-                { closeButton: true, id: "workspace-load-error" },
-              );
-            }
-            if (!isPreparedCalibration) {
-              setHasLoaded(false);
-              setHasLoadError(true);
-            }
-            return;
-          }
+        await persistence.flush();
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
         }
+
+        const source = await fetchWorkspaceRouteData("template-gallery", {
+          notifyOnError: false,
+          signal,
+        });
+        if (signal.aborted || requestIdRef.current !== requestId) {
+          return;
+        }
+
+        const persistedPreferences = persistence.getSnapshot();
+        const nextTheme = source.data.theme
+          ? normalizeWorkspaceTheme(source.data.theme)
+          : persistedPreferences?.theme ?? "light";
+        const persistedAgentSettings =
+          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
+
+        setTheme(nextTheme);
+        setDefaultTemplateId(source.data.defaultTemplateId);
+        setCustomTemplates(source.data.customTemplates);
+        persistence.hydrate({
+          locale: initialLocaleRef.current,
+          theme: nextTheme,
+          agentSettings: persistedAgentSettings,
+        });
+        setHasLoaded(true);
+      } catch (error) {
+        if (
+          signal.aborted ||
+          isAbortError(error) ||
+          requestIdRef.current !== requestId
+        ) {
+          return;
+        }
+
+        console.error("Failed to load the template gallery route.", error);
+        if (!isApiErrorToastShown(error)) {
+          toast.error(
+            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+            { closeButton: true, id: "workspace-load-error" },
+          );
+        }
+        setHasLoaded(false);
+        setHasLoadError(true);
       } finally {
         if (
-          !isPreparedCalibration &&
           !signal.aborted &&
           requestIdRef.current === requestId
         ) {
@@ -238,8 +204,7 @@ export function useTemplateGalleryWorkspace({
   );
 
   useEffect(() => {
-    const isPreparedCalibration = Boolean(preparedRouteData) && retryKey === 0;
-    if (isPreparedCalibration && preparedRouteData) {
+    if (preparedRouteData && retryKey === 0) {
       const persistedPreferences = persistence.getSnapshot();
       persistence.hydrate({
         locale: initialLocaleRef.current,
@@ -249,14 +214,13 @@ export function useTemplateGalleryWorkspace({
         agentSettings:
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
       });
+      return;
     }
 
     const controller = new AbortController();
-    // Suppress StrictMode's development preflight before transport begins,
-    // then abort any real in-flight request when route ownership changes.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadRouteData(controller.signal, isPreparedCalibration);
+        void loadRouteData(controller.signal);
       }
     }, 0);
 
@@ -268,7 +232,6 @@ export function useTemplateGalleryWorkspace({
 
   const changeTheme = useCallback(
     (nextTheme: ThemeMode) => {
-      markRouteMutation();
       setTheme(nextTheme);
       if (!hasLoaded || isLoading) {
         return;
@@ -302,47 +265,76 @@ export function useTemplateGalleryWorkspace({
         },
       );
     },
-    [hasLoaded, isLoading, locale, markRouteMutation, messages.loadError, onLocaleChange, persistence],
+    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
   );
 
-  const buildTemplateDetailHandoff = useCallback(
+  const commitTemplateDetailNavigation = useCallback(
     (
+      intent: WorkspaceNavigationIntent,
       templateId: string,
-      nextCustomTemplates: ResumeTemplateDefinition[] = customTemplates,
-    ) =>
-      createTemplateDetailRouteHandoff(templateId, {
-        customTemplates: nextCustomTemplates,
-        defaultTemplateId,
-        theme,
-      }),
-    [customTemplates, defaultTemplateId, theme],
+      data: WorkspaceTemplateRouteData,
+    ) => {
+      if (!intent.isCurrent()) {
+        return;
+      }
+
+      runViewTransition(() => {
+        if (!intent.isCurrent()) {
+          return;
+        }
+        intent.finish();
+        navigate(getTemplatePath(templateId), {
+          state: createTemplateDetailRouteHandoff(templateId, data),
+        });
+      }, "nav-forward");
+    },
+    [navigate],
   );
 
   const openTemplate = useCallback(
     async (templateId: string) => {
+      const intent = beginNavigation();
       if (!templateCatalog.some((item) => item.id === templateId)) {
+        intent.finish();
         return;
       }
 
+      toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+      let data: WorkspaceTemplateRouteData;
       try {
-        // This is a cold cross-route navigation. Resolve the detail route and
-        // its two lazy presentation seams before starting the view transition.
-        await preloadTemplateDetailWorkspace();
+        data = await prepareTemplateDetailRoute(templateId, persistence, {
+          signal: intent.signal,
+        });
       } catch (error) {
-        console.error("Failed to preload the template detail route.", error);
-        toast.error(messages.loadError, { closeButton: true });
+        if (
+          intent.signal.aborted ||
+          isAbortError(error) ||
+          !intent.isCurrent()
+        ) {
+          return;
+        }
+        intent.finish();
+        console.error("Failed to prepare the template detail route.", error);
+        toast.error(messages.loadError, {
+          closeButton: true,
+          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+        });
         return;
       }
 
-      runViewTransition(
-        () =>
-          navigate(getTemplatePath(templateId), {
-            state: buildTemplateDetailHandoff(templateId),
-          }),
-        "nav-forward",
+      commitTemplateDetailNavigation(
+        intent,
+        templateId,
+        data,
       );
     },
-    [buildTemplateDetailHandoff, messages.loadError, navigate, templateCatalog],
+    [
+      beginNavigation,
+      commitTemplateDetailNavigation,
+      messages.loadError,
+      persistence,
+      templateCatalog,
+    ],
   );
 
   const createCustomTemplate = useCallback(async () => {
@@ -350,9 +342,11 @@ export function useTemplateGalleryWorkspace({
       return;
     }
 
+    const intent = beginNavigation();
     createInFlightRef.current = true;
     setIsCreating(true);
-    void preloadTemplateDetailWorkspace().catch((error) => {
+    const detailRouteReady = preloadTemplateDetailRoute();
+    void detailRouteReady.catch((error) => {
       console.warn("Failed to warm the template detail route.", error);
     });
     const sourceTemplate = getTemplateById(templateCatalog, baseTemplateId);
@@ -363,20 +357,38 @@ export function useTemplateGalleryWorkspace({
     try {
       const result = await createTemplateApi(draftTemplate);
       const nextCustomTemplates = [...customTemplates, result.template];
-      markRouteMutation();
       setCustomTemplates(nextCustomTemplates);
-      runViewTransition(
-        () =>
-          navigate(getTemplatePath(result.template.id), {
-            state: buildTemplateDetailHandoff(
-              result.template.id,
-              nextCustomTemplates,
-            ),
-          }),
-        "nav-forward",
+      if (!intent.isCurrent()) {
+        return;
+      }
+      try {
+        await detailRouteReady;
+      } catch (error) {
+        if (!intent.isCurrent()) {
+          return;
+        }
+        intent.finish();
+        console.error("Failed to prepare the created template route.", error);
+        toast.error(messages.loadError, {
+          closeButton: true,
+          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+        });
+        return;
+      }
+      commitTemplateDetailNavigation(
+        intent,
+        result.template.id,
+        {
+          customTemplates: nextCustomTemplates,
+          defaultTemplateId,
+          theme,
+        },
       );
       toast.success(messages.templateCreated, { closeButton: true });
     } catch (error) {
+      if (intent.isCurrent()) {
+        intent.finish();
+      }
       console.error("Failed to create template in backend.", error);
       if (!isApiErrorToastShown(error)) {
         toast.error(messages.loadError, { closeButton: true });
@@ -386,13 +398,14 @@ export function useTemplateGalleryWorkspace({
       setIsCreating(false);
     }
   }, [
-    buildTemplateDetailHandoff,
+    beginNavigation,
+    commitTemplateDetailNavigation,
     customTemplates,
+    defaultTemplateId,
     isLoading,
-    markRouteMutation,
     messages,
-    navigate,
     templateCatalog,
+    theme,
   ]);
 
   const importTemplates = useCallback(
@@ -401,9 +414,11 @@ export function useTemplateGalleryWorkspace({
         return;
       }
 
+      const intent = beginNavigation();
       importInFlightRef.current = true;
       setIsImporting(true);
-      void preloadTemplateDetailWorkspace().catch((error) => {
+      const detailRouteReady = preloadTemplateDetailRoute();
+      void detailRouteReady.catch((error) => {
         console.warn("Failed to warm the template detail route.", error);
       });
 
@@ -425,20 +440,38 @@ export function useTemplateGalleryWorkspace({
         }
 
         const nextCustomTemplates = [...customTemplates, ...savedImports];
-        markRouteMutation();
         setCustomTemplates(nextCustomTemplates);
-        runViewTransition(
-          () =>
-            navigate(getTemplatePath(firstImportedTemplate.id), {
-              state: buildTemplateDetailHandoff(
-                firstImportedTemplate.id,
-                nextCustomTemplates,
-              ),
-            }),
-          "nav-forward",
+        if (!intent.isCurrent()) {
+          return;
+        }
+        try {
+          await detailRouteReady;
+        } catch (error) {
+          if (!intent.isCurrent()) {
+            return;
+          }
+          intent.finish();
+          console.error("Failed to prepare the imported template route.", error);
+          toast.error(messages.loadError, {
+            closeButton: true,
+            id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
+          });
+          return;
+        }
+        commitTemplateDetailNavigation(
+          intent,
+          firstImportedTemplate.id,
+          {
+            customTemplates: nextCustomTemplates,
+            defaultTemplateId,
+            theme,
+          },
         );
         toast.success(messages.templateImported, { closeButton: true });
       } catch (error) {
+        if (intent.isCurrent()) {
+          intent.finish();
+        }
         console.error("Failed to import template JSON.", error);
         if (!isApiErrorToastShown(error)) {
           toast.error(messages.templateImportFailed, { closeButton: true });
@@ -448,7 +481,14 @@ export function useTemplateGalleryWorkspace({
         setIsImporting(false);
       }
     },
-    [buildTemplateDetailHandoff, customTemplates, markRouteMutation, messages, navigate],
+    [
+      beginNavigation,
+      commitTemplateDetailNavigation,
+      customTemplates,
+      defaultTemplateId,
+      messages,
+      theme,
+    ],
   );
 
   const deleteTemplates = useCallback(
@@ -472,7 +512,6 @@ export function useTemplateGalleryWorkspace({
         return;
       }
 
-      markRouteMutation();
       setCustomTemplates((current) =>
         current.filter((item) => !customTemplateIds.includes(item.id)),
       );
@@ -486,7 +525,7 @@ export function useTemplateGalleryWorkspace({
         { closeButton: true },
       );
     },
-    [customTemplates, defaultTemplateId, markRouteMutation, messages],
+    [customTemplates, defaultTemplateId, messages],
   );
 
   const setDefaultTemplate = useCallback(
@@ -503,7 +542,6 @@ export function useTemplateGalleryWorkspace({
       setSettingDefaultTemplateId(templateId);
       try {
         const result = await saveDefaultTemplateApi(templateId);
-        markRouteMutation();
         setDefaultTemplateId(result.defaultTemplateId);
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
@@ -516,7 +554,7 @@ export function useTemplateGalleryWorkspace({
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateId, markRouteMutation, messages, templateCatalog],
+    [defaultTemplateId, messages, templateCatalog],
   );
 
   return {

@@ -65,7 +65,9 @@ export function discoveredFromConfig(config?: ModelConfig): DiscoveredModel[] {
       id: config.model,
       label: config.model,
       contextWindowTokens: config.contextWindowTokens,
-      maxOutputTokens: config.maxTokens,
+      // Saved configs only contain the per-request override. Treat the model
+      // capability as unknown until discovery returns authoritative metadata.
+      maxOutputTokens: null,
       supportsImage: config.supportsImage,
       supportsThinking: config.supportsThinking,
       supportsTools: config.supportsTools,
@@ -102,7 +104,6 @@ export function createModelConfigDraft(
     supportsThinking: source.supportsThinking,
     supportsTools: source.supportsTools,
     supportsStreaming: source.supportsStreaming,
-    thinkingEnabled: source.thinkingEnabled,
   };
 }
 
@@ -175,6 +176,31 @@ export function validateModelConfigDraft(
   if (provider.authRequired && !draft.apiKey.trim() && !draft.apiKeyPreview.trim()) {
     errors.apiKey = messages.validationRequired;
   }
+  const maxTokens = draft.maxTokens.trim();
+  const parsedMaxTokens = Number(maxTokens);
+  if (
+    maxTokens &&
+    (!/^\d+$/.test(maxTokens) ||
+      !Number.isSafeInteger(parsedMaxTokens) ||
+      parsedMaxTokens <= 0)
+  ) {
+    errors.maxTokens = messages.validationMaxTokens;
+  }
+  const selectedModel = discoveredModels.find(
+    (model) => model.id === draft.model,
+  );
+  const modelMaxOutputTokens = selectedModel?.maxOutputTokens;
+  if (
+    maxTokens &&
+    !errors.maxTokens &&
+    typeof modelMaxOutputTokens === "number" &&
+    parsedMaxTokens > modelMaxOutputTokens
+  ) {
+    errors.maxTokens = messages.validationMaxTokensExceeded.replace(
+      "{count}",
+      String(modelMaxOutputTokens),
+    );
+  }
   if (draft.providerKind === "cloud") {
     if (!provider.defaultBaseUrl.trim() || !isValidHttpUrl(provider.defaultBaseUrl.trim())) {
       errors.discovery = messages.modelDiscoveryFailed;
@@ -192,11 +218,6 @@ export function validateModelConfigDraft(
   if (!/^\d+$/.test(draft.contextWindowTokens.trim()) || Number(draft.contextWindowTokens) <= 0) {
     errors.contextWindowTokens = messages.validationMaxTokens;
   }
-  const maxTokens = draft.maxTokens.trim();
-  if (maxTokens && (!/^\d+$/.test(maxTokens) || Number(maxTokens) <= 0)) {
-    errors.maxTokens = messages.validationMaxTokens;
-  }
-
   return errors;
 }
 
@@ -204,19 +225,20 @@ export function applyDiscoveredModel(
   draft: ModelConfigDraft,
   model: DiscoveredModel,
 ) {
+  const modelChanged = draft.model !== model.id;
+
   return {
     ...draft,
     model: model.id,
     contextWindowTokens: String(model.contextWindowTokens),
-    maxTokens:
-      typeof model.maxOutputTokens === "number"
-        ? String(model.maxOutputTokens)
-        : "",
+    // maxOutputTokens is a discovered capability ceiling; maxTokens is an
+    // optional user override. Copying one into the other would turn Auto into
+    // a persisted hard limit and make later capability refreshes ambiguous.
+    maxTokens: modelChanged ? "" : draft.maxTokens,
     supportsImage: model.supportsImage,
     supportsThinking: model.supportsThinking,
     supportsTools: model.supportsTools,
     supportsStreaming: model.supportsStreaming,
-    thinkingEnabled: model.supportsThinking,
   };
 }
 
@@ -241,7 +263,6 @@ export function changeDraftProvider(
     supportsThinking: false,
     supportsTools: provider.supportsTools,
     supportsStreaming: provider.supportsStreaming,
-    thinkingEnabled: false,
   };
 }
 
@@ -250,9 +271,6 @@ export function createSavedModelConfig(
   provider: ModelProviderMeta,
   initialConfig?: ModelConfig,
 ) {
-  const usesManualSettings = draft.providerKind !== "cloud";
-  const supportsThinking = draft.supportsThinking;
-
   return {
     ...(initialConfig?.id ? { id: initialConfig.id } : {}),
     provider: draft.provider,
@@ -269,16 +287,14 @@ export function createSavedModelConfig(
         : draft.apiUrl.trim(),
     temperature: null,
     topP: null,
-    maxTokens: usesManualSettings
-      ? normalizeMaxTokens(Number(draft.maxTokens))
-      : null,
+    // An empty draft value is Auto (null); a number is an intentional request
+    // override for every provider kind, including official cloud providers.
+    maxTokens: normalizeMaxTokens(Number(draft.maxTokens)),
     contextWindowTokens: Number(draft.contextWindowTokens),
     supportsImage: draft.supportsImage,
-    supportsThinking,
+    supportsThinking: draft.supportsThinking,
     supportsTools: draft.supportsTools,
     supportsStreaming: draft.supportsStreaming,
-    thinkingEnabled:
-      supportsThinking && (usesManualSettings || draft.thinkingEnabled),
   } satisfies Omit<ModelConfig, "id"> & { id?: string };
 }
 

@@ -1,32 +1,11 @@
 import { Plus } from "lucide-react";
-import {
-  isValidElement,
-  lazy,
-  Suspense,
-  useState,
-  type ReactNode,
-} from "react";
+import { isValidElement, useState, type ReactNode } from "react";
 
+import { ModelConfigDialog } from "@/components/models/model-config-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { AppMessages, Locale } from "@/i18n";
 import type { ModelConfig } from "@/types/resume";
-
-const loadModelConfigDialog = () =>
-  import("@/components/models/model-config-dialog");
-
-const LazyModelConfigDialog = lazy(() =>
-  loadModelConfigDialog().then((module) => ({
-    default: module.ModelConfigDialog,
-  })),
-);
 
 export function ModelConfigFormPopover({
   t,
@@ -59,39 +38,19 @@ export function ModelConfigFormPopover({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        asChild
-        onFocus={() => void loadModelConfigDialog()}
-        onPointerEnter={() => void loadModelConfigDialog()}
-      >
+      <DialogTrigger asChild>
         {/* Radix must clone the concrete trigger so its behavior reaches the button. */}
         {triggerElement}
       </DialogTrigger>
       {open ? (
-        <Suspense
-          fallback={
-            <DialogContent closeLabel={t.close} className="sm:max-w-xl">
-              <DialogTitle className="sr-only">
-                {mode === "create" ? t.addModelConfig : t.editModelConfig}
-              </DialogTitle>
-              <DialogDescription className="sr-only">
-                {mode === "create" ? t.addModelConfig : t.editModelConfig}
-              </DialogDescription>
-              <div className="flex min-h-48 items-center justify-center">
-                <Spinner aria-label={t.modelProvidersLoading} />
-              </div>
-            </DialogContent>
-          }
-        >
-          <LazyModelConfigDialog
-            initialConfig={initialConfig}
-            locale={locale}
-            messages={t}
-            mode={mode}
-            onClose={() => setOpen(false)}
-            onSaved={onSubmit}
-          />
-        </Suspense>
+        <ModelConfigDialog
+          initialConfig={initialConfig}
+          locale={locale}
+          messages={t}
+          mode={mode}
+          onClose={() => setOpen(false)}
+          onSaved={onSubmit}
+        />
       ) : null}
     </Dialog>
   );

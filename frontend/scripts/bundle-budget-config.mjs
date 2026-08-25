@@ -4,8 +4,12 @@ export const MAX_CHUNK_RAW_BYTES = 480_000
 export const MAX_CHUNK_GZIP_BYTES = 140_000
 export const DEFAULT_DYNAMIC_ENTRY_RAW_BYTES = 200 * KIB
 export const DEFAULT_DYNAMIC_ENTRY_GZIP_BYTES = 65 * KIB
-export const MAX_SHELL_CSS_RAW_BYTES = 155_000
-export const MAX_SHELL_CSS_GZIP_BYTES = 25_500
+// The shell intentionally includes tw-animate-css so the shared shadcn/Radix
+// dialogs, popovers, selects, and sheets retain their enter/exit transitions.
+// Keep this ceiling close to that measured production baseline so future CSS
+// growth still fails here instead of silently accumulating.
+export const MAX_SHELL_CSS_RAW_BYTES = 160_000
+export const MAX_SHELL_CSS_GZIP_BYTES = 26_500
 export const RATCHET_THRESHOLD = 0.95
 
 export const conditionalFontCssBudgets = [
@@ -94,7 +98,9 @@ export const routeBudgets = [
       'src/components/workspace/models-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 230 * KIB,
+    // The final dialog ships with the already-lazy route so first open never
+    // swaps a nested lazy Spinner surface for the form.
+    maxGzipBytes: 235 * KIB,
   },
   {
     name: 'settings',

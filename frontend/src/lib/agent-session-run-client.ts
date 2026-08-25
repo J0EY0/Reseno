@@ -46,9 +46,10 @@ function getAgentDraftStatus(
 
 export function loadActiveAgentRun(
   resumeId: string,
-  options: { signal?: AbortSignal } = {},
+  options: { notifyOnError?: boolean; signal?: AbortSignal } = {},
 ) {
   return requestApi<AgentRunResponse | null>(apiRoutes.agentResumeRun(resumeId), {
+    notifyOnError: options.notifyOnError,
     signal: options.signal,
   });
 }
@@ -61,12 +62,13 @@ export function stopAgentRun(runId: string) {
 
 export async function loadAgentSession(
   resumeId: string,
-  options: { signal?: AbortSignal } = {},
+  options: { notifyOnError?: boolean; signal?: AbortSignal } = {},
 ) {
   return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
     // Session revisions are optimistic-concurrency tokens. Reusing even a
     // short-lived GET cache can make an otherwise valid history edit stale.
     cacheTtlMs: 0,
+    notifyOnError: options.notifyOnError,
     signal: options.signal,
   });
 }

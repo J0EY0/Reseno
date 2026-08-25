@@ -69,7 +69,6 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     supports_thinking INTEGER NOT NULL DEFAULT 0,
     supports_tools INTEGER NOT NULL DEFAULT 1,
     supports_streaming INTEGER NOT NULL DEFAULT 1,
-    thinking_enabled INTEGER NOT NULL DEFAULT 1,
     timeout_seconds INTEGER NOT NULL DEFAULT 60,
 
     enabled INTEGER NOT NULL DEFAULT 1,

@@ -1,6 +1,6 @@
 import re
-import unicodedata
 from copy import deepcopy
+from html import escape
 from typing import Any
 from uuid import uuid4
 
@@ -13,17 +13,9 @@ from app.services.resume_document_contract import (
     validate_resume_document,
 )
 
+from ..contracts import resume_edit_operation_error
 from ..localization import agent_text
-from ..models import EditPlanStep
-from ..operation_contract import resume_edit_operation_error
-from ..parsing_patterns import compiled_agent_pattern
-from ..privacy import AGENT_WRITABLE_BASIC_FIELDS, is_pii_basic_path
-from ..section_registry import (
-    SECTION_KIND_ALIAS_MATCHES,
-    SECTION_KIND_ALIASES,
-    SECTION_KIND_ENUM,
-    normalize_section_alias,
-)
+from ..privacy import is_pii_basic_path
 
 
 def _string_list(value: object) -> list[str]:
@@ -35,19 +27,6 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-BASIC_EDIT_FIELDS = {
-    "name",
-    "headline",
-    "phone",
-    "email",
-    "location",
-    "avatar",
-    "summary",
-}
-FIELD_ONLY_LABEL_RE = compiled_agent_pattern("editing.field_only_label")
-CONTENT_LABEL_RE = compiled_agent_pattern("editing.content_label")
-MIXED_FIELD_LABEL_RE = compiled_agent_pattern("editing.mixed_field_label")
-REQUEST_PREFIX_RE = compiled_agent_pattern("editing.request_prefix")
 QUALIFIED_ITEM_DIFF_FIELDS = frozenset(
     {"name", "role", "url", "description", "highlights"},
 )
@@ -116,160 +95,6 @@ def _model_string(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _compact_whitespace(value: str) -> str:
-    """Collapse text spacing for duplicate checks."""
-
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def _duplicate_key(value: str) -> str:
-    """Return a punctuation-light key for comparing generated fields."""
-
-    return re.sub(r"[\s:：,，.。;；\-–—/、·]+", "", value).lower()
-
-
-def _section_kind_from_text(value: object) -> str:
-    """Map a model-provided section type/name to a standard section kind."""
-
-    raw_text = _model_string(value)
-    text = normalize_section_alias(raw_text)
-    if not text:
-        return ""
-
-    if text in SECTION_KIND_ENUM:
-        return text
-
-    direct = SECTION_KIND_ALIASES.get(text)
-    if direct:
-        return direct
-
-    for alias, kind in SECTION_KIND_ALIAS_MATCHES:
-        if _section_alias_matches_text(raw_text, alias):
-            return kind
-
-    return ""
-
-
-def _section_alias_matches_text(value: str, alias: str) -> bool:
-    """Match prose aliases without treating short English aliases as substrings."""
-
-    normalized_alias = unicodedata.normalize("NFKC", alias).lower().strip()
-    if re.fullmatch(r"[a-z0-9]+(?:\s+[a-z0-9]+)*", normalized_alias):
-        words = normalized_alias.split()
-        pattern = (
-            r"(?<![a-z0-9])"
-            + r"[\W_]+".join(re.escape(word) for word in words)
-            + r"(?![a-z0-9])"
-        )
-        normalized_value = unicodedata.normalize("NFKC", value).lower()
-        return re.search(pattern, normalized_value) is not None
-
-    return normalize_section_alias(alias) in normalize_section_alias(value)
-
-
-def _normalized_section_kind(*values: object) -> str:
-    """Return a canonical section kind, or an empty string when unknown."""
-
-    for value in values:
-        kind = _section_kind_from_text(value)
-        if kind:
-            return kind
-
-    return ""
-
-
-def _clean_generated_text(value: object) -> str:
-    """Remove user-command prefixes and normalize model-provided prose."""
-
-    text = _compact_whitespace(_model_string(value))
-    return REQUEST_PREFIX_RE.sub("", text, count=1).strip()
-
-
-def _clean_highlight_text(value: object) -> str:
-    """Normalize one generated bullet/highlight."""
-
-    text = _clean_generated_text(value).strip(" -•\t")
-    text = CONTENT_LABEL_RE.sub("", text, count=1).strip()
-    if FIELD_ONLY_LABEL_RE.search(text):
-        return ""
-    return text
-
-
-def _contains_mixed_field_labels(value: str) -> bool:
-    """Return whether text still looks like an unsplit resume paragraph."""
-
-    return len(MIXED_FIELD_LABEL_RE.findall(value)) >= 2
-
-
-def _field_values_for_dedupe(item: dict[str, Any], kind: str) -> list[str]:
-    """Return fields that should not be repeated in prose or bullets."""
-
-    excluded = {"description", "content", "url"}
-    return [
-        _model_string(item.get(field))
-        for field in ITEM_STRING_FIELDS_BY_KIND.get(kind, ())
-        if field not in excluded
-    ]
-
-
-def _has_repeated_field_values(value: str, field_values: list[str]) -> bool:
-    """Return whether text repeats multiple structured fields."""
-
-    text_key = _duplicate_key(value)
-    field_keys = {
-        field_key
-        for field_value in field_values
-        if len(field_key := _duplicate_key(field_value)) >= 3
-    }
-    return sum(field_key in text_key for field_key in field_keys) >= 2
-
-
-def _clean_resume_item_fields(item: dict[str, Any], kind: str) -> dict[str, Any]:
-    """Keep generated semantic item fields in their kind-specific lanes."""
-
-    cleaned = {**item}
-    for key in ITEM_STRING_FIELDS_BY_KIND.get(kind, ()):
-        cleaned[key] = _clean_generated_text(cleaned.get(key))
-
-    for key in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
-        if key == "highlights":
-            continue
-        cleaned[key] = [
-            text
-            for value in _string_list(cleaned.get(key))
-            if (text := _clean_generated_text(value))
-        ]
-
-    field_values = _field_values_for_dedupe(cleaned, kind)
-    description = _model_string(cleaned.get("description"))
-    if description and (
-        _contains_mixed_field_labels(description)
-        or _has_repeated_field_values(description, field_values)
-    ):
-        cleaned["description"] = ""
-
-    highlights = cleaned.get("highlights")
-    next_highlights: list[str] = []
-    seen: set[str] = set()
-    if isinstance(highlights, list):
-        for highlight in highlights:
-            text = _clean_highlight_text(highlight)
-            if not text:
-                continue
-            if _contains_mixed_field_labels(text):
-                continue
-            if _has_repeated_field_values(text, field_values):
-                continue
-            key = _duplicate_key(text)
-            if key and key not in seen:
-                next_highlights.append(text)
-                seen.add(key)
-
-    if "highlights" in ITEM_LIST_FIELDS_BY_KIND.get(kind, ()):
-        cleaned["highlights"] = next_highlights
-    return cleaned
-
-
 def _model_int(value: object) -> int | None:
     """Return a bounded integer from model-provided JSON."""
 
@@ -279,323 +104,312 @@ def _model_int(value: object) -> int | None:
     return None
 
 
-def _normalized_item(value: object, kind: str) -> dict[str, Any] | None:
-    """Return one exact semantic item for the target section kind."""
+def _complete_inserted_item(value: object, kind: str) -> object:
+    """Fill canonical empty fields without asking the model to serialize them."""
 
     if not isinstance(value, dict) or kind not in ITEM_STRING_FIELDS_BY_KIND:
+        return value
+    item = deepcopy(value)
+    for field in ITEM_STRING_FIELDS_BY_KIND[kind]:
+        item.setdefault(field, "")
+    for field in ITEM_LIST_FIELDS_BY_KIND[kind]:
+        item.setdefault(field, [])
+    return item
+
+
+_RICH_TEXT_DOCUMENT_PATTERN = re.compile(
+    r"^\s*<(ol|p|ul)>[\s\S]*</\1>\s*$",
+    flags=re.IGNORECASE,
+)
+_RICH_TEXT_STRUCTURAL_SPACE_PATTERN = re.compile(
+    r"(</?(?:li|ol|p|ul)>)\s+(?=</?(?:li|ol|p|ul)>)",
+    flags=re.IGNORECASE,
+)
+_RICH_TEXT_SINGLE_LIST_PARAGRAPH_PATTERN = re.compile(
+    r"<li><p>([\s\S]*?)</p></li>",
+    flags=re.IGNORECASE,
+)
+
+
+def _rich_text_comparison_key(value: object) -> str | None:
+    """Return a conservative key for one canonical rich-text document."""
+
+    if not isinstance(value, str) or not _RICH_TEXT_DOCUMENT_PATTERN.fullmatch(value):
         return None
-    allowed_fields = {
-        "id",
-        *ITEM_STRING_FIELDS_BY_KIND[kind],
-        *ITEM_LIST_FIELDS_BY_KIND[kind],
-    }
-    if not set(value).issubset(allowed_fields):
-        return None
-    if "id" in value and not isinstance(value["id"], str):
-        return None
-    if any(
-        field in value and not isinstance(value[field], str)
-        for field in ITEM_STRING_FIELDS_BY_KIND[kind]
+    normalized = _RICH_TEXT_STRUCTURAL_SPACE_PATTERN.sub(r"\1", value.strip())
+    return _RICH_TEXT_SINGLE_LIST_PARAGRAPH_PATTERN.sub(
+        r"<li>\1</li>",
+        normalized,
+    )
+
+
+def _edit_field_values_equal(field: str, current: object, proposed: object) -> bool:
+    if field == "content":
+        current_key = _rich_text_comparison_key(current)
+        proposed_key = _rich_text_comparison_key(proposed)
+        if current_key is not None and proposed_key is not None:
+            return current_key == proposed_key
+    if (
+        field == "highlights"
+        and isinstance(current, list)
+        and isinstance(proposed, list)
+        and len(current) == len(proposed) == 1
     ):
-        return None
-    if any(
-        field in value
-        and (
-            not isinstance(value[field], list)
-            or not all(isinstance(item, str) for item in value[field])
+        current_key = _rich_text_comparison_key(current[0])
+        proposed_key = _rich_text_comparison_key(proposed[0])
+        if current_key is not None and proposed_key is not None:
+            return current_key == proposed_key
+    return current == proposed
+
+
+def _canonical_highlight_update(current: object, proposed: object) -> object:
+    """Keep edits to editor-owned highlights in its one-document shape."""
+
+    current_values = _string_list(current)
+    proposed_values = _string_list(proposed)
+    if (
+        len(current_values) != 1
+        or not _RICH_TEXT_DOCUMENT_PATTERN.fullmatch(current_values[0])
+        or not isinstance(proposed, list)
+        or len(proposed_values) != len(proposed)
+        or not proposed_values
+        or (
+            len(proposed_values) == 1
+            and _RICH_TEXT_DOCUMENT_PATTERN.fullmatch(proposed_values[0])
         )
-        for field in ITEM_LIST_FIELDS_BY_KIND[kind]
     ):
-        return None
+        return proposed
 
-    item: dict[str, Any] = {
-        "id": _model_string(value.get("id")) or f"item-agent-{uuid4().hex[:8]}"
-    }
-    item.update(
-        {
-            field: _model_string(value.get(field))
-            for field in ITEM_STRING_FIELDS_BY_KIND[kind]
-        }
-    )
-    item.update(
-        {
-            field: _string_list(value.get(field))
-            for field in ITEM_LIST_FIELDS_BY_KIND[kind]
-        }
-    )
-    return _clean_resume_item_fields(item, kind)
+    items = "".join(f"<li>{escape(value)}</li>" for value in proposed_values)
+    return [f"<ul>{items}</ul>"]
 
 
-def _normalized_section(value: object) -> dict[str, Any] | None:
-    """Return a safe ResumeSection payload from model JSON."""
-
-    if not isinstance(value, dict):
-        return None
-    if not set(value).issubset({"id", "section_type", "kind", "title", "items"}):
-        return None
-    if "id" in value and not isinstance(value["id"], str):
-        return None
-    if "title" in value and not isinstance(value["title"], str):
-        return None
-    if _section_kind_aliases_conflict(
-        value.get("section_type"),
-        value.get("kind"),
-    ):
-        return None
-
-    kind = _normalized_section_kind(
-        value.get("section_type"),
-        value.get("kind"),
-    )
-    items = value.get("items")
-    if not kind or not isinstance(items, list):
-        return None
-    normalized_items = [_normalized_item(item, kind) for item in items]
-    if any(item is None for item in normalized_items):
-        return None
-    normalized_items = [item for item in normalized_items if item is not None]
-    if kind == "simple_list" and len(normalized_items) != 1:
-        return None
-
-    return {
-        "id": _model_string(value.get("id")) or f"section-agent-{uuid4().hex[:8]}",
-        "kind": kind,
-        "title": _model_string(value.get("title")),
-        "items": normalized_items,
-    }
-
-
-def _safe_item_patch(
-    value: object,
-    *,
-    kind: str,
-    base_item: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return only fields writable by the target section's item contract."""
-
-    if not isinstance(value, dict) or kind not in ITEM_STRING_FIELDS_BY_KIND:
-        return {}
-    allowed_fields = {
-        *ITEM_STRING_FIELDS_BY_KIND[kind],
-        *ITEM_LIST_FIELDS_BY_KIND[kind],
-    }
-    if not set(value).issubset(allowed_fields):
-        return {}
-
-    patch: dict[str, Any] = {}
-    for key in ITEM_STRING_FIELDS_BY_KIND[kind]:
-        field_value = value.get(key)
-        if isinstance(field_value, str):
-            patch[key] = field_value
-
-    for key in ITEM_LIST_FIELDS_BY_KIND[kind]:
-        field_value = value.get(key)
-        if isinstance(field_value, list) and all(
-            isinstance(item, str) for item in field_value
-        ):
-            patch[key] = field_value
-
-    if not patch:
-        return {}
-
-    merged = _clean_resume_item_fields({**(base_item or {}), **patch}, kind)
-    cleaned_patch: dict[str, Any] = {}
-    for key in patch:
-        if key not in merged:
-            continue
-        cleaned_patch[key] = merged[key]
-
-    return cleaned_patch
-
-
-def _section_kind_aliases_conflict(*values: object) -> bool:
-    """Return whether aliases resolve to different known section kinds."""
-
-    resolved = {kind for value in values if (kind := _section_kind_from_text(value))}
-    return len(resolved) > 1
-
-
-def _safe_section_patch(value: object) -> dict[str, Any]:
-    """Return the only Agent-writable section field: its display title."""
-
-    if not isinstance(value, dict) or not set(value).issubset({"title"}):
-        return {}
-
-    title = value.get("title")
-    return {"title": title.strip()} if isinstance(title, str) else {}
-
-
-def _normalize_edit_operation(
+def _complete_edit_operation(
     resume: dict[str, Any],
-    operation: object,
-) -> dict[str, Any] | None:
-    """Validate and normalize a frontend ResumeEditOperation from model JSON."""
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the canonical operation shape for compact model input."""
 
-    if not isinstance(operation, dict):
-        return None
+    parsed = deepcopy(operation)
+    operation_type = parsed.get("type")
+    if operation_type == "insert_item":
+        section = _find_resume_section(resume, _model_string(parsed.get("sectionId")))
+        kind = _model_string(section.get("kind")) if section else ""
+        parsed["item"] = _complete_inserted_item(parsed.get("item"), kind)
+    elif operation_type == "update_item" and isinstance(
+        patch := parsed.get("patch"),
+        dict,
+    ):
+        section = _find_resume_section(resume, _model_string(parsed.get("sectionId")))
+        item = (
+            _find_resume_item(section, _model_string(parsed.get("itemId")))
+            if section
+            else None
+        )
+        if item and "highlights" in patch:
+            patch["highlights"] = _canonical_highlight_update(
+                item.get("highlights"),
+                patch["highlights"],
+            )
+    elif operation_type == "insert_section" and isinstance(
+        section := parsed.get("section"),
+        dict,
+    ):
+        kind = _model_string(section.get("kind"))
+        section.setdefault("title", "")
+        section.setdefault("items", [])
+        if isinstance(items := section.get("items"), list):
+            section["items"] = [_complete_inserted_item(item, kind) for item in items]
+    return parsed
 
-    operation_type = _model_string(operation.get("type"))
+
+def _operation_domain_error(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+) -> str | None:
+    """Return a state-dependent error for one schema-valid operation."""
+
+    operation_type = str(operation["type"])
     if operation_type == "replace_field":
-        path = _model_string(operation.get("path"))
-        value = operation.get("value")
-        if (
-            path.startswith("basic.")
-            and path[6:] in AGENT_WRITABLE_BASIC_FIELDS
-            and isinstance(value, str)
-        ):
-            basic = resume.get("basic")
-            current = basic.get(path[6:]) if isinstance(basic, dict) else None
-            if current != value:
-                return {"type": "replace_field", "path": path, "value": value}
         return None
 
     if operation_type == "insert_section":
-        section = _normalized_section(operation.get("section"))
-        if not section:
-            return None
-        existing_ids = {
-            str(candidate.get("id"))
-            for candidate in _resume_sections(resume)
-            if isinstance(candidate.get("id"), str)
-        }
+        section = operation["section"]
+        if not isinstance(section, dict):
+            return "Canonical protocol error: section must be an object."
+        section_id = str(section["id"])
+        if _find_resume_section(resume, section_id):
+            return "insert_section requires a unique section id."
         item_ids = [
-            str(item.get("id"))
-            for item in section.get("items", [])
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
+            str(item["id"]) for item in section["items"] if isinstance(item, dict)
         ]
-        if (
-            section["id"] in existing_ids
-            or len(item_ids) != len(set(item_ids))
-            or bool(set(item_ids) & _resume_item_ids(resume))
-        ):
-            return None
-        normalized: dict[str, Any] = {"type": "insert_section", "section": section}
-        index = _model_int(operation.get("index"))
-        if index is not None:
-            normalized["index"] = index
-        return normalized
+        if len(item_ids) != len(set(item_ids)):
+            return "insert_section requires unique item ids."
+        if set(item_ids) & _resume_item_ids(resume):
+            return "insert_section item ids must be unique in the resume."
+        return None
 
     if operation_type == "update_section":
-        section_id = _model_string(operation.get("sectionId"))
+        section_id = str(operation["sectionId"])
         section = _find_resume_section(resume, section_id)
-        patch = _safe_section_patch(operation.get("patch"))
-        changed_patch = (
-            {key: value for key, value in patch.items() if section.get(key) != value}
-            if section
-            else {}
-        )
-        if section_id and changed_patch and section:
-            return {
-                "type": "update_section",
-                "sectionId": section_id,
-                "patch": changed_patch,
-            }
+        if not section:
+            return "update_section requires an existing sectionId."
+        patch = operation["patch"]
         return None
 
     if operation_type == "delete_section":
-        section_id = _model_string(operation.get("sectionId"))
-        if section_id and _find_resume_section(resume, section_id):
-            return {"type": "delete_section", "sectionId": section_id}
-        return None
+        return (
+            None
+            if _find_resume_section(resume, str(operation["sectionId"]))
+            else "delete_section requires an existing sectionId."
+        )
 
     if operation_type == "reorder_sections":
-        section_ids = _string_list(operation.get("sectionIds"))
+        section_ids = _string_list(operation["sectionIds"])
         current_ids = [
             str(section.get("id"))
             for section in _resume_sections(resume)
             if isinstance(section.get("id"), str)
         ]
-        if (
-            len(section_ids) == len(current_ids)
-            and len(section_ids) == len(set(section_ids))
-            and set(section_ids) == set(current_ids)
-            and section_ids != current_ids
-        ):
-            return {"type": "reorder_sections", "sectionIds": section_ids}
+        if len(section_ids) != len(current_ids) or set(section_ids) != set(current_ids):
+            return "reorder_sections requires every existing sectionId exactly once."
         return None
 
     if operation_type == "insert_item":
-        section_id = _model_string(operation.get("sectionId"))
+        section_id = str(operation["sectionId"])
         section = _find_resume_section(resume, section_id)
-        kind = _model_string(section.get("kind")) if section else ""
-        item = _normalized_item(operation.get("item"), kind)
-        if (
-            not section_id
-            or not item
-            or not section
-            or kind == "simple_list"
-            or item["id"] in _resume_item_ids(resume)
-        ):
-            return None
-        normalized = {"type": "insert_item", "sectionId": section_id, "item": item}
-        index = _model_int(operation.get("index"))
-        if index is not None:
-            normalized["index"] = index
-        return normalized
+        if not section:
+            return "insert_item requires an existing sectionId."
+        kind = str(section.get("kind") or "")
+        if kind == "simple_list":
+            return "simple_list has one rich-text item; update its content instead."
+        item = operation["item"]
+        if not isinstance(item, dict) or not is_resume_item_for_kind(item, kind):
+            return "insert_item item fields must match the target section kind."
+        if str(item["id"]) in _resume_item_ids(resume):
+            return "insert_item requires a resume-wide unique item id."
+        return None
 
     if operation_type == "update_item":
-        section_id = _model_string(operation.get("sectionId"))
-        item_id = _model_string(operation.get("itemId"))
+        section_id = str(operation["sectionId"])
+        item_id = str(operation["itemId"])
         section = _find_resume_section(resume, section_id)
-        item = _find_resume_item(section, item_id) if section else None
-        kind = _model_string(section.get("kind")) if section else ""
-        patch = _safe_item_patch(
-            operation.get("patch"),
-            kind=kind,
-            base_item=item if isinstance(item, dict) else None,
-        )
-        changed_patch = (
-            {key: value for key, value in patch.items() if item.get(key) != value}
-            if item
-            else {}
-        )
-        if section and item_id and changed_patch and item:
-            return {
-                "type": "update_item",
-                "sectionId": section_id,
-                "itemId": item_id,
-                "patch": changed_patch,
-            }
+        if not section:
+            return "update_item requires an existing sectionId."
+        item = _find_resume_item(section, item_id)
+        if not item:
+            return "update_item requires an existing itemId."
+        patch = operation["patch"]
+        if not isinstance(patch, dict) or not is_resume_item_for_kind(
+            {**item, **patch},
+            str(section.get("kind") or ""),
+        ):
+            return "update_item patch fields must match the target section kind."
         return None
 
     if operation_type == "delete_item":
-        section_id = _model_string(operation.get("sectionId"))
-        item_id = _model_string(operation.get("itemId"))
+        section_id = str(operation["sectionId"])
+        item_id = str(operation["itemId"])
         section = _find_resume_section(resume, section_id)
-        if (
-            section
-            and section.get("kind") != "simple_list"
-            and item_id
-            and _find_resume_item(section, item_id)
-        ):
-            return {"type": "delete_item", "sectionId": section_id, "itemId": item_id}
+        if not section:
+            return "delete_item requires an existing sectionId."
+        if section.get("kind") == "simple_list":
+            return "simple_list has one rich-text item; update its content instead."
+        if not _find_resume_item(section, item_id):
+            return "delete_item requires an existing itemId."
         return None
 
     if operation_type == "reorder_items":
-        section_id = _model_string(operation.get("sectionId"))
+        section_id = str(operation["sectionId"])
         section = _find_resume_section(resume, section_id)
-        item_ids = _string_list(operation.get("itemIds"))
-        if not section or section.get("kind") == "simple_list" or not item_ids:
-            return None
+        if not section:
+            return "reorder_items requires an existing sectionId."
+        if section.get("kind") == "simple_list":
+            return "simple_list has one rich-text item; update its content instead."
+        item_ids = _string_list(operation["itemIds"])
         current_item_ids = [
             str(item.get("id"))
             for item in section.get("items", [])
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
-        if (
-            len(item_ids) == len(current_item_ids)
-            and len(item_ids) == len(set(item_ids))
-            and set(item_ids) == set(current_item_ids)
-            and item_ids != current_item_ids
+        if len(item_ids) != len(current_item_ids) or set(item_ids) != set(
+            current_item_ids,
         ):
-            return {
-                "type": "reorder_items",
-                "sectionId": section_id,
-                "itemIds": item_ids,
-            }
+            return "reorder_items requires every existing itemId exactly once."
         return None
 
-    return None
+    return f"Unsupported operation type: {operation_type}."
+
+
+def _operation_is_noop(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+) -> bool:
+    """Return whether a valid operation leaves the current draft unchanged."""
+
+    operation_type = str(operation["type"])
+    if operation_type == "replace_field":
+        basic = resume.get("basic")
+        path = str(operation["path"])
+        return isinstance(basic, dict) and basic.get(path[6:]) == operation["value"]
+    if operation_type == "update_section":
+        section = _find_resume_section(resume, str(operation["sectionId"]))
+        patch = operation["patch"]
+        return bool(
+            section
+            and isinstance(patch, dict)
+            and all(section.get(key) == value for key, value in patch.items())
+        )
+    if operation_type == "reorder_sections":
+        current_ids = [
+            str(section.get("id"))
+            for section in _resume_sections(resume)
+            if isinstance(section.get("id"), str)
+        ]
+        return _string_list(operation["sectionIds"]) == current_ids
+    if operation_type == "update_item":
+        section = _find_resume_section(resume, str(operation["sectionId"]))
+        item = _find_resume_item(section, str(operation["itemId"])) if section else None
+        patch = operation["patch"]
+        return bool(
+            item
+            and isinstance(patch, dict)
+            and all(
+                _edit_field_values_equal(key, item.get(key), value)
+                for key, value in patch.items()
+            )
+        )
+    if operation_type == "reorder_items":
+        section = _find_resume_section(resume, str(operation["sectionId"]))
+        items = section.get("items") if section else None
+        current_ids = [
+            str(item.get("id"))
+            for item in items or []
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        return _string_list(operation["itemIds"]) == current_ids
+    return False
+
+
+def _parse_edit_operation(
+    resume: dict[str, Any],
+    operation: object,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse one canonical operation, then enforce resume-state invariants."""
+
+    if not isinstance(operation, dict):
+        return None, "Canonical protocol error: operation must be an object."
+
+    parsed = _complete_edit_operation(resume, operation)
+    contract_error = resume_edit_operation_error(parsed)
+    if contract_error is not None:
+        return None, f"Canonical protocol error: {contract_error}"
+    domain_error = _operation_domain_error(resume, parsed)
+    if domain_error:
+        return None, domain_error
+    if _operation_is_noop(resume, parsed):
+        return None, None
+    return parsed, None
 
 
 def _operation_target(operation: dict[str, Any]) -> str:
@@ -618,6 +432,52 @@ def _operation_target(operation: dict[str, Any]) -> str:
     if operation_type == "reorder_items":
         return f"sections.{operation['sectionId']}.items"
     return ""
+
+
+def _operation_label(
+    resume: dict[str, Any],
+    operation: dict[str, Any],
+    locale: str,
+) -> str:
+    operation_type = operation.get("type")
+    if operation_type == "replace_field":
+        field = _model_string(operation.get("path")).removeprefix("basic.")
+        return agent_text(locale, f"diff.field.{field}")
+    if operation_type == "reorder_sections":
+        return agent_text(locale, "edit.label.sections")
+
+    section = operation.get("section") if operation_type == "insert_section" else None
+    if not isinstance(section, dict):
+        section = _find_resume_section(
+            resume,
+            _model_string(operation.get("sectionId")),
+        )
+    kind = _model_string(section.get("kind")) if section else ""
+    return agent_text(locale, f"diff.kind.{kind}") if kind else ""
+
+
+def _operation_title(
+    resume: dict[str, Any],
+    operation: object,
+    locale: str,
+    index: int,
+) -> str:
+    if not isinstance(operation, dict):
+        return agent_text(locale, "edit.default.title", index=index)
+    label = _operation_label(resume, operation, locale)
+    if not label:
+        return agent_text(locale, "edit.default.title", index=index)
+
+    operation_type = operation.get("type")
+    if operation_type in {"insert_section", "insert_item"}:
+        action = "add"
+    elif operation_type in {"delete_section", "delete_item"}:
+        action = "delete"
+    elif operation_type in {"reorder_sections", "reorder_items"}:
+        action = "reorder"
+    else:
+        action = "update"
+    return agent_text(locale, f"edit.title.{action}", label=label)
 
 
 def _operation_replacement(operation: dict[str, Any]) -> str | None:
@@ -662,169 +522,13 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
     return None
 
 
-def _invalid_operation_reason(resume: dict[str, Any], operation: object) -> str:
-    """Return a compact reason for a rejected model operation."""
-
-    if not isinstance(operation, dict):
-        return "Missing operation object."
-
-    operation_type = _model_string(operation.get("type"))
-    if not operation_type:
-        return "Missing operation type."
-
-    supported_types = {
-        "replace_field",
-        "update_item",
-        "insert_item",
-        "update_section",
-        "insert_section",
-        "delete_item",
-        "delete_section",
-        "reorder_sections",
-        "reorder_items",
-    }
-    if operation_type not in supported_types:
-        return f"Unsupported operation type: {operation_type}."
-
-    if operation_type == "replace_field":
-        path = _model_string(operation.get("path"))
-        field = path[6:] if path.startswith("basic.") else ""
-        if is_pii_basic_path(path) and field not in AGENT_WRITABLE_BASIC_FIELDS:
-            return "replace_field cannot edit hidden personal fields."
-        if not path.startswith("basic.") or field not in BASIC_EDIT_FIELDS:
-            return "replace_field requires path basic.<writableField>."
-        if field not in AGENT_WRITABLE_BASIC_FIELDS:
-            return "replace_field targets a read-only basic field."
-        if not isinstance(operation.get("value"), str):
-            return "replace_field requires a string value."
-        basic = resume.get("basic")
-        if isinstance(basic, dict) and basic.get(field) == operation.get("value"):
-            return "replace_field must change the current value."
-
-    if operation_type == "insert_section":
-        section = _normalized_section(operation.get("section"))
-        if not section:
-            return "insert_section requires a valid section object."
-        if _find_resume_section(resume, section["id"]):
-            return "insert_section requires a unique section id."
-        item_ids = [
-            str(item.get("id"))
-            for item in section.get("items", [])
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        ]
-        if len(item_ids) != len(set(item_ids)):
-            return "insert_section requires unique item ids."
-        if set(item_ids) & _resume_item_ids(resume):
-            return "insert_section item ids must be unique in the resume."
-
-    if operation_type == "update_section":
-        section_id = _model_string(operation.get("sectionId"))
-        if not section_id or not _find_resume_section(resume, section_id):
-            return "update_section requires an existing sectionId."
-        if not _safe_section_patch(operation.get("patch")):
-            return "update_section requires at least one writable section patch field."
-        section = _find_resume_section(resume, section_id)
-        patch = _safe_section_patch(operation.get("patch"))
-        if section and all(section.get(key) == value for key, value in patch.items()):
-            return "update_section must change at least one field."
-
-    if operation_type == "delete_section":
-        section_id = _model_string(operation.get("sectionId"))
-        if not section_id or not _find_resume_section(resume, section_id):
-            return "delete_section requires an existing sectionId."
-
-    if operation_type == "reorder_sections":
-        section_ids = _string_list(operation.get("sectionIds"))
-        current_ids = [
-            str(section.get("id"))
-            for section in _resume_sections(resume)
-            if isinstance(section.get("id"), str)
-        ]
-        if len(section_ids) != len(set(section_ids)):
-            return "reorder_sections cannot contain duplicate sectionIds."
-        if len(section_ids) != len(current_ids) or set(section_ids) != set(current_ids):
-            return "reorder_sections requires every existing sectionId exactly once."
-        if section_ids == current_ids:
-            return "reorder_sections must change the current order."
-
-    if operation_type == "insert_item":
-        section_id = _model_string(operation.get("sectionId"))
-        section = _find_resume_section(resume, section_id)
-        if not section_id or not section:
-            return "insert_item requires an existing sectionId."
-        kind = _model_string(section.get("kind"))
-        if kind == "simple_list":
-            return "simple_list has one rich-text item; update its content instead."
-        if not _normalized_item(operation.get("item"), kind):
-            return "insert_item requires a valid item object."
-        item = _normalized_item(operation.get("item"), kind)
-        if item and item["id"] in _resume_item_ids(resume):
-            return "insert_item requires a resume-wide unique item id."
-
-    if operation_type in {"update_item", "delete_item", "reorder_items"}:
-        section_id = _model_string(operation.get("sectionId"))
-        section = _find_resume_section(resume, section_id)
-        if not section:
-            return f"{operation_type} requires an existing sectionId."
-
-        if section.get("kind") == "simple_list" and operation_type in {
-            "delete_item",
-            "reorder_items",
-        }:
-            return "simple_list has one rich-text item; update its content instead."
-
-        if operation_type == "reorder_items":
-            item_ids = _string_list(operation.get("itemIds"))
-            current_item_ids = [
-                str(item.get("id"))
-                for item in section.get("items", [])
-                if isinstance(item, dict) and isinstance(item.get("id"), str)
-            ]
-            if len(item_ids) != len(set(item_ids)):
-                return "reorder_items cannot contain duplicate itemIds."
-            if len(item_ids) != len(current_item_ids) or set(item_ids) != set(
-                current_item_ids
-            ):
-                return "reorder_items requires every existing itemId exactly once."
-            if item_ids == current_item_ids:
-                return "reorder_items must change the current order."
-            return "Operation was rejected by validation."
-
-        item_id = _model_string(operation.get("itemId"))
-        item = _find_resume_item(section, item_id)
-        if not item_id or not item:
-            return f"{operation_type} requires an existing itemId."
-        if operation_type == "update_item" and not _safe_item_patch(
-            operation.get("patch"),
-            kind=_model_string(section.get("kind")),
-            base_item=item if isinstance(item, dict) else None,
-        ):
-            return "update_item requires at least one writable item patch field."
-        if operation_type == "update_item":
-            patch = _safe_item_patch(
-                operation.get("patch"),
-                kind=_model_string(section.get("kind")),
-                base_item=item,
-            )
-            if all(item.get(key) == value for key, value in patch.items()):
-                return "update_item must change at least one field."
-
-    return "Operation was rejected by validation."
-
-
-def _model_edit_suggestions_with_diagnostics(
+def parse_edit_batch(
     resume: dict[str, Any],
     value: object,
     *,
     locale: str,
-    allow_missing_operations: bool = False,
 ) -> tuple[list[AgentResumeEditSuggestion], list[dict[str, Any]]]:
-    """Convert model edits and return rejected entries for tool observations.
-
-    Plan steps may omit their optional executable operation. Callers can allow
-    those metadata-only steps while still rejecting every operation that was
-    explicitly supplied but failed validation.
-    """
+    """Parse one model edit batch against the canonical operation contract."""
 
     if not isinstance(value, list):
         return [], []
@@ -845,38 +549,23 @@ def _model_edit_suggestions_with_diagnostics(
             )
             continue
 
-        if allow_missing_operations and "operation" not in item:
-            continue
-
-        operation = _normalize_edit_operation(
+        operation, operation_error = _parse_edit_operation(
             working_resume,
             item.get("operation"),
         )
-        if not operation:
+        if operation is None and operation_error is None:
+            continue
+        if operation is None:
             rejected.append(
                 {
                     "index": index,
-                    "title": _model_string(item.get("title"))
-                    or agent_text(locale, "edit.default.title", index=index),
-                    "reason": _invalid_operation_reason(
+                    "title": _operation_title(
                         working_resume,
                         item.get("operation"),
+                        locale,
+                        index,
                     ),
-                },
-            )
-            continue
-
-        contract_error = resume_edit_operation_error(operation)
-        if contract_error is not None:
-            rejected.append(
-                {
-                    "index": index,
-                    "title": _model_string(item.get("title"))
-                    or agent_text(locale, "edit.default.title", index=index),
-                    "reason": (
-                        "Normalized operation violates the resume edit "
-                        f"protocol: {contract_error}"
-                    ),
+                    "reason": operation_error or "Operation was rejected.",
                 },
             )
             continue
@@ -889,26 +578,24 @@ def _model_edit_suggestions_with_diagnostics(
             rejected.append(
                 {
                     "index": index,
-                    "title": _model_string(item.get("title"))
-                    or agent_text(locale, "edit.default.title", index=index),
+                    "title": _operation_title(
+                        working_resume,
+                        operation,
+                        locale,
+                        index,
+                    ),
                     "reason": f"{exc.code} at {exc.path}.",
                 },
             )
             continue
 
-        title = _model_string(item.get("title")) or agent_text(
-            locale,
-            "edit.default.title",
-            index=index,
-        )
-        target = _model_string(item.get("target")) or _operation_target(operation)
-        reason = _model_string(item.get("reason")) or agent_text(
+        title = _operation_title(working_resume, operation, locale, index)
+        target = _operation_target(operation)
+        reason = agent_text(
             locale,
             "edit.default.reason",
         )
-        replacement = _model_string(item.get("replacement")) or _operation_replacement(
-            operation,
-        )
+        replacement = _operation_replacement(operation)
         evidence_refs = list(
             dict.fromkeys(
                 reference.strip()
@@ -934,42 +621,6 @@ def _model_edit_suggestions_with_diagnostics(
     return edits, rejected
 
 
-def _model_edit_suggestions(
-    resume: dict[str, Any],
-    value: object,
-    *,
-    locale: str,
-) -> list[AgentResumeEditSuggestion]:
-    """Convert model-supplied edits into validated frontend operations."""
-
-    edits, _rejected = _model_edit_suggestions_with_diagnostics(
-        resume,
-        value,
-        locale=locale,
-    )
-    return edits
-
-
-def _model_plan_steps(value: object) -> list[EditPlanStep]:
-    """Convert model-supplied plan steps into lightweight plan metadata."""
-
-    if not isinstance(value, list):
-        return []
-
-    steps: list[EditPlanStep] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-
-        action = _model_string(item.get("action"))
-        target = _model_string(item.get("target"))
-        reason = _model_string(item.get("reason"))
-        if action and target and reason:
-            steps.append(EditPlanStep(action=action, target=target, reason=reason))
-
-    return steps
-
-
 def _bounded_index(index: int | None, length: int) -> int:
     """Return a safe insertion index for draft mutations."""
 
@@ -979,20 +630,15 @@ def _bounded_index(index: int | None, length: int) -> int:
     return min(length, max(0, index))
 
 
-def _compact_observation_value(value: object) -> object:
-    """Return a compact value safe for model observation and tool UI."""
+def _complete_observation_value(value: object) -> object:
+    """Return the complete changed field used for the next model decision.
 
-    if isinstance(value, str):
-        return value if len(value) <= 220 else f"{value[:217]}..."
-    if isinstance(value, list):
-        return [_compact_observation_value(item) for item in value[:6]]
-    if isinstance(value, dict):
-        return {
-            str(key): _compact_observation_value(item)
-            for key, item in list(value.items())[:10]
-        }
+    Edit observations already contain only the operation target, not the full
+    resume. Truncating them can hide a later bullet or the decisive end of a
+    description and make the next model action incorrect.
+    """
 
-    return value
+    return deepcopy(value)
 
 
 def _item_kind_from_shape(item: dict[str, Any]) -> str:
@@ -1443,13 +1089,7 @@ def _apply_edit_operation(
 
     if operation_type == "insert_item":
         candidate = operation.get("item")
-        kind = _model_string(section.get("kind"))
-        if (
-            kind == "simple_list"
-            or not is_resume_item_for_kind(candidate, kind)
-            or not isinstance(candidate, dict)
-            or candidate["id"] in _resume_item_ids(resume)
-        ):
+        if not isinstance(candidate, dict):
             return
         index = _bounded_index(_model_int(operation.get("index")), len(items))
         items.insert(index, deepcopy(candidate))
@@ -1459,14 +1099,7 @@ def _apply_edit_operation(
         item = _find_resume_item(section, str(operation.get("itemId", "")))
         patch = operation.get("patch")
         if item and isinstance(patch, dict):
-            kind = _model_string(section.get("kind"))
-            safe_patch = _safe_item_patch(patch, kind=kind, base_item=item)
-            candidate = {**item, **safe_patch}
-            if set(safe_patch) == set(patch) and is_resume_item_for_kind(
-                candidate,
-                kind,
-            ):
-                item.update(safe_patch)
+            item.update(patch)
         return
 
     if operation_type == "delete_item":
@@ -1583,7 +1216,7 @@ def _edit_observations(
             _model_string(operation.get("sectionId")),
         )
         section_kind = _model_string(section.get("kind")) if section else ""
-        before_value = _compact_observation_value(
+        before_value = _complete_observation_value(
             _operation_observation_value(working_resume, operation, after=False),
         )
         if edit.operation:
@@ -1598,7 +1231,7 @@ def _edit_observations(
                 "operationType": operation.get("type"),
                 "status": edit.status,
                 "before": before_value,
-                "after": _compact_observation_value(
+                "after": _complete_observation_value(
                     _operation_observation_value(
                         working_resume,
                         operation,
@@ -1607,8 +1240,8 @@ def _edit_observations(
                 ),
                 "instruction": (
                     "Decide from this Observation whether the draft now satisfies "
-                    "the user request. If yes, call finish. If not, choose the "
-                    "next corrective Action."
+                    "the user request. If yes, answer naturally. If not, choose "
+                    "the next corrective Action."
                 ),
             },
         )

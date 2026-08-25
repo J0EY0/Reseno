@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 
+import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import type {
   ItemDiffLookup,
@@ -120,11 +121,7 @@ function SectionBlock({
   const structuralDiff = diff?.structuralDiff;
   const titleDiff = showTitle ? diff?.titleDiff : undefined;
   const markerDiff = structuralDiff ?? titleDiff;
-  const sectionClassName = structuralDiff
-    ? getDiffClassName(structuralDiff)
-    : titleDiff
-      ? "resume-diff-anchor"
-      : undefined;
+  const sectionClassName = getDiffClassName(structuralDiff);
   const renderedTitle = (
     <ResumeDiffText
       value={title}
@@ -140,6 +137,7 @@ function SectionBlock({
         className={cn(
           "resume-section relative overflow-hidden border",
           sectionClassName,
+          markerDiff && "resume-diff-label-host",
         )}
         data-resume-section-id={section.id}
         data-resume-diff-kind={markerDiff?.kind}
@@ -147,6 +145,7 @@ function SectionBlock({
         data-resume-section-layout={layout.section}
         style={{ ...sectionStyle, borderColor: settings.dividerColor }}
       >
+        <ResumeDiffBadge diff={markerDiff} t={t} />
         {showTitle ? (
           <div
             className="resume-section-header border-b px-4 py-2"
@@ -184,13 +183,18 @@ function SectionBlock({
   if (layout.section === "band") {
     return (
       <section
-        className={cn("resume-section relative", sectionClassName)}
+        className={cn(
+          "resume-section relative",
+          sectionClassName,
+          markerDiff && "resume-diff-label-host",
+        )}
         data-resume-section-id={section.id}
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
         data-resume-section-layout={layout.section}
         style={sectionStyle}
       >
+        <ResumeDiffBadge diff={markerDiff} t={t} />
         {showTitle ? (
           <div
             className="resume-section-header rounded-sm px-3 py-1.5"
@@ -224,13 +228,18 @@ function SectionBlock({
 
   return (
     <section
-      className={cn("resume-section relative", sectionClassName)}
+      className={cn(
+        "resume-section relative",
+        sectionClassName,
+        markerDiff && "resume-diff-label-host",
+      )}
       data-resume-section-id={section.id}
       data-resume-diff-kind={markerDiff?.kind}
       data-resume-diff-label={getDiffLabel(markerDiff, t)}
       data-resume-section-layout={layout.section}
       style={sectionStyle}
     >
+      <ResumeDiffBadge diff={markerDiff} t={t} />
       {showTitle ? (
         <div className="resume-section-header" data-resume-section-header="true">
           {layout.section === "plain" ? (

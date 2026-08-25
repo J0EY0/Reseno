@@ -88,17 +88,45 @@ export function canSubmitAgentPrompt({
   );
 }
 
-export function getAgentQualityWarningCount(tools: AgentToolInvocation[]) {
-  return tools.reduce((total, tool) => {
+export interface AgentQualityWarning {
+  code: string;
+  target: string;
+}
+
+export function getAgentQualityWarnings(tools: AgentToolInvocation[]) {
+  const warnings: AgentQualityWarning[] = [];
+  const seen = new Set<string>();
+
+  for (const tool of tools) {
     if (
       tool.state !== "output-available" ||
       !tool.output ||
       typeof tool.output !== "object"
     ) {
-      return total;
+      continue;
     }
 
-    const count = (tool.output as Record<string, unknown>).qualityIssueCount;
-    return total + (typeof count === "number" && count > 0 ? count : 0);
-  }, 0);
+    const issues = (tool.output as Record<string, unknown>).qualityIssues;
+    if (!Array.isArray(issues)) {
+      continue;
+    }
+    for (const issue of issues) {
+      if (!issue || typeof issue !== "object") {
+        continue;
+      }
+      const value = issue as Record<string, unknown>;
+      if (value.severity !== "warning" || typeof value.code !== "string") {
+        continue;
+      }
+      const target = typeof value.target === "string" ? value.target : "";
+      const key = `${value.code}\0${target}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      warnings.push({ code: value.code, target });
+    }
+  }
+
+  return warnings;
 }

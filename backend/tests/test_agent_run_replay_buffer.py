@@ -51,7 +51,11 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
             for delta in ("one", " two", " three", " four", " five"):
                 yield agent_runs._sse_frame(
                     "text_delta",
-                    {"type": "text_delta", "delta": delta},
+                    {
+                        "type": "text_delta",
+                        "delta": delta,
+                        "timelinePartId": "timeline-text-1",
+                    },
                 )
             yield agent_runs._sse_frame(
                 "message_done",
@@ -78,7 +82,7 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
         manager = AgentRunManager()
         run = await manager.start(
             AgentChatRequest(
-                resumeId="resume-replay-buffer",
+                resumeId="resumereplaybuffer",
                 expectedRevision="synthetic-bypassed-revision",
                 message=AgentConversationItem(
                     id="turn-run-replay-buffer",
@@ -98,6 +102,14 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
             "id": "message-1",
             "role": "assistant",
             "text": "one two three four five",
+            "timeline": [
+                {
+                    "id": "timeline-text-1",
+                    "type": "text",
+                    "text": "one two three four five",
+                    "toolIds": [],
+                },
+            ],
             "transactionState": "committed",
         }
         assert "event: run_done" in frames[-1]

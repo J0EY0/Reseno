@@ -155,10 +155,6 @@ try {
     50,
   );
   assert.equal(resumeTitle.normalizeResumeTitle("   ", "Fallback"), "Fallback");
-  assert.equal(
-    resumeTitle.formatResumeTitleForToolbar("Long Resume Name - Copy (2)"),
-    "Long... - Copy (2)",
-  );
 
   const resumeDetailRouteSource = await readFile(
     new URL(
@@ -191,6 +187,13 @@ try {
   const resumeGalleryRouteSource = await readFile(
     new URL(
       "src/components/workspace/use-resume-gallery-workspace.ts",
+      frontendRoot,
+    ),
+    "utf8",
+  );
+  const resumeGalleryImportSource = await readFile(
+    new URL(
+      "src/components/workspace/resume-gallery-import.ts",
       frontendRoot,
     ),
     "utf8",
@@ -270,13 +273,13 @@ try {
   }
   assert.ok(
     !/from\s+["']@\/lib\/pdf-resume-import["']/.test(
-      resumeGalleryRouteSource,
+      resumeGalleryImportSource,
     ),
     "The optional PDF parser must not be a static workspace dependency.",
   );
   assert.ok(
     /import\(\s*["']@\/lib\/pdf-resume-import["']\s*\)/.test(
-      resumeGalleryRouteSource,
+      resumeGalleryImportSource,
     ) &&
       !/pdf-resume-import/.test(resumeDetailRouteSource),
     "PDF import must retain a statically analyzable dynamic chunk boundary.",

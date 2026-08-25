@@ -6,6 +6,7 @@ import {
   resolveApiUrl,
 } from "@/lib/api-client";
 import {
+  applyAgentTextStreamEvent,
   applyAgentToolStreamEvent,
   createEmptyAssistantMessage,
   mergeAgentMessage,
@@ -135,12 +136,6 @@ function parseServerSentEventBlock(block: string) {
   return { eventId, payload, type };
 }
 
-function yieldToRenderer() {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, 0);
-  });
-}
-
 async function readAgentChatStream(
   response: Response,
   options: AgentChatStreamOptions,
@@ -164,44 +159,17 @@ async function readAgentChatStream(
         accumulator.message,
         getPayloadPatch(payload, "message"),
       );
-      publishMessage();
-      return;
+      return true;
     }
 
     if (type === "text_delta") {
-      const delta = isRecord(payload)
-        ? typeof payload.delta === "string"
-          ? payload.delta
-          : typeof payload.text === "string"
-            ? payload.text
-            : ""
-        : "";
-
-      if (delta) {
-        accumulator.message = {
-          ...accumulator.message,
-          text: `${accumulator.message.text}${delta}`,
-        };
-        publishMessage();
-      }
-      return;
-    }
-
-    if (type === "reasoning_delta") {
-      const delta = isRecord(payload)
-        ? typeof payload.delta === "string"
-          ? payload.delta
-          : ""
-        : "";
-
-      if (delta) {
-        accumulator.message = {
-          ...accumulator.message,
-          reasoning: `${accumulator.message.reasoning ?? ""}${delta}`,
-        };
-        publishMessage();
-      }
-      return;
+      const nextMessage = applyAgentTextStreamEvent(
+        accumulator.message,
+        payload,
+      );
+      const changed = nextMessage !== accumulator.message;
+      accumulator.message = nextMessage;
+      return changed;
     }
 
     if (
@@ -213,29 +181,15 @@ async function readAgentChatStream(
         accumulator.message,
         payload,
       );
-      publishMessage();
-      return;
+      return true;
     }
 
-    if (
-      type === "message_delta" ||
-      type === "plan" ||
-      type === "updates" ||
-      type === "timeline" ||
-      type === "suggestions" ||
-      type === "knowledge" ||
-      type === "tools" ||
-      type === "sources" ||
-      type === "edits" ||
-      type === "quickReplies" ||
-      type === "actions"
-    ) {
+    if (type === "message_delta" || type === "edits") {
       accumulator.message = mergeAgentMessage(
         accumulator.message,
         getPayloadPatch(payload, "message"),
       );
-      publishMessage();
-      return;
+      return true;
     }
 
     if (type === "message_done") {
@@ -244,8 +198,7 @@ async function readAgentChatStream(
         getPayloadPatch(payload, "message"),
       );
       accumulator.messageDone = true;
-      options.onMessage?.(accumulator.message);
-      return;
+      return true;
     }
 
     if (type === "run_done") {
@@ -262,7 +215,7 @@ async function readAgentChatStream(
       accumulator.errorCode = isRecord(payload)
         ? toErrorCode(payload.errorCode)
         : null;
-      return;
+      return false;
     }
 
     if (type === "error") {
@@ -278,14 +231,17 @@ async function readAgentChatStream(
           ...accumulator.message,
           text: accumulator.message.text || errorMessage,
         };
-        publishMessage();
+        return true;
       }
-      return;
+      return false;
     }
+
+    return false;
   };
 
-  const flushBlocks = async (blocks: string[]) => {
-    for (const [index, block] of blocks.entries()) {
+  const flushBlocks = (blocks: string[]) => {
+    let messageChanged = false;
+    for (const block of blocks) {
       const event = parseServerSentEventBlock(block);
 
       if (!event) {
@@ -299,11 +255,10 @@ async function readAgentChatStream(
           event.eventId,
         );
       }
-      applyEvent(event.type, event.payload);
-
-      if (index < blocks.length - 1) {
-        await yieldToRenderer();
-      }
+      messageChanged = applyEvent(event.type, event.payload) || messageChanged;
+    }
+    if (messageChanged) {
+      publishMessage();
     }
   };
 
@@ -318,13 +273,13 @@ async function readAgentChatStream(
 
     const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
-    await flushBlocks(blocks);
+    flushBlocks(blocks);
   }
 
   buffer += decoder.decode();
 
   if (buffer.trim()) {
-    await flushBlocks([buffer]);
+    flushBlocks([buffer]);
   }
 
   return accumulator;

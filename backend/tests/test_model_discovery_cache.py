@@ -21,7 +21,7 @@ def _discovered_model(model_id: str) -> DiscoveredModel:
         context_window_tokens=1_000,
         max_output_tokens=100,
         supports_image=False,
-        supports_thinking=False,
+        thinking_control="none",
         metadata_source="test",
     )
 
@@ -46,7 +46,7 @@ def _write_provider_cache_in_process(
     write_cached_provider_models(provider_id, models)
 
 
-def test_cache_rejects_pre_v1_google_discovery_snapshot(
+def test_cache_rejects_pre_v4_boolean_thinking_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

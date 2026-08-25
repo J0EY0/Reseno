@@ -44,7 +44,9 @@ export function CopilotPanel({
   const conversation = useAgentConversation({
     agentDraftState,
     locale,
+    onApplyAgentDraft,
     onBeforeSend,
+    onDiscardAgentDraft,
     onPreviewAgentEdits,
     onReconcileAgentDraft,
     onRollbackAgentDraft,
@@ -100,8 +102,8 @@ export function CopilotPanel({
               conversationContextRef={conversationContextRef}
               draft={{
                 hasAgentDraft,
-                onApply: onApplyAgentDraft,
-                onDiscard: onDiscardAgentDraft,
+                onApply: conversation.applyAgentDraft,
+                onDiscard: conversation.discardAgentDraft,
                 state: agentDraftState,
               }}
               hasConfiguredModel={Boolean(selectedModel)}

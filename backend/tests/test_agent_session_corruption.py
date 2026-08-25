@@ -76,7 +76,7 @@ def test_load_agent_session_rejects_invalid_stored_message_fields_without_pii(
     files_json: str,
     response_json: str | None,
 ) -> None:
-    session_id = f"resume-corrupt-{field}"
+    session_id = f"resumecorrupt{field}"
     message_id = f"message-corrupt-{field}"
     _insert_stored_message(
         agent_conn,
@@ -111,7 +111,7 @@ def test_load_agent_session_rejects_invalid_stored_message_fields_without_pii(
 def test_load_agent_session_allows_absent_assistant_response(
     agent_conn: sqlite3.Connection,
 ) -> None:
-    session_id = "resume-plain-assistant"
+    session_id = "resumeplainassistant"
     _insert_stored_message(
         agent_conn,
         session_id=session_id,
@@ -128,7 +128,7 @@ def test_load_agent_session_allows_absent_assistant_response(
 def test_load_agent_session_rejects_checkpoint_with_unknown_boundary(
     agent_conn: sqlite3.Connection,
 ) -> None:
-    session_id = "resume-checkpoint-missing-boundary"
+    session_id = "resumecheckpointmissingboundary"
     message_id = "assistant-checkpoint-missing-boundary"
     response_json = (
         '{"id":"assistant-checkpoint-missing-boundary",'
@@ -155,7 +155,7 @@ def test_load_agent_session_rejects_checkpoint_with_unknown_boundary(
 def test_load_agent_session_rejects_malformed_conversation_checkpoint(
     agent_conn: sqlite3.Connection,
 ) -> None:
-    session_id = "resume-malformed-checkpoint"
+    session_id = "resumemalformedcheckpoint"
     message_id = "assistant-malformed-checkpoint"
     response_json = (
         '{"id":"assistant-malformed-checkpoint",'
@@ -180,42 +180,10 @@ def test_load_agent_session_rejects_malformed_conversation_checkpoint(
     assert exc_info.value.field == "conversationCheckpoint"
 
 
-def test_load_agent_session_rejects_workspace_snapshot_for_unknown_turn(
-    agent_conn: sqlite3.Connection,
-) -> None:
-    session_id = "resume-workspace-snapshot-missing-turn"
-    message_id = "assistant-workspace-snapshot-missing-turn"
-    response_json = json.dumps(
-        {
-            "id": message_id,
-            "role": "assistant",
-            "text": "Stored response",
-            "_workspaceSnapshots": {
-                "turnMessageId": "missing-user-turn",
-                "tools": '{"workspaceContext":{}}',
-                "streamingFinal": None,
-            },
-        },
-    )
-    _insert_stored_message(
-        agent_conn,
-        session_id=session_id,
-        message_id=message_id,
-        role="assistant",
-        response_json=response_json,
-    )
-
-    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
-        agent_sessions.load_agent_session(agent_conn, session_id)
-
-    assert exc_info.value.message_id == message_id
-    assert exc_info.value.field == "workspaceSnapshots"
-
-
 def test_load_agent_session_rejects_regressed_conversation_checkpoint(
     agent_conn: sqlite3.Connection,
 ) -> None:
-    session_id = "resume-regressed-checkpoint"
+    session_id = "resumeregressedcheckpoint"
     _insert_stored_message(
         agent_conn,
         session_id=session_id,
@@ -283,7 +251,7 @@ def test_load_agent_session_rejects_regressed_conversation_checkpoint(
 def test_replace_agent_session_cannot_delete_existing_corrupt_message(
     agent_conn: sqlite3.Connection,
 ) -> None:
-    session_id = "resume-corrupt-replacement"
+    session_id = "resumecorruptreplacement"
     message_id = "message-corrupt-replacement"
     corrupt_files = f'["{PRIVATE_VALUE}"'
     _insert_stored_message(

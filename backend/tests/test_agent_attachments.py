@@ -23,10 +23,7 @@ from app.schemas.common import APP_CODE_NOT_FOUND
 from app.services import agent_sessions, resumes
 from app.services.agent import attachments as agent_attachments
 from app.services.agent.attachments import mark_agent_attachments_sent
-from app.services.agent.runtime.messages import (
-    build_agent_messages,
-    is_native_attachment_unsupported,
-)
+from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent_sessions import _current_user_message
 from app.services.llm import AgentLlmConfig, LlmRequestError, common
 from app.services.llm.adapters import (
@@ -34,8 +31,17 @@ from app.services.llm.adapters import (
     google_gemini,
     openai_responses,
 )
+from app.services.llm.types import LlmPrompt
 
 SYNTHETIC_SESSION_REVISION = "synthetic-session-revision"
+
+
+def _resume_id(label: str) -> str:
+    return "".join(
+        character
+        for character in label
+        if character.isascii() and character.isalnum()
+    )
 
 
 def _current_session_revision(session_id: str) -> str:
@@ -212,7 +218,7 @@ def test_current_attachment_filename_hides_resume_name(
     expected_filename: str,
     case_id: str,
 ) -> None:
-    session_id = f"resume-private-current-filename-{case_id}"
+    session_id = _resume_id(f"resume-private-current-filename-{case_id}")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -226,8 +232,6 @@ def test_current_attachment_filename_hides_resume_name(
     messages = build_agent_messages(
         request,
         _config(),
-        mode="streaming_final",
-        force_attachment_text=True,
     )
 
     assert _current_request_files(messages)[0]["filename"] == expected_filename
@@ -236,7 +240,7 @@ def test_current_attachment_filename_hides_resume_name(
 def test_prevalidate_rejects_corrupt_pdf_before_consumption(
     client: TestClient,
 ) -> None:
-    session_id = "resume-corrupt-pdf"
+    session_id = _resume_id("resume-corrupt-pdf")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -262,7 +266,7 @@ def test_prevalidate_rejects_corrupt_pdf_before_consumption(
 def test_prevalidate_rejects_encrypted_native_pdf(
     client: TestClient,
 ) -> None:
-    session_id = "resume-encrypted-pdf"
+    session_id = _resume_id("resume-encrypted-pdf")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -290,7 +294,7 @@ def test_prevalidate_normalizes_unexpected_extraction_failure(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-extraction-failure"
+    session_id = _resume_id("resume-extraction-failure")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -330,7 +334,7 @@ def test_prevalidate_rejects_aggregate_raw_bytes_without_partial_readiness(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-aggregate-bytes"
+    session_id = _resume_id("resume-aggregate-bytes")
     files = [
         _upload(
             client,
@@ -363,7 +367,7 @@ def test_prevalidate_rejects_aggregate_extracted_text(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-aggregate-text"
+    session_id = _resume_id("resume-aggregate-text")
     files = [
         _upload(
             client,
@@ -395,7 +399,7 @@ def test_prevalidate_rejects_aggregate_extracted_text(
 def test_attachment_lifecycle_advances_after_batch_validation_and_consumption(
     client: TestClient,
 ) -> None:
-    session_id = "resume-attachment-lifecycle"
+    session_id = _resume_id("resume-attachment-lifecycle")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -432,7 +436,7 @@ def test_cleanup_cannot_delete_attachment_referenced_by_committed_history(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-cleanup-consume-race"
+    session_id = _resume_id("resume-cleanup-consume-race")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -526,7 +530,7 @@ def test_cleanup_cannot_delete_during_attachment_readiness_handoff(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-cleanup-ready-race"
+    session_id = _resume_id("resume-cleanup-ready-race")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -613,7 +617,7 @@ def test_cleanup_cannot_delete_during_attachment_readiness_handoff(
 def test_mark_sent_rejects_attachment_that_is_still_stored(
     client: TestClient,
 ) -> None:
-    session_id = "resume-stored-attachment-consumption"
+    session_id = _resume_id("resume-stored-attachment-consumption")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -637,7 +641,7 @@ def test_mark_sent_rejects_attachment_that_is_still_stored(
 def test_version_two_metadata_without_state_is_inferred(
     client: TestClient,
 ) -> None:
-    session_id = "resume-legacy-attachment-state"
+    session_id = _resume_id("resume-legacy-attachment-state")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -659,27 +663,6 @@ def test_version_two_metadata_without_state_is_inferred(
     consumed = agent_attachments.load_agent_attachment(session_id, attachment)
     assert consumed is not None
     assert consumed.state == "consumed"
-
-
-@pytest.mark.parametrize(
-    ("status_code", "message", "expected"),
-    [
-        (400, "Unsupported attachment type application/pdf", True),
-        (415, "Invalid media type for input_file", True),
-        (400, "Invalid request parameter: temperature", False),
-        (401, "Unsupported attachment type application/pdf", False),
-        (429, "Unsupported attachment type application/pdf", False),
-        (500, "Unsupported attachment type application/pdf", False),
-    ],
-)
-def test_native_attachment_fallback_requires_explicit_client_rejection(
-    status_code: int,
-    message: str,
-    expected: bool,
-) -> None:
-    error = LlmRequestError(message, status_code=status_code)
-
-    assert is_native_attachment_unsupported(error) is expected
 
 
 def test_attachment_only_message_is_persisted_without_generated_text() -> None:
@@ -707,7 +690,7 @@ def test_attachment_only_message_is_persisted_without_generated_text() -> None:
 
 
 def test_attachment_filename_limit_counts_utf8_bytes(client: TestClient) -> None:
-    session_id = "resume-unicode-filename"
+    session_id = _resume_id("resume-unicode-filename")
     filename = f"{'简历' * 100}.pdf"
     payload = _pdf_with_text("Unicode filename")
 
@@ -736,7 +719,7 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-append-rollback"
+    session_id = _resume_id("resume-append-rollback")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -797,7 +780,7 @@ def test_stale_assistant_is_rejected_after_session_history_replacement(
     client: TestClient,
 ) -> None:
     del client  # The fixture provides an isolated database for this session test.
-    session_id = "resume-stale-assistant"
+    session_id = _resume_id("resume-stale-assistant")
     request = AgentChatRequest(
         resumeId=session_id,
         expectedRevision=_current_session_revision(session_id),
@@ -846,7 +829,7 @@ def test_marking_multiple_attachments_is_all_or_nothing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-attachment-partial-failure"
+    session_id = _resume_id("resume-attachment-partial-failure")
     first = _upload(
         client,
         session_id=session_id,
@@ -898,7 +881,7 @@ def test_user_message_and_attachment_state_are_compensated_on_db_failure(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-user-message-compensation"
+    session_id = _resume_id("resume-user-message-compensation")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -947,7 +930,7 @@ def test_replace_session_rolls_back_when_attachment_protection_fails(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-replace-rollback"
+    session_id = _resume_id("resume-replace-rollback")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -1016,7 +999,7 @@ def test_replace_session_rolls_back_when_attachment_protection_fails(
 def test_history_replacement_preserves_more_than_request_attachment_limit(
     client: TestClient,
 ) -> None:
-    session_id = "resume-history-many-attachments"
+    session_id = _resume_id("resume-history-many-attachments")
     attachments = [
         _upload(
             client,
@@ -1064,7 +1047,7 @@ def test_history_replacement_ignores_current_request_aggregate_size_limit(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id = "resume-history-aggregate-size"
+    session_id = _resume_id("resume-history-aggregate-size")
     attachments = [
         _upload(
             client,
@@ -1111,7 +1094,7 @@ def test_history_replacement_ignores_current_request_aggregate_size_limit(
 
 
 def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:
-    session_id = "resume-pdf-text"
+    session_id = _resume_id("resume-pdf-text")
     expected = "Senior TypeScript platform role"
     attachment = _upload(
         client,
@@ -1131,7 +1114,6 @@ def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:
     messages = build_agent_messages(
         _request(attachment, session_id=session_id),
         _config(),
-        mode="tools",
     )
     files = _current_request_files(messages)
 
@@ -1142,7 +1124,7 @@ def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:
 def test_uploaded_pdf_keeps_content_beyond_preview_sized_excerpt(
     client: TestClient,
 ) -> None:
-    session_id = "resume-pdf-complete"
+    session_id = _resume_id("resume-pdf-complete")
     expected = "late-paper-finding-retained"
     paper_text = f"{'context ' * 2_500}{expected}"
     attachment = _upload(
@@ -1156,7 +1138,6 @@ def test_uploaded_pdf_keeps_content_beyond_preview_sized_excerpt(
     messages = build_agent_messages(
         _request(attachment, session_id=session_id),
         _config(),
-        mode="tools",
     )
 
     assert expected in _current_request_files(messages)[0]["excerpt"]
@@ -1165,7 +1146,7 @@ def test_uploaded_pdf_keeps_content_beyond_preview_sized_excerpt(
 def test_historical_attachment_is_not_resent_implicitly(
     client: TestClient,
 ) -> None:
-    session_id = "resume-history"
+    session_id = _resume_id("resume-history")
     expected = "hierarchical visual context improves fine-grained perception"
     attachment = _upload(
         client,
@@ -1199,7 +1180,7 @@ def test_historical_attachment_is_not_resent_implicitly(
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
-    messages = build_agent_messages(request, _config(), mode="tools")
+    messages = build_agent_messages(request, _config())
     files = _current_request_files(messages)
 
     assert files == []
@@ -1209,7 +1190,7 @@ def test_historical_attachment_is_not_resent_implicitly(
 def test_historical_attachment_can_be_explicitly_referenced_again(
     client: TestClient,
 ) -> None:
-    session_id = "resume-reference"
+    session_id = _resume_id("resume-reference")
     expected = "stable-material-context"
     attachment = _upload(
         client,
@@ -1231,7 +1212,7 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
-    messages = build_agent_messages(request, _config(), mode="tools")
+    messages = build_agent_messages(request, _config())
     files = _current_request_files(messages)
 
     assert expected in files[0]["excerpt"]
@@ -1239,7 +1220,7 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
 
 
 def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
-    session_id = "resume-docx"
+    session_id = _resume_id("resume-docx")
     expected = "Reduced deployment time by 35 percent"
     attachment = _upload(
         client,
@@ -1254,7 +1235,6 @@ def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
     messages = build_agent_messages(
         _request(attachment, session_id=session_id),
         _config(),
-        mode="tools",
     )
 
     assert expected in _current_request_files(messages)[0]["excerpt"]
@@ -1263,7 +1243,7 @@ def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
 def test_uploaded_image_is_mapped_for_every_visual_adapter(
     client: TestClient,
 ) -> None:
-    session_id = "resume-image"
+    session_id = _resume_id("resume-image")
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
         "/x8AAusB9Wl6Y2sAAAAASUVORK5CYII=",
@@ -1279,7 +1259,6 @@ def test_uploaded_image_is_mapped_for_every_visual_adapter(
     messages = build_agent_messages(
         _request(attachment, session_id=session_id),
         _config(),
-        mode="tools",
     )
     content = messages[-1]["content"]
 
@@ -1293,7 +1272,7 @@ def test_uploaded_image_is_mapped_for_every_visual_adapter(
 
     chat_messages = common.chat_completion_params(
         _config(),
-        messages,
+        LlmPrompt(messages=messages),
         stream=False,
     )["messages"]
     assert chat_messages[-1]["content"][1] == {
@@ -1330,7 +1309,7 @@ def test_uploaded_image_is_mapped_for_every_visual_adapter(
 def test_original_attachment_can_be_downloaded_only_from_owning_session(
     client: TestClient,
 ) -> None:
-    session_id = "resume-download"
+    session_id = _resume_id("resume-download")
     payload = _pdf_with_text("Download the original bytes")
     attachment = _upload(
         client,
@@ -1357,7 +1336,7 @@ def test_original_attachment_can_be_downloaded_only_from_owning_session(
 def test_duplicate_filenames_use_compact_numbered_suffix(
     client: TestClient,
 ) -> None:
-    session_id = "resume-collisions"
+    session_id = _resume_id("resume-collisions")
     payload = _pdf_with_text("Same display filename")
 
     first = _upload(
@@ -1382,7 +1361,7 @@ def test_duplicate_filenames_use_compact_numbered_suffix(
 def test_pending_attachment_can_be_deleted_but_sent_history_is_protected(
     client: TestClient,
 ) -> None:
-    session_id = "resume-pending-delete"
+    session_id = _resume_id("resume-pending-delete")
     pending = _upload(
         client,
         session_id=session_id,
@@ -1516,7 +1495,7 @@ def test_delete_agent_session_attachments_accepts_missing_directory(
 def test_attachment_rollback_does_not_recreate_deleted_session_directory(
     client: TestClient,
 ) -> None:
-    session_id = "resume-deleted-attachment-rollback"
+    session_id = _resume_id("resume-deleted-attachment-rollback")
     attachment = _upload(
         client,
         session_id=session_id,
@@ -1844,7 +1823,7 @@ def test_chat_prevalidation_cannot_recreate_cache_after_permanent_delete(
 
 
 def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
-    session_id = "resume-native-pdf"
+    session_id = _resume_id("resume-native-pdf")
     payload = _pdf_with_text("Native PDF payload")
     attachment = _upload(
         client,
@@ -1857,7 +1836,6 @@ def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
     messages = build_agent_messages(
         _request(attachment, session_id=session_id),
         _config(api_family="openai_responses"),
-        mode="tools",
     )
     content = messages[-1]["content"]
 
@@ -1913,7 +1891,7 @@ def test_native_attachment_filename_hides_resume_name_without_changing_bytes(
     media_type: str,
     part_type: str,
 ) -> None:
-    session_id = f"resume-private-native-{extension}-filename-{case_id}"
+    session_id = _resume_id(f"resume-private-native-{extension}-filename-{case_id}")
     payload = (
         _pdf_with_text("Public project evidence")
         if extension == "pdf"
@@ -1935,7 +1913,6 @@ def test_native_attachment_filename_hides_resume_name_without_changing_bytes(
     messages = build_agent_messages(
         request,
         _config(api_family="openai_responses"),
-        mode="tools",
     )
     content = messages[-1]["content"]
 
@@ -1968,7 +1945,7 @@ def test_historical_native_attachment_filename_hides_resume_name_without_bytes(
     expected_filename: str,
     case_id: str,
 ) -> None:
-    session_id = f"resume-private-native-history-filename-{case_id}"
+    session_id = _resume_id(f"resume-private-native-history-filename-{case_id}")
     payload = _pdf_with_text("Historical project evidence")
     attachment = _upload(
         client,
@@ -2000,7 +1977,6 @@ def test_historical_native_attachment_filename_hides_resume_name_without_bytes(
     messages = build_agent_messages(
         request,
         _config(api_family="openai_responses"),
-        mode="tools",
     )
     serialized = json.dumps(messages)
 
@@ -2028,9 +2004,9 @@ def test_more_than_five_current_attachments_is_rejected() -> None:
         ),
         locale="en",
         resume={"basic": {}, "sections": []},
-        resume_id="resume-too-many",
+        resume_id="resumetoomany",
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
     with pytest.raises(LlmRequestError, match="At most 5 attachments"):
-        build_agent_messages(request, _config(), mode="tools")
+        build_agent_messages(request, _config())

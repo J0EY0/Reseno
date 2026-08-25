@@ -115,7 +115,7 @@ const agentStreamClient = await loadTypeScriptModule(
     }
     const firstEvent =
       requestedUrls.length === 1
-        ? 'id: 41\nevent: text_delta\ndata: {"delta":"partial"}\n\n'
+        ? 'id: 41\nevent: text_delta\ndata: {"delta":"partial","timelinePartId":"timeline-text-1"}\n\n'
         : "";
     return createEventStream(firstEvent);
   };
@@ -173,19 +173,22 @@ const agentStreamClient = await loadTypeScriptModule(
 
 {
   let requestCount = 0;
+  const publishedMessages = [];
   activeFetch = async () => {
     requestCount += 1;
     return createEventStream(
       [
-        'id: 7\nevent: text_delta\ndata: {"delta":"done"}',
-        'id: 8\nevent: message_done\ndata: {"message":{"text":"done"}}',
+        'id: 7\nevent: text_delta\ndata: {"delta":"done","timelinePartId":"timeline-text-1"}',
+        'id: 8\nevent: message_done\ndata: {"message":{"id":"message-done","role":"assistant","text":"done","timeline":[{"id":"timeline-text-1","type":"text","text":"done","toolIds":[]}]}}',
         'id: 9\nevent: run_done\ndata: {"status":"completed","executionState":"succeeded"}',
         "",
       ].join("\n\n"),
     );
   };
 
-  const result = await agentStreamClient.connectAgentRun(createActiveRun());
+  const result = await agentStreamClient.connectAgentRun(createActiveRun(), {
+    onMessage: (message) => publishedMessages.push(message),
+  });
 
   assert.equal(
     requestCount,
@@ -195,6 +198,12 @@ const agentStreamClient = await loadTypeScriptModule(
   assert.equal(result.status, "completed");
   assert.equal(result.lastEventId, 9);
   assert.equal(result.message.text, "done");
+  assert.equal(result.message.timeline[0].text, "done");
+  assert.equal(
+    publishedMessages.length,
+    1,
+    "Events received in one transport chunk must publish one React state update.",
+  );
 }
 
 {
@@ -217,6 +226,25 @@ const agentStreamClient = await loadTypeScriptModule(
   assert.equal(result.executionState, "cancelled");
   assert.equal(result.messageDone, true);
   assert.equal(result.message.text, "kept partial");
+  assert.equal(result.message.transactionState, "rolled_back");
+}
+
+{
+  activeFetch = async () =>
+    createEventStream(
+      [
+        'id: 20\nevent: error\ndata: {"error":"Agent model turn limit reached.","errorCode":"AGENT_INTERNAL_ERROR"}',
+        'id: 21\nevent: message_done\ndata: {"message":{"id":"message-turn-limit","role":"assistant","text":"No unfinished changes were applied.","transactionState":"rolled_back"}}',
+        'id: 22\nevent: run_done\ndata: {"status":"failed","executionState":"failed","errorCode":"AGENT_INTERNAL_ERROR"}',
+        "",
+      ].join("\n\n"),
+    );
+
+  const result = await agentStreamClient.connectAgentRun(createActiveRun());
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.executionState, "failed");
+  assert.equal(result.errorCode, "AGENT_INTERNAL_ERROR");
   assert.equal(result.message.transactionState, "rolled_back");
 }
 

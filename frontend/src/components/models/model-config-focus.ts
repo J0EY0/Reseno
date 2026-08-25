@@ -14,6 +14,9 @@ const cloudFocusOrder: ReadonlyArray<
   ["apiKey", ["model-api-key"]],
   ["model", ["model-select", "model-discovery"]],
   ["discovery", ["model-select", "model-discovery"]],
+  // When the validation render has already opened the section, focus the
+  // actual input. The always-mounted trigger remains a safe pre-commit fallback.
+  ["maxTokens", ["model-max-tokens", "model-output-settings"]],
 ];
 
 const localFocusOrder: ReadonlyArray<

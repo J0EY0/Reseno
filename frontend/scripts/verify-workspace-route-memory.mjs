@@ -55,6 +55,11 @@ assert.equal(
   false,
   "Browser history must contain only a small token, never the route DTO.",
 );
+assert.equal(
+  resolveWorkspaceLateralRoute(null, "settings").data,
+  settings.data,
+  "A successful prepared handoff must publish its target snapshot before commit.",
+);
 
 const arrival = resolveWorkspaceLateralRoute(settingsState, "settings");
 assert.equal(arrival.data, settings.data);
@@ -66,7 +71,7 @@ const back = resolveWorkspaceLateralRoute(null, "resume");
 assert.equal(
   back.data,
   resume.data,
-  "Same-session POP must seed its first frame from the latest view snapshot.",
+  "Same-session POP must seed its first frame from the latest committed view snapshot.",
 );
 
 const deadToken = resolveWorkspaceLateralRoute(settingsState, "settings");

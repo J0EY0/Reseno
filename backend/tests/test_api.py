@@ -20,20 +20,17 @@ from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfReques
 from app.services import resumes as resume_service
 from app.services import templates as template_service
 from app.services import user_preferences, workspace_pages
-from app.services.agent import WebReference, WebSearchReference, WebSearchResult
+from app.services.agent import contracts as agent_contracts
 from app.services.agent import section_registry as section_registry_module
 from app.services.agent.attachments import store_agent_attachment
 from app.services.agent.editing.operations import (
-    _model_edit_suggestions,
-    _model_edit_suggestions_with_diagnostics,
-    _safe_section_patch,
-    _section_kind_from_text,
+    parse_edit_batch,
 )
-from app.services.agent.executor import AgentPlanExecutor
+from app.services.agent.environment import ResumeToolEnvironment
+from app.services.agent.evidence import historical_prompt_evidence_ref
 from app.services.agent.integrations import web as agent_web
-from app.services.agent.intent_patterns import (
-    INTENT_PATTERN_FILE,
-    matches_intent_pattern,
+from app.services.agent.integrations.web import (
+    WebReference,
 )
 from app.services.agent.localization import (
     TEXT as AGENT_LOCALIZED_TEXT,
@@ -41,55 +38,38 @@ from app.services.agent.localization import (
 from app.services.agent.localization import (
     supported_agent_text_locales,
 )
-from app.services.agent.parsing_patterns import (
-    PARSING_PATTERN_FILE,
-    matches_agent_pattern,
-)
-from app.services.agent.policy import (
-    AgentCapabilityMode,
-    AgentTaskIntent,
-    capability_policy_for_request,
-)
 from app.services.agent.preferences import prepare_agent_request
-from app.services.agent.prompts import (
-    CORE_POLICY_PROMPT,
-    EDIT_OPERATION_GUIDE,
-    RESUME_EDITING_PLAYBOOK_PROMPT,
-    STREAMING_FINAL_RESPONSE_PROMPT,
-    SYSTEM_PROMPT,
-    TOOL_POLICY_PROMPT,
-)
+from app.services.agent.prompt import AGENT_PROMPT
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.messages import _system_parts, build_agent_messages
+from app.services.agent.runtime.messages import build_agent_messages
 from app.services.agent.section_registry import (
     SECTION_DEFAULT_LAYOUTS,
     SECTION_KIND_ENUM,
     SECTION_REGISTRY,
 )
-from app.services.agent.tools import registry as tool_registry
-from app.services.agent.tools.runner import AgentToolRunner
 from app.services.auth_accounts import get_auth_db_path
 from app.services.auth_tokens import create_access_token, decode_access_token
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmPrompt,
     LlmRequestError,
     LlmStreamEvent,
     LlmToolCall,
 )
+from app.services.model_configs import upsert_llm_config_dict
 from app.services.model_discovery_cache import (
     MODEL_DISCOVERY_CACHE_NAME,
+    get_cached_provider_model,
     write_cached_provider_models,
 )
 from app.services.model_providers import DiscoveredModel
 from app.services.pdf import ResumeImageExportResult
 from app.services.templates import TemplateCatalog
 
-ASYNC_COMPLETE_TOOL_CALL_PATH = (
-    "app.services.agent.runtime.loop.async_complete_tool_call"
-)
-ASYNC_COMPLETE_CHAT_PATH = "app.services.agent.runtime.streaming.async_complete_chat"
-ASYNC_STREAM_CHAT_PATH = "app.services.agent.runtime.streaming.async_stream_chat"
+ASYNC_COMPLETE_TOOL_CALL_PATH = "app.services.agent.runtime.loop.async_stream_tool_call"
+ASYNC_COMPLETE_CHAT_PATH = "app.services.agent.runtime.loop.async_complete_chat"
+ASYNC_STREAM_CHAT_PATH = "app.services.agent.runtime.loop.async_stream_chat"
 
 
 def minimal_resume_document(
@@ -114,7 +94,7 @@ def minimal_resume_document(
 
 
 def minimal_resume_item(
-    resume_id: str = "resume-test",
+    resume_id: str = "resumetest",
     title: str = "Test Resume",
 ) -> dict:
     return {
@@ -509,6 +489,122 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
             assert headers["Authorization"] == f"Bearer {payload['apiKey']}"
 
 
+def test_anthropic_discovery_caches_official_thinking_control(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
+        assert url == "https://api.anthropic.com/v1/models"
+        assert headers["x-api-key"] == "sk-anthropic-secret"
+        return {
+            "data": [
+                {
+                    "id": "claude-sonnet-4-6",
+                    "max_input_tokens": 200_000,
+                    "max_tokens": 64_000,
+                    "capabilities": {
+                        "thinking": {
+                            "supported": True,
+                            "types": {
+                                "adaptive": {"supported": True},
+                                "enabled": {"supported": True},
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "claude-sonnet-4-5-20250929",
+                    "capabilities": {
+                        "thinking": {
+                            "supported": True,
+                            "types": {
+                                "adaptive": {"supported": False},
+                                "enabled": {"supported": True},
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "claude-sonnet-5-unknown-capability",
+                },
+            ],
+        }
+
+    monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "anthropic",
+            "apiFamily": "anthropic_messages",
+            "apiUrl": "https://api.anthropic.com/v1",
+            "apiKey": "sk-anthropic-secret",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    models = {item["id"]: item for item in response.json()["data"]["models"]}
+    assert models["claude-sonnet-4-6"]["supportsThinking"] is True
+    assert models["claude-sonnet-4-6"]["contextWindowTokens"] == 200_000
+    assert models["claude-sonnet-4-6"]["maxOutputTokens"] == 64_000
+    assert models["claude-sonnet-4-5-20250929"]["supportsThinking"] is True
+    assert models["claude-sonnet-5-unknown-capability"]["supportsThinking"] is False
+    adaptive = get_cached_provider_model("anthropic", "claude-sonnet-4-6")
+    budget = get_cached_provider_model(
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+    )
+    unsupported = get_cached_provider_model(
+        "anthropic",
+        "claude-sonnet-5-unknown-capability",
+    )
+    assert adaptive is not None and adaptive.thinking_control == "native_auto"
+    assert budget is not None and budget.thinking_control == "native_budget"
+    assert unsupported is not None and unsupported.thinking_control == "none"
+
+
+def test_qwen_discovery_requires_capability_evidence_for_native_auto(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
+        assert url.endswith("/models")
+        assert headers["Authorization"] == "Bearer sk-qwen-secret"
+        return {
+            "data": [
+                {"id": "qwen-thinking-name-only"},
+                {"id": "qwen-capable", "supports_reasoning": True},
+            ],
+        }
+
+    monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
+    monkeypatch.setattr(
+        "app.services.model_providers.resolve_model_metadata",
+        lambda *_args: None,
+    )
+
+    response = client.post(
+        "/api/model-providers/discover-models",
+        json={
+            "provider": "qwen",
+            "apiFamily": "openai_compatible_chat",
+            "apiUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "apiKey": "sk-qwen-secret",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in response.json()["data"]["models"]}
+    assert by_id["qwen-thinking-name-only"]["supportsThinking"] is False
+    assert by_id["qwen-capable"]["supportsThinking"] is True
+    incapable = get_cached_provider_model("qwen", "qwen-thinking-name-only")
+    capable = get_cached_provider_model("qwen", "qwen-capable")
+    assert incapable is not None and incapable.thinking_control == "none"
+    assert capable is not None and capable.thinking_control == "native_auto"
+
+
 def test_model_provider_discovery_reads_cached_models_without_refresh(
     client: TestClient,
     monkeypatch,
@@ -522,7 +618,7 @@ def test_model_provider_discovery_reads_cached_models_without_refresh(
                 context_window_tokens=65536,
                 max_output_tokens=4096,
                 supports_image=False,
-                supports_thinking=True,
+                thinking_control="provider_default",
                 metadata_source="provider",
             ),
         ],
@@ -565,7 +661,7 @@ def test_model_provider_discovery_refresh_writes_cache(
                 context_window_tokens=131072,
                 max_output_tokens=8192,
                 supports_image=True,
-                supports_thinking=True,
+                thinking_control="provider_default",
                 metadata_source="provider",
             ),
         ]
@@ -628,9 +724,10 @@ def parse_agent_stream_message(body: str) -> dict:
     return json.loads(message_done_data)["message"]
 
 
-def agent_workspace_context(messages: list[dict]) -> dict:
+def agent_workspace_context(prompt: LlmPrompt | list[dict]) -> dict:
     """Read the structured, untrusted workspace envelope from an LLM prompt."""
 
+    messages = prompt.messages if isinstance(prompt, LlmPrompt) else prompt
     for message in reversed(messages):
         content = message.get("content")
         if message.get("role") != "user" or not isinstance(content, str):
@@ -645,9 +742,10 @@ def agent_workspace_context(messages: list[dict]) -> dict:
     raise AssertionError("Agent prompt has no workspaceContext envelope.")
 
 
-def agent_current_request_files(messages: list[dict]) -> list[dict]:
+def agent_current_request_files(prompt: LlmPrompt | list[dict]) -> list[dict]:
     """Read extracted files from the current user turn only."""
 
+    messages = prompt.messages if isinstance(prompt, LlmPrompt) else prompt
     content = messages[-1]["content"]
     if not isinstance(content, list):
         return []
@@ -694,44 +792,11 @@ def stub_stream_text(text: str):
     return stream_response
 
 
-def stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
-    return (
-        WebSearchResult(
-            title="AI Application Developer JD",
-            url="https://example.test/jobs/ai-application-developer",
-            excerpt="AI application development responsibilities and requirements.",
-        ),
-        1,
-        None,
-    )
-
-
-async def async_stub_jd_search(query: str) -> tuple[WebSearchResult, int, None]:
-    return stub_jd_search(query)
-
-
-def stub_web_search_summary(
-    queries: list[str],
-    max_results: int = 10,
-) -> WebSearchReference:
-    return WebSearchReference(
-        query=queries[0],
-        results=(
-            WebSearchResult(
-                title="AI Application Developer Responsibilities",
-                url="https://example.test/roles/ai-application-developer",
-                excerpt="AI application developers build LLM features and workflows.",
-            ),
-            WebSearchResult(
-                title="AI Application Developer Skills",
-                url="https://example.test/roles/ai-application-developer-skills",
-                excerpt=(
-                    "Common requirements include Python, APIs, evaluation, and RAG."
-                ),
-            ),
-        ),
-        query_count=len(queries),
-        result_count=max_results,
+async def async_stub_jd_fetch(url: str, *_context: str) -> WebReference:
+    return WebReference(
+        title="AI Application Developer JD",
+        final_url=str(url),
+        excerpt="AI application development responsibilities and requirements.",
     )
 
 
@@ -749,43 +814,29 @@ def tool_call(
     )
 
 
-def target_context_history(
-    *,
-    target: str,
-    description: str = "",
-    must_have_skills: list[str] | None = None,
-) -> list[dict[str, object]]:
-    return [
-        {
-            "id": "assistant-target-context-history",
-            "role": "assistant",
-            "text": "Target context updated.",
-            "response": {
-                "id": "assistant-target-context-history",
-                "role": "assistant",
-                "text": "Target context updated.",
-                "targetContext": {
-                    "kind": "employment",
-                    "target": target,
-                    "description": description,
-                    "mustHaveSkills": must_have_skills or [],
-                    "exactJobDescription": bool(description),
-                },
-            },
-        },
-    ]
+def invoke_agent_tool(
+    environment: ResumeToolEnvironment,
+    call: LlmToolCall,
+) -> tuple[object, dict[str, object]]:
+    effect = asyncio.run(environment.invoke(call, AgentRuntimeContext()))
+    return effect.invocation, effect.observation
 
 
 def stub_tool_call_batches(
     *batches: list[LlmToolCall],
+    terminal_text: str = "Done.",
 ):
     pending = list(batches)
 
-    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
-        if pending:
-            return LlmAssistantMessage(content="", tool_calls=pending.pop(0))
-
-        return LlmAssistantMessage(content="", tool_calls=[])
+    async def call_tools(*_: object, **__: object):
+        response = (
+            LlmAssistantMessage(content="", tool_calls=pending.pop(0))
+            if pending
+            else LlmAssistantMessage(content=terminal_text, tool_calls=[])
+        )
+        if response.content:
+            yield LlmStreamEvent(type="text_delta", delta=response.content)
+        yield LlmStreamEvent(type="done", message=response)
 
     return call_tools
 
@@ -795,18 +846,30 @@ def stub_tool_call_responses(
 ):
     pending = list(responses)
 
-    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
-        if pending:
-            return pending.pop(0)
-
-        return LlmAssistantMessage(content="", tool_calls=[])
+    async def call_tools(*_: object, **__: object):
+        response = (
+            pending.pop(0)
+            if pending
+            else LlmAssistantMessage(content="Done.", tool_calls=[])
+        )
+        if response.content:
+            yield LlmStreamEvent(type="text_delta", delta=response.content)
+        yield LlmStreamEvent(type="done", message=response)
 
     return call_tools
 
 
+async def fail_on_second_final_stream(*_: object, **__: object) -> object:
+    raise AssertionError("the Pi-style loop must end on the model's natural stop")
+    yield
+
+
 def stub_terminal_tool_text(text: str):
-    async def call_tools(*_: object, **__: object) -> LlmAssistantMessage:
-        return LlmAssistantMessage(content=text, tool_calls=[])
+    async def call_tools(*_: object, **__: object):
+        response = LlmAssistantMessage(content=text, tool_calls=[])
+        if text:
+            yield LlmStreamEvent(type="text_delta", delta=text)
+        yield LlmStreamEvent(type="done", message=response)
 
     return call_tools
 
@@ -915,6 +978,22 @@ def test_workspace_page_endpoint_only_reads_owned_data(
     assert response.json()["code"] == 0
     assert set(response.json()["data"]) == expected_fields
     assert Counter(reads) == Counter(expected_reads)
+
+
+def test_resumes_workspace_page_preserves_nullable_editor_fields(
+    client: TestClient,
+) -> None:
+    created = client.post("/api/resumes", json={}).json()["data"]["resume"]
+
+    response = client.get("/api/workspace/pages/resumes")
+    resume = next(
+        item
+        for item in response.json()["data"]["resumes"]
+        if item["id"] == created["id"]
+    )
+
+    assert "templateSettings" in resume
+    assert resume["templateSettings"] is None
 
 
 def test_workspace_bootstrap_endpoint_is_removed(client: TestClient) -> None:
@@ -2972,6 +3051,29 @@ def test_existing_v1_database_starts_unchanged_with_separate_auth_database(
     get_settings.cache_clear()
 
 
+def test_fresh_schema_keeps_thinking_capability_without_obsolete_toggle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.db.schema import ensure_database_schema
+
+    db_path = tmp_path / "app.db"
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_DB_PATH", str(db_path))
+    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("APP_ENV_FILE", str(tmp_path / ".env"))
+    get_settings.cache_clear()
+
+    ensure_database_schema()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_configs)")}
+
+    assert "supports_thinking" in columns
+    assert "thinking_enabled" not in columns
+    get_settings.cache_clear()
+
+
 def test_ensure_database_schema_rejects_unversioned_nonempty_database(
     tmp_path: Path,
     monkeypatch,
@@ -3215,7 +3317,7 @@ def test_model_config_resolves_litellm_token_limits(
     )
     assert model_metadata.refresh_model_metadata_cache() is True
 
-    response = client.post(
+    rejected = client.post(
         "/api/model-configs",
         json={
             "id": "llm-token-limits",
@@ -3229,6 +3331,42 @@ def test_model_config_resolves_litellm_token_limits(
             "temperature": 0.4,
             "topP": 0.9,
             "maxTokens": 999999,
+        },
+    )
+
+    assert rejected.status_code == 400
+    assert rejected.json()["message"] == "MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT"
+
+    invalid = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
+            "nickname": "Unknown Model",
+            "apiKey": "sk-custom-secret",
+            "model": "unknown-model",
+            "apiUrl": "https://example.test/v1",
+            "maxTokens": 0,
+        },
+    )
+
+    assert invalid.status_code == 422
+
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "id": "llm-token-limits",
+            "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
+            "nickname": "Token Limits",
+            "apiKey": "sk-token-secret",
+            "model": "gpt-5.1",
+            "apiUrl": "https://api.openai.com/v1",
+            "temperature": 0.4,
+            "topP": 0.9,
+            "maxTokens": 8192,
         },
     )
 
@@ -3254,6 +3392,56 @@ def test_model_config_resolves_litellm_token_limits(
     assert row["max_tokens"] == 8192
 
 
+def test_model_config_rejects_output_limit_above_javascript_safe_integer(
+    client: TestClient,
+) -> None:
+    payload = {
+        "provider": "openai",
+        "providerKind": "custom",
+        "apiFamily": "openai_compatible_chat",
+        "nickname": "Unknown Model",
+        "apiKey": "sk-custom-secret",
+        "model": "unknown-model",
+        "apiUrl": "https://example.test/v1",
+    }
+
+    accepted = client.post(
+        "/api/model-configs",
+        json={**payload, "maxTokens": 9_007_199_254_740_991},
+    )
+    rejected = client.post(
+        "/api/model-configs",
+        json={**payload, "maxTokens": 9_007_199_254_740_992},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["maxTokens"] == 9_007_199_254_740_991
+    assert rejected.status_code == 422
+    assert rejected.json()["message"] == "VALIDATION_ERROR"
+
+
+def test_raw_model_config_rejects_output_limit_above_javascript_safe_integer(
+    client: TestClient,
+) -> None:
+    # Workspace payloads bypass Pydantic but must honor the same persistence
+    # invariant as the HTTP interface instead of overflowing SQLite's int64.
+    with connect() as conn:
+        with pytest.raises(ValueError, match="MODEL_CONFIG_MAX_TOKENS_INVALID"):
+            upsert_llm_config_dict(
+                conn,
+                {
+                    "provider": "openai",
+                    "providerKind": "custom",
+                    "apiFamily": "openai_compatible_chat",
+                    "nickname": "Unknown Model",
+                    "apiKey": "sk-custom-secret",
+                    "model": "unknown-model",
+                    "apiUrl": "https://example.test/v1",
+                    "maxTokens": 9_007_199_254_740_992,
+                },
+            )
+
+
 def test_cloud_model_config_stores_provider_defaults(
     client: TestClient,
 ) -> None:
@@ -3266,11 +3454,28 @@ def test_cloud_model_config_stores_provider_defaults(
                 context_window_tokens=131072,
                 max_output_tokens=8192,
                 supports_image=True,
-                supports_thinking=True,
+                thinking_control="provider_default",
                 metadata_source="provider",
             ),
         ],
     )
+
+    rejected = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "openai",
+            "providerKind": "cloud",
+            "apiFamily": "openai_responses",
+            "nickname": "Cloud",
+            "apiKey": "sk-cloud-secret",
+            "model": "gpt-cloud",
+            "apiUrl": "https://api.openai.com/v1",
+            "maxTokens": 8193,
+        },
+    )
+
+    assert rejected.status_code == 400
+    assert rejected.json()["message"] == "MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT"
 
     response = client.post(
         "/api/model-configs",
@@ -3292,18 +3497,24 @@ def test_cloud_model_config_stores_provider_defaults(
     data = response.json()["data"]
     assert data["temperature"] is None
     assert data["topP"] is None
-    assert data["maxTokens"] is None
+    assert data["maxTokens"] == 4096
     assert data["contextWindowTokens"] == 131072
     assert data["supportsImage"] is True
     assert data["supportsThinking"] is True
     assert data["supportsTools"] is True
     assert data["supportsStreaming"] is True
-    assert data["thinkingEnabled"] is True
+    assert "thinkingEnabled" not in data
 
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT temperature, top_p, max_tokens, supports_tools, supports_streaming
+            SELECT
+                temperature,
+                top_p,
+                max_tokens,
+                supports_tools,
+                supports_streaming,
+                encrypted_api_key
             FROM llm_configs
             WHERE client_id = ?
             """,
@@ -3313,9 +3524,96 @@ def test_cloud_model_config_stores_provider_defaults(
     assert row is not None
     assert row["temperature"] is None
     assert row["top_p"] is None
-    assert row["max_tokens"] is None
+    assert row["max_tokens"] == 4096
     assert row["supports_tools"] == 1
     assert row["supports_streaming"] == 1
+    encrypted_api_key = row["encrypted_api_key"]
+
+    auto_response = client.post(
+        "/api/model-configs",
+        json={
+            **data,
+            "apiKey": "",
+            "maxTokens": None,
+        },
+    )
+
+    assert auto_response.status_code == 200
+    assert auto_response.json()["data"]["maxTokens"] is None
+
+    with connect() as conn:
+        auto_row = conn.execute(
+            """
+            SELECT max_tokens, encrypted_api_key
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            (data["id"],),
+        ).fetchone()
+
+    assert auto_row is not None
+    assert auto_row["max_tokens"] is None
+    assert auto_row["encrypted_api_key"] == encrypted_api_key
+
+
+def test_anthropic_config_update_replaces_legacy_thinking_with_current_capability(
+    client: TestClient,
+) -> None:
+    write_cached_provider_models(
+        "anthropic",
+        [
+            DiscoveredModel(
+                id="claude-example",
+                label="claude-example",
+                context_window_tokens=200_000,
+                max_output_tokens=64_000,
+                supports_image=True,
+                thinking_control="none",
+                metadata_source="provider",
+            ),
+        ],
+    )
+    response = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "anthropic",
+            "providerKind": "cloud",
+            "apiFamily": "anthropic_messages",
+            "nickname": "Anthropic",
+            "apiKey": "anthropic-secret",
+            "model": "claude-example",
+            "apiUrl": "https://api.anthropic.com/v1",
+        },
+    )
+    assert response.status_code == 200
+    saved = response.json()["data"]
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE llm_configs SET supports_thinking = 1 WHERE client_id = ?",
+            (saved["id"],),
+        )
+
+    updated = client.post(
+        "/api/model-configs",
+        json={
+            **saved,
+            "nickname": "Anthropic Updated",
+            "apiKey": None,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["data"]["supportsThinking"] is False
+
+    with connect() as conn:
+        persisted = conn.execute(
+            "SELECT supports_thinking FROM llm_configs WHERE client_id = ?",
+            (saved["id"],),
+        ).fetchone()
+
+    assert persisted is not None
+    assert persisted["supports_thinking"] == 0
 
 
 def test_google_cloud_config_uses_manifest_v1_end_to_end(
@@ -3332,7 +3630,7 @@ def test_google_cloud_config_uses_manifest_v1_end_to_end(
                 context_window_tokens=1_000_000,
                 max_output_tokens=65_536,
                 supports_image=True,
-                supports_thinking=True,
+                thinking_control="provider_default",
                 metadata_source="provider",
             ),
         ],
@@ -3413,7 +3711,6 @@ def test_local_model_config_stores_manual_capabilities(
             "supportsThinking": True,
             "supportsTools": False,
             "supportsStreaming": False,
-            "thinkingEnabled": True,
         },
     )
 
@@ -3429,7 +3726,7 @@ def test_local_model_config_stores_manual_capabilities(
     assert data["supportsThinking"] is True
     assert data["supportsTools"] is False
     assert data["supportsStreaming"] is False
-    assert data["thinkingEnabled"] is True
+    assert "thinkingEnabled" not in data
 
     with connect() as conn:
         row = conn.execute(
@@ -3444,6 +3741,85 @@ def test_local_model_config_stores_manual_capabilities(
     assert row is not None
     assert row["supports_tools"] == 0
     assert row["supports_streaming"] == 0
+
+
+def test_model_config_api_keeps_thinking_capability_without_obsolete_toggle(
+    client: TestClient,
+) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    request_properties = schemas["ModelConfigUpsertRequest"]["properties"]
+    response_properties = schemas["ModelConfigResponse"]["properties"]
+    assert "supportsThinking" in request_properties
+    assert "supportsThinking" in response_properties
+    assert "thinkingEnabled" not in request_properties
+    assert "thinkingEnabled" not in response_properties
+
+    create_response = client.post(
+        "/api/model-configs",
+        json={
+            "provider": "openai",
+            "providerKind": "custom",
+            "apiFamily": "openai_compatible_chat",
+            "nickname": "Manual Reasoning",
+            "apiKey": "sk-runtime-auto-secret",
+            "model": "reasoning-model",
+            "apiUrl": "https://example.test/v1",
+            "contextWindowTokens": 65536,
+            "supportsThinking": True,
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()["data"]
+    assert created["supportsThinking"] is True
+    assert "thinkingEnabled" not in created
+
+    listed = client.get("/api/model-configs").json()["data"]["configs"]
+    listed_config = next(item for item in listed if item["id"] == created["id"])
+    assert listed_config["supportsThinking"] is True
+    assert "thinkingEnabled" not in listed_config
+
+    with connect() as conn:
+        inserted = conn.execute(
+            """
+            SELECT supports_thinking, encrypted_api_key
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            (created["id"],),
+        ).fetchone()
+        assert inserted is not None
+        assert inserted["supports_thinking"] == 1
+        encrypted_api_key = inserted["encrypted_api_key"]
+
+    update_response = client.post(
+        "/api/model-configs",
+        json={
+            **created,
+            "nickname": "Manual Reasoning Updated",
+            "apiKey": None,
+        },
+    )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()["data"]
+    assert updated["id"] == created["id"]
+    assert updated["supportsThinking"] is True
+    assert "thinkingEnabled" not in updated
+
+    with connect() as conn:
+        persisted = conn.execute(
+            """
+            SELECT supports_thinking, encrypted_api_key
+            FROM llm_configs
+            WHERE client_id = ?
+            """,
+            (created["id"],),
+        ).fetchone()
+
+    assert persisted is not None
+    assert persisted["supports_thinking"] == 1
+    assert persisted["encrypted_api_key"] == encrypted_api_key
 
 
 def test_model_metadata_cache_is_prepared_before_config_save(
@@ -3463,6 +3839,7 @@ def test_model_metadata_cache_is_prepared_before_config_save(
                 "litellm_provider": "openai",
                 "max_input_tokens": 131072,
                 "max_output_tokens": 8192,
+                "supports_web_search": True,
             },
         },
     )
@@ -3476,6 +3853,7 @@ def test_model_metadata_cache_is_prepared_before_config_save(
         "sourceKey": "openai/gpt-5.1",
         "contextWindowTokens": 131072,
         "maxOutputTokens": 8192,
+        "supportsWebSearch": True,
     }
     assert "gpt-proxy" not in cache_data["providers"]["openai"]
 
@@ -3484,6 +3862,7 @@ def test_model_metadata_cache_is_prepared_before_config_save(
     assert metadata is not None
     assert metadata.context_window_tokens == 131072
     assert metadata.max_output_tokens == 8192
+    assert metadata.supports_web_search is True
     get_settings.cache_clear()
 
 
@@ -3500,7 +3879,7 @@ def test_model_metadata_cache_is_reused_without_refresh(
     cache_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
                 "source": "litellm:model_prices_and_context_window",
                 "fetchedAt": "2026-06-27T00:00:00+00:00",
                 "providers": {
@@ -3541,7 +3920,7 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
     cache_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
                 "source": "litellm:model_prices_and_context_window",
                 "fetchedAt": "2026-06-01T00:00:00+00:00",
                 "providers": {
@@ -3597,7 +3976,7 @@ def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
     cache_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
                 "source": "litellm:model_prices_and_context_window",
                 "fetchedAt": "2026-06-01T00:00:00+00:00",
                 "providers": {
@@ -3745,7 +4124,6 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
                 name="Avery",
                 summary="Frontend engineer with React project experience.",
             ),
-            "appliedActions": [],
             "modelConfig": None,
             "settings": {},
         },
@@ -3782,7 +4160,6 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
             "messages": [],
             "locale": "zh",
             "resume": created_resume["resume"],
-            "appliedActions": [],
             "modelConfig": None,
             "settings": {},
         },
@@ -3832,14 +4209,13 @@ def test_agent_session_put_replaces_persisted_messages(
                         "id": "agent-assistant-original",
                         "role": "assistant",
                         "text": "原来的回答",
-                        "quickReplies": ["继续"],
                         "tools": [
                             {
-                                "id": "tool-search-success",
-                                "type": "tool-web_search",
-                                "title": "web_search",
+                                "id": "tool-fetch-success",
+                                "type": "tool-web_fetch",
+                                "title": "web_fetch",
                                 "state": "output-available",
-                                "input": {"query": "staff frontend engineer"},
+                                "input": {"url": "https://example.com/job"},
                                 "output": {"resultCount": 2},
                                 "startedAt": "2026-08-10T10:00:00Z",
                                 "completedAt": "2026-08-10T10:00:01Z",
@@ -3883,10 +4259,9 @@ def test_agent_session_put_replaces_persisted_messages(
         "agent-assistant-original",
         "agent-user-tail",
     ]
-    assert first_messages[1]["response"]["quickReplies"] == ["继续"]
     assistant_response = first_messages[1]["response"]
     assert assistant_response["tools"][0]["input"] == {
-        "query": "staff frontend engineer",
+        "url": "https://example.com/job",
     }
     assert assistant_response["tools"][0]["output"] == {"resultCount": 2}
     assert assistant_response["tools"][1]["errorText"] == "Fetch failed"
@@ -4152,7 +4527,6 @@ def test_provider_failure_keeps_user_message_without_assistant(
             "messages": [],
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -4194,7 +4568,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                 "id": "agent-assistant-draft",
                 "role": "assistant",
                 "text": "已生成项目经历草稿。",
-                "actions": ["execute"],
                 "sources": [
                     {
                         "id": "source-project-brief",
@@ -4298,12 +4671,11 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                 },
             ],
         },
-        appliedActions=["execute"],
         modelConfig=None,
         settings={},
     )
 
-    messages = build_agent_messages(request, config, mode="tools")
+    messages = build_agent_messages(request, config)
     workspace = agent_workspace_context(messages)
     context = workspace["conversationState"]
 
@@ -4311,9 +4683,8 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     assert "responseLanguage" in messages[0]["content"]
     assert context["currentDraft"]["id"] == "draft-current"
     assert context["currentDraft"]["status"] == "pending"
-    assert context["currentDraft"]["diffs"][0]["after"] == "ResuMate"
+    assert context["currentDraft"]["diffs"][0]["path"] == "sections.project"
     assert workspace["resume"]["sections"][0]["id"] == "project"
-    assert context["appliedActions"] == ["execute"]
     assistant_state = next(
         json.loads(message["content"])["assistantResponseContext"]
         for message in messages
@@ -4324,7 +4695,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     assert assistant_state["editCount"] == 1
     assert assistant_state["edits"][0]["title"] == "新增项目经历模块"
     assert assistant_state["edits"][0]["sectionId"] == "project"
-    assert assistant_state["actions"] == ["execute"]
     assert assistant_state["sourceRefs"] == [
         {
             "id": "source-project-brief",
@@ -4338,7 +4708,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     }
 
 
-def test_agent_message_builder_remains_a_pure_native_projection() -> None:
+def test_agent_message_builder_treats_historical_assistant_prose_as_data() -> None:
     config = AgentLlmConfig(
         client_id="llm-test",
         name="Test Model",
@@ -4369,17 +4739,51 @@ def test_agent_message_builder_remains_a_pure_native_projection() -> None:
         messages=conversation,
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
-        appliedActions=[],
         modelConfig=None,
         settings={},
     )
 
-    messages = build_agent_messages(request, config, mode="tools")
+    messages = build_agent_messages(request, config)
 
     assert request._active_conversation_checkpoint is None
-    assert messages[1 : 1 + len(conversation)] == [
-        {"role": item["role"], "content": item["text"]} for item in conversation
-    ]
+    expected_history: list[dict[str, str]] = []
+    for item in conversation:
+        if item["role"] == "assistant":
+            expected_history.append(
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "assistantResponseContext": {
+                                "text": item["text"],
+                                "messageId": item["id"],
+                            },
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+            continue
+        expected_history.append({"role": "user", "content": item["text"]})
+        expected_history.append(
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "historicalUserEvidence": {
+                            "appliesToPreviousUserMessage": True,
+                            "evidenceRef": historical_prompt_evidence_ref(
+                                item["id"],
+                            ),
+                        },
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+    assert messages[1 : 1 + len(expected_history)] == expected_history
     assert json.loads(messages[-2]["content"])["workspaceContext"]
     assert messages[-1] == {
         "role": "user",
@@ -4414,19 +4818,18 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
             "basic": {"name": "测试用户", "summary": "很长的简介" * 300},
             "sections": [],
         },
-        appliedActions=[],
         modelConfig=None,
         settings={},
     )
 
     with pytest.raises(LlmRequestError, match="context window"):
-        build_agent_messages(request, config, mode="tools")
+        build_agent_messages(request, config)
 
 
 def test_agent_messages_hide_personal_identity_from_model_payload(
     client: TestClient,
 ) -> None:
-    session_id = "agent-message-privacy"
+    session_id = "agentmessageprivacy"
     session_revision = client.get(
         f"/api/agent/resumes/{session_id}/session",
     ).json()["data"]["revision"]
@@ -4462,10 +4865,6 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
                 "role": "user",
                 "text": "王小明的邮箱是 xiaoming@example.com",
             },
-            *target_context_history(
-                target="前端工程师",
-                description="候选人邮箱 xiaoming@example.com",
-            ),
         ],
         locale="zh",
         resume={
@@ -4482,14 +4881,13 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
             },
             "sections": [],
         },
-        appliedActions=[],
         modelConfig=None,
         settings={},
         resume_id=session_id,
         expected_revision=session_revision,
     )
 
-    messages = build_agent_messages(request, config, mode="tools")
+    messages = build_agent_messages(request, config)
     serialized = json.dumps(messages, ensure_ascii=False)
     workspace = agent_workspace_context(messages)
     files = agent_current_request_files(messages)
@@ -4513,162 +4911,8 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
     assert "[redacted_phone]" in files[0]["excerpt"]
 
 
-def test_agent_executor_analyzes_pending_draft_resume() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-executor-analyzes-pending-draft-resume",
-            "role": "user",
-            "text": "继续修改刚才的草稿",
-        },
-        messages=[],
-        locale="zh",
-        resume={"basic": {"name": "王小明"}, "sections": []},
-        draftState={
-            "id": "draft-current",
-            "status": "pending",
-            "resume": {
-                "basic": {
-                    "name": "王小明",
-                    "summary": "草稿里的个人简介",
-                },
-                "sections": [
-                    {
-                        "id": "project",
-                        "kind": "project",
-                        "customTitle": "项目经历",
-                        "items": [
-                            {
-                                "id": "project-item-1",
-                                "title": "ResuMate",
-                                "subtitle": "AI 简历编辑器",
-                                "description": "支持草稿预览和多轮修改。",
-                            },
-                        ],
-                    },
-                ],
-            },
-        },
-        appliedActions=[],
-        modelConfig=None,
-        settings={},
-    )
-
-    analysis = AgentPlanExecutor(request).analyze_resume()
-
-    assert analysis.summary == "草稿里的个人简介"
-    assert [section["id"] for section in analysis.sections] == ["project"]
-
-
-def test_agent_resume_lookup_finds_target_item() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-resume-lookup-finds-target-item",
-            "role": "user",
-            "text": "缩短 ResuMate 项目",
-        },
-        locale="zh",
-        resume={
-            "basic": {
-                "name": "王小明",
-                "phone": "13800138000",
-                "email": "xiaoming@example.com",
-            },
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "title": "项目经历",
-                    "items": [
-                        {
-                            "id": "project-1",
-                            "name": "ResuMate",
-                            "role": "AI 简历编辑器",
-                            "techStack": ["React"],
-                            "period": "2026",
-                            "url": "",
-                            "description": (
-                                "支持多轮 Agent 草稿编辑，联系 13800138000。"
-                            ),
-                            "highlights": ["实现可预览、可撤回的简历草稿。"],
-                        },
-                    ],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call("call-lookup", "resume_lookup", {"query": "ResuMate"}),
-    )
-
-    assert tool.title == "resume_lookup"
-    assert result["output"]["sectionCount"] == 1
-    assert result["output"]["itemCount"] == 1
-    assert result["output"]["items"][0]["id"] == "project-1"
-    assert result["output"]["items"][0]["sectionId"] == "project"
-    output_text = json.dumps(result["output"], ensure_ascii=False)
-    assert "13800138000" not in output_text
-    assert "xiaoming@example.com" not in output_text
-    assert "[redacted_phone]" in output_text
-
-
-def test_agent_draft_diff_summary_hides_personal_identity() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-draft-diff-summary-hides-personal-identity",
-            "role": "user",
-            "text": "解释刚才的草稿",
-        },
-        locale="zh",
-        resume={
-            "basic": {
-                "name": "王小明",
-                "phone": "13800138000",
-                "email": "xiaoming@example.com",
-            },
-            "sections": [],
-        },
-        draftState={
-            "id": "draft-current",
-            "status": "pending",
-            "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "editCount": 1,
-            "edits": [
-                {
-                    "id": "edit-summary",
-                    "title": "优化王小明简介",
-                    "target": "basic.summary",
-                    "replacement": "联系 xiaoming@example.com 或 13800138000。",
-                },
-            ],
-            "diffs": [
-                {
-                    "id": "diff-summary",
-                    "label": "王小明简介",
-                    "before": "邮箱 xiaoming@example.com",
-                    "after": "电话 13800138000",
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    _, result = runner._run_local_tool(
-        tool_call("call-diff", "draft_diff_summary", {}),
-    )
-
-    output_text = json.dumps(result["output"], ensure_ascii=False)
-    assert "王小明" not in output_text
-    assert "13800138000" not in output_text
-    assert "xiaoming@example.com" not in output_text
-    assert "[redacted_name]" in output_text
-    assert "[redacted_phone]" in output_text
-    assert "[redacted_email]" in output_text
-
-
 def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
-    edits, rejected = _model_edit_suggestions_with_diagnostics(
+    edits, rejected = parse_edit_batch(
         {"basic": {"email": "xiaoming@example.com"}, "sections": []},
         [
             {
@@ -4687,7 +4931,7 @@ def test_agent_rejects_replace_field_for_hidden_personal_fields() -> None:
 
     assert edits == []
     assert len(rejected) == 1
-    assert "hidden personal fields" in rejected[0]["reason"]
+    assert "Canonical protocol error" in rejected[0]["reason"]
 
 
 def test_agent_rejects_location_write_as_hidden_personal_data() -> None:
@@ -4702,9 +4946,10 @@ def test_agent_rejects_location_write_as_hidden_personal_data() -> None:
         locale="zh",
         resume=resume,
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
+    environment = ResumeToolEnvironment.open(request)
 
-    tool, result = runner._run_local_tool(
+    tool, result = invoke_agent_tool(
+        environment,
         tool_call(
             "call-location",
             "edit_execute",
@@ -4726,276 +4971,16 @@ def test_agent_rejects_location_write_as_hidden_personal_data() -> None:
     )
 
     assert tool.state == "output-error"
-    assert runner.draft_resume["basic"]["location"] == "杭州"
     assert result["output"]["editCount"] == 0
     assert result["output"]["rejectedEditCount"] == 1
-    assert "hidden personal fields" in result["output"]["rejectedEdits"][0]["reason"]
+    reason = result["output"]["rejectedEdits"][0]["reason"]
+    assert "Canonical protocol error" in reason
+    assert "basic.location" in reason
     assert "杭州" not in json.dumps(result["output"], ensure_ascii=False)
+    assert environment.close(completed=True).edits == ()
 
 
-def test_agent_edit_move_item_rejects_cross_kind_content() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-edit-move-item-rejects-cross-kind-content",
-            "role": "user",
-            "text": "把项目移动到其他经历",
-        },
-        locale="zh",
-        resume={
-            "basic": {"name": "王小明"},
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "title": "项目经历",
-                    "items": [
-                        {
-                            "id": "project-1",
-                            "name": "ResuMate",
-                            "role": "前端开发",
-                            "techStack": ["React"],
-                            "period": "2026",
-                            "url": "",
-                            "description": "",
-                            "highlights": ["实现 Agent 草稿预览。"],
-                        },
-                    ],
-                },
-                {
-                    "id": "other",
-                    "kind": "simple_list",
-                    "title": "其他经历",
-                    "items": [
-                        {
-                            "id": "other-1",
-                            "content": "<ul><li>其他内容</li></ul>",
-                        },
-                    ],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-move",
-            "edit_move_item",
-            {
-                "fromSectionId": "project",
-                "toSectionId": "other",
-                "itemId": "project-1",
-                "reason": "用户要求移动该项目条目。",
-            },
-        ),
-    )
-
-    assert tool.title == "edit_move_item"
-    assert tool.state == "output-error"
-    assert result["output"]["editCount"] == 0
-    assert "固定只有一个富文本条目" in tool.error_text
-    assert runner.edits == []
-    project_items = runner.draft_resume["sections"][0]["items"]
-    other_items = runner.draft_resume["sections"][1]["items"]
-    assert project_items[0]["id"] == "project-1"
-    assert other_items == [
-        {"id": "other-1", "content": "<ul><li>其他内容</li></ul>"},
-    ]
-
-
-def test_agent_edit_split_item_rejects_missing_target_without_partial_insert() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-split-missing-target",
-            "role": "user",
-            "text": "拆分项目经历",
-        },
-        locale="zh",
-        resume={
-            "basic": {},
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "layout": "timeline",
-                    "items": [{"id": "project-1", "title": "ResuMate"}],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-split",
-            "edit_split_item",
-            {
-                "sectionId": "project",
-                "itemId": "missing",
-                "first": {"description": "第一段"},
-                "second": {"title": "第二段"},
-            },
-        ),
-    )
-
-    assert tool.state == "output-error"
-    assert result["output"]["editCount"] == 0
-    assert runner.edits == []
-    assert runner.draft_resume["sections"][0]["items"] == [
-        {"id": "project-1", "title": "ResuMate"},
-    ]
-
-
-def test_agent_edit_split_item_generates_fresh_second_item_id() -> None:
-    resume = minimal_resume_item()["resume"]
-    resume["sections"] = [
-        {
-            "id": "project",
-            "kind": "project",
-            "title": "项目经历",
-            "items": [
-                {
-                    "id": "project-1",
-                    "name": "ResuMate",
-                    "role": "",
-                    "techStack": [],
-                    "period": "",
-                    "url": "",
-                    "description": "",
-                    "highlights": [],
-                },
-            ],
-        },
-    ]
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-edit-split-item-generates-fresh-second-item-id",
-            "role": "user",
-            "text": (
-                "项目事实：我负责 Agent 草稿流程，并将第二个项目命名为 "
-                "ResuMate 指标优化，同时优化草稿预览链路。请拆分项目经历。"
-            ),
-        },
-        locale="zh",
-        resume=resume,
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-split",
-            "edit_split_item",
-            {
-                "sectionId": "project",
-                "itemId": "project-1",
-                "first": {"description": "负责 Agent 草稿流程。"},
-                "second": {
-                    "id": "project-1",
-                    "name": "ResuMate 指标优化",
-                    "highlights": ["优化草稿预览链路。"],
-                },
-                "index": 1,
-            },
-        ),
-    )
-
-    items = runner.draft_resume["sections"][0]["items"]
-    assert tool.state == "output-available"
-    assert result["output"]["editCount"] == 2
-    assert items[0]["description"] == "负责 Agent 草稿流程。"
-    assert items[1]["name"] == "ResuMate 指标优化"
-    assert items[1]["id"] != "project-1"
-
-
-def test_agent_edit_merge_items_rejects_missing_target_without_partial_delete() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-merge-missing-target",
-            "role": "user",
-            "text": "合并项目经历",
-        },
-        locale="zh",
-        resume={
-            "basic": {},
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "layout": "timeline",
-                    "items": [
-                        {"id": "project-1", "title": "ResuMate A"},
-                        {"id": "project-2", "title": "ResuMate B"},
-                    ],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-merge",
-            "edit_merge_items",
-            {
-                "sectionId": "project",
-                "itemIds": ["project-1", "missing"],
-                "mergedItem": {"description": "合并后的项目经历。"},
-            },
-        ),
-    )
-
-    assert tool.state == "output-error"
-    assert result["output"]["editCount"] == 0
-    assert runner.edits == []
-    assert [item["id"] for item in runner.draft_resume["sections"][0]["items"]] == [
-        "project-1",
-        "project-2",
-    ]
-
-
-def test_agent_edit_merge_items_rejects_duplicate_item_ids() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-edit-merge-items-rejects-duplicate-item-ids",
-            "role": "user",
-            "text": "合并项目经历",
-        },
-        locale="zh",
-        resume={
-            "basic": {},
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "layout": "timeline",
-                    "items": [{"id": "project-1", "title": "ResuMate"}],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-merge",
-            "edit_merge_items",
-            {
-                "sectionId": "project",
-                "itemIds": ["project-1", "project-1"],
-                "mergedItem": {"description": "合并后的项目经历。"},
-            },
-        ),
-    )
-
-    assert tool.state == "output-error"
-    assert result["output"]["editCount"] == 0
-    assert runner.edits == []
-    assert runner.draft_resume["sections"][0]["items"] == [
-        {"id": "project-1", "title": "ResuMate"},
-    ]
-
-
-def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
+def test_agent_edit_execute_uses_pending_draft_resume() -> None:
     base_resume = minimal_resume_item()["resume"]
     base_resume["basic"]["name"] = "王小明"
     draft_resume = minimal_resume_item()["resume"]
@@ -5033,12 +5018,13 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
             "resume": draft_resume,
         },
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
+    environment = ResumeToolEnvironment.open(request)
 
-    tool, result = runner._run_local_tool(
+    tool, result = invoke_agent_tool(
+        environment,
         tool_call(
             "call-rewrite",
-            "draft_rewrite",
+            "edit_execute",
             {
                 "edits": [
                     {
@@ -5057,13 +5043,16 @@ def test_agent_draft_rewrite_uses_pending_draft_resume() -> None:
         ),
     )
 
-    item = runner.draft_resume["sections"][0]["items"][0]
-    assert tool.title == "draft_rewrite"
+    assert tool.title == "edit_execute"
     assert result["output"]["editCount"] == 1
-    assert item["description"] == "支持 Agent 草稿编辑。"
+    edits = environment.close(completed=True).edits
+    assert edits[0].operation["patch"]["description"] == "支持 Agent 草稿编辑。"
 
 
-def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
+def test_agent_chat_uses_natural_completion_after_edit(
+    client: TestClient,
+    monkeypatch,
+) -> None:
     session_id = client.post(
         "/api/resumes",
         json={"title": "Agent JSON chat"},
@@ -5088,88 +5077,55 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text(
-            '{"text":"Real model response","suggestions":["Use TypeScript"],'
-            '"knowledge":[{"title":"TypeScript","detail":"Prepare examples."}],'
-            '"quickReplies":["Preview edits"]}'
-        ),
+        fail_on_second_final_stream,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-target-context",
-                    "update_target_context",
-                    {
-                        "mode": "replace",
-                        "context": {
-                            "kind": "employment",
-                            "target": "Frontend engineer",
-                            "mustHaveSkills": ["React", "TypeScript"],
-                        },
-                    },
-                ),
-                tool_call(
-                    "call-jd",
-                    "web_search",
-                    {
-                        "query": "frontend engineer job description",
-                        "purpose": "jd",
-                    },
-                ),
-            ],
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call(
-                    "call-plan",
-                    "edit_plan",
-                    {
-                        "steps": [
-                            {
-                                "action": "replace_field",
-                                "target": "basic.summary",
-                                "reason": "Tighten the existing summary.",
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-execute",
-                    "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "Update summary",
-                                "target": "basic.summary",
-                                "reason": "Clarify the existing React experience.",
-                                "operation": {
-                                    "type": "replace_field",
-                                    "path": "basic.summary",
-                                    "value": (
-                                        "Frontend engineer focused on React "
-                                        "project delivery."
-                                    ),
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-jd",
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend"},
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "Update summary",
+                                    "target": "basic.summary",
+                                    "reason": "Clarify the existing React experience.",
+                                    "operation": {
+                                        "type": "replace_field",
+                                        "path": "basic.summary",
+                                        "value": (
+                                            "Frontend engineer focused on React "
+                                            "project delivery."
+                                        ),
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {"status": "ready", "reason": "Draft is complete."},
-                ),
-            ],
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(content="Draft is complete.", tool_calls=[]),
         ),
     )
-    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        async_stub_jd_fetch,
+    )
 
     _, message = post_agent_chat_stream(
         client,
@@ -5178,8 +5134,9 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 "id": "agent-user-1",
                 "role": "user",
                 "text": (
-                    "The target frontend role requires React and TypeScript. "
-                    "Find missing keywords and edit my summary."
+                    "Use https://example.test/jobs/frontend with the target role's "
+                    "React and TypeScript requirements to find missing keywords "
+                    "and edit my summary."
                 ),
                 "files": [attachment],
             },
@@ -5189,7 +5146,6 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
                 name="Avery",
                 summary="Frontend engineer with React project experience.",
             ),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "resumeId": session_id,
@@ -5198,23 +5154,14 @@ def test_agent_chat_supports_json(client: TestClient, monkeypatch) -> None:
     )
 
     assert message["role"] == "assistant"
-    assert message["text"] == "Real model response"
-    assert message["actions"]
+    assert message["text"] == "Draft is complete."
     assert message["tools"]
     assert message["sources"]
     assert message["edits"]
-    assert message["quickReplies"]
-    assert any(source["sourceType"] == "targetContext" for source in message["sources"])
-    assert any(
-        source["sourceType"] == "attachment" and source["title"] == "jd.txt"
-        for source in message["sources"]
-    )
-    assert not any(
-        source["sourceType"] in {"resume", "system"} for source in message["sources"]
-    )
+    assert {source["sourceType"] for source in message["sources"]} == {"web"}
     assert message["edits"][0]["status"] == "executed"
     assert message["edits"][0]["operation"]["type"] == "replace_field"
-    assert any(tool["title"] == "web_search" for tool in message["tools"])
+    assert any(tool["title"] == "web_fetch" for tool in message["tools"])
 
 
 def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
@@ -5224,50 +5171,47 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text('{"text":"已生成项目经历修改草稿"}'),
+        fail_on_second_final_stream,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-execute",
-                    "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "强化项目结果",
-                                "target": "sections.project.items.project-1",
-                                "reason": (
-                                    "用户要求修改项目经历，直接定位现有项目条目。"
-                                ),
-                                "replacement": "负责推荐链路优化，点击率提升 12%。",
-                                "operation": {
-                                    "type": "update_item",
-                                    "sectionId": "project",
-                                    "itemId": "project-1",
-                                    "patch": {
-                                        "description": (
-                                            "负责推荐链路优化，点击率提升 12%。"
-                                        ),
-                                        "highlights": ["接口延迟降低 30%"],
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "强化项目结果",
+                                    "target": "sections.project.items.project-1",
+                                    "reason": (
+                                        "用户要求修改项目经历，直接定位现有项目条目。"
+                                    ),
+                                    "replacement": "负责推荐链路优化，点击率提升 12%。",
+                                    "operation": {
+                                        "type": "update_item",
+                                        "sectionId": "project",
+                                        "itemId": "project-1",
+                                        "patch": {
+                                            "description": (
+                                                "负责推荐链路优化，点击率提升 12%。"
+                                            ),
+                                            "highlights": ["接口延迟降低 30%"],
+                                        },
                                     },
                                 },
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "ready",
-                        "reason": "Observation shows the project item now matches.",
-                    },
-                ),
-            ],
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(
+                content="已生成项目经历修改草稿。",
+                tool_calls=[],
+            ),
         ),
     )
     resume = minimal_resume_document(name="王小明")
@@ -5305,7 +5249,6 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             "messages": [],
             "locale": "zh",
             "resume": resume,
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -5319,7 +5262,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
     assert (
         observations[0]["after"]["description"] == "负责推荐链路优化，点击率提升 12%。"
     )
-    assert message["text"] == "已生成项目经历修改草稿"
+    assert message["text"] == "已生成项目经历修改草稿。"
     assert message["edits"][0]["target"] == "sections.project.items.project-1"
     assert message["edits"][0]["operation"] == {
         "type": "update_item",
@@ -5332,7 +5275,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
     }
 
 
-def test_agent_chat_executes_explicit_project_insert_after_plan(
+def test_agent_chat_executes_explicit_project_insert_directly(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -5344,77 +5287,56 @@ def test_agent_chat_executes_explicit_project_insert_after_plan(
     )
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text('{"text":"已生成项目经历草稿"}'),
+        fail_on_second_final_stream,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call(
-                    "call-plan",
-                    "edit_plan",
-                    {
-                        "steps": [
-                            {
-                                "action": "insert_section",
-                                "target": "sections",
-                                "reason": "用户提供了项目经历，需要新增项目模块。",
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-execute",
-                    "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "新增项目经历",
-                                "target": "sections",
-                                "reason": "用户提供了完整项目事实。",
-                                "operation": {
-                                    "type": "insert_section",
-                                    "section": {
-                                        "section_type": "project",
-                                        "title": "项目经历",
-                                        "items": [
-                                            {
-                                                "name": "电商后台管理系统",
-                                                "role": "",
-                                                "techStack": [],
-                                                "period": "2023.03 - 2023.06",
-                                                "url": "",
-                                                "description": "",
-                                                "highlights": [
-                                                    (
-                                                        "负责 Spring Boot、MySQL、"
-                                                        "Redis、Docker 和 SQL 优化"
-                                                    ),
-                                                ],
-                                            },
-                                        ],
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "新增项目经历",
+                                    "target": "sections",
+                                    "reason": "用户提供了完整项目事实。",
+                                    "evidenceRefs": ["prompt:current"],
+                                    "operation": {
+                                        "type": "insert_section",
+                                        "section": {
+                                            "id": "project-added",
+                                            "kind": "project",
+                                            "title": "项目经历",
+                                            "items": [
+                                                {
+                                                    "id": "project-added-1",
+                                                    "name": "电商后台管理系统",
+                                                    "role": "",
+                                                    "techStack": [],
+                                                    "period": "2023.03 - 2023.06",
+                                                    "url": "",
+                                                    "description": "",
+                                                    "highlights": [
+                                                        (
+                                                            "负责 Spring Boot、MySQL、"
+                                                            "Redis、Docker 和 SQL 优化"
+                                                        ),
+                                                    ],
+                                                },
+                                            ],
+                                        },
                                     },
                                 },
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "ready",
-                        "reason": "Observation shows the project section was added.",
-                    },
-                ),
-            ],
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(content="项目经历草稿已完成。", tool_calls=[]),
         ),
     )
 
@@ -5422,23 +5344,22 @@ def test_agent_chat_executes_explicit_project_insert_after_plan(
         client,
         {
             "message": {
-                "id": "agent-user-chat-executes-explicit-project-insert-after-plan",
+                "id": "agent-user-chat-executes-explicit-project-insert-directly",
                 "role": "user",
                 "text": prompt,
             },
             "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
     )
 
     tool_titles = [tool["title"] for tool in message["tools"]]
-    assert tool_titles == ["resume_analysis", "edit_plan", "edit_execute"]
+    assert tool_titles == ["edit_execute"]
     assert message["edits"]
-    observations = message["tools"][2]["output"]["observations"]
+    observations = message["tools"][0]["output"]["observations"]
     assert observations[0]["before"] is None
     assert "电商后台管理系统" in observations[0]["after"]
     assert "2023.03 - 2023.06" in observations[0]["after"]
@@ -5460,7 +5381,7 @@ def test_agent_chat_executes_explicit_project_insert_after_plan(
     )
 
 
-def test_agent_chat_normalizes_model_inserted_resume_fields(
+def test_agent_chat_retries_noncanonical_insert_with_canonical_operation(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -5472,7 +5393,7 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
     )
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text('{"text":"已生成项目经历草稿"}'),
+        fail_on_second_final_stream,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
@@ -5538,13 +5459,16 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
                                 "title": "新增项目经历",
                                 "target": "sections",
                                 "reason": "移除重复元数据后重新提交完整项目条目。",
+                                "evidenceRefs": ["prompt:current"],
                                 "operation": {
                                     "type": "insert_section",
                                     "section": {
-                                        "section_type": "project",
+                                        "id": "project-added",
+                                        "kind": "project",
                                         "title": "项目经历",
                                         "items": [
                                             {
+                                                "id": "project-added-1",
                                                 "name": "电商后台管理系统",
                                                 "role": "后端开发",
                                                 "techStack": [
@@ -5571,16 +5495,6 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
                     },
                 ),
             ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "ready",
-                        "reason": "Observation shows the project section was added.",
-                    },
-                ),
-            ],
         ),
     )
 
@@ -5595,7 +5509,6 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
             "messages": [],
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -5616,63 +5529,11 @@ def test_agent_chat_normalizes_model_inserted_resume_fields(
     ]
 
 
-def test_agent_section_registry_drives_schema_and_prompt() -> None:
-    assert tool_registry.SECTION_KIND_ENUM == SECTION_KIND_ENUM
-    assert (
-        f"Allowed section_type values are: {', '.join(SECTION_KIND_ENUM)}."
-        in EDIT_OPERATION_GUIDE
-    )
-    for kind in SECTION_KIND_ENUM:
-        assert f"- {kind}:" in EDIT_OPERATION_GUIDE
-
-
-def test_agent_fine_grained_tools_are_registered() -> None:
-    tool_names = {
-        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
-    }
-
-    assert {
-        "resume_lookup",
-        "draft_diff_summary",
-        "edit_move_item",
-        "edit_split_item",
-        "edit_merge_items",
-        "skills_classify",
-        "draft_rewrite",
-    } <= tool_names
-
-
-def _assert_language_pattern_schema(
-    patterns: dict[str, object],
-    *,
-    locale_required_groups: set[str],
-) -> None:
-    allowed_keys = {"common", *SUPPORTED_AGENT_LOCALES}
-
-    for group_name, group in patterns.items():
-        assert isinstance(group, dict), group_name
-        assert set(group) <= allowed_keys, group_name
-
-        for key, value in group.items():
-            assert isinstance(key, str)
-            assert isinstance(value, list), f"{group_name}.{key}"
-            assert all(isinstance(item, str) and item for item in value)
-
-        if group_name in locale_required_groups:
-            for locale in SUPPORTED_AGENT_LOCALES:
-                assert group.get(locale), f"{group_name}.{locale}"
-
-
 def test_agent_supported_locales_cover_resources() -> None:
     supported = set(SUPPORTED_AGENT_LOCALES)
     prompt_dir = Path(__file__).parents[1] / "app/services/agent/prompts"
     expected_prompt_files = {
-        "compaction.md",
-        "core_policy.md",
-        "edit_operation_guide.md",
-        "resume_editing_playbook.md",
-        "streaming_final_response.md",
-        "system.md",
+        "agent.md",
     }
 
     assert DEFAULT_AGENT_LOCALE in supported
@@ -5682,508 +5543,84 @@ def test_agent_supported_locales_cover_resources() -> None:
     for prompt_path in prompt_dir.glob("*.md"):
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert re.search(r"[\u4e00-\u9fff]", prompt_text) is None
-    assert (
-        CORE_POLICY_PROMPT
-        == (prompt_dir / "core_policy.md").read_text(encoding="utf-8").strip()
-    )
-    assert (
-        TOOL_POLICY_PROMPT
-        == (prompt_dir / "system.md").read_text(encoding="utf-8").strip()
-    )
-    assert (
-        RESUME_EDITING_PLAYBOOK_PROMPT
-        == (prompt_dir / "resume_editing_playbook.md")
-        .read_text(encoding="utf-8")
-        .strip()
-    )
-    assert SYSTEM_PROMPT == "\n\n".join(
-        (
-            CORE_POLICY_PROMPT,
-            TOOL_POLICY_PROMPT,
-            RESUME_EDITING_PLAYBOOK_PROMPT,
-        ),
-    )
-    assert (
-        STREAMING_FINAL_RESPONSE_PROMPT
-        == (prompt_dir / "streaming_final_response.md")
-        .read_text(encoding="utf-8")
-        .strip()
-    )
-    assert "confirmationMode" not in SYSTEM_PROMPT
-
-
-def test_agent_system_prompts_are_scoped_to_each_runtime_phase() -> None:
-    assert _system_parts("tools") == [SYSTEM_PROMPT, EDIT_OPERATION_GUIDE]
-    assert _system_parts("streaming_final") == [
-        CORE_POLICY_PROMPT,
-        STREAMING_FINAL_RESPONSE_PROMPT,
-    ]
-
-
-def test_agent_intent_patterns_are_externalized() -> None:
-    patterns = json.loads(INTENT_PATTERN_FILE.read_text(encoding="utf-8"))
-    required_groups = {
-        "explain_draft",
-        "previous_draft_reference",
-        "draft_reference",
-        "draft_revision",
-        "job_request",
-        "role_research",
-        "jd_gap_diagnosis",
-        "analyze_resume",
-        "edit_resume",
-        "material_generation_request",
-        "delete_intent",
-        "reorder_intent",
-        "merge_intent",
-    }
-    policy_source = (
-        Path(__file__).parents[1] / "app/services/agent/policy.py"
-    ).read_text(encoding="utf-8")
-
-    assert required_groups <= set(patterns)
-    _assert_language_pattern_schema(
-        patterns,
-        locale_required_groups=required_groups,
-    )
-    assert matches_intent_pattern("帮我生成一个项目经历草稿", "edit_resume")
-    assert matches_intent_pattern("拆分项目经历", "edit_resume")
-    assert matches_intent_pattern("合并项目经历", "edit_resume")
-    assert matches_intent_pattern("整理技能分组", "edit_resume")
-    assert matches_intent_pattern(
-        "帮我生成一个项目经历草稿",
-        "material_generation_request",
-    )
-    assert matches_intent_pattern("帮我了解 AI应用开发工程师", "role_research")
-    assert matches_intent_pattern("这份简历和 JD 的差距在哪里", "jd_gap_diagnosis")
-    assert matches_intent_pattern("把刚才的草稿再短一点", "draft_revision")
-    assert matches_intent_pattern("rewrite my summary", "edit_resume", locale="en")
-    assert not matches_intent_pattern("rewrite my summary", "edit_resume", locale="zh")
-    assert not re.search(r"[\u4e00-\u9fff]", policy_source)
-
-
-def test_agent_parsing_patterns_are_externalized() -> None:
-    patterns = json.loads(PARSING_PATTERN_FILE.read_text(encoding="utf-8"))
-    required_groups = {
-        "visible_plan.job_context",
-        "visible_plan.export",
-        "role.explicit",
-        "role.cleanup_prefix",
-        "role.trailing_context",
-        "plan.add",
-        "plan.delete",
-        "plan.reorder",
-        "plan.summary",
-        "plan.bullet",
-        "project.stop_labels",
-        "editing.field_only_label",
-        "streaming.blocked_visible_loop_prefixes",
-        "web.blocked_excerpt_markers",
-    }
-    source_paths = [
-        Path(__file__).parents[1] / "app/services/agent/executor.py",
-        Path(__file__).parents[1] / "app/services/agent/editing/operations.py",
-        Path(__file__).parents[1] / "app/services/agent/runtime/streaming.py",
-        Path(__file__).parents[1] / "app/services/agent/integrations/web.py",
-    ]
-
-    assert required_groups <= set(patterns)
-    _assert_language_pattern_schema(
-        patterns,
-        locale_required_groups={
-            "visible_plan.job_context",
-            "visible_plan.export",
-            "role.explicit",
-            "plan.add",
-            "plan.delete",
-            "plan.reorder",
-            "plan.summary",
-            "plan.bullet",
-            "project.stop_labels",
-        },
-    )
-    assert matches_agent_pattern("目标岗位是前端工程师", "visible_plan.job_context")
-    assert matches_agent_pattern("导出 PDF", "visible_plan.export")
-    assert matches_agent_pattern("export", "visible_plan.export", locale="en")
-    assert not matches_agent_pattern("export", "visible_plan.export", locale="zh")
-    for source_path in source_paths:
-        source = source_path.read_text(encoding="utf-8")
-        assert not re.search(r"[\u4e00-\u9fff]", source)
+    assert AGENT_PROMPT == (prompt_dir / "agent.md").read_text(encoding="utf-8").strip()
+    assert not (prompt_dir / "loader.py").exists()
+    assert "confirmationMode" not in AGENT_PROMPT
 
 
 def test_agent_web_tools_replace_legacy_jd_schema_names() -> None:
     tool_names = {
-        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
+        schema["function"]["name"] for schema in agent_contracts.AGENT_TOOL_SCHEMAS
     }
 
-    assert {"web_fetch", "web_search"} <= tool_names
+    assert tool_names == {
+        "web_search",
+        "web_fetch",
+        "attachment_read",
+        "edit_execute",
+    }
     assert "jd_url_fetch" not in tool_names
     assert "jd_reference_search" not in tool_names
 
 
-def test_agent_tool_specs_match_schema_and_runner_handlers() -> None:
-    spec_names = [spec.name for spec in tool_registry.AGENT_TOOL_SPECS]
-    schema_names = [
-        schema["function"]["name"] for schema in tool_registry.AGENT_TOOL_SCHEMAS
-    ]
-
-    assert len(spec_names) == len(set(spec_names))
-    assert schema_names == spec_names
-    assert tool_registry.ALL_KNOWN_TOOL_NAMES == set(spec_names)
-    for spec in tool_registry.AGENT_TOOL_SPECS:
-        assert spec.schema["function"]["name"] == spec.name
-        assert hasattr(AgentToolRunner, spec.handler_name)
-
-
-def test_agent_web_search_schema_supports_multi_queries() -> None:
+def test_agent_web_fetch_schema_requires_only_url() -> None:
     schema = next(
         schema
-        for schema in tool_registry.AGENT_TOOL_SCHEMAS
-        if schema["function"]["name"] == "web_search"
+        for schema in agent_contracts.AGENT_TOOL_SCHEMAS
+        if schema["function"]["name"] == "web_fetch"
     )
     parameters = schema["function"]["parameters"]
 
-    assert parameters["required"] == ["purpose"]
-    assert parameters["properties"]["queries"]["maxItems"] == 5
-    assert parameters["properties"]["queries"]["items"]["type"] == "string"
-    assert parameters["properties"]["maxResults"]["maximum"] == 10
+    assert parameters["required"] == ["url"]
+    assert set(parameters["properties"]) == {"url"}
+    assert parameters["additionalProperties"] is False
 
 
-def test_agent_target_context_search_fallback_uses_explicit_target() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-target-context-search-fallback-uses-explicit-target",
-            "role": "user",
-            "text": "查找示例大学计算机硕士项目的课程和研究方向",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    queries = runner.web_search_queries(
-        tool_call(
-            "call-web-search",
-            "web_search",
-            {
-                "purpose": "target_context",
-                "target": "示例大学计算机硕士项目",
-            },
-        ),
-        "示例大学计算机硕士项目",
-    )
-
-    assert queries
-    assert queries[0].startswith("示例大学计算机硕士项目")
-    assert queries != [request.message.text]
-    assert all(" JD " not in query for query in queries)
-
-
-def test_agent_web_fetch_schema_supports_generic_target_context() -> None:
-    schema = next(
-        schema
-        for schema in tool_registry.AGENT_TOOL_SCHEMAS
-        if schema["function"]["name"] == "web_fetch"
-    )
-
-    purposes = schema["function"]["parameters"]["properties"]["purpose"]["enum"]
-
-    assert "jd" in purposes
-    assert "target_context" in purposes
-
-
-def test_agent_web_fetch_requires_explicit_purpose() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-web-fetch-requires-explicit-purpose",
-            "role": "user",
-            "text": "参考这个链接 https://example.test/project",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = asyncio.run(
-        runner.run(
-            tool_call(
-                "call-web-fetch",
-                "web_fetch",
-                {"url": "https://example.test/project"},
-            ),
-            AgentRuntimeContext(),
-        ),
-    )
-
-    assert tool.title == "web_fetch"
-    assert tool.state == "output-error"
-    assert result["output"]["blocked"] is True
-    assert "链接用途" in tool.error_text
-
-
-def test_agent_web_fetch_target_context_is_not_candidate_evidence(
+def test_agent_web_fetch_returns_a_readable_public_page_observation(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.agent._fetch_web_reference",
-        lambda *_: WebReference(
+    async def fetch_reference(*_: object) -> WebReference:
+        return WebReference(
             title="Example Graduate Program",
             excerpt="Official admissions requirements and research areas.",
-        ),
+            final_url="https://example.test/graduate-program",
+            passages=(
+                agent_web.WebPassage(
+                    section="Admissions",
+                    text="Official admissions requirements and research areas.",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        fetch_reference,
     )
     request = AgentChatRequest(
         message={
-            "id": "agent-user-web-fetch-target-context-is-not-candidate-evidence",
+            "id": "agent-user-web-fetch-public-context-is-not-candidate-evidence",
             "role": "user",
             "text": "请参考 https://example.test/graduate-program 的申请要求",
         },
         locale="zh",
         resume={"basic": {}, "sections": []},
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
+    environment = ResumeToolEnvironment.open(request)
 
-    tool, result = asyncio.run(
-        runner.run(
-            tool_call(
-                "call-web-fetch",
-                "web_fetch",
-                {
-                    "url": "https://example.test/graduate-program",
-                    "purpose": "target_context",
-                },
-            ),
-            AgentRuntimeContext(),
+    tool, result = invoke_agent_tool(
+        environment,
+        tool_call(
+            "call-web-fetch",
+            "web_fetch",
+            {"url": "https://example.test/graduate-program"},
         ),
     )
 
     assert tool.state == "output-available"
-    assert result["output"]["purpose"] == "target_context"
-    assert result["output"]["canSupportResumeFacts"] is False
-    assert result["output"]["personalExperienceEvidence"] is False
-
-
-def test_agent_web_search_uses_explicit_reference_purpose(monkeypatch) -> None:
-    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-web-search-uses-explicit-reference-purpose",
-            "role": "user",
-            "text": "帮我了解 AI application developer 岗位",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
+    assert result["output"]["references"][0]["title"] == (
+        "Example Graduate Program"
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = asyncio.run(
-        runner.run(
-            tool_call(
-                "call-web-search",
-                "web_search",
-                {
-                    "query": "AI application developer responsibilities",
-                    "purpose": "target_context",
-                },
-            ),
-            AgentRuntimeContext(),
-        ),
-    )
-
-    assert tool.title == "web_search"
-    assert tool.state == "output-available"
-    assert result["output"]["purpose"] == "target_context"
-    assert result["output"]["personalExperienceEvidence"] is False
-
-
-def test_agent_web_search_accepts_multi_query_target_context(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        stub_web_search_summary,
-    )
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-web-search-accepts-multi-query-target-context",
-            "role": "user",
-            "text": "帮我了解 AI application developer 岗位",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = asyncio.run(
-        runner.run(
-            tool_call(
-                "call-web-search",
-                "web_search",
-                {
-                    "queries": [
-                        "AI application developer responsibilities",
-                        "AI application developer skills",
-                        "AI application developer resume keywords",
-                    ],
-                    "maxResults": 10,
-                    "purpose": "target_context",
-                },
-            ),
-            AgentRuntimeContext(),
-        ),
-    )
-
-    assert tool.title == "web_search"
-    assert tool.state == "output-available"
-    assert result["input"]["query"] == "AI application developer responsibilities"
-    assert result["input"]["maxResults"] == 10
-    assert result["output"]["queryCount"] == 3
-    assert result["output"]["maxResults"] == 10
-    assert len(result["output"]["results"]) == 2
-    assert (
-        result["output"]["url"] == "https://example.test/roles/ai-application-developer"
-    )
-    assert result["output"]["personalExperienceEvidence"] is False
-
-
-def test_agent_web_search_context_is_visible_to_final_response(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        stub_web_search_summary,
-    )
-    config = AgentLlmConfig(
-        client_id="llm-test",
-        name="Test Model",
-        provider="openai",
-        model="gpt-test",
-        base_url="https://example.test/v1",
-        api_key="sk-test",
-        temperature=0.4,
-        top_p=0.9,
-        max_tokens=None,
-        timeout_seconds=60,
-        context_window_tokens=16_384,
-    )
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-web-search-context-is-visible-to-final-response",
-            "role": "user",
-            "text": "帮我了解 AI application developer 岗位",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    asyncio.run(
-        runner.run(
-            tool_call(
-                "call-web-search",
-                "web_search",
-                {
-                    "queries": [
-                        "AI application developer responsibilities",
-                        "AI application developer skills",
-                    ],
-                    "purpose": "target_context",
-                },
-            ),
-            AgentRuntimeContext(),
-        ),
-    )
-    draft = runner.build_message()
-    messages = build_agent_messages(
-        request,
-        config,
-        mode="streaming_final",
-        draft=draft,
-    )
-    payload = agent_workspace_context(messages)
-    web_context = payload["toolContext"]["webSearch"][0]
-
-    assert draft.edits == []
-    assert draft.sources[0].url == "https://example.test/roles/ai-application-developer"
-    assert web_context["purpose"] == "target_context"
-    assert len(web_context["results"]) == 2
-    assert "LLM features" in web_context["results"][0]["excerpt"]
-    assert "evaluation" in web_context["results"][1]["excerpt"]
-    assert web_context["results"][0]["sourceKind"] == "search_snippet"
-
-
-def test_agent_web_search_falls_back_to_search_snippet(monkeypatch) -> None:
-    monkeypatch.setattr(
-        agent_web,
-        "_search_web_results",
-        lambda _query: (
-            [
-                WebSearchResult(
-                    title="Frontend engineer JD",
-                    url="https://example.test/jobs/frontend",
-                    excerpt=(
-                        "Frontend engineer responsibilities include React, "
-                        "TypeScript, performance optimization, collaboration "
-                        "with product teams, and accessible UI delivery."
-                    ),
-                ),
-            ],
-            None,
-        ),
-    )
-    monkeypatch.setattr(agent_web, "_fetch_web_reference", lambda _url: None)
-
-    result, count, error = agent_web._search_web_reference("frontend engineer jd")
-
-    assert error is None
-    assert count == 1
-    assert result is not None
-    assert result.url == "https://example.test/jobs/frontend"
-    assert "React" in result.excerpt
-
-
-def test_agent_web_search_summary_dedupes_and_limits_queries(monkeypatch) -> None:
-    calls: list[tuple[str, int]] = []
-
-    def fake_search(
-        query: str,
-        max_results: int,
-    ) -> tuple[list[WebSearchResult], int, None]:
-        calls.append((query, max_results))
-        available_results = [
-            WebSearchResult(
-                title=f"{query} unique",
-                url=f"https://example.test/{query}",
-                excerpt=f"Unique context for {query}.",
-            ),
-            WebSearchResult(
-                title=f"{query} shared",
-                url="https://example.test/shared",
-                excerpt=f"Shared context for {query}.",
-            ),
-        ]
-        return (
-            available_results[:max_results],
-            len(available_results),
-            None,
-        )
-
-    monkeypatch.setattr(agent_web, "_search_web_reference_results", fake_search)
-
-    summary = agent_web._search_web_reference_summary(
-        ["first", "first", "second", "third", "fourth", "fifth", "sixth"],
-        max_results=3,
-    )
-
-    assert calls == [("first", 3), ("second", 1)]
-    assert summary.query == "first"
-    assert summary.query_count == 5
-    assert summary.result_count == 4
-    assert len(summary.results) == 3
-
-
-def test_agent_web_headers_are_browser_compatible() -> None:
-    headers = agent_web._web_headers("text/html")
-
-    assert headers["Accept"] == "text/html"
-    assert "Mozilla/5.0" in headers["User-Agent"]
-    assert "resumate.local" not in headers["User-Agent"]
-    assert headers["Accept-Language"]
 
 
 def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
@@ -6203,16 +5640,13 @@ def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
         normalize_agent_settings({"confirmationMode": "suggestOnly"}),
     )
 
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
+    environment = ResumeToolEnvironment.open(request)
+    schema_names = {schema["function"]["name"] for schema in environment.tool_schemas}
 
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert "resume_analysis" in schema_names
-    assert "edit_execute" not in schema_names
+    assert schema_names == {"web_search", "web_fetch"}
 
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    tool, result = runner._run_local_tool(
+    tool, result = invoke_agent_tool(
+        environment,
         tool_call(
             "call-execute",
             "edit_execute",
@@ -6236,369 +5670,30 @@ def test_agent_suggest_only_filters_and_blocks_edit_tools() -> None:
     assert tool.state == "output-error"
     assert result["output"]["blocked"] is True
     assert "仅给建议" in tool.error_text
-    assert runner.edits == []
-    assert runner.draft_resume["basic"]["summary"] == "已有简介"
+    assert environment.close(completed=True).edits == ()
 
 
-def test_agent_explain_draft_policy_allows_diff_summary_only() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-explain-draft-policy-allows-diff-summary-only",
-            "role": "user",
-            "text": "解释刚才的草稿改了什么",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-        draftState={
-            "id": "draft-current",
-            "status": "pending",
-            "resume": {"basic": {}, "sections": []},
-            "editCount": 1,
-            "edits": [
+def test_agent_delete_operations_are_previewed_without_text_intent_routing() -> None:
+    resume = minimal_resume_document()
+    resume["sections"] = [
+        {
+            "id": "project",
+            "kind": "project",
+            "title": "项目经历",
+            "items": [
                 {
-                    "id": "edit-summary",
-                    "title": "优化简介",
-                    "target": "basic.summary",
-                    "replacement": "新的简介",
+                    "id": "project-1",
+                    "name": "ResuMate",
+                    "role": "",
+                    "techStack": [],
+                    "period": "",
+                    "url": "",
+                    "description": "",
+                    "highlights": [],
                 },
             ],
-            "diffs": [],
         },
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.EXPLAIN_DRAFT
-    assert schema_names == {"draft_diff_summary", "finish"}
-
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    diff_tool, _ = runner._run_local_tool(
-        tool_call("call-diff", "draft_diff_summary", {}),
-    )
-    message = runner.build_message()
-    edit_tool, _ = runner._run_local_tool(
-        tool_call(
-            "call-execute",
-            "edit_execute",
-            {
-                "edits": [
-                    {
-                        "title": "不应执行",
-                        "target": "basic.summary",
-                        "operation": {
-                            "type": "replace_field",
-                            "path": "basic.summary",
-                            "value": "新的简介",
-                        },
-                    },
-                ],
-            },
-        ),
-    )
-
-    assert diff_tool.state == "output-available"
-    assert "不会生成新的简历修改" in message.text
-    assert edit_tool.state == "output-error"
-    assert "只读任务" in edit_tool.error_text
-    assert runner.edits == []
-
-
-def test_agent_rewrite_draft_requires_pending_draft() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-rewrite-draft-requires-pending-draft",
-            "role": "user",
-            "text": "把刚才的草稿再短一点",
-        },
-        locale="zh",
-        resume={"basic": {"summary": "已有简介"}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.REWRITE_DRAFT
-    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
-    assert schema_names == {"finish"}
-
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    tool, _ = runner._run_local_tool(
-        tool_call(
-            "call-rewrite",
-            "draft_rewrite",
-            {"edits": [{"operation": {"type": "replace_field"}}]},
-        ),
-    )
-
-    assert tool.state == "output-error"
-    assert "待确认草稿" in tool.error_text
-    assert runner.edits == []
-
-
-def test_agent_plain_edit_phrase_does_not_require_pending_draft() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-plain-edit-phrase-does-not-require-pending-draft",
-            "role": "user",
-            "text": "把项目标题改成更像后端工程师",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.EDIT_RESUME
-    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
-    assert "edit_execute" in schema_names
-    assert "draft_rewrite" not in schema_names
-
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-rewrite",
-            "draft_rewrite",
-            {"edits": [{"operation": {"type": "replace_field"}}]},
-        ),
-    )
-
-    assert tool.state == "output-error"
-    assert result["output"]["blocked"] is True
-
-
-def test_agent_new_draft_request_does_not_require_pending_draft() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-new-draft-request-does-not-require-pending-draft",
-            "role": "user",
-            "text": "帮我生成一个项目经历草稿：项目名称：智能客服系统；"
-            "职责：负责 RAG 检索和接口开发；技术：Python、FastAPI、Milvus。",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.EDIT_RESUME
-    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
-    assert "edit_plan" in schema_names
-    assert "edit_execute" in schema_names
-    assert "draft_rewrite" not in schema_names
-
-
-def test_agent_material_generation_requires_user_evidence() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-material-generation-requires-user-evidence",
-            "role": "user",
-            "text": "帮我生成一个项目经历草稿",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.EDIT_RESUME
-    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
-    assert policy.reason == "source_material"
-    assert schema_names == {"finish"}
-
-
-def test_agent_revising_named_draft_requires_pending_draft() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-revising-named-draft-requires-pending-draft",
-            "role": "user",
-            "text": "把草稿改短一点",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.REWRITE_DRAFT
-    assert policy.mode == AgentCapabilityMode.CLARIFY_ONLY
-    assert schema_names == {"finish"}
-
-
-def test_agent_without_target_context_does_not_force_jd_intent() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-keyword-match-missing-does-not-force-jd-intent",
-            "role": "user",
-            "text": "这份简历整体怎么样？",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.ANALYZE_RESUME
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert "resume_analysis" in schema_names
-    assert "edit_execute" not in schema_names
-    assert "web_search" not in schema_names
-
-
-def test_agent_role_research_policy_allows_web_search_without_edits() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-role-research-policy-allows-web-search-without-edits",
-            "role": "user",
-            "text": "帮我了解 AI应用开发工程师",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.RESEARCH_ROLE
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert "web_search" in schema_names
-    assert "web_fetch" not in schema_names
-    assert "edit_plan" not in schema_names
-    assert "edit_execute" not in schema_names
-
-
-def test_agent_admission_research_policy_allows_web_search_without_edits() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-admission-research",
-            "role": "user",
-            "text": "帮我了解示例大学计算机硕士项目的申请要求和研究方向",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.RESEARCH_ROLE
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert "web_search" in schema_names
-    assert "edit_plan" not in schema_names
-    assert "edit_execute" not in schema_names
-
-
-def test_agent_admission_tailoring_can_draft_and_research_target() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-admission-tailoring-can-draft-and-research-target",
-            "role": "user",
-            "text": "根据示例大学计算机硕士项目的申请要求优化这份简历",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.EDIT_RESUME
-    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
-    assert "web_search" in schema_names
-    assert "edit_plan" in schema_names
-    assert "edit_execute" in schema_names
-
-
-def test_agent_scholarship_application_is_not_misclassified_as_jd() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-scholarship-application-is-not-misclassified-as-jd",
-            "role": "user",
-            "text": "我想申请奖学金，应该怎么准备？",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-    )
-
-    policy = capability_policy_for_request(request)
-
-    assert policy.intent != AgentTaskIntent.MATCH_JD
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-
-
-def test_agent_jd_gap_diagnosis_policy_is_read_only() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-jd-gap-diagnosis-policy-is-read-only",
-            "role": "user",
-            "text": "这份简历和 JD 的差距在哪里？",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-        messages=target_context_history(
-            target="AI application developer",
-            description=(
-                "AI application developer requires Python, RAG, and evaluation."
-            ),
-        ),
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.DIAGNOSE_JD_GAP
-    assert policy.mode == AgentCapabilityMode.READ_ONLY
-    assert "resume_analysis" in schema_names
-    assert "web_search" in schema_names
-    assert "web_fetch" in schema_names
-    assert "edit_plan" not in schema_names
-    assert "edit_execute" not in schema_names
-
-
-def test_agent_jd_optimization_request_can_still_draft() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-jd-optimization-request-can-still-draft",
-            "role": "user",
-            "text": "根据这个 JD 优化简历，并看一下差距",
-        },
-        locale="zh",
-        resume={"basic": {}, "sections": []},
-        messages=target_context_history(
-            target="AI application developer",
-            description=(
-                "AI application developer requires Python, RAG, and evaluation."
-            ),
-        ),
-    )
-
-    policy = capability_policy_for_request(request)
-    schemas = tool_registry.agent_tool_schemas_for_names(policy.allowed_tools)
-    schema_names = {schema["function"]["name"] for schema in schemas}
-
-    assert policy.intent == AgentTaskIntent.MATCH_JD
-    assert policy.mode == AgentCapabilityMode.CAN_DRAFT
-    assert "edit_plan" in schema_names
-    assert "edit_execute" in schema_names
-
-
-def test_agent_delete_operations_require_explicit_delete_intent() -> None:
+    ]
     request = AgentChatRequest(
         message={
             "id": "agent-user-delete-operations-require-explicit-delete-intent",
@@ -6606,20 +5701,12 @@ def test_agent_delete_operations_require_explicit_delete_intent() -> None:
             "text": "优化项目经历",
         },
         locale="zh",
-        resume={
-            "basic": {},
-            "sections": [
-                {
-                    "id": "project",
-                    "kind": "project",
-                    "items": [{"id": "project-1", "title": "ResuMate"}],
-                },
-            ],
-        },
+        resume=resume,
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
+    environment = ResumeToolEnvironment.open(request)
 
-    tool, result = runner._run_local_tool(
+    tool, result = invoke_agent_tool(
+        environment,
         tool_call(
             "call-delete",
             "edit_execute",
@@ -6639,79 +5726,15 @@ def test_agent_delete_operations_require_explicit_delete_intent() -> None:
         ),
     )
 
-    assert tool.state == "output-error"
-    assert result["output"]["blocked"] is True
-    assert "明确提出删除" in tool.error_text
-    assert runner.edits == []
-
-
-def test_agent_skills_classify_replaces_existing_groups_with_explicit_delete() -> None:
-    request = AgentChatRequest(
-        message={
-            "id": "agent-user-skills-classify",
-            "role": "user",
-            "text": (
-                "候选人事实：前端技能是 React、TypeScript，后端技能是 Python。"
-                "请删除旧技能 HTML，并按这两组整理技能。"
-            ),
-        },
-        locale="zh",
-        resume={
-            "schemaVersion": 2,
-            "basic": {
-                "name": "",
-                "headline": "",
-                "phone": "",
-                "email": "",
-                "location": "",
-                "avatar": "",
-                "summary": "",
-                "customFields": [],
-            },
-            "sections": [
-                {
-                    "id": "skills",
-                    "kind": "simple_list",
-                    "title": "技能",
-                    "items": [
-                        {
-                            "id": "skill-1",
-                            "content": "旧技能：HTML",
-                        },
-                    ],
-                },
-            ],
-        },
-    )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-
-    tool, result = runner._run_local_tool(
-        tool_call(
-            "call-skills",
-            "skills_classify",
-            {
-                "groups": [
-                    {"title": "前端", "skills": ["React", "TypeScript"]},
-                    {"title": "后端", "skills": ["Python"]},
-                ],
-            },
-        ),
-    )
-
-    items = runner.draft_resume["sections"][0]["items"]
     assert tool.state == "output-available"
     assert result["output"]["editCount"] == 1
-    assert items[0]["id"] == "skill-1"
-    assert [item["content"] for item in items] == [
-        "<ul><li>前端：React、TypeScript</li><li>后端：Python</li></ul>",
-    ]
+    assert result["output"]["observations"][0]["after"] is None
+    assert len(environment.close(completed=True).edits) == 1
 
 
 def test_agent_edit_operation_schema_requires_operation_specific_fields() -> None:
-    variants = tool_registry.OPERATION_SCHEMA["oneOf"]
-    by_type = {
-        variant["properties"]["type"]["enum"][0]: variant for variant in variants
-    }
+    variants = agent_contracts.OPERATION_SCHEMA["oneOf"]
+    by_type = {variant["properties"]["type"]["const"]: variant for variant in variants}
 
     assert set(by_type) == {
         "replace_field",
@@ -6939,58 +5962,10 @@ def test_section_registry_rejects_pdf_compatibility_alias_conflicts(
         )
 
 
-def test_safe_section_patch_rejects_conflicting_new_and_legacy_kinds() -> None:
-    assert (
-        _safe_section_patch(
-            {
-                "section_type": "work",
-                "kind": "project",
-                "layout": "timeline",
-            }
-        )
-        == {}
-    )
-
-
-def test_safe_section_patch_allows_title_only_and_rejects_kind_changes() -> None:
-    assert (
-        _safe_section_patch(
-            {
-                "section_type": "work experience",
-                "kind": "work",
-                "layout": "timeline",
-            }
-        )
-        == {}
-    )
-    assert _safe_section_patch({"title": " Work Experience "}) == {
-        "title": "Work Experience"
-    }
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("internship experience", "experience"),
-        ("my internship experience section", "experience"),
-        ("other experience details", "simple_list"),
-        ("ＳＫＩＬＬＳ", "simple_list"),
-        ("networking", ""),
-        ("customization", ""),
-        ("otherworldly", ""),
-    ],
-)
-def test_section_kind_matching_uses_canonical_specific_aliases(
-    value: str,
-    expected: str,
-) -> None:
-    assert _section_kind_from_text(value) == expected
-
-
 def test_agent_chat_accepts_simple_list_section_kind() -> None:
     assert "simple_list" in SECTION_KIND_ENUM
 
-    edits = _model_edit_suggestions(
+    edits, rejected = parse_edit_batch(
         minimal_resume_document(name="姓名"),
         [
             {
@@ -7000,10 +5975,12 @@ def test_agent_chat_accepts_simple_list_section_kind() -> None:
                 "operation": {
                     "type": "insert_section",
                     "section": {
-                        "section_type": "simple_list",
+                        "id": "other-experience",
+                        "kind": "simple_list",
                         "title": "其他经历",
                         "items": [
                             {
+                                "id": "other-experience-1",
                                 "content": "开源贡献：维护项目文档",
                             },
                         ],
@@ -7014,6 +5991,7 @@ def test_agent_chat_accepts_simple_list_section_kind() -> None:
         locale="zh",
     )
 
+    assert rejected == []
     assert edits
     section = edits[0].operation["section"]
     assert section["kind"] == "simple_list"
@@ -7022,7 +6000,7 @@ def test_agent_chat_accepts_simple_list_section_kind() -> None:
 
 
 def test_agent_chat_rejects_noncanonical_list_item_content() -> None:
-    edits = _model_edit_suggestions(
+    edits, rejected = parse_edit_batch(
         minimal_resume_document(name="姓名"),
         [
             {
@@ -7052,6 +6030,8 @@ def test_agent_chat_rejects_noncanonical_list_item_content() -> None:
     )
 
     assert edits == []
+    assert len(rejected) == 1
+    assert "Canonical protocol error" in rejected[0]["reason"]
 
 
 def test_agent_chat_plain_message_does_not_return_tools(
@@ -7065,7 +6045,7 @@ def test_agent_chat_plain_message_does_not_return_tools(
     )
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text("你好，我可以回答简历相关问题。"),
+        fail_on_second_final_stream,
     )
 
     _, message = post_agent_chat_stream(
@@ -7079,7 +6059,6 @@ def test_agent_chat_plain_message_does_not_return_tools(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -7088,10 +6067,9 @@ def test_agent_chat_plain_message_does_not_return_tools(
     assert message["text"] == "你好，我可以回答简历相关问题。"
     assert message["tools"] == []
     assert message["edits"] == []
-    assert message["actions"] == []
 
 
-def test_agent_chat_plain_stream_uses_final_completion(
+def test_agent_chat_plain_natural_stop_skips_second_completion(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -7101,11 +6079,7 @@ def test_agent_chat_plain_stream_uses_final_completion(
         stub_terminal_tool_text("工具选择阶段的半截回答"),
     )
 
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="最终")
-        yield LlmStreamEvent(type="text_delta", delta="完整回答")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, fail_on_second_final_stream)
 
     with client.stream(
         "POST",
@@ -7120,7 +6094,6 @@ def test_agent_chat_plain_stream_uses_final_completion(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -7129,8 +6102,8 @@ def test_agent_chat_plain_stream_uses_final_completion(
         body = "".join(response.iter_text())
 
     assert response.status_code == 200
-    assert "最终完整回答" in body
-    assert "工具选择阶段的半截回答" not in body
+    assert "工具选择阶段的半截回答" in body
+    assert "event: text_delta" in body
 
 
 def test_agent_chat_without_tool_support_still_streams_plain_response(
@@ -7168,7 +6141,6 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -7222,58 +6194,14 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
     )
 
-    assert "text_delta" in body
+    assert "event: text_delta" in body
+    assert "这个模型不支持流式，但仍然可以直接回答问题。" in body
     assert message["text"] == "这个模型不支持流式，但仍然可以直接回答问题。"
-    assert message["tools"] == []
-    assert message["edits"] == []
-
-
-def test_agent_chat_finish_blocked_without_visible_tools_returns_message(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "blocked",
-                        "reason": "缺少要修改的目标模块或条目。",
-                    },
-                ),
-            ],
-        ),
-    )
-
-    _, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-finish-blocked-json",
-                "role": "user",
-                "text": "帮我修改简历",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    assert "不能生成可靠" in message["text"]
-    assert "缺少要修改的目标模块或条目" in message["text"]
     assert message["tools"] == []
     assert message["edits"] == []
 
@@ -7285,19 +6213,13 @@ def test_agent_chat_material_gap_asks_followup_questions(
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "blocked",
-                        "reason": "缺少可写入简历的项目事实。",
-                        "missing": ["source_material", "user_evidence"],
-                    },
-                ),
-            ],
+        stub_terminal_tool_text(
+            "请补充项目事实：你本人具体负责哪一部分、用了哪些技术、有没有结果。",
         ),
+    )
+    monkeypatch.setattr(
+        ASYNC_STREAM_CHAT_PATH,
+        fail_on_second_final_stream,
     )
 
     _, message = post_agent_chat_stream(
@@ -7311,7 +6233,6 @@ def test_agent_chat_material_gap_asks_followup_questions(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -7319,7 +6240,6 @@ def test_agent_chat_material_gap_asks_followup_questions(
 
     assert message["tools"] == []
     assert message["edits"] == []
-    assert message["finishMissing"] == ["source_material", "user_evidence"]
     assert "你本人具体负责哪一部分" in message["text"]
     assert "用了哪些技术" in message["text"]
     assert "有没有结果" in message["text"]
@@ -7397,7 +6317,6 @@ def test_agent_chat_reports_invalid_model_edit_operation(
                     },
                 ],
             },
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -7405,7 +6324,7 @@ def test_agent_chat_reports_invalid_model_edit_operation(
 
     tool = message["tools"][0]
     rejected_edit = tool["output"]["rejectedEdits"][0]
-    assert message["text"] == "需要补充 itemId 后才能继续生成可预览草稿。"
+    assert "需要补充 itemId 后才能继续生成可预览草稿。" in message["text"]
     assert message["edits"] == []
     assert tool["state"] == "output-error"
     assert tool["output"]["rejectedEditCount"] == 1
@@ -7438,7 +6357,6 @@ def test_agent_model_error_does_not_return_llm_tool(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -7459,73 +6377,64 @@ def test_agent_chat_uses_provided_jd_url(
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text('{"text":"Real model response for JD URL"}'),
+        fail_on_second_final_stream,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-jd",
-                    "web_fetch",
-                    {
-                        "url": "https://example.test/jobs/frontend",
-                        "purpose": "jd",
-                    },
-                ),
-            ],
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call(
-                    "call-plan",
-                    "edit_plan",
-                    {
-                        "steps": [
-                            {
-                                "action": "reorder_sections",
-                                "target": "sections",
-                                "reason": "用户明确要求调整模块顺序。",
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-execute",
-                    "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "调整模块顺序",
-                                "target": "sections",
-                                "reason": "将项目经历前置。",
-                                "operation": {
-                                    "type": "reorder_sections",
-                                    "sectionIds": ["project", "education"],
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-jd",
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend"},
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "调整模块顺序",
+                                    "target": "sections",
+                                    "reason": "将项目经历前置。",
+                                    "operation": {
+                                        "type": "reorder_sections",
+                                        "sectionIds": ["project", "education"],
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {"status": "ready", "reason": "Draft is complete."},
-                ),
-            ],
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(content="Draft is complete.", tool_calls=[]),
         ),
     )
-    monkeypatch.setattr(
-        "app.services.agent._fetch_web_reference",
-        lambda *_: WebReference(
+
+    async def fetch_reference(*_: object) -> WebReference:
+        return WebReference(
             title="Frontend Engineer Job",
             excerpt="React TypeScript responsibilities and requirements.",
-        ),
+            final_url="https://example.test/jobs/frontend",
+            passages=(
+                agent_web.WebPassage(
+                    section="Requirements",
+                    text="React TypeScript responsibilities and requirements.",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        fetch_reference,
     )
     resume = minimal_resume_document(name="王小明", summary="前端开发。")
     resume["sections"] = [
@@ -7577,305 +6486,76 @@ def test_agent_chat_uses_provided_jd_url(
             "messages": [],
             "locale": "zh",
             "resume": resume,
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
     )
 
     assert any(tool["title"] == "web_fetch" for tool in message["tools"])
-    assert message["sources"] == [
-        {
-            "id": "source-jd-url",
-            "title": "Frontend Engineer Job",
-            "sourceType": "web",
-            "url": "https://example.test/jobs/frontend",
-            "excerpt": "React TypeScript responsibilities and requirements.",
-        },
-    ]
+    assert len(message["sources"]) == 1
+    source = message["sources"][0]
+    assert re.fullmatch(r"source-web-[0-9a-f]{16}", source["id"])
+    assert {key: value for key, value in source.items() if key != "id"} == {
+        "title": "Frontend Engineer Job",
+        "sourceType": "web",
+        "url": "https://example.test/jobs/frontend",
+        "excerpt": "React TypeScript responsibilities and requirements.",
+    }
     assert any(
         edit["operation"]["type"] == "reorder_sections" for edit in message["edits"]
     )
 
 
-def test_agent_chat_cleans_chinese_target_role(
+def test_agent_chat_defers_sibling_edit_until_failed_read_is_observed(
     client: TestClient,
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr(
-        ASYNC_STREAM_CHAT_PATH,
-        stub_stream_text('{"text":"已分析目标岗位"}'),
-    )
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-jd",
-                    "web_search",
-                    {
-                        "query": "AI应用开发 岗位 JD 职责 任职要求",
-                        "purpose": "jd",
-                    },
-                ),
-            ],
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call("call-plan", "edit_plan"),
-            ],
-        ),
-    )
-    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
-
-    _, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-chat-cleans-chinese-target-role",
-                "role": "user",
-                "text": "帮我优化简历，应聘的职位是AI应用开发",
+    edit_arguments = {
+        "edits": [
+            {
+                "title": "优化个人简介",
+                "target": "basic.summary",
+                "reason": "让已有经历表达更聚焦。",
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.summary",
+                    "value": "聚焦复杂交互与工程质量。",
+                },
             },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    jd_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
-    assert jd_tool["output"]["role"] == "AI应用开发"
-    assert jd_tool["input"]["query"] == "AI应用开发 岗位 JD 职责 任职要求"
-    assert message["knowledge"][0]["title"] == "AI应用开发"
-    assert not any("的职位是" in suggestion for suggestion in message["suggestions"])
-
-
-def test_agent_chat_streams_role_research_web_summary(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        stub_web_search_summary,
-    )
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-role-research",
-                    "web_search",
-                    {
-                        "queries": [
-                            "AI application developer responsibilities",
-                            "AI application developer skills",
-                            "AI application developer resume keywords",
-                        ],
-                        "maxResults": 10,
-                        "purpose": "target_context",
-                    },
-                ),
-            ],
-        ),
-    )
-
-    async def stream_response(
-        _config: AgentLlmConfig,
-        messages: list[dict],
-        *_: object,
-        **__: object,
-    ) -> object:
-        payload = agent_workspace_context(messages)
-        web_context = payload["toolContext"]["webSearch"][0]
-        assert web_context["purpose"] == "target_context"
-        assert len(web_context["results"]) == 2
-        yield LlmStreamEvent(
-            type="text_delta",
-            delta="岗位情报：核心职责、技能要求、简历关键词。",
-        )
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
-
-    _, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-chat-streams-role-research-web-summary",
-                "role": "user",
-                "text": "帮我了解 AI应用开发工程师",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
-    assert message["edits"] == []
-    assert "岗位情报" in message["text"]
-    assert web_tool["input"]["maxResults"] == 10
-    assert web_tool["output"]["queryCount"] == 3
-    assert web_tool["output"]["personalExperienceEvidence"] is False
-
-
-def test_agent_chat_streams_read_only_research_timeout_without_edit_rollback(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-
-    def timed_out_search(
-        queries: list[str],
-        max_results: int = 10,
-    ) -> WebSearchReference:
-        return WebSearchReference(
-            query=queries[0],
-            results=(),
-            query_count=len(queries),
-            result_count=0,
-            error="Web search exceeded its operation time budget.",
-            timed_out=True,
-        )
-
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        timed_out_search,
-    )
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-role-research-timeout",
-                    "web_search",
-                    {
-                        "queries": [
-                            "AI application developer responsibilities",
-                            "AI application developer skills",
-                        ],
-                        "maxResults": 10,
-                        "purpose": "target_context",
-                    },
-                ),
-            ],
-        ),
-    )
-
-    async def unexpected_final_stream(*_: object) -> object:
-        raise AssertionError("failed research must not be presented as a result")
-        yield
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
-
-    body, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-chat-role-research-timeout",
-                "role": "user",
-                "text": "帮我了解 AI应用开发工程师",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
-    assert web_tool["state"] == "output-error"
-    assert web_tool["output"] == {
-        "queryCount": 2,
-        "resultCount": 0,
-        "timedOut": True,
-        "partial": False,
+        ],
     }
-    assert web_tool["errorText"] == "Web search exceeded its operation time budget."
-    assert message["edits"] == []
-    assert message["transactionState"] == "none"
-    assert "检索" in message["text"]
-    assert "超时" in message["text"]
-    assert "重试" in message["text"]
-    assert "草稿" not in message["text"]
-    assert '"transactionState":"rolled_back"' not in body
 
-
-def test_agent_chat_stops_batch_before_edit_after_read_failure(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-
-    def timed_out_search(
-        queries: list[str],
-        max_results: int = 10,
-    ) -> WebSearchReference:
-        return WebSearchReference(
-            query=queries[0],
-            results=(),
-            query_count=len(queries),
-            result_count=0,
-            error="Web search exceeded its operation time budget.",
-            timed_out=True,
-        )
+    async def failed_fetch(
+        _url: str,
+        _relevance_query: str,
+        _reference_title: str,
+        _browser: object,
+    ) -> None:
+        return None
 
     monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        timed_out_search,
+        agent_web,
+        "_async_fetch_web_reference",
+        failed_fetch,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
-                    "call-web-timeout-before-edit",
-                    "web_search",
-                    {
-                        "queries": [
-                            "frontend engineer responsibilities",
-                            "frontend engineer skills",
-                        ],
-                        "maxResults": 10,
-                        "purpose": "target_context",
-                    },
+                    "call-web-failure-before-edit",
+                    "web_fetch",
+                    {"url": "https://example.test/jobs/frontend"},
                 ),
                 tool_call(
                     "call-edit-after-timeout",
                     "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "优化个人简介",
-                                "target": "basic.summary",
-                                "reason": "让已有经历表达更聚焦。",
-                                "operation": {
-                                    "type": "replace_field",
-                                    "path": "basic.summary",
-                                    "value": "聚焦复杂交互与工程质量。",
-                                },
-                            },
-                        ],
-                    },
+                    edit_arguments,
                 ),
             ],
         ),
     )
-
-    async def unexpected_final_stream(*_: object) -> object:
-        raise AssertionError("failed research must terminate before editing")
-        yield
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
 
     _, message = post_agent_chat_stream(
         client,
@@ -7885,7 +6565,8 @@ def test_agent_chat_stops_batch_before_edit_after_read_failure(
                 "role": "user",
                 "text": (
                     "候选人事实：我关注复杂交互与工程质量。"
-                    "请针对前端工程师岗位优化个人简介。"
+                    "请参考 https://example.test/jobs/frontend "
+                    "针对前端工程师岗位优化个人简介。"
                 ),
             },
             "messages": [],
@@ -7894,238 +6575,28 @@ def test_agent_chat_stops_batch_before_edit_after_read_failure(
                 name="王小明",
                 summary="关注工程质量。",
             ),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
     )
 
-    assert [tool["title"] for tool in message["tools"]] == ["web_search"]
+    assert [tool["title"] for tool in message["tools"]] == ["web_fetch"]
     assert message["tools"][0]["state"] == "output-error"
     assert message["transactionState"] == "none"
     assert message["edits"] == []
-    assert "超时" in message["text"]
-    assert "重试" in message["text"]
 
 
-def test_agent_chat_target_context_control_failure_is_not_edit_rollback(
+def test_agent_chat_lets_model_diagnose_jd_gap_from_workspace(
     client: TestClient,
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-ungrounded-target-context",
-                    "update_target_context",
-                    {
-                        "mode": "replace",
-                        "context": {
-                            "kind": "employment",
-                            "target": "量子计算研究员",
-                        },
-                    },
-                ),
-            ],
+        stub_terminal_tool_text(
+            "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；需要补充项目证据。",
         ),
     )
-
-    async def unexpected_final_stream(*_: object) -> object:
-        raise AssertionError("ungrounded target context must terminate the turn")
-        yield
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_final_stream)
-
-    body, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-chat-ungrounded-target-context",
-                "role": "user",
-                "text": "帮我了解 AI应用开发工程师",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    assert [tool["title"] for tool in message["tools"]] == [
-        "update_target_context",
-    ]
-    assert message["tools"][0]["state"] == "output-error"
-    assert message["tools"][0]["errorText"] == (
-        "Target context update is not grounded in this prompt."
-    )
-    assert message["transactionState"] == "none"
-    assert message["edits"] == []
-    assert "目标信息" in message["text"]
-    assert "重试" in message["text"]
-    assert "草稿" not in message["text"]
-    assert '"transactionState":"rolled_back"' not in body
-
-
-def test_agent_chat_streams_partial_research_status_to_final_summary(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-    result = WebSearchResult(
-        title="AI Application Developer Responsibilities",
-        url="https://example.test/roles/ai-application-developer",
-        excerpt="AI application developers build and evaluate LLM workflows.",
-    )
-
-    def partial_search(
-        queries: list[str],
-        max_results: int = 10,
-    ) -> WebSearchReference:
-        return WebSearchReference(
-            query=queries[0],
-            results=(result,),
-            query_count=len(queries),
-            result_count=1,
-            timed_out=True,
-            partial=True,
-        )
-
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        partial_search,
-    )
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-role-research-partial",
-                    "web_search",
-                    {
-                        "queries": [
-                            "AI application developer responsibilities",
-                            "AI application developer skills",
-                        ],
-                        "maxResults": 10,
-                        "purpose": "target_context",
-                    },
-                ),
-            ],
-        ),
-    )
-
-    async def stream_partial_summary(
-        _config: AgentLlmConfig,
-        messages: list[dict],
-        *_: object,
-        **__: object,
-    ) -> object:
-        payload = agent_workspace_context(messages)
-        web_context = payload["toolContext"]["webSearch"][0]
-        assert web_context["timedOut"] is True
-        assert web_context["partial"] is True
-        assert len(web_context["results"]) == 1
-        yield LlmStreamEvent(
-            type="text_delta",
-            delta="本次公开检索仅返回部分结果：相关岗位通常需要构建和评估 LLM 工作流。",
-        )
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_partial_summary)
-
-    _, message = post_agent_chat_stream(
-        client,
-        {
-            "message": {
-                "id": "agent-user-chat-role-research-partial",
-                "role": "user",
-                "text": "帮我了解 AI应用开发工程师",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-        },
-    )
-
-    web_tool = next(tool for tool in message["tools"] if tool["title"] == "web_search")
-    assert web_tool["state"] == "output-available"
-    assert web_tool["output"]["timedOut"] is True
-    assert web_tool["output"]["partial"] is True
-    assert message["transactionState"] == "none"
-    assert message["edits"] == []
-    assert "部分结果" in message["text"]
-
-
-def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-    monkeypatch.setattr(
-        "app.services.agent._search_web_reference_summary",
-        stub_web_search_summary,
-    )
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-update-target-context",
-                    "update_target_context",
-                    {
-                        "mode": "replace",
-                        "context": {
-                            "kind": "employment",
-                            "target": "AI application developer",
-                            "mustHaveSkills": ["Python", "RAG", "evaluation"],
-                        },
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-target-context",
-                    "web_search",
-                    {
-                        "queries": [
-                            "AI application developer JD requirements",
-                            "AI application developer resume keywords",
-                        ],
-                        "purpose": "target_context",
-                        "maxResults": 10,
-                    },
-                ),
-            ],
-            [tool_call("call-analysis", "resume_analysis")],
-        ),
-    )
-
-    async def stream_response(
-        _config: AgentLlmConfig,
-        messages: list[dict],
-        *_: object,
-        **__: object,
-    ) -> object:
-        payload = agent_workspace_context(messages)
-        analysis_context = payload["toolContext"]["resumeAnalysis"][0]
-        assert analysis_context["matchedKeywords"] == ["python"]
-        assert analysis_context["missingKeywords"] == ["rag", "evaluation"]
-        assert analysis_context["targetFit"]["hasTargetContext"] is True
-        assert payload["toolContext"]["webSearch"][0]["purpose"] == "target_context"
-        yield LlmStreamEvent(
-            type="text_delta",
-            delta=(
-                "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；需要补充项目证据。"
-            ),
-        )
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     _, message = post_agent_chat_stream(
         client,
@@ -8161,7 +6632,6 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
                     },
                 ],
             },
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
         },
@@ -8170,12 +6640,7 @@ def test_agent_chat_streams_jd_gap_diagnosis_without_edits(
     tool_titles = [tool["title"] for tool in message["tools"]]
     assert message["edits"] == []
     assert "差距诊断" in message["text"]
-    assert tool_titles == [
-        "update_target_context",
-        "web_search",
-        "resume_analysis",
-    ]
-    assert "edit_plan" not in tool_titles
+    assert tool_titles == []
     assert "edit_execute" not in tool_titles
 
 
@@ -8185,48 +6650,29 @@ def test_agent_chat_streams_tool_and_source_metadata(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        "app.services.agent._async_search_web_reference",
-        async_stub_jd_search,
+        agent_web,
+        "_async_fetch_web_reference",
+        async_stub_jd_fetch,
     )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-jd",
-                    "web_search",
-                    {
-                        "query": "前端开发工程师 岗位 JD 职责 任职要求",
-                        "purpose": "jd",
-                    },
-                ),
-            ],
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call(
-                    "call-plan",
-                    "edit_plan",
-                    {
-                        "steps": [
-                            {
-                                "action": "replace_field",
-                                "target": "basic.summary",
-                                "reason": "整理个人简介。",
-                            },
-                        ],
-                    },
-                ),
-            ],
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-jd",
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend"},
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(
+                content="流式真实模型响应",
+                tool_calls=[],
+            ),
         ),
     )
-
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="流式")
-        yield LlmStreamEvent(type="text_delta", delta="真实模型响应")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -8236,12 +6682,14 @@ def test_agent_chat_streams_tool_and_source_metadata(
             "message": {
                 "id": "agent-user-chat-streams-tool-and-source-metadata",
                 "role": "user",
-                "text": "针对前端开发工程师岗位优化个人简介",
+                "text": (
+                    "基于 https://example.test/jobs/frontend 分析前端开发工程师"
+                    "岗位与个人简介的匹配度，只分析不要修改"
+                ),
             },
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8252,95 +6700,27 @@ def test_agent_chat_streams_tool_and_source_metadata(
     assert response.status_code == 200
     assert "event: message_start" in body
     assert "event: plan" not in body
-    assert "event: timeline" in body
-    assert "event: text_delta" not in body
+    assert "event: timeline" not in body
+    assert "event: text_delta" in body
     assert "我先分析目标岗位和当前简历" not in body
     assert "event: tool_start" in body
-    assert "event: tool_delta" in body
+    assert "event: tool_delta" not in body
     assert "event: tool_done" in body
     assert '"state":"input-available"' in body
     assert '"state":"output-available"' in body
-    assert "event: message_delta" in body
+    assert "event: message_delta" not in body
     assert "event: message_done" in body
     assert "流式真实模型响应" in body
-    assert body.index("web_search") < body.index("resume_analysis")
-    assert body.index("resume_analysis") < body.index("edit_plan")
+    assert body.index("web_fetch") < body.index("流式真实模型响应")
     assert body.index("event: tool_start") < body.index("流式真实模型响应")
-    assert body.index("流式真实模型响应") < body.index('"source-jd-search"')
+    assert body.index('"source-web-') < body.index("流式真实模型响应")
     assert '"tools":' in body
-    assert '"source-jd-search"' in body
+    assert '"source-web-' in body
     assert '"edits":[]' in body
-    assert '"quickReplies":' in body
-    assert "edit_plan" in body
     assert "edit_execute" not in body
 
 
-def test_agent_chat_streams_finish_blocked_without_visible_tools(
-    client: TestClient,
-    monkeypatch,
-) -> None:
-    model_config = create_agent_model_config(client)
-
-    def unexpected_stream(*_: object) -> object:
-        raise AssertionError("finish-only responses should not stream final completion")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_stream)
-    monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {
-                        "status": "blocked",
-                        "reason": "缺少真实经历内容。",
-                    },
-                ),
-            ],
-        ),
-    )
-
-    with client.stream(
-        "POST",
-        "/api/agent/chat",
-        headers={"accept": "text/event-stream"},
-        json={
-            "message": {
-                "id": "agent-user-chat-streams-finish-blocked-without-visible-tools",
-                "role": "user",
-                "text": "帮我生成项目经历",
-            },
-            "messages": [],
-            "locale": "zh",
-            "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
-            "modelConfig": model_config,
-            "settings": {},
-            "stream": True,
-        },
-    ) as response:
-        body = "".join(response.iter_text())
-
-    assert response.status_code == 200
-    message_done_frame = next(
-        frame
-        for frame in body.split("\n\n")
-        if frame.startswith("event: message_done\n")
-    )
-    message_done_data = next(
-        line.removeprefix("data: ")
-        for line in message_done_frame.splitlines()
-        if line.startswith("data: ")
-    )
-    message = json.loads(message_done_data)["message"]
-    assert "不能生成可靠" in message["text"]
-    assert "缺少真实经历内容" in message["text"]
-    assert message["tools"] == []
-    assert message["edits"] == []
-
-
-def test_agent_chat_hides_model_narration_between_tool_actions(
+def test_agent_chat_streams_model_narration_during_edit_loop(
     client: TestClient,
     monkeypatch,
 ) -> None:
@@ -8349,34 +6729,31 @@ def test_agent_chat_hides_model_narration_between_tool_actions(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
-                content="我先看一下当前简历内容。",
-                tool_calls=[tool_call("call-analysis", "resume_analysis")],
-            ),
-            LlmAssistantMessage(
-                content="我发现简介比较短，下一步先整理可执行的修改方向。",
+                content="我发现简介比较短，现在直接生成修改草稿。",
                 tool_calls=[
                     tool_call(
-                        "call-plan",
-                        "edit_plan",
+                        "call-execute",
+                        "edit_execute",
                         {
-                            "steps": [
+                            "edits": [
                                 {
-                                    "action": "replace_field",
+                                    "title": "优化个人简介",
                                     "target": "basic.summary",
-                                    "reason": "整理个人简介。",
+                                    "reason": "让已有经历表达更聚焦。",
+                                    "operation": {
+                                        "type": "replace_field",
+                                        "path": "basic.summary",
+                                        "value": "具备前端项目经验。",
+                                    },
                                 },
                             ],
                         },
                     ),
                 ],
             ),
+            LlmAssistantMessage(content="最后给出草稿建议。", tool_calls=[]),
         ),
     )
-
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="最后给出草稿建议。")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -8394,7 +6771,6 @@ def test_agent_chat_hides_model_narration_between_tool_actions(
                 name="王小明",
                 summary="有前端项目经验。",
             ),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8404,15 +6780,13 @@ def test_agent_chat_hides_model_narration_between_tool_actions(
 
     assert response.status_code == 200
     assert "event: updates" not in body
-    assert "event: timeline" in body
-    assert "event: text_delta" not in body
-    assert "我先看一下当前简历内容。" not in body
-    assert "已读取当前简历结构" not in body
-    assert "已整理出" not in body
-    assert "我发现简介比较短，下一步先整理可执行的修改方向。" not in body
-    assert body.index("resume_analysis") < body.index("edit_plan")
-    assert body.index("edit_plan") < body.index("最后给出草稿建议。")
-    assert "最后给出草稿建议。" in body
+    assert "event: timeline" not in body
+    assert "event: text_delta" in body
+    assert "我发现简介比较短，现在直接生成修改草稿。" in body
+    expected_text = "最后给出草稿建议。"
+    assert body.index("我发现简介比较短") < body.index("edit_execute")
+    assert body.index("edit_execute") < body.index(expected_text)
+    assert expected_text in body
 
     message_done_frame = next(
         frame
@@ -8426,11 +6800,12 @@ def test_agent_chat_hides_model_narration_between_tool_actions(
     )
     timeline = json.loads(message_done_data)["message"]["timeline"]
     assert [part["type"] for part in timeline] == [
+        "text",
         "tool_group",
         "text",
     ]
     assert [part["toolIds"] for part in timeline if part["type"] == "tool_group"] == [
-        ["call-analysis", "call-plan"],
+        ["call-execute"],
     ]
 
 
@@ -8439,31 +6814,35 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        async_stub_jd_fetch,
+    )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="我先同时检查简历结构和岗位参考。",
                 tool_calls=[
-                    tool_call("call-analysis", "resume_analysis"),
+                    tool_call(
+                        "call-role",
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend"},
+                    ),
                     tool_call(
                         "call-jd",
-                        "web_search",
-                        {
-                            "query": "前端开发工程师 岗位 JD 职责 任职要求",
-                            "purpose": "jd",
-                        },
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend-details"},
                     ),
                 ],
             ),
+            LlmAssistantMessage(
+                content="下一步会基于这些结果给出草稿。",
+                tool_calls=[],
+            ),
         ),
     )
-
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="下一步会基于这些结果给出草稿。")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
 
     with client.stream(
         "POST",
@@ -8473,7 +6852,11 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
             "message": {
                 "id": "agent-user-tool-batch",
                 "role": "user",
-                "text": "针对前端开发工程师岗位优化个人简介",
+                "text": (
+                    "参考 https://example.test/jobs/frontend 和 "
+                    "https://example.test/jobs/frontend-details "
+                    "针对前端开发工程师岗位优化个人简介"
+                ),
             },
             "messages": [],
             "locale": "zh",
@@ -8481,7 +6864,6 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
                 "sections": [],
             },
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8491,13 +6873,11 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
 
     assert response.status_code == 200
     assert "event: plan" not in body
-    assert "event: timeline" in body
-    assert "event: text_delta" not in body
-    assert "我先同时检查简历结构和岗位参考。" not in body
-    assert "已读取当前简历结构" not in body
-    assert "已拿到岗位参考" not in body
-    assert body.index("resume_analysis") < body.index("web_search")
-    assert body.index("web_search") < body.index(
+    assert "event: timeline" not in body
+    assert "event: text_delta" in body
+    assert "我先同时检查简历结构和岗位参考。" in body
+    assert body.index("call-role") < body.index("call-jd")
+    assert body.index("call-jd") < body.index(
         "下一步会基于这些结果给出草稿。",
     )
 
@@ -8513,11 +6893,12 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
     )
     timeline = json.loads(message_done_data)["message"]["timeline"]
     assert [part["type"] for part in timeline] == [
+        "text",
         "tool_group",
         "text",
     ]
     assert [part["toolIds"] for part in timeline if part["type"] == "tool_group"] == [
-        ["call-analysis", "call-jd"]
+        ["call-role", "call-jd"]
     ]
 
 
@@ -8526,24 +6907,44 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
+    preface = "我先查阅公开的前端工程师简历建议。"
+    terminal_text = (
+        "P1：先修正腾讯经历中公司、职位和地点字段错位，确保招聘者能够快速识别"
+        "任职主体与实际职责。\n\n"
+        "P2：补全个人标题，并让简介同时覆盖教育背景、实习经历、项目经验和核心"
+        "技能，但不要添加当前简历没有提供的数字。\n\n"
+        "P3：将 ResuMate 项目中散落在名称、角色、技术栈和描述里的内容归位，"
+        "再用互不重复的亮点说明实现内容。\n\n"
+        "P4：所有经历优先写清具体任务、采用的方法和已经存在的交付结果；缺少"
+        "量化证据时应追问，而不是虚构性能提升或用户规模。\n\n"
+        "P5：技能模块应拆分技术技能与语言能力，保留 React、TypeScript、"
+        "Node.js、Prompt Engineering、英语 CET-6（544）和雅思 6.5。"
+    )
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        async_stub_jd_fetch,
+    )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
-                content="我先读取当前简历。",
-                tool_calls=[tool_call("call-analysis", "resume_analysis")],
+                content=preface,
+                tool_calls=[
+                    tool_call(
+                        "call-fetch",
+                        "web_fetch",
+                        {"url": "https://example.test/resume-advice"},
+                    ),
+                ],
             ),
             LlmAssistantMessage(
-                content="当前简历已经足够回答这个问题，我不会继续调用工具。",
+                content=terminal_text,
                 tool_calls=[],
             ),
         ),
     )
-
-    async def stream_response(*_: object, **__: object) -> object:
-        raise AssertionError("terminal tool-loop text should not request final stream")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, fail_on_second_final_stream)
 
     with client.stream(
         "POST",
@@ -8553,7 +6954,10 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
             "message": {
                 "id": "agent-user-terminal-model-text",
                 "role": "user",
-                "text": "分析一下我的简历",
+                "text": (
+                    "结合 https://example.test/resume-advice 的前端工程师简历建议，"
+                    "分析一下我的简历"
+                ),
             },
             "messages": [],
             "locale": "zh",
@@ -8561,7 +6965,6 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
                 "basic": {"name": "王小明", "summary": "有前端项目经验。"},
                 "sections": [],
             },
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8570,12 +6973,10 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         body = "".join(response.iter_text())
 
     assert response.status_code == 200
-    assert "我先读取当前简历。" not in body
-    assert "当前简历已经足够回答这个问题，我不会继续调用工具。" in body
-    assert "已读取当前简历结构" not in body
-    assert body.index("resume_analysis") < body.index(
-        "当前简历已经足够回答这个问题，我不会继续调用工具。",
-    )
+    assert preface in body
+    assert "P5：技能模块" in body
+    assert body.index(preface) < body.index("web_fetch")
+    assert body.index("web_fetch") < body.index("P5：技能模块")
 
     message_done_frame = next(
         frame
@@ -8587,9 +6988,17 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         for line in message_done_frame.splitlines()
         if line.startswith("data: ")
     )
-    timeline = json.loads(message_done_data)["message"]["timeline"]
-    assert [part["type"] for part in timeline] == ["tool_group", "text"]
-    assert timeline[-1]["text"] == "当前简历已经足够回答这个问题，我不会继续调用工具。"
+    message = json.loads(message_done_data)["message"]
+    timeline = message["timeline"]
+    assert message["text"] == terminal_text
+    assert [part["type"] for part in timeline] == [
+        "text",
+        "tool_group",
+        "text",
+    ]
+    assert timeline[0]["text"] == preface
+    assert timeline[1]["toolIds"] == ["call-fetch"]
+    assert timeline[-1]["text"] == terminal_text
 
 
 def test_agent_chat_streams_edit_metadata_when_execute_finishes(
@@ -8597,73 +7006,52 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     monkeypatch,
 ) -> None:
     model_config = create_agent_model_config(client)
-    monkeypatch.setattr("app.services.agent._search_web_reference", stub_jd_search)
+    monkeypatch.setattr(
+        agent_web,
+        "_async_fetch_web_reference",
+        async_stub_jd_fetch,
+    )
     monkeypatch.setattr(
         ASYNC_COMPLETE_TOOL_CALL_PATH,
-        stub_tool_call_batches(
-            [
-                tool_call(
-                    "call-jd",
-                    "web_search",
-                    {
-                        "query": "前端开发工程师 岗位 JD 职责 任职要求",
-                        "purpose": "jd",
-                    },
-                ),
-            ],
-            [
-                tool_call("call-analysis", "resume_analysis"),
-            ],
-            [
-                tool_call(
-                    "call-plan",
-                    "edit_plan",
-                    {
-                        "steps": [
-                            {
-                                "action": "replace_field",
-                                "target": "basic.summary",
-                                "reason": "整理个人简介。",
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-execute",
-                    "edit_execute",
-                    {
-                        "edits": [
-                            {
-                                "title": "优化个人简介",
-                                "target": "basic.summary",
-                                "reason": "让已有经历表达更聚焦。",
-                                "operation": {
-                                    "type": "replace_field",
-                                    "path": "basic.summary",
-                                    "value": "具备前端项目经验。",
+        stub_tool_call_responses(
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-jd",
+                        "web_fetch",
+                        {"url": "https://example.test/jobs/frontend"},
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(
+                content="",
+                tool_calls=[
+                    tool_call(
+                        "call-execute",
+                        "edit_execute",
+                        {
+                            "edits": [
+                                {
+                                    "title": "优化个人简介",
+                                    "target": "basic.summary",
+                                    "reason": "让已有经历表达更聚焦。",
+                                    "operation": {
+                                        "type": "replace_field",
+                                        "path": "basic.summary",
+                                        "value": "具备前端项目经验。",
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                ),
-            ],
-            [
-                tool_call(
-                    "call-finish",
-                    "finish",
-                    {"status": "ready", "reason": "Draft is complete."},
-                ),
-            ],
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            LlmAssistantMessage(content="草稿修改已完成。", tool_calls=[]),
         ),
     )
 
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="模型")
-        yield LlmStreamEvent(type="text_delta", delta="完成分析")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
+    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, fail_on_second_final_stream)
 
     with client.stream(
         "POST",
@@ -8673,7 +7061,10 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
             "message": {
                 "id": "agent-user-chat-streams-edit-metadata-when-execute-finishes",
                 "role": "user",
-                "text": "针对前端开发工程师岗位优化个人简介",
+                "text": (
+                    "参考 https://example.test/jobs/frontend "
+                    "针对前端开发工程师岗位优化个人简介"
+                ),
             },
             "messages": [],
             "locale": "zh",
@@ -8681,7 +7072,6 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
                 name="王小明",
                 summary="有前端项目经验。",
             ),
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8695,13 +7085,13 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     assert "event: tool_start" in body
     assert "event: tool_done" in body
     assert "event: edits" in body
-    assert "event: text_delta" not in body
-    assert "模型完成分析" in body
-    assert body.index("event: tool_start") < body.index("模型完成分析")
-    assert body.index("event: edits") < body.index("模型完成分析")
-    assert body.rindex('"edits":[{') > body.index("模型完成分析")
+    assert "event: text_delta" in body
+    expected_text = "草稿修改已完成。"
+    assert expected_text in body
+    assert body.index("event: tool_start") < body.index(expected_text)
+    assert body.index("event: edits") < body.index(expected_text)
+    assert body.rindex('"edits":[{') > body.index(expected_text)
     assert '"edits":[{' in body
-    assert "edit_plan" in body
     assert "edit_execute" in body
 
     message_done_frame = next(
@@ -8718,8 +7108,6 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
     assert [part["type"] for part in timeline] == ["tool_group", "text"]
     assert timeline[0]["toolIds"] == [
         "call-jd",
-        "call-analysis",
-        "call-plan",
         "call-execute",
     ]
 
@@ -8734,12 +7122,6 @@ def test_agent_chat_streams_plain_model_tokens(
         stub_terminal_tool_text("你好，我可以帮你看简历。"),
     )
 
-    async def stream_response(*_: object, **__: object) -> object:
-        yield LlmStreamEvent(type="text_delta", delta="你好，")
-        yield LlmStreamEvent(type="text_delta", delta="我可以帮你看简历。")
-
-    monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, stream_response)
-
     with client.stream(
         "POST",
         "/api/agent/chat",
@@ -8753,7 +7135,6 @@ def test_agent_chat_streams_plain_model_tokens(
             "messages": [],
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
-            "appliedActions": [],
             "modelConfig": model_config,
             "settings": {},
             "stream": True,
@@ -8763,6 +7144,7 @@ def test_agent_chat_streams_plain_model_tokens(
 
     assert response.status_code == 200
     assert "正在等待模型返回。" not in body
+    assert "event: timeline" not in body
     assert "event: text_delta" in body
     assert "你好，我可以帮你看简历。" in body
     assert "event: tools" not in body
@@ -9294,7 +7676,7 @@ def test_export_render_url_uses_only_server_configuration(monkeypatch) -> None:
     try:
         render_url = build_render_url(
             ExportResumePdfRequest(
-                resumeId="resume-configured-renderer",
+                resumeId="resumeconfiguredrenderer",
                 locale="en",
                 fileNameSeed="resume",
                 savedAt="2026-05-16T00:00:00.000Z",
@@ -9310,7 +7692,7 @@ def test_export_render_url_uses_only_server_configuration(monkeypatch) -> None:
     assert parsed.path == "/internal/pdf-export"
     assert parse_qs(parsed.query) == {
         "locale": ["en"],
-        "resumeId": ["resume-configured-renderer"],
+        "resumeId": ["resumeconfiguredrenderer"],
         "savedAt": ["2026-05-16T00:00:00.000Z"],
         "versionId": ["7"],
     }

@@ -20,8 +20,8 @@ def validate_tool_calls(
     """Validate model-selected tool arguments against the supplied schemas.
 
     The LLM layer validates mechanical JSON-schema correctness only. It does
-    not know whether an edit is desirable; the agent runner still owns policy
-    and business execution.
+    not know whether an edit is desirable; the tool environment and its domain
+    engine own authorization and business execution.
     """
 
     schemas = _tool_parameter_schemas(tools)

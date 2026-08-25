@@ -253,7 +253,6 @@ export interface ModelConfig {
   supportsThinking: boolean
   supportsTools: boolean
   supportsStreaming: boolean
-  thinkingEnabled: boolean
 }
 
 export interface AgentSettings {

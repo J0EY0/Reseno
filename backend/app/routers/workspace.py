@@ -32,7 +32,6 @@ router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 @router.get(
     "/pages/resumes",
     response_model=ApiResponse[ResumesPageResponse],
-    response_model_exclude_none=True,
 )
 def get_resumes_page() -> ApiResponse[ResumesPageResponse]:
     return ok_response(load_resumes_page())
@@ -41,7 +40,6 @@ def get_resumes_page() -> ApiResponse[ResumesPageResponse]:
 @router.get(
     "/pages/resume-editor",
     response_model=ApiResponse[ResumeEditorPageResponse],
-    response_model_exclude_none=True,
 )
 def get_resume_editor_page() -> ApiResponse[ResumeEditorPageResponse]:
     return ok_response(load_resume_editor_page())
@@ -50,7 +48,6 @@ def get_resume_editor_page() -> ApiResponse[ResumeEditorPageResponse]:
 @router.get(
     "/pages/templates",
     response_model=ApiResponse[TemplatesPageResponse],
-    response_model_exclude_none=True,
 )
 def get_templates_page() -> ApiResponse[TemplatesPageResponse]:
     return ok_response(load_templates_page())
@@ -59,7 +56,6 @@ def get_templates_page() -> ApiResponse[TemplatesPageResponse]:
 @router.get(
     "/pages/trash",
     response_model=ApiResponse[TrashPageResponse],
-    response_model_exclude_none=True,
 )
 def get_trash_page() -> ApiResponse[TrashPageResponse]:
     return ok_response(load_trash_page())
@@ -68,7 +64,6 @@ def get_trash_page() -> ApiResponse[TrashPageResponse]:
 @router.get(
     "/pages/models",
     response_model=ApiResponse[ModelsPageResponse],
-    response_model_exclude_none=True,
 )
 def get_models_page() -> ApiResponse[ModelsPageResponse]:
     return ok_response(load_models_page())
@@ -77,7 +72,6 @@ def get_models_page() -> ApiResponse[ModelsPageResponse]:
 @router.get(
     "/pages/settings",
     response_model=ApiResponse[SettingsPageResponse],
-    response_model_exclude_none=True,
 )
 def get_settings_page() -> ApiResponse[SettingsPageResponse]:
     return ok_response(load_settings_page())

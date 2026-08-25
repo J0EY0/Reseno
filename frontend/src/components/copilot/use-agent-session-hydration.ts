@@ -81,9 +81,11 @@ export function useAgentSessionHydration({
         // Both reads depend only on resumeId, so start them together. Capture
         // the run rejection now so a failed session read cannot orphan it.
         const sessionRequest = loadAgentSession(resumeId, {
+          notifyOnError: false,
           signal: abortController.signal,
         })
         const activeRunRequest = loadActiveAgentRun(resumeId, {
+          notifyOnError: false,
           signal: abortController.signal,
         }).then(
           (run) => ({ status: 'fulfilled' as const, run }),

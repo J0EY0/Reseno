@@ -243,7 +243,7 @@ try {
   const { AgentChangeSummary } = await server.ssrLoadModule(
     "/src/components/copilot/copilot-change-summary.tsx",
   );
-  const renderSummary = (edits, draftDiffs) =>
+  const renderSummary = (edits, draftDiffs, tools = []) =>
     renderToStaticMarkup(
       createElement(AgentChangeSummary, {
         draftDiffs,
@@ -256,7 +256,7 @@ try {
           text: "Updated the resume.",
           transactionState: "committed",
           edits,
-          tools: [],
+          tools,
         },
         shouldShowDraftActions: false,
         t: {
@@ -266,6 +266,13 @@ try {
           agentDiffBefore: "Before",
           agentDiscardDraft: "Discard",
           agentDraftSynced: "Draft synced",
+          agentQualityDuplicateContent: "Duplicate content",
+          agentQualityGeneral: "Review this suggestion",
+          agentQualityInconsistentTense: "Inconsistent tense",
+          agentQualityMixedLanguages: "Mixed languages",
+          agentQualityReverseChronology: "Chronology",
+          agentQualityTargetCoverage: "Target coverage",
+          agentQualityUnsupportedClaim: "Unsupported claim",
           agentQualityWarnings: "{count} warnings",
           agentReviewReady: "{count} changes ready",
         },
@@ -282,6 +289,31 @@ try {
   assert.match(summaryMarkup, /2 changes ready/);
   assert.match(summaryMarkup, /Built an AI resume editor with real-time preview\./);
   assert.match(summaryMarkup, /Reduced state complexity/);
+
+  const warningMarkup = renderSummary([multiFieldEdit], undefined, [
+    {
+      state: "output-available",
+      output: {
+        qualityIssues: [
+          {
+            code: "target_requirements_not_covered",
+            severity: "warning",
+            target: "resume",
+          },
+          {
+            code: "unsupported_edit_claim",
+            severity: "warning",
+            target: "sections.project.items.project-1",
+          },
+        ],
+      },
+    },
+  ]);
+  assert.match(warningMarkup, /2 warnings/);
+  assert.match(warningMarkup, /Target coverage/);
+  assert.match(warningMarkup, /Unsupported claim/);
+  assert.doesNotMatch(warningMarkup, /target_requirements_not_covered/);
+  assert.doesNotMatch(warningMarkup, /sections\.project/);
 
   const richListEdit = {
     id: "edit-skills-list",

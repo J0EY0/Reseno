@@ -7,7 +7,6 @@ import {
   type CSSProperties,
 } from "react";
 
-import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
 import { TemplateEditor } from "@/components/templates/template-editor";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -136,13 +135,6 @@ export function TemplateDetailWorkspaceView({
         onDiscard={controller.leave.discardAndLeave}
         onSave={controller.leave.saveAndLeave}
       />
-      <AppSidebar
-        t={messages}
-        activeView="templates"
-        onViewChange={controller.changeView}
-        onViewPreload={controller.preloadWorkspaceView}
-      />
-
       <SidebarInset
         id="main-content"
         tabIndex={-1}

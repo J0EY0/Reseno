@@ -63,8 +63,7 @@ def _load_section_registry() -> list[SectionRegistryEntry]:
             raise ValueError("Each section registry entry must define kind.")
         if kind != kind.strip() or re.fullmatch(r"[a-z][a-z0-9_]*", kind) is None:
             raise ValueError(
-                "Section kind must be a canonical lowercase identifier: "
-                f"{kind!r}"
+                f"Section kind must be a canonical lowercase identifier: {kind!r}"
             )
         if kind in kinds:
             raise ValueError(f"Duplicate section kind in registry: {kind}")
@@ -80,8 +79,7 @@ def _load_section_registry() -> list[SectionRegistryEntry]:
             or not label_value.strip()
             for label_key, label_value in labels.items()
         ) or any(
-            not isinstance(labels.get(locale), str)
-            or not labels[locale].strip()
+            not isinstance(labels.get(locale), str) or not labels[locale].strip()
             for locale in SUPPORTED_AGENT_LOCALES
         ):
             expected = "/".join(SUPPORTED_AGENT_LOCALES)
@@ -91,9 +89,7 @@ def _load_section_registry() -> list[SectionRegistryEntry]:
         if not isinstance(aliases, list):
             raise ValueError(f"Section kind {kind} aliases must be a list.")
         if not aliases:
-            raise ValueError(
-                f"Section kind {kind} aliases must be a non-empty list."
-            )
+            raise ValueError(f"Section kind {kind} aliases must be a non-empty list.")
 
         for alias_index, alias in enumerate(aliases):
             if not isinstance(alias, str) or not alias.strip():
@@ -127,16 +123,13 @@ def _load_section_registry() -> list[SectionRegistryEntry]:
 
             aliases_by_key[alias_key] = (kind, alias, alias_index)
         kinds.add(kind)
-        validated_layout: SectionLayout = (
-            "timeline" if layout == "timeline" else "list"
-        )
+        validated_layout: SectionLayout = "timeline" if layout == "timeline" else "list"
         validated_sections.append(
             {
                 "kind": kind,
                 "defaultLayout": validated_layout,
                 "labels": {
-                    label_key: label_value
-                    for label_key, label_value in labels.items()
+                    label_key: label_value for label_key, label_value in labels.items()
                 },
                 "aliases": [alias for alias in aliases],
             }
@@ -151,8 +144,7 @@ SECTION_LABELS: dict[str, dict[str, str]] = {
     section["kind"]: section["labels"] for section in SECTION_REGISTRY
 }
 SECTION_DEFAULT_LAYOUTS: dict[str, SectionLayout] = {
-    section["kind"]: section["defaultLayout"]
-    for section in SECTION_REGISTRY
+    section["kind"]: section["defaultLayout"] for section in SECTION_REGISTRY
 }
 SECTION_KIND_ALIASES: dict[str, str] = {
     normalize_section_alias(alias): section["kind"]

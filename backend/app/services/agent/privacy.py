@@ -17,6 +17,13 @@ DATE_RANGE_RE = re.compile(
     r"(?:19|20)\d{2}\s*[./-]\s*(?:0?[1-9]|1[0-2])",
     flags=re.IGNORECASE,
 )
+TIMESTAMP_RE = re.compile(
+    r"(?:19|20)\d{2}[./-](?:0?[1-9]|1[0-2])[./-]"
+    r"(?:0?[1-9]|[12]\d|3[01])[T\s]+"
+    r"(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?",
+    flags=re.IGNORECASE,
+)
 
 
 def is_pii_basic_path(path: str) -> bool:
@@ -111,6 +118,11 @@ def sanitize_agent_resume(
 
 def _phone_replacement(match: re.Match[str]) -> str:
     if DATE_RANGE_RE.fullmatch(match.group(0).strip()):
+        return match.group(0)
+    if any(
+        timestamp.start() <= match.start() and match.end() <= timestamp.end()
+        for timestamp in TIMESTAMP_RE.finditer(match.string)
+    ):
         return match.group(0)
     if _is_numeric_url_path_segment(match):
         return match.group(0)

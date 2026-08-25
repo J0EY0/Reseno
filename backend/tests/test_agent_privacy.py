@@ -1,17 +1,13 @@
-import asyncio
 import json
 
 from app.schemas.agent import AgentChatRequest, AgentConversationItem
-from app.services.agent.executor import AgentPlanExecutor
+from app.services.agent.contracts import EDIT_EXECUTE_SCHEMA
+from app.services.agent.draft import DraftEditEngine
 from app.services.agent.privacy import (
     HIDDEN_BASIC_VALUE,
     sanitize_agent_resume,
     sanitize_agent_text,
 )
-from app.services.agent.prompts import EDIT_OPERATION_GUIDE
-from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.tools.runner import AgentToolRunner
-from app.services.llm import LlmToolCall
 
 
 def test_resume_location_is_hidden_from_every_model_visible_field() -> None:
@@ -71,6 +67,15 @@ def test_resume_date_ranges_are_not_redacted_as_phone_numbers() -> None:
     assert sanitized["sections"][0]["items"][0]["period"] == ("2022.07 - 2022.09")
 
 
+def test_web_refresh_timestamp_is_not_redacted_as_a_phone_number() -> None:
+    sanitized = sanitize_agent_text(
+        "前端实习生 2026-08-20 16:26:09 刷新，联系电话 +86 138 0000 0000。",
+    )
+
+    assert "2026-08-20 16:26:09" in sanitized
+    assert "[redacted_phone]" in sanitized
+
+
 def test_web_source_url_numeric_path_is_not_redacted_as_phone_number() -> None:
     url = "https://zhuanlan.zhihu.com/p/1234567890123456789"
 
@@ -108,7 +113,7 @@ def test_cjk_hidden_term_keeps_literal_replacement_semantics() -> None:
     )
 
 
-def test_agent_write_tool_rejects_location_changes() -> None:
+def test_draft_engine_rejects_location_changes() -> None:
     request = AgentChatRequest(
         message=AgentConversationItem(
             id="turn-agent-privacy-location",
@@ -130,32 +135,27 @@ def test_agent_write_tool_rejects_location_changes() -> None:
             "sections": [],
         },
     )
-    runner = AgentToolRunner(AgentPlanExecutor(request))
-    tool_call = LlmToolCall(
-        id="call-location",
-        name="edit_execute",
-        arguments={
-            "edits": [
-                {
-                    "title": "Change location",
-                    "target": "basic.location",
-                    "operation": {
-                        "type": "replace_field",
-                        "path": "basic.location",
-                        "value": "Shanghai",
-                    },
+    engine = DraftEditEngine.open(request)
+    batch = engine.execute(
+        [
+            {
+                "title": "Change location",
+                "target": "basic.location",
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.location",
+                    "value": "Shanghai",
                 },
-            ],
-        },
-        raw_arguments="{}",
+            },
+        ],
     )
 
-    tool, _ = asyncio.run(runner.run(tool_call, AgentRuntimeContext()))
-
-    assert tool.state == "output-error"
-    assert runner.edits == []
-    assert runner.draft_resume["basic"]["location"] == "Beijing"
+    assert batch.accepted is False
+    assert engine.edits == ()
+    assert batch.draft_resume["basic"]["location"] == "Beijing"
 
 
-def test_agent_prompt_does_not_offer_hidden_location_writes() -> None:
-    assert "basic.location" not in EDIT_OPERATION_GUIDE
+def test_agent_write_contract_does_not_offer_hidden_location_writes() -> None:
+    serialized_schema = json.dumps(EDIT_EXECUTE_SCHEMA, ensure_ascii=False)
+
+    assert "basic.location" not in serialized_schema

@@ -3,7 +3,6 @@ import { toast } from "sonner";
 
 import type { AppMessages, Locale } from "@/i18n";
 import {
-  createDefaultAgentSettings,
   normalizeAgentSettings,
 } from "@/lib/agent-settings";
 import { isApiErrorToastShown } from "@/lib/api-client";
@@ -22,7 +21,7 @@ function normalizeTheme(value: unknown): ThemeMode {
 }
 
 interface ResumeDetailPreferencesOptions {
-  initialTheme?: ThemeMode;
+  initialRouteData?: ResumeEditorRouteData;
   isLoading: () => boolean;
   locale: Locale;
   messages: AppMessages;
@@ -32,7 +31,7 @@ interface ResumeDetailPreferencesOptions {
 
 /** Owns route-local preference UI and the shared serialized write boundary. */
 export function useResumeDetailPreferences({
-  initialTheme,
+  initialRouteData,
   isLoading,
   locale,
   messages,
@@ -41,15 +40,25 @@ export function useResumeDetailPreferences({
 }: ResumeDetailPreferencesOptions) {
   const initialLocaleRef = useRef(locale);
   const initialSnapshot = persistence.getSnapshot();
+  const [initialModelConfigs] = useState(() =>
+    normalizeModelConfigs(initialRouteData, locale),
+  );
   const [theme, setTheme] = useState<ThemeMode>(() =>
-    initialTheme ? normalizeTheme(initialTheme) : initialSnapshot?.theme ?? "light",
+    initialRouteData?.theme
+      ? normalizeTheme(initialRouteData.theme)
+      : initialSnapshot?.theme ?? "light",
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
-  const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
+  const [modelConfigs, setModelConfigs] =
+    useState<ModelConfig[]>(initialModelConfigs);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
-    initialSnapshot?.agentSettings ?? createDefaultAgentSettings(),
+    () =>
+      normalizeAgentSettings(
+        initialRouteData?.agentSettings ?? initialSnapshot?.agentSettings,
+        initialModelConfigs,
+      ),
   );
 
   useEffect(() => {

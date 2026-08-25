@@ -9,6 +9,7 @@ from openai.types.chat import ChatCompletionChunk
 
 from app.services.llm import (
     AgentLlmConfig,
+    LlmPrompt,
     LlmRequestContext,
     LlmRequestError,
     async_complete_chat,
@@ -97,7 +98,9 @@ def test_openai_chat_async_completion_uses_sdk_params(monkeypatch) -> None:
     )
 
     message = asyncio.run(
-        async_complete_chat(config, [{"role": "user", "content": "hello"}]),
+        async_complete_chat(
+            config, LlmPrompt(messages=[{"role": "user", "content": "hello"}])
+        ),
     )
 
     assert message.content == "SDK response"
@@ -105,6 +108,7 @@ def test_openai_chat_async_completion_uses_sdk_params(monkeypatch) -> None:
     assert message.usage and message.usage.total_tokens == 14
     assert FakeAsyncOpenAI.init_kwargs["api_key"] == "sk-test-secret"
     assert FakeAsyncOpenAI.init_kwargs["base_url"] == "https://api.example.test/v1"
+    assert FakeAsyncOpenAI.init_kwargs["max_retries"] == 0
     timeout = FakeAsyncOpenAI.init_kwargs["timeout"]
     assert isinstance(timeout, httpx.Timeout)
     assert timeout.connect == 30
@@ -119,8 +123,14 @@ def test_openai_chat_async_completion_uses_sdk_params(monkeypatch) -> None:
     }
 
 
-def test_openai_chat_public_dispatch_sends_request_prompt_cache_key(
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [("moonshot", "https://api.moonshot.ai/v1")],
+)
+def test_official_chat_provider_sends_request_prompt_cache_key(
     monkeypatch,
+    provider: str,
+    base_url: str,
 ) -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -149,8 +159,13 @@ def test_openai_chat_public_dispatch_sends_request_prompt_cache_key(
 
     message = asyncio.run(
         async_complete_chat(
-            _config(provider="openai", provider_kind="cloud"),
-            [{"role": "user", "content": "hello"}],
+            _config(
+                provider=provider,
+                provider_kind="cloud",
+                api_family="openai_compatible_chat",
+                base_url=base_url,
+            ),
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             request_context=LlmRequestContext(cache_key="resume-session-1"),
         ),
     )
@@ -159,8 +174,17 @@ def test_openai_chat_public_dispatch_sends_request_prompt_cache_key(
     assert client.params["prompt_cache_key"] == "resume-session-1"
 
 
-def test_openai_responses_public_dispatch_sends_request_prompt_cache_key(
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("openai", "https://api.openai.com/v1"),
+        ("xai", "https://api.x.ai/v1"),
+    ],
+)
+def test_official_responses_provider_sends_request_prompt_cache_key(
     monkeypatch,
+    provider: str,
+    base_url: str,
 ) -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -186,17 +210,255 @@ def test_openai_responses_public_dispatch_sends_request_prompt_cache_key(
     message = asyncio.run(
         async_complete_chat(
             _config(
-                provider="openai",
+                provider=provider,
                 provider_kind="cloud",
                 api_family="openai_responses",
+                base_url=base_url,
             ),
-            [{"role": "user", "content": "hello"}],
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             request_context=LlmRequestContext(cache_key="resume-session-1"),
         ),
     )
 
     assert message.content == "cached"
     assert client.params["prompt_cache_key"] == "resume-session-1"
+
+
+def test_openai_gpt_5_6_responses_marks_only_the_declared_stable_prefix(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **params: Any) -> object:
+            self.params = params
+            return SimpleNamespace(
+                id="response-explicit-cache",
+                output_text="cached",
+                output=[],
+                status="completed",
+                usage=None,
+            )
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    message = asyncio.run(
+        async_complete_chat(
+            _config(
+                provider="openai",
+                provider_kind="cloud",
+                api_family="openai_responses",
+                model="gpt-5.6-terra",
+                base_url="https://api.openai.com/v1",
+            ),
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "stable instructions"},
+                    {"role": "user", "content": "stable historical turn"},
+                    {"role": "assistant", "content": "stable historical answer"},
+                    {"role": "user", "content": "current workspace"},
+                    {"role": "user", "content": "current changing request"},
+                ],
+                stable_prefix_message_counts=(2, 3, 5),
+            ),
+            request_context=LlmRequestContext(
+                cache_key="resume-session-1",
+            ),
+        ),
+    )
+
+    assert message.content == "cached"
+    assert client.params["prompt_cache_key"] == "resume-session-1"
+    assert client.params["extra_body"] == {
+        "prompt_cache_options": {"mode": "explicit"},
+    }
+    input_items = client.params["input"]
+    assert input_items[-4]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit",
+    }
+    assert input_items[-3]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit",
+    }
+    assert "prompt_cache_breakpoint" not in input_items[-2]["content"][0]
+    assert input_items[-1]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit",
+    }
+
+
+def test_openai_gpt_5_6_without_a_stable_prefix_keeps_implicit_cache(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **params: Any) -> object:
+            self.params = params
+            return SimpleNamespace(
+                id="response-implicit-cache",
+                output_text="cached",
+                output=[],
+                status="completed",
+                usage=None,
+            )
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    asyncio.run(
+        openai_responses.complete(
+            _config(
+                provider="openai",
+                provider_kind="cloud",
+                api_family="openai_responses",
+                model="gpt-5.6",
+                base_url="https://api.openai.com/v1",
+            ),
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "stable instructions"},
+                    {"role": "user", "content": "current workspace"},
+                    {"role": "user", "content": "current changing request"},
+                ]
+            ),
+            request_context=LlmRequestContext(cache_key="resume-session-1"),
+        ),
+    )
+
+    assert client.params["prompt_cache_key"] == "resume-session-1"
+    assert "extra_body" not in client.params
+    assert all(
+        "prompt_cache_breakpoint" not in part
+        for item in client.params["input"]
+        for part in item.get("content", [])
+        if isinstance(part, dict)
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_kind", "model"),
+    [
+        ("openai", "cloud", "gpt-5.5"),
+        ("openai", "cloud", "gpt-test"),
+        ("xai", "cloud", "grok-4.5"),
+        ("openai", "custom", "gpt-5.6-terra"),
+    ],
+)
+def test_unsupported_responses_provider_does_not_receive_explicit_cache_fields(
+    monkeypatch,
+    provider: str,
+    provider_kind: str,
+    model: str,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **params: Any) -> object:
+            self.params = params
+            return SimpleNamespace(
+                id="response-implicit-cache",
+                output_text="cached",
+                output=[],
+                status="completed",
+                usage=None,
+            )
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    asyncio.run(
+        openai_responses.complete(
+            _config(
+                provider=provider,
+                provider_kind=provider_kind,
+                api_family="openai_responses",
+                model=model,
+            ),
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "stable instructions"},
+                    {"role": "user", "content": "current changing request"},
+                ]
+            ),
+            request_context=LlmRequestContext(cache_key="resume-session-1"),
+        ),
+    )
+
+    assert "extra_body" not in client.params
+    for item in client.params["input"]:
+        content = item.get("content")
+        if isinstance(content, list):
+            assert all("prompt_cache_breakpoint" not in part for part in content)
+
+
+def test_deepseek_chat_usage_normalizes_official_cache_hit_tokens() -> None:
+    usage = common.openai_chat_usage(
+        SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=120,
+                completion_tokens=8,
+                total_tokens=128,
+                prompt_cache_hit_tokens=96,
+                prompt_cache_miss_tokens=24,
+            ),
+        ),
+    )
+
+    assert usage
+    assert usage.input_tokens == 120
+    assert usage.cached_input_tokens == 96
+    assert usage.output_tokens == 8
+    assert usage.total_tokens == 128
+
+
+def test_openai_compatible_usage_normalizes_standard_cached_tokens() -> None:
+    usage = common.openai_chat_usage(
+        SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=120,
+                completion_tokens=8,
+                total_tokens=128,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=96),
+            ),
+        ),
+    )
+
+    assert usage
+    assert usage.cached_input_tokens == 96
+
+
+def test_moonshot_chat_usage_normalizes_official_cached_tokens() -> None:
+    usage = common.openai_chat_usage(
+        SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=120,
+                completion_tokens=8,
+                total_tokens=128,
+                cached_tokens=96,
+            ),
+        ),
+    )
+
+    assert usage
+    assert usage.input_tokens == 120
+    assert usage.cached_input_tokens == 96
+    assert usage.output_tokens == 8
+    assert usage.total_tokens == 128
 
 
 @pytest.mark.parametrize("cache_key", ["", "   ", "x" * 65])
@@ -211,12 +473,18 @@ def test_llm_request_context_rejects_non_string_cache_key() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider", "provider_kind", "api_family"),
+    ("provider", "provider_kind", "api_family", "base_url"),
     [
-        ("custom-cloud", "custom", "openai_compatible_chat"),
-        ("xai", "cloud", "openai_responses"),
-        ("openai", "custom", "openai_compatible_chat"),
-        ("openai", "custom", "openai_responses"),
+        ("openai", "cloud", "openai_compatible_chat", "https://api.openai.com/v1"),
+        ("custom-cloud", "custom", "openai_compatible_chat", "https://proxy.test/v1"),
+        ("moonshot", "custom", "openai_compatible_chat", "https://api.moonshot.ai/v1"),
+        ("moonshot", "cloud", "openai_responses", "https://api.moonshot.ai/v1"),
+        ("xai", "custom", "openai_responses", "https://api.x.ai/v1"),
+        ("openai", "custom", "openai_compatible_chat", "https://api.openai.com/v1"),
+        ("openai", "custom", "openai_responses", "https://api.openai.com/v1"),
+        ("openai", "cloud", "openai_responses", "https://proxy.test/v1"),
+        ("xai", "cloud", "openai_responses", "https://proxy.test/v1"),
+        ("moonshot", "cloud", "openai_compatible_chat", "https://proxy.test/v1"),
     ],
 )
 def test_non_official_openai_providers_do_not_receive_prompt_cache_key(
@@ -224,6 +492,7 @@ def test_non_official_openai_providers_do_not_receive_prompt_cache_key(
     provider: str,
     provider_kind: str,
     api_family: str,
+    base_url: str,
 ) -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -268,8 +537,9 @@ def test_non_official_openai_providers_do_not_receive_prompt_cache_key(
                 provider=provider,
                 provider_kind=provider_kind,
                 api_family=api_family,
+                base_url=base_url,
             ),
-            [{"role": "user", "content": "hello"}],
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             request_context=LlmRequestContext(cache_key="resume-session-1"),
         ),
     )
@@ -277,7 +547,7 @@ def test_non_official_openai_providers_do_not_receive_prompt_cache_key(
     assert "prompt_cache_key" not in client.params
 
 
-def test_openai_chat_tool_dispatch_sends_request_prompt_cache_key(
+def test_moonshot_chat_tool_dispatch_sends_request_prompt_cache_key(
     monkeypatch,
 ) -> None:
     class FakeClient:
@@ -308,17 +578,111 @@ def test_openai_chat_tool_dispatch_sends_request_prompt_cache_key(
     asyncio.run(
         async_complete_tool_call(
             _config(
-                provider="openai",
+                provider="moonshot",
                 provider_kind="cloud",
+                api_family="openai_compatible_chat",
+                base_url="https://api.moonshot.ai/v1",
                 supports_streaming=False,
             ),
-            [{"role": "user", "content": "inspect"}],
+            LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
             [],
             request_context=LlmRequestContext(cache_key="resume-session-1"),
         ),
     )
 
     assert client.params["prompt_cache_key"] == "resume-session-1"
+
+
+def test_qwen_supported_model_projects_only_the_latest_four_cache_boundaries(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **params: Any) -> object:
+            self.params = params
+            return SimpleNamespace(
+                id="chatcmpl-qwen-cache",
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="cached"),
+                    ),
+                ],
+            )
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+    transcript: list[dict[str, Any]] = [
+        {"role": "system", "content": "stable policy"},
+    ]
+    for index in range(5):
+        transcript.append(
+            {"role": "user", "content": f"replayable turn {index}"},
+        )
+
+    asyncio.run(
+        openai_chat.complete(
+            _config(
+                provider="qwen",
+                provider_kind="cloud",
+                api_family="openai_compatible_chat",
+                model="qwen3.7-plus",
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+            LlmPrompt(
+                messages=transcript,  # type: ignore[arg-type]
+                stable_prefix_message_counts=(2, 3, 4, 5, 6),
+            ),
+        ),
+    )
+
+    messages = client.params["messages"]
+    assert messages[1]["content"] == "replayable turn 0"
+    assert [
+        message["content"][-1].get("cache_control") for message in messages[2:]
+    ] == [{"type": "ephemeral"}] * 4
+
+
+@pytest.mark.parametrize(
+    ("provider_kind", "model"),
+    [
+        ("cloud", "qwen-max"),
+        ("custom", "qwen3.7-plus"),
+    ],
+)
+def test_qwen_unsupported_endpoint_or_model_keeps_implicit_cache_only(
+    provider_kind: str,
+    model: str,
+) -> None:
+    params = common.chat_completion_params(
+        _config(
+            provider="qwen",
+            provider_kind=provider_kind,
+            api_family="openai_compatible_chat",
+            model=model,
+        ),
+        LlmPrompt(
+            messages=[
+                {"role": "user", "content": "stable history"},
+                {"role": "user", "content": "current request"},
+            ],
+            stable_prefix_message_counts=(1,),
+        ),
+        stream=False,
+    )
+
+    assert params["messages"] == [
+        {"role": "user", "content": "stable history"},
+        {"role": "user", "content": "current request"},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -383,7 +747,7 @@ def test_openai_chat_rejects_malformed_call_in_terminal_tool_batch(
         asyncio.run(
             async_complete_tool_call(
                 _config(supports_streaming=False),
-                [{"role": "user", "content": "Inspect my resume."}],
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
                 [
                     {
                         "type": "function",
@@ -427,9 +791,10 @@ def test_openai_responses_tool_dispatch_sends_request_prompt_cache_key(
                 provider="openai",
                 provider_kind="cloud",
                 api_family="openai_responses",
+                base_url="https://api.openai.com/v1",
                 supports_streaming=False,
             ),
-            [{"role": "user", "content": "inspect"}],
+            LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
             [],
             request_context=LlmRequestContext(cache_key="resume-session-1"),
         ),
@@ -494,7 +859,7 @@ def test_openai_responses_rejects_malformed_call_in_terminal_tool_batch(
                     api_family="openai_responses",
                     supports_streaming=False,
                 ),
-                [{"role": "user", "content": "Inspect my resume."}],
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
                 [
                     {
                         "type": "function",
@@ -536,7 +901,7 @@ def test_openai_chat_closes_request_client_after_completion(monkeypatch) -> None
     message = asyncio.run(
         openai_chat.complete(
             _config(),
-            [{"role": "user", "content": "hello"}],
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
         ),
     )
 
@@ -565,7 +930,7 @@ def test_openai_chat_closes_request_client_when_create_raises(monkeypatch) -> No
         asyncio.run(
             async_complete_chat(
                 _config(),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             ),
         )
 
@@ -604,7 +969,7 @@ def test_openai_responses_closes_request_client_after_stream(monkeypatch) -> Non
         _collect_stream(
             openai_responses.stream(
                 _config(api_family="openai_responses"),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             ),
         ),
     )
@@ -640,14 +1005,14 @@ def test_openai_responses_closes_request_client_when_completion_fails(
         asyncio.run(
             async_complete_chat(
                 _config(api_family="openai_responses"),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             ),
         )
 
     assert client.close_count == 1
 
 
-def test_openai_chat_tool_fallback_reuses_and_closes_one_client(monkeypatch) -> None:
+def test_openai_chat_tool_error_is_not_retried(monkeypatch) -> None:
     class FakeClient:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -658,26 +1023,67 @@ def test_openai_chat_tool_fallback_reuses_and_closes_one_client(monkeypatch) -> 
 
         async def create(self, **params: Any) -> object:
             self.calls.append(params)
-            if len(self.calls) == 1:
-                request = httpx.Request("POST", "https://api.example.test/v1")
-                response = httpx.Response(
-                    400,
-                    request=request,
-                    text='{"error":"parallel_tool_calls is unsupported"}',
-                )
-                raise APIStatusError(
-                    "Unsupported parameter",
-                    response=response,
-                    body=None,
-                )
-            return SimpleNamespace(
-                id="chatcmpl-fallback",
-                choices=[
-                    SimpleNamespace(
-                        finish_reason="tool_calls",
-                        message=SimpleNamespace(content="", tool_calls=[]),
-                    ),
-                ],
+            request = httpx.Request("POST", "https://api.example.test/v1")
+            response = httpx.Response(
+                400,
+                request=request,
+                text='{"error":"parallel_tool_calls is unsupported"}',
+            )
+            raise APIStatusError(
+                "Unsupported parameter",
+                response=response,
+                body=None,
+            )
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
+    provider_attempts = 0
+
+    def record_attempt() -> None:
+        nonlocal provider_attempts
+        provider_attempts += 1
+
+    with pytest.raises(LlmRequestError):
+        asyncio.run(
+            async_complete_tool_call(
+                _config(),
+                LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
+                [],
+                on_provider_attempt=record_attempt,
+            ),
+        )
+
+    assert len(client.calls) == 1
+    assert client.close_count == 1
+    assert provider_attempts == 1
+
+
+def test_openai_chat_stream_tool_error_is_not_retried(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.close_count = 0
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self.create),
+            )
+
+        async def create(self, **params: Any) -> object:
+            self.calls.append(params)
+            if len(self.calls) > 1:
+                return AsyncStream([])
+            request = httpx.Request("POST", "https://api.example.test/v1")
+            response = httpx.Response(
+                400,
+                request=request,
+                text='{"error":"parallel_tool_calls is unsupported"}',
+            )
+            raise APIStatusError(
+                "Unsupported parameter",
+                response=response,
+                body=None,
             )
 
         async def close(self) -> None:
@@ -686,18 +1092,19 @@ def test_openai_chat_tool_fallback_reuses_and_closes_one_client(monkeypatch) -> 
     client = FakeClient()
     monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
 
-    message = asyncio.run(
-        openai_chat.complete_tool_call(
-            _config(),
-            [{"role": "user", "content": "inspect"}],
-            [],
-        ),
-    )
+    with pytest.raises(LlmRequestError):
+        asyncio.run(
+            _collect_stream(
+                openai_chat.stream_tool_call(
+                    _config(),
+                    LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
+                    [],
+                ),
+            ),
+        )
 
-    assert message.stop_reason == "tool_calls"
-    assert len(client.calls) == 2
-    assert client.calls[0]["parallel_tool_calls"] is False
-    assert "parallel_tool_calls" not in client.calls[1]
+    assert len(client.calls) == 1
+    assert "parallel_tool_calls" not in client.calls[0]
     assert client.close_count == 1
 
 
@@ -749,8 +1156,12 @@ def test_openai_chat_stream_returns_delta_and_done_message(monkeypatch) -> None:
     events = asyncio.run(
         _collect_stream(
             async_stream_chat(
-                _config(provider="openai", provider_kind="cloud"),
-                [{"role": "user", "content": "hi"}],
+                _config(
+                    provider="moonshot",
+                    provider_kind="cloud",
+                    base_url="https://api.moonshot.ai/v1",
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "hi"}]),
                 request_context=LlmRequestContext(cache_key="resume-session-1"),
             ),
         ),
@@ -864,8 +1275,12 @@ def test_openai_chat_streams_tool_activity_before_complete_validated_call(
     events = asyncio.run(
         _collect_stream(
             openai_chat.stream_tool_call(
-                _config(provider="openai", provider_kind="cloud"),
-                [{"role": "user", "content": "edit"}],
+                _config(
+                    provider="moonshot",
+                    provider_kind="cloud",
+                    base_url="https://api.moonshot.ai/v1",
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "edit"}]),
                 [
                     {
                         "type": "function",
@@ -937,7 +1352,7 @@ def test_openai_chat_stream_closes_provider_and_client_when_closed_early(
     async def consume_one_event() -> None:
         stream = async_stream_chat(
             _config(),
-            [{"role": "user", "content": "hello"}],
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
         )
         event = await anext(stream)
         assert (event.type, event.delta) == ("text_delta", "first")
@@ -989,7 +1404,7 @@ def test_openai_responses_stream_closes_provider_and_client_when_cancelled(
             _collect_stream(
                 async_stream_chat(
                     _config(api_family="openai_responses"),
-                    [{"role": "user", "content": "hello"}],
+                    LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
                 ),
             ),
         )
@@ -1039,17 +1454,17 @@ def test_openai_responses_adapter_flattens_tools(monkeypatch) -> None:
         temperature=None,
         top_p=None,
         api_family="openai_responses",
-        supports_thinking=True,
-        thinking_enabled=True,
     )
 
     message = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "system", "content": "system text"},
-                {"role": "user", "content": "hello"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "system text"},
+                    {"role": "user", "content": "hello"},
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -1089,7 +1504,8 @@ def test_openai_responses_adapter_flattens_tools(monkeypatch) -> None:
             "strict": False,
         },
     ]
-    assert FakeResponses.create_params["reasoning"] == {"effort": "medium"}
+    assert "tool_choice" not in FakeResponses.create_params
+    assert "reasoning" not in FakeResponses.create_params
 
 
 def test_openai_responses_replays_encrypted_reasoning_before_tool_results(
@@ -1153,9 +1569,8 @@ def test_openai_responses_replays_encrypted_reasoning_before_tool_results(
         provider="openai",
         provider_kind="cloud",
         api_family="openai_responses",
+        base_url="https://api.openai.com/v1",
         supports_streaming=False,
-        supports_thinking=True,
-        thinking_enabled=True,
     )
     tools = [
         {
@@ -1176,38 +1591,40 @@ def test_openai_responses_replays_encrypted_reasoning_before_tool_results(
     first = asyncio.run(
         async_complete_tool_call(
             config,
-            [{"role": "user", "content": "Improve my resume."}],
+            LlmPrompt(messages=[{"role": "user", "content": "Improve my resume."}]),
             tools,
         ),
     )
-    assert first.provider_state == {"reasoning_items": reasoning_items}
+    assert first.provider_state == {"continuation_items": reasoning_items}
     tool_call = first.tool_calls[0]
     second = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "user", "content": "Improve my resume."},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.name,
-                                "arguments": tool_call.raw_arguments,
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "Improve my resume."},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": tool_call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.name,
+                                    "arguments": tool_call.raw_arguments,
+                                },
                             },
-                        },
-                    ],
-                    "provider_state": first.provider_state,
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": '{"ok":true}',
-                },
-            ],
+                        ],
+                        "provider_state": first.provider_state,
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": '{"ok":true}',
+                    },
+                ]
+            ),
             tools,
         ),
     )
@@ -1306,9 +1723,8 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
         provider="xai",
         provider_kind="cloud",
         api_family="openai_responses",
+        base_url="https://api.x.ai/v1",
         supports_streaming=False,
-        supports_thinking=True,
-        thinking_enabled=True,
     )
     tools = [
         {
@@ -1323,7 +1739,7 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
     first = asyncio.run(
         async_complete_tool_call(
             config,
-            [{"role": "user", "content": "Inspect my resume."}],
+            LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
             tools,
         ),
     )
@@ -1350,42 +1766,46 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
     second = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "user", "content": "Inspect my resume."},
-                first_assistant,
-                first_tool_result,
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "Inspect my resume."},
+                    first_assistant,
+                    first_tool_result,
+                ]
+            ),
             tools,
         ),
     )
     third = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "user", "content": "Inspect my resume."},
-                first_assistant,
-                first_tool_result,
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": second.tool_calls[0].id,
-                            "type": "function",
-                            "function": {
-                                "name": second.tool_calls[0].name,
-                                "arguments": second.tool_calls[0].raw_arguments,
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "Inspect my resume."},
+                    first_assistant,
+                    first_tool_result,
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": second.tool_calls[0].id,
+                                "type": "function",
+                                "function": {
+                                    "name": second.tool_calls[0].name,
+                                    "arguments": second.tool_calls[0].raw_arguments,
+                                },
                             },
-                        },
-                    ],
-                    "provider_state": second.provider_state,
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": second.tool_calls[0].id,
-                    "content": '{"ok":true}',
-                },
-            ],
+                        ],
+                        "provider_state": second.provider_state,
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": second.tool_calls[0].id,
+                        "content": '{"ok":true}',
+                    },
+                ]
+            ),
             tools,
         ),
     )
@@ -1400,8 +1820,19 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
     assert client.requests[2]["input"][4] == second_reasoning_item
 
 
-def test_custom_responses_endpoint_does_not_receive_encrypted_reasoning_include(
+@pytest.mark.parametrize(
+    ("provider", "provider_kind", "base_url"),
+    [
+        ("custom-cloud", "custom", "https://responses.example.test/v1"),
+        ("openai", "cloud", "https://openai-proxy.example.test/v1"),
+        ("xai", "cloud", "https://xai-proxy.example.test/v1"),
+    ],
+)
+def test_non_official_responses_endpoint_does_not_receive_reasoning_include(
     monkeypatch,
+    provider: str,
+    provider_kind: str,
+    base_url: str,
 ) -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -1427,13 +1858,12 @@ def test_custom_responses_endpoint_does_not_receive_encrypted_reasoning_include(
     asyncio.run(
         async_complete_chat(
             _config(
-                provider="custom-cloud",
-                provider_kind="custom",
+                provider=provider,
+                provider_kind=provider_kind,
                 api_family="openai_responses",
-                supports_thinking=True,
-                thinking_enabled=True,
+                base_url=base_url,
             ),
-            [{"role": "user", "content": "Inspect my resume."}],
+            LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
         ),
     )
 
@@ -1441,32 +1871,63 @@ def test_custom_responses_endpoint_does_not_receive_encrypted_reasoning_include(
     assert "include" not in client.params
 
 
-def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled() -> (
-    None
-):
-    params = openai_responses.responses_params(
-        _config(
-            provider="openai",
-            provider_kind="cloud",
-            api_family="openai_responses",
-            supports_thinking=True,
-            thinking_enabled=False,
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("openai", "https://api.openai.com/v1"),
+        ("xai", "https://api.x.ai/v1"),
+    ],
+)
+def test_official_responses_providers_request_encrypted_reasoning_under_auto(
+    monkeypatch,
+    provider: str,
+    base_url: str,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+            self.responses = SimpleNamespace(create=self.create)
+
+        async def create(self, **params: Any) -> object:
+            self.params = params
+            return SimpleNamespace(
+                id="response-auto-reasoning",
+                output_text="Done",
+                output=[],
+                status="completed",
+                usage=None,
+            )
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
+
+    asyncio.run(
+        async_complete_chat(
+            _config(
+                provider=provider,
+                provider_kind="cloud",
+                api_family="openai_responses",
+                base_url=base_url,
+            ),
+            LlmPrompt(messages=[{"role": "user", "content": "Inspect the resume."}]),
         ),
-        [{"role": "user", "content": "Inspect the resume."}],
     )
 
-    assert params["include"] == ["reasoning.encrypted_content"]
-    assert "reasoning" not in params
+    assert client.params["include"] == ["reasoning.encrypted_content"]
+    assert "reasoning" not in client.params
 
 
 @pytest.mark.parametrize(
     "provider_state",
     [
         {"thinking_blocks": []},
-        {"reasoning_items": []},
-        {"reasoning_items": ["not-an-item"]},
+        {"continuation_items": []},
+        {"continuation_items": ["not-an-item"]},
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "reasoning-1",
@@ -1477,7 +1938,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             "steps": [],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "message",
                     "id": "reasoning-1",
@@ -1487,7 +1948,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             ],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "",
@@ -1497,7 +1958,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             ],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "reasoning-1",
@@ -1507,7 +1968,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             ],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "reasoning-1",
@@ -1517,7 +1978,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             ],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "reasoning-1",
@@ -1528,7 +1989,7 @@ def test_openai_responses_requests_encrypted_reasoning_when_effort_is_disabled()
             ],
         },
         {
-            "reasoning_items": [
+            "continuation_items": [
                 {
                     "type": "reasoning",
                     "id": "reasoning-1",
@@ -1577,15 +2038,17 @@ def test_openai_responses_rejects_malformed_reasoning_state_before_request(
                     api_family="openai_responses",
                     supports_streaming=False,
                 ),
-                [
-                    {"role": "user", "content": "First request."},
-                    {
-                        "role": "assistant",
-                        "content": "First response.",
-                        "provider_state": provider_state,
-                    },
-                    {"role": "user", "content": "Follow up."},
-                ],
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "First request."},
+                        {
+                            "role": "assistant",
+                            "content": "First response.",
+                            "provider_state": provider_state,
+                        },
+                        {"role": "user", "content": "Follow up."},
+                    ]
+                ),
             ),
         )
 
@@ -1634,8 +2097,9 @@ def test_openai_responses_stream_maps_provider_events(monkeypatch) -> None:
                     provider="openai",
                     provider_kind="cloud",
                     api_family="openai_responses",
+                    base_url="https://api.openai.com/v1",
                 ),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
                 request_context=LlmRequestContext(cache_key="resume-session-1"),
             ),
         ),
@@ -1696,7 +2160,7 @@ def test_tool_argument_validation_returns_repair_error(monkeypatch) -> None:
     message = asyncio.run(
         async_complete_tool_call(
             _config(),
-            [{"role": "user", "content": "find project"}],
+            LlmPrompt(messages=[{"role": "user", "content": "find project"}]),
             [
                 {
                     "type": "function",
@@ -1715,13 +2179,13 @@ def test_tool_argument_validation_returns_repair_error(monkeypatch) -> None:
         ),
     )
 
-    assert message.tool_calls == []
+    assert [tool_call.id for tool_call in message.tool_calls] == ["call-1"]
     assert message.validation_errors
     assert message.validation_errors[0].tool_call.id == "call-1"
     assert "required property" in message.validation_errors[0].message
 
 
-def test_tool_argument_validation_retries_the_complete_unexecuted_batch(
+def test_tool_argument_validation_preserves_each_mixed_batch_result(
     monkeypatch,
 ) -> None:
     async def fake_post_json(_: str, **__: Any) -> dict[str, Any]:
@@ -1750,7 +2214,7 @@ def test_tool_argument_validation_retries_the_complete_unexecuted_batch(
     message = asyncio.run(
         async_complete_tool_call(
             _config(api_family="google_gemini"),
-            [{"role": "user", "content": "find skills"}],
+            LlmPrompt(messages=[{"role": "user", "content": "find skills"}]),
             [
                 {
                     "type": "function",
@@ -1769,13 +2233,14 @@ def test_tool_argument_validation_retries_the_complete_unexecuted_batch(
         ),
     )
 
-    assert message.tool_calls == []
-    assert [error.tool_call.id for error in message.validation_errors] == [
+    assert [tool_call.id for tool_call in message.tool_calls] == [
         "fc-valid",
         "fc-invalid",
     ]
-    assert "not executed" in message.validation_errors[0].message
-    assert "required property" in message.validation_errors[1].message
+    assert [error.tool_call.id for error in message.validation_errors] == [
+        "fc-invalid",
+    ]
+    assert "required property" in message.validation_errors[0].message
     assert message.provider_state == {
         "steps": [
             {"type": "thought", "text": "Need two lookups."},
@@ -1823,17 +2288,17 @@ def test_anthropic_adapter_maps_tool_schema_and_calls(monkeypatch) -> None:
         model="claude-test",
         base_url="https://api.anthropic.com/v1",
         api_family="anthropic_messages",
-        temperature=None,
-        top_p=None,
     )
 
     message = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "system", "content": "system text"},
-                {"role": "user", "content": "hello"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "system text"},
+                    {"role": "user", "content": "hello"},
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -1859,27 +2324,47 @@ def test_anthropic_adapter_maps_tool_schema_and_calls(monkeypatch) -> None:
             "cache_control": {"type": "ephemeral"},
         },
     ]
+    assert captured["payload"]["cache_control"] == {"type": "ephemeral"}
     assert captured["payload"]["messages"] == [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "hello",
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ],
-        },
+        {"role": "user", "content": "hello"},
     ]
     assert captured["payload"]["tools"][0]["input_schema"] == {
         "type": "object",
         "properties": {"query": {"type": "string"}},
     }
+    assert "thinking" not in captured["payload"]
+    assert captured["payload"]["temperature"] == 0.3
+    assert captured["payload"]["top_p"] == 0.8
     assert message.content == "checking"
     assert message.stop_reason == "tool_calls"
     assert message.usage and message.usage.total_tokens == 10
     assert message.tool_calls[0].id == "toolu-1"
     assert message.tool_calls[0].arguments == {"query": "project"}
+
+
+def test_anthropic_context_window_stop_is_normalized_as_length(monkeypatch) -> None:
+    async def fake_post_json(_: str, **__: Any) -> dict[str, Any]:
+        return {
+            "id": "msg-context-limit",
+            "stop_reason": "model_context_window_exceeded",
+            "content": [{"type": "text", "text": "Partial"}],
+        }
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
+
+    message = asyncio.run(
+        async_complete_chat(
+            _config(
+                provider="anthropic",
+                provider_kind="cloud",
+                api_family="anthropic_messages",
+                base_url="https://api.anthropic.com/v1",
+            ),
+            LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+        ),
+    )
+
+    assert message.stop_reason == "length"
 
 
 @pytest.mark.parametrize(
@@ -1927,7 +2412,7 @@ def test_anthropic_rejects_malformed_call_in_terminal_tool_batch(
                     api_family="anthropic_messages",
                     supports_streaming=False,
                 ),
-                [{"role": "user", "content": "Inspect my resume."}],
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
                 [
                     {
                         "type": "function",
@@ -1964,10 +2449,12 @@ def test_anthropic_adapter_marks_static_prompt_prefixes_for_caching(
                 base_url="https://api.anthropic.com/v1",
                 api_family="anthropic_messages",
             ),
-            [
-                {"role": "system", "content": "stable system instructions"},
-                {"role": "user", "content": "hello"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "stable system instructions"},
+                    {"role": "user", "content": "hello"},
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -1979,7 +2466,7 @@ def test_anthropic_adapter_marks_static_prompt_prefixes_for_caching(
                 {
                     "type": "function",
                     "function": {
-                        "name": "finish",
+                        "name": "second_tool",
                         "parameters": {"type": "object"},
                     },
                 },
@@ -2000,7 +2487,7 @@ def test_anthropic_adapter_marks_static_prompt_prefixes_for_caching(
     }
 
 
-def test_anthropic_adapter_marks_growing_conversation_prefix_for_caching(
+def test_anthropic_adapter_enables_automatic_growing_conversation_cache(
     monkeypatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -2023,27 +2510,24 @@ def test_anthropic_adapter_marks_growing_conversation_prefix_for_caching(
                 base_url="https://api.anthropic.com/v1",
                 api_family="anthropic_messages",
             ),
-            [
-                {"role": "user", "content": "first question"},
-                {"role": "assistant", "content": "first answer"},
-                {"role": "user", "content": "follow-up question"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "first question"},
+                    {"role": "assistant", "content": "first answer"},
+                    {"role": "user", "content": "follow-up question"},
+                ]
+            ),
         ),
     )
 
+    assert captured["payload"]["cache_control"] == {"type": "ephemeral"}
     assert captured["payload"]["messages"][-1] == {
         "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": "follow-up question",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ],
+        "content": "follow-up question",
     }
 
 
-def test_anthropic_adapter_marks_tool_result_prefix_for_caching(
+def test_anthropic_automatic_cache_advances_through_tool_results(
     monkeypatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -2066,28 +2550,30 @@ def test_anthropic_adapter_marks_tool_result_prefix_for_caching(
                 base_url="https://api.anthropic.com/v1",
                 api_family="anthropic_messages",
             ),
-            [
-                {"role": "user", "content": "inspect my resume"},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "toolu-cache",
-                            "type": "function",
-                            "function": {
-                                "name": "resume_lookup",
-                                "arguments": '{"query":"skills"}',
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "inspect my resume"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "toolu-cache",
+                                "type": "function",
+                                "function": {
+                                    "name": "resume_lookup",
+                                    "arguments": '{"query":"skills"}',
+                                },
                             },
-                        },
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "toolu-cache",
-                    "content": '{"matches":["Python"]}',
-                },
-            ],
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "toolu-cache",
+                        "content": '{"matches":["Python"]}',
+                    },
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -2100,16 +2586,18 @@ def test_anthropic_adapter_marks_tool_result_prefix_for_caching(
         ),
     )
 
+    assert captured["payload"]["cache_control"] == {"type": "ephemeral"}
     assert captured["payload"]["messages"][-1]["content"][-1] == {
         "type": "tool_result",
         "tool_use_id": "toolu-cache",
         "content": '{"matches":["Python"]}',
-        "cache_control": {"type": "ephemeral"},
     }
 
 
-def test_custom_anthropic_endpoint_does_not_receive_cache_control(
+@pytest.mark.parametrize("provider_kind", ["custom", "cloud"])
+def test_non_official_anthropic_endpoint_does_not_receive_cache_control(
     monkeypatch,
+    provider_kind: str,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -2127,14 +2615,18 @@ def test_custom_anthropic_endpoint_does_not_receive_cache_control(
         async_complete_tool_call(
             _config(
                 provider="anthropic",
-                provider_kind="custom",
+                provider_kind=provider_kind,
                 base_url="https://anthropic-compatible.example.test/v1",
                 api_family="anthropic_messages",
+                model="claude-sonnet-4-6",
+                thinking_control="native_auto",
             ),
-            [
-                {"role": "system", "content": "stable instructions"},
-                {"role": "user", "content": "inspect my resume"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "stable instructions"},
+                    {"role": "user", "content": "inspect my resume"},
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -2148,8 +2640,10 @@ def test_custom_anthropic_endpoint_does_not_receive_cache_control(
     )
 
     assert captured["payload"]["system"] == "stable instructions"
+    assert "cache_control" not in captured["payload"]
     assert "cache_control" not in captured["payload"]["messages"][-1]["content"][0]
     assert "cache_control" not in captured["payload"]["tools"][-1]
+    assert "thinking" not in captured["payload"]
 
 
 def test_anthropic_adapter_normalizes_prompt_cache_usage(monkeypatch) -> None:
@@ -2162,6 +2656,7 @@ def test_anthropic_adapter_normalizes_prompt_cache_usage(monkeypatch) -> None:
                 "cache_creation_input_tokens": 40,
                 "cache_read_input_tokens": 60,
                 "output_tokens": 7,
+                "output_tokens_details": {"thinking_tokens": 3},
             },
             "content": [{"type": "text", "text": "Done"}],
         }
@@ -2176,15 +2671,17 @@ def test_anthropic_adapter_normalizes_prompt_cache_usage(monkeypatch) -> None:
                 base_url="https://api.anthropic.com/v1",
                 api_family="anthropic_messages",
             ),
-            [{"role": "user", "content": "hello"}],
+            LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
         ),
     )
 
     assert message.usage
     assert message.usage.input_tokens == 105
     assert message.usage.cached_input_tokens == 60
+    assert message.usage.cache_write_input_tokens == 40
     assert message.usage.output_tokens == 7
     assert message.usage.total_tokens == 112
+    assert message.usage.reasoning_tokens == 3
 
 
 def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
@@ -2225,8 +2722,6 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
         model="claude-thinking",
         base_url="https://api.anthropic.com/v1",
         api_family="anthropic_messages",
-        supports_thinking=True,
-        thinking_enabled=True,
         temperature=None,
         top_p=None,
     )
@@ -2248,17 +2743,24 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
     first = asyncio.run(
         async_complete_tool_call(
             config,
-            [{"role": "user", "content": "Inspect my project."}],
+            LlmPrompt(messages=[{"role": "user", "content": "Inspect my project."}]),
             tools,
         ),
     )
     assert first.reasoning == "I should inspect the resume."
     assert first.provider_state == {
-        "thinking_blocks": [
+        "model": "claude-thinking",
+        "content_blocks": [
             {
                 "type": "thinking",
                 "thinking": "I should inspect the resume.",
                 "signature": "signed-thinking-block",
+            },
+            {
+                "type": "tool_use",
+                "id": "toolu-thinking",
+                "name": "resume_lookup",
+                "input": {"query": "project"},
             },
         ],
     }
@@ -2266,35 +2768,38 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
     second = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "user", "content": "Inspect my project."},
-                {
-                    "role": "assistant",
-                    "content": first.content or None,
-                    "tool_calls": [
-                        {
-                            "id": first.tool_calls[0].id,
-                            "type": "function",
-                            "function": {
-                                "name": first.tool_calls[0].name,
-                                "arguments": first.tool_calls[0].raw_arguments,
+            LlmPrompt(
+                messages=[
+                    {"role": "user", "content": "Inspect my project."},
+                    {
+                        "role": "assistant",
+                        "content": first.content or None,
+                        "tool_calls": [
+                            {
+                                "id": first.tool_calls[0].id,
+                                "type": "function",
+                                "function": {
+                                    "name": first.tool_calls[0].name,
+                                    "arguments": first.tool_calls[0].raw_arguments,
+                                },
                             },
-                        },
-                    ],
-                    "reasoning_content": first.reasoning,
-                    "provider_state": first.provider_state,
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": first.tool_calls[0].id,
-                    "content": '{"matches":["Project A"]}',
-                },
-            ],
+                        ],
+                        "reasoning_content": first.reasoning,
+                        "provider_state": first.provider_state,
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": first.tool_calls[0].id,
+                        "content": '{"matches":["Project A"]}',
+                    },
+                ]
+            ),
             tools,
         ),
     )
 
     assert second.content == "Done"
+    assert all("thinking" not in payload for payload in captured_payloads)
     assert captured_payloads[1]["messages"] == [
         {"role": "user", "content": "Inspect my project."},
         {
@@ -2320,7 +2825,6 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
                     "type": "tool_result",
                     "tool_use_id": "toolu-thinking",
                     "content": '{"matches":["Project A"]}',
-                    "cache_control": {"type": "ephemeral"},
                 },
             ],
         },
@@ -2393,7 +2897,7 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
                     base_url="https://api.anthropic.com/v1",
                     api_family="anthropic_messages",
                 ),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             ),
         ),
     )
@@ -2413,36 +2917,31 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
     assert events[-1].message.reasoning == "think"
     assert events[-1].message.response_id == "msg-stream"
     assert events[-1].message.provider_state == {
-        "thinking_blocks": [
+        "model": "gpt-test",
+        "content_blocks": [
             {
                 "type": "thinking",
                 "thinking": "think ",
                 "signature": "stream-signature",
             },
+            {"type": "text", "text": "Hello"},
         ],
     }
     assert events[-1].message.usage
     assert events[-1].message.usage.input_tokens == 12
     assert events[-1].message.usage.cached_input_tokens == 3
+    assert events[-1].message.usage.cache_write_input_tokens == 5
     assert events[-1].message.usage.total_tokens == 14
 
     _, replayed = anthropic_messages.anthropic_messages(
         [
             {
                 "role": "assistant",
+                "content": events[-1].message.content,
                 "provider_state": events[-1].message.provider_state,
-                "tool_calls": [
-                    {
-                        "id": "toolu-stream",
-                        "type": "function",
-                        "function": {
-                            "name": "resume_lookup",
-                            "arguments": '{"query":"project"}',
-                        },
-                    },
-                ],
             },
         ],
+        model="gpt-test",
     )
     assert replayed == [
         {
@@ -2454,10 +2953,8 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
                     "signature": "stream-signature",
                 },
                 {
-                    "type": "tool_use",
-                    "id": "toolu-stream",
-                    "name": "resume_lookup",
-                    "input": {"query": "project"},
+                    "type": "text",
+                    "text": "Hello",
                 },
             ],
         },
@@ -2501,10 +2998,12 @@ def test_gemini_adapter_builds_stateless_interaction(monkeypatch) -> None:
     message = asyncio.run(
         async_complete_tool_call(
             config,
-            [
-                {"role": "system", "content": "system text"},
-                {"role": "user", "content": "hello"},
-            ],
+            LlmPrompt(
+                messages=[
+                    {"role": "system", "content": "system text"},
+                    {"role": "user", "content": "hello"},
+                ]
+            ),
             [
                 {
                     "type": "function",
@@ -3024,7 +3523,7 @@ def test_gemini_v1_stream_completes_on_authoritative_completed_event(
                     base_url="https://generativelanguage.googleapis.com/v1",
                     api_family="google_gemini",
                 ),
-                [{"role": "user", "content": "hello"}],
+                LlmPrompt(messages=[{"role": "user", "content": "hello"}]),
             ),
         ),
     )

@@ -1,6 +1,5 @@
 import { memo } from "react";
 
-import { Empty, EmptyDescription } from "@/components/ui/empty";
 import type { AppMessages } from "@/i18n";
 import type {
   ResumeData,
@@ -13,7 +12,6 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   t,
   previewResume,
   templates,
-  totalTemplateCount,
   defaultTemplateId,
   isSelecting,
   selectedIdSet,
@@ -26,7 +24,6 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   t: AppMessages;
   previewResume: ResumeData;
   templates: ResumeTemplateDefinition[];
-  totalTemplateCount: number;
   defaultTemplateId: string;
   isSelecting: boolean;
   selectedIdSet: Set<string>;
@@ -36,16 +33,6 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   onSetDefaultTemplate: (templateId: string) => void;
   onToggleSelected: (templateId: string) => void;
 }) {
-  if (templates.length === 0) {
-    return (
-      <Empty className="col-span-full min-h-[390px] border border-border/70 bg-card/55">
-        <EmptyDescription className="font-medium">
-          {totalTemplateCount === 0 ? t.emptyTemplates : t.emptyTemplateSearch}
-        </EmptyDescription>
-      </Empty>
-    );
-  }
-
   return templates.map((template) => (
     <TemplateGalleryCard
       key={template.id}

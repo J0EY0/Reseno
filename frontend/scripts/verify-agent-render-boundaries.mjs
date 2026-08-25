@@ -103,23 +103,36 @@ assert(
   /isPlainAgentText\(responseText\)[\s\S]{0,180}AgentPlainResponse/.test(
     assistantResponse,
   ) &&
-    /AgentRichResponse text=\{responseText\}/.test(assistantResponse),
+    /AgentRichResponse[\s\S]{0,120}text=\{responseText\}/.test(
+      assistantResponse,
+    ),
   "Plain responses must stay lightweight while Markdown uses the optional renderer.",
 );
 assert(
-  assistantResponse.includes('citation: AgentCitationTag') &&
-    assistantResponse.includes('allowedTags={AGENT_CITATION_TAGS}') &&
-    assistantResponse.includes('literalTagContent={AGENT_LITERAL_TAGS}') &&
-    assistantResponse.includes('description={source.excerpt}') &&
-    !assistantResponse.includes("splitTrailingCitationText"),
-  "Agent citations must bind explicit claim markup to its own source ids without a trailing-source heuristic.",
+  assistantResponse.includes(
+    'from "@/components/ai-elements/inline-citation"',
+  ) &&
+    assistantResponse.includes("<InlineCitation>") &&
+    assistantResponse.includes("<InlineCitationCard>") &&
+    assistantResponse.includes("<InlineCitationCardTrigger") &&
+    assistantResponse.includes("<InlineCitationCardBody>") &&
+    assistantResponse.includes("<InlineCitationCarousel>") &&
+    assistantResponse.includes("<InlineCitationSource") &&
+    assistantResponse.includes("sourceByUrl") &&
+    !assistantResponse.includes("<citation") &&
+    !assistantResponse.includes('from "@/components/ai-elements/sources"') &&
+    !assistantResponse.includes("source.excerpt") &&
+    responseContent.includes("inlineTail") &&
+    responseContent.includes("[&>p:last-child]:inline"),
+  "Agent sources must use one official hover citation attached to the response tail without model markup.",
 );
 assert(
-  /ComponentProps<\s*typeof HoverCardContent\s*>/.test(inlineCitation) &&
-    /side="top"/.test(inlineCitation) &&
-    /sideOffset=\{8\}/.test(inlineCitation) &&
-    /max-w-\[calc\(100vw-1\.5rem\)\]/.test(inlineCitation),
-  "Inline citation cards must prefer the space above while retaining viewport-safe collision placement.",
+  inlineCitation.includes("<HoverCard") &&
+    inlineCitation.includes("<HoverCardTrigger") &&
+    inlineCitation.includes("<HoverCardContent") &&
+    inlineCitation.includes("<Carousel") &&
+    inlineCitation.includes("new URL(sources[0]).hostname"),
+  "The official citation pill must open its source carousel on hover.",
 );
 assert(
   /memo\(function AgentAssistantMessageRow/.test(presentation) &&
@@ -138,10 +151,29 @@ assert(
     toolPresentation.includes("getVisibleCompletedTools"),
   "Timeline ordering and tool lifecycle presentation must stay in one deep module.",
 );
+const toolDetailsDisclosureClass = toolPresentation.match(
+  /className="(?<classes>group\/details[^"]+)"/,
+);
+assert(
+  toolDetailsDisclosureClass?.groups?.classes.includes("shadow-none") &&
+    toolDetailsDisclosureClass.groups.classes.includes(
+      "hover:bg-transparent",
+    ) &&
+    toolDetailsDisclosureClass.groups.classes.includes("hover:shadow-none"),
+  "Completed-tool disclosure must stay flat instead of gaining a hover surface or shadow.",
+);
+assert(
+  /<AgentMessageTimeline[\s\S]{0,300}isStreamingAssistant=\{isStreamingAssistant\}/.test(
+    presentation,
+  ) &&
+    toolPresentation.includes("shouldShowTimelineContinuationStatus(") &&
+    toolPresentation.includes("label={t.agentToolContinuing}"),
+  "A streaming timeline that pauses after completed tools must keep a shimmer status visible.",
+);
 assert(
   /export function AgentChangeSummary/.test(changeSummary) &&
     changeSummary.includes("getAgentEditDiffFields") &&
-    changeSummary.includes("getAgentQualityWarningCount") &&
+    changeSummary.includes("getAgentQualityWarnings") &&
     changeSummary.includes("draftDiffs?.map") &&
     changeSummary.includes("visibleDiffs ?? responseDiffs") &&
     presentation.includes("draftDiffs={draftDiffs}") &&

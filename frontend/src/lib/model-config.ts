@@ -48,7 +48,6 @@ export function createDefaultModelConfig(
     supportsThinking: false,
     supportsTools: true,
     supportsStreaming: true,
-    thinkingEnabled: false,
     ...overrides,
   }
 }
@@ -114,7 +113,6 @@ export function normalizeModelConfig(
     supportsThinking: Boolean(raw.supportsThinking),
     supportsTools: raw.supportsTools !== false,
     supportsStreaming: raw.supportsStreaming !== false,
-    thinkingEnabled: Boolean(raw.thinkingEnabled && raw.supportsThinking),
   })
 }
 

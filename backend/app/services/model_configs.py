@@ -3,7 +3,11 @@ from sqlite3 import Connection, Row
 from typing import Any
 
 from app.db.connection import connect
-from app.schemas.model_configs import ModelConfigResponse, ModelConfigUpsertRequest
+from app.schemas.model_configs import (
+    MAX_USER_MAX_TOKENS,
+    ModelConfigResponse,
+    ModelConfigUpsertRequest,
+)
 from app.services.llm_secrets import (
     decrypt_api_key,
     encrypt_api_key,
@@ -12,6 +16,7 @@ from app.services.llm_secrets import (
     mask_encrypted_api_key,
 )
 from app.services.model_discovery_cache import get_cached_provider_model
+from app.services.model_metadata import resolve_model_metadata
 from app.services.model_providers import (
     DiscoveredModel,
     enrich_selected_model,
@@ -63,7 +68,6 @@ def _row_to_response(row: Row) -> ModelConfigResponse:
         supportsThinking=bool(row["supports_thinking"]),
         supportsTools=bool(row["supports_tools"]),
         supportsStreaming=bool(row["supports_streaming"]),
-        thinkingEnabled=bool(row["thinking_enabled"]),
     )
 
 
@@ -89,8 +93,7 @@ def _list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
             supports_image,
             supports_thinking,
             supports_tools,
-            supports_streaming,
-            thinking_enabled
+            supports_streaming
         FROM llm_configs
         WHERE enabled = 1
         ORDER BY is_default DESC, created_at DESC, id DESC
@@ -206,10 +209,6 @@ def _build_upsert_values(
         provider_kind=provider_kind,
         metadata=metadata,
     )
-    thinking_enabled = _thinking_enabled_value(
-        item=item,
-        supports_thinking=supports_thinking,
-    )
 
     return (
         client_id,
@@ -231,8 +230,12 @@ def _build_upsert_values(
             if provider_kind == "cloud"
             else _optional_float(_raw_value(item, "topP"))
         ),
-        _normalize_max_tokens(
-            None if provider_kind == "cloud" else _raw_value(item, "maxTokens"),
+        # `NULL` is the durable Auto sentinel. A numeric value is an explicit
+        # user override for every provider kind, including managed cloud APIs.
+        # Keep that distinction in storage instead of materializing today's
+        # discovered model ceiling, which can change independently over time.
+        _validated_max_tokens(
+            _raw_value(item, "maxTokens"),
             metadata.max_output_tokens,
         ),
         metadata.context_window_tokens,
@@ -240,7 +243,6 @@ def _build_upsert_values(
         int(supports_thinking),
         int(supports_tools),
         int(supports_streaming),
-        int(thinking_enabled),
         0,
     )
 
@@ -315,13 +317,34 @@ def _validated_cloud_model_metadata(
         and existing["model"] == model
         and (existing["base_url"] or "") == (base_url or "")
     ):
+        discovered = get_cached_provider_model(provider, model)
+        if discovered is not None:
+            return discovered
+
+        if provider == "anthropic":
+            # Saved Anthropic capability bits from older builds may have come
+            # from name heuristics and cannot prove adaptive-thinking support.
+            # Reuse only current official discovery data for this provider.
+            raise ValueError("MODEL_CONFIG_MODEL_NOT_DISCOVERED")
+
+        # The config row stores the selected model snapshot, not a second copy
+        # of the model capability catalog. If provider discovery data is no
+        # longer present, consult the already-local LiteLLM cache so an update
+        # cannot bypass a known output ceiling. This performs no network I/O.
+        litellm_metadata = resolve_model_metadata(provider, model)
         return DiscoveredModel(
             id=model,
             label=model,
             context_window_tokens=int(existing["context_window_tokens"]),
-            max_output_tokens=None,
+            max_output_tokens=(
+                litellm_metadata.max_output_tokens
+                if litellm_metadata is not None
+                else None
+            ),
             supports_image=bool(existing["supports_image"]),
-            supports_thinking=bool(existing["supports_thinking"]),
+            thinking_control=(
+                "provider_default" if bool(existing["supports_thinking"]) else "none"
+            ),
             supports_tools=bool(existing["supports_tools"]),
             supports_streaming=bool(existing["supports_streaming"]),
             metadata_source="saved",
@@ -358,20 +381,8 @@ def _supports_thinking_value(
     metadata: DiscoveredModel,
 ) -> bool:
     if provider_kind == "cloud":
-        return metadata.supports_thinking
+        return metadata.thinking_control != "none"
     return bool(_raw_value(item, "supportsThinking") or False)
-
-
-def _thinking_enabled_value(
-    *,
-    item: dict[str, Any],
-    supports_thinking: bool,
-) -> bool:
-    if not supports_thinking:
-        return False
-
-    value = _raw_value(item, "thinkingEnabled")
-    return True if value is None else bool(value)
 
 
 def _supports_tools_value(
@@ -434,14 +445,28 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
-def _normalize_max_tokens(value: Any, max_output_tokens: int | None) -> int | None:
-    if not isinstance(value, int) or value <= 0:
+def _validated_max_tokens(value: Any, max_output_tokens: int | None) -> int | None:
+    """Validate one persisted output override without changing its meaning.
+
+    `None` means Auto and must remain distinguishable from an explicit numeric
+    cap. When provider discovery or LiteLLM knows the model ceiling, rejecting
+    an oversized value is safer than silently storing a different value from
+    the one the user submitted. Raw workspace imports also cross this seam, so
+    validation lives here in addition to the HTTP schema.
+    """
+
+    if value is None:
         return None
-
-    if max_output_tokens is None:
-        return value
-
-    return min(value, max_output_tokens)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > MAX_USER_MAX_TOKENS
+    ):
+        raise ValueError("MODEL_CONFIG_MAX_TOKENS_INVALID")
+    if max_output_tokens is not None and value > max_output_tokens:
+        raise ValueError("MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT")
+    return value
 
 
 def _existing_api_key_matches(existing: Row, api_key: str) -> bool:
@@ -484,7 +509,6 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         supports_thinking,
         supports_tools,
         supports_streaming,
-        thinking_enabled,
         is_default,
     ) = values
 
@@ -510,7 +534,6 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         and int(existing["supports_thinking"]) == int(supports_thinking)
         and int(existing["supports_tools"]) == int(supports_tools)
         and int(existing["supports_streaming"]) == int(supports_streaming)
-        and int(existing["thinking_enabled"]) == int(thinking_enabled)
         and int(existing["is_default"]) == int(is_default)
     )
 
@@ -538,7 +561,6 @@ def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
             supports_thinking,
             supports_tools,
             supports_streaming,
-            thinking_enabled,
             enabled,
             is_default
         FROM llm_configs
@@ -616,10 +638,9 @@ def upsert_llm_config_dict(
             supports_thinking,
             supports_tools,
             supports_streaming,
-            thinking_enabled,
             is_default
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(client_id) DO UPDATE SET
             name = excluded.name,
             provider = excluded.provider,
@@ -655,7 +676,6 @@ def upsert_llm_config_dict(
             supports_thinking = excluded.supports_thinking,
             supports_tools = excluded.supports_tools,
             supports_streaming = excluded.supports_streaming,
-            thinking_enabled = excluded.thinking_enabled,
             enabled = 1,
             is_default = excluded.is_default,
             updated_at = CURRENT_TIMESTAMP

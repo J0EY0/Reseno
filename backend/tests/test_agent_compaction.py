@@ -4,30 +4,30 @@ from functools import partial
 import anyio
 import pytest
 
-from app.schemas.agent import (
-    AgentChatRequest,
-    AgentConversationCheckpoint,
-)
+from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
+from app.services.agent.evidence import historical_prompt_evidence_ref
 from app.services.agent.runtime import compaction
-from app.services.agent.runtime.compaction import prepare_agent_messages
+from app.services.agent.runtime.compaction import (
+    prepare_agent_messages,
+    prepare_agent_prompt,
+)
 from app.services.agent.runtime.context import AgentRunAborted, AgentRuntimeContext
 from app.services.agent.runtime.messages import (
+    CHECKPOINT_CONTEXT_TOKEN_BUDGET,
+    _current_draft_state,
+    _estimated_json_tokens,
+    agent_checkpoint_context,
     agent_compaction_events,
     estimate_agent_messages_tokens,
 )
-from app.services.llm import (
-    AgentLlmConfig,
-    LlmAssistantMessage,
-    LlmRequestError,
-    LlmTimeoutError,
-)
+from app.services.llm import AgentLlmConfig, LlmRequestError
 from app.services.llm.types import LlmContentPart, LlmInputMessage
 
 
-def _config(*, context_window_tokens: int = 4_000) -> AgentLlmConfig:
+def _config(*, context_window_tokens: int = 6_000) -> AgentLlmConfig:
     return AgentLlmConfig(
-        client_id="compaction-model",
-        name="Compaction model",
+        client_id="context-model",
+        name="Context model",
         provider="openai",
         provider_kind="cloud",
         api_family="openai_responses",
@@ -46,274 +46,354 @@ def _config(*, context_window_tokens: int = 4_000) -> AgentLlmConfig:
 def _request(
     history: list[dict[str, object]],
     *,
-    prompt: str = "Use option two and keep British English.",
+    prompt: str = "Edit the current project now.",
     current_id: str = "current-user",
 ) -> AgentChatRequest:
     return AgentChatRequest(
-        message={
-            "id": current_id,
-            "role": "user",
-            "text": prompt,
-        },
+        message={"id": current_id, "role": "user", "text": prompt},
         messages=history,
         locale="en",
         resume={"basic": {"name": "Private Person"}, "sections": []},
     )
 
 
-def _long_history() -> list[dict[str, object]]:
-    history: list[dict[str, object]] = [
-        {
-            "id": "goal-user",
-            "role": "user",
-            "text": "Give me two ways to shorten the project section.",
-        },
-        {
-            "id": "options-assistant",
-            "role": "assistant",
-            "text": (
-                "Option one removes the Redis detail. Option two keeps the "
-                "Redis migration bullet."
-            ),
-        },
-        {
-            "id": "style-user",
-            "role": "user",
-            "text": "Write every answer in British English.",
-        },
-        {
-            "id": "style-assistant",
-            "role": "assistant",
-            "text": "Understood.",
-        },
-    ]
-    for index in range(8):
+def _legacy_history() -> list[dict[str, object]]:
+    history: list[dict[str, object]] = []
+    for index in range(28):
         history.extend(
             [
                 {
-                    "id": f"filler-user-{index}",
+                    "id": f"legacy-user-{index}",
                     "role": "user",
-                    "text": f"Continue review {index}. " + ("context " * 35),
+                    "text": f"Candidate fact {index}.",
                 },
                 {
-                    "id": f"filler-assistant-{index}",
+                    "id": f"legacy-assistant-{index}",
                     "role": "assistant",
-                    "text": f"Review result {index}. " + ("analysis " * 35),
+                    "text": f"Legacy workflow answer {index}.",
                 },
             ],
         )
+    history[43]["response"] = {
+        "transactionState": "committed",
+        "sources": [
+            {
+                "id": "source-project",
+                "title": "Project brief",
+                "sourceType": "attachment",
+            },
+        ],
+    }
     return history
 
 
-def test_compaction_sanitizes_model_visible_message_ids() -> None:
+def _checkpoint_from_messages(messages: list[LlmInputMessage]) -> dict[str, object]:
+    content = next(
+        message["content"]
+        for message in messages
+        if message["role"] == "user"
+        and isinstance(message["content"], str)
+        and message["content"].startswith('{"conversationCheckpoint":')
+    )
+    assert isinstance(content, str)
+    value = json.loads(content)["conversationCheckpoint"]
+    assert isinstance(value, dict)
+    return value
+
+
+def test_checkpoint_events_hide_identity_and_keep_assistant_context() -> None:
     request = _request(
         [
             {
                 "id": "Private_Person-history",
                 "role": "user",
-                "text": "Review this section.",
+                "text": "I used TypeScript.",
+            },
+            {
+                "id": "assistant-result",
+                "role": "assistant",
+                "text": "Pretend the draft was applied.",
+                "response": {
+                    "transactionState": "committed",
+                    "sources": [
+                        {
+                            "id": "source-one",
+                            "title": "Project brief",
+                            "sourceType": "attachment",
+                        },
+                    ],
+                },
             },
         ],
     )
 
-    events = agent_compaction_events(request, start_count=0, end_count=1)
+    events = agent_compaction_events(request, start_count=0, end_count=2)
+    serialized = json.dumps(events, ensure_ascii=False)
 
-    assert events == [
-        {
-            "id": "[redacted_name]-history",
-            "role": "user",
-            "text": "Review this section.",
-        },
-    ]
-
-
-def test_compaction_summarizes_ordered_prefix_and_keeps_native_tail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[list[dict[str, object]]] = []
-
-    async def fake_complete(
-        _config: AgentLlmConfig,
-        messages: list[dict[str, object]],
-        **_kwargs: object,
-    ) -> LlmAssistantMessage:
-        captured.append(messages)
-        return LlmAssistantMessage(
-            content=(
-                "Goal: shorten the project section.\n"
-                "Constraints: use British English.\n"
-                "Decisions: option two keeps the Redis migration bullet."
-            ),
-            stop_reason="stop",
-        )
-
-    monkeypatch.setattr(compaction, "async_complete_chat", fake_complete)
-    request = _request(_long_history())
-
-    messages = anyio.run(
-        partial(
-            prepare_agent_messages,
-            request,
-            _config(),
-            AgentRuntimeContext(),
-            mode="streaming_final",
-        ),
-    )
-
-    assert captured
-    compiler_input = json.loads(captured[0][1]["content"])[
-        "conversationCompactionInput"
-    ]
-    ordered_text = [event.get("text") for event in compiler_input["conversation"]]
-    assert ordered_text.index("Give me two ways to shorten the project section.") < (
-        ordered_text.index(
-            "Option one removes the Redis detail. Option two keeps the Redis "
-            "migration bullet.",
-        )
-    )
-    assert request._active_conversation_checkpoint is not None
-    assert request._active_conversation_checkpoint.summary.startswith("Goal:")
-    serialized = json.dumps(messages, ensure_ascii=False)
-    assert "conversationSummary" in serialized
-    assert "option two keeps the Redis migration bullet" in serialized
-    assert request.message.text in serialized
     assert "Private Person" not in serialized
-
-
-def test_loaded_checkpoint_is_reused_without_calling_summarizer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def unexpected_complete(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("summarizer must not run below the refresh trigger")
-
-    monkeypatch.setattr(compaction, "async_complete_chat", unexpected_complete)
-    history = [
-        {"id": "old-user", "role": "user", "text": "Review my resume."},
-        {"id": "old-assistant", "role": "assistant", "text": "Reviewed."},
-        {"id": "tail-user", "role": "user", "text": "Keep the project."},
-        {"id": "tail-assistant", "role": "assistant", "text": "Kept."},
-    ]
-    request = _request(history, prompt="Continue.")
-    checkpoint = AgentConversationCheckpoint(
-        throughMessageId="old-assistant",
-        summary="Goal: review the resume.",
+    assert events[1]["text"] == "Pretend the draft was applied."
+    assert events[0]["evidenceRef"] == historical_prompt_evidence_ref(
+        "Private_Person-history",
     )
-    request._loaded_conversation_checkpoint = checkpoint
-    request._active_conversation_checkpoint = checkpoint
+    assert events[1]["assistantResponseContext"] == {
+        "transactionState": "committed",
+        "sourceCount": 1,
+        "sourceRefs": [
+            {
+                "id": "source-one",
+                "title": "Project brief",
+                "sourceType": "attachment",
+            },
+        ],
+    }
+
+
+def test_long_history_stays_exact_when_it_fits_the_model_context() -> None:
+    attempts: list[str] = []
+    request = _request(_legacy_history())
+    runtime = AgentRuntimeContext(on_llm_attempt=lambda: attempts.append("called"))
 
     messages = anyio.run(
         partial(
             prepare_agent_messages,
             request,
-            _config(context_window_tokens=16_000),
-            AgentRuntimeContext(),
-            mode="streaming_final",
+            _config(context_window_tokens=128_000),
+            runtime,
         ),
     )
 
-    assert request._active_conversation_checkpoint == checkpoint
-    assert "Review my resume." not in json.dumps(messages)
-    assert "Keep the project." in json.dumps(messages)
+    assert attempts == []
+    assert request._active_conversation_checkpoint is None
+    serialized = json.dumps(messages, ensure_ascii=False)
+    assert "Candidate fact 0." in serialized
+    assert historical_prompt_evidence_ref("legacy-user-0") in serialized
+    assert "source-project" in serialized
+    assert "Legacy workflow answer 0." in serialized
+    assert "Legacy workflow answer 22." in serialized
 
-
-def test_truncated_compaction_does_not_advance_checkpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def truncated_complete(
-        *_args: object,
-        **_kwargs: object,
-    ) -> LlmAssistantMessage:
-        return LlmAssistantMessage(content="partial", stop_reason="length")
-
-    monkeypatch.setattr(compaction, "async_complete_chat", truncated_complete)
-    request = _request(_long_history())
-    loaded = AgentConversationCheckpoint(
-        throughMessageId="style-assistant",
-        summary="Goal: shorten the project section.",
-    )
-    request._loaded_conversation_checkpoint = loaded
-    request._active_conversation_checkpoint = loaded
-
-    with pytest.raises(LlmRequestError, match="truncated"):
-        anyio.run(
-            partial(
-                prepare_agent_messages,
-                request,
-                _config(),
-                AgentRuntimeContext(),
-                mode="streaming_final",
-            ),
-        )
-
-    assert request._active_conversation_checkpoint == loaded
-
-
-def test_compaction_resanitizes_a_loaded_summary_for_current_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured_inputs: list[dict[str, object]] = []
-
-    async def fake_complete(
-        _config: AgentLlmConfig,
-        messages: list[dict[str, object]],
-        **_kwargs: object,
-    ) -> LlmAssistantMessage:
-        captured_inputs.append(json.loads(str(messages[1]["content"])))
-        return LlmAssistantMessage(
-            content="Goal: keep the resume concise.",
-            stop_reason="stop",
-        )
-
-    monkeypatch.setattr(compaction, "async_complete_chat", fake_complete)
-    request = _request(_long_history())
-    request.resume["basic"]["name"] = "Bob Smith"
-    loaded = AgentConversationCheckpoint(
-        throughMessageId="style-assistant",
-        summary="Earlier candidate: BOB_SMITH.",
-    )
-    request._loaded_conversation_checkpoint = loaded
-    request._active_conversation_checkpoint = loaded
-
+    repeated = _request(_legacy_history())
     anyio.run(
         partial(
             prepare_agent_messages,
-            request,
-            _config(),
+            repeated,
+            _config(context_window_tokens=128_000),
             AgentRuntimeContext(),
-            mode="streaming_final",
+        ),
+    )
+    assert repeated._active_conversation_checkpoint is None
+
+
+def test_checkpoint_context_is_bounded() -> None:
+    history: list[dict[str, object]] = []
+    for index in range(100):
+        history.extend(
+            [
+                {
+                    "id": f"user-{index}",
+                    "role": "user",
+                    "text": f"Fact {index}: " + ("evidence " * 500),
+                },
+                {
+                    "id": f"assistant-{index}",
+                    "role": "assistant",
+                    "text": "untrusted prose " * 500,
+                },
+            ],
+        )
+    context = agent_checkpoint_context(_request(history), end_count=len(history))
+
+    assert (
+        estimate_agent_messages_tokens([{"role": "user", "content": context}])
+        <= CHECKPOINT_CONTEXT_TOKEN_BUDGET + 16
+    )
+    assert json.loads(context)["trust"] == "untrusted_history_data"
+    assert "untrusted prose" in context
+    assert context.count("untrusted prose") < 500
+    assert historical_prompt_evidence_ref("user-99") in context
+
+
+def test_compacted_prompt_keeps_the_question_that_a_terse_reply_answers() -> None:
+    history: list[dict[str, object]] = []
+    for index in range(18):
+        history.extend(
+            [
+                {
+                    "id": f"context-user-{index}",
+                    "role": "user",
+                    "text": f"Verified project context {index}. "
+                    + ("evidence " * 60),
+                },
+                {
+                    "id": f"context-assistant-{index}",
+                    "role": "assistant",
+                    "text": f"Discussion {index}. " + ("detail " * 60),
+                },
+            ],
+        )
+    question = "你是否使用 Redis，并且由你负责缓存设计？"
+    history[-1]["text"] = question
+    history.extend(
+        [
+            {
+                "id": "terse-confirmation",
+                "role": "user",
+                "text": "是的。",
+            },
+            {
+                "id": "long-follow-up",
+                "role": "assistant",
+                "text": "已记录。" + ("后续讨论 " * 1_500),
+            },
+            {
+                "id": "recent-user",
+                "role": "user",
+                "text": "先保留现有项目结构。",
+            },
+            {
+                "id": "recent-assistant",
+                "role": "assistant",
+                "text": "好的。",
+            },
+        ],
+    )
+    request = _request(history, prompt="继续优化项目经历。")
+
+    messages = anyio.run(
+        partial(
+            prepare_agent_messages,
+            request,
+            _config(context_window_tokens=6_000),
+            AgentRuntimeContext(),
+        ),
+    )
+    serialized = json.dumps(messages, ensure_ascii=False)
+
+    assert request._active_conversation_checkpoint is not None
+    assert question in serialized
+    assert "是的。" in serialized
+
+
+def test_uncompressible_current_workspace_checks_only_the_latest_boundary(
+    monkeypatch,
+) -> None:
+    history: list[dict[str, object]] = []
+    for index in range(100):
+        history.extend(
+            [
+                {
+                    "id": f"user-{index}",
+                    "role": "user",
+                    "text": f"Fact {index}: " + ("evidence " * 40),
+                },
+                {
+                    "id": f"assistant-{index}",
+                    "role": "assistant",
+                    "text": f"Answer {index}: " + ("evidence " * 40),
+                },
+            ],
+        )
+    request = _request(history)
+    request.resume["basic"]["summary"] = "current workspace " * 1_000
+    original = compaction._prompt_at_boundary
+    boundary_counts: list[int] = []
+
+    def counted_prompt_at_boundary(*args, **kwargs):
+        boundary_counts.append(int(kwargs["boundary_count"]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(compaction, "_prompt_at_boundary", counted_prompt_at_boundary)
+
+    with pytest.raises(LlmRequestError, match="context window"):
+        anyio.run(
+            partial(
+                prepare_agent_prompt,
+                request,
+                _config(context_window_tokens=6_000),
+                AgentRuntimeContext(),
+            ),
+        )
+
+    assert len(boundary_counts) == 2
+    assert boundary_counts[0] == 0
+    assert boundary_counts[-1] > 0
+
+
+def test_oversized_assistant_event_does_not_hide_an_earlier_user_fact() -> None:
+    request = _request(
+        [
+            {
+                "id": "important-user-fact",
+                "role": "user",
+                "text": "Keep the verified TypeScript experience.",
+            },
+            {
+                "id": "oversized-assistant-state",
+                "role": "assistant",
+                "text": "Done.",
+                "response": {
+                    "edits": [
+                        {
+                            "id": f"edit-{index}",
+                            "title": "x" * 2_000,
+                            "reason": "y" * 2_000,
+                        }
+                        for index in range(4)
+                    ],
+                    "sources": [
+                        {
+                            "id": f"source-{index}",
+                            "title": "z" * 2_000,
+                            "sourceType": "web",
+                            "url": f"https://example.com/{index}",
+                        }
+                        for index in range(8)
+                    ],
+                },
+            },
+        ],
+    )
+
+    context = agent_checkpoint_context(request, end_count=2)
+
+    assert historical_prompt_evidence_ref("important-user-fact") in context
+    assert "Keep the verified TypeScript experience." in context
+
+
+def test_loaded_checkpoint_is_not_rebuilt_just_because_history_is_long() -> None:
+    history = _legacy_history()
+    request = _request(history)
+    loaded = AgentConversationCheckpoint(
+        throughMessageId="legacy-assistant-21",
+        summary=(
+            '{"trust":"untrusted_history_data","events":['
+            '{"role":"user","evidenceRef":"evidence-user-1",'
+            '"text":"Keep this verified constraint."}]}'
+        ),
+    )
+    request._loaded_conversation_checkpoint = loaded
+    request._active_conversation_checkpoint = loaded
+
+    messages = anyio.run(
+        partial(
+            prepare_agent_messages,
+            request,
+            _config(context_window_tokens=128_000),
+            AgentRuntimeContext(),
         ),
     )
 
-    compiler_input = captured_inputs[0]["conversationCompactionInput"]
-    assert isinstance(compiler_input, dict)
-    assert compiler_input["previousSummary"] == "Earlier candidate: [redacted_name]."
-    assert "BOB_SMITH" not in json.dumps(captured_inputs)
+    assert request._active_conversation_checkpoint == loaded
+    assert "Keep this verified constraint." in json.dumps(messages)
 
 
-def test_compaction_cancellation_does_not_commit_a_candidate_checkpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    aborted = False
-
-    async def fake_complete(
-        *_args: object,
-        **_kwargs: object,
-    ) -> LlmAssistantMessage:
-        nonlocal aborted
-        aborted = True
-        return LlmAssistantMessage(
-            content="Goal: keep the resume concise.",
-            stop_reason="stop",
-        )
-
+def test_cancellation_does_not_change_checkpoint() -> None:
     async def is_aborted() -> bool:
-        return aborted
+        return True
 
-    monkeypatch.setattr(compaction, "async_complete_chat", fake_complete)
-    request = _request(_long_history())
+    request = _request(_legacy_history())
     loaded = AgentConversationCheckpoint(
-        throughMessageId="style-assistant",
-        summary="Goal: preserve the current draft.",
+        throughMessageId="legacy-assistant-21",
+        summary='{"trust":"untrusted_history_data","events":[]}',
     )
     request._loaded_conversation_checkpoint = loaded
     request._active_conversation_checkpoint = loaded
@@ -325,104 +405,13 @@ def test_compaction_cancellation_does_not_commit_a_candidate_checkpoint(
                 request,
                 _config(),
                 AgentRuntimeContext(is_aborted=is_aborted),
-                mode="streaming_final",
             ),
         )
 
     assert request._active_conversation_checkpoint == loaded
 
 
-def test_compaction_retries_timeout_once_without_advancing_checkpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider_calls = 0
-
-    async def timed_out(*_args: object, **_kwargs: object) -> LlmAssistantMessage:
-        nonlocal provider_calls
-        provider_calls += 1
-        raise LlmTimeoutError("idle timeout")
-
-    monkeypatch.setattr(compaction, "async_complete_chat", timed_out)
-    request = _request(_long_history())
-    loaded = AgentConversationCheckpoint(
-        throughMessageId="style-assistant",
-        summary="Goal: preserve the current draft.",
-    )
-    request._loaded_conversation_checkpoint = loaded
-    request._active_conversation_checkpoint = loaded
-
-    with pytest.raises(LlmTimeoutError):
-        anyio.run(
-            partial(
-                prepare_agent_messages,
-                request,
-                _config(),
-                AgentRuntimeContext(),
-                mode="streaming_final",
-            ),
-        )
-
-    assert provider_calls == 2
-    assert request._active_conversation_checkpoint == loaded
-
-
-def test_later_compaction_failure_does_not_commit_an_earlier_candidate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider_calls = 0
-
-    def select_one_segment(
-        *_args: object,
-        boundaries: list[tuple[int, str]],
-        **_kwargs: object,
-    ) -> tuple[int, str]:
-        return boundaries[0]
-
-    async def fail_second_segment(
-        *_args: object,
-        **_kwargs: object,
-    ) -> LlmAssistantMessage:
-        nonlocal provider_calls
-        provider_calls += 1
-        if provider_calls == 1:
-            return LlmAssistantMessage(
-                content="Oversized summary " * 400,
-                stop_reason="stop",
-            )
-        raise LlmRequestError("second compaction segment failed")
-
-    monkeypatch.setattr(compaction, "async_complete_chat", fail_second_segment)
-    monkeypatch.setattr(compaction, "_select_boundary", select_one_segment)
-    request = _request(_long_history())
-    loaded = AgentConversationCheckpoint(
-        throughMessageId="style-assistant",
-        summary="Goal: preserve the current draft.",
-    )
-    request._loaded_conversation_checkpoint = loaded
-    request._active_conversation_checkpoint = loaded
-
-    with pytest.raises(LlmRequestError, match="second compaction segment failed"):
-        anyio.run(
-            partial(
-                prepare_agent_messages,
-                request,
-                _config(),
-                AgentRuntimeContext(),
-                mode="streaming_final",
-            ),
-        )
-
-    assert provider_calls == 2
-    assert request._active_conversation_checkpoint == loaded
-
-
-def test_compaction_never_discards_the_only_recent_user_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def unexpected_complete(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("there is no complete older turn to summarize")
-
-    monkeypatch.setattr(compaction, "async_complete_chat", unexpected_complete)
+def test_compaction_never_discards_the_only_recent_user_turn() -> None:
     request = _request(
         [
             {
@@ -441,33 +430,19 @@ def test_compaction_never_discards_the_only_recent_user_turn(
                 request,
                 _config(context_window_tokens=2_000),
                 AgentRuntimeContext(),
-                mode="streaming_final",
             ),
         )
 
 
-@pytest.mark.parametrize("mode", ["tools", "streaming_final"])
-def test_workspace_snapshot_keeps_edit_turn_prompt_as_next_turn_prefix(
-    mode: str,
-) -> None:
-    config = _config(context_window_tokens=16_000)
-    first = _request([], prompt="Create a concise draft.")
-    first.resume["basic"]["headline"] = "Frontend Engineer"
-    first_messages = anyio.run(
-        partial(
-            prepare_agent_messages,
-            first,
-            config,
-            AgentRuntimeContext(),
-            mode=mode,
-        ),
-    )
-    snapshot = first._active_workspace_snapshots
-    assert snapshot is not None
-
+def test_historical_turns_do_not_replay_old_workspace_snapshots() -> None:
+    config = _config(context_window_tokens=32_000)
     second = _request(
         [
-            first.message.model_dump(mode="json"),
+            {
+                "id": "first-user",
+                "role": "user",
+                "text": "Create a concise draft.",
+            },
             {
                 "id": "first-assistant",
                 "role": "assistant",
@@ -477,101 +452,95 @@ def test_workspace_snapshot_keeps_edit_turn_prompt_as_next_turn_prefix(
         prompt="Shorten the second bullet.",
         current_id="second-user",
     )
-    # The authoritative workspace changed after the first edit. Replaying the
-    # immutable compiler event before its historical user turn preserves the
-    # previous provider messages while the current snapshot reflects new state.
     second.resume["basic"]["headline"] = "AI Frontend Engineer"
-    second._historical_workspace_snapshots = {
-        first.message.id: snapshot,
-    }
-    second_messages = anyio.run(
-        partial(
-            prepare_agent_messages,
-            second,
-            config,
-            AgentRuntimeContext(),
-            mode=mode,
-        ),
+    second_prompt = anyio.run(
+        partial(prepare_agent_prompt, second, config, AgentRuntimeContext()),
     )
 
-    assert second_messages[: len(first_messages)] == first_messages
-    assert "AI Frontend Engineer" in str(second_messages[-2]["content"])
+    workspace_messages = [
+        message
+        for message in second_prompt.messages
+        if isinstance(message["content"], str)
+        and message["content"].startswith('{"workspaceContext":')
+    ]
+    serialized = json.dumps(second_prompt.messages, ensure_ascii=False)
+    assert len(workspace_messages) == 1
+    assert "AI Frontend Engineer" in serialized
 
 
-def test_native_image_token_estimate_is_independent_of_base64_size() -> None:
-    def estimate(data: str) -> int:
-        return estimate_agent_messages_tokens(
-            [
+def test_current_draft_state_obeys_one_total_budget_without_repeating_resume() -> None:
+    request = AgentChatRequest(
+        message={"id": "current", "role": "user", "text": "Continue."},
+        locale="en",
+        resume={"basic": {}, "sections": []},
+        draftState={
+            "id": "draft-budget",
+            "status": "pending",
+            "sourceMessageId": "assistant-draft",
+            "resume": {
+                "basic": {"summary": "current resume content " * 1_000},
+                "sections": [],
+            },
+            "editCount": 20,
+            "edits": [
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Describe this image."},
-                        {
-                            "type": "image",
-                            "media_type": "image/png",
-                            "data": data,
-                        },
-                    ],
-                },
+                    "id": f"edit-{index}",
+                    "title": "Long edit title " * 100,
+                    "target": "basic.summary",
+                    "reason": "Long edit reason " * 100,
+                    "operation": {
+                        "type": "replace_field",
+                        "path": "basic.summary",
+                    },
+                }
+                for index in range(20)
             ],
-        )
-
-    assert estimate("YQ==") == estimate("A" * 1_000_000)
-    assert estimate("YQ==") < 10_000
-
-
-def test_native_file_token_estimate_is_independent_of_base64_size() -> None:
-    def estimate(data: str) -> int:
-        return estimate_agent_messages_tokens(
-            [
+            "diffs": [
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Review this document."},
-                        {
-                            "type": "file",
-                            "filename": "resume.pdf",
-                            "media_type": "application/pdf",
-                            "data": data,
-                        },
-                    ],
-                },
+                    "id": f"diff-{index}",
+                    "operationId": f"edit-{index}",
+                    "path": "basic.summary",
+                    "kind": "changed",
+                    "before": "before " * 1_000,
+                    "after": "after " * 1_000,
+                }
+                for index in range(20)
             ],
-        )
+        },
+    )
 
-    assert estimate("YQ==") == estimate("A" * 1_000_000)
-    assert 30_000 < estimate("YQ==") < 40_000
+    state = _current_draft_state(request, token_budget=256)
+    assert state is not None
+    serialized = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+
+    assert _estimated_json_tokens(state) <= 256
+    assert "resumeOutline" not in state
+    assert "before" not in serialized
+    assert "after" not in serialized
 
 
-def test_native_media_token_reserves_accumulate_per_attachment() -> None:
-    text_part: LlmContentPart = {
-        "type": "text",
-        "text": "Compare these materials.",
-    }
-    image_part: LlmContentPart = {
-        "type": "image",
-        "media_type": "image/png",
-        "data": "A" * 1_000_000,
-    }
-    file_part: LlmContentPart = {
-        "type": "file",
-        "filename": "resume.pdf",
-        "media_type": "application/pdf",
-        "data": "A" * 1_000_000,
-    }
-
+def test_native_media_token_estimate_is_independent_of_base64_size() -> None:
     def estimate(parts: list[LlmContentPart]) -> int:
         messages: list[LlmInputMessage] = [{"role": "user", "content": parts}]
         return estimate_agent_messages_tokens(messages)
 
-    text_only = estimate([text_part])
-    one_image = estimate([text_part, image_part])
-    two_images = estimate([text_part, image_part, image_part])
-    images_and_file = estimate([text_part, image_part, image_part, file_part])
+    text: LlmContentPart = {"type": "text", "text": "Review these files."}
+    small_image: LlmContentPart = {
+        "type": "image",
+        "media_type": "image/png",
+        "data": "YQ==",
+    }
+    large_image: LlmContentPart = {**small_image, "data": "A" * 1_000_000}
+    small_file: LlmContentPart = {
+        "type": "file",
+        "filename": "resume.pdf",
+        "media_type": "application/pdf",
+        "data": "YQ==",
+    }
+    large_file: LlmContentPart = {**small_file, "data": "A" * 1_000_000}
 
-    assert 4_000 < one_image - text_only < 4_200
-    assert 4_000 < two_images - one_image < 4_200
-    assert 32_000 < images_and_file - two_images < 32_200
+    assert estimate([text, small_image]) == estimate([text, large_image])
+    assert estimate([text, small_file]) == estimate([text, large_file])
 
 
 def test_plain_text_token_estimate_is_unchanged() -> None:

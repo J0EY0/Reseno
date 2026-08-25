@@ -268,6 +268,19 @@ try {
 
   assert.equal(isCanonicalResumeSection(project), true);
   assert.equal(
+    isCanonicalResumeSection({ ...project, id: "project:archive" }),
+    false,
+    "Section IDs must not contain the evidence reference delimiter.",
+  );
+  assert.equal(
+    isCanonicalResumeSection({
+      ...project,
+      items: [{ ...project.items[0], id: "project:primary" }],
+    }),
+    false,
+    "Item IDs must not contain the evidence reference delimiter.",
+  );
+  assert.equal(
     isCanonicalResumeSection({
       id: "legacy",
       kind: "project",

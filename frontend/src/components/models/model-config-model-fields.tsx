@@ -1,3 +1,6 @@
+import { useCallback, useState } from "react";
+import { ChevronDown } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -124,8 +127,9 @@ function CapabilityFields({
   controller: ModelConfigDialogController;
   messages: AppMessages;
 }) {
-  const { draft, errors, updateField } = controller;
-  const usesManualSettings = draft.providerKind !== "cloud";
+  const { draft, errors, selectedProvider, updateField } = controller;
+  const usesManualSettings =
+    Boolean(selectedProvider) && draft.providerKind !== "cloud";
 
   return (
     <>
@@ -155,11 +159,9 @@ function CapabilityFields({
               <Checkbox
                 id="model-supports-thinking"
                 checked={draft.supportsThinking}
-                onCheckedChange={(checked) => {
-                  const enabled = checked === true;
-                  updateField("supportsThinking", enabled);
-                  updateField("thinkingEnabled", enabled);
-                }}
+                onCheckedChange={(checked) =>
+                  updateField("supportsThinking", checked === true)
+                }
               />
               <FieldLabel
                 htmlFor="model-supports-thinking"
@@ -232,28 +234,99 @@ function CapabilityFields({
         </FieldSet>
       ) : null}
 
-      {draft.supportsThinking && !usesManualSettings ? (
-        <Field orientation="horizontal">
-          <Checkbox
-            id="model-thinking-enabled"
-            checked={draft.thinkingEnabled}
-            onCheckedChange={(checked) =>
-              updateField("thinkingEnabled", checked === true)
-            }
-          />
-          <FieldLabel
-            htmlFor="model-thinking-enabled"
-            className="font-normal"
-          >
-            {messages.thinkingEnabled}
-          </FieldLabel>
-        </Field>
-      ) : null}
-
       {draft.providerKind !== "cloud" && errors.discovery ? (
         <FieldError>{errors.discovery}</FieldError>
       ) : null}
     </>
+  );
+}
+
+function CloudOutputOverrideField({
+  controller,
+  messages,
+}: {
+  controller: ModelConfigDialogController;
+  messages: AppMessages;
+}) {
+  const { draft, errors, updateField } = controller;
+  const [open, setOpen] = useState(Boolean(draft.maxTokens));
+  const focusInvalidOutputInput = useCallback(
+    (input: HTMLInputElement | null) => {
+      // The callback ref runs when the newly opened content mounts and again
+      // when maxTokens changes from valid to invalid. This makes the actual
+      // field the final focus target without timing assumptions.
+      if (input && errors.maxTokens) {
+        input.focus();
+      }
+    },
+    [errors.maxTokens],
+  );
+  if (draft.providerKind !== "cloud" || !draft.model.trim()) {
+    return null;
+  }
+  const expanded = open || Boolean(errors.maxTokens);
+
+  return (
+    <div>
+      <button
+        id="model-output-settings"
+        type="button"
+        aria-controls="model-output-settings-content"
+        aria-expanded={expanded}
+        aria-invalid={Boolean(errors.maxTokens)}
+        className="group flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 rounded-md py-2 text-left text-sm font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{messages.advancedSettings}</span>
+        <ChevronDown
+          aria-hidden="true"
+          className="size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded:rotate-180"
+        />
+      </button>
+      {expanded ? (
+        <div
+          id="model-output-settings-content"
+          aria-labelledby="model-output-settings"
+          className="pt-3"
+        >
+          <Field data-invalid={Boolean(errors.maxTokens)}>
+            <ModelFormFieldLabel
+              htmlFor="model-max-tokens"
+              label={messages.maxTokens}
+            />
+            <Input
+              ref={focusInvalidOutputInput}
+              id="model-max-tokens"
+              name="model-max-tokens"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={draft.maxTokens}
+              placeholder={messages.maxTokensAuto}
+              aria-invalid={Boolean(errors.maxTokens)}
+              aria-describedby={
+                errors.maxTokens ? "model-max-tokens-error" : undefined
+              }
+              onChange={(event) => {
+                // The field intentionally keeps the raw digit string while the
+                // user edits. Frontend and backend validation remain the single
+                // authority for positive integers and discovered model limits;
+                // the native number input's steppers must not silently coerce it.
+                // Keep the section open after updateField clears a validation
+                // error, so correcting the first digit never hides the input.
+                if (errors.maxTokens) {
+                  setOpen(true);
+                }
+                updateField("maxTokens", event.target.value);
+              }}
+            />
+            <FieldError id="model-max-tokens-error">
+              {errors.maxTokens}
+            </FieldError>
+          </Field>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -264,7 +337,12 @@ export function ModelConfigModelFields({
   controller: ModelConfigDialogController;
   messages: AppMessages;
 }) {
-  const { draft, errors, providersLoaded, selectedProvider } = controller;
+  const {
+    draft,
+    errors,
+    modelOptionsLoading,
+    selectedProvider,
+  } = controller;
   const usesDiscoveredModelSelect =
     Boolean(selectedProvider) && draft.providerKind === "cloud";
   const usesManualSettings =
@@ -272,7 +350,7 @@ export function ModelConfigModelFields({
 
   return (
     <>
-      {!providersLoaded ? (
+      {modelOptionsLoading ? (
         <Field>
           <ModelFormFieldLabel
             htmlFor="model-select"
@@ -310,7 +388,12 @@ export function ModelConfigModelFields({
         </FieldGroup>
       )}
 
-      <CapabilityFields controller={controller} messages={messages} />
+      {!modelOptionsLoading ? (
+        <CapabilityFields controller={controller} messages={messages} />
+      ) : null}
+      {!modelOptionsLoading ? (
+        <CloudOutputOverrideField controller={controller} messages={messages} />
+      ) : null}
     </>
   );
 }

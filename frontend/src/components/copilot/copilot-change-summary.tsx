@@ -4,7 +4,7 @@ import {
   compactResumeDraftDiffs,
   getAgentEditDiffFields,
 } from "@/lib/agent-diff-value";
-import { getAgentQualityWarningCount } from "@/lib/agent-panel-state";
+import { getAgentQualityWarnings } from "@/lib/agent-panel-state";
 import type {
   AgentChatMessage,
   AgentResumeEditSuggestion,
@@ -24,6 +24,22 @@ function formatCountMessage(
 
 function getEditSummaryLabel(edit: AgentResumeEditSuggestion) {
   return edit.title.trim() || edit.target.trim() || edit.id;
+}
+
+const qualityWarningMessageKeys = {
+  inconsistent_item_tense: "agentQualityInconsistentTense",
+  mixed_resume_languages: "agentQualityMixedLanguages",
+  resume_items_not_reverse_chronological: "agentQualityReverseChronology",
+  semantically_duplicate_resume_content: "agentQualityDuplicateContent",
+  target_requirements_not_covered: "agentQualityTargetCoverage",
+  unsupported_edit_claim: "agentQualityUnsupportedClaim",
+} as const satisfies Record<string, keyof AppMessages>;
+
+function getQualityWarningLabel(code: string, t: AppMessages) {
+  const messageKey = Object.hasOwn(qualityWarningMessageKeys, code)
+    ? qualityWarningMessageKeys[code as keyof typeof qualityWarningMessageKeys]
+    : undefined;
+  return messageKey ? t[messageKey] : t.agentQualityGeneral;
 }
 
 function diffTargetKey(diff: ResumeDraftDiff) {
@@ -63,7 +79,7 @@ export function AgentChangeSummary({
   }
 
   const tools = response?.tools ?? [];
-  const qualityWarningCount = getAgentQualityWarningCount(tools);
+  const qualityWarnings = getAgentQualityWarnings(tools);
   const isCommitted = response?.transactionState === "committed";
   const responseDiffs = edits.flatMap((edit) => edit.diffs ?? []);
   const canonicalLabelByTarget = new Map(
@@ -103,10 +119,17 @@ export function AgentChangeSummary({
           {t.agentDraftSynced}
         </p>
       ) : null}
-      {qualityWarningCount > 0 ? (
-        <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
-          {formatCountMessage(t.agentQualityWarnings, qualityWarningCount)}
-        </p>
+      {qualityWarnings.length > 0 ? (
+        <div className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
+          <p>{formatCountMessage(t.agentQualityWarnings, qualityWarnings.length)}</p>
+          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+            {qualityWarnings.map((warning) => (
+              <li key={`${warning.code}:${warning.target}`}>
+                {getQualityWarningLabel(warning.code, t)}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       <div className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1 text-xs leading-5 text-muted-foreground">
         {editRows.map(({ edit, fields }) => {

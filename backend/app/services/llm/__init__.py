@@ -3,22 +3,26 @@ from .dispatch import (
     async_complete_chat,
     async_complete_tool_call,
     async_stream_chat,
+    async_stream_tool_call,
     supports_native_attachment,
 )
 from .errors import LlmRequestError, LlmTimeoutError
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
+    LlmPrompt,
     LlmRequestContext,
     LlmStreamEvent,
     LlmToolCall,
     LlmToolValidationError,
     LlmUsage,
+    LlmWebSource,
 )
 
 __all__ = [
     "AgentLlmConfig",
     "LlmAssistantMessage",
+    "LlmPrompt",
     "LlmRequestError",
     "LlmRequestContext",
     "LlmTimeoutError",
@@ -26,9 +30,11 @@ __all__ = [
     "LlmToolCall",
     "LlmToolValidationError",
     "LlmUsage",
+    "LlmWebSource",
     "async_complete_chat",
     "async_complete_tool_call",
     "async_stream_chat",
+    "async_stream_tool_call",
     "resolve_agent_llm_config",
     "supports_native_attachment",
 ]

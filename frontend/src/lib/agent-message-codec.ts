@@ -1,94 +1,14 @@
 import type {
-  AgentChatActionId,
   AgentChatMessage,
-  AgentFinishMissing,
   AgentResumeEditSuggestion,
   AgentSource,
-  AgentTargetContext,
   AgentTimelinePart,
   AgentToolInvocation,
   AgentTransactionState,
 } from "@/types/api";
 
-const agentActionIds = new Set<AgentChatActionId>([
-  "summary",
-  "bullet",
-  "keywords",
-  "plan",
-  "execute",
-]);
-const agentFinishMissingValues = new Set<AgentFinishMissing>([
-  "pending_draft",
-  "url_purpose",
-  "resume_target",
-  "draft_edit_target",
-  "source_material",
-  "target_role",
-  "user_evidence",
-  "explicit_delete_intent",
-  "explicit_reorder_intent",
-  "model_config",
-]);
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
-}
-
-function toStringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : undefined;
-}
-
-function toKnowledgeItems(value: unknown): AgentChatMessage["knowledge"] {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value
-    .filter(isRecord)
-    .map((item) => ({
-      title: typeof item.title === "string" ? item.title : "",
-      detail: typeof item.detail === "string" ? item.detail : "",
-    }))
-    .filter((item) => item.title || item.detail);
-}
-
-function toActionIds(value: unknown): AgentChatActionId[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  const actions = value
-    .map((item) => {
-      if (typeof item === "string") {
-        return item;
-      }
-
-      if (isRecord(item) && typeof item.id === "string") {
-        return item.id;
-      }
-
-      return "";
-    })
-    .filter((item): item is AgentChatActionId =>
-      agentActionIds.has(item as AgentChatActionId),
-    );
-
-  return actions.length > 0 ? actions : undefined;
-}
-
-function toFinishMissing(value: unknown): AgentChatMessage["finishMissing"] {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  const missing = value.filter(
-    (item): item is AgentFinishMissing =>
-      typeof item === "string" &&
-      agentFinishMissingValues.has(item as AgentFinishMissing),
-  );
-
-  return missing.length > 0 ? missing : undefined;
 }
 
 function toTransactionState(value: unknown): AgentTransactionState | undefined {
@@ -104,39 +24,8 @@ function toTransactionState(value: unknown): AgentTransactionState | undefined {
   return undefined;
 }
 
-function toTargetContext(value: unknown): AgentTargetContext | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const kind = value.kind;
-  if (
-    kind !== "employment" &&
-    kind !== "graduate_study" &&
-    kind !== "research" &&
-    kind !== "scholarship" &&
-    kind !== "general"
-  ) {
-    return undefined;
-  }
-
-  return {
-    cleared: value.cleared === true,
-    kind,
-    target: typeof value.target === "string" ? value.target : "",
-    locations: toStringArray(value.locations) ?? [],
-    seniority: typeof value.seniority === "string" ? value.seniority : "",
-    responsibilities: toStringArray(value.responsibilities) ?? [],
-    mustHaveSkills: toStringArray(value.mustHaveSkills) ?? [],
-    niceToHaveSkills: toStringArray(value.niceToHaveSkills) ?? [],
-    requirements: toStringArray(value.requirements) ?? [],
-    description: typeof value.description === "string" ? value.description : "",
-    exactJobDescription: value.exactJobDescription === true,
-    sourceMessageIds: toStringArray(value.sourceMessageIds) ?? [],
-  };
-}
-
 function toSourceType(value: unknown): AgentSource["sourceType"] | undefined {
-  if (value === "targetContext" || value === "attachment" || value === "web") {
+  if (value === "attachment" || value === "web") {
     return value;
   }
 
@@ -156,10 +45,6 @@ function toSources(value: unknown): AgentChatMessage["sources"] {
       const title = typeof item.title === "string" ? item.title : "";
 
       if (!sourceType || !id || !title) {
-        return [];
-      }
-
-      if (id === "source-jd-search-query") {
         return [];
       }
 
@@ -360,9 +245,7 @@ export function createEmptyAssistantMessage(): AgentChatMessage {
   return {
     id: `agent-stream-${Date.now()}`,
     role: "assistant",
-    reasoning: "",
     text: "",
-    updates: [],
     timeline: [],
   };
 }
@@ -375,47 +258,29 @@ export function mergeAgentMessage(
     return current;
   }
 
-  const suggestions = toStringArray(patch.suggestions);
-  const plan = toStringArray(patch.plan);
-  const updates = toStringArray(patch.updates);
   const timeline = toTimelineParts(patch.timeline);
-  const knowledge = toKnowledgeItems(patch.knowledge);
-  const actions = toActionIds(patch.actions);
   const tools = toToolInvocations(patch.tools);
   const sources = toSources(patch.sources);
   const edits = toEditSuggestions(patch.edits);
-  const finishMissing = toFinishMissing(patch.finishMissing);
   const transactionState = toTransactionState(patch.transactionState);
-  const quickReplies = toStringArray(patch.quickReplies);
-  const targetContext = toTargetContext(patch.targetContext);
 
   return {
     ...current,
     id: typeof patch.id === "string" ? patch.id : current.id,
     role: "assistant",
-    reasoning:
-      typeof patch.reasoning === "string" ? patch.reasoning : current.reasoning,
     tone:
       patch.tone === "default" || patch.tone === "success"
         ? patch.tone
         : current.tone,
     text: typeof patch.text === "string" ? patch.text : current.text,
-    updates: updates ?? current.updates,
     timeline: timeline ?? current.timeline,
-    plan: plan ?? current.plan,
-    suggestions: suggestions ?? current.suggestions,
-    knowledge: knowledge ?? current.knowledge,
     tools:
       tools === undefined
         ? current.tools
         : mergeAgentToolInvocations(current.tools, tools),
     sources: sources ?? current.sources,
     edits: edits ?? current.edits,
-    targetContext: targetContext ?? current.targetContext,
     transactionState: transactionState ?? current.transactionState,
-    finishMissing: finishMissing ?? current.finishMissing,
-    quickReplies: quickReplies ?? current.quickReplies,
-    actions: actions ?? current.actions,
   };
 }
 
@@ -427,6 +292,68 @@ function getPayloadPatch(payload: unknown, key: string) {
   return payload[key] ?? payload;
 }
 
+function getTimelinePartId(payload: unknown) {
+  return isRecord(payload) && typeof payload.timelinePartId === "string"
+    ? payload.timelinePartId
+    : "";
+}
+
+function appendTimelineText(
+  timeline: AgentTimelinePart[] = [],
+  partId: string,
+  delta: string,
+) {
+  const last = timeline.at(-1);
+  if (last?.id === partId && last.type === "text") {
+    return [
+      ...timeline.slice(0, -1),
+      { ...last, text: `${last.text ?? ""}${delta}` },
+    ];
+  }
+
+  return [...timeline, { id: partId, type: "text" as const, text: delta }];
+}
+
+function appendTimelineTool(
+  timeline: AgentTimelinePart[] = [],
+  partId: string,
+  toolId: string,
+) {
+  const last = timeline.at(-1);
+  if (last?.id === partId && last.type === "tool_group") {
+    if (last.toolIds?.includes(toolId)) {
+      return timeline;
+    }
+    return [
+      ...timeline.slice(0, -1),
+      { ...last, toolIds: [...(last.toolIds ?? []), toolId] },
+    ];
+  }
+
+  return [
+    ...timeline,
+    { id: partId, type: "tool_group" as const, toolIds: [toolId] },
+  ];
+}
+
+export function applyAgentTextStreamEvent(
+  message: AgentChatMessage,
+  payload: unknown,
+) {
+  if (!isRecord(payload) || typeof payload.delta !== "string") {
+    return message;
+  }
+
+  const partId = getTimelinePartId(payload);
+  return {
+    ...message,
+    text: `${message.text}${payload.delta}`,
+    timeline: partId
+      ? appendTimelineText(message.timeline, partId, payload.delta)
+      : message.timeline,
+  };
+}
+
 export function applyAgentToolStreamEvent(
   message: AgentChatMessage,
   payload: unknown,
@@ -436,8 +363,12 @@ export function applyAgentToolStreamEvent(
     return message;
   }
 
+  const partId = getTimelinePartId(payload);
   return {
     ...message,
     tools: mergeAgentToolInvocations(message.tools, tools),
+    timeline: partId
+      ? appendTimelineTool(message.timeline, partId, tools[0].id)
+      : message.timeline,
   };
 }

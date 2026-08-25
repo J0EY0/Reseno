@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import shutil
 import xml.etree.ElementTree as ElementTree
 import zipfile
@@ -21,6 +20,7 @@ from pypdf import PdfReader
 from app.config import get_settings
 from app.db.connection import connect
 from app.schemas.agent import AgentAttachmentResponse, AgentChatRequest
+from app.schemas.resumes import is_valid_resume_id
 from app.services.agent.privacy import sanitize_agent_text
 from app.services.agent.resume_owner import active_resume_transaction
 
@@ -43,7 +43,6 @@ DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 
-_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _TEXT_SUFFIXES = {
     ".csv",
     ".json",
@@ -137,8 +136,8 @@ def store_agent_attachment(
     """Validate and persist an original inside an already-authorized session.
 
     Upload intentionally does not extract document text. The original file is
-    canonical; extraction is lazy and cached only when an adapter needs a text
-    fallback. HTTP uploads must use ``store_resume_agent_attachment`` so the
+    canonical; extraction is lazy and cached when a text-only adapter needs it.
+    HTTP uploads must use ``store_resume_agent_attachment`` so the
     filesystem write cannot outlive its resume owner.
     """
 
@@ -736,7 +735,7 @@ def _normalized_attachment_id(value: Any) -> str | None:
 
 
 def _is_valid_session_id(value: str) -> bool:
-    return bool(_SESSION_ID_PATTERN.fullmatch(value))
+    return is_valid_resume_id(value)
 
 
 def _safe_filename(filename: str) -> str:

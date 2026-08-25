@@ -8,6 +8,7 @@ from ..common import (
     async_post_json,
     async_stream_json,
     close_async_stream,
+    make_web_source,
     map_stop_reason,
     message_content_parts,
     message_content_text,
@@ -27,7 +28,15 @@ from ..types import (
     LlmStreamEvent,
     LlmToolCall,
     LlmUsage,
+    LlmWebSource,
 )
+
+_NATIVE_WEB_STEP_TYPES = {
+    "google_search_call",
+    "google_search_result",
+    "url_context_call",
+    "url_context_result",
+}
 
 
 def supports_native_attachment(media_type: str) -> bool:
@@ -88,7 +97,10 @@ async def _stream_interaction(
     provider_stream = async_stream_json(
         f"{provider_base_url(config.base_url)}/interactions",
         headers={**_headers(config), "Accept": "text/event-stream"},
-        payload={**gemini_payload(config, messages, tools), "stream": True},
+        payload={
+            **gemini_payload(config, messages, tools),
+            "stream": True,
+        },
         timeout_seconds=config.timeout_seconds,
     )
     steps: dict[int, dict[str, Any]] = {}
@@ -96,6 +108,7 @@ async def _stream_interaction(
     reasoning_parts: dict[int, list[str]] = {}
     argument_parts: dict[int, list[str]] = {}
     thought_signatures: dict[int, str] = {}
+    text_annotations: dict[int, list[dict[str, Any]]] = {}
     stopped_steps: set[int] = set()
 
     try:
@@ -107,8 +120,14 @@ async def _stream_interaction(
             if event_type == "interaction.created":
                 yield LlmStreamEvent(type="activity")
                 continue
-            if event_type == "interaction.status_update":
+            if event_type in {
+                "interaction.status_update",
+                "interaction.in_progress",
+                "interaction.requires_action",
+            }:
                 if event.get("status") in {"in_progress", "requires_action"}:
+                    yield LlmStreamEvent(type="activity")
+                elif event_type != "interaction.status_update":
                     yield LlmStreamEvent(type="activity")
                 continue
 
@@ -130,19 +149,9 @@ async def _stream_interaction(
                         argument_parts[index] = [
                             json.dumps(initial_arguments, ensure_ascii=False),
                         ]
-                content = step.get("content")
-                initial_texts = (
-                    [
-                        block["text"]
-                        for block in content
-                        if isinstance(block, dict)
-                        and block.get("type") == "text"
-                        and isinstance(block.get("text"), str)
-                        and block["text"]
-                    ]
-                    if step.get("type") == "model_output" and isinstance(content, list)
-                    else []
-                )
+                initial_texts, initial_annotations = _initial_stream_text(step)
+                if initial_annotations:
+                    text_annotations[index] = initial_annotations
                 if initial_texts:
                     text_parts[index] = initial_texts
                     for text in initial_texts:
@@ -203,6 +212,18 @@ async def _stream_interaction(
                     if arguments:
                         argument_parts.setdefault(index, []).append(arguments)
                         yield LlmStreamEvent(type="activity")
+                elif delta_type == "text_annotation":
+                    annotations = delta.get("annotations")
+                    if isinstance(annotations, list):
+                        text_annotations.setdefault(index, []).extend(
+                            annotation
+                            for annotation in annotations
+                            if isinstance(annotation, dict)
+                        )
+                    yield LlmStreamEvent(type="activity")
+                elif delta_type in _NATIVE_WEB_STEP_TYPES:
+                    _merge_native_web_delta(steps[index], delta)
+                    yield LlmStreamEvent(type="activity")
                 continue
 
             if event_type == "step.stop":
@@ -236,6 +257,7 @@ async def _stream_interaction(
                     reasoning_parts,
                     argument_parts,
                     thought_signatures,
+                    text_annotations,
                 )
                 message = _message_from_payload(payload)
                 yield LlmStreamEvent(
@@ -278,8 +300,21 @@ def gemini_payload(
         # Interactions accepts system instructions as a first-class field. Do
         # not fold them into user text or the agent's hard rules lose weight.
         payload["system_instruction"] = system
-    if tools:
-        payload["tools"] = _gemini_function_tools(tools)
+    provider_tools = _gemini_function_tools(tools or [])
+    if config.use_native_web_search:
+        provider_tools[:0] = [
+            {"type": "google_search"},
+            {"type": "url_context"},
+        ]
+    if provider_tools:
+        payload["tools"] = provider_tools
+    if config.request_max_output_tokens:
+        # Gemini Interactions v1 defines this under generation_config rather
+        # than as a top-level field. Merge instead of replacing so future
+        # provider-owned generation settings remain intact.
+        generation_config = dict(payload.get("generation_config") or {})
+        generation_config["max_output_tokens"] = config.request_max_output_tokens
+        payload["generation_config"] = generation_config
 
     return payload
 
@@ -455,20 +490,47 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
             "Model provider requested action without a valid function call.",
         )
     provider_steps = _provider_steps(payload)
+    content, sources = _text_and_sources(payload)
     return LlmAssistantMessage(
-        content=_text(payload),
+        content=content,
         tool_calls=tool_calls,
         reasoning=_reasoning(payload),
         usage=_usage(payload),
         stop_reason="tool_calls" if tool_calls else _stop_reason(payload),
         response_id=str(payload.get("id") or "") or None,
-        # Stateless replay needs Gemini's generated output steps in order,
-        # without provider input/result steps from the raw interaction.
+        # Stateless replay needs Gemini's generated and hosted-tool steps in
+        # order, without user input or client function results.
         provider_state={"steps": provider_steps} if provider_steps else {},
+        sources=sources,
     )
 
 
-def _text(payload: dict[str, Any]) -> str:
+def _text_and_sources(
+    payload: dict[str, Any],
+) -> tuple[str, list[LlmWebSource]]:
+    sources: dict[str, LlmWebSource] = {}
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict) or step.get("type") not in {
+            "google_search_result",
+            "url_context_result",
+        }:
+            continue
+        results = step.get("result")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            url = result.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            source = make_web_source(
+                url=url,
+                title=str(result.get("title") or "").strip(),
+                excerpt=str(result.get("snippet") or "").strip(),
+            )
+            sources[source.id] = source
+
     parts: list[str] = []
     for step in payload.get("steps") or []:
         if not isinstance(step, dict):
@@ -477,10 +539,61 @@ def _text(payload: dict[str, Any]) -> str:
         if isinstance(text, str):
             parts.append(text)
         for block in step.get("content") or []:
-            if isinstance(block, dict) and isinstance(block.get("text"), str):
-                parts.append(block["text"])
+            if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                continue
+            text = block["text"]
+            for annotation in block.get("annotations") or []:
+                if (
+                    not isinstance(annotation, dict)
+                    or annotation.get("type") != "url_citation"
+                ):
+                    continue
+                url = annotation.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    continue
+                bounds = _gemini_byte_range(
+                    text,
+                    annotation.get("start_index"),
+                    annotation.get("end_index"),
+                )
+                excerpt = text[bounds[0] : bounds[1]] if bounds else ""
+                source = make_web_source(
+                    url=url,
+                    title=str(annotation.get("title") or "").strip(),
+                    excerpt=excerpt,
+                )
+                existing = sources.get(source.id)
+                if existing is None or (not existing.excerpt and source.excerpt):
+                    sources[source.id] = source
+            parts.append(text)
 
-    return "".join(parts).strip()
+    return "".join(parts).strip(), list(sources.values())
+
+
+def _gemini_byte_range(
+    text: str,
+    start_index: Any,
+    end_index: Any,
+) -> tuple[int, int] | None:
+    if (
+        isinstance(start_index, bool)
+        or not isinstance(start_index, int)
+        or isinstance(end_index, bool)
+        or not isinstance(end_index, int)
+        or start_index < 0
+        or end_index <= start_index
+    ):
+        return None
+
+    encoded = text.encode("utf-8")
+    if end_index > len(encoded):
+        return None
+    try:
+        start = len(encoded[:start_index].decode("utf-8"))
+        end = len(encoded[:end_index].decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    return start, end
 
 
 def _reasoning(payload: dict[str, Any]) -> str:
@@ -538,7 +651,11 @@ def _provider_steps(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(step, dict) or step.get("type") not in {
             "thought",
             "function_call",
+            "google_search_call",
+            "google_search_result",
             "model_output",
+            "url_context_call",
+            "url_context_result",
         }:
             continue
         provider_step = dict(step)
@@ -601,13 +718,18 @@ def _stream_payload(
     reasoning_parts: dict[int, list[str]],
     argument_parts: dict[int, list[str]],
     thought_signatures: dict[int, str],
+    text_annotations: dict[int, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     assembled_steps: list[dict[str, Any]] = []
     for index in sorted(steps):
         step = dict(steps[index])
         text = "".join(text_parts.get(index, []))
         if text:
-            step["content"] = [{"type": "text", "text": text}]
+            text_block: dict[str, Any] = {"type": "text", "text": text}
+            annotations = text_annotations.get(index)
+            if annotations:
+                text_block["annotations"] = annotations
+            step["content"] = [text_block]
         reasoning = "".join(reasoning_parts.get(index, []))
         if reasoning:
             step["summary"] = [{"type": "text", "text": reasoning}]
@@ -630,6 +752,55 @@ def _stream_payload(
         assembled_steps.append(step)
 
     return {**interaction, "steps": assembled_steps}
+
+
+def _initial_stream_text(
+    step: dict[str, Any],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    content = step.get("content")
+    if step.get("type") != "model_output" or not isinstance(content, list):
+        return [], []
+
+    texts: list[str] = []
+    annotations: list[dict[str, Any]] = []
+    byte_offset = 0
+    for block in content:
+        if (
+            not isinstance(block, dict)
+            or block.get("type") != "text"
+            or not isinstance(block.get("text"), str)
+        ):
+            continue
+        text = block["text"]
+        if text:
+            texts.append(text)
+        for annotation in block.get("annotations") or []:
+            if not isinstance(annotation, dict):
+                continue
+            adjusted = dict(annotation)
+            for key in ("start_index", "end_index"):
+                value = adjusted.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    adjusted[key] = value + byte_offset
+            annotations.append(adjusted)
+        byte_offset += len(text.encode("utf-8"))
+    return texts, annotations
+
+
+def _merge_native_web_delta(
+    step: dict[str, Any],
+    delta: dict[str, Any],
+) -> None:
+    for key, value in delta.items():
+        if key == "type":
+            continue
+        existing = step.get(key)
+        if isinstance(existing, list) and isinstance(value, list):
+            existing.extend(value)
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            existing.update(value)
+        else:
+            step[key] = value
 
 
 def _is_error_event(payload: dict[str, Any]) -> bool:
