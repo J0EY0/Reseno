@@ -4745,7 +4745,6 @@ def test_agent_message_builder_treats_historical_assistant_prose_as_data() -> No
 
     messages = build_agent_messages(request, config)
 
-    assert request._active_conversation_checkpoint is None
     expected_history: list[dict[str, str]] = []
     for item in conversation:
         if item["role"] == "assistant":
@@ -5727,8 +5726,8 @@ def test_agent_delete_operations_are_previewed_without_text_intent_routing() -> 
     )
 
     assert tool.state == "output-available"
-    assert result["output"]["editCount"] == 1
-    assert result["output"]["observations"][0]["after"] is None
+    assert tool.output["observations"][0]["after"] is None
+    assert result["output"] == {"status": "accepted", "editCount": 1}
     assert len(environment.close(completed=True).edits) == 1
 
 

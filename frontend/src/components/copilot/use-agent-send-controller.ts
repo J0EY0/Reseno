@@ -382,7 +382,7 @@ export function useAgentSendController({
                           expectedRevision,
                           locale,
                           message: currentMessage,
-                          messages: priorMessages,
+                          messages: resumeId ? [] : priorMessages,
                           modelConfig: selectedModel,
                           resume,
                           resumeId,

@@ -27,6 +27,9 @@ try {
   const { AgentAssistantResponse } = await server.ssrLoadModule(
     "/src/components/copilot/copilot-assistant-response.tsx",
   );
+  const { AgentAssistantMessageRow } = await server.ssrLoadModule(
+    "/src/components/copilot/copilot-message-presentation.tsx",
+  );
   const {
     createAgentMarkdownComponents,
     getAgentMarkdownFallbackText,
@@ -209,6 +212,54 @@ try {
     /<code[^>]*data-streamdown="inline-code"[^>]*>React\.FC<\/code>/,
     "Unrelated technical inline code must keep the standard code presentation.",
   );
+
+  const comparisonTable = `**岗位要求对比：**
+
+| JD 要求 | 简历证据 |
+| --- | --- |
+| React | ResuMate 项目 |`;
+  const comparisonTableMarkup = renderToStaticMarkup(
+    createElement(MessageResponse, {
+      children: comparisonTable,
+      mode: "static",
+    }),
+  );
+  const editedResponseMarkup = renderToStaticMarkup(
+    createElement(AgentAssistantMessageRow, {
+      hasAgentDraft: false,
+      isStreamingAssistant: false,
+      message: {
+        id: "assistant-with-edits",
+        role: "assistant",
+        text: comparisonTable,
+        response: {
+          id: "assistant-with-edits",
+          role: "assistant",
+          text: comparisonTable,
+          edits,
+          transactionState: "committed",
+        },
+      },
+      onApplyAgentDraft: () => {},
+      onDiscardAgentDraft: () => {},
+      shouldShowDraftActions: false,
+      t: zhMessages,
+    }),
+  );
+
+  assert.match(
+    comparisonTableMarkup,
+    /<table(?:\s|>)/,
+    "The JD fixture must remain a valid GFM table at the rich-rendering seam.",
+  );
+
+  for (const tableText of ["JD 要求", "简历证据", "React", "ResuMate 项目"]) {
+    assert.match(
+      editedResponseMarkup,
+      new RegExp(tableText),
+      "A valid JD comparison table must remain visible when the response also carries structured edits.",
+    );
+  }
 } finally {
   await server.close();
 }

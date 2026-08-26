@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
 from app.services.llm import (
     AgentLlmConfig,
     LlmRequestError,
@@ -46,6 +46,7 @@ from ..privacy import (
     sanitize_agent_value,
 )
 from ..prompt import AGENT_PROMPT
+from .context import AgentContextWindowError
 
 CONTEXT_COMPRESSION_RATIO = 0.85
 CONTEXT_CHECKPOINT_TARGET_RATIO = 0.70
@@ -129,18 +130,23 @@ class AgentPromptLimits:
 def build_agent_messages(
     request: AgentChatRequest,
     config: AgentLlmConfig,
+    *,
+    checkpoint: AgentConversationCheckpoint | None = None,
 ) -> list[LlmInputMessage]:
     """Build the model-visible transcript without provider cache metadata."""
 
     return build_agent_prompt(
         request,
         config,
+        checkpoint=checkpoint,
     ).messages
 
 
 def build_agent_prompt(
     request: AgentChatRequest,
     config: AgentLlmConfig,
+    *,
+    checkpoint: AgentConversationCheckpoint | None = None,
 ) -> LlmPrompt:
     """Build model messages with current-request attachments only.
 
@@ -185,6 +191,7 @@ def build_agent_prompt(
         config=config,
         tool_schema_tokens=tool_schema_tokens,
         hidden_terms=hidden_terms,
+        checkpoint=checkpoint,
     )
     sanitized_state = sanitize_agent_value(
         projection.state,
@@ -403,12 +410,12 @@ def _conversation_projection(
     config: AgentLlmConfig,
     tool_schema_tokens: int,
     hidden_terms: tuple[str, ...],
+    checkpoint: AgentConversationCheckpoint | None,
 ) -> _ConversationProjection:
     # A persisted checkpoint replaces exactly one authoritative history
     # prefix. The remaining product messages stay exact and ordered, which is
     # what lets a later request reuse the previous provider prompt prefix.
     conversation = list(request.messages)
-    checkpoint = request._active_conversation_checkpoint
     checkpoint_count = (
         _checkpoint_message_count(conversation, checkpoint.through_message_id)
         if checkpoint is not None
@@ -445,18 +452,14 @@ def _conversation_projection(
 
 
 def _checkpoint_context_value(
-    value: str,
+    value: dict[str, Any],
     *,
     hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
-    try:
-        context = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise LlmRequestError("The stored conversation checkpoint is invalid.") from exc
-    sanitized = sanitize_agent_value(context, hidden_terms=hidden_terms)
-    if not isinstance(sanitized, dict) or not sanitized:
-        raise LlmRequestError("The stored conversation checkpoint is invalid.")
-    return sanitized
+    return cast(
+        dict[str, Any],
+        sanitize_agent_value(value, hidden_terms=hidden_terms),
+    )
 
 
 def _checkpoint_message_count(
@@ -472,10 +475,12 @@ def _checkpoint_message_count(
     )
 
 
-def agent_checkpoint_message_count(request: AgentChatRequest) -> int:
+def agent_checkpoint_message_count(
+    request: AgentChatRequest,
+    checkpoint: AgentConversationCheckpoint | None,
+) -> int:
     """Resolve the active checkpoint boundary against authoritative history."""
 
-    checkpoint = request._active_conversation_checkpoint
     if checkpoint is None:
         return 0
     return _checkpoint_message_count(
@@ -565,7 +570,8 @@ def agent_checkpoint_context(
     request: AgentChatRequest,
     *,
     end_count: int,
-) -> str:
+    token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
+) -> dict[str, Any]:
     """Return one deterministic, bounded checkpoint from authoritative history."""
 
     selected: list[dict[str, Any]] = []
@@ -583,18 +589,14 @@ def agent_checkpoint_context(
             "trust": "untrusted_history_data",
             "events": candidate,
         }
-        if _estimated_json_tokens(payload) > CHECKPOINT_CONTEXT_TOKEN_BUDGET:
+        if _estimated_json_tokens(payload) > token_budget:
             continue
         selected = candidate
 
-    return json.dumps(
-        {
-            "trust": "untrusted_history_data",
-            "events": selected,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    return {
+        "trust": "untrusted_history_data",
+        "events": selected,
+    }
 
 
 def _bounded_checkpoint_event(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -645,9 +647,7 @@ def _bounded_checkpoint_event(event: dict[str, Any]) -> dict[str, Any] | None:
             bounded_state["sourceRefs"] = source_refs[:8]
         bounded["assistantResponseContext"] = bounded_state
     return (
-        bounded
-        if "text" in bounded or "assistantResponseContext" in bounded
-        else None
+        bounded if "text" in bounded or "assistantResponseContext" in bounded else None
     )
 
 
@@ -830,10 +830,10 @@ def _compact_tool_result_value(value: Any, *, excerpt_chars: int) -> Any:
     return compacted
 
 
-def _model_turn_context_window_error() -> LlmRequestError:
-    return LlmRequestError(
+def _model_turn_context_window_error() -> AgentContextWindowError:
+    return AgentContextWindowError(
         "Tool observations exceed the selected model context window. "
-        "Start a new conversation or choose a model with a larger context window.",
+        "Narrow the current request or choose a model with a larger context window.",
     )
 
 
@@ -1199,7 +1199,7 @@ def _context_budget(
         - (1 if config.provider_kind != "cloud" else 0)
     )
     if input_tokens <= 0:
-        raise LlmRequestError(
+        raise AgentContextWindowError(
             "The selected model context window is too small after reserving "
             "tool definitions and runtime input-estimation safety margin.",
         )
@@ -1270,7 +1270,7 @@ def _fit_attachment_context(
     """Require complete extracted text to fit; never send a partial document."""
 
     if _estimated_json_tokens(files) > token_budget:
-        raise LlmRequestError(
+        raise AgentContextWindowError(
             "The attached document is too large for the selected model context.",
         )
     return files

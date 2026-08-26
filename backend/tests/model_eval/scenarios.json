@@ -653,7 +653,6 @@
         ],
         "minSources": 1,
         "requiredToolSequence": [
-          "web_search",
           "edit_execute"
         ],
         "requiredResponseRegex": [

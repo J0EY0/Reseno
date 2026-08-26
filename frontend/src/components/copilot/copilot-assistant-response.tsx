@@ -94,53 +94,19 @@ function getWebSources(sources: AgentSource[] | undefined) {
   return [...sourceByUrl.values()];
 }
 
-function removeMarkdownTableBlocks(text: string) {
-  const tableRowPattern = /^\s*\|.*\|\s*$/;
-  const tableSeparatorPattern =
-    /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
-  const lines = text.split(/\r?\n/);
-  const keptLines: string[] = [];
-  let removedTableLine = false;
-
-  for (const line of lines) {
-    const isMarkdownTableLine =
-      tableRowPattern.test(line) || tableSeparatorPattern.test(line);
-
-    if (isMarkdownTableLine) {
-      removedTableLine = true;
-      continue;
-    }
-
-    if (removedTableLine && !line.trim()) {
-      removedTableLine = false;
-      continue;
-    }
-
-    removedTableLine = false;
-    keptLines.push(line);
-  }
-
-  return keptLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
 /**
- * Owns the complete assistant-text rendering policy: edit-table cleanup,
- * lightweight plain text, optional rich Markdown, and source placement.
+ * Owns the complete assistant-text rendering policy: lightweight plain text,
+ * optional rich Markdown, and source placement.
  */
 export function AgentAssistantResponse({
   fieldLabels,
-  removeMarkdownTables,
   sources,
   text,
 }: {
   fieldLabels?: ReadonlyMap<string, string>;
-  removeMarkdownTables?: boolean;
   sources: AgentSource[] | undefined;
   text: string;
 }) {
-  const responseText = removeMarkdownTables
-    ? removeMarkdownTableBlocks(text)
-    : text;
   const webSources = useMemo(() => getWebSources(sources), [sources]);
   const markdownComponents = useMemo(
     () =>
@@ -152,23 +118,23 @@ export function AgentAssistantResponse({
   const fallbackText = useMemo(
     () =>
       fieldLabels?.size
-        ? getAgentMarkdownFallbackText(responseText, fieldLabels)
-        : responseText,
-    [fieldLabels, responseText],
+        ? getAgentMarkdownFallbackText(text, fieldLabels)
+        : text,
+    [fieldLabels, text],
   );
   const hasWebSources = webSources.length > 0;
 
-  if (!responseText.trim()) {
+  if (!text.trim()) {
     return null;
   }
 
   return (
     <div>
-      {isPlainAgentText(responseText) ? (
-        <AgentPlainResponse inlineTail={hasWebSources} text={responseText} />
+      {isPlainAgentText(text) ? (
+        <AgentPlainResponse inlineTail={hasWebSources} text={text} />
       ) : (
         <AgentRichResponse
-          text={responseText}
+          text={text}
           components={markdownComponents}
           fallbackText={fallbackText}
           inlineTail={hasWebSources}

@@ -6,10 +6,10 @@ import pytest
 from openai import APIConnectionError, APIStatusError
 
 from app.schemas.agent import AgentChatRequest, AgentConversationItem
-from app.services import agent_runs, agent_sessions
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.context import (
+    AgentContextWindowError,
     AgentRuntimeContext,
     agent_llm_request_context,
 )
@@ -53,11 +53,6 @@ def test_provider_response_body_never_enters_agent_sse(
         yield  # pragma: no cover - keeps this an async iterator
 
     monkeypatch.setattr(
-        agent_sessions,
-        "persist_agent_user_message",
-        lambda conn, request: None,
-    )
-    monkeypatch.setattr(
         streaming,
         "resolve_agent_llm_config",
         lambda conn, model_config: _config(),
@@ -66,7 +61,7 @@ def test_provider_response_body_never_enters_agent_sse(
 
     async def collect() -> str:
         frames: list[str] = []
-        async for frame in streaming.async_stream_agent_response(
+        async for event in streaming.async_iter_agent_events(
             AgentChatRequest(
                 message=AgentConversationItem(
                     id="turn-provider-error-sse",
@@ -77,7 +72,7 @@ def test_provider_response_body_never_enters_agent_sse(
             ),
             object(),
         ):
-            frames.append(frame)
+            frames.append(streaming.serialize_agent_event(event))
         return "".join(frames)
 
     frames = asyncio.run(collect())
@@ -185,13 +180,65 @@ def test_provider_timeout_has_a_distinct_public_error_code() -> None:
 
     assert streaming._llm_error_code(error) == "AGENT_PROVIDER_TIMEOUT"
     assert streaming._llm_error_detail(error) == ("Model provider request timed out.")
-    assert (
-        agent_runs._provider_error_code(
-            "event: error\n"
-            'data: {"type":"error","errorCode":"AGENT_PROVIDER_TIMEOUT"}\n\n',
-        )
-        == "AGENT_PROVIDER_TIMEOUT"
+    event = streaming.AgentStreamError(
+        message="Model provider request timed out.",
+        error_code=streaming._llm_error_code(error),
     )
+    assert event.error_code == "AGENT_PROVIDER_TIMEOUT"
+    assert '"errorCode":"AGENT_PROVIDER_TIMEOUT"' in (
+        streaming.serialize_agent_event(event)
+    )
+
+
+def test_local_context_window_error_keeps_actionable_detail() -> None:
+    error = AgentContextWindowError(
+        "The current resume and request exceed the selected model context window. "
+        "Shorten the current input or choose a model with a larger context window.",
+    )
+
+    assert streaming._llm_error_code(error) == "AGENT_INTERNAL_ERROR"
+    assert streaming._llm_error_detail(error) == str(error)
+
+
+def test_local_context_window_error_is_not_presented_as_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_loop(*args: object, **kwargs: object):
+        del args, kwargs
+        raise AgentContextWindowError("local context overflow")
+        yield  # pragma: no cover - keeps this an async iterator
+
+    monkeypatch.setattr(
+        streaming,
+        "resolve_agent_llm_config",
+        lambda conn, model_config: _config(),
+    )
+    monkeypatch.setattr(streaming, "async_iter_agent_tool_call_loop", failing_loop)
+
+    async def collect() -> str:
+        frames = [
+            streaming.serialize_agent_event(event)
+            async for event in streaming.async_iter_agent_events(
+                AgentChatRequest(
+                    message=AgentConversationItem(
+                        id="turn-context-window-error",
+                        role="user",
+                        text="请修改简历",
+                    ),
+                    locale="zh",
+                    resume={"basic": {}, "sections": []},
+                ),
+                object(),
+            )
+        ]
+        return "".join(frames)
+
+    frames = asyncio.run(collect())
+
+    assert "上下文窗口" in frames
+    assert "缩短本次输入" in frames
+    assert "调用模型失败" not in frames
+    assert "API Key" not in frames
 
 
 def test_agent_tool_loop_does_not_apply_a_total_provider_wall_clock(
@@ -233,7 +280,11 @@ def test_agent_tool_loop_does_not_apply_a_total_provider_wall_clock(
         ]
 
         assert provider_calls == 1
-        assert any(event.text == "done" for event in events)
+        assert any(
+            isinstance(event, agent_loop.AgentToolLoopTextDelta)
+            and event.text == "done"
+            for event in events
+        )
 
     asyncio.run(scenario())
 
@@ -279,7 +330,7 @@ def test_agent_loop_reports_normalized_usage_to_the_runtime_observer(
             )
         ]
 
-        assert events[-1].kind == "done"
+        assert isinstance(events[-1], agent_loop.AgentToolLoopCompleted)
         assert observed == [(response.usage, "stop")]
 
     asyncio.run(scenario())
@@ -433,11 +484,6 @@ def test_agent_reuses_opaque_prompt_cache_key_across_model_turns(
             yield LlmStreamEvent(type="done", message=response)
 
         monkeypatch.setattr(
-            agent_sessions,
-            "persist_agent_user_message",
-            lambda conn, request: None,
-        )
-        monkeypatch.setattr(
             streaming,
             "resolve_agent_llm_config",
             lambda conn, model_config: replace(
@@ -457,8 +503,8 @@ def test_agent_reuses_opaque_prompt_cache_key_across_model_turns(
             turns[resume_id] = 0
             contexts[resume_id] = []
             frames = [
-                frame
-                async for frame in streaming.async_stream_agent_response(
+                streaming.serialize_agent_event(event)
+                async for event in streaming.async_iter_agent_events(
                     AgentChatRequest(
                         resumeId=resume_id,
                         expectedRevision="revision-1",

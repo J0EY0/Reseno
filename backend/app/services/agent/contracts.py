@@ -298,11 +298,15 @@ WEB_SEARCH_SCHEMA: dict[str, Any] = {
         "name": "web_search",
         "description": (
             "Search the public web with one focused query and read the most relevant "
-            "pages. The result separates read references from discovery candidates. "
-            "References contain sourceId, relevant page passages, and available page "
-            "dates as publishedDate or validThrough. Candidates contain search "
-            "snippets only and are not factual sources; use web_fetch on a candidate "
-            "URL before relying on its details."
+            "pages. For current roles, prefer readable employer or ATS postings; "
+            "use the fewest primary sources sufficient for the requested claim "
+            "instead of aggregators or resume guides. The result separates read "
+            "references from discovery candidates. References are already read and "
+            "contain sourceId, relevant page passages, and available page dates as "
+            "publishedDate or validThrough; never pass a reference URL to web_fetch. "
+            "Readable references do not by themselves prove authority, recency, or "
+            "page type. Candidates contain search snippets only and are not factual "
+            "sources; use web_fetch on a candidate URL before relying on its details."
         ),
         "parameters": {
             "type": "object",
@@ -352,7 +356,9 @@ WEB_FETCH_SCHEMA: dict[str, Any] = {
             "Read a relevant public URL supplied by the user, returned by web_search, "
             "or retained from history. Use it when material page detail or status "
             "is still missing from the available references. The result contains a "
-            "citable reference with relevant page passages and available page dates."
+            "citable reference with relevant page passages and available page dates. "
+            "Readable references do not by themselves prove authority, recency, or "
+            "page type."
         ),
         "parameters": {
             "type": "object",
@@ -405,12 +411,12 @@ EDIT_EXECUTE_SCHEMA: dict[str, Any] = {
         "name": "edit_execute",
         "description": (
             "Create one complete preview batch for explicit resume edits after "
-            "the target field, sectionId, or itemId is known. First normalize "
-            "clearly misplaced values according to the target section kind, then "
-            "improve the prose. Move existing facts instead of duplicating them "
-            "and omit exact no-op operations. When one request spans basic fields "
-            "and section items, include every requested operation together in the "
-            "edits array."
+            "the target field, sectionId, or itemId is known. Keep normalization to "
+            "requested fields or clearly misplaced values needed to complete that "
+            "request; avoid adjacent cleanup. Improve prose only where "
+            "requested. Move existing facts instead of duplicating them and omit "
+            "exact no-op operations. When one request spans basic fields and section "
+            "items, include every requested operation together in the edits array."
         ),
         "parameters": {
             "type": "object",

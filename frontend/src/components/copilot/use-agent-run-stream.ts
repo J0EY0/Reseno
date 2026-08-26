@@ -90,6 +90,7 @@ export function useAgentRunStream({
     ): Promise<AgentRunStatus> => {
       const runtime = runtimeRef.current
       let streamedMessageId: string | undefined
+      let runMayStillBeActive = false
       const expectedResumeId = runtime.currentResumeId
 
       try {
@@ -194,6 +195,7 @@ export function useAgentRunStream({
 
         // A non-retryable subscription failure means this browser can no
         // longer observe a commit. Never leave its provisional preview active.
+        runMayStillBeActive = runtime.activeRun?.status === 'active'
         runtime.onRollbackAgentDraft(streamedMessageId)
         console.error('Failed to consume agent run.', error)
         if (notifyOnFailure && !isApiErrorToastShown(error)) {
@@ -227,10 +229,12 @@ export function useAgentRunStream({
 
         if (runtime.activeRequestAbort === abortController) {
           runtime.activeRequestAbort = null
-          runtime.activeRun = null
-          runtime.stopRequested = false
-          updates.setStreamingMessage(null)
-          updates.setIsResponding(false)
+          if (!runMayStillBeActive) {
+            runtime.activeRun = null
+            runtime.stopRequested = false
+            updates.setStreamingMessage(null)
+            updates.setIsResponding(false)
+          }
         }
       }
     },

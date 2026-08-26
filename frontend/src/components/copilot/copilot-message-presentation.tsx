@@ -74,7 +74,6 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
             fieldLabels={fieldLabels}
             isStreamingAssistant={isStreamingAssistant}
             parts={timeline}
-            removeMarkdownTables={Boolean(response?.edits?.length)}
             sources={response?.sources}
             tools={tools}
             t={t}
@@ -85,7 +84,6 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
               <div>
                 <AgentAssistantResponse
                   fieldLabels={fieldLabels}
-                  removeMarkdownTables={Boolean(response?.edits?.length)}
                   sources={response?.sources}
                   text={message.text}
                 />

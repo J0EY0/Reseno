@@ -1,12 +1,16 @@
 import json
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from sqlite3 import Connection
+from typing import Literal
 from uuid import uuid4
 
 from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
     AgentTimelinePart,
+    AgentTransactionState,
+    AgentTurnErrorCode,
 )
 from app.services.llm import (
     AgentLlmConfig,
@@ -17,10 +21,68 @@ from app.services.llm import (
 
 from ..localization import agent_text
 from .context import (
+    AgentContextWindowError,
     AgentRunAborted,
     AgentRuntimeContext,
 )
-from .loop import AgentModelTurnLimitError, async_iter_agent_tool_call_loop
+from .loop import (
+    AgentModelTurnLimitError,
+    AgentToolLoopCompleted,
+    AgentToolLoopEdits,
+    AgentToolLoopTerminalText,
+    AgentToolLoopTextDelta,
+    AgentToolLoopTools,
+    AgentTurnResult,
+    async_iter_agent_tool_call_loop,
+)
+
+
+@dataclass(frozen=True)
+class AgentMessageStarted:
+    message: dict[str, object]
+
+
+@dataclass(frozen=True)
+class AgentTextDelta:
+    delta: str
+    timeline_part_id: str
+
+
+@dataclass(frozen=True)
+class AgentToolUpdate:
+    kind: Literal["tool_start", "tool_delta", "tool_done"]
+    tool: dict[str, object]
+    timeline_part_id: str
+
+
+@dataclass(frozen=True)
+class AgentEditsUpdate:
+    edits: list[dict[str, object]]
+    transaction_state: AgentTransactionState
+
+
+@dataclass(frozen=True)
+class AgentStreamError:
+    message: str
+    error_code: AgentTurnErrorCode
+
+
+@dataclass(frozen=True)
+class AgentCompleted:
+    """A visible terminal message plus whether it belongs in durable history."""
+
+    message: AgentChatMessage
+    persist: bool
+
+
+type AgentRuntimeEvent = (
+    AgentMessageStarted
+    | AgentTextDelta
+    | AgentToolUpdate
+    | AgentEditsUpdate
+    | AgentStreamError
+    | AgentCompleted
+)
 
 
 def _merge_llm_response(
@@ -101,6 +163,8 @@ def _model_error_message(
 def _llm_error_detail(error: LlmRequestError) -> str:
     """Return a stable error without exposing provider-controlled text."""
 
+    if isinstance(error, AgentContextWindowError):
+        return str(error)
     if isinstance(error, AgentModelTurnLimitError):
         return "Agent model turn limit reached."
     if isinstance(error.status_code, int):
@@ -116,10 +180,10 @@ def _llm_error_detail(error: LlmRequestError) -> str:
     return "Model provider request failed."
 
 
-def _llm_error_code(error: LlmRequestError) -> str:
+def _llm_error_code(error: LlmRequestError) -> AgentTurnErrorCode:
     """Return the durable public classification for one provider failure."""
 
-    if isinstance(error, AgentModelTurnLimitError):
+    if isinstance(error, (AgentContextWindowError, AgentModelTurnLimitError)):
         return "AGENT_INTERNAL_ERROR"
     if error.status_code in {401, 403}:
         return "AGENT_PROVIDER_AUTH_ERROR"
@@ -128,49 +192,55 @@ def _llm_error_code(error: LlmRequestError) -> str:
     return "AGENT_PROVIDER_ERROR"
 
 
-def _sse_event(event_name: str, payload: dict[str, object]) -> str:
+def serialize_agent_event(event: AgentRuntimeEvent) -> str:
+    """Serialize one internal runtime event into the stable public SSE shape."""
+
+    event_name, payload = agent_event_payload(event)
+    return serialize_sse_event(event_name, payload)
+
+
+def serialize_sse_event(event_name: str, payload: dict[str, object]) -> str:
     """Serialize one server-sent event frame."""
 
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event_name}\ndata: {data}\n\n"
 
 
-def _message_patch_event(event_name: str, **fields: object) -> str:
-    """Return an SSE event that patches visible assistant message fields."""
+def agent_event_payload(event: AgentRuntimeEvent) -> tuple[str, dict[str, object]]:
+    """Project a typed runtime event into the public wire contract."""
 
-    return _sse_event(
-        event_name,
-        {
-            "type": event_name,
-            "message": fields,
-        },
-    )
-
-
-def _text_stream_event(delta: str, timeline_part_id: str) -> str:
-    return _sse_event(
-        "text_delta",
-        {
+    if isinstance(event, AgentMessageStarted):
+        return "message_start", {"type": "message_start", "message": event.message}
+    if isinstance(event, AgentTextDelta):
+        return "text_delta", {
             "type": "text_delta",
-            "delta": delta,
-            "timelinePartId": timeline_part_id,
-        },
-    )
-
-
-def _tool_stream_event(
-    event_name: str,
-    tool: dict[str, object],
-    timeline_part_id: str,
-) -> str:
-    return _sse_event(
-        event_name,
-        {
-            "type": event_name,
-            "tool": tool,
-            "timelinePartId": timeline_part_id,
-        },
-    )
+            "delta": event.delta,
+            "timelinePartId": event.timeline_part_id,
+        }
+    if isinstance(event, AgentToolUpdate):
+        return event.kind, {
+            "type": event.kind,
+            "tool": event.tool,
+            "timelinePartId": event.timeline_part_id,
+        }
+    if isinstance(event, AgentEditsUpdate):
+        return "edits", {
+            "type": "edits",
+            "message": {
+                "edits": event.edits,
+                "transactionState": event.transaction_state,
+            },
+        }
+    if isinstance(event, AgentStreamError):
+        return "error", {
+            "type": "error",
+            "error": event.message,
+            "errorCode": event.error_code,
+        }
+    return "message_done", {
+        "type": "message_done",
+        "message": event.message.model_dump(mode="json", by_alias=True),
+    }
 
 
 def _timeline_text_part(part_id: str, text: str) -> AgentTimelinePart:
@@ -245,94 +315,69 @@ def _append_timeline_tools(
 
 def stream_agent_message(
     message: AgentChatMessage,
-    on_complete: Callable[[AgentChatMessage], None] | None = None,
-) -> Iterator[str]:
-    """Yield a chat message and persist it before the terminal SSE event."""
+) -> Iterator[AgentRuntimeEvent]:
+    """Yield a direct response through the same typed runtime protocol."""
 
-    message_payload = message.model_dump(mode="json", by_alias=True)
     text = message.text
 
-    yield _sse_event(
-        "message_start",
-        {
-            "type": "message_start",
-            "message": {
-                "id": message.id,
-                "role": message.role,
-                "tone": message.tone,
-                "text": "",
-            },
+    yield AgentMessageStarted(
+        message={
+            "id": message.id,
+            "role": message.role,
+            "tone": message.tone,
+            "text": "",
         },
     )
 
     chunk_size = 24
     for index in range(0, len(text), chunk_size):
-        yield _text_stream_event(
-            text[index : index + chunk_size],
-            "timeline-text-1",
+        yield AgentTextDelta(
+            delta=text[index : index + chunk_size],
+            timeline_part_id="timeline-text-1",
         )
 
-    on_complete_message(on_complete, message)
-    yield _sse_event(
-        "message_done",
-        {"type": "message_done", "message": message_payload},
-    )
+    yield AgentCompleted(message=message, persist=True)
 
 
-async def async_stream_agent_response(
+async def async_iter_agent_events(
     request: AgentChatRequest,
     conn: Connection,
-    on_complete: Callable[[AgentChatMessage], None] | None = None,
     runtime: AgentRuntimeContext | None = None,
-) -> AsyncIterator[str]:
-    """Stream an agent response through async provider calls."""
+) -> AsyncIterator[AgentRuntimeEvent]:
+    """Run provider work after the user turn has crossed the acceptance seam."""
 
-    # Import lazily because importing the attachment submodule initializes the
-    # Agent package, whose public runtime imports this streaming module.
-    from app.services.agent_sessions import persist_agent_user_message
-
-    # The user turn is authoritative before provider work begins. Cancellation
-    # or provider failure therefore leaves a recoverable prompt, while the
-    # completion callback remains responsible only for successful assistants.
-    persist_agent_user_message(conn, request)
     runtime = runtime or AgentRuntimeContext()
     config = resolve_agent_llm_config(conn, request.model_config_data)
     if config is None:
         message = _model_setup_message(request)
-        for chunk in stream_agent_message(message, on_complete):
-            yield chunk
+        for event in stream_agent_message(message):
+            yield event
         return
 
-    async for frame in async_stream_resolved_agent_response(
+    async for event in async_iter_resolved_agent_events(
         request,
         config,
-        on_complete=on_complete,
         runtime=runtime,
     ):
-        yield frame
+        yield event
 
 
-async def async_stream_resolved_agent_response(
+async def async_iter_resolved_agent_events(
     request: AgentChatRequest,
     config: AgentLlmConfig,
-    on_complete: Callable[[AgentChatMessage], None] | None = None,
     runtime: AgentRuntimeContext | None = None,
-) -> AsyncIterator[str]:
-    """Project one model/tool loop into the public SSE protocol."""
+) -> AsyncIterator[AgentRuntimeEvent]:
+    """Project one model/tool loop into typed runtime events."""
 
     runtime = runtime or AgentRuntimeContext()
     message_id = f"agent-msg-{uuid4().hex[:12]}"
 
-    yield _sse_event(
-        "message_start",
-        {
-            "type": "message_start",
-            "message": {
-                "id": message_id,
-                "role": "assistant",
-                "tone": "default",
-                "text": "",
-            },
+    yield AgentMessageStarted(
+        message={
+            "id": message_id,
+            "role": "assistant",
+            "tone": "default",
+            "text": "",
         },
     )
 
@@ -343,35 +388,30 @@ async def async_stream_resolved_agent_response(
     completed_tool_ids: set[str] = set()
 
     try:
-        turn_result = None
+        turn_result: AgentTurnResult | None = None
         terminal_loop_text = ""
         async for event in async_iter_agent_tool_call_loop(
             request,
             config,
             runtime,
         ):
-            if event.kind == "text_delta":
-                delta = event.text or ""
-                if delta:
-                    part_id = _append_timeline_delta(
-                        timeline_parts,
-                        timeline_text_chunks,
-                        delta,
-                    )
-                    yield _text_stream_event(delta, part_id)
+            if isinstance(event, AgentToolLoopTextDelta):
+                part_id = _append_timeline_delta(
+                    timeline_parts,
+                    timeline_text_chunks,
+                    event.text,
+                )
+                yield AgentTextDelta(delta=event.text, timeline_part_id=part_id)
                 continue
-            if event.kind == "terminal":
-                terminal_loop_text = (event.text or "").strip()
+            if isinstance(event, AgentToolLoopTerminalText):
+                terminal_loop_text = event.text.strip()
                 continue
-            if event.kind == "tools":
+            if isinstance(event, AgentToolLoopTools):
                 tool_payloads = [
-                    tool.model_dump(mode="json", by_alias=True)
-                    for tool in event.tools or []
+                    tool.model_dump(mode="json", by_alias=True) for tool in event.tools
                 ]
                 new_tool_ids = [
-                    tool.id
-                    for tool in event.tools or []
-                    if tool.id not in tool_part_ids
+                    tool.id for tool in event.tools if tool.id not in tool_part_ids
                 ]
                 if new_tool_ids:
                     part_id = _append_timeline_tools(
@@ -389,41 +429,42 @@ async def async_stream_resolved_agent_response(
                     terminal = state.startswith("output-")
                     if tool_id not in started_tool_ids:
                         started_tool_ids.add(tool_id)
-                        event_name = "tool_done" if terminal else "tool_start"
+                        event_name: Literal["tool_start", "tool_done"] = (
+                            "tool_done" if terminal else "tool_start"
+                        )
                         if terminal:
                             completed_tool_ids.add(tool_id)
-                        yield _tool_stream_event(
-                            event_name,
-                            tool_payload,
-                            timeline_part_id,
+                        yield AgentToolUpdate(
+                            kind=event_name,
+                            tool=tool_payload,
+                            timeline_part_id=timeline_part_id,
                         )
                     elif terminal and tool_id not in completed_tool_ids:
                         completed_tool_ids.add(tool_id)
-                        yield _tool_stream_event(
-                            "tool_done",
-                            tool_payload,
-                            timeline_part_id,
+                        yield AgentToolUpdate(
+                            kind="tool_done",
+                            tool=tool_payload,
+                            timeline_part_id=timeline_part_id,
                         )
                     elif not terminal:
-                        yield _tool_stream_event(
-                            "tool_delta",
-                            tool_payload,
-                            timeline_part_id,
+                        yield AgentToolUpdate(
+                            kind="tool_delta",
+                            tool=tool_payload,
+                            timeline_part_id=timeline_part_id,
                         )
                 continue
-            if event.kind == "edits":
-                yield _message_patch_event(
-                    "edits",
+            if isinstance(event, AgentToolLoopEdits):
+                yield AgentEditsUpdate(
                     edits=[
                         edit.model_dump(mode="json", by_alias=True)
-                        for edit in event.edits or []
+                        for edit in event.edits
                     ],
-                    transactionState=event.transaction_state,
+                    transaction_state=event.transaction_state,
                 )
                 continue
-            if event.kind == "done":
+            if isinstance(event, AgentToolLoopCompleted):
                 turn_result = event.result
-                if turn_result and not terminal_loop_text:
+                if not terminal_loop_text:
                     terminal_loop_text = turn_result.terminal_text.strip()
 
         if turn_result is None:
@@ -450,6 +491,7 @@ async def async_stream_resolved_agent_response(
     except AgentRunAborted:
         return
     except LlmRequestError as exc:
+        error_detail = _llm_error_detail(exc)
         if isinstance(exc, AgentModelTurnLimitError):
             if exc.result.message is not None:
                 message = exc.result.message.model_copy(update={"id": message_id})
@@ -467,45 +509,24 @@ async def async_stream_resolved_agent_response(
                     ),
                 },
             )
+        elif isinstance(exc, AgentContextWindowError):
+            error_detail = agent_text(
+                request.locale,
+                "error.context_window_exceeded",
+            )
+            message = _direct_llm_response(
+                error_detail,
+                message_id=message_id,
+            )
         else:
             message = _model_error_message(request, config, exc)
-        yield _sse_event(
-            "error",
-            {
-                "type": "error",
-                "error": _llm_error_detail(exc) or "Agent request failed.",
-                "errorCode": _llm_error_code(exc),
-            },
+        yield AgentStreamError(
+            message=error_detail or "Agent request failed.",
+            error_code=_llm_error_code(exc),
         )
-        yield _sse_event(
-            "message_done",
-            {
-                "type": "message_done",
-                "message": message.model_dump(mode="json", by_alias=True),
-            },
-        )
-        # Provider and attachment failures are terminal for this request, but
-        # they are not a completed conversation turn. Keeping the completion
-        # hook untouched here would persist both the optimistic user message
-        # and this transient error, making a retry duplicate the prompt.
+        # Provider failures remain visible but do not become conversation
+        # history, so the accepted user turn can be retried without duplication.
+        yield AgentCompleted(message=message, persist=False)
         return
 
-    # Persist before telling clients that the turn is authoritative.
-    on_complete_message(on_complete, message)
-    yield _sse_event(
-        "message_done",
-        {
-            "type": "message_done",
-            "message": message.model_dump(mode="json", by_alias=True),
-        },
-    )
-
-
-def on_complete_message(
-    callback: Callable[[AgentChatMessage], None] | None,
-    message: AgentChatMessage,
-) -> None:
-    """Call the streaming completion hook when the router needs persistence."""
-
-    if callback:
-        callback(message)
+    yield AgentCompleted(message=message, persist=True)

@@ -4,8 +4,13 @@ from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
 from app.services.llm import AgentLlmConfig, LlmRequestError
 from app.services.llm.types import LlmInputMessage, LlmPrompt
 
-from .context import AgentRuntimeContext
+from .context import (
+    AgentContextWindowError,
+    AgentConversationState,
+    AgentRuntimeContext,
+)
 from .messages import (
+    CHECKPOINT_CONTEXT_TOKEN_BUDGET,
     agent_checkpoint_context,
     agent_checkpoint_message_count,
     agent_compaction_boundaries,
@@ -39,16 +44,24 @@ async def prepare_agent_prompt(
     """Build one bounded prompt without making a second model request."""
 
     await runtime.checkpoint()
-    checkpoint_count = agent_checkpoint_message_count(request)
+    state = runtime.conversation_state
+    checkpoint_count = agent_checkpoint_message_count(
+        request,
+        state.active_checkpoint,
+    )
     prompt, checkpoint = _prompt_at_boundary(
         request,
         config,
+        state=state,
         boundary_count=checkpoint_count,
     )
     limits = agent_prompt_limits(request, config)
     estimated_tokens = estimate_agent_messages_tokens(prompt.messages)
+    compaction_triggered = (
+        limits is not None and estimated_tokens > limits.trigger_tokens
+    )
 
-    if limits is not None and estimated_tokens > limits.trigger_tokens:
+    if limits is not None and compaction_triggered:
         boundaries = agent_compaction_boundaries(
             request,
             after_count=checkpoint_count,
@@ -67,6 +80,7 @@ async def prepare_agent_prompt(
                     candidate_prompt, candidate_checkpoint = _prompt_at_boundary(
                         request,
                         config,
+                        state=state,
                         boundary_count=boundary_count,
                     )
                     evaluated[index] = (
@@ -95,10 +109,67 @@ async def prepare_agent_prompt(
                         low = middle + 1
                 prompt, checkpoint, estimated_tokens = candidate_at(low)
 
+    if (
+        limits is not None
+        and compaction_triggered
+        and estimated_tokens > limits.target_tokens
+    ):
+        # Ordinary compaction keeps the latest historical user turn exact. That
+        # preserves provider cache locality and conversational detail, but one
+        # unusually large turn can still miss the target and leave no useful
+        # headroom for tools. A rollover is the final, lossier cut: fold the
+        # complete persisted history into the checkpoint while keeping the
+        # current request and workspace exact.
+        history_count = len(request.messages)
+        if history_count > 0:
+            checkpoint_token_budget = CHECKPOINT_CONTEXT_TOKEN_BUDGET
+            handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
+                request,
+                config,
+                state=state,
+                boundary_count=history_count,
+                rebuild_checkpoint=True,
+                checkpoint_token_budget=checkpoint_token_budget,
+            )
+            handoff_tokens = estimate_agent_messages_tokens(handoff_prompt.messages)
+            if handoff_tokens > limits.target_tokens:
+                checkpoint_token_budget = max(
+                    1,
+                    checkpoint_token_budget
+                    - (handoff_tokens - limits.target_tokens),
+                )
+                handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
+                    request,
+                    config,
+                    state=state,
+                    boundary_count=history_count,
+                    rebuild_checkpoint=True,
+                    checkpoint_token_budget=checkpoint_token_budget,
+                )
+                handoff_tokens = estimate_agent_messages_tokens(
+                    handoff_prompt.messages,
+                )
+            if handoff_tokens > limits.target_tokens and checkpoint_token_budget > 1:
+                checkpoint_token_budget = 1
+                handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
+                    request,
+                    config,
+                    state=state,
+                    boundary_count=history_count,
+                    rebuild_checkpoint=True,
+                    checkpoint_token_budget=checkpoint_token_budget,
+                )
+                handoff_tokens = estimate_agent_messages_tokens(
+                    handoff_prompt.messages,
+                )
+            prompt = handoff_prompt
+            checkpoint = handoff_checkpoint
+            estimated_tokens = handoff_tokens
+
     if limits is not None and estimated_tokens > limits.input_tokens:
         raise _context_window_error()
 
-    request._active_conversation_checkpoint = checkpoint
+    state.active_checkpoint = checkpoint
     return prompt
 
 
@@ -106,16 +177,23 @@ def _prompt_at_boundary(
     request: AgentChatRequest,
     config: AgentLlmConfig,
     *,
+    state: AgentConversationState,
     boundary_count: int,
+    rebuild_checkpoint: bool = False,
+    checkpoint_token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
 ) -> tuple[LlmPrompt, AgentConversationCheckpoint | None]:
-    checkpoint = _checkpoint_at_boundary(request, boundary_count)
-    projected = request.model_copy(deep=False)
-    projected._loaded_conversation_checkpoint = request._loaded_conversation_checkpoint
-    projected._active_conversation_checkpoint = checkpoint
+    checkpoint = _checkpoint_at_boundary(
+        request,
+        boundary_count,
+        state=state,
+        rebuild_checkpoint=rebuild_checkpoint,
+        checkpoint_token_budget=checkpoint_token_budget,
+    )
     return (
         build_agent_prompt(
-            projected,
+            request,
             config,
+            checkpoint=checkpoint,
         ),
         checkpoint,
     )
@@ -124,6 +202,10 @@ def _prompt_at_boundary(
 def _checkpoint_at_boundary(
     request: AgentChatRequest,
     boundary_count: int,
+    *,
+    state: AgentConversationState,
+    rebuild_checkpoint: bool = False,
+    checkpoint_token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
 ) -> AgentConversationCheckpoint | None:
     if boundary_count <= 0:
         return None
@@ -132,12 +214,20 @@ def _checkpoint_at_boundary(
     message_id = _message_id(history[boundary_count - 1])
     if not message_id:
         raise LlmRequestError("The conversation checkpoint boundary is invalid.")
-    active = request._active_conversation_checkpoint
-    if active is not None and active.through_message_id == message_id:
+    active = state.active_checkpoint
+    if (
+        not rebuild_checkpoint
+        and active is not None
+        and active.through_message_id == message_id
+    ):
         return active
     return AgentConversationCheckpoint(
         throughMessageId=message_id,
-        summary=agent_checkpoint_context(request, end_count=boundary_count),
+        summary=agent_checkpoint_context(
+            request,
+            end_count=boundary_count,
+            token_budget=checkpoint_token_budget,
+        ),
     )
 
 
@@ -146,9 +236,9 @@ def _message_id(item: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _context_window_error() -> LlmRequestError:
-    return LlmRequestError(
-        "The conversation and current request exceed the selected model context "
-        "window. Start a new conversation or choose a model with a larger "
-        "context window.",
+def _context_window_error() -> AgentContextWindowError:
+    return AgentContextWindowError(
+        "The current resume, attachments, and request exceed the selected model "
+        "context window. Shorten the current input or choose a model with a "
+        "larger context window.",
     )

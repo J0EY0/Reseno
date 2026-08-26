@@ -33,6 +33,7 @@ from app.services.agent.attachments import (
     rollback_agent_attachments_sent,
 )
 from app.services.agent.resume_owner import require_active_resume
+from app.services.agent.runtime.context import AgentConversationState
 from app.services.llm.config import resolve_agent_llm_config
 from app.services.llm.dispatch import supports_native_attachment
 from app.services.resumes import (
@@ -59,6 +60,28 @@ class UserAgentMessage:
     text: str
     files: list[dict[str, Any]]
     created_at: str
+
+
+@dataclass(frozen=True)
+class AcceptedAgentTurn:
+    """One accepted run bound to its authoritative durable conversation state."""
+
+    request: AgentChatRequest
+    run_id: str
+    session_id: str | None
+    turn_id: str
+    revision: str | None
+    conversation_state: AgentConversationState
+
+
+@dataclass(frozen=True)
+class AgentTerminalOutcome:
+    """The single durable result of a completed, failed, or cancelled run."""
+
+    status: AgentTurnExecutionStatus
+    error_code: AgentTurnErrorCode | None
+    assistant: AgentChatMessage | None
+    checkpoint: AgentConversationCheckpoint | None
 
 
 @dataclass(frozen=True)
@@ -218,12 +241,12 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
     )
 
 
-def prepare_agent_turn(
+def accept_agent_turn(
     conn: Connection,
     request: AgentChatRequest,
     *,
-    run_id: str | None = None,
-) -> AgentChatRequest:
+    run_id: str,
+) -> AcceptedAgentTurn:
     """Accept one user turn and replace client history with authoritative history.
 
     This is the acceptance boundary for a run. The user message is committed
@@ -232,12 +255,28 @@ def prepare_agent_turn(
     influence the model.
     """
 
+    assert request.message.id is not None
+    turn_id = request.message.id
     if not request.resume_id:
-        return request
+        return AcceptedAgentTurn(
+            request=request,
+            run_id=run_id,
+            session_id=None,
+            turn_id=turn_id,
+            revision=None,
+            conversation_state=AgentConversationState(),
+        )
 
     resume_id = request.resume_id.strip()
     if not is_valid_resume_id(resume_id):
-        return request
+        return AcceptedAgentTurn(
+            request=request,
+            run_id=run_id,
+            session_id=None,
+            turn_id=turn_id,
+            revision=None,
+            conversation_state=AgentConversationState(),
+        )
 
     now = _now_iso()
     user_message = _current_user_message(request, now)
@@ -284,14 +323,13 @@ def prepare_agent_turn(
                     user_message.files,
                 )
 
-            if run_id is not None:
-                _insert_agent_turn_execution(
-                    conn,
-                    run_id=run_id,
-                    session_id=resume_id,
-                    turn_id=user_message.id,
-                    started_at=now,
-                )
+            _insert_agent_turn_execution(
+                conn,
+                run_id=run_id,
+                session_id=resume_id,
+                turn_id=user_message.id,
+                started_at=now,
+            )
             authoritative_revision = _session_revision(conn, resume_id)
             # `message` is the singular current turn. Provider history must be
             # authoritative, prior-only state even though the turn is already
@@ -309,72 +347,74 @@ def prepare_agent_turn(
         _compensate_attachment_state(receipt)
         raise
 
-    prepared = request.model_copy(update={"messages": authoritative_messages})
-    object.__setattr__(
-        prepared,
-        "_persisted_session_revision",
-        authoritative_revision,
+    authoritative_request = request.model_copy(
+        update={"messages": authoritative_messages},
     )
-    object.__setattr__(
-        prepared,
-        "_persisted_user_message_id",
-        user_message.id,
+    return AcceptedAgentTurn(
+        request=authoritative_request,
+        run_id=run_id,
+        session_id=resume_id,
+        turn_id=user_message.id,
+        revision=authoritative_revision,
+        conversation_state=AgentConversationState(
+            loaded_checkpoint=conversation_checkpoint,
+            active_checkpoint=conversation_checkpoint,
+        ),
     )
-    prepared._loaded_conversation_checkpoint = conversation_checkpoint
-    prepared._active_conversation_checkpoint = conversation_checkpoint
-    return prepared
 
 
-def finish_agent_turn_execution(
+def persist_agent_terminal_outcome(
     conn: Connection,
-    request: AgentChatRequest,
-    *,
-    run_id: str,
-    status: AgentTurnExecutionStatus,
-    error_code: AgentTurnErrorCode | None,
-    assistant_message: AgentChatMessage | None = None,
+    turn: AcceptedAgentTurn,
+    outcome: AgentTerminalOutcome,
 ) -> None:
     """Atomically persist a terminal execution and its optional assistant."""
 
-    if not request.resume_id:
+    if turn.session_id is None:
         return
 
-    resume_id = request.resume_id.strip()
-    turn_id = getattr(request, "_persisted_user_message_id", None)
-    if not is_valid_resume_id(resume_id) or not isinstance(turn_id, str):
-        return
-
+    resume_id = turn.session_id
     completed_at = _now_iso()
     with _transaction(conn):
-        if assistant_message is not None:
-            expected_revision = _request_session_revision(request)
-            if expected_revision is None:
+        if outcome.assistant is not None:
+            if turn.revision is None:
                 raise AgentSessionPersistenceError(
                     "The Agent turn has no durable message revision.",
                 )
 
             require_active_resume(conn, resume_id)
             current_revision = _session_revision(conn, resume_id)
-            if current_revision != expected_revision:
+            if current_revision != turn.revision:
                 raise AgentSessionTurnConflictError(
-                    expected_revision,
+                    turn.revision,
                     current_revision,
                 )
 
             inserted = _insert_message(
                 conn,
                 session_id=resume_id,
-                message_id=assistant_message.id,
+                message_id=outcome.assistant.id,
                 role="assistant",
-                text=assistant_message.text,
+                text=outcome.assistant.text,
                 files=[],
-                response=assistant_message,
+                response=outcome.assistant,
                 sequence=_next_message_sequence(conn, resume_id),
                 created_at=completed_at,
+                conversation_checkpoint=(
+                    outcome.checkpoint
+                    if outcome.checkpoint != turn.conversation_state.loaded_checkpoint
+                    else None
+                ),
             )
             if not inserted:
                 raise AgentSessionPersistenceError(
                     "The terminal Agent message could not be persisted.",
+                )
+            if outcome.assistant.draft is not None:
+                _discard_older_pending_drafts(
+                    conn,
+                    resume_id,
+                    current_message_id=outcome.assistant.id,
                 )
 
         cursor = conn.execute(
@@ -385,13 +425,13 @@ def finish_agent_turn_execution(
               AND status = 'running'
             """,
             (
-                status,
-                error_code,
+                outcome.status,
+                outcome.error_code,
                 completed_at,
                 completed_at,
-                run_id,
+                turn.run_id,
                 resume_id,
-                turn_id,
+                turn.turn_id,
             ),
         )
         if cursor.rowcount != 1:
@@ -422,123 +462,6 @@ def fail_interrupted_agent_turn_executions(conn: Connection) -> int:
             (completed_at, completed_at),
         )
     return max(cursor.rowcount, 0)
-
-
-def persist_agent_user_message(
-    conn: Connection,
-    request: AgentChatRequest,
-) -> str | None:
-    """Persist the user turn and bind its authoritative revision to the run."""
-
-    persisted_revision = _request_session_revision(request)
-    if persisted_revision is not None:
-        return persisted_revision
-
-    if not request.resume_id:
-        return None
-
-    resume_id = request.resume_id.strip()
-    if not is_valid_resume_id(resume_id):
-        return None
-
-    now = _now_iso()
-    user_message = _current_user_message(request, now)
-
-    _prevalidate_current_turn_attachments(
-        conn,
-        request,
-        resume_id,
-        user_message.files,
-    )
-
-    receipt: AgentAttachmentSentReceipt | None = None
-    authoritative_revision: str | None = None
-    try:
-        with _transaction(conn):
-            require_active_resume(conn, resume_id)
-            _upsert_session(conn, request, resume_id, user_message, now)
-            _insert_message(
-                conn,
-                session_id=resume_id,
-                message_id=user_message.id,
-                role="user",
-                text=user_message.text,
-                files=user_message.files,
-                response=None,
-                sequence=_next_message_sequence(conn, resume_id),
-                created_at=user_message.created_at,
-            )
-            # SQLite and attachment metadata live in separate stores. Keeping
-            # the receipt until commit lets ordinary write/commit failures
-            # restore sentAt without introducing a persistent job/outbox.
-            receipt = mark_agent_attachments_sent(resume_id, user_message.files)
-            authoritative_revision = _session_revision(conn, resume_id)
-    except BaseException:
-        _compensate_attachment_state(receipt)
-        raise
-
-    if authoritative_revision is not None:
-        object.__setattr__(
-            request,
-            "_persisted_session_revision",
-            authoritative_revision,
-        )
-    return authoritative_revision
-
-
-def append_agent_exchange(
-    conn: Connection,
-    request: AgentChatRequest,
-    assistant_message: AgentChatMessage,
-) -> None:
-    """Append a successful assistant response without duplicating the user turn."""
-
-    if not request.resume_id:
-        return
-
-    resume_id = request.resume_id.strip()
-    if not is_valid_resume_id(resume_id):
-        return
-
-    expected_revision = persist_agent_user_message(conn, request)
-    if expected_revision is None:
-        return
-
-    with _transaction(conn):
-        require_active_resume(conn, resume_id)
-        current_revision = _session_revision(conn, resume_id)
-        if current_revision != expected_revision:
-            if _message_exists(conn, resume_id, assistant_message.id):
-                return
-            raise AgentSessionTurnConflictError(
-                expected_revision,
-                current_revision,
-            )
-
-        now = _now_iso()
-        inserted = _insert_message(
-            conn,
-            session_id=resume_id,
-            message_id=assistant_message.id,
-            role="assistant",
-            text=assistant_message.text,
-            files=[],
-            response=assistant_message,
-            sequence=_next_message_sequence(conn, resume_id),
-            created_at=now,
-            conversation_checkpoint=(
-                request._active_conversation_checkpoint
-                if request._active_conversation_checkpoint
-                != request._loaded_conversation_checkpoint
-                else None
-            ),
-        )
-        if inserted and assistant_message.draft is not None:
-            _discard_older_pending_drafts(
-                conn,
-                resume_id,
-                current_message_id=assistant_message.id,
-            )
 
 
 def _discard_older_pending_drafts(
@@ -1350,13 +1273,6 @@ def _current_user_message(
     )
 
 
-def _request_session_revision(request: AgentChatRequest) -> str | None:
-    """Return the user-turn revision captured before provider execution."""
-
-    revision = getattr(request, "_persisted_session_revision", None)
-    return revision if isinstance(revision, str) else None
-
-
 def _session_title(user_message: UserAgentMessage | None) -> str:
     """Use the first user message as a short session title."""
 
@@ -1614,21 +1530,3 @@ def _insert_message(
         ),
     )
     return cursor.rowcount > 0
-
-
-def _message_exists(
-    conn: Connection,
-    session_id: str,
-    message_id: str,
-) -> bool:
-    """Return whether an idempotent completion already reached this session."""
-
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM agent_messages
-        WHERE session_id = ? AND id = ?
-        """,
-        (session_id, message_id),
-    ).fetchone()
-    return row is not None

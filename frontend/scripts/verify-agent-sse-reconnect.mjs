@@ -51,7 +51,7 @@ function createActiveRun() {
   };
 }
 
-async function loadTypeScriptModule(fileName, imports = {}) {
+async function loadTypeScriptModule(fileName, imports = {}, globals = {}) {
   const source = await readFile(
     join(frontendRoot, "src", "lib", fileName),
     "utf8",
@@ -83,6 +83,7 @@ async function loadTypeScriptModule(fileName, imports = {}) {
       clearTimeout,
       setTimeout: (callback) => setTimeout(callback, 0),
     },
+    ...globals,
   });
 
   return module.exports;
@@ -104,6 +105,25 @@ const agentStreamClient = await loadTypeScriptModule(
     "@/lib/agent-message-codec": messageCodec,
     "@/lib/api-client": apiClient,
   },
+);
+const agentRunStreamHook = await loadTypeScriptModule(
+  "../components/copilot/use-agent-run-stream.ts",
+  {
+    react: { useCallback: (callback) => callback },
+    sonner: { toast: { error: () => undefined } },
+    "@/lib/agent-session-run-client": {
+      stopAgentRun: () => Promise.resolve(),
+    },
+    "@/lib/api-client": {
+      isAbortError: (error) => error?.name === "AbortError",
+      isApiErrorToastShown: () => false,
+    },
+    "./copilot-message-model": {
+      getEditsPreviewKey: () => "",
+      toAssistantPanelMessage: (message) => message,
+    },
+  },
+  { console: { error: () => undefined } },
 );
 
 {
@@ -168,6 +188,80 @@ const agentStreamClient = await loadTypeScriptModule(
     String(error),
     /network interruption 3/,
     "The transport error that exhausts the shared retry budget must be preserved.",
+  );
+}
+
+{
+  let requestCount = 0;
+  activeFetch = async () => {
+    requestCount += 1;
+    return createEventStream();
+  };
+  const abortController = new AbortController();
+  const respondingWrites = [];
+  const streamingWrites = [];
+  const runtime = {
+    activeRequestAbort: abortController,
+    activeRun: null,
+    currentResumeId: "resume-active-after-exhaustion",
+    isResponding: true,
+    onPreviewAgentEdits: () => undefined,
+    onRollbackAgentDraft: () => undefined,
+    previewedEditsKey: null,
+    requestFailedText: "request failed",
+    requestResume: null,
+    sessionReady: true,
+    sessionRevision: "revision-active",
+    stopRequested: false,
+    transientStatusTexts: [],
+  };
+  const consumeRunStream = agentRunStreamHook.useAgentRunStream({
+    refreshAgentSession: () => Promise.resolve(null),
+    runtimeRef: { current: runtime },
+    updates: {
+      setIsResponding: (value) => respondingWrites.push(value),
+      setMessages: () => undefined,
+      setSessionLoadError: () => undefined,
+      setSessionReady: () => undefined,
+      setStreamingMessage: (value) => streamingWrites.push(value),
+    },
+  });
+  const run = {
+    ...createActiveRun(),
+    id: "run-still-active-after-exhaustion",
+    resumeId: runtime.currentResumeId,
+  };
+
+  const status = await consumeRunStream(
+    (options) => agentStreamClient.connectAgentRun(run, options),
+    abortController,
+  );
+
+  assert.equal(status, "failed");
+  assert.equal(
+    requestCount,
+    6,
+    "The controller must not turn a spent reconnect budget into an unbounded resubscription loop.",
+  );
+  assert.equal(
+    runtime.activeRequestAbort,
+    null,
+    "A failed subscription must release its spent abort-controller ownership.",
+  );
+  assert.equal(
+    runtime.activeRun?.id,
+    run.id,
+    "Transport exhaustion must preserve the accepted active run so Stop can still target it.",
+  );
+  assert.equal(
+    respondingWrites.includes(false),
+    false,
+    "Transport exhaustion must keep the send gate closed while the backend run may still be active.",
+  );
+  assert.equal(
+    streamingWrites.includes(null),
+    false,
+    "Transport exhaustion must preserve the last observable streaming frame for an active run.",
   );
 }
 

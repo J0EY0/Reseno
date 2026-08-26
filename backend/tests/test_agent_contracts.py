@@ -217,10 +217,21 @@ def test_web_tools_expose_focused_search_and_public_fetch() -> None:
             "validThrough",
         )
     )
+    assert "employer or ATS postings" in search["description"]
+    assert "fewest primary sources sufficient" in search["description"]
+    assert "aggregators" in search["description"]
+    assert "already read" in search["description"]
+    assert "never pass a reference URL to web_fetch" in search["description"]
+    assert "do not by themselves prove authority, recency, or page type" in (
+        search["description"]
+    )
     assert set(fetch_parameters["properties"]) == {"url"}
     assert fetch_parameters["required"] == ["url"]
     assert "material page detail" in fetch["description"]
     assert "citable reference" in fetch["description"]
+    assert "do not by themselves prove authority, recency, or page type" in (
+        fetch["description"]
+    )
     assert "public HTTP(S) URL" in fetch_parameters["properties"]["url"]["description"]
 
 
@@ -251,7 +262,13 @@ def test_edit_execute_explains_field_semantics_and_normalization_at_its_seam() -
     patch = _operation_branch("update_item")["properties"]["patch"]
     patch_description = patch["description"]
 
-    assert "normalize clearly misplaced values" in tool_description
+    assert (
+        "Keep normalization to requested fields or clearly misplaced values needed to "
+        "complete that request"
+        in tool_description
+    )
+    assert "avoid adjacent cleanup" in tool_description
+    assert "First normalize" not in tool_description
     assert "omit exact no-op operations" in tool_description
     assert "company is the employer" in patch_description
     assert "position is the role or title" in patch_description

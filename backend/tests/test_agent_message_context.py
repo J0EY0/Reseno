@@ -87,12 +87,8 @@ def _ascii_prompt_at_or_below(token_limit: int) -> LlmPrompt:
     return LlmPrompt(messages=[{"role": "user", "content": "x" * low}])
 
 
-def _checkpoint_context(events: list[dict[str, object]]) -> str:
-    return json.dumps(
-        {"trust": "untrusted_history_data", "events": events},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+def _checkpoint_context(events: list[dict[str, object]]) -> dict[str, object]:
+    return {"trust": "untrusted_history_data", "events": events}
 
 
 def test_agent_system_prompt_includes_current_date_for_time_sensitive_search() -> None:
@@ -241,12 +237,10 @@ def test_compacted_fact_keeps_a_copyable_original_user_evidence_ref() -> None:
             ],
         ),
     )
-    request._loaded_conversation_checkpoint = checkpoint
-    request._active_conversation_checkpoint = checkpoint
-
     messages = build_agent_messages(
         request,
         _config(context_window_tokens=16_000, max_tokens=2_048),
+        checkpoint=checkpoint,
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -1034,7 +1028,6 @@ def test_agent_pure_projection_keeps_history_until_context_preparation() -> None
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
-    assert request._active_conversation_checkpoint is None
     assert not any(
         message["role"] == "user"
         and isinstance(message["content"], str)
@@ -1204,11 +1197,10 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
         throughMessageId="checkpoint-history-5",
         summary=_checkpoint_context([]),
     )
-    first_request._loaded_conversation_checkpoint = checkpoint
-    first_request._active_conversation_checkpoint = checkpoint
     first_projection = build_agent_messages(
         first_request,
         config,
+        checkpoint=checkpoint,
     )
     summary_message = next(
         message
@@ -1237,11 +1229,10 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
     # authoritative session loader. Reusing that exact boundary is what keeps
     # the preceding provider payload cacheable instead of rebuilding a moving
     # last-N window on every request.
-    second_request._loaded_conversation_checkpoint = checkpoint
-    second_request._active_conversation_checkpoint = checkpoint
     second_projection = build_agent_messages(
         second_request,
         config,
+        checkpoint=checkpoint,
     )
 
     # The persisted summary and exact tail remain byte-stable. Full
@@ -1295,20 +1286,21 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
         throughMessageId="stable-boundary-5",
         summary=_checkpoint_context([]),
     )
-    first_request._loaded_conversation_checkpoint = checkpoint
-    first_request._active_conversation_checkpoint = checkpoint
-    build_agent_messages(first_request, compact_config)
+    build_agent_messages(
+        first_request,
+        compact_config,
+        checkpoint=checkpoint,
+    )
 
     next_request = _request(
         prompt="继续检查。",
         current_id="checkpoint-larger-model-user",
         messages=history,
     )
-    next_request._loaded_conversation_checkpoint = checkpoint
-    next_request._active_conversation_checkpoint = checkpoint
     projection = build_agent_messages(
         next_request,
         _config(context_window_tokens=64_000, max_tokens=4_096),
+        checkpoint=checkpoint,
     )
 
     summary_message = next(
@@ -1319,7 +1311,6 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
         and message["content"].startswith('{"conversationCheckpoint":')
     )
     assert json.loads(summary_message["content"])["conversationCheckpoint"]
-    assert next_request._active_conversation_checkpoint == checkpoint
     assert not any(
         message.get("content") == history[0]["text"] for message in projection
     )
@@ -1342,9 +1333,7 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
         throughMessageId="headroom-history-3",
         summary=_checkpoint_context([]),
     )
-    request._loaded_conversation_checkpoint = checkpoint
-    request._active_conversation_checkpoint = checkpoint
-    build_agent_messages(request, config)
+    build_agent_messages(request, config, checkpoint=checkpoint)
     initial_boundary = checkpoint.through_message_id
 
     for index in range(1, 6):
@@ -1363,13 +1352,8 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
             current_id=f"headroom-user-{index}",
             messages=history,
         )
-        request._loaded_conversation_checkpoint = checkpoint
-        request._active_conversation_checkpoint = checkpoint
-        build_agent_messages(request, config)
-        assert request._active_conversation_checkpoint == checkpoint
-        assert request._active_conversation_checkpoint.through_message_id == (
-            initial_boundary
-        )
+        build_agent_messages(request, config, checkpoint=checkpoint)
+        assert checkpoint.through_message_id == initial_boundary
 
 
 def test_agent_pure_projection_never_drops_recent_exact_messages() -> None:

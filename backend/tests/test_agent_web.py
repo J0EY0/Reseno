@@ -87,6 +87,71 @@ def test_web_search_parses_duckduckgo_results_without_a_search_sdk() -> None:
     ]
 
 
+def test_web_search_diversifies_a_larger_discovery_pool() -> None:
+    urls = [
+        *(f"https://directory.example/jobs/{index}" for index in range(4)),
+        "https://careers.example/jobs/frontend",
+        "https://jobs.example.org/roles/frontend",
+        "https://ats.example.net/openings/frontend",
+    ]
+    html = "".join(
+        f"""
+        <div class="result results_links web-result">
+          <h2><a class="result__a" href="{url}">Result {index}</a></h2>
+          <a class="result__snippet">Frontend internship result {index}.</a>
+        </div>
+        """
+        for index, url in enumerate(urls)
+    ).encode()
+
+    discovered = agent_web._parse_duckduckgo_results(html, "utf-8")
+    selected = agent_web._select_search_results(discovered)
+
+    assert [result.url for result in discovered] == urls
+    assert [result.url for result in selected] == [
+        urls[0],
+        urls[1],
+        urls[4],
+        urls[5],
+        urls[6],
+    ]
+
+    browser_candidates = agent_web._select_search_results(
+        discovered,
+        limit=2,
+        per_source=1,
+    )
+    assert [result.url for result in browser_candidates] == [urls[0], urls[4]]
+
+
+def test_web_search_keeps_distinct_tenants_on_a_shared_ats() -> None:
+    results = [
+        agent_web.WebSearchResult(
+            url="https://jobs.lever.co/acme/frontend-intern",
+            title="Acme Frontend Intern",
+            excerpt="Build Acme frontend products.",
+        ),
+        agent_web.WebSearchResult(
+            url="https://jobs.lever.co/example/frontend-intern",
+            title="Example Frontend Intern",
+            excerpt="Build Example frontend products.",
+        ),
+        agent_web.WebSearchResult(
+            url="https://directory.example/jobs/frontend",
+            title="Frontend internship directory",
+            excerpt="A third-party internship directory.",
+        ),
+    ]
+
+    selected = agent_web._select_search_results(
+        results,
+        limit=2,
+        per_source=1,
+    )
+
+    assert selected == results[:2]
+
+
 def test_web_fetch_extracts_the_query_relevant_page_passage_locally() -> None:
     html = b"""
         <html>
@@ -660,6 +725,76 @@ def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
     assert launch_options == {"headless": True}
 
 
+def test_dynamic_renderer_waits_for_relevant_job_content() -> None:
+    url = "https://jobs.example/positions/7"
+    body = "Home Jobs Sign in recruiting assistant"
+
+    class Locator:
+        async def inner_text(self, *, timeout: int) -> str:
+            assert timeout == 1_000
+            return body
+
+        async def all_text_contents(self) -> list[str]:
+            return []
+
+    class Response:
+        status = 200
+
+    class Page:
+        url = "https://jobs.example/positions/7"
+
+        async def route(self, _pattern: str, _handler: object) -> None:
+            return None
+
+        async def goto(
+            self,
+            requested_url: str,
+            *,
+            wait_until: str,
+            timeout: int,
+        ) -> Response:
+            assert requested_url == url
+            assert wait_until == "domcontentloaded"
+            assert timeout == 6_000
+            return Response()
+
+        async def wait_for_function(self, _expression: str, *, timeout: int) -> None:
+            nonlocal body
+            if timeout < 3_000:
+                raise agent_web.PlaywrightTimeoutError("job content is not ready")
+            body = (
+                "Frontend Intern\nResponsibilities\n"
+                "Build React and TypeScript interfaces for the recruiting product.\n"
+                "Improve accessibility and browser performance."
+            )
+
+        async def title(self) -> str:
+            return "Frontend Intern"
+
+        def locator(self, _selector: str) -> Locator:
+            return Locator()
+
+        async def close(self) -> None:
+            return None
+
+    class Context:
+        async def new_page(self) -> Page:
+            return Page()
+
+    class Browser:
+        async def context(self) -> Context:
+            return Context()
+
+    rendered = asyncio.run(
+        agent_web._async_render_web_references(
+            [(url, "React TypeScript frontend", "Frontend Intern")],
+            Browser(),  # type: ignore[arg-type]
+        ),
+    )
+
+    assert rendered[url].excerpt.startswith("Build React and TypeScript")
+
+
 def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
     calls = {"start": 0, "launch": 0, "new_context": 0, "close": 0, "stop": 0}
 
@@ -829,6 +964,75 @@ def test_web_search_reports_duckduckgo_challenge_as_rate_limited(
     response = asyncio.run(agent_web._async_search_web("frontend intern"))
 
     assert response == agent_web.WebSearchResponse(error_reason="rate_limited")
+
+
+def test_web_search_promotes_only_the_target_number_of_read_references(
+    monkeypatch,
+) -> None:
+    real_client = httpx.AsyncClient
+    search_html = b"""
+        <a class="result__a" href="https://one.example/jobs/1">Role one</a>
+        <a class="result__snippet">Discovery snippet one.</a>
+        <a class="result__a" href="https://two.example/jobs/2">Role two</a>
+        <a class="result__snippet">Discovery snippet two.</a>
+        <a class="result__a" href="https://three.example/jobs/3">Role three</a>
+        <a class="result__snippet">Discovery snippet three.</a>
+    """
+
+    class PublicPeer:
+        def get_extra_info(self, name: str):
+            return ("93.184.216.34", 443) if name == "server_addr" else None
+
+    def fake_getaddrinfo(
+        _host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+        ]
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            content=search_html,
+            headers={"content-type": "text/html; charset=utf-8"},
+            extensions={"network_stream": PublicPeer()},
+        ),
+    )
+
+    async def read_static(
+        _client: httpx.AsyncClient,
+        url: str,
+        _query: str,
+        title: str,
+    ) -> agent_web.WebReference:
+        return agent_web.WebReference(
+            title=title,
+            excerpt=(
+                f"{title}. Discovery snippet for a frontend intern role with "
+                "responsibilities and requirements."
+            ),
+            final_url=url,
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        agent_web.httpx,
+        "AsyncClient",
+        lambda **_kwargs: real_client(transport=transport),
+    )
+    monkeypatch.setattr(agent_web, "_async_fetch_with_client", read_static)
+
+    response = asyncio.run(agent_web._async_search_web("frontend intern"))
+
+    assert [result.source_kind for result in response.results[:3]] == [
+        "fetched_page",
+        "fetched_page",
+        "search_snippet",
+    ]
+    assert response.results[2].excerpt == "Discovery snippet three."
 
 
 def test_web_search_keeps_discovery_results_when_one_page_read_fails(
@@ -1402,7 +1606,7 @@ def test_web_search_sanitizes_query_and_reuses_result_context_for_fetch(
     ]
 
 
-def test_web_search_observation_caps_references_and_distributes_passage_budget(
+def test_web_search_observation_distributes_reference_passage_budget(
     monkeypatch,
 ) -> None:
     adapter = _web_adapter(prompt="搜索前端岗位要求")
@@ -1420,7 +1624,9 @@ def test_web_search_observation_caps_references_and_distributes_passage_budget(
                     url=url,
                     title=f"Frontend Role {index}",
                     excerpt=f"Frontend role {index} responsibilities and requirements.",
-                    source_kind="fetched_page",
+                    source_kind=(
+                        "fetched_page" if index < 2 else "search_snippet"
+                    ),
                     passages=(
                         tuple(
                             agent_web.WebPassage(
@@ -1441,11 +1647,7 @@ def test_web_search_observation_caps_references_and_distributes_passage_budget(
             ),
         )
 
-    async def fail_if_fetched(*_args: object) -> agent_web.WebReference:
-        raise AssertionError("web_fetch must reuse the full search reference cache")
-
     monkeypatch.setattr(agent_web, "_async_search_web", fake_search)
-    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fail_if_fetched)
 
     search_tool = asyncio.run(
         _invoke(
@@ -1453,17 +1655,12 @@ def test_web_search_observation_caps_references_and_distributes_passage_budget(
             _web_tool_call("web_search", {"query": "frontend requirements"}),
         ),
     )
-    fetch_tool = asyncio.run(
-        _invoke(
-            adapter,
-            _web_tool_call("web_fetch", {"url": urls[0]}),
-        ),
-    )
-
     assert search_tool.output
     references = search_tool.output["references"]
+    candidates = search_tool.output["candidates"]
     passage_counts = [len(reference["passages"]) for reference in references]
-    assert [reference["url"] for reference in references] == urls[:5]
+    assert [reference["url"] for reference in references] == urls[:2]
+    assert [candidate["url"] for candidate in candidates] == urls[2:5]
     assert all(count >= 1 for count in passage_counts)
     assert sum(passage_counts) <= 8
     assert all(
@@ -1471,8 +1668,6 @@ def test_web_search_observation_caps_references_and_distributes_passage_budget(
         for reference in references
         for passage in reference["passages"]
     )
-    assert fetch_tool.output
-    assert len(fetch_tool.output["references"][0]["passages"]) == 4
 
 
 def test_web_search_keeps_hidden_terms_explicitly_entered_in_current_prompt(

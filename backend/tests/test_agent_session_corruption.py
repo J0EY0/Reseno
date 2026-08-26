@@ -134,7 +134,8 @@ def test_load_agent_session_rejects_checkpoint_with_unknown_boundary(
         '{"id":"assistant-checkpoint-missing-boundary",'
         '"role":"assistant","text":"Stored response",'
         '"_conversationCheckpoint":{'
-        '"throughMessageId":"missing-history-message","summary":"Saved"}}'
+        '"throughMessageId":"missing-history-message",'
+        '"summary":{"trust":"untrusted_history_data","events":[]}}}'
     )
     _insert_stored_message(
         agent_conn,
@@ -162,7 +163,8 @@ def test_load_agent_session_rejects_malformed_conversation_checkpoint(
         '"role":"assistant","text":"Stored response",'
         '"_conversationCheckpoint":{'
         '"throughMessageId":"history-message",'
-        '"summary":"Saved","unexpectedField":[]}}'
+        '"summary":{"trust":"untrusted_history_data","events":[]},'
+        '"unexpectedField":[]}}'
     )
     _insert_stored_message(
         agent_conn,
@@ -177,6 +179,45 @@ def test_load_agent_session_rejects_malformed_conversation_checkpoint(
 
     assert exc_info.value.session_id == session_id
     assert exc_info.value.message_id == message_id
+    assert exc_info.value.field == "conversationCheckpoint"
+
+
+@pytest.mark.parametrize("summary", ["plain text", [], {}])
+def test_load_agent_session_rejects_unstructured_checkpoint_summary(
+    agent_conn: sqlite3.Connection,
+    summary: object,
+) -> None:
+    session_id = "resumeunstructuredcheckpoint"
+    _insert_stored_message(
+        agent_conn,
+        session_id=session_id,
+        message_id="checkpoint-boundary",
+        role="user",
+    )
+    response_json = json.dumps(
+        {
+            "id": "assistant-unstructured-checkpoint",
+            "role": "assistant",
+            "text": "Stored response",
+            "_conversationCheckpoint": {
+                "throughMessageId": "checkpoint-boundary",
+                "summary": summary,
+            },
+        },
+    )
+    agent_conn.execute(
+        """
+        INSERT INTO agent_messages (
+            id, session_id, role, text, files_json, response_json, sequence
+        )
+        VALUES (?, ?, 'assistant', '', '[]', ?, 2)
+        """,
+        ("assistant-unstructured-checkpoint", session_id, response_json),
+    )
+
+    with pytest.raises(agent_sessions.AgentSessionDataError) as exc_info:
+        agent_sessions.load_agent_session(agent_conn, session_id)
+
     assert exc_info.value.field == "conversationCheckpoint"
 
 
@@ -203,7 +244,10 @@ def test_load_agent_session_rejects_regressed_conversation_checkpoint(
                     "text": "Stored newer checkpoint",
                     "_conversationCheckpoint": {
                         "throughMessageId": "checkpoint-boundary-new",
-                        "summary": "Newer summary",
+                        "summary": {
+                            "trust": "untrusted_history_data",
+                            "events": [],
+                        },
                     },
                 },
             ),
@@ -219,7 +263,10 @@ def test_load_agent_session_rejects_regressed_conversation_checkpoint(
                     "text": "Stored regressed checkpoint",
                     "_conversationCheckpoint": {
                         "throughMessageId": "checkpoint-boundary-old",
-                        "summary": "Regressed summary",
+                        "summary": {
+                            "trust": "untrusted_history_data",
+                            "events": [],
+                        },
                     },
                 },
             ),

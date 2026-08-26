@@ -181,7 +181,6 @@ export function AgentMessageTimeline({
   fieldLabels,
   isStreamingAssistant,
   parts,
-  removeMarkdownTables,
   sources,
   tools,
   t,
@@ -189,7 +188,6 @@ export function AgentMessageTimeline({
   fieldLabels?: ReadonlyMap<string, string>;
   isStreamingAssistant: boolean;
   parts: AgentTimelinePart[];
-  removeMarkdownTables?: boolean;
   sources: AgentSource[] | undefined;
   tools: AgentToolInvocation[];
   t: AppMessages;
@@ -223,7 +221,6 @@ export function AgentMessageTimeline({
             <div key={part.id}>
               <AgentAssistantResponse
                 fieldLabels={fieldLabels}
-                removeMarkdownTables={removeMarkdownTables}
                 sources={part.id === lastTextPartId ? sources : undefined}
                 text={part.text ?? ""}
               />

@@ -33,7 +33,11 @@ from app.schemas.agent import (
 )
 from app.services.agent.draft import DraftTransaction
 from app.services.agent.editing.operations import _apply_edit_operations
-from app.services.agent.runtime.loop import AgentTurnResult
+from app.services.agent.runtime.loop import (
+    AgentToolLoopCompleted,
+    AgentToolLoopEvent,
+    AgentTurnResult,
+)
 from app.services.llm import AgentLlmConfig, LlmUsage
 from app.services.llm.config import resolve_agent_llm_config
 from app.services.llm.types import LlmStopReason
@@ -209,8 +213,8 @@ class _EvaluationCallCollector:
         )
         self._response_started_at = None
 
-    def record_tool_loop_event(self, event: Any) -> None:
-        if event.kind == "done":
+    def record_tool_loop_event(self, event: AgentToolLoopEvent) -> None:
+        if isinstance(event, AgentToolLoopCompleted):
             self.result = event.result
 
     def token_usage(self) -> EvaluationTokenUsage:
@@ -364,7 +368,9 @@ async def execute_real_agent(
     # Keep the production Agent dependency behind the opt-in execution path.
     # Fixture validation and mock-provider tests must remain offline-safe.
     from app.services.agent.runtime.streaming import (
-        async_stream_resolved_agent_response,
+        AgentCompleted,
+        AgentStreamError,
+        async_iter_resolved_agent_events,
     )
 
     call_collector = _EvaluationCallCollector()
@@ -380,15 +386,15 @@ async def execute_real_agent(
     provider_error = ""
 
     try:
-        async for frame in async_stream_resolved_agent_response(
+        async for event in async_iter_resolved_agent_events(
             request,
             config,
-            on_complete=completed_messages.append,
             runtime=runtime,
         ):
-            event_name, payload = _sse_frame_payload(frame)
-            if event_name == "error":
-                provider_error = str(payload.get("error") or "Agent request failed.")
+            if isinstance(event, AgentCompleted):
+                completed_messages.append(event.message)
+            elif isinstance(event, AgentStreamError):
+                provider_error = event.message
     except Exception as exc:
         raise _EvaluationExecutionFailure(
             exc,
@@ -772,22 +778,6 @@ def _append_diagnostic_code(codes: list[str], value: object) -> None:
         codes.append(value)
 
 
-def _sse_frame_payload(frame: str) -> tuple[str, dict[str, Any]]:
-    """Parse one production SSE frame without accepting multi-event input."""
-
-    event_name = ""
-    data = ""
-    for line in frame.splitlines():
-        if line.startswith("event: "):
-            event_name = line.removeprefix("event: ")
-        elif line.startswith("data: "):
-            data = line.removeprefix("data: ")
-    if not data:
-        return event_name, {}
-    payload = json.loads(data)
-    return event_name, payload if isinstance(payload, dict) else {}
-
-
 @contextmanager
 def prepared_request(
     case: ModelEvalCase,
@@ -870,76 +860,138 @@ async def run_suite(
     config: AgentLlmConfig,
     *,
     executor: CaseExecutor = execute_real_agent,
+    repeat: int = 1,
 ) -> dict[str, Any]:
     """Run cases sequentially and return a key-safe machine-readable report."""
+
+    if repeat < 1:
+        raise ValueError("repeat must be a positive integer.")
 
     started_at = datetime.now(UTC)
     results: list[dict[str, Any]] = []
     metric_cases: list[_MetricCaseResult] = []
 
     for case in cases:
-        case_started = perf_counter()
-        observation: EvaluationObservation | None = None
-        token_usage = EvaluationTokenUsage()
-        truncated = False
-        try:
-            with prepared_request(case, config) as request:
-                observation = await executor(request, config)
-            failure_reasons = evaluate_observation(case.expect, observation)
-            token_usage = observation.token_usage
-            truncated = observation.truncated
-            duration_ms = round((perf_counter() - case_started) * 1000)
-            result = {
-                "id": case.id,
-                "description": case.description,
-                "passed": not failure_reasons,
-                "durationMs": duration_ms,
-                "failureReasons": failure_reasons,
-                "observed": observation_summary(observation),
-            }
-        except Exception as exc:
-            duration_ms = round((perf_counter() - case_started) * 1000)
-            if isinstance(exc, _EvaluationExecutionFailure):
-                token_usage = exc.token_usage
-                truncated = exc.truncated
-            failure_code = "output_truncated" if truncated else "execution_error"
-            failure_reasons = [
-                {
-                    "code": failure_code,
-                    "detail": redact_error(exc, config.api_key),
-                },
-            ]
-            result = {
-                "id": case.id,
-                "description": case.description,
-                "passed": False,
-                "durationMs": duration_ms,
-                "failureReasons": failure_reasons,
-                "observed": (
+        runs: list[dict[str, Any]] = []
+        case_metric_runs: list[_MetricCaseResult] = []
+        for run_number in range(1, repeat + 1):
+            case_started = perf_counter()
+            observation: EvaluationObservation | None = None
+            token_usage = EvaluationTokenUsage()
+            truncated = False
+            try:
+                with prepared_request(case, config) as request:
+                    observation = await executor(request, config)
+                failure_reasons = evaluate_observation(case.expect, observation)
+                token_usage = observation.token_usage
+                truncated = observation.truncated
+                duration_ms = round((perf_counter() - case_started) * 1000)
+                run_result = {
+                    "run": run_number,
+                    "passed": not failure_reasons,
+                    "durationMs": duration_ms,
+                    "failureReasons": failure_reasons,
+                    "observed": observation_summary(observation),
+                }
+            except Exception as exc:
+                duration_ms = round((perf_counter() - case_started) * 1000)
+                if isinstance(exc, _EvaluationExecutionFailure):
+                    token_usage = exc.token_usage
+                    truncated = exc.truncated
+                failure_code = "output_truncated" if truncated else "execution_error"
+                failure_reasons = [
                     {
-                        "truncated": truncated,
-                        "tokenUsage": _token_usage_payload(token_usage),
-                    }
-                    if truncated
-                    or token_usage.request_attempts
-                    or token_usage.terminal_responses
-                    else None
+                        "code": failure_code,
+                        "detail": redact_error(exc, config.api_key),
+                    },
+                ]
+                run_result = {
+                    "run": run_number,
+                    "passed": False,
+                    "durationMs": duration_ms,
+                    "failureReasons": failure_reasons,
+                    "observed": (
+                        {
+                            "truncated": truncated,
+                            "tokenUsage": _token_usage_payload(token_usage),
+                        }
+                        if truncated
+                        or token_usage.request_attempts
+                        or token_usage.terminal_responses
+                        else None
+                    ),
+                }
+            runs.append(run_result)
+            case_metric_runs.append(
+                _MetricCaseResult(
+                    expectation=case.expect,
+                    observation=observation,
+                    failure_codes=frozenset(
+                        failure["code"] for failure in failure_reasons
+                    ),
+                    duration_ms=duration_ms,
+                    token_usage=token_usage,
+                    truncated=truncated,
                 ),
-            }
-        results.append(result)
-        metric_cases.append(
-            _MetricCaseResult(
-                expectation=case.expect,
-                observation=observation,
-                failure_codes=frozenset(failure["code"] for failure in failure_reasons),
-                duration_ms=duration_ms,
-                token_usage=token_usage,
-                truncated=truncated,
-            ),
+            )
+
+        pass_count = sum(run["passed"] for run in runs)
+        durations = [metric.duration_ms for metric in case_metric_runs]
+        tool_name_counts = Counter(
+            tool_name
+            for metric in case_metric_runs
+            if metric.observation is not None
+            for tool_name in metric.observation.tool_names
         )
+        results.append(
+            {
+                "id": case.id,
+                "description": case.description,
+                "passed": pass_count == repeat,
+                "passCount": pass_count,
+                "runCount": repeat,
+                "passRate": _rate(pass_count, repeat),
+                "durationMs": sum(durations),
+                "durationStatsMs": _count_statistics(durations),
+                "modelAttempts": _count_statistics(
+                    [
+                        metric.token_usage.request_attempts
+                        for metric in case_metric_runs
+                    ],
+                ),
+                "modelResponses": _count_statistics(
+                    [
+                        metric.token_usage.terminal_responses
+                        for metric in case_metric_runs
+                    ],
+                ),
+                "toolCalls": {
+                    **_count_statistics(
+                        [
+                            len(metric.observation.tool_names)
+                            if metric.observation is not None
+                            else 0
+                            for metric in case_metric_runs
+                        ],
+                    ),
+                    "byName": dict(sorted(tool_name_counts.items())),
+                },
+                "failureReasons": [
+                    failure
+                    for run in runs
+                    for failure in run["failureReasons"]
+                ],
+                "observed": runs[-1]["observed"],
+                "runs": runs,
+            },
+        )
+        metric_cases.extend(case_metric_runs)
 
     passed = sum(result["passed"] for result in results)
     total = len(results)
+    run_count = total * repeat
+    passed_runs = sum(result["passCount"] for result in results)
+    pass_at_n = sum(result["passCount"] > 0 for result in results)
     completed_at = datetime.now(UTC)
     return {
         "schemaVersion": REPORT_SCHEMA_VERSION,
@@ -952,6 +1004,20 @@ async def run_suite(
             "passed": passed,
             "failed": total - passed,
             "passRate": round(passed / total, 4) if total else 0.0,
+            "runCount": run_count,
+            "passedRuns": passed_runs,
+            "failedRuns": run_count - passed_runs,
+            "runPassRate": _rate(passed_runs, run_count),
+            "passAtN": {
+                "n": repeat,
+                "passedCases": pass_at_n,
+                "rate": _rate(pass_at_n, total),
+            },
+            "stablePass": {
+                "n": repeat,
+                "passedCases": passed,
+                "rate": _rate(passed, total),
+            },
         },
         "metrics": _evaluation_metrics(metric_cases),
         "cases": results,
@@ -1056,12 +1122,9 @@ def evaluate_observation(
                     f"Changed value mismatch at required path: {path!r}.",
                 ),
             )
-    if (
-        expect.required_tool_sequence
-        and not _contains_ordered_actions(
-            observation.tool_names,
-            expect.required_tool_sequence,
-        )
+    if expect.required_tool_sequence and not _contains_ordered_actions(
+        observation.tool_names,
+        expect.required_tool_sequence,
     ):
         failures.append(
             _failure(
@@ -1273,11 +1336,7 @@ def _evaluation_metrics(cases: Sequence[_MetricCaseResult]) -> dict[str, Any]:
             "truncatedCases": truncated_cases,
             "rate": _rate(truncated_cases, len(cases)),
         },
-        "latencyMs": {
-            "total": sum(durations),
-            "average": round(sum(durations) / len(durations)) if durations else 0,
-            "maximum": max(durations, default=0),
-        },
+        "latencyMs": _count_statistics(durations),
         "tokenUsage": _token_usage_payload(usage),
         # Providers normalize token counts, but the configured model does not
         # carry authoritative, effective-dated prices. A guessed model-name
@@ -1302,6 +1361,27 @@ def _passing_metric(
         "passedCases": passed,
         "rate": _rate(passed, len(cases)),
     }
+
+
+def _count_statistics(values: Sequence[int]) -> dict[str, int]:
+    """Summarize repeated integer observations with nearest-rank percentiles."""
+
+    ordered = sorted(values)
+    total = sum(ordered)
+    return {
+        "total": total,
+        "average": round(total / len(ordered)) if ordered else 0,
+        "p50": _nearest_rank_percentile(ordered, 50),
+        "p95": _nearest_rank_percentile(ordered, 95),
+        "maximum": ordered[-1] if ordered else 0,
+    }
+
+
+def _nearest_rank_percentile(ordered: Sequence[int], percentile: int) -> int:
+    if not ordered:
+        return 0
+    rank = (percentile * len(ordered) + 99) // 100
+    return ordered[max(rank - 1, 0)]
 
 
 def _rate(count: int, total: int) -> float:
@@ -1480,6 +1560,16 @@ def _selected_cases(
     return cases
 
 
+def _positive_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run opt-in resume Agent evaluation against a real model.",
@@ -1501,6 +1591,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         dest="case_ids",
         help="Run one case id. Repeat to select multiple cases.",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=_positive_integer,
+        default=1,
+        help="Run every selected case this many times sequentially.",
     )
     parser.add_argument(
         "--output",
@@ -1527,7 +1623,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(
                 "The selected model does not support Agent tool calls.",
             )
-        report = asyncio.run(run_suite(cases, config))
+        report = asyncio.run(run_suite(cases, config, repeat=args.repeat))
         exit_code = 0 if report["summary"]["failed"] == 0 else 1
     except Exception as exc:
         report = {

@@ -77,9 +77,13 @@ export function AgentSettingsTab({
     { value: "zh", label: t.languageChinese },
     { value: "en", label: t.languageEnglish },
   ];
+  const agentModelConfigs = modelConfigs.filter(
+    (config) => config.supportsTools,
+  );
   const selectedDefaultModel =
-    modelConfigs.find((config) => config.id === agentSettings.defaultModelId) ??
-    null;
+    agentModelConfigs.find(
+      (config) => config.id === agentSettings.defaultModelId,
+    ) ?? null;
 
   return (
     <TabsContent value="agent" className="mt-5 space-y-5">
@@ -91,7 +95,7 @@ export function AgentSettingsTab({
         >
           <Select
             value={selectedDefaultModel?.id}
-            disabled={modelConfigs.length === 0}
+            disabled={agentModelConfigs.length === 0}
             onValueChange={(value) =>
               onAgentSettingsChange({
                 ...agentSettings,
@@ -116,7 +120,7 @@ export function AgentSettingsTab({
             </SelectTrigger>
             <SelectContent className="min-w-[20rem]">
               <SelectGroup>
-                {modelConfigs.map((config) => (
+                {agentModelConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>
                     <ModelOption
                       config={config}

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from app.agent_locales import AgentLocale
@@ -95,7 +95,7 @@ class AgentConversationCheckpoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     through_message_id: str = Field(alias="throughMessageId", min_length=1)
-    summary: str = Field(min_length=1)
+    summary: dict[str, Any] = Field(min_length=1)
 
 
 class AgentChatRequest(BaseModel):
@@ -126,16 +126,6 @@ class AgentChatRequest(BaseModel):
         repr=False,
     )
     stream: bool = True
-
-    # Checkpoints are backend-owned compiler state. Private attributes keep
-    # them out of the HTTP/OpenAPI contract while allowing all prompt phases in
-    # one run to share a single monotonic conversation boundary.
-    _loaded_conversation_checkpoint: AgentConversationCheckpoint | None = PrivateAttr(
-        default=None,
-    )
-    _active_conversation_checkpoint: AgentConversationCheckpoint | None = PrivateAttr(
-        default=None,
-    )
 
     @model_validator(mode="after")
     def require_revision_for_persisted_session(self) -> "AgentChatRequest":

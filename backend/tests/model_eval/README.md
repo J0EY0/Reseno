@@ -110,8 +110,9 @@ assertions; this measures evidence-preserving density rather than raw length.
 `current_web_jd_tailoring` exercises the production search path: hosted search
 for supported cloud providers, otherwise the local DuckDuckGo/HTTP/Chromium
 tools. It requires a readable current JD before one grounded summary edit and
-requires the final answer to name and cite the selected role. The report records
-the visible tool sequence, source count, and end-to-end latency.
+requires the final answer to name and cite the selected role. Source count
+proves either search path produced readable evidence; the visible tool sequence
+requires only the provider-neutral `edit_execute` action.
 
 The offline unit test only mocks the provider boundary and verifies evaluator
 selection, reporting, and secret redaction:

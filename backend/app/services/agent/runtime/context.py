@@ -1,11 +1,11 @@
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import anyio
 
-from app.schemas.agent import AgentChatRequest
+from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -29,11 +29,32 @@ class AgentRunAborted(Exception):
     """Raised when the user has explicitly cancelled the active Agent run."""
 
 
+class AgentContextWindowError(LlmRequestError):
+    """Raised when local prompt compilation cannot fit the selected model."""
+
+
+@dataclass
+class AgentConversationState:
+    """Mutable prompt-compiler state shared by every phase of one accepted turn.
+
+    Conversation checkpoints are durable backend state, not client request
+    data. Keeping both boundaries here makes the state transition explicit:
+    compaction advances ``active_checkpoint`` while terminal persistence can
+    compare it with the checkpoint loaded when the turn was accepted.
+    """
+
+    loaded_checkpoint: AgentConversationCheckpoint | None = None
+    active_checkpoint: AgentConversationCheckpoint | None = None
+
+
 @dataclass(frozen=True)
 class AgentRuntimeContext:
     """Runtime controls shared across Agent streaming, tool calls, and tools."""
 
     is_aborted: Callable[[], Awaitable[bool]] | None = None
+    conversation_state: AgentConversationState = field(
+        default_factory=AgentConversationState,
+    )
     blocking_timeout_seconds: float = DEFAULT_BLOCKING_TIMEOUT_SECONDS
     max_model_turns: int = DEFAULT_MAX_MODEL_TURNS
     llm_request_context: LlmRequestContext | None = None

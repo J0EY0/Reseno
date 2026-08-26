@@ -424,6 +424,19 @@ def test_successful_edit_observation_contains_only_execution_facts() -> None:
         assert effect.invocation.state == "output-available"
         assert set(effect.invocation.output) == {"editCount", "observations"}
         assert effect.invocation.output["editCount"] == 1
+        assert effect.invocation.output["observations"][0]["before"] == "前端工程师"
+        assert effect.invocation.output["observations"][0]["after"] == (
+            "聚焦复杂前端系统的工程师。"
+        )
+        assert effect.observation == {
+            "title": "edit_execute",
+            "state": "output-available",
+            "output": {
+                "status": "accepted",
+                "editCount": 1,
+            },
+            "errorText": None,
+        }
         assert effect.edits[-1].title == "更新个人简介"
         assert effect.edits_changed is True
 

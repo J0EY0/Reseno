@@ -144,6 +144,26 @@ assert.match(panel, /useAgentPromptActions\(/);
 assert.match(panel, /useAgentMessageActions\(/);
 assert.match(panel, /<CopilotConversationView/);
 assert.match(panel, /<CopilotComposer/);
+assert.match(
+  panel,
+  /const agentModelConfigs = useMemo\([\s\S]{0,240}modelConfigs\.filter\(\(config\) => config\.supportsTools\)[\s\S]{0,100}\[modelConfigs\]/,
+  "The Agent panel must derive its model options from tool-capable configs only.",
+);
+assert.match(
+  panel,
+  /agentModelConfigs\.find\(\(config\) => config\.id === selectedModelId\) \?\?\s*null/,
+  "An Agent selection without tool support must resolve to the unconfigured state.",
+);
+assert.doesNotMatch(
+  panel,
+  /modelConfigs\[0\]|agentModelConfigs\[0\]/,
+  "The Agent must not silently fall back to a different model.",
+);
+assert.match(
+  panel,
+  /<CopilotComposer[\s\S]{0,500}modelConfigs=\{agentModelConfigs\}/,
+  "The Agent model selector must receive only tool-capable configs.",
+);
 assert.doesNotMatch(
   panel,
   /@\/lib\/(?:agent-|api-client)|\b(?:toast|useState)\b/,

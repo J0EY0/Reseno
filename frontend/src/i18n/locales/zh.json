@@ -648,7 +648,7 @@
   "agentChangeSummaryTitle": "修改摘要",
   "agentLiveEditing": "正在帮你修改简历",
   "agentDraftSynced": "预览区已同步高亮草稿",
-  "agentReviewReady": "已完成 {count} 处修改",
+  "agentReviewReady": "当前草稿共 {count} 处修改",
   "agentQualityWarnings": "{count} 条质量建议",
   "agentQualityDuplicateContent": "简历中存在语义重复的内容。",
   "agentQualityGeneral": "应用草稿前请检查这条建议。",

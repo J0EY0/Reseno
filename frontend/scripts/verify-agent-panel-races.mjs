@@ -158,6 +158,45 @@ function compileFunctions(source, declarations, names) {
   return behaviorModule.exports;
 }
 
+async function loadTypeScriptModule(path, imports, globals = {}) {
+  const source = await readFile(path, "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const behaviorModule = { exports: {} };
+  vm.runInNewContext(compiled, {
+    AbortController,
+    console,
+    exports: behaviorModule.exports,
+    module: behaviorModule,
+    require: (specifier) => {
+      if (Object.hasOwn(imports, specifier)) {
+        return imports[specifier];
+      }
+      throw new Error(`Unexpected import: ${specifier}`);
+    },
+    ...globals,
+  });
+  return behaviorModule.exports;
+}
+
+function createDeferred() {
+  let reject;
+  let resolve;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    reject = rejectPromise;
+    resolve = resolvePromise;
+  });
+  return { promise, reject, resolve };
+}
+
+async function flushAsyncWork() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 function extractBetween(source, start, end) {
   const startIndex = source.indexOf(start);
   const endIndex = source.indexOf(end, startIndex + start.length);
@@ -547,5 +586,134 @@ assert(
   messages.join(",") === "persisted",
   "Stopping a debounced send must restore the pre-send message list.",
 );
+
+{
+  const sessionRequest = createDeferred();
+  const activeRunRequest = createDeferred();
+  const messageWrites = [];
+  const reconciledDrafts = [];
+  const loadErrorWrites = [];
+  let cleanup = () => undefined;
+  const runtime = {
+    activeRequestAbort: null,
+    activeRun: null,
+    onReconcileAgentDraft: (draft) => reconciledDrafts.push(draft),
+    optimisticMessageOwner: null,
+    previewedEditsKey: null,
+    sessionReady: true,
+    sessionReadyPromise: null,
+    sessionRevision: "existing-revision",
+    stopRequested: false,
+  };
+  const authoritativeSession = {
+    executions: [],
+    messages: [
+      {
+        id: "assistant-authoritative",
+        role: "assistant",
+        text: "saved",
+        response: {
+          draft: { baseResume: {}, status: "pending" },
+          edits: [
+            {
+              id: "edit-authoritative",
+              target: "basics.summary",
+              title: "Saved edit",
+            },
+          ],
+          id: "assistant-authoritative",
+          role: "assistant",
+          text: "saved",
+          transactionState: "committed",
+        },
+      },
+    ],
+    resumeId: "resume-hydration-race",
+    revision: "authoritative-revision",
+  };
+  const messageModel = await loadTypeScriptModule(
+    join(copilotRoot, "copilot-message-model.ts"),
+    {
+      "@/i18n": {
+        loadMessages: () =>
+          Promise.resolve({ agentTransientModelStatusTexts: [] }),
+        locales: ["en"],
+      },
+      "@/lib/resume": { createId: () => "generated-message" },
+    },
+  );
+  const hydrationModule = await loadTypeScriptModule(
+    join(copilotRoot, "use-agent-session-hydration.ts"),
+    {
+      react: {
+        useEffect: (effect) => {
+          cleanup = effect();
+        },
+      },
+      "@/lib/agent-session-run-client": {
+        loadActiveAgentRun: () => activeRunRequest.promise,
+        loadAgentSession: () => sessionRequest.promise,
+      },
+      "@/lib/agent-stream-client": {
+        connectAgentRun: () => {
+          throw new Error("The stream must not start after bootstrap failure.");
+        },
+      },
+      "@/lib/api-client": {
+        isAbortError: () => false,
+      },
+      "./copilot-message-model": messageModel,
+    },
+    {
+      console: { error: () => undefined },
+    },
+  );
+
+  hydrationModule.useAgentSessionHydration({
+    cancelScheduledSend: () => false,
+    consumeRunStream: () => {
+      throw new Error("The stream must not start after bootstrap failure.");
+    },
+    resumeId: "resume-hydration-race",
+    retryAttempt: 0,
+    runtimeRef: { current: runtime },
+    updates: {
+      setIsResponding: () => undefined,
+      setMessages: (value) => messageWrites.push(value),
+      setSessionLoadError: (value) => loadErrorWrites.push(value),
+      setSessionReady: () => undefined,
+      setStreamingMessage: () => undefined,
+    },
+  });
+
+  sessionRequest.resolve(authoritativeSession);
+  await flushAsyncWork();
+  const committedWhileRunPending = messageWrites.some(
+    (value) => Array.isArray(value) && value[0]?.id === "assistant-authoritative",
+  );
+  const reconciledWhileRunPending = reconciledDrafts.length > 0;
+  const revisionWhileRunPending = runtime.sessionRevision;
+
+  activeRunRequest.reject(new Error("active run lookup failed"));
+  await flushAsyncWork();
+
+  assert(
+    !committedWhileRunPending &&
+      !reconciledWhileRunPending &&
+      revisionWhileRunPending === null,
+    "Session history and its formal draft preview must not commit while the active-run read is pending.",
+  );
+  assert(
+    !messageWrites.some(
+      (value) => Array.isArray(value) && value[0]?.id === "assistant-authoritative",
+    ) &&
+      reconciledDrafts.length === 0 &&
+      runtime.sessionRevision === null &&
+      loadErrorWrites.at(-1) === true,
+    "A failed active-run read must leave session history, revision, and the formal draft preview uncommitted.",
+  );
+
+  cleanup();
+}
 
 console.log("Agent panel race checks passed.");

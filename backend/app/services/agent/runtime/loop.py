@@ -57,15 +57,48 @@ class AgentModelTurnLimitError(LlmRequestError):
 
 
 @dataclass(frozen=True)
-class AgentToolLoopEvent:
-    """A user-visible state change produced by one ReAct tool loop."""
+class AgentToolLoopTextDelta:
+    """One streamed text fragment from the current model turn."""
 
-    kind: str
-    text: str | None = None
-    tools: list[AgentToolInvocation] | None = None
-    edits: list[AgentResumeEditSuggestion] | None = None
-    transaction_state: AgentTransactionState = "none"
-    result: AgentTurnResult | None = None
+    text: str
+
+
+@dataclass(frozen=True)
+class AgentToolLoopTerminalText:
+    """The model's authoritative natural-language completion."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class AgentToolLoopTools:
+    """One running or completed tool-state update."""
+
+    tools: list[AgentToolInvocation]
+
+
+@dataclass(frozen=True)
+class AgentToolLoopEdits:
+    """The current edit set and its transaction state."""
+
+    edits: list[AgentResumeEditSuggestion]
+    transaction_state: AgentTransactionState
+
+
+@dataclass(frozen=True)
+class AgentToolLoopCompleted:
+    """A naturally completed loop with its closed environment result."""
+
+    result: AgentTurnResult
+
+
+type AgentToolLoopEvent = (
+    AgentToolLoopTextDelta
+    | AgentToolLoopTerminalText
+    | AgentToolLoopTools
+    | AgentToolLoopEdits
+    | AgentToolLoopCompleted
+)
 
 
 def _running_model_tool(tool_call: LlmToolCall) -> AgentToolInvocation:
@@ -237,10 +270,7 @@ async def _async_iter_agent_tool_call_loop(
         ):
             if stream_event.type == "text_delta":
                 if stream_event.delta:
-                    yield AgentToolLoopEvent(
-                        kind="text_delta",
-                        text=stream_event.delta,
-                    )
+                    yield AgentToolLoopTextDelta(text=stream_event.delta)
                 continue
             if stream_event.type == "done":
                 response = stream_event.message
@@ -262,10 +292,7 @@ async def _async_iter_agent_tool_call_loop(
                 raise LlmRequestError("Model provider returned an empty response.")
             terminal_text = response.content
             completed = True
-            yield AgentToolLoopEvent(
-                kind="terminal",
-                text=response.content,
-            )
+            yield AgentToolLoopTerminalText(text=response.content)
             break
 
         validation_errors = {
@@ -286,8 +313,7 @@ async def _async_iter_agent_tool_call_loop(
         )
         executable_calls = environment.executable_tool_calls(valid_tool_calls)
         if executable_calls:
-            yield AgentToolLoopEvent(
-                kind="tools",
+            yield AgentToolLoopTools(
                 tools=[_running_model_tool(call) for call in executable_calls],
             )
 
@@ -314,7 +340,7 @@ async def _async_iter_agent_tool_call_loop(
 
             effect = effects_by_call[id(tool_call)]
             if id(tool_call) in executable_call_ids:
-                yield AgentToolLoopEvent(kind="tools", tools=[effect.invocation])
+                yield AgentToolLoopTools(tools=[effect.invocation])
             tool_messages.append(
                 _tool_result_message(
                     tool_call.id,
@@ -322,8 +348,7 @@ async def _async_iter_agent_tool_call_loop(
                 ),
             )
             if effect.edits_changed:
-                yield AgentToolLoopEvent(
-                    kind="edits",
+                yield AgentToolLoopEdits(
                     edits=list(effect.edits),
                     transaction_state=effect.transaction_state,
                 )
@@ -338,8 +363,7 @@ async def _async_iter_agent_tool_call_loop(
             terminal_text=terminal_text,
         )
         if result.transaction_state == "rolled_back":
-            yield AgentToolLoopEvent(
-                kind="edits",
+            yield AgentToolLoopEdits(
                 edits=[],
                 transaction_state="rolled_back",
             )
@@ -351,12 +375,11 @@ async def _async_iter_agent_tool_call_loop(
         terminal_text=terminal_text,
     )
     if result.transaction_state == "rolled_back":
-        yield AgentToolLoopEvent(
-            kind="edits",
+        yield AgentToolLoopEdits(
             edits=[],
             transaction_state="rolled_back",
         )
-    yield AgentToolLoopEvent(kind="done", result=result)
+    yield AgentToolLoopCompleted(result=result)
 
 
 async def async_iter_agent_tool_call_loop(

@@ -367,11 +367,13 @@ assert(
       agentSendController,
     ) &&
     /^\s*message\s*:\s*currentMessage\s*,/m.test(agentChatPostPayload) &&
-    /^\s*messages\s*:\s*priorMessages\s*,/m.test(agentChatPostPayload) &&
+    /^\s*messages\s*:\s*resumeId\s*\?\s*\[\]\s*:\s*priorMessages\s*,/m.test(
+      agentChatPostPayload,
+    ) &&
     /replaceAgentSession\([\s\S]{0,300}messages:\s*apiMessages/.test(
       agentSendController,
     ),
-  "Session replacement must include the current message while chat history contains prior messages only.",
+  "Persisted chat POSTs must omit client history, temporary chats must retain it, and session replacement must include the full edited history.",
 );
 assert(
   /if\s*\(\s*\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.isResponding/.test(

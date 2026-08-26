@@ -212,11 +212,11 @@ class WebToolAdapter:
                     valid_through=result.valid_through,
                     passages=result.passages,
                 )
-                references.append(_web_reference_payload(reference))
                 self._remember_reference(
                     result.url,
                     reference,
                 )
+                references.append(_web_reference_payload(reference))
             else:
                 candidates.append(_web_candidate_payload(result))
 

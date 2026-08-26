@@ -34,12 +34,15 @@ export function CopilotPanel({
   onOpenModelSettings,
   onBeforeSend,
 }: CopilotPanelProps) {
+  const agentModelConfigs = useMemo(
+    () => modelConfigs.filter((config) => config.supportsTools),
+    [modelConfigs],
+  )
   const selectedModel = useMemo(
     () =>
-      modelConfigs.find((config) => config.id === selectedModelId) ??
-      modelConfigs[0] ??
+      agentModelConfigs.find((config) => config.id === selectedModelId) ??
       null,
-    [modelConfigs, selectedModelId],
+    [agentModelConfigs, selectedModelId],
   )
   const conversation = useAgentConversation({
     agentDraftState,
@@ -127,7 +130,7 @@ export function CopilotPanel({
                   globalDropActive={globalDropActive}
                   isResponding={conversation.isResponding}
                   isSessionReady={conversation.isSessionReady}
-                  modelConfigs={modelConfigs}
+                  modelConfigs={agentModelConfigs}
                   onOpenModelSettings={onOpenModelSettings}
                   onSelectedModelChange={onSelectedModelChange}
                   promptActions={promptActions}

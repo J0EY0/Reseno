@@ -429,13 +429,27 @@ class ResumeToolEnvironment:
         return completed_tool, observation
 
     def _tool_result(self, tool: AgentToolInvocation) -> dict[str, Any]:
+        output = sanitize_agent_value(
+            tool.output,
+            hidden_terms=self._hidden_terms,
+        )
+        if (
+            tool.title == "edit_execute"
+            and tool.state == "output-available"
+            and isinstance(output, dict)
+            and isinstance(observations := output.get("observations"), list)
+        ):
+            # The invocation retains complete before/after values for review and
+            # persistence. The model already has its operation arguments, so the
+            # next turn only needs confirmation of what the engine accepted.
+            output = {
+                "status": "accepted",
+                "editCount": output.get("editCount", len(observations)),
+            }
         return {
             "title": tool.title,
             "state": tool.state,
-            "output": sanitize_agent_value(
-                tool.output,
-                hidden_terms=self._hidden_terms,
-            ),
+            "output": output,
             "errorText": sanitize_agent_value(
                 tool.error_text,
                 hidden_terms=self._hidden_terms,

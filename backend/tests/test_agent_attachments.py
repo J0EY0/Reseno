@@ -38,9 +38,7 @@ SYNTHETIC_SESSION_REVISION = "synthetic-session-revision"
 
 def _resume_id(label: str) -> str:
     return "".join(
-        character
-        for character in label
-        if character.isascii() and character.isalnum()
+        character for character in label if character.isascii() and character.isalnum()
     )
 
 
@@ -497,7 +495,11 @@ def test_cleanup_cannot_delete_attachment_referenced_by_committed_history(
     def prepare_turn() -> None:
         conn = connect()
         try:
-            agent_sessions.prepare_agent_turn(conn, request)
+            agent_sessions.accept_agent_turn(
+                conn,
+                request,
+                run_id="run-cleanup-race",
+            )
         except BaseException as exc:
             prepare_errors.append(exc)
         finally:
@@ -715,7 +717,7 @@ def test_attachment_filename_limit_counts_utf8_bytes(client: TestClient) -> None
     assert len(second["filename"].encode("utf-8")) <= 180
 
 
-def test_append_exchange_rolls_back_when_attachment_protection_fails(
+def test_accept_turn_rolls_back_when_attachment_protection_fails(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -737,11 +739,6 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
             files=[attachment],
         ),
     )
-    assistant = AgentChatMessage(
-        id="agent-assistant-rollback",
-        role="assistant",
-        text="Done.",
-    )
 
     def fail_protection(
         protected_session_id: str,
@@ -759,7 +756,11 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
     conn = connect()
     try:
         with pytest.raises(OSError, match="metadata write failed"):
-            agent_sessions.append_agent_exchange(conn, request, assistant)
+            agent_sessions.accept_agent_turn(
+                conn,
+                request,
+                run_id="run-attachment-rollback",
+            )
 
         message_count = conn.execute(
             "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
@@ -776,7 +777,7 @@ def test_append_exchange_rolls_back_when_attachment_protection_fails(
     assert session_count == 0
 
 
-def test_stale_assistant_is_rejected_after_session_history_replacement(
+def test_stale_assistant_is_rejected_after_a_newer_turn_is_accepted(
     client: TestClient,
 ) -> None:
     del client  # The fixture provides an isolated database for this session test.
@@ -795,33 +796,49 @@ def test_stale_assistant_is_rejected_after_session_history_replacement(
         role="assistant",
         text="Old run response",
     )
-    replacement = AgentConversationItem(
-        id="agent-user-replacement",
-        role="user",
-        text="Replacement history",
-    )
-
     conn = connect()
     try:
-        agent_sessions.persist_agent_user_message(conn, request)
-        revision = agent_sessions.load_agent_session(conn, session_id).revision
-        agent_sessions.replace_agent_session_messages(
+        accepted = agent_sessions.accept_agent_turn(
             conn,
-            session_id,
-            locale="en",
-            messages=[replacement],
-            revision=revision,
+            request,
+            run_id="run-old",
+        )
+        agent_sessions.accept_agent_turn(
+            conn,
+            AgentChatRequest(
+                resumeId=session_id,
+                expectedRevision=agent_sessions.load_agent_session(
+                    conn,
+                    session_id,
+                ).revision,
+                message=AgentConversationItem(
+                    id="agent-user-new-run",
+                    role="user",
+                    text="Newer prompt",
+                ),
+            ),
+            run_id="run-new",
         )
 
         with pytest.raises(agent_sessions.AgentSessionTurnConflictError):
-            agent_sessions.append_agent_exchange(conn, request, assistant)
+            agent_sessions.persist_agent_terminal_outcome(
+                conn,
+                accepted,
+                agent_sessions.AgentTerminalOutcome(
+                    status="succeeded",
+                    error_code=None,
+                    assistant=assistant,
+                    checkpoint=accepted.conversation_state.active_checkpoint,
+                ),
+            )
 
         persisted = agent_sessions.load_agent_session(conn, session_id)
     finally:
         conn.close()
 
     assert [message.id for message in persisted.messages] == [
-        "agent-user-replacement",
+        "agent-user-old-run",
+        "agent-user-new-run",
     ]
 
 
@@ -909,7 +926,11 @@ def test_user_message_and_attachment_state_are_compensated_on_db_failure(
     conn = connect()
     try:
         with pytest.raises(OSError, match="message insert failed"):
-            agent_sessions.persist_agent_user_message(conn, request)
+            agent_sessions.accept_agent_turn(
+                conn,
+                request,
+                run_id="run-user-message-compensation",
+            )
         message_count = conn.execute(
             "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
             (session_id,),

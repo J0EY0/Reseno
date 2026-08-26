@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.agent import AgentChatMessage, AgentChatRequest
-from app.services.agent.runtime.loop import AgentTurnResult
+from app.services.agent.runtime.loop import AgentToolLoopCompleted, AgentTurnResult
+from app.services.agent.runtime.streaming import AgentCompleted
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -20,6 +21,7 @@ from scripts.agent_model_eval import (
     EvaluationObservation,
     EvaluationTokenUsage,
     ModelEvalCase,
+    _build_parser,
     evaluate_observation,
     execute_real_agent,
     load_suite,
@@ -176,10 +178,7 @@ def test_default_fixture_covers_required_agent_behaviors() -> None:
         case for case in suite.cases if case.id == "current_web_jd_tailoring"
     )
     assert current_web.expect.min_sources == 1
-    assert current_web.expect.required_tool_sequence == [
-        "web_search",
-        "edit_execute",
-    ]
+    assert current_web.expect.required_tool_sequence == ["edit_execute"]
     assert all(
         "citation" not in pattern and "source_ids" not in pattern
         for pattern in current_web.expect.required_response_regex
@@ -382,12 +381,114 @@ def test_run_suite_uses_injected_provider_and_reports_failures() -> None:
         "passed": 1,
         "failed": 1,
         "passRate": 0.5,
+        "runCount": 2,
+        "passedRuns": 1,
+        "failedRuns": 1,
+        "runPassRate": 0.5,
+        "passAtN": {"n": 1, "passedCases": 1, "rate": 0.5},
+        "stablePass": {"n": 1, "passedCases": 1, "rate": 0.5},
     }
     assert report["cases"][0]["passed"] is True
     assert report["cases"][1]["failureReasons"][0]["code"] == (
         "required_edit_string_missing"
     )
     assert "super-secret-api-key" not in json.dumps(report)
+
+
+def test_run_suite_repeats_cases_and_reports_stability_statistics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    clock = iter((0.0, 0.01, 1.0, 1.02, 2.0, 2.04))
+    monkeypatch.setattr(
+        "scripts.agent_model_eval.perf_counter",
+        lambda: next(clock),
+    )
+
+    async def varying_provider(
+        _request: AgentChatRequest,
+        _selected_config: AgentLlmConfig,
+    ) -> EvaluationObservation:
+        nonlocal attempts
+        attempts += 1
+        passed = attempts != 2
+        return EvaluationObservation(
+            response_text="Draft ready.",
+            edit_payloads=("expected-marker" if passed else "missing-marker",),
+            edit_targets=("basic.summary",),
+            edit_count=1,
+            rejected_edit_count=0,
+            transaction_state="committed",
+            tool_names=tuple("edit_execute" for _ in range(attempts)),
+            tool_error_count=0,
+            token_usage=EvaluationTokenUsage(
+                request_attempts=attempts,
+                terminal_responses=attempts,
+            ),
+        )
+
+    report = asyncio.run(
+        run_suite(
+            [_case("repeat", required="expected-marker")],
+            _config(),
+            executor=varying_provider,
+            repeat=3,
+        ),
+    )
+
+    assert attempts == 3
+    assert report["summary"] == {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "passRate": 0.0,
+        "runCount": 3,
+        "passedRuns": 2,
+        "failedRuns": 1,
+        "runPassRate": 0.6667,
+        "passAtN": {"n": 3, "passedCases": 1, "rate": 1.0},
+        "stablePass": {"n": 3, "passedCases": 0, "rate": 0.0},
+    }
+    result = report["cases"][0]
+    assert result["passed"] is False
+    assert result["passCount"] == 2
+    assert result["runCount"] == 3
+    assert result["passRate"] == 0.6667
+    assert result["durationStatsMs"] == {
+        "total": 70,
+        "average": 23,
+        "p50": 20,
+        "p95": 40,
+        "maximum": 40,
+    }
+    assert result["modelAttempts"] == {
+        "total": 6,
+        "average": 2,
+        "p50": 2,
+        "p95": 3,
+        "maximum": 3,
+    }
+    assert result["modelResponses"] == result["modelAttempts"]
+    assert result["toolCalls"] == {
+        "total": 6,
+        "average": 2,
+        "p50": 2,
+        "p95": 3,
+        "maximum": 3,
+        "byName": {"edit_execute": 6},
+    }
+    assert [run["passed"] for run in result["runs"]] == [True, False, True]
+    assert [run["run"] for run in result["runs"]] == [1, 2, 3]
+    assert report["metrics"]["latencyMs"] == result["durationStatsMs"]
+
+
+def test_cli_repeat_is_a_positive_integer() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args([]).repeat == 1
+    assert parser.parse_args(["--repeat", "3"]).repeat == 3
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--repeat", "0"])
 
 
 def test_report_exposes_auto_quality_latency_usage_and_cost_availability() -> None:
@@ -801,22 +902,21 @@ def test_real_observation_uses_the_natural_completion_result(
     async def fake_pipeline(
         _request,
         _config,
-        on_complete,
         runtime,
     ):
-        runtime.record_tool_loop_event(SimpleNamespace(kind="done", result=result))
-        on_complete(
-            AgentChatMessage(
+        runtime.record_tool_loop_event(AgentToolLoopCompleted(result=result))
+        yield AgentCompleted(
+            message=AgentChatMessage(
                 id="evaluation-message",
                 role="assistant",
                 text="Draft ready.",
                 transactionState="committed",
             ),
+            persist=True,
         )
-        yield "event: message_done\ndata: {}\n\n"
 
     monkeypatch.setattr(
-        "app.services.agent.runtime.streaming.async_stream_resolved_agent_response",
+        "app.services.agent.runtime.streaming.async_iter_resolved_agent_events",
         fake_pipeline,
     )
     request = AgentChatRequest.model_validate(
@@ -873,22 +973,21 @@ def test_real_observation_reports_content_free_tool_error_codes(
     async def fake_pipeline(
         _request,
         _config,
-        on_complete,
         runtime,
     ):
-        runtime.record_tool_loop_event(SimpleNamespace(kind="done", result=result))
-        on_complete(
-            AgentChatMessage(
+        runtime.record_tool_loop_event(AgentToolLoopCompleted(result=result))
+        yield AgentCompleted(
+            message=AgentChatMessage(
                 id="evaluation-message",
                 role="assistant",
                 text="No draft was published.",
                 transactionState="none",
             ),
+            persist=True,
         )
-        yield "event: message_done\ndata: {}\n\n"
 
     monkeypatch.setattr(
-        "app.services.agent.runtime.streaming.async_stream_resolved_agent_response",
+        "app.services.agent.runtime.streaming.async_iter_resolved_agent_events",
         fake_pipeline,
     )
     request = AgentChatRequest.model_validate(
@@ -1060,20 +1159,20 @@ def test_real_observation_uses_only_final_edited_items_for_enrichment(
         transaction_state="committed",
     )
 
-    async def fake_pipeline(_request, _config, on_complete, runtime):
-        runtime.record_tool_loop_event(SimpleNamespace(kind="done", result=result))
-        on_complete(
-            AgentChatMessage(
+    async def fake_pipeline(_request, _config, runtime):
+        runtime.record_tool_loop_event(AgentToolLoopCompleted(result=result))
+        yield AgentCompleted(
+            message=AgentChatMessage(
                 id="evaluation-final-draft",
                 role="assistant",
                 text="Draft ready.",
                 transactionState="committed",
             ),
+            persist=True,
         )
-        yield "event: message_done\ndata: {}\n\n"
 
     monkeypatch.setattr(
-        "app.services.agent.runtime.streaming.async_stream_resolved_agent_response",
+        "app.services.agent.runtime.streaming.async_iter_resolved_agent_events",
         fake_pipeline,
     )
     request = AgentChatRequest.model_validate(
@@ -1158,20 +1257,20 @@ def test_accepted_controlled_rewording_warning_is_diagnostic_only(
         transaction_state="committed",
     )
 
-    async def fake_pipeline(_request, _config, on_complete, runtime):
-        runtime.record_tool_loop_event(SimpleNamespace(kind="done", result=result))
-        on_complete(
-            AgentChatMessage(
+    async def fake_pipeline(_request, _config, runtime):
+        runtime.record_tool_loop_event(AgentToolLoopCompleted(result=result))
+        yield AgentCompleted(
+            message=AgentChatMessage(
                 id="evaluation-warning",
                 role="assistant",
                 text="Draft ready.",
                 transactionState="committed",
             ),
+            persist=True,
         )
-        yield "event: message_done\ndata: {}\n\n"
 
     monkeypatch.setattr(
-        "app.services.agent.runtime.streaming.async_stream_resolved_agent_response",
+        "app.services.agent.runtime.streaming.async_iter_resolved_agent_events",
         fake_pipeline,
     )
     request = AgentChatRequest.model_validate(
@@ -1216,7 +1315,7 @@ def test_real_observation_aggregates_provider_normalized_token_usage(
 ) -> None:
     result = _turn_result()
 
-    async def fake_pipeline(_request, _config, on_complete, runtime):
+    async def fake_pipeline(_request, _config, runtime):
         runtime.record_llm_attempt()
         runtime.record_llm_response(
             LlmAssistantMessage(
@@ -1240,18 +1339,18 @@ def test_real_observation_aggregates_provider_normalized_token_usage(
                 ),
             ),
         )
-        runtime.record_tool_loop_event(SimpleNamespace(kind="done", result=result))
-        on_complete(
-            AgentChatMessage(
+        runtime.record_tool_loop_event(AgentToolLoopCompleted(result=result))
+        yield AgentCompleted(
+            message=AgentChatMessage(
                 id="evaluation-usage-message",
                 role="assistant",
                 text="Draft ready.",
             ),
+            persist=True,
         )
-        yield "event: message_done\ndata: {}\n\n"
 
     monkeypatch.setattr(
-        "app.services.agent.runtime.streaming.async_stream_resolved_agent_response",
+        "app.services.agent.runtime.streaming.async_iter_resolved_agent_events",
         fake_pipeline,
     )
     request = AgentChatRequest.model_validate(

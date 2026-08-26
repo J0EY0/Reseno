@@ -4,6 +4,7 @@ import threading
 from collections.abc import AsyncIterator
 from contextlib import closing
 from datetime import UTC, datetime
+from sqlite3 import Connection
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -17,14 +18,23 @@ from app.schemas.agent import (
     AgentChatMessage,
     AgentChatRequest,
     AgentCommittedDraft,
+    AgentConversationCheckpoint,
     AgentConversationItem,
     AgentDraftState,
 )
 from app.services import agent_runs, agent_sessions, resumes
 from app.services.agent.draft import DraftTransaction
 from app.services.agent.runtime import streaming
-from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.loop import AgentModelTurnLimitError, AgentTurnResult
+from app.services.agent.runtime.context import (
+    AgentConversationState,
+    AgentRuntimeContext,
+)
+from app.services.agent.runtime.loop import (
+    AgentModelTurnLimitError,
+    AgentToolLoopCompleted,
+    AgentToolLoopEdits,
+    AgentTurnResult,
+)
 from app.services.agent_runs import AgentRunConflictError, AgentRunManager
 from app.services.llm import AgentLlmConfig, LlmTimeoutError
 
@@ -40,7 +50,21 @@ def _bypass_turn_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         agent_runs,
         "_prepare_run_request",
-        lambda request, run_id: request,
+        _accepted_turn,
+    )
+
+
+def _accepted_turn(
+    request: AgentChatRequest,
+    run_id: str,
+) -> agent_sessions.AcceptedAgentTurn:
+    return agent_sessions.AcceptedAgentTurn(
+        request=request,
+        run_id=run_id,
+        session_id=None,
+        turn_id=request.message.id,
+        revision=None,
+        conversation_state=AgentConversationState(),
     )
 
 
@@ -80,6 +104,49 @@ async def _collect_events(
     return [frame async for frame in manager.subscribe(run_id, after=after)]
 
 
+def _runtime_event(
+    event_name: str,
+    payload: dict[str, object],
+) -> streaming.AgentRuntimeEvent:
+    """Build typed test input at the runtime seam, before SSE serialization."""
+
+    if event_name == "message_start":
+        return streaming.AgentMessageStarted(message=dict(payload["message"]))
+    if event_name == "text_delta":
+        return streaming.AgentTextDelta(
+            delta=str(payload["delta"]),
+            timeline_part_id=str(payload["timelinePartId"]),
+        )
+    if event_name in {"tool_start", "tool_delta", "tool_done"}:
+        return streaming.AgentToolUpdate(
+            kind=event_name,
+            tool=dict(payload["tool"]),
+            timeline_part_id=str(payload.get("timelinePartId") or "timeline-tool-1"),
+        )
+    if event_name == "edits":
+        patch = dict(payload["message"])
+        return streaming.AgentEditsUpdate(
+            edits=list(patch.get("edits") or []),
+            transaction_state=patch.get("transactionState") or "none",
+        )
+    if event_name == "error":
+        return streaming.AgentStreamError(
+            message=str(payload.get("error") or payload.get("message") or ""),
+            error_code=payload.get("errorCode") or "AGENT_PROVIDER_ERROR",
+        )
+    if event_name == "message_done":
+        message = {
+            "role": "assistant",
+            "text": "",
+            **dict(payload["message"]),
+        }
+        return streaming.AgentCompleted(
+            message=AgentChatMessage.model_validate(message),
+            persist=True,
+        )
+    raise AssertionError(f"Unsupported test event: {event_name}")
+
+
 def test_run_response_preserves_the_pending_transaction_base() -> None:
     request_resume = {
         "basic": {"headline": "Engineer"},
@@ -115,7 +182,7 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
     )
     run = agent_runs.AgentRun(
         id="run-pending-draft-base",
-        request=request,
+        turn=_accepted_turn(request, "run-pending-draft-base"),
         resume_id=request.resume_id,
     )
 
@@ -215,13 +282,11 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
         )
 
         async def fake_loop(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
-            yield SimpleNamespace(
-                kind="edits",
+            yield AgentToolLoopEdits(
                 edits=next_message.edits,
                 transaction_state="provisional",
             )
-            yield SimpleNamespace(
-                kind="done",
+            yield AgentToolLoopCompleted(
                 result=AgentTurnResult(
                     message=next_message,
                     tools=(),
@@ -231,11 +296,6 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
                 ),
             )
 
-        monkeypatch.setattr(
-            agent_sessions,
-            "persist_agent_user_message",
-            lambda conn, prepared: None,
-        )
         monkeypatch.setattr(
             streaming,
             "resolve_agent_llm_config",
@@ -252,14 +312,18 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
             fake_loop,
         )
 
-        completed: list[AgentChatMessage] = []
-        frames = [
-            frame
-            async for frame in streaming.async_stream_agent_response(
+        events = [
+            event
+            async for event in streaming.async_iter_agent_events(
                 request,
                 _FakeConnection(),
-                completed.append,
             )
+        ]
+        frames = [streaming.serialize_agent_event(event) for event in events]
+        completed = [
+            event.message
+            for event in events
+            if isinstance(event, streaming.AgentCompleted)
         ]
         provisional = next(
             frame for frame in frames if '"transactionState":"provisional"' in frame
@@ -444,15 +508,14 @@ def test_hard_delete_purges_durably_finished_run_before_memory_terminal(
     ).json()["data"]["resume"]["id"]
     stream_may_finish = asyncio.Event()
     durable_finish_committed = threading.Event()
-    real_finish = agent_sessions.finish_agent_turn_execution
+    real_finish = agent_sessions.persist_agent_terminal_outcome
 
     async def fake_stream(
         request: AgentChatRequest,
         conn: object,
-        persist_message: object,
         runtime: AgentRuntimeContext,
-    ) -> AsyncIterator[str]:
-        del request, conn, persist_message, runtime
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del request, conn, runtime
         await stream_may_finish.wait()
         if False:
             yield ""
@@ -461,10 +524,10 @@ def test_hard_delete_purges_durably_finished_run_before_memory_terminal(
         real_finish(*args, **kwargs)
         durable_finish_committed.set()
 
-    monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
     monkeypatch.setattr(
         agent_runs,
-        "finish_agent_turn_execution",
+        "persist_agent_terminal_outcome",
         finish_and_signal,
     )
 
@@ -527,11 +590,10 @@ def test_cancelled_hard_delete_waits_for_completed_run_purge(
     async def fake_stream(
         request: AgentChatRequest,
         conn: object,
-        persist_message: object,
         runtime: AgentRuntimeContext,
-    ) -> AsyncIterator[str]:
-        del request, conn, persist_message, runtime
-        yield agent_runs._sse_frame(
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del request, conn, runtime
+        yield _runtime_event(
             "message_done",
             {
                 "type": "message_done",
@@ -551,7 +613,7 @@ def test_cancelled_hard_delete_waits_for_completed_run_purge(
         assert deletion_may_return.wait(timeout=1)
         return result
 
-    monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
     monkeypatch.setattr(
         resumes_router,
         "delete_resume_forever",
@@ -613,12 +675,11 @@ def test_subscribe_heartbeat_does_not_advance_replay_cursor(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
             await release_stream.wait()
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -631,7 +692,7 @@ def test_subscribe_heartbeat_does_not_advance_replay_cursor(
             )
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(agent_runs, "AGENT_SSE_HEARTBEAT_SECONDS", 0.01)
         _bypass_turn_preparation(monkeypatch)
 
@@ -672,20 +733,18 @@ def test_turn_preparation_does_not_block_the_event_loop(
         def blocking_prepare(
             request: AgentChatRequest,
             run_id: str,
-        ) -> AgentChatRequest:
-            del run_id
+        ) -> agent_sessions.AcceptedAgentTurn:
             preparation_started.set()
             assert release_preparation.wait(timeout=1)
-            return request
+            return _accepted_turn(request, run_id)
 
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -699,7 +758,7 @@ def test_turn_preparation_does_not_block_the_event_loop(
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
         monkeypatch.setattr(agent_runs, "_prepare_run_request", blocking_prepare)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         release_timer = threading.Timer(0.3, release_preparation.set)
@@ -736,11 +795,27 @@ def test_terminal_persistence_does_not_block_the_event_loop(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {"id": "message-nonblocking-terminal"},
+                },
+            )
+            yield _runtime_event(
+                "edits",
+                {
+                    "type": "edits",
+                    "message": {
+                        "edits": [{"id": "provisional-edit"}],
+                        "transactionState": "provisional",
+                    },
+                },
+            )
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -758,12 +833,13 @@ def test_terminal_persistence_does_not_block_the_event_loop(
             assert release_persistence.wait(timeout=1)
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(
             agent_runs,
-            "finish_agent_turn_execution",
+            "persist_agent_terminal_outcome",
             blocking_finish,
         )
+        monkeypatch.setattr(agent_runs, "MAX_BUFFERED_AGENT_EVENTS", 1)
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
@@ -777,6 +853,8 @@ def test_terminal_persistence_does_not_block_the_event_loop(
 
             assert persistence_started.is_set()
             assert elapsed < 0.1
+            assert any("event: message_delta" in event.frame for event in run.events)
+            assert not any("event: message_done" in event.frame for event in run.events)
 
             release_persistence.set()
             assert run.task is not None
@@ -784,6 +862,67 @@ def test_terminal_persistence_does_not_block_the_event_loop(
         finally:
             release_persistence.set()
             release_timer.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_completed_message_resolves_provisional_edit_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        outcomes: list[agent_sessions.AgentTerminalOutcome] = []
+
+        async def fake_stream(
+            request: AgentChatRequest,
+            conn: _FakeConnection,
+            runtime: AgentRuntimeContext,
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield streaming.AgentEditsUpdate(
+                edits=[{"id": "provisional-edit"}],
+                transaction_state="provisional",
+            )
+            yield streaming.AgentCompleted(
+                message=AgentChatMessage(
+                    id="message-committed-edit",
+                    role="assistant",
+                    text="The edit is ready.",
+                    transactionState="committed",
+                ),
+                persist=True,
+            )
+
+        def capture_outcome(
+            conn: _FakeConnection,
+            turn: agent_sessions.AcceptedAgentTurn,
+            outcome: agent_sessions.AgentTerminalOutcome,
+        ) -> None:
+            del conn, turn
+            outcomes.append(outcome)
+
+        monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
+        monkeypatch.setattr(
+            agent_runs,
+            "persist_agent_terminal_outcome",
+            capture_outcome,
+        )
+        _bypass_turn_preparation(monkeypatch)
+
+        manager = AgentRunManager()
+        run = await manager.start(_request("resumecommittededit"))
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
+
+        assert run.status == "completed"
+        assert run.execution_state == "succeeded"
+        assert not run.has_provisional_edits
+        assert [(outcome.status, outcome.assistant.id) for outcome in outcomes] == [
+            ("succeeded", "message-committed-edit"),
+        ]
+        assert not any(
+            '"transactionState":"rolled_back"' in event.frame for event in run.events
+        )
 
     asyncio.run(scenario())
 
@@ -797,16 +936,15 @@ def test_run_survives_subscriber_disconnect_and_replays_from_cursor(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_start",
                 {"type": "message_start", "message": {"id": "message-1"}},
             )
             await release_stream.wait()
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -819,7 +957,7 @@ def test_run_survives_subscriber_disconnect_and_replays_from_cursor(
             )
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
@@ -852,10 +990,9 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
     async def fake_stream(
         request: AgentChatRequest,
         conn: object,
-        persist_message: object,
         runtime: AgentRuntimeContext,
-    ) -> AsyncIterator[str]:
-        del conn, runtime
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del conn
         assistant = AgentChatMessage(
             id="assistant-stop-after-message-done",
             role="assistant",
@@ -863,8 +1000,7 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
             draft=AgentCommittedDraft(baseResume=request.resume),
             transactionState="committed",
         )
-        persist_message(assistant)  # type: ignore[operator]
-        yield agent_runs._sse_frame(
+        yield _runtime_event(
             "message_done",
             {
                 "type": "message_done",
@@ -874,7 +1010,7 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
         message_done_published.set()
         await release_stream.wait()
 
-    monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
     async def scenario() -> tuple[str, list[str]]:
         manager = AgentRunManager()
@@ -891,7 +1027,7 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
             ),
         )
         await asyncio.wait_for(message_done_published.wait(), timeout=1)
-        assert run.has_terminal_message
+        assert run.completion is not None
         assert not run.terminalizing
 
         await manager.stop(run.id)
@@ -917,41 +1053,6 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
     assert execution["runId"] == run_id
     assert execution["status"] == "succeeded"
     assert execution["errorCode"] is None
-
-
-def test_message_done_is_not_emitted_before_persistence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def scenario() -> None:
-        monkeypatch.setattr(
-            agent_sessions,
-            "persist_agent_user_message",
-            lambda conn, request: None,
-        )
-        monkeypatch.setattr(
-            streaming,
-            "resolve_agent_llm_config",
-            lambda conn, model_config: None,
-        )
-        frames: list[str] = []
-
-        def fail_persistence(message: object) -> None:
-            del message
-            raise OSError("database write failed")
-
-        with pytest.raises(OSError, match="database write failed"):
-            async for frame in streaming.async_stream_agent_response(
-                _request(),
-                _FakeConnection(),
-                fail_persistence,
-            ):
-                frames.append(frame)
-
-        assert any("event: text_delta" in frame for frame in frames)
-        assert not any("event: message_delta" in frame for frame in frames)
-        assert not any("event: message_done" in frame for frame in frames)
-
-    asyncio.run(scenario())
 
 
 def test_user_message_is_persisted_before_cancelled_provider_work(
@@ -1009,9 +1110,15 @@ def test_user_message_is_persisted_before_cancelled_provider_work(
             blocked_loop,
         )
 
+        turn = agent_sessions.accept_agent_turn(
+            conn,
+            request,
+            run_id="agent-run-user-before-cancel",
+        )
+
         async def consume() -> None:
-            async for _frame in streaming.async_stream_agent_response(
-                request,
+            async for _event in streaming.async_iter_agent_events(
+                turn.request,
                 conn,
             ):
                 pass
@@ -1048,11 +1155,10 @@ def test_explicit_stop_rolls_back_provisional_edits(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "edits",
                 {
                     "type": "edits",
@@ -1068,7 +1174,7 @@ def test_explicit_stop_rolls_back_provisional_edits(
             await blocked_stream.wait()
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
@@ -1112,11 +1218,10 @@ def test_explicit_stop_persists_visible_partial_message(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_start",
                 {
                     "type": "message_start",
@@ -1127,7 +1232,7 @@ def test_explicit_stop_persists_visible_partial_message(
                     },
                 },
             )
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "text_delta",
                 {
                     "type": "text_delta",
@@ -1141,7 +1246,7 @@ def test_explicit_stop_persists_visible_partial_message(
                 ("tool-approval-requested", "approval-requested"),
                 ("tool-approval-responded", "approval-responded"),
             ):
-                yield agent_runs._sse_frame(
+                yield _runtime_event(
                     "tool_start",
                     {
                         "type": "tool_start",
@@ -1156,7 +1261,7 @@ def test_explicit_stop_persists_visible_partial_message(
                         },
                     },
                 )
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "tool_done",
                 {
                     "type": "tool_done",
@@ -1172,7 +1277,7 @@ def test_explicit_stop_persists_visible_partial_message(
                     },
                 },
             )
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "edits",
                 {
                     "type": "edits",
@@ -1185,7 +1290,7 @@ def test_explicit_stop_persists_visible_partial_message(
             partial_published.set()
             await blocked_stream.wait()
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         run = await manager.start(
@@ -1224,9 +1329,13 @@ def test_explicit_stop_persists_visible_partial_message(
     assert rollback_index < message_done_index < terminal_index
     assert partial_text in events[message_done_index]
     assert "uncommitted-edit" not in events[message_done_index]
-    cancelled_message_payload = agent_runs._event_payload(
-        events[message_done_index],
-    )[1]["message"]
+    cancelled_message_payload = json.loads(
+        next(
+            line.removeprefix("data: ")
+            for line in events[message_done_index].splitlines()
+            if line.startswith("data: ")
+        ),
+    )["message"]
     cancelled_tools = {tool["id"]: tool for tool in cancelled_message_payload["tools"]}
     for tool_id in (
         "tool-input-streaming",
@@ -1241,9 +1350,10 @@ def test_explicit_stop_persists_visible_partial_message(
     assert cancelled_tools["tool-already-complete"]["output"] == {
         "sectionCount": 1,
     }
-    assert [
-        part["type"] for part in cancelled_message_payload["timeline"]
-    ] == ["text", "tool_group"]
+    assert [part["type"] for part in cancelled_message_payload["timeline"]] == [
+        "text",
+        "tool_group",
+    ]
     assert '"status":"cancelled"' in events[terminal_index]
 
     session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
@@ -1278,11 +1388,10 @@ def test_provider_error_rolls_back_provisional_edits(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "edits",
                 {
                     "type": "edits",
@@ -1293,11 +1402,11 @@ def test_provider_error_rolls_back_provisional_edits(
                     },
                 },
             )
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "error",
                 {"type": "error", "error": "Provider request failed."},
             )
-            yield agent_runs._sse_frame(
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -1310,7 +1419,7 @@ def test_provider_error_rolls_back_provisional_edits(
             )
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
@@ -1343,11 +1452,10 @@ def test_successful_execution_state_is_persisted(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -1359,7 +1467,7 @@ def test_successful_execution_state_is_persisted(
                 },
             )
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         run = await manager.start(
@@ -1389,6 +1497,200 @@ def test_successful_execution_state_is_persisted(
     assert execution["completedAt"] is not None
 
 
+def test_successful_terminal_commit_persists_rollover_for_the_next_turn(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = "resumerolloverterminalcommit"
+    _current_session_revision(resume_id)
+    seed_assistant = AgentChatMessage(
+        id="assistant-before-rollover",
+        role="assistant",
+        text="Keep the earlier verified context.",
+        transactionState="committed",
+    )
+    with closing(connect()) as conn:
+        seed_turn = agent_sessions.accept_agent_turn(
+            conn,
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=agent_sessions.load_agent_session(
+                    conn,
+                    resume_id,
+                ).revision,
+                message=AgentConversationItem(
+                    id="user-before-rollover",
+                    role="user",
+                    text="Remember this verified context.",
+                ),
+            ),
+            run_id="run-before-rollover",
+        )
+        agent_sessions.persist_agent_terminal_outcome(
+            conn,
+            seed_turn,
+            agent_sessions.AgentTerminalOutcome(
+                status="succeeded",
+                error_code=None,
+                assistant=seed_assistant,
+                checkpoint=None,
+            ),
+        )
+        revision = agent_sessions.load_agent_session(conn, resume_id).revision
+
+    checkpoint = AgentConversationCheckpoint(
+        throughMessageId=seed_assistant.id,
+        summary={
+            "trust": "untrusted_history_data",
+            "events": [{"role": "user", "text": "verified context"}],
+        },
+    )
+
+    async def fake_stream(
+        request: AgentChatRequest,
+        conn: object,
+        runtime: AgentRuntimeContext,
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del conn
+        assert [message.id for message in request.messages] == [
+            "user-before-rollover",
+            seed_assistant.id,
+        ]
+        runtime.conversation_state.active_checkpoint = checkpoint
+        yield streaming.AgentCompleted(
+            message=AgentChatMessage(
+                id="assistant-after-rollover",
+                role="assistant",
+                text="The next answer uses the compacted context.",
+                transactionState="committed",
+            ),
+            persist=True,
+        )
+
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
+
+    async def scenario() -> str:
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=revision,
+                message=AgentConversationItem(
+                    id="user-triggering-rollover",
+                    role="user",
+                    text="Continue.",
+                ),
+            ),
+        )
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
+        return run.id
+
+    run_id = asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        session = agent_sessions.load_agent_session(conn, resume_id)
+        next_turn = agent_sessions.accept_agent_turn(
+            conn,
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=session.revision,
+                message=AgentConversationItem(
+                    id="user-after-rollover",
+                    role="user",
+                    text="Continue again.",
+                ),
+            ),
+            run_id="run-after-rollover",
+        )
+
+    assert [message.id for message in session.messages] == [
+        "user-before-rollover",
+        seed_assistant.id,
+        "user-triggering-rollover",
+        "assistant-after-rollover",
+    ]
+    assert session.executions[-1].run_id == run_id
+    assert session.executions[-1].status == "succeeded"
+    assert next_turn.conversation_state.loaded_checkpoint == checkpoint
+
+
+def test_rejected_terminal_message_downgrades_without_leaking_the_run_slot(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_id = "resumerejectedterminaloutcome"
+    real_persist = agent_sessions.persist_agent_terminal_outcome
+    attempts: list[agent_sessions.AgentTerminalOutcome] = []
+
+    def reject_stale_assistant(
+        conn: Connection,
+        turn: agent_sessions.AcceptedAgentTurn,
+        outcome: agent_sessions.AgentTerminalOutcome,
+    ) -> None:
+        attempts.append(outcome)
+        if outcome.assistant is not None:
+            raise agent_sessions.AgentSessionTurnConflictError(
+                turn.revision or "accepted",
+                "newer-revision",
+            )
+        real_persist(conn, turn, outcome)
+
+    async def fake_stream(
+        request: AgentChatRequest,
+        conn: object,
+        runtime: AgentRuntimeContext,
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del request, conn, runtime
+        yield streaming.AgentCompleted(
+            message=AgentChatMessage(
+                id="assistant-rejected-terminal",
+                role="assistant",
+                text="This message must not become durable.",
+                transactionState="committed",
+            ),
+            persist=True,
+        )
+
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
+    monkeypatch.setattr(
+        agent_runs,
+        "persist_agent_terminal_outcome",
+        reject_stale_assistant,
+    )
+
+    async def scenario() -> tuple[str, list[str]]:
+        manager = AgentRunManager()
+        run = await manager.start(
+            AgentChatRequest(
+                resumeId=resume_id,
+                expectedRevision=_current_session_revision(resume_id),
+                message=AgentConversationItem(
+                    id="user-rejected-terminal",
+                    role="user",
+                    text="Create a response.",
+                ),
+            ),
+        )
+        assert run.task is not None
+        await asyncio.wait_for(run.task, timeout=1)
+        assert await manager.active_for_resume(resume_id) is None
+        return run.id, await _collect_events(manager, run.id)
+
+    run_id, events = asyncio.run(scenario())
+
+    session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
+    assert session_response.status_code == 200
+    session = session_response.json()["data"]
+    assert [message["role"] for message in session["messages"]] == ["user"]
+    assert session["executions"][-1]["runId"] == run_id
+    assert session["executions"][-1]["status"] == "failed"
+    assert session["executions"][-1]["errorCode"] == "AGENT_INTERNAL_ERROR"
+    assert [outcome.assistant is not None for outcome in attempts] == [True, False]
+    assert not any("event: message_done" in frame for frame in events)
+    assert '"status":"failed"' in events[-1]
+
+
 def test_shutdown_interrupts_terminal_retry_for_startup_cleanup(
     client: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -1402,11 +1704,10 @@ def test_shutdown_interrupts_terminal_retry_for_startup_cleanup(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -1423,10 +1724,10 @@ def test_shutdown_interrupts_terminal_retry_for_startup_cleanup(
             failure_seen.set()
             raise OSError("terminal database commit failed")
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(
             agent_runs,
-            "finish_agent_turn_execution",
+            "persist_agent_terminal_outcome",
             fail_terminal_persistence,
         )
         monkeypatch.setattr(
@@ -1477,7 +1778,7 @@ def test_shutdown_interrupts_terminal_retry_for_startup_cleanup(
     assert after_cleanup.executions[-1].error_code == "AGENT_INTERNAL_ERROR"
 
 
-def test_terminal_persistence_failure_recovers_only_its_durable_execution(
+def test_terminal_persistence_retry_keeps_the_original_success_outcome(
     client: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1488,7 +1789,7 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
     unaffected_revision = _current_session_revision(unaffected_resume_id)
 
     with closing(connect()) as conn:
-        agent_sessions.prepare_agent_turn(
+        agent_sessions.accept_agent_turn(
             conn,
             AgentChatRequest(
                 resumeId=unaffected_resume_id,
@@ -1502,7 +1803,7 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
             run_id=unaffected_run_id,
         )
 
-    real_finish = agent_sessions.finish_agent_turn_execution
+    real_finish = agent_sessions.persist_agent_terminal_outcome
     finish_attempts = 0
 
     def fail_first_finish(*args: object, **kwargs: object) -> None:
@@ -1516,11 +1817,10 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -1532,10 +1832,10 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
                 },
             )
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(
             agent_runs,
-            "finish_agent_turn_execution",
+            "persist_agent_terminal_outcome",
             fail_first_finish,
         )
 
@@ -1553,9 +1853,9 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
         )
         assert run.task is not None
         await asyncio.wait_for(run.task, timeout=1)
-        assert run.status == "failed"
-        assert run.execution_state == "failed"
-        assert run.error_code == "AGENT_INTERNAL_ERROR"
+        assert run.status == "completed"
+        assert run.execution_state == "succeeded"
+        assert run.error_code is None
         return run.id
 
     recovered_run_id = asyncio.run(scenario())
@@ -1568,7 +1868,8 @@ def test_terminal_persistence_failure_recovers_only_its_durable_execution(
     assert [
         (execution.run_id, execution.status, execution.error_code)
         for execution in recovered.executions
-    ] == [(recovered_run_id, "failed", "AGENT_INTERNAL_ERROR")]
+    ] == [(recovered_run_id, "succeeded", None)]
+    assert recovered.messages[-1].id == "message-terminal-persistence-recovery"
     assert [
         (execution.run_id, execution.status, execution.error_code)
         for execution in unaffected.executions
@@ -1581,7 +1882,7 @@ def test_terminal_persistence_retries_while_run_stays_active(
 ) -> None:
     del client
     resume_id = "resumeterminalpersistenceretries"
-    real_finish = agent_sessions.finish_agent_turn_execution
+    real_finish = agent_sessions.persist_agent_terminal_outcome
     allow_finish = threading.Event()
     finish_attempts = 0
 
@@ -1600,11 +1901,10 @@ def test_terminal_persistence_retries_while_run_stays_active(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "message_done",
                 {
                     "type": "message_done",
@@ -1616,10 +1916,10 @@ def test_terminal_persistence_retries_while_run_stays_active(
                 },
             )
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(
             agent_runs,
-            "finish_agent_turn_execution",
+            "persist_agent_terminal_outcome",
             unavailable_finish,
         )
         monkeypatch.setattr(
@@ -1706,8 +2006,8 @@ def test_terminal_persistence_retries_while_run_stays_active(
         ).executions[-1]
     assert finish_attempts >= 4
     assert execution.run_id == run_id
-    assert execution.status == "failed"
-    assert execution.error_code == "AGENT_INTERNAL_ERROR"
+    assert execution.status == "succeeded"
+    assert execution.error_code is None
 
 
 def test_provider_timeout_error_code_is_consistent_across_run_and_reload(
@@ -1881,12 +2181,8 @@ def test_model_turn_limit_is_failed_and_persisted_as_internal_error(
         await asyncio.wait_for(run.task, timeout=2)
         frames = await _collect_events(manager, run.id)
 
-        error_frame = next(
-            frame for frame in frames if "event: error" in frame
-        )
-        run_done_frame = next(
-            frame for frame in frames if "event: run_done" in frame
-        )
+        error_frame = next(frame for frame in frames if "event: error" in frame)
+        run_done_frame = next(frame for frame in frames if "event: run_done" in frame)
         assert '"errorCode":"AGENT_INTERNAL_ERROR"' in error_frame
         assert '"status":"failed"' in run_done_frame
         assert '"errorCode":"AGENT_INTERNAL_ERROR"' in run_done_frame
@@ -1912,19 +2208,19 @@ def test_provider_401_execution_state_is_persisted(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
-            yield agent_runs._sse_frame(
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
+            yield _runtime_event(
                 "error",
                 {
                     "type": "error",
                     "error": "Model provider returned HTTP 401.",
+                    "errorCode": "AGENT_PROVIDER_AUTH_ERROR",
                 },
             )
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         run = await manager.start(
@@ -1970,15 +2266,14 @@ def test_unexpected_run_failure_execution_state_is_persisted(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
             if False:
                 yield ""
             raise RuntimeError("sensitive implementation detail")
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         run = await manager.start(
@@ -2019,16 +2314,15 @@ def test_cancelled_execution_state_is_persisted(
         async def fake_stream(
             request: AgentChatRequest,
             conn: object,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message, runtime
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn, runtime
             provider_started.set()
             await provider_blocked.wait()
             if False:
                 yield ""
 
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
         run = await manager.start(
@@ -2086,7 +2380,7 @@ def test_interrupted_running_execution_becomes_retryable(
             ),
             resume={"basic": {}, "sections": []},
         )
-        agent_sessions.prepare_agent_turn(
+        agent_sessions.accept_agent_turn(
             conn,
             request,
             run_id="run-interrupted-state",
@@ -2130,7 +2424,7 @@ def test_same_millisecond_retry_is_latest_execution(
 
     _current_session_revision("resumesamemillisecondretry")
     with closing(connect()) as conn:
-        failed_request = agent_sessions.prepare_agent_turn(
+        failed_request = agent_sessions.accept_agent_turn(
             conn,
             retry_request(
                 agent_sessions.load_agent_session(
@@ -2140,14 +2434,17 @@ def test_same_millisecond_retry_is_latest_execution(
             ),
             run_id="run-z-first",
         )
-        agent_sessions.finish_agent_turn_execution(
+        agent_sessions.persist_agent_terminal_outcome(
             conn,
             failed_request,
-            run_id="run-z-first",
-            status="failed",
-            error_code="AGENT_INTERNAL_ERROR",
+            agent_sessions.AgentTerminalOutcome(
+                status="failed",
+                error_code="AGENT_INTERNAL_ERROR",
+                assistant=None,
+                checkpoint=None,
+            ),
         )
-        agent_sessions.prepare_agent_turn(
+        agent_sessions.accept_agent_turn(
             conn,
             retry_request(
                 agent_sessions.load_agent_session(
@@ -2176,17 +2473,16 @@ def test_only_one_active_run_is_allowed_per_resume(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn
             while not await runtime.is_aborted():
                 await asyncio.sleep(0)
             if False:
                 yield ""
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
@@ -2209,17 +2505,16 @@ def test_global_active_run_capacity_is_enforced(
         async def fake_stream(
             request: AgentChatRequest,
             conn: _FakeConnection,
-            persist_message: object,
             runtime: AgentRuntimeContext,
-        ) -> AsyncIterator[str]:
-            del request, conn, persist_message
+        ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+            del request, conn
             while not await runtime.is_aborted():
                 await asyncio.sleep(0)
             if False:
                 yield ""
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
-        monkeypatch.setattr(agent_runs, "async_stream_agent_response", fake_stream)
+        monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
         monkeypatch.setattr(agent_runs, "MAX_ACTIVE_AGENT_RUNS", 2)
         _bypass_turn_preparation(monkeypatch)
 

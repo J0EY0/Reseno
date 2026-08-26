@@ -34,6 +34,11 @@ TEXT: dict[str, dict[str, str]] = {
             "Web search is temporarily unavailable. Try a narrower query or ask "
             "the user for a relevant URL."
         ),
+        "error.context_window_exceeded": (
+            "The current resume, attachments, and request do not fit the selected "
+            "model context window. Shorten the current input or choose a model "
+            "with a larger context window."
+        ),
         "model.error.label": "Provider response",
         "model.error.text": (
             'Model config "{name}" was found, but the provider request failed. '
@@ -95,6 +100,10 @@ TEXT: dict[str, dict[str, str]] = {
         ),
         "error.web_search_failed": (
             "网页搜索暂时不可用。请缩小查询范围，或让用户提供相关链接。"
+        ),
+        "error.context_window_exceeded": (
+            "当前简历、附件和请求无法放入所选模型的上下文窗口。请缩短本次输入，"
+            "或选择上下文窗口更大的模型。"
         ),
         "model.error.label": "提供方返回",
         "model.error.text": (

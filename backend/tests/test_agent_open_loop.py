@@ -66,6 +66,14 @@ def _request(prompt: str) -> AgentChatRequest:
     )
 
 
+def _completed_result(
+    events: list[agent_loop.AgentToolLoopEvent],
+) -> agent_loop.AgentTurnResult:
+    completion = events[-1]
+    assert isinstance(completion, agent_loop.AgentToolLoopCompleted)
+    return completion.result
+
+
 def _summary_edit(value: str, *, call_id: str = "call-edit") -> LlmToolCall:
     arguments = {
         "edits": [
@@ -136,13 +144,15 @@ def test_star_advice_naturally_ends_without_a_forced_tool(monkeypatch) -> None:
                 _config(),
             )
         ]
-        result = events[-1].result
+        completion = events[-1]
 
         assert model_calls == 1
-        assert result is not None
-        assert result.tools == ()
-        assert result.terminal_text.startswith("先补充项目背景")
-        assert any(event.kind == "terminal" for event in events)
+        assert isinstance(completion, agent_loop.AgentToolLoopCompleted)
+        assert completion.result.tools == ()
+        assert completion.result.terminal_text.startswith("先补充项目背景")
+        assert any(
+            isinstance(event, agent_loop.AgentToolLoopTerminalText) for event in events
+        )
 
     asyncio.run(scenario())
 
@@ -159,9 +169,9 @@ def test_native_search_hides_local_web_tools_and_keeps_provider_sources(
         )
 
         async def fake_model_response(_config, _prompt, _runtime, tool_schemas):
-            assert [
-                schema["function"]["name"] for schema in tool_schemas
-            ] == ["edit_execute"]
+            assert [schema["function"]["name"] for schema in tool_schemas] == [
+                "edit_execute"
+            ]
             response = LlmAssistantMessage(
                 content="该岗位当前强调 React 与 TypeScript。",
                 stop_reason="stop",
@@ -183,7 +193,7 @@ def test_native_search_hides_local_web_tools_and_keeps_provider_sources(
                 replace(_config(), use_native_web_search=True),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert result is not None
         assert result.tools == ()
@@ -242,14 +252,14 @@ def test_context_transform_runs_before_every_model_turn(monkeypatch) -> None:
         ]
 
         assert transformed_message_counts == [3, 5]
-        assert events[-1].result is not None
-        assert events[-1].result.terminal_text == "已完成检查。"
+        assert _completed_result(events).terminal_text == "已完成检查。"
 
     asyncio.run(scenario())
 
 
 def test_validated_edit_commits_after_natural_completion(monkeypatch) -> None:
     async def scenario() -> None:
+        model_calls = 0
         responses = iter(
             [
                 LlmAssistantMessage(
@@ -260,7 +270,15 @@ def test_validated_edit_commits_after_natural_completion(monkeypatch) -> None:
             ],
         )
 
-        async def fake_model_response(*_args, **_kwargs):
+        async def fake_model_response(_config, prompt, _runtime, _tool_schemas):
+            nonlocal model_calls
+            model_calls += 1
+            if model_calls == 2:
+                observation = json.loads(prompt.messages[-1]["content"])
+                assert observation["output"] == {
+                    "status": "accepted",
+                    "editCount": 1,
+                }
             response = next(responses)
             if response.content:
                 yield LlmStreamEvent(type="text_delta", delta=response.content)
@@ -281,7 +299,7 @@ def test_validated_edit_commits_after_natural_completion(monkeypatch) -> None:
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert result is not None
         assert result.transaction_state == "committed"
@@ -351,7 +369,7 @@ def test_loop_allows_multiple_schema_repairs_before_a_valid_tool_call(
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert model_calls == 4
         assert result is not None
@@ -411,8 +429,7 @@ def test_loop_executes_valid_reads_when_a_sibling_call_fails_validation(
                     agent_web.WebPassage(
                         section="Requirements",
                         text=(
-                            "JD_OBSERVATION_ONLY: React Server Components "
-                            "are required."
+                            "JD_OBSERVATION_ONLY: React Server Components are required."
                         ),
                     ),
                 ),
@@ -423,16 +440,14 @@ def test_loop_executes_valid_reads_when_a_sibling_call_fails_validation(
             model_calls += 1
             if model_calls == 2:
                 observations = [
-                    json.loads(message["content"])
-                    for message in prompt.messages[-2:]
+                    json.loads(message["content"]) for message in prompt.messages[-2:]
                 ]
                 assert observations[0]["title"] == "web_fetch"
-                assert "JD_OBSERVATION_ONLY" in observations[0]["output"][
-                    "references"
-                ][0]["passages"][0]["text"]
-                assert observations[1]["error"] == (
-                    "TOOL_ARGUMENT_VALIDATION_FAILED"
+                assert (
+                    "JD_OBSERVATION_ONLY"
+                    in observations[0]["output"]["references"][0]["passages"][0]["text"]
                 )
+                assert observations[1]["error"] == ("TOOL_ARGUMENT_VALIDATION_FAILED")
             response = next(responses)
             yield LlmStreamEvent(type="done", message=response)
 
@@ -454,7 +469,7 @@ def test_loop_executes_valid_reads_when_a_sibling_call_fails_validation(
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert fetch_count == 1
         assert result is not None
@@ -462,7 +477,8 @@ def test_loop_executes_valid_reads_when_a_sibling_call_fails_validation(
         assert all(
             tool.id != "call-invalid-edit"
             for event in events
-            for tool in (event.tools or [])
+            if isinstance(event, agent_loop.AgentToolLoopTools)
+            for tool in event.tools
         )
 
     asyncio.run(scenario())
@@ -527,16 +543,16 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
             model_calls += 1
             if model_calls == 2:
                 observations = [
-                    json.loads(message["content"])
-                    for message in prompt.messages[-2:]
+                    json.loads(message["content"]) for message in prompt.messages[-2:]
                 ]
                 assert [item["title"] for item in observations] == [
                     "web_fetch",
                     "edit_execute",
                 ]
-                assert "JD_OBSERVATION_ONLY" in observations[0]["output"][
-                    "references"
-                ][0]["passages"][0]["text"]
+                assert (
+                    "JD_OBSERVATION_ONLY"
+                    in observations[0]["output"]["references"][0]["passages"][0]["text"]
+                )
                 assert observations[1]["output"]["status"] == "not_executed"
             if model_calls == 3:
                 observation = json.loads(prompt.messages[-1]["content"])
@@ -567,7 +583,7 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert result is not None
         assert model_calls == 3
@@ -578,7 +594,8 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
         assert all(
             tool.id != "call-premature-edit"
             for event in events
-            for tool in (event.tools or [])
+            if isinstance(event, agent_loop.AgentToolLoopTools)
+            for tool in event.tools
         )
         assert len(result.edits) == 1
         assert result.edits[0].operation["value"] == (
@@ -655,7 +672,7 @@ def test_loop_runs_independent_read_tools_in_parallel(monkeypatch) -> None:
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert result is not None
         assert [tool.title for tool in result.tools] == ["web_fetch", "web_fetch"]
@@ -832,7 +849,7 @@ def test_replayed_recoverable_observation_does_not_end_the_loop(monkeypatch) -> 
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert model_calls == 4
         assert result is not None
@@ -885,7 +902,7 @@ def test_natural_completion_keeps_accepted_edits_after_rejected_followup(
                 _config(),
             )
         ]
-        result = events[-1].result
+        result = _completed_result(events)
 
         assert result is not None
         assert result.transaction_state == "committed"
@@ -897,7 +914,8 @@ def test_natural_completion_keeps_accepted_edits_after_rejected_followup(
         assert result.message is not None
         assert result.message.draft is not None
         assert not any(
-            event.kind == "edits" and event.transaction_state == "rolled_back"
+            isinstance(event, agent_loop.AgentToolLoopEdits)
+            and event.transaction_state == "rolled_back"
             for event in events
         )
 
@@ -935,8 +953,8 @@ def test_committed_edit_publishes_the_models_natural_completion(monkeypatch) -> 
         )
 
         frames = [
-            frame
-            async for frame in agent_streaming.async_stream_resolved_agent_response(
+            agent_streaming.serialize_agent_event(event)
+            async for event in agent_streaming.async_iter_resolved_agent_events(
                 _request(
                     "候选人事实：我关注复杂交互与工程质量。请据此优化个人简介。",
                 ),
@@ -980,8 +998,8 @@ def test_public_text_stream_sends_only_incremental_payloads(monkeypatch) -> None
         )
 
         frames = [
-            frame
-            async for frame in agent_streaming.async_stream_resolved_agent_response(
+            agent_streaming.serialize_agent_event(event)
+            async for event in agent_streaming.async_iter_resolved_agent_events(
                 _request("分析这份简历。"),
                 _config(),
             )
@@ -994,8 +1012,7 @@ def test_public_text_stream_sends_only_incremental_payloads(monkeypatch) -> None
         assert not any(frame.startswith("event: timeline") for frame in frames)
         assert not any(frame.startswith("event: message_delta") for frame in frames)
         assert all(
-            '"timelinePartId":"timeline-text-1"' in frame
-            for frame in delta_frames
+            '"timelinePartId":"timeline-text-1"' in frame for frame in delta_frames
         )
         assert all('"timeline":' not in frame for frame in delta_frames)
         assert max(map(len, delta_frames)) < 180
@@ -1030,8 +1047,8 @@ def test_model_turn_limit_rolls_back_and_emits_an_internal_error(monkeypatch) ->
         )
 
         frames = [
-            frame
-            async for frame in agent_streaming.async_stream_resolved_agent_response(
+            agent_streaming.serialize_agent_event(event)
+            async for event in agent_streaming.async_iter_resolved_agent_events(
                 _request(
                     "候选人事实：我关注复杂交互与工程质量。请据此优化个人简介。",
                 ),

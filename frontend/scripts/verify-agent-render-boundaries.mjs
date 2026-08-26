@@ -100,10 +100,10 @@ assert(
   "Rich Agent responses must use a statically analyzable dynamic import.",
 );
 assert(
-  /isPlainAgentText\(responseText\)[\s\S]{0,180}AgentPlainResponse/.test(
+  /isPlainAgentText\(text\)[\s\S]{0,180}AgentPlainResponse/.test(
     assistantResponse,
   ) &&
-    /AgentRichResponse[\s\S]{0,120}text=\{responseText\}/.test(
+    /AgentRichResponse[\s\S]{0,120}text=\{text\}/.test(
       assistantResponse,
     ),
   "Plain responses must stay lightweight while Markdown uses the optional renderer.",

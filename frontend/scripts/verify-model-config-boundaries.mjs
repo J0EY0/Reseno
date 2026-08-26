@@ -22,6 +22,8 @@ const [
   modelConfigLibrary,
   modelConfigApi,
   resumeTypes,
+  agentSettingsTab,
+  messages,
 ] =
   await Promise.all([
     readText("src/components/model-config-form-popover.tsx"),
@@ -33,6 +35,8 @@ const [
     readText("src/lib/model-config.ts"),
     readText("src/lib/model-config-api.ts"),
     readText("src/types/resume.ts"),
+    readText("src/components/agent-settings-tab.tsx"),
+    readText("src/i18n/locales/en.json").then(JSON.parse),
   ]);
 
 assert.match(
@@ -189,6 +193,11 @@ assert.match(
   /interface DiscoveredModel[\s\S]*supportsThinking:\s*boolean/,
   "Discovered models must preserve provider reasoning capability metadata.",
 );
+assert.match(
+  agentSettingsTab,
+  /const agentModelConfigs = modelConfigs\.filter\(\s*\(config\) => config\.supportsTools,?\s*\)[\s\S]{0,240}agentModelConfigs\.find\(\s*\(config\) => config\.id === agentSettings\.defaultModelId,?\s*\)[\s\S]{0,500}disabled=\{agentModelConfigs\.length === 0\}[\s\S]{0,900}agentModelConfigs\.map\(\(config\) =>/,
+  "Agent settings must list only tool-capable models and treat an unsupported saved selection as unconfigured.",
+);
 assert.doesNotMatch(
   `${resumeTypes}\n${modelConfigLibrary}\n${draft}\n${controller}\n${modelFields}`,
   /\bthinkingEnabled\b/,
@@ -206,11 +215,20 @@ const server = await createServer({
       name: "model-config-dialog-trigger-stub",
       enforce: "pre",
       resolveId(source) {
+        if (source === "@/components/model-provider-icon") {
+          return "\0model-provider-icon-stub";
+        }
         return source === "@/components/models/model-config-dialog"
           ? "\0model-config-dialog-trigger-stub"
           : null;
       },
       load(id) {
+        if (
+          id === "\0model-provider-icon-stub" ||
+          id.endsWith("/components/model-provider-icon.tsx")
+        ) {
+          return "export function ModelProviderIcon() { return null }";
+        }
         return id === "\0model-config-dialog-trigger-stub" ||
           id.endsWith("/components/models/model-config-dialog.tsx")
           ? "export function ModelConfigDialog() { return null }"
@@ -393,6 +411,44 @@ try {
     normalizeModelConfigs({ modelConfigs: [canonicalModelConfig] }, "en"),
     [canonicalModelConfig],
     "The canonical modelConfigs array must remain the workspace model contract.",
+  );
+
+  const { AgentSettingsTab } = await server.ssrLoadModule(
+    "/src/components/agent-settings-tab.tsx",
+  );
+  const { Tabs } = await server.ssrLoadModule("/src/components/ui/tabs.tsx");
+  const unsupportedSelectedModel = {
+    ...canonicalModelConfig,
+    id: "model-without-tools",
+    nickname: "No-tools model",
+    supportsTools: false,
+  };
+  const agentSettingsMarkup = renderToStaticMarkup(
+    React.createElement(
+      Tabs,
+      { value: "agent" },
+      React.createElement(AgentSettingsTab, {
+        agentSettings: {
+          defaultModelId: unsupportedSelectedModel.id,
+          responseLanguage: "follow",
+          behaviorMode: "balanced",
+          confirmationMode: "always",
+        },
+        modelConfigs: [unsupportedSelectedModel, canonicalModelConfig],
+        onAgentSettingsChange() {},
+        t: messages,
+      }),
+    ),
+  );
+  assert.match(
+    agentSettingsMarkup,
+    new RegExp(messages.agentModelNotConfigured),
+    "An unsupported saved Agent model must render the clear unconfigured state.",
+  );
+  assert.doesNotMatch(
+    agentSettingsMarkup,
+    /No-tools model/,
+    "An unsupported saved model must not remain visible as the active Agent model.",
   );
 
   const {

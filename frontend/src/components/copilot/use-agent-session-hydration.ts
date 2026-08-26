@@ -97,10 +97,6 @@ export function useAgentSessionHydration({
           return
         }
 
-        updates.setMessages(panelMessages)
-        runtime.sessionRevision = session.revision
-        runtime.onReconcileAgentDraft(draftSnapshot)
-
         const activeRunResult = await activeRunRequest
         if (activeRunResult.status === 'rejected') {
           throw activeRunResult.error
@@ -109,6 +105,10 @@ export function useAgentSessionHydration({
         if (cancelled || runtime.activeRequestAbort !== abortController) {
           return
         }
+
+        updates.setMessages(panelMessages)
+        runtime.sessionRevision = session.revision
+        runtime.onReconcileAgentDraft(draftSnapshot)
         runtime.sessionReady = true
         updates.setSessionReady(true)
         releaseSessionWaiters()

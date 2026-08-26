@@ -8,8 +8,9 @@ from collections.abc import AsyncIterator
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from sqlite3 import OperationalError
 from time import monotonic
-from typing import Final
+from typing import Final, Literal, TypeGuard
 from uuid import uuid4
 
 from app.db.connection import connect
@@ -18,18 +19,37 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentRunResponse,
     AgentRunStatus,
+    AgentToolInvocation,
     AgentTurnErrorCode,
     AgentTurnExecutionStatus,
 )
 from app.services.agent.draft import DraftTransaction
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.streaming import async_stream_agent_response
+from app.services.agent.runtime.loop import (
+    AgentToolLoopCompleted,
+    AgentToolLoopEvent,
+    AgentToolLoopTools,
+)
+from app.services.agent.runtime.streaming import (
+    AgentCompleted,
+    AgentEditsUpdate,
+    AgentMessageStarted,
+    AgentRuntimeEvent,
+    AgentStreamError,
+    AgentTextDelta,
+    AgentToolUpdate,
+    async_iter_agent_events,
+    serialize_agent_event,
+    serialize_sse_event,
+)
 from app.services.agent_sessions import (
-    append_agent_exchange,
-    finish_agent_turn_execution,
-    prepare_agent_turn,
+    AcceptedAgentTurn,
+    AgentTerminalOutcome,
+    accept_agent_turn,
+    persist_agent_terminal_outcome,
 )
 from app.services.llm import LlmUsage
+from app.services.llm.types import LlmStopReason
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -63,7 +83,7 @@ class BufferedAgentEvent:
 @dataclass
 class AgentRun:
     id: str
-    request: AgentChatRequest
+    turn: AcceptedAgentTurn
     resume_id: str | None
     status: AgentRunStatus = "active"
     events: list[BufferedAgentEvent] = field(default_factory=list)
@@ -72,14 +92,17 @@ class AgentRun:
     task: asyncio.Task[None] | None = None
     next_sequence: int = 1
     has_provisional_edits: bool = False
-    has_terminal_message: bool = False
-    has_error: bool = False
+    completion: AgentCompleted | None = None
     execution_state: AgentTurnExecutionStatus = "running"
     error_code: AgentTurnErrorCode | None = None
     buffered_event_bytes: int = 0
     replay_message: dict[str, object] = field(default_factory=dict)
     terminalizing: bool = False
     started_monotonic: float = field(default_factory=monotonic, repr=False)
+
+    @property
+    def request(self) -> AgentChatRequest:
+        return self.turn.request
 
     def response(self) -> AgentRunResponse:
         return AgentRunResponse(
@@ -94,6 +117,59 @@ class AgentRun:
 
 
 @dataclass
+class _AgentModelTurnMetric:
+    """Privacy-safe timing and usage for one completed model response."""
+
+    index: int
+    attempts: int
+    duration_ms: int
+    stop_reason: LlmStopReason
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cached_input_tokens: int | None
+    cache_write_input_tokens: int | None
+    reasoning_tokens: int | None
+
+    def as_log_value(self) -> dict[str, int | str | None]:
+        return {
+            "index": self.index,
+            "attempts": self.attempts,
+            "duration_ms": self.duration_ms,
+            "stop_reason": self.stop_reason,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_input_tokens": self.cache_write_input_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+        }
+
+
+type _AgentEditBatchOutcome = Literal["accepted", "rejected", "deferred"]
+
+
+@dataclass
+class _AgentEditBatchMetric:
+    """One edit execution outcome without operation or resume content."""
+
+    index: int
+    outcome: _AgentEditBatchOutcome
+    edit_count: int
+    repair_depth: int
+    error_codes: tuple[str, ...] = ()
+
+    def as_log_value(self) -> dict[str, int | str | list[str]]:
+        return {
+            "index": self.index,
+            "outcome": self.outcome,
+            "edit_count": self.edit_count,
+            "repair_depth": self.repair_depth,
+            "error_codes": list(self.error_codes),
+        }
+
+
+@dataclass
 class _AgentRunMetrics:
     run_started_monotonic: float = field(default_factory=monotonic, repr=False)
     model_attempts: int = 0
@@ -105,8 +181,12 @@ class _AgentRunMetrics:
     cache_write_input_tokens: int | None = None
     reasoning_tokens: int | None = None
     first_event_elapsed_ms: int | None = None
+    model_turns: list[_AgentModelTurnMetric] = field(default_factory=list)
+    edit_batches: list[_AgentEditBatchMetric] = field(default_factory=list)
     _model_started_monotonic: float | None = field(default=None, repr=False)
+    _current_model_attempts: int = field(default=0, repr=False)
     _model_elapsed_seconds: float = field(default=0.0, repr=False)
+    _pending_edit_repair_depth: int = field(default=0, repr=False)
     _tool_intervals_by_name: dict[str, list[tuple[float, float]]] = field(
         default_factory=dict,
         repr=False,
@@ -115,85 +195,165 @@ class _AgentRunMetrics:
 
     def record_model_attempt(self) -> None:
         self.model_attempts += 1
+        self._current_model_attempts += 1
         if self._model_started_monotonic is None:
             self._model_started_monotonic = monotonic()
 
     def record_model_response(
         self,
         usage: LlmUsage | None,
-        _stop_reason: object,
+        stop_reason: LlmStopReason,
     ) -> None:
         self.model_responses += 1
-        self.finish_model_timing()
-        if usage is None:
-            return
-        self.input_tokens = _add_optional_usage(
-            self.input_tokens,
-            usage.input_tokens,
+        duration_ms = self.finish_model_timing()
+        self.model_turns.append(
+            _AgentModelTurnMetric(
+                index=self.model_responses,
+                attempts=self._current_model_attempts,
+                duration_ms=duration_ms,
+                stop_reason=stop_reason,
+                input_tokens=usage.input_tokens if usage is not None else None,
+                output_tokens=usage.output_tokens if usage is not None else None,
+                total_tokens=usage.total_tokens if usage is not None else None,
+                cached_input_tokens=(
+                    usage.cached_input_tokens if usage is not None else None
+                ),
+                cache_write_input_tokens=(
+                    usage.cache_write_input_tokens if usage is not None else None
+                ),
+                reasoning_tokens=(
+                    usage.reasoning_tokens if usage is not None else None
+                ),
+            ),
         )
-        self.output_tokens = _add_optional_usage(
-            self.output_tokens,
-            usage.output_tokens,
-        )
-        self.total_tokens = _add_optional_usage(
-            self.total_tokens,
-            usage.total_tokens,
-        )
-        self.cached_input_tokens = _add_optional_usage(
-            self.cached_input_tokens,
-            usage.cached_input_tokens,
-        )
-        self.cache_write_input_tokens = _add_optional_usage(
-            self.cache_write_input_tokens,
-            usage.cache_write_input_tokens,
-        )
-        self.reasoning_tokens = _add_optional_usage(
-            self.reasoning_tokens,
-            usage.reasoning_tokens,
-        )
+        self._current_model_attempts = 0
 
-    def finish_model_timing(self) -> None:
+        if usage is not None:
+            self.input_tokens = _add_optional_usage(
+                self.input_tokens,
+                usage.input_tokens,
+            )
+            self.output_tokens = _add_optional_usage(
+                self.output_tokens,
+                usage.output_tokens,
+            )
+            self.total_tokens = _add_optional_usage(
+                self.total_tokens,
+                usage.total_tokens,
+            )
+            self.cached_input_tokens = _add_optional_usage(
+                self.cached_input_tokens,
+                usage.cached_input_tokens,
+            )
+            self.cache_write_input_tokens = _add_optional_usage(
+                self.cache_write_input_tokens,
+                usage.cache_write_input_tokens,
+            )
+            self.reasoning_tokens = _add_optional_usage(
+                self.reasoning_tokens,
+                usage.reasoning_tokens,
+            )
+
+    def finish_model_timing(self) -> int:
         """Close one model interval, including retries before its response."""
 
         if self._model_started_monotonic is None:
-            return
-        self._model_elapsed_seconds += monotonic() - self._model_started_monotonic
+            return 0
+        elapsed_seconds = monotonic() - self._model_started_monotonic
+        self._model_elapsed_seconds += elapsed_seconds
         self._model_started_monotonic = None
+        return round(elapsed_seconds * 1000)
 
-    def record_tool_loop_event(self, event: object) -> None:
-        """Observe timings only; never inspect tool input or output payloads."""
+    def record_tool_loop_event(self, event: AgentToolLoopEvent) -> None:
+        """Observe timings and whitelisted counters without retaining payloads."""
 
-        if (
-            self.first_event_elapsed_ms is None
-            and getattr(event, "kind", None) != "done"
+        if self.first_event_elapsed_ms is None and not isinstance(
+            event, AgentToolLoopCompleted
         ):
             self.first_event_elapsed_ms = round(
                 (monotonic() - self.run_started_monotonic) * 1000,
             )
 
-        tools = getattr(event, "tools", None)
-        if not isinstance(tools, list):
+        if not isinstance(event, AgentToolLoopTools):
             return
-        for tool in tools:
-            tool_id = getattr(tool, "id", None)
-            name = getattr(tool, "title", None)
-            started_at = _timestamp_seconds(getattr(tool, "started_at", None))
-            completed_at = _timestamp_seconds(getattr(tool, "completed_at", None))
+        for tool in event.tools:
+            started_at = _timestamp_seconds(tool.started_at)
+            completed_at = _timestamp_seconds(tool.completed_at)
             if (
-                not isinstance(tool_id, str)
-                or not tool_id
-                or tool_id in self._observed_tool_ids
-                or not isinstance(name, str)
-                or not name
+                tool.id in self._observed_tool_ids
+                or not tool.title
                 or started_at is None
                 or completed_at is None
                 or completed_at < started_at
             ):
                 continue
-            self._observed_tool_ids.add(tool_id)
-            self._tool_intervals_by_name.setdefault(name, []).append(
+            self._observed_tool_ids.add(tool.id)
+            self._tool_intervals_by_name.setdefault(tool.title, []).append(
                 (started_at, completed_at),
             )
+            self._record_edit_batch(tool)
+
+    def _record_edit_batch(self, tool: AgentToolInvocation) -> None:
+        """Extract only server-authored counters and codes from an edit result.
+
+        Tool input, rejected reasons, claims, observations, and resume values are
+        deliberately ignored at this logging boundary.
+        """
+
+        if tool.title != "edit_execute" or not isinstance(tool.output, dict):
+            return
+
+        output = tool.output
+        output_status = output.get("status")
+        if output_status == "not_executed":
+            outcome: _AgentEditBatchOutcome = "deferred"
+            edit_count = _safe_non_negative_int_from_mapping(tool.input, "editCount")
+        elif tool.state == "output-error":
+            outcome = "rejected"
+            edit_count = _safe_non_negative_int_from_mapping(
+                output,
+                "rejectedEditCount",
+            )
+        elif tool.state == "output-available":
+            outcome = "accepted"
+            edit_count = _safe_non_negative_int_from_mapping(output, "editCount")
+        else:
+            return
+
+        error_codes = _safe_edit_error_codes(output) if outcome == "rejected" else ()
+        if outcome == "rejected":
+            self._pending_edit_repair_depth += 1
+            repair_depth = self._pending_edit_repair_depth
+        elif outcome == "accepted":
+            repair_depth = self._pending_edit_repair_depth
+            self._pending_edit_repair_depth = 0
+        else:
+            repair_depth = self._pending_edit_repair_depth
+
+        self.edit_batches.append(
+            _AgentEditBatchMetric(
+                index=len(self.edit_batches) + 1,
+                outcome=outcome,
+                edit_count=edit_count,
+                repair_depth=repair_depth,
+                error_codes=error_codes,
+            ),
+        )
+
+    @property
+    def model_turn_log_values(self) -> list[dict[str, int | str | None]]:
+        return [turn.as_log_value() for turn in self.model_turns]
+
+    @property
+    def edit_batch_log_values(self) -> list[dict[str, int | str | list[str]]]:
+        return [batch.as_log_value() for batch in self.edit_batches]
+
+    @property
+    def edit_batch_outcomes(self) -> dict[str, int]:
+        return {
+            outcome: sum(batch.outcome == outcome for batch in self.edit_batches)
+            for outcome in ("accepted", "rejected", "deferred")
+        }
 
     @property
     def model_elapsed_ms(self) -> int:
@@ -268,7 +428,7 @@ class AgentRunManager:
             # then propagate cancellation to the HTTP caller.
             while True:
                 try:
-                    request = await asyncio.shield(preparation_task)
+                    turn = await asyncio.shield(preparation_task)
                     break
                 except asyncio.CancelledError as exc:
                     if preparation_task.cancelled():
@@ -277,7 +437,7 @@ class AgentRunManager:
 
             run = AgentRun(
                 id=run_id,
-                request=request,
+                turn=turn,
                 resume_id=resume_id,
                 started_monotonic=started_monotonic,
             )
@@ -366,7 +526,7 @@ class AgentRunManager:
             # its retry into a running DB ghost.
             if run.task is not None and (
                 self._shutting_down
-                or (not run.has_terminal_message and not run.terminalizing)
+                or (run.completion is None and not run.terminalizing)
             ):
                 asyncio.get_running_loop().call_soon(run.task.cancel)
         return run
@@ -425,6 +585,7 @@ class AgentRunManager:
         metrics = _AgentRunMetrics(run_started_monotonic=run.started_monotonic)
         runtime = AgentRuntimeContext(
             is_aborted=is_cancelled,
+            conversation_state=run.turn.conversation_state,
             on_llm_attempt=metrics.record_model_attempt,
             on_llm_response=metrics.record_model_response,
             on_tool_loop_event=metrics.record_tool_loop_event,
@@ -432,32 +593,38 @@ class AgentRunManager:
         final_status: AgentRunStatus = "failed"
         try:
             with closing(connect()) as conn:
-                iterator = async_stream_agent_response(
+                iterator = async_iter_agent_events(
                     run.request,
                     conn,
-                    lambda message: append_agent_exchange(conn, run.request, message),
                     runtime,
                 )
-                async for frame in iterator:
-                    event_name = _event_name(frame)
-                    transaction_state = _transaction_state(frame)
-                    if transaction_state == "provisional":
-                        run.has_provisional_edits = True
-                    elif transaction_state in {"committed", "rolled_back"}:
-                        run.has_provisional_edits = False
-                    run.has_terminal_message = (
-                        run.has_terminal_message or event_name == "message_done"
-                    )
-                    if event_name == "error":
-                        run.has_error = True
-                        run.error_code = run.error_code or _provider_error_code(frame)
-                    await self._publish(run, frame)
+                async for event in iterator:
+                    if isinstance(event, AgentCompleted):
+                        run.completion = event
+                        # The tool loop streams provisional edits immediately,
+                        # then carries the authoritative commit/rollback only
+                        # on its completed message. Consume that terminal state
+                        # here even though message_done waits for persistence.
+                        if event.message.transaction_state in {
+                            "committed",
+                            "rolled_back",
+                        }:
+                            run.has_provisional_edits = False
+                        continue
+                    if isinstance(event, AgentEditsUpdate):
+                        if event.transaction_state == "provisional":
+                            run.has_provisional_edits = True
+                        elif event.transaction_state in {"committed", "rolled_back"}:
+                            run.has_provisional_edits = False
+                    if isinstance(event, AgentStreamError):
+                        run.error_code = run.error_code or event.error_code
+                    await self._publish(run, event)
 
-            if run.cancel_event.is_set() and not run.has_terminal_message:
+            if run.cancel_event.is_set() and run.completion is None:
                 await self._rollback_provisional_edits(run)
                 run.error_code = "AGENT_RUN_CANCELLED"
                 final_status = "cancelled"
-            elif run.has_error or run.has_provisional_edits:
+            elif run.error_code is not None or run.has_provisional_edits:
                 # A normal completion must resolve every provisional edit with
                 # an explicit commit or rollback. Provider failures can still
                 # emit a user-facing message_done, so that event alone is not a
@@ -470,8 +637,11 @@ class AgentRunManager:
                     )
                 await self._rollback_provisional_edits(run)
                 final_status = "failed"
-            else:
+            elif run.completion is not None:
                 final_status = "completed"
+            else:
+                run.error_code = "AGENT_INTERNAL_ERROR"
+                final_status = "failed"
         except asyncio.CancelledError:
             run.cancel_event.set()
             run.error_code = "AGENT_RUN_CANCELLED"
@@ -484,9 +654,9 @@ class AgentRunManager:
             logger.exception("Unexpected failure in Agent run %s", run.id)
             await self._publish(
                 run,
-                _sse_frame(
-                    "error",
-                    {"type": "error", "error": "Agent request failed."},
+                AgentStreamError(
+                    message="Agent request failed.",
+                    error_code="AGENT_INTERNAL_ERROR",
                 ),
             )
             run.error_code = "AGENT_INTERNAL_ERROR"
@@ -525,6 +695,7 @@ class AgentRunManager:
                                 "model_elapsed_ms": metrics.model_elapsed_ms,
                                 "model_attempts": metrics.model_attempts,
                                 "model_responses": metrics.model_responses,
+                                "model_turns": metrics.model_turn_log_values,
                                 "input_tokens": metrics.input_tokens,
                                 "output_tokens": metrics.output_tokens,
                                 "total_tokens": metrics.total_tokens,
@@ -538,6 +709,8 @@ class AgentRunManager:
                                 "tool_elapsed_ms_by_name": (
                                     metrics.tool_elapsed_ms_by_name
                                 ),
+                                "edit_batch_outcomes": metrics.edit_batch_outcomes,
+                                "edit_batches": metrics.edit_batch_log_values,
                                 "tools": _replay_tool_states(run.replay_message),
                             },
                             separators=(",", ":"),
@@ -551,31 +724,30 @@ class AgentRunManager:
         if run.has_provisional_edits:
             await self._publish(
                 run,
-                _sse_frame(
-                    "edits",
-                    {
-                        "type": "edits",
-                        "message": {
-                            "edits": [],
-                            "transactionState": "rolled_back",
-                        },
-                    },
+                AgentEditsUpdate(
+                    edits=[],
+                    transaction_state="rolled_back",
                 ),
             )
             run.has_provisional_edits = False
 
-    async def _publish(self, run: AgentRun, frame: str) -> None:
+    async def _publish(self, run: AgentRun, event: AgentRuntimeEvent) -> None:
         async with run.condition:
             sequence = run.next_sequence
             run.next_sequence += 1
+            frame = serialize_agent_event(event)
             buffered_event = BufferedAgentEvent(
                 sequence=sequence,
                 frame=_with_event_id(frame, sequence),
             )
-            _merge_replay_message(run.replay_message, frame)
+            _merge_replay_event(run.replay_message, event)
             run.events.append(buffered_event)
             run.buffered_event_bytes += _frame_size(buffered_event.frame)
-            _compact_replay_buffer(run, sequence)
+            _compact_replay_buffer(
+                run,
+                sequence,
+                terminal=isinstance(event, AgentCompleted),
+            )
             run.condition.notify_all()
 
     async def _publish_terminal(
@@ -588,10 +760,29 @@ class AgentRunManager:
         run.terminalizing = True
         execution_state = _execution_state(status)
         error_code = None if execution_state == "succeeded" else run.error_code
+        public_message = run.completion.message if run.completion is not None else None
         cancelled_message = (
             _cancelled_replay_message(run)
-            if status == "cancelled" and not run.has_terminal_message
+            if status == "cancelled" and public_message is None
             else None
+        )
+        public_message = public_message or cancelled_message
+        durable_message = (
+            run.completion.message
+            if execution_state == "succeeded"
+            and run.completion is not None
+            and run.completion.persist
+            else cancelled_message
+        )
+        terminal_outcome = AgentTerminalOutcome(
+            status=execution_state,
+            error_code=error_code,
+            assistant=durable_message,
+            checkpoint=(
+                run.turn.conversation_state.active_checkpoint
+                if execution_state == "succeeded"
+                else None
+            ),
         )
         retry_delay = AGENT_TERMINAL_RETRY_INITIAL_SECONDS
         failed_attempts = 0
@@ -603,11 +794,8 @@ class AgentRunManager:
                 persistence_task = asyncio.create_task(
                     asyncio.to_thread(
                         _finish_agent_run_execution,
-                        run.request,
-                        run.id,
-                        execution_state,
-                        error_code,
-                        cancelled_message,
+                        run.turn,
+                        terminal_outcome,
                     ),
                 )
                 try:
@@ -619,12 +807,8 @@ class AgentRunManager:
                     # work ends. Do not abandon the in-flight durable barrier.
                     await persistence_task
                 break
-            except Exception:
+            except (OSError, OperationalError):
                 failed_attempts += 1
-                status = "failed"
-                execution_state = "failed"
-                error_code = "AGENT_INTERNAL_ERROR"
-                run.has_error = True
                 if failed_attempts == 1:
                     logger.exception("Failed to persist terminal Agent run %s", run.id)
                 elif failed_attempts & (failed_attempts - 1) == 0:
@@ -640,24 +824,40 @@ class AgentRunManager:
                     retry_delay * 2,
                     AGENT_TERMINAL_RETRY_MAX_SECONDS,
                 )
+            except Exception:
+                # Revision, owner, and execution-CAS failures cannot heal by
+                # replaying the same assistant write. Drop that uncommitted
+                # message and make one final attempt to close the execution.
+                # If the execution row itself no longer exists or is already
+                # terminal, release the process-local run instead of leaking
+                # its slot forever.
+                logger.exception("Terminal Agent outcome was rejected for %s", run.id)
+                if terminal_outcome.status == "failed" and (
+                    terminal_outcome.assistant is None
+                ):
+                    break
+                status = "failed"
+                execution_state = "failed"
+                error_code = "AGENT_INTERNAL_ERROR"
+                public_message = None
+                run.completion = None
+                run.error_code = error_code
+                terminal_outcome = AgentTerminalOutcome(
+                    status=execution_state,
+                    error_code=error_code,
+                    assistant=None,
+                    checkpoint=None,
+                )
 
-        if cancelled_message is not None:
-            run.has_terminal_message = True
+        if public_message is not None:
+            terminal_message = AgentCompleted(message=public_message, persist=False)
+            run.completion = run.completion or terminal_message
             await self._publish(
                 run,
-                _sse_frame(
-                    "message_done",
-                    {
-                        "type": "message_done",
-                        "message": cancelled_message.model_dump(
-                            mode="json",
-                            by_alias=True,
-                        ),
-                    },
-                ),
+                terminal_message,
             )
 
-        frame = _sse_frame(
+        frame = serialize_sse_event(
             "run_done",
             {
                 "type": "run_done",
@@ -732,31 +932,21 @@ def _existing_resume_ids(resume_ids: tuple[str, ...]) -> set[str]:
 def _prepare_run_request(
     request: AgentChatRequest,
     run_id: str,
-) -> AgentChatRequest:
+) -> AcceptedAgentTurn:
     """Accept one turn on a worker so SQLite and parsing never block asyncio."""
 
     with closing(connect()) as conn:
-        return prepare_agent_turn(conn, request, run_id=run_id)
+        return accept_agent_turn(conn, request, run_id=run_id)
 
 
 def _finish_agent_run_execution(
-    request: AgentChatRequest,
-    run_id: str,
-    status: AgentTurnExecutionStatus,
-    error_code: AgentTurnErrorCode | None,
-    assistant_message: AgentChatMessage | None,
+    turn: AcceptedAgentTurn,
+    outcome: AgentTerminalOutcome,
 ) -> None:
     """Persist one terminal transition on its own worker connection."""
 
     with closing(connect()) as conn:
-        finish_agent_turn_execution(
-            conn,
-            request,
-            run_id=run_id,
-            status=status,
-            error_code=error_code,
-            assistant_message=assistant_message,
-        )
+        persist_agent_terminal_outcome(conn, turn, outcome)
 
 
 def _replay_tool_states(message: dict[str, object]) -> str:
@@ -778,6 +968,51 @@ def _add_optional_usage(current: int | None, value: int | None) -> int | None:
     if value is None:
         return current
     return (current or 0) + value
+
+
+def _safe_non_negative_int_from_mapping(value: object, key: str) -> int:
+    """Read a server-authored counter without retaining the surrounding payload."""
+
+    if not isinstance(value, dict):
+        return 0
+    candidate = value.get(key)
+    if isinstance(candidate, bool) or not isinstance(candidate, int):
+        return 0
+    return max(candidate, 0)
+
+
+def _safe_edit_error_codes(output: dict[str, object]) -> tuple[str, ...]:
+    """Return bounded machine codes, never rejection reasons or claim text."""
+
+    rejected_edits = output.get("rejectedEdits")
+    if not isinstance(rejected_edits, list):
+        return ("edit_execute_rejected",)
+
+    codes: set[str] = set()
+    for rejected in rejected_edits:
+        if not isinstance(rejected, dict):
+            continue
+        quality_issue = rejected.get("qualityIssue")
+        if not isinstance(quality_issue, dict):
+            continue
+        code = quality_issue.get("code")
+        if _is_safe_metric_code(code):
+            codes.add(code)
+    return tuple(sorted(codes)) or ("edit_execute_rejected",)
+
+
+def _is_safe_metric_code(value: object) -> TypeGuard[str]:
+    """Accept only the compact snake-case vocabulary used by draft issues."""
+
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 64
+        and "a" <= value[0] <= "z"
+        and all(
+            "a" <= character <= "z" or "0" <= character <= "9" or character == "_"
+            for character in value
+        )
+    )
 
 
 def _timestamp_seconds(value: object) -> float | None:
@@ -821,25 +1056,6 @@ def _with_event_id(frame: str, sequence: int) -> str:
 
 def _frame_size(frame: str) -> int:
     return len(frame.encode("utf-8"))
-
-
-def _event_payload(frame: str) -> tuple[str, dict[str, object]]:
-    """Return the event name and JSON object carried by one SSE frame."""
-
-    event_name = _event_name(frame)
-    data_lines = [
-        line.removeprefix("data:").strip()
-        for line in frame.splitlines()
-        if line.startswith("data:")
-    ]
-    if not data_lines:
-        return event_name, {}
-
-    try:
-        payload = json.loads("\n".join(data_lines))
-    except json.JSONDecodeError:
-        return event_name, {}
-    return event_name, payload if isinstance(payload, dict) else {}
 
 
 def _merge_replay_tool(
@@ -938,52 +1154,57 @@ def _append_replay_timeline_tool(
     message["timeline"] = parts
 
 
-def _merge_replay_message(
+def _merge_replay_event(
     message: dict[str, object],
-    frame: str,
+    event: AgentRuntimeEvent,
 ) -> None:
-    """Fold incremental SSE events into one authoritative replay snapshot.
+    """Fold typed runtime events into one authoritative replay snapshot.
 
     A reconnecting subscriber either already owns events before its cursor or
     starts at zero. Replacing a long prefix with an absolute message snapshot
     is therefore lossless for both cases and avoids retaining every token delta.
     """
 
-    event_name, payload = _event_payload(frame)
-    patch = payload.get("message")
-    if isinstance(patch, dict):
-        message.update(patch)
-
-    if event_name == "text_delta":
-        delta = payload.get("delta")
-        if isinstance(delta, str):
-            message["text"] = f"{message.get('text', '')}{delta}"
-            _append_replay_timeline_text(
-                message,
-                payload.get("timelinePartId"),
-                delta,
-            )
-    elif event_name in {"tool_start", "tool_delta", "tool_done"}:
-        tool = payload.get("tool")
-        if isinstance(tool, dict):
-            _merge_replay_tool(message, tool)
-            _append_replay_timeline_tool(
-                message,
-                payload.get("timelinePartId"),
-                tool.get("id"),
-            )
-    elif event_name == "error" and not message.get("text"):
-        error_text = payload.get("message") or payload.get("error")
-        if isinstance(error_text, str):
-            message["text"] = error_text
+    if isinstance(event, AgentMessageStarted):
+        message.update(event.message)
+    elif isinstance(event, AgentTextDelta):
+        message["text"] = f"{message.get('text', '')}{event.delta}"
+        _append_replay_timeline_text(
+            message,
+            event.timeline_part_id,
+            event.delta,
+        )
+    elif isinstance(event, AgentToolUpdate):
+        _merge_replay_tool(message, event.tool)
+        _append_replay_timeline_tool(
+            message,
+            event.timeline_part_id,
+            event.tool.get("id"),
+        )
+    elif isinstance(event, AgentEditsUpdate):
+        message.update(
+            {
+                "edits": event.edits,
+                "transactionState": event.transaction_state,
+            },
+        )
+    elif isinstance(event, AgentStreamError) and not message.get("text"):
+        message["text"] = event.message
+    elif isinstance(event, AgentCompleted):
+        message.update(event.message.model_dump(mode="json", by_alias=True))
 
     message.setdefault("role", "assistant")
     message.setdefault("text", "")
 
 
-def _replay_snapshot_event(run: AgentRun, sequence: int) -> BufferedAgentEvent:
-    event_name = "message_done" if run.has_terminal_message else "message_delta"
-    frame = _sse_frame(
+def _replay_snapshot_event(
+    run: AgentRun,
+    sequence: int,
+    *,
+    terminal: bool,
+) -> BufferedAgentEvent:
+    event_name = "message_done" if terminal else "message_delta"
+    frame = serialize_sse_event(
         event_name,
         {
             "type": event_name,
@@ -1003,13 +1224,18 @@ def _replay_buffer_exceeded(run: AgentRun) -> bool:
     )
 
 
-def _compact_replay_buffer(run: AgentRun, sequence: int) -> None:
+def _compact_replay_buffer(
+    run: AgentRun,
+    sequence: int,
+    *,
+    terminal: bool,
+) -> None:
     """Replace a long active-run prefix with one absolute message snapshot."""
 
     if not _replay_buffer_exceeded(run):
         return
 
-    snapshot = _replay_snapshot_event(run, sequence)
+    snapshot = _replay_snapshot_event(run, sequence, terminal=terminal)
     run.events = [snapshot]
     run.buffered_event_bytes = _frame_size(snapshot.frame)
 
@@ -1024,25 +1250,15 @@ def _compact_terminal_replay_buffer(
         return
 
     snapshot_sequence = max(terminal_event.sequence - 1, 1)
-    snapshot = _replay_snapshot_event(run, snapshot_sequence)
+    snapshot = _replay_snapshot_event(
+        run,
+        snapshot_sequence,
+        terminal=run.completion is not None,
+    )
     run.events = [snapshot, terminal_event]
     run.buffered_event_bytes = _frame_size(snapshot.frame) + _frame_size(
         terminal_event.frame,
     )
-
-
-def _transaction_state(frame: str) -> str:
-    for line in frame.splitlines():
-        if not line.startswith("data:"):
-            continue
-        try:
-            payload = json.loads(line.removeprefix("data:").strip())
-        except json.JSONDecodeError:
-            return ""
-        message = payload.get("message") if isinstance(payload, dict) else None
-        if isinstance(message, dict):
-            return str(message.get("transactionState") or "")
-    return ""
 
 
 def _cancelled_replay_message(run: AgentRun) -> AgentChatMessage | None:
@@ -1089,43 +1305,9 @@ def _cancelled_replay_message(run: AgentRun) -> AgentChatMessage | None:
     return AgentChatMessage.model_validate(payload)
 
 
-def _event_name(frame: str) -> str:
-    first_line = frame.splitlines()[0] if frame else ""
-    return first_line.removeprefix("event:").strip()
-
-
-def _provider_error_code(frame: str) -> AgentTurnErrorCode:
-    """Classify a public provider error without persisting its free-form text."""
-
-    _, payload = _event_payload(frame)
-    explicit_code = payload.get("errorCode")
-    if explicit_code == "AGENT_INTERNAL_ERROR":
-        return "AGENT_INTERNAL_ERROR"
-    if explicit_code == "AGENT_PROVIDER_AUTH_ERROR":
-        return "AGENT_PROVIDER_AUTH_ERROR"
-    if explicit_code == "AGENT_PROVIDER_TIMEOUT":
-        return "AGENT_PROVIDER_TIMEOUT"
-    if explicit_code == "AGENT_PROVIDER_ERROR":
-        return "AGENT_PROVIDER_ERROR"
-
-    error_text = payload.get("error") or payload.get("message")
-    normalized = error_text.casefold() if isinstance(error_text, str) else ""
-    if any(
-        marker in normalized
-        for marker in ("http 401", "http 403", "unauthorized", "forbidden")
-    ):
-        return "AGENT_PROVIDER_AUTH_ERROR"
-    return "AGENT_PROVIDER_ERROR"
-
-
 def _execution_state(status: AgentRunStatus) -> AgentTurnExecutionStatus:
     if status == "completed":
         return "succeeded"
     if status == "cancelled":
         return "cancelled"
     return "failed"
-
-
-def _sse_frame(event_name: str, payload: dict[str, object]) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event_name}\ndata: {data}\n\n"

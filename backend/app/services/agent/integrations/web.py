@@ -37,12 +37,15 @@ from playwright.async_api import (
 )
 
 SEARCH_MAX_RESULTS = 5
+SEARCH_DISCOVERY_RESULTS = SEARCH_MAX_RESULTS * 2
+SEARCH_RESULTS_PER_SOURCE = 2
 SEARCH_READ_RESULTS = SEARCH_MAX_RESULTS
 SEARCH_TARGET_REFERENCES = 2
 SEARCH_BROWSER_READ_RESULTS = 2
 SEARCH_TIMEOUT_SECONDS = 12.0
 FETCH_TIMEOUT_SECONDS = 10.0
 PAGE_HTTP_TIMEOUT_SECONDS = 3.0
+DYNAMIC_CONTENT_TIMEOUT_MS = 4_000
 DUCKDUCKGO_SEARCH_URL = "https://html.duckduckgo.com/html/"
 WEB_USER_AGENT = "Mozilla/5.0 (compatible; ResuMate/1.0)"
 WEB_ACCEPT_LANGUAGE = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
@@ -471,9 +474,38 @@ def _parse_duckduckgo_results(raw: bytes, charset: str) -> list[WebSearchResult]
             continue
         seen_urls.add(result.url)
         results.append(result)
-        if len(results) >= SEARCH_MAX_RESULTS:
+        if len(results) >= SEARCH_DISCOVERY_RESULTS:
             break
     return results
+
+
+def _select_search_results(
+    results: list[WebSearchResult],
+    *,
+    limit: int = SEARCH_MAX_RESULTS,
+    per_source: int = SEARCH_RESULTS_PER_SOURCE,
+) -> list[WebSearchResult]:
+    """Keep result order while avoiding one source crowding out the result set."""
+
+    selected: list[WebSearchResult] = []
+    deferred: list[WebSearchResult] = []
+    counts_by_source: dict[tuple[str, str], int] = {}
+    for result in results:
+        parsed = urlsplit(result.url)
+        hostname = (parsed.hostname or "").casefold()
+        tenant = parsed.path.strip("/").partition("/")[0].casefold()
+        source = (hostname, tenant)
+        if hostname and counts_by_source.get(source, 0) >= per_source:
+            deferred.append(result)
+            continue
+        selected.append(result)
+        if hostname:
+            counts_by_source[source] = counts_by_source.get(source, 0) + 1
+        if len(selected) == limit:
+            return selected
+
+    selected.extend(deferred[: limit - len(selected)])
+    return selected
 
 
 class _PageTextParser(HTMLParser):
@@ -1084,14 +1116,16 @@ async def _async_search_web(
                 if not 200 <= search_page.status_code < 300:
                     return WebSearchResponse(error_reason="temporarily_unavailable")
 
-                discovered = [
-                    result
-                    for result in _parse_duckduckgo_results(
-                        search_page.raw,
-                        search_page.charset,
-                    )
-                    if _matches_search_domains(result.url, domains)
-                ]
+                discovered = _select_search_results(
+                    [
+                        result
+                        for result in _parse_duckduckgo_results(
+                            search_page.raw,
+                            search_page.charset,
+                        )
+                        if _matches_search_domains(result.url, domains)
+                    ],
+                )
                 results = list(discovered)
 
                 async def read_static(
@@ -1142,44 +1176,63 @@ async def _async_search_web(
                         passages=reference.passages,
                     )
 
-                read_results = [
-                    promote(result, reference)
+                def promote_references(
+                    references: list[WebReference | None],
+                ) -> list[WebSearchResult]:
+                    promoted = 0
+                    read_results: list[WebSearchResult] = []
                     for result, reference in zip(
                         read_candidates,
-                        static_references,
+                        references,
                         strict=True,
-                    )
-                ]
+                    ):
+                        if promoted >= SEARCH_TARGET_REFERENCES:
+                            read_results.append(result)
+                            continue
+                        resolved = promote(result, reference)
+                        read_results.append(resolved)
+                        if resolved.source_kind == "fetched_page":
+                            promoted += 1
+                    return read_results
+
+                read_results = promote_references(static_references)
                 results = [*read_results, *discovered[SEARCH_READ_RESULTS:]]
 
                 if (
                     sum(reference is not None for reference in static_references)
                     < SEARCH_TARGET_REFERENCES
                 ):
+                    render_candidates = _select_search_results(
+                        [
+                            result
+                            for result, reference in zip(
+                                read_candidates,
+                                static_references,
+                                strict=True,
+                            )
+                            if reference is None
+                        ],
+                        limit=SEARCH_BROWSER_READ_RESULTS,
+                        per_source=1,
+                    )
                     render_requests = [
                         (result.url, query, result.title)
-                        for result, reference in zip(
-                            read_candidates,
-                            static_references,
-                            strict=True,
-                        )
-                        if reference is None
-                    ][:SEARCH_BROWSER_READ_RESULTS]
+                        for result in render_candidates
+                    ]
                     rendered_references = await _async_render_web_references(
                         render_requests,
                         browser,
                     )
-                    read_results = [
-                        promote(
-                            result,
-                            reference or rendered_references.get(result.url),
-                        )
-                        for result, reference in zip(
-                            read_candidates,
-                            static_references,
-                            strict=True,
-                        )
-                    ]
+                    read_results = promote_references(
+                        [
+                            reference or rendered_references.get(result.url)
+                            for result, reference in zip(
+                                read_candidates,
+                                static_references,
+                                strict=True,
+                            )
+                        ],
+                    )
                     results = [*read_results, *discovered[SEARCH_READ_RESULTS:]]
     except TimeoutError:
         if results:
@@ -1365,7 +1418,7 @@ async def _async_render_web_references(
                 try:
                     await page.wait_for_function(
                         "document.body && document.body.innerText.length >= 200",
-                        timeout=2_000,
+                        timeout=DYNAMIC_CONTENT_TIMEOUT_MS,
                     )
                 except PlaywrightTimeoutError:
                     pass
