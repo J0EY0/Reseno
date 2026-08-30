@@ -1,4 +1,5 @@
 import type { Locale } from "@/i18n";
+import { saveWorkspaceThemePreference } from "@/lib/workspace-theme";
 import type { AgentSettings, ThemeMode } from "@/types/resume";
 
 export interface WorkspacePreferencesSnapshot {
@@ -38,12 +39,14 @@ export function createWorkspacePreferencesPersistence(): WorkspacePreferencesPer
     getSnapshot: () => persistedSnapshot,
     hydrate(snapshot) {
       persistedSnapshot = snapshot;
+      saveWorkspaceThemePreference(snapshot.theme);
     },
     enqueue(snapshot, save, handlers) {
       const mutationId = ++latestMutationId;
       const request = queue.then(async () => {
         await save();
         persistedSnapshot = snapshot;
+        saveWorkspaceThemePreference(snapshot.theme);
       });
 
       // The shared queue includes rollback handling, so a new route that calls

@@ -5,6 +5,26 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ResuMate</title>
+    <script data-resumate-theme-bootstrap>
+      (() => {
+        let theme = "light";
+        try {
+          const savedTheme = localStorage.getItem("resumate-theme");
+          if (savedTheme === "dark" || savedTheme === "system") {
+            theme = savedTheme;
+          }
+        } catch {
+          // Continue with the light default when storage is unavailable.
+        }
+
+        const isDark =
+          theme === "dark" ||
+          (theme === "system" &&
+            window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", isDark);
+        document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

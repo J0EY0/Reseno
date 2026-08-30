@@ -11,7 +11,6 @@ import { SectionsList } from "@/components/preview/resume-preview-sections";
 import type { ResumeTemplateImageElement } from "@/types/resume";
 
 interface ResumePageContentProps {
-  breakBeforeSectionSpacers?: Record<string, number>;
   editableTemplateImages?: boolean;
   enableContactLinks: boolean;
   model: ResumePreviewModel;
@@ -24,16 +23,12 @@ interface ResumePageContentProps {
 }
 
 export function StandardResumeContent({
-  breakBeforeSectionSpacers,
   enableContactLinks,
   model,
   pageSections,
 }: Pick<
   ResumePageContentProps,
-  | "breakBeforeSectionSpacers"
-  | "enableContactLinks"
-  | "model"
-  | "pageSections"
+  "enableContactLinks" | "model" | "pageSections"
 >) {
   return (
     <div className="relative z-10" data-resume-flow-content="true">
@@ -51,8 +46,7 @@ export function StandardResumeContent({
         settings={model.settings}
         layout={model.layout}
         isSidebarLayout={false}
-        className="mt-7"
-        breakBeforeSectionSpacers={breakBeforeSectionSpacers}
+        className="mt-[1.25em]"
         sectionDiffById={model.diffLookup.sectionDiffById}
         itemDiffById={model.diffLookup.itemDiffById}
       />
@@ -61,7 +55,6 @@ export function StandardResumeContent({
 }
 
 export function ResumePageContent({
-  breakBeforeSectionSpacers,
   editableTemplateImages = false,
   enableContactLinks,
   model,
@@ -103,7 +96,6 @@ export function ResumePageContent({
               settings={model.settings}
               layout={model.layout}
               isSidebarLayout
-              breakBeforeSectionSpacers={breakBeforeSectionSpacers}
               sectionDiffById={model.diffLookup.sectionDiffById}
               itemDiffById={model.diffLookup.itemDiffById}
             />
@@ -124,7 +116,6 @@ export function ResumePageContent({
       <StandardResumeContent
         model={model}
         pageSections={pageSections}
-        breakBeforeSectionSpacers={breakBeforeSectionSpacers}
         enableContactLinks={enableContactLinks}
       />
     </>

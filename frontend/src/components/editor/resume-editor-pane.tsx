@@ -1,6 +1,8 @@
 import {
+  lazy,
   memo,
   startTransition,
+  Suspense,
   useState,
   type ChangeEvent,
   type Dispatch,
@@ -8,7 +10,6 @@ import {
 } from "react";
 
 import { AddSectionPopover } from "@/components/editor/add-section-popover";
-import { AvatarCropDialog } from "@/components/editor/avatar-crop-dialog";
 import { BasicInfoCard } from "@/components/editor/basic-info-card";
 import { ResumeSectionCard } from "@/components/editor/resume-section-card";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,6 +30,12 @@ import type {
 } from "@/types/resume";
 
 type CollapsedState = Record<string, boolean>;
+
+const AvatarCropDialog = lazy(() =>
+  import("@/components/editor/avatar-crop-dialog").then((module) => ({
+    default: module.AvatarCropDialog,
+  })),
+);
 
 // The route controller owns persisted resume and navigation state. This pane
 // owns only transient avatar UI and translates editor actions into state updates.
@@ -210,20 +217,22 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
 
   return (
     <>
-      <AvatarCropDialog
-        t={t}
-        open={Boolean(avatarCropSource)}
-        source={avatarCropSource}
-        onCancel={() => setAvatarCropSource(null)}
-        onConfirm={(value) => {
-          updateBasic("avatar", value);
-          setAvatarCropSource(null);
-        }}
-      />
+      <Suspense fallback={null}>
+        <AvatarCropDialog
+          t={t}
+          open={Boolean(avatarCropSource)}
+          source={avatarCropSource}
+          onCancel={() => setAvatarCropSource(null)}
+          onConfirm={(value) => {
+            updateBasic("avatar", value);
+            setAvatarCropSource(null);
+          }}
+        />
+      </Suspense>
 
       <section className="resume-editor-panel flex flex-col gap-2.5 print:hidden">
         {hasLoadError ? (
-          <Card className="rounded-2xl border-border/80 shadow-sm">
+          <Card className="border-border/80">
             <CardContent className="p-5 text-sm text-muted-foreground">
               {t.loadError}
             </CardContent>

@@ -3,9 +3,6 @@ import {
   Languages,
   Monitor,
   Moon,
-  Palette,
-  ShieldCheck,
-  SlidersHorizontal,
   Sun,
 } from "lucide-react";
 
@@ -23,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { TabsContent } from "@/components/ui/tabs";
 import { usePasswordSettings } from "@/components/use-password-settings";
 import type { AppMessages, Locale } from "@/i18n";
@@ -57,11 +55,8 @@ export function SiteSettingsTab({
   ];
 
   return (
-    <TabsContent value="site" className="mt-5 space-y-5">
-      <SettingsSection
-        icon={<SlidersHorizontal />}
-        title={t.generalSettingsTitle}
-      >
+    <TabsContent value="site" className="mt-5 flex flex-col gap-6">
+      <SettingsSection title={t.preferencesSettingsTitle}>
         <SettingsRow
           icon={<Languages />}
           label={t.language}
@@ -81,7 +76,7 @@ export function SiteSettingsTab({
             >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent align="end">
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectGroup>
                 <SelectItem value="zh">{t.languageChinese}</SelectItem>
                 <SelectItem value="en">{t.languageEnglish}</SelectItem>
@@ -89,9 +84,8 @@ export function SiteSettingsTab({
             </SelectContent>
           </Select>
         </SettingsRow>
-      </SettingsSection>
+        <Separator className="mx-5 w-auto sm:mx-6" />
 
-      <SettingsSection icon={<Palette />} title={t.appearanceSettingsTitle}>
         <SettingsRow
           icon={<Moon />}
           label={t.theme}
@@ -105,10 +99,7 @@ export function SiteSettingsTab({
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection
-        icon={<ShieldCheck />}
-        title={t.accountSecuritySettingsTitle}
-      >
+      <SettingsSection title={t.accountSecuritySettingsTitle}>
         <SettingsRow
           icon={<KeyRound />}
           label={t.passwordSettingsTitle}

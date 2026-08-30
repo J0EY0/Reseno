@@ -1,9 +1,8 @@
 import { SettingsPanel } from "@/components/settings-panel";
-import { WorkspaceRouteSkeleton } from "@/components/workspace-skeletons";
+import { SettingsPanelSkeleton } from "@/components/settings-panel-skeleton";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
-import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 import type { AppMessages, Locale } from "@/i18n";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 
@@ -32,38 +31,30 @@ export function SettingsWorkspacePage({
     preferences.hasLoaded ? preferences.routeData : null,
   );
 
+  if (preferences.hasLoadError) {
+    return (
+      <WorkspaceRouteError
+        messages={messages}
+        onRetry={preferences.retryLoad}
+      />
+    );
+  }
+
+  if (!preferences.hasLoaded) {
+    return <SettingsPanelSkeleton />;
+  }
+
   return (
-    <WorkspaceShell
-      activeView="settings"
+    <SettingsPanel
       locale={locale}
-      messages={messages}
+      t={messages}
       theme={preferences.theme}
-      resolvedTheme={preferences.resolvedTheme}
-      persistence={persistence}
-      onLocaleChange={onLocaleChange}
       onThemeChange={preferences.changeTheme}
-      onLogout={onLogout}
-    >
-      {preferences.hasLoadError ? (
-        <WorkspaceRouteError
-          messages={messages}
-          onRetry={preferences.retryLoad}
-        />
-      ) : !preferences.hasLoaded ? (
-        <WorkspaceRouteSkeleton />
-      ) : (
-        <SettingsPanel
-          locale={locale}
-          t={messages}
-          theme={preferences.theme}
-          onThemeChange={preferences.changeTheme}
-          onLocaleChange={preferences.changeLocale}
-          agentSettings={preferences.agentSettings}
-          onAgentSettingsChange={preferences.changeAgentSettings}
-          modelConfigs={preferences.modelConfigs}
-          onPasswordChanged={onLogout}
-        />
-      )}
-    </WorkspaceShell>
+      onLocaleChange={preferences.changeLocale}
+      agentSettings={preferences.agentSettings}
+      onAgentSettingsChange={preferences.changeAgentSettings}
+      modelConfigs={preferences.modelConfigs}
+      onPasswordChanged={onLogout}
+    />
   );
 }

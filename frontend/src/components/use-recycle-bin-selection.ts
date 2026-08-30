@@ -9,7 +9,7 @@ import type {
 
 // Recycle-bin rows have a stable height, so a fixed size keeps pagination
 // predictable without coupling it to viewport measurements.
-const TRASH_PAGE_SIZE = 10;
+const TRASH_PAGE_SIZE = 6;
 
 export function useRecycleBinSelection({
   deletedResumes,
@@ -164,45 +164,23 @@ export function useRecycleBinSelection({
     });
   }
 
-  function selectAllResumes(selected: boolean) {
+  function setSelectedResumeIds(ids: string[]) {
+    const selectedIdSet = new Set(ids);
     setResumeSelection({
       page: safeCurrentPage,
-      ids: selected ? paginatedDeletedResumes.map((item) => item.id) : [],
+      ids: paginatedDeletedResumes
+        .filter((item) => selectedIdSet.has(item.id))
+        .map((item) => item.id),
     });
   }
 
-  function selectAllTemplates(selected: boolean) {
+  function setSelectedTemplateIds(ids: string[]) {
+    const selectedIdSet = new Set(ids);
     setTemplateSelection({
       page: safeCurrentPage,
-      ids: selected ? paginatedDeletedTemplates.map((item) => item.id) : [],
-    });
-  }
-
-  function toggleResume(id: string, selected: boolean) {
-    setResumeSelection((current) => {
-      const ids = current.page === safeCurrentPage ? current.ids : [];
-      return {
-        page: safeCurrentPage,
-        ids: selected
-          ? ids.includes(id)
-            ? ids
-            : [...ids, id]
-          : ids.filter((currentId) => currentId !== id),
-      };
-    });
-  }
-
-  function toggleTemplate(id: string, selected: boolean) {
-    setTemplateSelection((current) => {
-      const ids = current.page === safeCurrentPage ? current.ids : [];
-      return {
-        page: safeCurrentPage,
-        ids: selected
-          ? ids.includes(id)
-            ? ids
-            : [...ids, id]
-          : ids.filter((currentId) => currentId !== id),
-      };
+      ids: paginatedDeletedTemplates
+        .filter((item) => selectedIdSet.has(item.id))
+        .map((item) => item.id),
     });
   }
 
@@ -233,12 +211,8 @@ export function useRecycleBinSelection({
     paginatedDeletedTemplates,
     selectedResumePageIds,
     selectedTemplatePageIds,
-    selectedResumeIdSet: new Set(validSelectedResumeIds),
-    selectedTemplateIdSet: new Set(validSelectedTemplateIds),
-    selectAllResumes,
-    selectAllTemplates,
-    toggleResume,
-    toggleTemplate,
+    setSelectedResumeIds,
+    setSelectedTemplateIds,
     removeResumeIds,
     removeTemplateIds,
   };

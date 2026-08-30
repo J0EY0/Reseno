@@ -1,5 +1,6 @@
 import type { AppMessages } from "@/i18n";
-import { useMemo } from "react";
+import { startTransition, useMemo, type MouseEvent } from "react";
+import { useLocation } from "react-router-dom";
 
 import {
   Pagination,
@@ -11,9 +12,18 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import { cn } from "@/lib/utils";
-import { runViewTransition } from "@/lib/view-transition";
 
 type GalleryPaginationItem = number | "ellipsis";
+
+function isPlainPrimaryClick(event: MouseEvent<HTMLAnchorElement>) {
+  return (
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
 
 function getPaginationItems(
   currentPage: number,
@@ -62,6 +72,7 @@ export function GalleryPagination({
   onPageChange: (page: number) => void;
   disabled?: boolean;
 }) {
+  const location = useLocation();
   const pageItems = useMemo(
     () => getPaginationItems(currentPage, totalPages),
     [currentPage, totalPages],
@@ -81,28 +92,66 @@ export function GalleryPagination({
       return;
     }
 
-    runViewTransition(
-      () => onPageChange(page),
-      page > currentPage ? "nav-forward" : "nav-back",
-    );
+    startTransition(() => onPageChange(page));
   }
+
+  function getPageHref(page: number) {
+    const nextSearchParams = new URLSearchParams(location.search);
+
+    if (page > 1) {
+      nextSearchParams.set("page", String(page));
+    } else {
+      nextSearchParams.delete("page");
+    }
+
+    const search = nextSearchParams.toString();
+    return `${location.pathname}${search ? `?${search}` : ""}${location.hash}`;
+  }
+
+  function handlePageClick(
+    event: MouseEvent<HTMLAnchorElement>,
+    page: number,
+    unavailable: boolean,
+  ) {
+    if (unavailable) {
+      event.preventDefault();
+      return;
+    }
+
+    if (!isPlainPrimaryClick(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    goToPage(page);
+  }
+
+  const previousUnavailable = disabled || currentPage === 1;
+  const nextUnavailable = disabled || currentPage === totalPages;
 
   return (
     <Pagination className="pt-4">
       <PaginationContent>
         <PaginationItem>
           <PaginationPrevious
-            href="#"
+            href={
+              previousUnavailable
+                ? undefined
+                : getPageHref(currentPage - 1)
+            }
             text={t.paginationPrevious}
             aria-label={t.paginationPrevious}
-            aria-disabled={disabled || currentPage === 1}
+            aria-disabled={previousUnavailable}
+            tabIndex={previousUnavailable ? -1 : undefined}
             className={cn(
-              (disabled || currentPage === 1) &&
-                "pointer-events-none opacity-45",
+              previousUnavailable && "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
-              event.preventDefault();
-              goToPage(currentPage - 1);
+              handlePageClick(
+                event,
+                currentPage - 1,
+                previousUnavailable,
+              );
             }}
           />
         </PaginationItem>
@@ -115,14 +164,14 @@ export function GalleryPagination({
           ) : (
             <PaginationItem key={item}>
               <PaginationLink
-                href="#"
+                href={disabled ? undefined : getPageHref(item)}
                 isActive={item === currentPage}
                 size="icon-sm"
                 aria-disabled={disabled}
+                tabIndex={disabled ? -1 : undefined}
                 className={cn(disabled && "pointer-events-none opacity-45")}
                 onClick={(event) => {
-                  event.preventDefault();
-                  goToPage(item);
+                  handlePageClick(event, item, disabled);
                 }}
               >
                 {item}
@@ -133,17 +182,18 @@ export function GalleryPagination({
 
         <PaginationItem>
           <PaginationNext
-            href="#"
+            href={
+              nextUnavailable ? undefined : getPageHref(currentPage + 1)
+            }
             text={t.paginationNext}
             aria-label={t.paginationNext}
-            aria-disabled={disabled || currentPage === totalPages}
+            aria-disabled={nextUnavailable}
+            tabIndex={nextUnavailable ? -1 : undefined}
             className={cn(
-              (disabled || currentPage === totalPages) &&
-                "pointer-events-none opacity-45",
+              nextUnavailable && "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
-              event.preventDefault();
-              goToPage(currentPage + 1);
+              handlePageClick(event, currentPage + 1, nextUnavailable);
             }}
           />
         </PaginationItem>

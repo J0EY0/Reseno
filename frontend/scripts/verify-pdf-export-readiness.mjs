@@ -46,19 +46,21 @@ assert(
     /useResumePagination\(\s*model,\s*resumeFontReadyToken,?\s*\)/.test(
       resumePreview,
     ) &&
-    /useLayoutEffect\(\(\)\s*=>\s*\{\s*if \(!resumeFontReadyToken\)\s*\{\s*return/.test(
+    /useLayoutEffect\(\(\)\s*=>[\s\S]*?measurePages\(\);\s*if \(!resumeFontReadyToken\)/.test(
       resumePagination,
     ) &&
     /await loadResumeFontStyles\(fontFamily\)[\s\S]*?await waitForAnimationFrame\(\)[\s\S]*?document\.fonts\?\.ready/.test(
       resumeFontLoader,
     ),
-  "Pagination must settle the conditional stylesheet before waiting for its font and measuring.",
+  "Visible pagination must measure before paint while export readiness still waits for settled fonts.",
 );
 assert(
-  !/measuredContentHeight\s*\+\s*addedSpacerDelta\s*-\s*PAGINATION_TOLERANCE_PX/.test(
+  /interface ResumePaginationState\s*{[\s\S]*?pages:\s*ResumePageSlice\[\]/.test(
     resumePagination,
-  ),
-  "Final page count must not hide real overflow behind the orphan tolerance.",
+  ) &&
+    /findSafePageEnd\(/.test(resumePagination) &&
+    /range\.getClientRects\(\)/.test(resumePagination),
+  "Pagination must derive safe page slices from measured text line boxes.",
 );
 assert(
   /onPaginationReadyChange=\{handlePaginationReadyChange\}/.test(

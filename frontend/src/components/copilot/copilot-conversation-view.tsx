@@ -5,12 +5,12 @@ import {
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import type { AppMessages } from '@/i18n'
 import { shouldShowAgentDraftActions } from '@/lib/agent-panel-state'
 import { cn } from '@/lib/utils'
 import type { AgentDraftState } from '@/types/api'
 import { RotateCcw } from 'lucide-react'
+import { startTransition, useEffect, useState } from 'react'
 import type { RefObject } from 'react'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
 
@@ -20,6 +20,53 @@ import { AgentUserMessageRow } from './copilot-user-message-row'
 import type { AgentConversationController } from './copilot-panel-types'
 import type { AgentMessageActions } from './use-agent-message-actions'
 import type { AgentPromptActions } from './use-agent-prompt-actions'
+
+const INITIAL_AGENT_HISTORY_RENDER_COUNT = 10
+const AGENT_HISTORY_RENDER_BATCH_SIZE = 6
+
+function useProgressiveAgentHistory({
+  isSessionLoading,
+  visibleMessageCount,
+}: {
+  isSessionLoading: boolean
+  visibleMessageCount: number
+}) {
+  const [storedStartIndex, setStoredStartIndex] = useState<number | null>(null)
+  const initialStartIndex = Math.max(
+    0,
+    visibleMessageCount - INITIAL_AGENT_HISTORY_RENDER_COUNT,
+  )
+  const startIndex = Math.min(
+    storedStartIndex ?? initialStartIndex,
+    initialStartIndex,
+  )
+  const hasOlderMessages = !isSessionLoading && startIndex > 0
+
+  useEffect(() => {
+    if (!hasOlderMessages) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      startTransition(() => {
+        setStoredStartIndex((currentStartIndex) => {
+          const normalizedStartIndex = Math.min(
+            currentStartIndex ?? initialStartIndex,
+            initialStartIndex,
+          )
+          return Math.max(
+            0,
+            normalizedStartIndex - AGENT_HISTORY_RENDER_BATCH_SIZE,
+          )
+        })
+      })
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [hasOlderMessages, initialStartIndex, startIndex])
+
+  return { hasOlderMessages, startIndex }
+}
 
 function AgentSessionLoadError({
   onRetry,
@@ -46,25 +93,6 @@ function AgentSessionLoadError({
         <RotateCcw data-icon="inline-start" />
         {t.agentRetry}
       </Button>
-    </div>
-  )
-}
-
-function AgentSessionLoading({ t }: { t: AppMessages }) {
-  return (
-    <div
-      aria-live="polite"
-      className="mx-auto grid w-full max-w-[260px] justify-items-center gap-3 text-center"
-      role="status"
-    >
-      <div aria-hidden="true" className="grid w-full gap-2">
-        <Skeleton className="mx-auto h-3 w-4/5" />
-        <Skeleton className="mx-auto h-3 w-3/5" />
-        <Skeleton className="mx-auto h-3 w-2/3" />
-      </div>
-      <p className="text-xs leading-5 text-muted-foreground">
-        {t.agentHistoryLoading}
-      </p>
     </div>
   )
 }
@@ -109,9 +137,15 @@ export function CopilotConversationView({
   const isSessionLoading = !isSessionReady && !sessionLoadError
   const showConversationPlaceholder =
     isSessionLoading || visibleMessages.length === 0
+  const { hasOlderMessages, startIndex } = useProgressiveAgentHistory({
+    isSessionLoading,
+    visibleMessageCount: visibleMessages.length,
+  })
+  const renderedMessages = visibleMessages.slice(startIndex)
 
   return (
     <Conversation
+      aria-busy={hasOlderMessages || isSessionLoading}
       className="min-h-0 min-w-0 flex-1 overflow-x-hidden"
       contextRef={conversationContextRef}
       initial="instant"
@@ -125,11 +159,7 @@ export function CopilotConversationView({
         )}
         scrollClassName="agent-thread-scroll"
       >
-        {isSessionLoading ? (
-          <ConversationEmptyState className="px-6 py-10">
-            <AgentSessionLoading t={t} />
-          </ConversationEmptyState>
-        ) : visibleMessages.length === 0 ? (
+        {isSessionLoading ? null : visibleMessages.length === 0 ? (
           <ConversationEmptyState className="px-6 py-10">
             {sessionLoadError ? (
               <AgentSessionLoadError
@@ -162,7 +192,7 @@ export function CopilotConversationView({
                 t={t}
               />
             ) : null}
-            {visibleMessages.map((message) => {
+            {renderedMessages.map((message) => {
               if (message.role === 'user') {
                 const isEditing =
                   messageActions.editingMessageId === message.id

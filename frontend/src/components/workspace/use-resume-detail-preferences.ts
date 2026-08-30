@@ -8,6 +8,10 @@ import {
 import { isApiErrorToastShown } from "@/lib/api-client";
 import { normalizeModelConfigs } from "@/lib/model-config";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import {
+  loadWorkspaceThemePreference,
+  normalizeWorkspaceTheme,
+} from "@/lib/workspace-theme";
 import { saveUserSettingsApi } from "@/lib/workspace-api";
 import type { ResumeEditorRouteData } from "@/lib/workspace-route-data";
 import type {
@@ -15,10 +19,6 @@ import type {
   ModelConfig,
   ThemeMode,
 } from "@/types/resume";
-
-function normalizeTheme(value: unknown): ThemeMode {
-  return value === "dark" || value === "system" ? value : "light";
-}
 
 interface ResumeDetailPreferencesOptions {
   initialRouteData?: ResumeEditorRouteData;
@@ -45,8 +45,8 @@ export function useResumeDetailPreferences({
   );
   const [theme, setTheme] = useState<ThemeMode>(() =>
     initialRouteData?.theme
-      ? normalizeTheme(initialRouteData.theme)
-      : initialSnapshot?.theme ?? "light",
+      ? normalizeWorkspaceTheme(initialRouteData.theme)
+      : initialSnapshot?.theme ?? loadWorkspaceThemePreference(),
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
@@ -92,7 +92,7 @@ export function useResumeDetailPreferences({
         nextModels,
       );
       const nextTheme = source.theme
-        ? normalizeTheme(source.theme)
+        ? normalizeWorkspaceTheme(source.theme)
         : theme;
 
       setTheme(nextTheme);

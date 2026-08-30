@@ -4,7 +4,6 @@ import { Link } from "react-router-dom";
 
 import { ResumeThumbnail } from "@/components/preview/resume-thumbnail";
 import { Button } from "@/components/ui/button";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type {
@@ -18,8 +17,10 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
   template,
   isSelecting,
   isSelected,
+  isOpening,
   showDeleteAction,
   updatedAtFormatter,
+  onPreloadDetail,
   onOpenResume,
   onRequestDelete,
   onToggleSelected,
@@ -29,23 +30,29 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
   template: ResumeTemplateDefinition;
   isSelecting: boolean;
   isSelected: boolean;
+  isOpening: boolean;
   showDeleteAction: boolean;
   updatedAtFormatter: Intl.DateTimeFormat;
+  onPreloadDetail: () => void;
   onOpenResume: (resumeId: string) => void;
   onRequestDelete: (resumeIds: string[]) => void;
   onToggleSelected: (resumeId: string) => void;
 }) {
   const resumeLabel = item.title || item.resume.basic.name || t.untitledResume;
+  const preloadDetail = isSelecting ? undefined : onPreloadDetail;
 
   return (
-    <ViewTransitionBoundary enter="fade-in" exit="fade-out" default="none">
-      <div className="group relative h-full">
+    <div className="group relative h-full">
         <Link
           to={`/resume/${item.id}`}
           role={isSelecting ? "button" : undefined}
           aria-label={resumeLabel}
           aria-pressed={isSelecting ? isSelected : undefined}
+          aria-busy={isOpening || undefined}
           className="block h-full rounded-(--radius-card) text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          onPointerEnter={preloadDetail}
+          onFocus={preloadDetail}
+          onPointerDown={preloadDetail}
           onClick={(event) => {
             if (isSelecting) {
               event.preventDefault();
@@ -72,45 +79,39 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
         >
           <div
             className={cn(
-              "flex h-full flex-col rounded-(--radius-card) border border-border/80 bg-card p-2.5 shadow-none transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
+              "flex h-full flex-col rounded-(--radius-card) border border-border/80 bg-card p-2.5 shadow-card transition-colors duration-200 group-hover:border-border group-hover:bg-accent/20",
               isSelected && "border-primary bg-accent/20",
             )}
           >
-            <div className="rounded-[18px] bg-muted/55 p-2">
-              <ViewTransitionBoundary
-                name={`resume-preview-${item.id}`}
-                share="morph"
-                default="none"
-              >
-                <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-[14px] border border-zinc-200 bg-white">
-                  {isSelecting ? (
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "absolute left-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur",
-                        isSelected
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-border/80 bg-background/92 text-muted-foreground",
-                      )}
-                    >
-                      <Check className="size-3.5" />
-                    </span>
-                  ) : null}
-                  <div
+            <div className="rounded-xl bg-muted/55 p-2">
+              <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-zinc-200 bg-white">
+                {isSelecting ? (
+                  <span
                     aria-hidden="true"
-                    className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
-                    style={{ width: "210mm", height: "297mm" }}
+                    className={cn(
+                      "absolute left-3 top-3 z-10 flex size-7 items-center justify-center rounded-full border backdrop-blur",
+                      isSelected
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/80 bg-background/92 text-muted-foreground",
+                    )}
                   >
-                    <ResumeThumbnail
-                      t={t}
-                      resume={item.resume}
-                      fontFamily={item.typography.fontFamily}
-                      fontSize={item.typography.fontSize}
-                      template={template}
-                    />
-                  </div>
+                    <Check className="size-3.5" />
+                  </span>
+                ) : null}
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
+                  style={{ width: "210mm", height: "297mm" }}
+                >
+                  <ResumeThumbnail
+                    t={t}
+                    resume={item.resume}
+                    fontFamily={item.typography.fontFamily}
+                    fontSize={item.typography.fontSize}
+                    template={template}
+                  />
                 </div>
-              </ViewTransitionBoundary>
+              </div>
             </div>
             <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">
               <div>
@@ -142,7 +143,6 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
             <Trash2 className="size-3.5" />
           </Button>
         ) : null}
-      </div>
-    </ViewTransitionBoundary>
+    </div>
   );
 });

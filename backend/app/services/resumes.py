@@ -696,7 +696,7 @@ def _deleted_resume_preview(
     row: Row,
     resume_item: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the limited payload shown in the recycle bin."""
+    """Build the recycle-bin preview without editor-only job context."""
 
     resume = resume_item["resume"]
     deleted_at = row["deleted_at"] or row["saved_at"]
@@ -705,11 +705,7 @@ def _deleted_resume_preview(
         "id": row["id"],
         "title": resume_item["title"],
         "updatedAt": row["saved_at"],
-        "resume": {
-            "schemaVersion": 2,
-            "basic": resume["basic"],
-            "sections": [],
-        },
+        "resume": resume,
         "jobBrief": "",
         "typography": resume_item["typography"],
         "template": resume_item["template"],

@@ -15,7 +15,9 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   defaultTemplateId,
   isSelecting,
   selectedIdSet,
+  openingTemplateId,
   settingDefaultTemplateId,
+  onPreloadTemplateDetail,
   onOpenTemplate,
   onRequestDelete,
   onSetDefaultTemplate,
@@ -27,7 +29,9 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   defaultTemplateId: string;
   isSelecting: boolean;
   selectedIdSet: Set<string>;
+  openingTemplateId: string | null;
   settingDefaultTemplateId: string | null;
+  onPreloadTemplateDetail: () => void;
   onOpenTemplate: (templateId: string) => void;
   onRequestDelete: (templateIds: string[]) => void;
   onSetDefaultTemplate: (templateId: string) => void;
@@ -42,7 +46,9 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
       isDefaultTemplate={defaultTemplateId === template.id}
       isSelecting={isSelecting}
       isSelected={selectedIdSet.has(template.id)}
+      isOpening={openingTemplateId === template.id}
       settingDefaultTemplateId={settingDefaultTemplateId}
+      onPreloadDetail={onPreloadTemplateDetail}
       onOpenTemplate={onOpenTemplate}
       onRequestDelete={onRequestDelete}
       onSetDefaultTemplate={onSetDefaultTemplate}

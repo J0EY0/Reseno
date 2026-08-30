@@ -1,8 +1,13 @@
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Field,
   FieldError,
@@ -25,6 +30,8 @@ import type { AppMessages } from "@/i18n";
 
 import { ModelFormFieldLabel } from "./model-config-field-labels";
 import type { ModelConfigDialogController } from "./use-model-config-dialog";
+
+import "./model-config-model-fields.css";
 
 function DiscoveredModelField({
   controller,
@@ -250,45 +257,102 @@ function CloudOutputOverrideField({
 }) {
   const { draft, errors, updateField } = controller;
   const [open, setOpen] = useState(Boolean(draft.maxTokens));
+  const contentRef = useRef<HTMLDivElement>(null);
+  const revealOnOpenRef = useRef(false);
   const focusInvalidOutputInput = useCallback(
     (input: HTMLInputElement | null) => {
       // The callback ref runs when the newly opened content mounts and again
       // when maxTokens changes from valid to invalid. This makes the actual
       // field the final focus target without timing assumptions.
       if (input && errors.maxTokens) {
-        input.focus();
+        input.focus({ preventScroll: true });
       }
     },
     [errors.maxTokens],
   );
+  const revealOutputField = useCallback(() => {
+    const content = contentRef.current;
+    const viewport = content?.closest<HTMLElement>(
+      '[data-slot="field-group"]',
+    );
+    if (!content || !viewport) {
+      return;
+    }
+
+    const contentRect = content.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    const edgePadding = 12;
+    const lowerEdge = viewportRect.bottom - edgePadding;
+    const upperEdge = viewportRect.top + edgePadding;
+    const delta =
+      contentRect.bottom > lowerEdge
+        ? contentRect.bottom - lowerEdge
+        : contentRect.top < upperEdge
+          ? contentRect.top - upperEdge
+          : 0;
+
+    if (Math.abs(delta) < 1) {
+      return;
+    }
+
+    viewport.scrollTo({
+      top: viewport.scrollTop + delta,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+  }, []);
+  const expanded = open || Boolean(errors.maxTokens);
+
+  useLayoutEffect(() => {
+    if (
+      !expanded ||
+      (!revealOnOpenRef.current && !errors.maxTokens)
+    ) {
+      return;
+    }
+
+    revealOnOpenRef.current = false;
+    revealOutputField();
+  }, [errors.maxTokens, expanded, revealOutputField]);
+
   if (draft.providerKind !== "cloud" || !draft.model.trim()) {
     return null;
   }
-  const expanded = open || Boolean(errors.maxTokens);
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen && !expanded) {
+      revealOnOpenRef.current = true;
+    } else if (!nextOpen) {
+      revealOnOpenRef.current = false;
+    }
+    setOpen(nextOpen);
+  }
 
   return (
-    <div>
-      <button
-        id="model-output-settings"
-        type="button"
-        aria-controls="model-output-settings-content"
-        aria-expanded={expanded}
-        aria-invalid={Boolean(errors.maxTokens)}
-        className="group flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 rounded-md py-2 text-left text-sm font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span>{messages.advancedSettings}</span>
-        <ChevronDown
-          aria-hidden="true"
-          className="size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded:rotate-180"
-        />
-      </button>
-      {expanded ? (
-        <div
-          id="model-output-settings-content"
-          aria-labelledby="model-output-settings"
-          className="pt-3"
+    <Collapsible open={expanded} onOpenChange={handleOpenChange}>
+      <CollapsibleTrigger asChild>
+        <button
+          id="model-output-settings"
+          type="button"
+          aria-controls="model-output-settings-content"
+          aria-invalid={Boolean(errors.maxTokens)}
+          className="group flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 rounded-md py-2 text-left text-sm font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
+          <span>{messages.advancedSettings}</span>
+          <ChevronDown
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded:rotate-180"
+          />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        ref={contentRef}
+        id="model-output-settings-content"
+        aria-labelledby="model-output-settings"
+        className="model-output-settings-content"
+      >
+        <div className="model-output-settings-content-inner pt-3">
           <Field data-invalid={Boolean(errors.maxTokens)}>
             <ModelFormFieldLabel
               htmlFor="model-max-tokens"
@@ -325,8 +389,8 @@ function CloudOutputOverrideField({
             </FieldError>
           </Field>
         </div>
-      ) : null}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

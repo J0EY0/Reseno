@@ -54,13 +54,19 @@ export function useTemplateGalleryController({
     safeCurrentPage * pageSize,
   );
 
-  const toggleSelected = useCallback((templateId: string) => {
-    setSelectedIds((current) =>
-      current.includes(templateId)
-        ? current.filter((id) => id !== templateId)
-        : [...current, templateId],
-    );
-  }, []);
+  const toggleSelected = useCallback(
+    (templateId: string) => {
+      if (!customTemplateIdSet.has(templateId)) {
+        return;
+      }
+      setSelectedIds((current) =>
+        current.includes(templateId)
+          ? current.filter((id) => id !== templateId)
+          : [...current, templateId],
+      );
+    },
+    [customTemplateIdSet],
+  );
   const toggleSelecting = useCallback(() => {
     setIsSelecting((current) => {
       if (current) {

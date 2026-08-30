@@ -45,7 +45,7 @@ export function TemplateEditor({
 
   return (
     <div className="grid gap-4">
-      <Card className="overflow-hidden rounded-[30px] border border-border/80 bg-card shadow-[0_18px_60px_-48px_rgba(15,23,42,0.5)]">
+      <Card className="overflow-hidden rounded-(--radius-workspace) border border-border/80 bg-card shadow-none">
         <CardContent className="template-editor-scroll p-0">
           <div className="sticky top-0 z-20 border-b border-border/40 bg-card/95 px-5 py-4 backdrop-blur">
             <div className="flex flex-wrap items-start justify-between gap-4">

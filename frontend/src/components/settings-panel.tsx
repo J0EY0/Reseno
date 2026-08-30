@@ -5,6 +5,7 @@ import { AgentSettingsTab } from "@/components/agent-settings-tab";
 import type { SettingsPanelProps } from "@/components/settings-panel-types";
 import { SiteSettingsTab } from "@/components/site-settings-tab";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 export function SettingsPanel({
   locale,
@@ -43,18 +44,25 @@ export function SettingsPanel({
       >
         <TabsList
           aria-label={t.settings}
-          className="h-auto w-full justify-start gap-2 bg-transparent p-0"
+          className="relative grid grid-cols-2"
         >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-y-[3.5px] left-[3px] w-[calc(50%_-_3px)] rounded-md border border-transparent bg-background shadow-sm transition-transform duration-200 ease-out motion-reduce:transition-none dark:border-input dark:bg-input/30",
+              activeTab === "agent" && "translate-x-full",
+            )}
+          />
           <TabsTrigger
             value="site"
-            className="h-10 flex-none rounded-lg border border-transparent px-4 data-[state=active]:border-border data-[state=active]:bg-accent data-[state=active]:shadow-none"
+            className="data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
           >
             <Settings2 />
             {t.siteSettingsTitle}
           </TabsTrigger>
           <TabsTrigger
             value="agent"
-            className="h-10 flex-none rounded-lg border border-transparent px-4 data-[state=active]:border-border data-[state=active]:bg-accent data-[state=active]:shadow-none"
+            className="data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
           >
             <Sparkles />
             {t.agentSettingsTitle}

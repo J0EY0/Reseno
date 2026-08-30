@@ -1,5 +1,10 @@
 import { useLayoutEffect, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useParams,
+} from "react-router-dom";
 
 import { ResumeDetailWorkspaceView } from "@/components/workspace/resume-detail-workspace-view";
 import { useResumeDetailWorkspace } from "@/components/workspace/use-resume-detail-workspace";
@@ -27,7 +32,19 @@ function ResumeDetailRouteOwner({
 }: ResumeDetailRouteOwnerProps) {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigationType = useNavigationType();
   const [initialRouteState] = useState(routeState);
+
+  useLayoutEffect(() => {
+    if (navigationType !== "PUSH") {
+      return;
+    }
+
+    window.scrollTo({ left: 0, top: 0, behavior: "auto" });
+    document
+      .getElementById("main-content")
+      ?.focus({ preventScroll: true });
+  }, [navigationType]);
 
   useLayoutEffect(() => {
     if (routeState == null) {

@@ -1,6 +1,9 @@
+import { useRef, useState } from "react";
+
 import type {
   PendingTrashAction,
   RecycleBinPanelProps,
+  RecycleBinPreviewTarget,
   TrashActionKey,
 } from "@/components/recycle-bin-types";
 import { useRecycleBinActions } from "@/components/use-recycle-bin-actions";
@@ -14,6 +17,10 @@ export function useRecycleBinController({
   onRestoreTemplate,
   onDeleteTemplateForever,
 }: RecycleBinPanelProps) {
+  const [previewTarget, setPreviewTarget] =
+    useState<RecycleBinPreviewTarget | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const previewTriggerRef = useRef<string | null>(null);
   const actions = useRecycleBinActions({
     onRestoreResume,
     onDeleteResumeForever,
@@ -80,6 +87,34 @@ export function useRecycleBinController({
     }
   }
 
+  function openPreview(
+    target: RecycleBinPreviewTarget,
+    triggerId: string,
+  ) {
+    previewTriggerRef.current = triggerId;
+    setPreviewTarget(target);
+    setIsPreviewOpen(true);
+  }
+
+  function closePreview() {
+    setIsPreviewOpen(false);
+  }
+
+  function restorePreviewFocus() {
+    const triggerId = previewTriggerRef.current;
+    previewTriggerRef.current = null;
+    window.requestAnimationFrame(() => {
+      if (!triggerId) {
+        return;
+      }
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-trash-action-trigger="${CSS.escape(triggerId)}"]`,
+        )
+        ?.focus({ preventScroll: true });
+    });
+  }
+
   return {
     activeTab: selection.activeTab,
     changeTab: selection.changeTab,
@@ -93,13 +128,18 @@ export function useRecycleBinController({
       close: actions.closeDialog,
       confirm: confirmAction,
     },
+    preview: {
+      target: previewTarget,
+      open: isPreviewOpen,
+      show: openPreview,
+      close: closePreview,
+      restoreFocus: restorePreviewFocus,
+    },
     resumes: {
       items: selection.paginatedDeletedResumes,
       totalPages: selection.resumeTotalPages,
       selectedPageIds: selection.selectedResumePageIds,
-      selectedIdSet: selection.selectedResumeIdSet,
-      selectAll: selection.selectAllResumes,
-      toggleSelected: selection.toggleResume,
+      setSelectedIds: selection.setSelectedResumeIds,
       restoreOne(id: string) {
         void restoreResumeIds([id], `resume-restore:${id}`);
       },
@@ -113,9 +153,7 @@ export function useRecycleBinController({
       items: selection.paginatedDeletedTemplates,
       totalPages: selection.templateTotalPages,
       selectedPageIds: selection.selectedTemplatePageIds,
-      selectedIdSet: selection.selectedTemplateIdSet,
-      selectAll: selection.selectAllTemplates,
-      toggleSelected: selection.toggleTemplate,
+      setSelectedIds: selection.setSelectedTemplateIds,
       restoreOne(id: string) {
         void restoreTemplateIds([id], `template-restore:${id}`);
       },

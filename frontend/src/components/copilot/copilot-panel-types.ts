@@ -12,6 +12,8 @@ import type { ModelConfig, ResumeData } from '@/types/resume'
 
 import type { AgentPanelMessage } from './copilot-message-model'
 
+export type AgentPanelStatus = 'loading' | 'ready' | 'responding' | 'error'
+
 export interface CopilotPanelProps {
   isPanelCollapsed: boolean
   resumeId?: string
@@ -34,6 +36,7 @@ export interface CopilotPanelProps {
   onApplyAgentDraft: () => Promise<AgentSessionResponse | null>
   onDiscardAgentDraft: () => Promise<AgentSessionResponse | null>
   onOpenModelSettings: () => void
+  onStatusChange: (status: AgentPanelStatus) => void
   onBeforeSend?: () => Promise<void>
 }
 
@@ -68,6 +71,7 @@ export interface AgentConversationController {
   sessionResetVersion: number
   sendPrompt: SendAgentPrompt
   sessionLoadError: boolean
+  status: AgentPanelStatus
   stopResponding: () => void
   streamingMessage: AgentPanelMessage | null
   visibleMessages: AgentPanelMessage[]

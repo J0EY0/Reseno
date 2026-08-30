@@ -9,6 +9,17 @@ import type {
   PreparedResumeDetailRouteData,
   WorkspaceTemplateRouteData,
 } from "@/lib/workspace-route-data";
+import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import {
+  loadModelsWorkspacePage,
+  loadResumeDetailWorkspacePage,
+  loadResumeGalleryWorkspacePage,
+  loadSettingsWorkspacePage,
+  loadTemplateDetailWorkspacePage,
+  loadTemplateGalleryWorkspacePage,
+  loadTrashWorkspacePage,
+  loadWorkspaceLateralLayout,
+} from "@/components/workspace/workspace-route-loaders";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { PreparedWorkspaceRoute } from "@/lib/workspace-route-memory";
 import type { ResumeDetailResponse, WorkspaceVersionSummary } from "@/types/api";
@@ -21,21 +32,26 @@ interface RoutePreparationOptions {
   signal: AbortSignal;
 }
 
-export function preloadWorkspaceRoute(view: WorkspaceView) {
+function loadWorkspaceRoute(view: WorkspaceView) {
   switch (view) {
     case "models":
-      return import("@/components/workspace/models-workspace-page");
+      return loadModelsWorkspacePage();
     case "settings":
-      return import("@/components/workspace/settings-workspace-page");
+      return loadSettingsWorkspacePage();
     case "templates":
-      return import(
-        "@/components/workspace/template-gallery-workspace-page"
-      );
+      return loadTemplateGalleryWorkspacePage();
     case "trash":
-      return import("@/components/workspace/trash-workspace-page");
+      return loadTrashWorkspacePage();
     case "resume":
-      return import("@/components/workspace/resume-gallery-workspace-page");
+      return loadResumeGalleryWorkspacePage();
   }
+}
+
+export function preloadWorkspaceRoute(view: WorkspaceView) {
+  return Promise.all([
+    loadWorkspaceLateralLayout(),
+    loadWorkspaceRoute(view),
+  ]);
 }
 
 async function loadWorkspaceRouteData(
@@ -99,8 +115,8 @@ export async function prepareWorkspaceRoute<View extends WorkspaceView>(
 
 export function preloadResumeDetailRoute() {
   return Promise.all([
-    import("@/components/workspace/resume-detail-workspace-page"),
-    import("@/components/preview/document-preview-card"),
+    loadResumeDetailWorkspacePage(),
+    loadDocumentPreviewCard(),
   ]);
 }
 
@@ -186,8 +202,8 @@ export async function prepareCreatedResumeDetailRoute(
 
 export function preloadTemplateDetailRoute() {
   return Promise.all([
-    import("@/components/workspace/template-detail-workspace-page"),
-    import("@/components/preview/document-preview-card"),
+    loadTemplateDetailWorkspacePage(),
+    loadDocumentPreviewCard(),
   ]);
 }
 

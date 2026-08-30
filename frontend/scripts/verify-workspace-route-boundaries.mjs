@@ -27,15 +27,23 @@ const [
   templateDetailLeaveSource,
   trashPageSource,
   trashRouteSource,
+  lateralLayoutSource,
   shellSource,
+  workspaceThemeSource,
+  sidebarSource,
   preferencesRouteSource,
   lateralRouteDataSource,
   persistenceSource,
   preparedNavigationSource,
   navigationTransactionSource,
   workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
+  routeLoaderSource,
   workspaceRouteSource,
   workspaceRouteMemorySource,
+  resumeGallerySource,
+  resumeGalleryGridSource,
+  resumeGalleryCardSource,
 ] = await Promise.all([
   readText("src/App.tsx"),
   readText("src/components/workspace/resume-gallery-workspace-page.tsx"),
@@ -57,7 +65,10 @@ const [
   readText("src/components/workspace/use-template-detail-leave.ts"),
   readText("src/components/workspace/trash-workspace-page.tsx"),
   readText("src/components/workspace/use-trash-workspace.ts"),
+  readText("src/components/workspace/workspace-lateral-layout.tsx"),
   readText("src/components/workspace/workspace-shell.tsx"),
+  readText("src/components/workspace/workspace-theme.tsx"),
+  readText("src/components/app-sidebar.tsx"),
   readText("src/components/workspace/use-workspace-preferences-route.ts"),
   readText("src/components/workspace/use-workspace-lateral-route-data.ts"),
   readText("src/lib/workspace-preferences-persistence.ts"),
@@ -68,8 +79,13 @@ const [
     "src/components/workspace/use-workspace-navigation-transaction.ts",
   ),
   readText("src/components/workspace/workspace-route-preparation.ts"),
+  readText("src/components/workspace/workspace-route-loaders.ts"),
+  readText("src/lib/route-loader.ts"),
   readText("src/lib/workspace-route.ts"),
   readText("src/lib/workspace-route-memory.ts"),
+  readText("src/components/resume-gallery.tsx"),
+  readText("src/components/resume-gallery-grid.tsx"),
+  readText("src/components/resume-gallery-card.tsx"),
 ]);
 const resumeDetailCommandsSource = await readText(
   "src/components/workspace/use-resume-detail-commands.ts",
@@ -85,11 +101,42 @@ for (const routeEntry of [
   "trash-workspace-page",
 ]) {
   assert.match(
-    appSource,
+    workspaceRouteLoadersSource,
     new RegExp(`import\\("@/components/workspace/${routeEntry}"\\)`),
     `${routeEntry} must remain a literal, statically analyzable lazy entry.`,
   );
+  assert.doesNotMatch(
+    appSource + workspaceRoutePreparationSource,
+    new RegExp(`import\\("@/components/workspace/${routeEntry}"\\)`),
+    `${routeEntry} must have one shared dynamic-import owner.`,
+  );
 }
+for (const routeLoader of [
+  "loadResumeGalleryWorkspacePage",
+  "loadResumeDetailWorkspacePage",
+  "loadModelsWorkspacePage",
+  "loadSettingsWorkspacePage",
+  "loadTemplateGalleryWorkspacePage",
+  "loadTemplateDetailWorkspacePage",
+  "loadTrashWorkspacePage",
+  "loadWorkspaceLateralLayout",
+]) {
+  assert.match(
+    appSource,
+    new RegExp(`lazy\\(${routeLoader}\\)`),
+    `${routeLoader} must be consumed directly by React.lazy.`,
+  );
+}
+assert.match(
+  appSource,
+  /from "@\/components\/workspace\/workspace-route-loaders"/,
+  "App lazy routes must consume the shared workspace route loaders.",
+);
+assert.match(
+  routeLoaderSource,
+  /function createRouteLoader[\s\S]{0,220}let request:[\s\S]{0,180}request \|\|= loader\(\)\.then/,
+  "Workspace route preload and React.lazy must share one memoized module Promise.",
+);
 const appRouteSuspenseSource = appSource.slice(
   appSource.indexOf("function AppRouteSuspense"),
   appSource.indexOf("function DocumentMetadata"),
@@ -106,6 +153,11 @@ assert.match(appSource, /<Route path="\/settings"/);
 assert.match(appSource, /<Route path="\/templates"/);
 assert.match(appSource, /<Route path="\/template\/:id"/);
 assert.match(appSource, /<Route path="\/trash"/);
+assert.match(
+  appSource,
+  /loadWorkspaceLateralLayout[\s\S]*?<Route element=\{renderWorkspaceLateralLayout\(\)\}>[\s\S]*?<Route path="\/resume"[\s\S]*?<Route path="\/trash"[\s\S]*?<\/Route>/,
+  "The five lateral routes must share one lazy persistent workspace layout.",
+);
 assert.doesNotMatch(
   workspaceRouteSource,
   /resumeBuilderRoutePaths/,
@@ -124,28 +176,33 @@ assert.doesNotMatch(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /case "resume":\s*return import\(\s*"@\/components\/workspace\/resume-gallery-workspace-page"\s*\)/,
+  /case "resume":\s*return loadResumeGalleryWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the independent resume gallery route entry.",
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /case "models":\s*return import\(\s*"@\/components\/workspace\/models-workspace-page"\s*\)/,
+  /case "models":\s*return loadModelsWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the models route entry.",
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /case "settings":\s*return import\(\s*"@\/components\/workspace\/settings-workspace-page"\s*\)/,
+  /case "settings":\s*return loadSettingsWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the settings route entry.",
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /case "templates":\s*return import\(\s*"@\/components\/workspace\/template-gallery-workspace-page"\s*\)/,
+  /case "templates":\s*return loadTemplateGalleryWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the template gallery route entry.",
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /case "trash":\s*return import\(\s*"@\/components\/workspace\/trash-workspace-page"\s*\)/,
+  /case "trash":\s*return loadTrashWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the trash route entry.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
+  /return Promise\.all\(\[\s*loadWorkspaceLateralLayout\(\),\s*loadWorkspaceRoute\(view\),\s*\]\)/,
+  "Prepared lateral navigation must preload the persistent layout with its child route.",
 );
 assert.match(
   workspaceRoutePreparationSource,
@@ -215,7 +272,7 @@ for (const pageSource of [
 }
 assert.match(
   appSource,
-  /authGate\.phase !== "app"[\s\S]{0,100}clearWorkspaceLateralRouteMemory\(\)/,
+  /authGate\.phase === "app"[\s\S]{0,160}hasEnteredAuthenticatedAppRef\.current = true[\s\S]{0,180}!hasEnteredAuthenticatedAppRef\.current[\s\S]{0,240}import\("@\/lib\/workspace-route-memory"\)[\s\S]{0,160}clearWorkspaceLateralRouteMemory\(\)/,
   "Leaving the authenticated app must clear all per-view snapshots and one-time handoffs.",
 );
 try {
@@ -228,7 +285,45 @@ try {
 }
 assert.match(shellSource, /<AppSidebar[\s\S]*<SidebarInset/);
 assert.match(shellSource, /<AppToaster theme=\{theme\}/);
-assert.match(shellSource, /<ViewTransitionBoundary/);
+assert.match(
+  lateralLayoutSource,
+  /<WorkspaceThemeProvider[\s\S]*?<WorkspaceShell[\s\S]*?<Outlet \/>/,
+  "The lateral layout must keep theme, Sidebar, and Header mounted around the changing route outlet.",
+);
+assert.doesNotMatch(
+  resumeGalleryPageSource +
+    templateGalleryPageSource +
+    trashPageSource +
+    modelsPageSource +
+    settingsPageSource,
+  /WorkspaceShell/,
+  "Lateral route pages must render content only so their shared chrome keeps DOM identity.",
+);
+assert.doesNotMatch(
+  shellSource,
+  /ViewTransitionBoundary|viewTransitionName/,
+  "The persistent shell must use ordinary DOM motion instead of the unavailable React ViewTransition API.",
+);
+assert.match(
+  shellSource,
+  /pendingView[\s\S]*?setPendingView\(view\)[\s\S]*?key=\{activeView\}[\s\S]*?workspace-route-stage/,
+  "Sidebar navigation must report immediate pending intent while each committed view receives one lightweight entry stage.",
+);
+assert.match(
+  sidebarSource,
+  /pendingView === item\.id[\s\S]*?aria-busy=\{isPending \|\| undefined\}/,
+  "Only the target sidebar item must expose semantic navigation progress.",
+);
+assert.doesNotMatch(
+  sidebarSource,
+  /components\/ui\/spinner|<Spinner/,
+  "Sidebar navigation must stay visually stable instead of showing a loading icon.",
+);
+assert.match(
+  workspaceThemeSource,
+  /WorkspaceThemeProvider[\s\S]*?prefers-color-scheme: dark[\s\S]*?persistence\.enqueue/,
+  "The persistent lateral layout must own one theme surface and serialized persistence path.",
+);
 assert.doesNotMatch(
   shellSource,
   /import\("@\/components\/resume-builder"\)/,
@@ -297,7 +392,7 @@ assert.doesNotMatch(
 );
 assert.match(
   shellViewChangeSource,
-  /const intent = beginNavigation\(\);[\s\S]{0,100}if \(view === activeView\) \{[\s\S]{0,80}intent\.finish\(\)/,
+  /const intent = beginNavigation\(\);[\s\S]{0,420}if \(view === activeView\) \{[\s\S]{0,140}intent\.finish\(\)/,
   "Clicking the active sidebar entry must still supersede an older card or mutation intent.",
 );
 assert.doesNotMatch(
@@ -367,7 +462,6 @@ for (const detailRouteSource of [
 for (const routeSource of [
   resumeGalleryRouteSource,
   templateGalleryRouteSource,
-  trashRouteSource,
   preferencesRouteSource,
 ]) {
   assert.match(
@@ -386,6 +480,16 @@ for (const routeSource of [
     "Lateral routes must not retain the obsolete background-calibration path.",
   );
 }
+assert.match(
+  trashRouteSource,
+  /hasLoaded, setHasLoaded\] = useState\(Boolean\(preparedRouteData\)\)/,
+  "The prepared trash route must render its first-frame content without a loading reset.",
+);
+assert.match(
+  trashRouteSource,
+  /if \(preparedRouteData && retryKey === 0\)[\s\S]{0,700}return;[\s\S]{0,200}new AbortController\(\)/,
+  "A prepared trash handoff must return before the direct-URL loader creates transport.",
+);
 assert.match(
   preferencesRouteSource,
   /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*kind/,
@@ -418,7 +522,7 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /import\("@\/components\/workspace\/template-detail-workspace-page"\)/,
+  /loadTemplateDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentPreviewCard\(\)/,
   "Template preparation must preload the independent detail route entry.",
 );
 const openTemplateSource = templateGalleryRouteSource.slice(
@@ -509,6 +613,11 @@ assert.match(
   "Template detail must consume complete handoff state once and scrub it from history.",
 );
 assert.match(
+  templateDetailPageSource,
+  /useNavigationType\(\)[\s\S]{0,180}useLayoutEffect\([\s\S]{0,180}navigationType !== ["']PUSH["'][\s\S]{0,180}window\.scrollTo\([\s\S]{0,120}top:\s*0[\s\S]{0,180}getElementById\(["']main-content["']\)[\s\S]{0,60}\?\.focus\(\{\s*preventScroll:\s*true\s*\}\)/,
+  "Template detail PUSH entry must hand focus to main content without reacting to its history scrub.",
+);
+assert.match(
   templateDetailSaveSource,
   /activeRequestRef[\s\S]*submittedFingerprint[\s\S]*acceptedFingerprints[\s\S]*onAdoptSavedTemplateRef/,
   "Template detail must keep serialized saves and protect edits made during an active request.",
@@ -559,8 +668,32 @@ const openResumeSource = resumeGalleryRouteSource.slice(
   resumeGalleryRouteSource.indexOf("const createResume"),
 );
 assert.match(
+  resumeGalleryRouteSource,
+  /const preloadResumeDetail = useCallback\([\s\S]{0,300}preloadResumeDetailRoute\(\)/,
+  "Resume gallery intent must preload only the existing detail modules before navigation.",
+);
+assert.ok(
+  resumeGalleryPageSource.includes(
+    "onPreloadResumeDetail={gallery.preloadResumeDetail}",
+  ) &&
+    resumeGallerySource.includes("onPreloadResumeDetail") &&
+    resumeGalleryGridSource.includes("onPreloadResumeDetail") &&
+    resumeGalleryCardSource.includes("onPreloadDetail"),
+  "Resume detail preload intent must flow explicitly from the route owner to each card.",
+);
+assert.match(
+  resumeGalleryCardSource,
+  /aria-busy=\{isOpening \|\| undefined\}[\s\S]{0,900}onPointerEnter=\{preloadDetail\}[\s\S]{0,120}onFocus=\{preloadDetail\}[\s\S]{0,120}onPointerDown=\{preloadDetail\}/,
+  "Resume cards must preload on pointer, focus, and touch intent while reporting semantic pending navigation.",
+);
+assert.doesNotMatch(
+  resumeGalleryCardSource,
+  /components\/ui\/spinner|<Spinner/,
+  "Opening an existing resume must keep its card visually stable without a loading icon.",
+);
+assert.match(
   openResumeSource,
-  /prepareResumeDetailRoute\(resumeId, persistence, \{\s*signal: intent\.signal/,
+  /setOpeningResumeId\(resumeId\)[\s\S]*prepareResumeDetailRoute\(resumeId, persistence, \{\s*signal: intent\.signal[\s\S]*clearOpeningResume\(resumeId\)/,
   "Resume card navigation must freshly validate its target with the shared intent.",
 );
 assert.match(
@@ -588,23 +721,27 @@ const resumeDetailCommitSource = resumeGalleryRouteSource.slice(
 );
 assert.match(
   resumeDetailCommitSource,
-  /!intent\.isCurrent\(\)[\s\S]*intent\.finish\(\)[\s\S]{0,160}navigate\(/,
+  /!intent\.isCurrent\(\)[\s\S]*startTransition\([\s\S]{0,180}onCommit\?\.\(\)[\s\S]{0,120}setOpeningResumeId\(null\)[\s\S]{0,120}intent\.finish\(\)[\s\S]{0,160}navigate\(/,
   "Resume detail commits must be owned by the latest shared intent.",
 );
-for (const [start, end, label] of [
-  ["const createResume", "const importResume", "creation"],
-  ["const importResume", "const moveResumesToTrash", "import"],
-]) {
-  const mutationSource = resumeGalleryRouteSource.slice(
-    resumeGalleryRouteSource.indexOf(start),
-    resumeGalleryRouteSource.indexOf(end),
-  );
-  assert.match(
-    mutationSource,
-    /const intent = beginNavigation\(\)[\s\S]*setResumes\([\s\S]{0,300}!intent\.isCurrent\(\)[\s\S]*prepareCreatedResumeDetailRoute\([\s\S]{0,180}signal: intent\.signal[\s\S]*commitResumeDetailNavigation\(\s*intent/,
-    `Resume ${label} must keep its mutation result but never navigate after a newer intent.`,
-  );
-}
+const createResumeSource = resumeGalleryRouteSource.slice(
+  resumeGalleryRouteSource.indexOf("const createResume"),
+  resumeGalleryRouteSource.indexOf("const importResume"),
+);
+assert.match(
+  createResumeSource,
+  /prepareCreatedResumeDetailRoute\([\s\S]*publishCreatedResume[\s\S]*messages\.resumeCreatedOpenFailed[\s\S]*commitResumeDetailNavigation\(\s*intent,[\s\S]{0,220}publishCreatedResume/,
+  "Resume creation must publish only after preparation, publish on preparation failure, and batch success publication with navigation.",
+);
+const importResumeSource = resumeGalleryRouteSource.slice(
+  resumeGalleryRouteSource.indexOf("const importResume"),
+  resumeGalleryRouteSource.indexOf("const moveResumesToTrash"),
+);
+assert.match(
+  importResumeSource,
+  /const intent = beginNavigation\(\)[\s\S]*setResumes\([\s\S]{0,300}!intent\.isCurrent\(\)[\s\S]*prepareCreatedResumeDetailRoute\([\s\S]{0,180}signal: intent\.signal[\s\S]*commitResumeDetailNavigation\(\s*intent/,
+  "Resume import must keep its mutation result but never navigate after a newer intent.",
+);
 assert.doesNotMatch(
   resumeGalleryRouteSource,
   /detailNavigationIntentRef|detailNavigationAbortRef|new AbortController\(\)\.signal/,
@@ -622,7 +759,7 @@ assert.doesNotMatch(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /import\("@\/components\/workspace\/resume-detail-workspace-page"\)/,
+  /loadResumeDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentPreviewCard\(\)/,
   "Resume preparation must preload the independent resume-detail route entry.",
 );
 assert.doesNotMatch(
@@ -639,6 +776,11 @@ assert.match(
   resumeDetailPageSource,
   /useState\(routeState\)[\s\S]{0,600}navigate\([\s\S]{0,260}replace:\s*true, state:\s*null[\s\S]{0,500}routeState:\s*initialRouteState/,
   "Resume detail must consume the handoff from history without dropping the current mount's first-frame seed.",
+);
+assert.match(
+  resumeDetailPageSource,
+  /useNavigationType\(\)[\s\S]{0,180}useLayoutEffect\([\s\S]{0,180}navigationType !== ["']PUSH["'][\s\S]{0,180}window\.scrollTo\([\s\S]{0,120}top:\s*0[\s\S]{0,180}getElementById\(["']main-content["']\)[\s\S]{0,60}\?\.focus\(\{\s*preventScroll:\s*true\s*\}\)/,
+  "Resume detail PUSH entry must hand focus to main content without reacting to its history scrub.",
 );
 assert.match(
   resumeDetailRouteSource,
@@ -825,9 +967,18 @@ const compiledPersistence = ts.transpileModule(persistenceSource, {
   },
 }).outputText;
 const persistenceModule = { exports: {} };
+const cachedThemes = [];
 vm.runInNewContext(compiledPersistence, {
   exports: persistenceModule.exports,
   module: persistenceModule,
+  require(specifier) {
+    assert.equal(specifier, "@/lib/workspace-theme");
+    return {
+      saveWorkspaceThemePreference(theme) {
+        cachedThemes.push(theme);
+      },
+    };
+  },
 });
 
 const { createWorkspacePreferencesPersistence } = persistenceModule.exports;
@@ -854,6 +1005,7 @@ const firstGate = new Promise((resolve) => {
 });
 
 persistence.hydrate(base);
+assert.deepEqual(cachedThemes, ["light"]);
 persistence.enqueue(
   first,
   async () => {
@@ -873,10 +1025,16 @@ persistence.enqueue(
 
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.deepEqual(order, ["first:start"], "Preference writes must be serialized.");
+assert.deepEqual(
+  cachedThemes,
+  ["light"],
+  "The first-paint cache must not commit an in-flight preference.",
+);
 releaseFirst();
 await persistence.flush();
 assert.deepEqual(order, ["first:start", "first:end", "second"]);
 assert.deepEqual(persistence.getSnapshot(), second);
+assert.deepEqual(cachedThemes, ["light", "dark", "system"]);
 
 let staleRollbackCount = 0;
 const newest = {
@@ -898,6 +1056,11 @@ persistence.enqueue(newest, async () => {}, {
 await persistence.flush();
 assert.equal(staleRollbackCount, 0, "An older failure must not revert newer UI.");
 assert.deepEqual(persistence.getSnapshot(), newest);
+assert.deepEqual(
+  cachedThemes,
+  ["light", "dark", "system", "light"],
+  "Only committed preference writes may update the first-paint cache.",
+);
 
 let rollbackSnapshot = null;
 persistence.enqueue(
@@ -917,6 +1080,11 @@ assert.deepEqual(
   rollbackSnapshot,
   newest,
   "The latest failed mutation must roll back to the last committed snapshot.",
+);
+assert.deepEqual(
+  cachedThemes,
+  ["light", "dark", "system", "light"],
+  "A failed latest mutation must leave the committed first-paint theme intact.",
 );
 
 console.log("Workspace route ownership and preference persistence verified.");

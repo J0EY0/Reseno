@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 
 import {
   clearAuthSession,
@@ -12,7 +12,6 @@ import {
   isApiErrorCode,
   isApiErrorToastShown,
 } from "@/lib/api-client";
-import { runViewTransition } from "@/lib/view-transition";
 
 type AuthGateState =
   | { phase: "loading" }
@@ -87,10 +86,10 @@ export function useAuthGate({
     try {
       await loginWithCredentials(credentials.username, credentials.password);
 
-      runViewTransition(() => {
+      startTransition(() => {
         onAuthenticated();
         setAuthGate({ phase: "app" });
-      }, "nav-forward");
+      });
 
       return { ok: true as const };
     } catch (error) {
@@ -110,10 +109,10 @@ export function useAuthGate({
     try {
       await setupAuthOwner(credentials);
 
-      runViewTransition(() => {
+      startTransition(() => {
         onAuthenticated();
         setAuthGate({ phase: "app" });
-      }, "nav-forward");
+      });
 
       return { ok: true as const };
     } catch (error) {
@@ -131,10 +130,10 @@ export function useAuthGate({
 
   function logout() {
     clearAuthSession();
-    runViewTransition(() => {
+    startTransition(() => {
       onLoggedOut();
       setAuthGate({ phase: "login" });
-    }, "nav-back");
+    });
   }
 
   function retry() {

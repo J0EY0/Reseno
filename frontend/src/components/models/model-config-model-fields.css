@@ -1,0 +1,35 @@
+.model-output-settings-content {
+  overflow: clip;
+  overflow-anchor: none;
+}
+
+.model-output-settings-content[data-state='closed'] {
+  animation: model-output-settings-exit 180ms var(--ease-move) both;
+}
+
+.model-output-settings-content[data-state='open']
+  .model-output-settings-content-inner {
+  animation: model-output-settings-inner-enter 180ms var(--ease-move);
+}
+
+@keyframes model-output-settings-exit {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+
+  to {
+    height: 0;
+  }
+}
+
+@keyframes model-output-settings-inner-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

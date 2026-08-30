@@ -46,7 +46,7 @@ const resumeFontStyleLoaders: Record<
   serif: loadNotoSerifStyles,
 };
 
-function loadResumeFontStyles(fontFamily: ResumeFontFamily) {
+export function loadResumeFontStyles(fontFamily: ResumeFontFamily) {
   return resumeFontStyleLoaders[fontFamily]();
 }
 

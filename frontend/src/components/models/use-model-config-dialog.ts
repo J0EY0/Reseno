@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages, Locale } from "@/i18n";
@@ -77,6 +77,7 @@ export function useModelConfigDialog({
   const [errors, setErrors] = useState<ModelConfigErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const discoveryRequestIdRef = useRef(0);
   const selectedProvider = useMemo(
     () => providerById(providers, draft.provider),
     [draft.provider, providers],
@@ -234,6 +235,8 @@ export function useModelConfigDialog({
         return;
       }
 
+      discoveryRequestIdRef.current += 1;
+      setDiscovering(false);
       setDraft((current) => changeDraftProvider(current, provider));
       setDiscoveredModels([]);
       setModelOptionsLoaded(
@@ -292,6 +295,7 @@ export function useModelConfigDialog({
       return;
     }
 
+    const requestId = ++discoveryRequestIdRef.current;
     setDiscovering(true);
     setErrors((current) => {
       const next = { ...current };
@@ -308,8 +312,14 @@ export function useModelConfigDialog({
         configId: initialConfig?.id,
         refresh: true,
       });
+      if (requestId !== discoveryRequestIdRef.current) {
+        return;
+      }
       applyDiscoveredModels(response.models);
     } catch (error) {
+      if (requestId !== discoveryRequestIdRef.current) {
+        return;
+      }
       if (discoveredModels.length === 0) {
         setDraft((current) => ({
           ...current,
@@ -328,7 +338,9 @@ export function useModelConfigDialog({
             : messages.modelDiscoveryFailed,
       }));
     } finally {
-      setDiscovering(false);
+      if (requestId === discoveryRequestIdRef.current) {
+        setDiscovering(false);
+      }
     }
   }, [
     applyDiscoveredModels,

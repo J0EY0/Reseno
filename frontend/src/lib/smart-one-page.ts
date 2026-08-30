@@ -93,7 +93,7 @@ function createSettingsCandidate(
       settings.pagePaddingBottom,
       level.pagePaddingDelta,
     ),
-    sectionGap: compactNumber(settings.sectionGap, level.sectionGap, 0.8),
+    sectionGap: compactNumber(settings.sectionGap, level.sectionGap, 0.6),
     itemGap: compactNumber(settings.itemGap, level.itemGap, 0.4),
     bodyLineHeight: compactNumber(
       settings.bodyLineHeight,

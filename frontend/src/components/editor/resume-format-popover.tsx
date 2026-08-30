@@ -173,6 +173,7 @@ function FormatSliderField({
 }
 
 export function ResumeFormatPopover({
+  compact = false,
   t,
   template,
   templates,
@@ -184,6 +185,7 @@ export function ResumeFormatPopover({
   onTypographyChange,
   onTemplateSettingsChange,
 }: {
+  compact?: boolean;
   t: AppMessages;
   template: ResumeTemplateId;
   templates: ResumeTemplateDefinition[];
@@ -201,10 +203,17 @@ export function ResumeFormatPopover({
     <Popover>
       <PopoverTrigger
         type="button"
-        className={cn(buttonVariants({ variant: "outline" }))}
+        className={cn(
+          buttonVariants({
+            variant: "outline",
+            size: compact ? "icon" : "default",
+          }),
+        )}
+        aria-label={compact ? t.format : undefined}
+        title={compact ? t.format : undefined}
       >
         <SlidersHorizontal className="size-4" />
-        {t.format}
+        {compact ? null : t.format}
       </PopoverTrigger>
       <PopoverContent
         align="end"

@@ -57,3 +57,44 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Check frontend quality
         run: pnpm check:frontend
+
+  browser-smoke:
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.ref_name == github.event.repository.default_branch
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          version: "0.11.14"
+          working-directory: backend
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install locked backend dependencies
+        working-directory: backend
+        run: uv sync --locked --all-groups
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        working-directory: backend
+        run: uv run --locked playwright install --with-deps chromium
+      - name: Run browser smoke tests
+        working-directory: frontend
+        run: pnpm test:workspace-network:smoke

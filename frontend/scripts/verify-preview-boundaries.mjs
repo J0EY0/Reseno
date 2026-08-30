@@ -86,6 +86,7 @@ const [
   previewRichDiff,
   previewPages,
   previewBasicInfo,
+  previewContent,
   previewDiffBadge,
   previewSectionItems,
   previewSections,
@@ -95,7 +96,7 @@ const [
     readSource("components/resume-gallery-card.tsx"),
     readSource("components/templates/template-gallery.tsx"),
     readSource("components/templates/template-gallery-card.tsx"),
-    readSource("components/recycle-bin-item-row.tsx"),
+    readSource("components/recycle-bin-table.tsx"),
     readSource("components/preview/document-preview-card.tsx"),
     readSource("index.css"),
     readSource("components/pdf-export-renderer.tsx"),
@@ -104,6 +105,7 @@ const [
     readSource("components/preview/resume-preview-rich-diff.tsx"),
     readSource("components/preview/resume-preview-pages.tsx"),
     readSource("components/preview/resume-preview-basic-info.tsx"),
+    readSource("components/preview/resume-preview-content.tsx"),
     readSource("components/preview/resume-preview-diff-badge.tsx"),
     readSource("components/preview/resume-preview-section-items.tsx"),
     readSource("components/preview/resume-preview-sections.tsx"),
@@ -115,8 +117,12 @@ const thumbnailCallers = [
 ];
 
 assert(
-  !/resume-thumbnail/.test(resumeGallery) &&
-    !/resume-thumbnail/.test(templateGallery),
+  !/from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(
+    resumeGallery,
+  ) &&
+    !/from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(
+      templateGallery,
+    ),
   "Gallery route entries must leave thumbnail rendering inside memoized cards.",
 );
 assert(
@@ -143,6 +149,43 @@ assert(
     /from\s+["']@\/components\/preview\/resume-preview["']/.test(source),
   ),
   "Detail and PDF renderers must retain the paginated ResumePreview seam.",
+);
+assert(
+  !/layoutTransitionKey|PREVIEW_LAYOUT_MOTION|previewLayoutAnimationRef|previewScaleBoxRectRef|shouldAnimateNextLayoutRef|\.animate\(/.test(
+    documentPreview,
+  ),
+  "Preview resizing must not recreate a FLIP animation or a layout-transition prop.",
+);
+assert(
+  /showPreviewTitle\?: boolean/.test(documentPreview) &&
+    /props\.showPreviewTitle !== false/.test(documentPreview),
+  "Document preview callers must be able to omit the visual preview title without changing the document surface.",
+);
+assert(
+  /let animationFrameId:\s*number \| null = null/.test(documentPreview) &&
+    /const schedulePreviewScaleSync = \(\) => \{[\s\S]{0,300}if \(animationFrameId !== null\) \{\s*return;\s*\}[\s\S]{0,300}window\.requestAnimationFrame\(\(\) => \{[\s\S]{0,180}syncPreviewLayout\(\)/.test(
+      documentPreview,
+    ) &&
+    /animationFrameId\s*=\s*window\.requestAnimationFrame\(\(\) => \{\s*animationFrameId\s*=\s*null;\s*syncPreviewLayout\(\);\s*\}\)/.test(
+      documentPreview,
+    ) &&
+    /new ResizeObserver\(schedulePreviewScaleSync\)/.test(documentPreview) &&
+    /resizeObserver\.observe\(frameElement\)/.test(documentPreview) &&
+    (documentPreview.match(/requestAnimationFrame/g)?.length ?? 0) === 3 &&
+    /scaleBoxElement\.style\.width[\s\S]{0,180}scaleBoxElement\.style\.height[\s\S]{0,180}scaleContentElement\.style\.transform/.test(
+      documentPreview,
+    ) &&
+    !/syncPreviewScaleDuringLayoutTransition|remainingFrames\s*=\s*24/.test(
+      documentPreview,
+    ),
+  "Preview scaling must stay event-driven, coalesce to one rAF, and write DOM styles without React frame state.",
+);
+assert(
+  /className="mt-\[1\.25em\]"/.test(previewContent) &&
+    (previewSections.match(/showTitle \? "mt-\[0\.25em\]"/g)?.length ?? 0) === 2 &&
+    (previewSections.match(/leading-\[1\.2\]/g)?.length ?? 0) === 5 &&
+    /resume-item relative grid gap-\[0\.375em\]/.test(previewSectionItems),
+  "Shared resume structure spacing must use the compact font-relative defaults.",
 );
 
 const diffBaseRule = readCssRule(indexCss, ".resume-diff");
@@ -254,6 +297,11 @@ assert(
   /enableContactLinks=\{false\}/.test(resumeThumbnail ?? "") &&
     !/onMoveTemplateImage|editableTemplateImages/.test(resumeThumbnail ?? ""),
   "ResumeThumbnail must remain non-interactive inside linked gallery cards.",
+);
+assert(
+  /onMoveTemplateImage\?:/.test(documentPreview) &&
+    /Boolean\(props\.onMoveTemplateImage\)/.test(documentPreview),
+  "Template previews must become editable only when an image-move command is provided.",
 );
 
 const previewEntries = await readdir(previewRoot, { withFileTypes: true });

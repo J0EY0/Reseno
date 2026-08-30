@@ -157,7 +157,7 @@ export function useResumeDetailCommands({
               session.setTemplateSettings(result.previous.templateSettings);
             },
           },
-          duration: 2_600,
+          duration: 6_000,
         });
       } else {
         toast.info(messages.smartOnePageNoChange, { duration: 1_800 });
@@ -195,8 +195,6 @@ export function useResumeDetailCommands({
           onClick: () => navigateToResume(detail),
         },
         classNames: {
-          actionButton:
-            "h-8! rounded-md! border! border-current/20! bg-transparent! px-2.5! text-current! shadow-none! transition-colors! duration-200! hover:border-current/35! hover:bg-current/10! focus-visible:ring-2! focus-visible:ring-current! focus-visible:ring-offset-1!",
           content: "min-w-0! flex-1!",
           description: "truncate! opacity-75!",
         },

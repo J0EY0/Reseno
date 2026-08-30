@@ -3,14 +3,13 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import {
   EmptyTrashState,
   RecycleBinThumbnail,
-  TrashItemRow,
-  TrashSelectionToolbar,
-} from "@/components/recycle-bin-item-row";
+  RecycleBinTable,
+  type RecycleBinTableItem,
+} from "@/components/recycle-bin-table";
 import { formatTrashTimestamp } from "@/components/recycle-bin-format";
 import { TabsContent } from "@/components/ui/tabs";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import type { AppMessages, Locale } from "@/i18n";
-import { getTemplateById } from "@/lib/templates";
+import { createTemplateSettings, getTemplateById } from "@/lib/templates";
 import type {
   DeletedResumeTemplateDefinition,
   ResumeTemplateDefinition,
@@ -31,78 +30,72 @@ export function DeletedResumeTrashList({
 }) {
   const items = controller.resumes.items;
   const previewTemplates = [...templates, ...deletedTemplates];
+  const tableItems: RecycleBinTableItem[] = items.map((item) => {
+    const title = item.title || item.resume.basic.name || t.untitledResume;
+    const baseTemplate = getTemplateById(previewTemplates, item.template);
+    const template: ResumeTemplateDefinition = {
+      ...baseTemplate,
+      settings: createTemplateSettings(baseTemplate.preset, {
+        ...baseTemplate.settings,
+        ...(item.templateSettings ?? {}),
+      }),
+    };
+
+    return {
+      id: item.id,
+      thumbnail: (
+        <RecycleBinThumbnail
+          t={t}
+          resume={item.resume}
+          template={template}
+          fontFamily={item.typography.fontFamily}
+          fontSize={item.typography.fontSize}
+        />
+      ),
+      title,
+      subtitle:
+        item.resume.basic.headline ||
+        item.resume.basic.email ||
+        item.resume.basic.phone,
+      deletedAtText: formatTrashTimestamp(locale, item.deletedAt),
+      isRestoring:
+        controller.runningActionKey === `resume-restore:${item.id}`,
+      previewTarget: {
+        variant: "resume",
+        title,
+        resume: item.resume,
+        template,
+        typography: item.typography,
+      },
+    };
+  });
 
   return (
     <TabsContent value="resumes" className="mt-0">
-      <div className="overflow-hidden">
+      <div
+        data-slot="trash-list-content"
+        className="min-h-[390px] overflow-hidden"
+      >
         {items.length > 0 ? (
           <>
-            <TrashSelectionToolbar
-              selectionId="select-all-deleted-resumes"
+            <RecycleBinTable
+              items={tableItems}
+              selectedIds={controller.resumes.selectedPageIds}
+              itemLabel={t.resumeRecycleBin}
+              deletedAtLabel={t.recycleBinDeletedAtLabel}
               selectAllLabel={t.selectAll}
-              restoreLabel={t.restoreSelected}
-              deleteLabel={t.deleteSelectedForever}
-              selectedCount={controller.resumes.selectedPageIds.length}
-              itemCount={items.length}
-              onSelectAll={controller.resumes.selectAll}
-              onRestore={controller.resumes.restoreSelected}
-              onDelete={controller.resumes.deleteSelected}
-              isRestoring={
-                controller.runningActionKey === "resume-restore-selected"
-              }
+              selectLabel={t.selectItems}
+              previewLabel={t.preview}
+              restoreLabel={t.restore}
+              deleteLabel={t.deleteForever}
+              actionsLabel={t.actions}
+              emptyMessage={t.emptyResumeTrash}
               disabled={controller.isBusy}
+              onPreview={controller.preview.show}
+              onSelectionChange={controller.resumes.setSelectedIds}
+              onRestore={controller.resumes.restoreOne}
+              onDelete={controller.resumes.deleteOne}
             />
-
-            {items.map((item) => {
-              const title =
-                item.title || item.resume.basic.name || t.untitledResume;
-              const template = getTemplateById(
-                previewTemplates,
-                item.template,
-              );
-
-              return (
-                <ViewTransitionBoundary
-                  key={item.id}
-                  enter="fade-in"
-                  exit="fade-out"
-                  default="none"
-                >
-                  <TrashItemRow
-                    thumbnail={
-                      <RecycleBinThumbnail
-                        t={t}
-                        resume={item.resume}
-                        template={template}
-                        fontFamily={item.typography.fontFamily}
-                        fontSize={item.typography.fontSize}
-                      />
-                    }
-                    title={title}
-                    subtitle={
-                      item.resume.basic.headline ||
-                      item.resume.basic.email ||
-                      item.resume.basic.phone
-                    }
-                    deletedAtText={`${t.recycleBinDeletedAtPrefix} ${formatTrashTimestamp(locale, item.deletedAt)}`}
-                    restoreLabel={t.restore}
-                    deleteLabel={t.deleteForever}
-                    isRestoring={
-                      controller.runningActionKey ===
-                      `resume-restore:${item.id}`
-                    }
-                    disabled={controller.isBusy}
-                    selected={controller.resumes.selectedIdSet.has(item.id)}
-                    selectLabel={t.selectItems}
-                    onSelectedChange={(selected) =>
-                      controller.resumes.toggleSelected(item.id, selected)
-                    }
-                    onRestore={() => controller.resumes.restoreOne(item.id)}
-                    onDelete={() => controller.resumes.deleteOne(item.id)}
-                  />
-                </ViewTransitionBoundary>
-              );
-            })}
             <GalleryPagination
               currentPage={controller.currentPage}
               totalPages={controller.resumes.totalPages}

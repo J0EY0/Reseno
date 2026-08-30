@@ -8,10 +8,9 @@ import {
 } from "react";
 
 import { AppToaster } from "@/components/app-toaster";
+import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
 import { TemplateEditor } from "@/components/templates/template-editor";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { ViewTransitionBoundary } from "@/components/view-transition";
-import { TemplateDetailLeaveDialog } from "@/components/workspace/template-detail-leave-dialog";
 import { TemplateDetailWorkspaceHeader } from "@/components/workspace/template-detail-workspace-header";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import {
@@ -21,9 +20,10 @@ import {
 import type { TemplateDetailWorkspaceController } from "@/components/workspace/use-template-detail-workspace";
 import type { AppMessages, Locale } from "@/i18n";
 
-const DocumentPreviewCard = lazy(() =>
-  import("@/components/preview/document-preview-card").then((module) => ({
-    default: module.DocumentPreviewCard,
+const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
+const TemplateDetailLeaveDialog = lazy(() =>
+  import("@/components/workspace/template-detail-leave-dialog").then((module) => ({
+    default: module.TemplateDetailLeaveDialog,
   })),
 );
 
@@ -37,7 +37,7 @@ function TemplateDetailContent({
   const template = controller.template;
 
   return (
-    <div className="template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[460px_minmax(0,1fr)]">
+    <div className="workspace-document-enter template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[460px_minmax(0,1fr)]">
       <section className="resume-editor-panel resume-template-editor-panel flex flex-col gap-4 print:hidden">
         {controller.hasLoaded && template ? (
           <TemplateEditor
@@ -56,7 +56,12 @@ function TemplateDetailContent({
             onUpdateTemplate={controller.updateTemplate}
           />
         ) : (
-          <WorkspacePanelSkeleton />
+          <div
+            data-slot="template-editor-skeleton"
+            className="min-h-[520px] rounded-(--radius-workspace) border border-border/80 bg-card p-4 shadow-none"
+          >
+            <WorkspacePanelSkeleton />
+          </div>
         )}
       </section>
 
@@ -64,7 +69,6 @@ function TemplateDetailContent({
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
           <DocumentPreviewCard
             variant="template"
-            id={template.id}
             t={messages}
             resume={controller.templatePreviewResume}
             template={template}
@@ -126,15 +130,17 @@ export function TemplateDetailWorkspaceView({
         {messages.skipToContent}
       </a>
       <AppToaster theme={controller.theme} position="bottom-right" />
-      <TemplateDetailLeaveDialog
-        changeCount={controller.saveChangeCount}
-        isOpen={controller.leave.isOpen}
-        isResolving={controller.leave.isResolving}
-        messages={messages}
-        onCancel={controller.leave.cancelLeave}
-        onDiscard={controller.leave.discardAndLeave}
-        onSave={controller.leave.saveAndLeave}
-      />
+      <Suspense fallback={null}>
+        <TemplateDetailLeaveDialog
+          changeCount={controller.saveChangeCount}
+          isOpen={controller.leave.isOpen}
+          isResolving={controller.leave.isResolving}
+          messages={messages}
+          onCancel={controller.leave.cancelLeave}
+          onDiscard={controller.leave.discardAndLeave}
+          onSave={controller.leave.saveAndLeave}
+        />
+      </Suspense>
       <SidebarInset
         id="main-content"
         tabIndex={-1}
@@ -161,36 +167,17 @@ export function TemplateDetailWorkspaceView({
           template={controller.template}
         />
 
-        <ViewTransitionBoundary
-          default="none"
-          enter={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          exit={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          update={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-        >
-          {controller.hasLoadError ? (
-            <WorkspaceRouteError
-              messages={messages}
-              onRetry={controller.retryLoad}
-            />
-          ) : (
-            <TemplateDetailContent
-              controller={controller}
-              messages={messages}
-            />
-          )}
-        </ViewTransitionBoundary>
+        {controller.hasLoadError ? (
+          <WorkspaceRouteError
+            messages={messages}
+            onRetry={controller.retryLoad}
+          />
+        ) : (
+          <TemplateDetailContent
+            controller={controller}
+            messages={messages}
+          />
+        )}
       </SidebarInset>
     </SidebarProvider>
   );

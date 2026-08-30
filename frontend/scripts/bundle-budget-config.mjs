@@ -39,7 +39,7 @@ export const routeBudgets = [
   {
     name: 'shell',
     roots: ['index.html'],
-    maxGzipBytes: 127 * KIB,
+    maxGzipBytes: 128 * KIB,
   },
   {
     name: 'resume detail',
@@ -49,28 +49,30 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 245 * KIB,
+    maxGzipBytes: 231 * KIB,
   },
   {
     name: 'resume gallery',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/resume-gallery-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 205 * KIB,
+    maxGzipBytes: 212 * KIB,
   },
   {
     name: 'template gallery',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/template-gallery-workspace-page.tsx',
     ],
     forbiddenStaticEntries: [
       'src/components/resume-builder.tsx',
       'src/components/templates/template-editor.tsx',
     ],
-    maxGzipBytes: 205 * KIB,
+    maxGzipBytes: 212 * KIB,
   },
   {
     name: 'template detail',
@@ -80,36 +82,41 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 221 * KIB,
+    // Keep both workspace and preview skeletons in the lazy route so loading
+    // preserves the final surface hierarchy without a second visual jump.
+    maxGzipBytes: 222 * KIB,
   },
   {
     name: 'trash',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/trash-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 205 * KIB,
+    maxGzipBytes: 233 * KIB,
   },
   {
     name: 'models',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/models-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // The final dialog ships with the already-lazy route so first open never
     // swaps a nested lazy Spinner surface for the form.
-    maxGzipBytes: 235 * KIB,
+    maxGzipBytes: 250 * KIB,
   },
   {
     name: 'settings',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/settings-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 224 * KIB,
+    maxGzipBytes: 222 * KIB,
   },
   {
     name: 'Agent',
@@ -120,6 +127,6 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 313 * KIB,
+    maxGzipBytes: 295 * KIB,
   },
 ]

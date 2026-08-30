@@ -1,12 +1,6 @@
 import type { ReactNode } from "react";
 
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+import { Card } from "@/components/ui/card";
 import {
   ToggleGroup,
   ToggleGroupItem,
@@ -27,7 +21,7 @@ export function SettingsRow({
     <div
       role="group"
       aria-label={label}
-      className="grid min-h-20 gap-4 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center sm:gap-6 sm:px-6"
+      className="grid min-h-20 gap-4 px-5 py-4 sm:min-h-16 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center sm:gap-6 sm:px-6 sm:py-3"
     >
       <div className="flex min-w-0 items-start gap-3">
         <span
@@ -51,34 +45,19 @@ export function SettingsRow({
 }
 
 export function SettingsSection({
-  icon,
   title,
   children,
 }: {
-  icon: ReactNode;
   title: string;
   children: ReactNode;
 }) {
   return (
-    <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-xs">
-      <CardHeader className="px-5 py-4 sm:px-6 sm:py-5">
-        <CardTitle
-          role="heading"
-          aria-level={2}
-          className="flex items-center gap-2.5 text-base"
-        >
-          <span
-            className="flex size-7 items-center justify-center text-muted-foreground [&_svg]:size-[18px]"
-            aria-hidden="true"
-          >
-            {icon}
-          </span>
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <Separator />
-      <CardContent className="p-0">{children}</CardContent>
-    </Card>
+    <section className="grid gap-3">
+      <h2 className="px-1 text-base font-semibold text-foreground">{title}</h2>
+      <Card className="gap-0 overflow-hidden py-0">
+        {children}
+      </Card>
+    </section>
   );
 }
 
@@ -109,7 +88,7 @@ export function OptionToggleGroup<T extends string>({
           key={item.value}
           value={item.value}
           aria-label={item.label}
-          className="min-w-0 flex-auto shrink px-2 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+          className="min-w-0 flex-auto shrink px-2 text-muted-foreground transition-colors duration-150"
         >
           {item.icon}
           <span className="min-w-0 truncate">{item.label}</span>

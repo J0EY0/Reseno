@@ -1,9 +1,10 @@
-import { FileUp, PlusSquare } from "lucide-react";
+import { CopyPlus, FileUp } from "lucide-react";
 import { useRef, type ChangeEvent } from "react";
 
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
 import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
+import { useResumeThumbnailFonts } from "@/components/preview/resume-thumbnail-fonts";
 import { ResumeGalleryGrid } from "@/components/resume-gallery-grid";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
@@ -23,6 +24,8 @@ export function ResumeGallery({
   templates,
   isImporting,
   isCreating,
+  openingResumeId,
+  onPreloadResumeDetail,
   onOpenResume,
   onCreateResume,
   onImportResume,
@@ -35,6 +38,8 @@ export function ResumeGallery({
   templates: ResumeTemplateDefinition[];
   isImporting: boolean;
   isCreating: boolean;
+  openingResumeId: string | null;
+  onPreloadResumeDetail: () => void;
   onOpenResume: (resumeId: string) => void;
   onCreateResume: () => void;
   onImportResume: (file: File) => void;
@@ -50,6 +55,9 @@ export function ResumeGallery({
     onDeleteResume,
     onBulkDeleteResumes,
   });
+  useResumeThumbnailFonts(
+    gallery.paginatedResumes.map((item) => item.typography.fontFamily),
+  );
 
   function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -118,14 +126,15 @@ export function ResumeGallery({
             <Button
               type="button"
               disabled={isImporting || isCreating}
+              aria-busy={isCreating || undefined}
               onClick={onCreateResume}
             >
               {isCreating ? (
-                <Spinner data-icon="inline-start" aria-label={t.newResume} />
+                <Spinner data-icon="inline-start" aria-label={t.creating} />
               ) : (
-                <PlusSquare data-icon="inline-start" />
+                <CopyPlus data-icon="inline-start" />
               )}
-              {t.newResume}
+              {isCreating ? t.creating : t.newResume}
             </Button>
           </>
         }
@@ -139,7 +148,8 @@ export function ResumeGallery({
       ) : null}
       <div
         ref={gridRef}
-        className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
+        data-slot="gallery-grid"
+        className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(208px,228px))] justify-center gap-4"
       >
         <ResumeGalleryGrid
           t={t}
@@ -148,7 +158,9 @@ export function ResumeGallery({
           isSelecting={gallery.isSelecting}
           selectedIdSet={gallery.selectedIdSet}
           selectedCount={gallery.selectedResumeIds.length}
+          openingResumeId={openingResumeId}
           updatedAtFormatter={gallery.updatedAtFormatter}
+          onPreloadResumeDetail={onPreloadResumeDetail}
           onOpenResume={onOpenResume}
           onRequestDelete={gallery.requestDelete}
           onToggleSelected={gallery.toggleSelected}

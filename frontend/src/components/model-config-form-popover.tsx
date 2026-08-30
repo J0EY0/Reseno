@@ -1,5 +1,11 @@
-import { Plus } from "lucide-react";
-import { isValidElement, useState, type ReactNode } from "react";
+import { CopyPlus } from "lucide-react";
+import {
+  isValidElement,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { ModelConfigDialog } from "@/components/models/model-config-dialog";
 import { Button } from "@/components/ui/button";
@@ -11,24 +17,52 @@ export function ModelConfigFormPopover({
   t,
   locale,
   mode,
+  defaultOpen = false,
   initialConfig,
   trigger,
+  restoreFocus,
   onSubmit,
 }: {
   t: AppMessages;
   locale: Locale;
   mode: "create" | "edit";
+  defaultOpen?: boolean;
   initialConfig?: ModelConfig;
-  trigger?: ReactNode;
+  trigger?: ReactNode | null;
+  restoreFocus?: () => void;
   onSubmit: (value: ModelConfig) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const triggerElement = !trigger ? (
+  const [open, setOpen] = useState(defaultOpen);
+  const nextDialogSessionRef = useRef(defaultOpen ? 1 : 0);
+  const [dialogSession, setDialogSession] = useState<number | null>(
+    defaultOpen ? 1 : null,
+  );
+
+  useEffect(() => {
+    if (open || dialogSession === null) {
+      return;
+    }
+
+    const fallbackTimer = window.setTimeout(() => {
+      setDialogSession(null);
+    }, 250);
+    return () => window.clearTimeout(fallbackTimer);
+  }, [dialogSession, open]);
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen && !open) {
+      nextDialogSessionRef.current += 1;
+      setDialogSession(nextDialogSessionRef.current);
+    }
+    setOpen(nextOpen);
+  }
+
+  const triggerElement = trigger === undefined ? (
     <Button type="button">
-      <Plus data-icon="inline-start" />
+      <CopyPlus data-icon="inline-start" />
       {t.addModelConfig}
     </Button>
-  ) : isValidElement(trigger) ? (
+  ) : trigger === null ? null : isValidElement(trigger) ? (
     trigger
   ) : (
     <Button type="button" variant="outline">
@@ -37,19 +71,24 @@ export function ModelConfigFormPopover({
   );
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        {/* Radix must clone the concrete trigger so its behavior reaches the button. */}
-        {triggerElement}
-      </DialogTrigger>
-      {open ? (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      {triggerElement ? (
+        <DialogTrigger asChild>
+          {/* Radix must clone the concrete trigger so its behavior reaches the button. */}
+          {triggerElement}
+        </DialogTrigger>
+      ) : null}
+      {dialogSession !== null ? (
         <ModelConfigDialog
+          key={dialogSession}
           initialConfig={initialConfig}
           locale={locale}
           messages={t}
           mode={mode}
-          onClose={() => setOpen(false)}
+          onClose={() => handleOpenChange(false)}
+          onExited={() => setDialogSession(null)}
           onSaved={onSubmit}
+          restoreFocus={restoreFocus}
         />
       ) : null}
     </Dialog>

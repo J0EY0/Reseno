@@ -4,6 +4,7 @@ import type {
   DeletedResumeWorkspaceItem,
   ResumeData,
   ResumeTemplateDefinition,
+  ResumeTypographySettings,
 } from "@/types/resume";
 
 export interface RecycleBinPanelProps {
@@ -20,6 +21,21 @@ export interface RecycleBinPanelProps {
 }
 
 export type RecycleBinTab = "resumes" | "templates";
+
+export type RecycleBinPreviewTarget =
+  | {
+      variant: "resume";
+      title: string;
+      resume: ResumeData;
+      template: ResumeTemplateDefinition;
+      typography: ResumeTypographySettings;
+    }
+  | {
+      variant: "template";
+      title: string;
+      resume: ResumeData;
+      template: ResumeTemplateDefinition;
+    };
 
 export type PendingTrashAction =
   | { type: "resume-item"; ids: string[] }

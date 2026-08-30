@@ -9,6 +9,10 @@ import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { normalizeModelConfigs } from "@/lib/model-config";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
+  normalizeWorkspaceTheme,
+  useWorkspaceTheme,
+} from "@/components/workspace/workspace-theme-context";
+import {
   type WorkspacePreferencesPersistence,
   type WorkspacePreferencesSnapshot,
 } from "@/lib/workspace-preferences-persistence";
@@ -20,14 +24,9 @@ import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import type {
   AgentSettings,
   ModelConfig,
-  ThemeMode,
 } from "@/types/resume";
 
 type PreferencesRouteKind = "models" | "settings";
-
-function normalizeWorkspaceTheme(value: unknown): ThemeMode {
-  return value === "dark" || value === "system" ? value : "light";
-}
 
 export function useWorkspacePreferencesRoute({
   kind,
@@ -43,6 +42,11 @@ export function useWorkspacePreferencesRoute({
   persistence: WorkspacePreferencesPersistence;
 }) {
   const preparedRouteData = useWorkspaceLateralRouteData(kind);
+  const {
+    changeTheme: changeWorkspaceTheme,
+    hydrateTheme,
+    theme,
+  } = useWorkspaceTheme();
   const initialLocaleRef = useRef(locale);
   const [initialPreferences] = useState(() => persistence.getSnapshot());
   const [initialModelConfigs] = useState(() =>
@@ -53,15 +57,6 @@ export function useWorkspacePreferencesRoute({
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
   const [isLoading, setIsLoading] = useState(!preparedRouteData);
-  const [theme, setTheme] = useState<ThemeMode>(
-    () =>
-      preparedRouteData
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : initialPreferences?.theme ?? "light",
-  );
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(
-    "light",
-  );
   const [modelConfigs, setModelConfigs] =
     useState<ModelConfig[]>(initialModelConfigs);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
@@ -77,33 +72,6 @@ export function useWorkspacePreferencesRoute({
     () => ({ agentSettings, modelConfigs, theme }),
     [agentSettings, modelConfigs, theme],
   );
-  useEffect(() => {
-    const root = document.documentElement;
-    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-
-    function applyTheme() {
-      const nextTheme =
-        theme === "system"
-          ? mediaQuery?.matches
-            ? "dark"
-            : "light"
-          : theme;
-
-      root.classList.toggle("dark", nextTheme === "dark");
-      root.style.colorScheme = nextTheme;
-      setResolvedTheme(nextTheme);
-    }
-
-    applyTheme();
-
-    if (theme !== "system" || !mediaQuery) {
-      return;
-    }
-
-    mediaQuery.addEventListener("change", applyTheme);
-    return () => mediaQuery.removeEventListener("change", applyTheme);
-  }, [theme]);
-
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
@@ -141,7 +109,7 @@ export function useWorkspacePreferencesRoute({
           agentSettings: nextAgentSettings,
         };
 
-        setTheme(nextTheme);
+        hydrateTheme(nextTheme);
         setModelConfigs(nextModelConfigs);
         setAgentSettings(nextAgentSettings);
         persistence.hydrate(snapshot);
@@ -176,7 +144,7 @@ export function useWorkspacePreferencesRoute({
         }
       }
     },
-    [kind, persistence],
+    [hydrateTheme, kind, persistence],
   );
 
   useEffect(() => {
@@ -185,9 +153,11 @@ export function useWorkspacePreferencesRoute({
         preparedRouteData,
         initialLocaleRef.current,
       );
+      const nextTheme = normalizeWorkspaceTheme(preparedRouteData.theme);
+      hydrateTheme(nextTheme);
       persistence.hydrate({
         locale: initialLocaleRef.current,
-        theme: normalizeWorkspaceTheme(preparedRouteData.theme),
+        theme: nextTheme,
         agentSettings: normalizeAgentSettings(
           preparedRouteData.agentSettings,
           preparedModelConfigs,
@@ -207,7 +177,7 @@ export function useWorkspacePreferencesRoute({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
+  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
 
   const persistSnapshot = useCallback(
     (
@@ -228,7 +198,7 @@ export function useWorkspacePreferencesRoute({
         {
           onRollback(persisted) {
             onLocaleChange(persisted.locale);
-            setTheme(persisted.theme);
+            hydrateTheme(persisted.theme);
             setAgentSettings(
               normalizeAgentSettings(
                 persisted.agentSettings,
@@ -247,6 +217,7 @@ export function useWorkspacePreferencesRoute({
     },
     [
       hasLoaded,
+      hydrateTheme,
       isLoading,
       messages.loadError,
       modelConfigs,
@@ -268,15 +239,10 @@ export function useWorkspacePreferencesRoute({
   );
 
   const changeTheme = useCallback(
-    (nextTheme: ThemeMode) => {
-      setTheme(nextTheme);
-      persistSnapshot({
-        locale,
-        theme: nextTheme,
-        agentSettings,
-      });
+    (nextTheme: "light" | "dark" | "system") => {
+      changeWorkspaceTheme(nextTheme, agentSettings);
     },
-    [agentSettings, locale, persistSnapshot],
+    [agentSettings, changeWorkspaceTheme],
   );
 
   const changeAgentSettings = useCallback(
@@ -330,7 +296,6 @@ export function useWorkspacePreferencesRoute({
     hasLoadError,
     isLoading,
     modelConfigs,
-    resolvedTheme,
     retryLoad: () => setRetryKey((current) => current + 1),
     routeData,
     theme,

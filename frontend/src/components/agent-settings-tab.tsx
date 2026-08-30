@@ -1,4 +1,4 @@
-import { Bot, Gauge, Languages, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { Bot, Gauge, Languages, ShieldCheck } from "lucide-react";
 
 import { ModelProviderIcon } from "@/components/model-provider-icon";
 import {
@@ -86,8 +86,8 @@ export function AgentSettingsTab({
     ) ?? null;
 
   return (
-    <TabsContent value="agent" className="mt-5 space-y-5">
-      <SettingsSection icon={<Bot />} title={t.agentModelSettingsTitle}>
+    <TabsContent value="agent" className="mt-5 flex flex-col gap-6">
+      <SettingsSection title={t.agentModelSettingsTitle}>
         <SettingsRow
           icon={<Bot />}
           label={t.defaultAgentModel}
@@ -105,7 +105,7 @@ export function AgentSettingsTab({
           >
             <SelectTrigger
               aria-label={t.defaultAgentModel}
-              className="ml-auto w-64 max-w-full"
+              className="ml-auto w-full sm:max-w-64"
             >
               <SelectValue placeholder={t.agentModelNotConfigured}>
                 {selectedDefaultModel ? (
@@ -118,7 +118,11 @@ export function AgentSettingsTab({
                 )}
               </SelectValue>
             </SelectTrigger>
-            <SelectContent className="min-w-[20rem]">
+            <SelectContent
+              align="end"
+              position="popper"
+              sideOffset={4}
+            >
               <SelectGroup>
                 {agentModelConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>
@@ -134,10 +138,7 @@ export function AgentSettingsTab({
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection
-        icon={<SlidersHorizontal />}
-        title={t.agentInteractionSettingsTitle}
-      >
+      <SettingsSection title={t.agentInteractionSettingsTitle}>
         <SettingsRow
           icon={<Languages />}
           label={t.agentResponseLanguage}
@@ -156,11 +157,11 @@ export function AgentSettingsTab({
           >
             <SelectTrigger
               aria-label={t.agentResponseLanguage}
-              className="ml-auto w-48 max-w-full"
+              className="ml-auto w-40"
             >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent align="end">
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectGroup>
                 {responseLanguageItems.map((item) => (
                   <SelectItem key={item.value} value={item.value}>

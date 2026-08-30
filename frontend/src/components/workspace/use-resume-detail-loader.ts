@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import { getMessagesSync, type Locale } from "@/i18n";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
 import { loadResumeDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
@@ -56,7 +57,7 @@ export function useResumeDetailLoader({
       setHasLoadError(false);
       onLoadErrorChangeRef.current(false);
       toast.dismiss("workspace-load-error");
-      void import("@/components/preview/document-preview-card");
+      void loadDocumentPreviewCard();
 
       try {
         const prepared = await loadResumeDetailRouteData(

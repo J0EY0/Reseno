@@ -25,6 +25,7 @@ try {
   const workspaceRoute = await server.ssrLoadModule(
     "/src/lib/workspace-route.ts",
   );
+  const templates = await server.ssrLoadModule("/src/lib/templates.ts");
   const resumeTitle = await server.ssrLoadModule("/src/lib/resume-title.ts");
 
   const persistedResume = {
@@ -113,6 +114,22 @@ try {
   assert.deepEqual(fittedResult.previous, currentStyle);
   assert.equal(fittedStyles.length, 1);
 
+  const compactGapStyles = [];
+  const compactGapMeasurements = [2, 1];
+  await smartOnePage.fitResumeToOnePage(
+    currentStyle,
+    { ...settings, sectionGap: 0.6 },
+    {
+      applyStyle: (style) => compactGapStyles.push(style),
+      measurePageCount: async () => compactGapMeasurements.shift() ?? 1,
+    },
+  );
+  assert.equal(
+    compactGapStyles[0]?.templateSettings.sectionGap,
+    0.6,
+    "Smart One Page must not enlarge an already compact section gap.",
+  );
+
   const exhaustedStyles = [];
   const exhaustedResult = await smartOnePage.fitResumeToOnePage(
     currentStyle,
@@ -155,6 +172,31 @@ try {
     50,
   );
   assert.equal(resumeTitle.normalizeResumeTitle("   ", "Fallback"), "Fallback");
+
+  const expectedBuiltinSectionGaps = {
+    minimal: 0.7,
+    modern: 0.6,
+    compact: 0.7,
+    classic: 0.8,
+    executive: 0.7,
+    academic: 0.8,
+  };
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.keys(expectedBuiltinSectionGaps).map((templateId) => [
+        templateId,
+        templates.createTemplateSettings(templateId).sectionGap,
+      ]),
+    ),
+    expectedBuiltinSectionGaps,
+    "Built-in templates must keep their compact default section rhythm.",
+  );
+  assert.equal(
+    templates.createTemplateSettings("minimal", { sectionGap: 0.6 })
+      .sectionGap,
+    0.6,
+    "The compact section-gap lower bound must remain available.",
+  );
 
   const resumeDetailRouteSource = await readFile(
     new URL(
@@ -215,6 +257,13 @@ try {
   const documentPreviewSource = await readFile(
     new URL(
       "src/components/preview/document-preview-card.tsx",
+      frontendRoot,
+    ),
+    "utf8",
+  );
+  const documentPreviewLoaderSource = await readFile(
+    new URL(
+      "src/components/preview/document-preview-card-loader.ts",
       frontendRoot,
     ),
     "utf8",
@@ -288,16 +337,18 @@ try {
     !/from\s+["']@\/components\/preview\/resume-preview["']/.test(
       resumeDetailViewSource,
     ) &&
+      /lazy\(loadDocumentPreviewCard\)/.test(resumeDetailViewSource) &&
+      /lazy\(loadDocumentPreviewCard\)/.test(templateDetailViewSource) &&
       /import\(["']@\/components\/preview\/document-preview-card["']\)/.test(
-        resumeDetailViewSource,
+        documentPreviewLoaderSource,
       ),
     "Document preview rendering must remain behind its detail-route chunk.",
   );
   assert.ok(
-    /void import\("@\/components\/preview\/document-preview-card"\)/.test(
+    /void loadDocumentPreviewCard\(\)/.test(
       resumeDetailLoaderSource,
     ) &&
-      /void import\("@\/components\/preview\/document-preview-card"\)/.test(
+      /void loadDocumentPreviewCard\(\)/.test(
         templateDetailRouteSource,
       ),
     "Each direct detail route must preload the preview chunk while route data loads.",
@@ -306,11 +357,24 @@ try {
     /useImperativeHandle\(/.test(documentPreviewSource) &&
       /measurePageCount:\s*\(\)\s*=>/.test(documentPreviewSource) &&
       /remainingFrames = 8/.test(documentPreviewSource) &&
-      /remainingFrames = 24/.test(documentPreviewSource) &&
+      !/remainingFrames = 24/.test(documentPreviewSource) &&
+      /new ResizeObserver\(schedulePreviewScaleSync\)/.test(
+        documentPreviewSource,
+      ) &&
+      !/scaleBoxElement\.animate\(|layoutTransitionKey|PREVIEW_LAYOUT_MOTION|shouldAnimateNextLayoutRef/.test(
+        documentPreviewSource,
+      ) &&
+      /if \(animationFrameId !== null\) \{\s*return;\s*\}[\s\S]{0,300}window\.requestAnimationFrame\(\(\) => \{[\s\S]{0,180}syncPreviewLayout\(\)/.test(
+        documentPreviewSource,
+      ) &&
+      /animationFrameId\s*=\s*window\.requestAnimationFrame\(\(\) => \{\s*animationFrameId\s*=\s*null;\s*syncPreviewLayout\(\);\s*\}\)/.test(
+        documentPreviewSource,
+      ) &&
+      /resizeObserver\.observe\(frameElement\)/.test(documentPreviewSource) &&
       /measurePageCount:\s*\(\)\s*=>\s*previewHandle\.measurePageCount\(\)/.test(
         resumeDetailCommandsSource,
       ),
-    "The preview module must own scaling and expose only pagination measurement.",
+    "The preview module must own event-driven single-rAF scaling and pagination measurement without FLIP motion.",
   );
   assert.ok(
     /<Suspense fallback=\{<WorkspacePreviewSkeleton \/>\}>/.test(

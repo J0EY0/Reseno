@@ -11,11 +11,9 @@ import {
 import { AppToaster } from "@/components/app-toaster";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
 import type { DocumentPreviewHandle } from "@/components/preview/document-preview-card";
+import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import { ResumeDetailAgentHost } from "@/components/workspace/resume-detail-agent-host";
-import { ResumeDetailLeaveDialog } from "@/components/workspace/resume-detail-leave-dialog";
-import { ResumeDetailTitleDialog } from "@/components/workspace/resume-detail-title-dialog";
 import { ResumeDetailWorkspaceHeader } from "@/components/workspace/resume-detail-workspace-header";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
@@ -25,9 +23,15 @@ import { cn } from "@/lib/utils";
 
 // Pagination and PDF-ready preview code are owned by the document surface,
 // rather than the route shell that must render immediately.
-const DocumentPreviewCard = lazy(() =>
-  import("@/components/preview/document-preview-card").then((module) => ({
-    default: module.DocumentPreviewCard,
+const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
+const ResumeDetailLeaveDialog = lazy(() =>
+  import("@/components/workspace/resume-detail-leave-dialog").then((module) => ({
+    default: module.ResumeDetailLeaveDialog,
+  })),
+);
+const ResumeDetailTitleDialog = lazy(() =>
+  import("@/components/workspace/resume-detail-title-dialog").then((module) => ({
+    default: module.ResumeDetailTitleDialog,
   })),
 );
 
@@ -45,8 +49,9 @@ function ResumeDetailContent({
   const { commands, state } = model;
   const shouldDockAgent = !state.agent.isPanelCollapsed;
   const workspaceStyle = {
+    "--agent-panel-width": "360px",
     "--resume-workspace-columns": shouldDockAgent
-      ? "clamp(340px,27vw,400px) minmax(0,1fr) 18px clamp(320px,25vw,360px)"
+      ? "clamp(340px,27vw,400px) minmax(0,1fr) 18px var(--agent-panel-width)"
       : "clamp(340px,27vw,400px) minmax(0,1fr) 18px 0px",
   } as CSSProperties;
 
@@ -55,7 +60,7 @@ function ResumeDetailContent({
       style={workspaceStyle}
       data-agent-expanded={shouldDockAgent}
       className={cn(
-        "resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4 xl:gap-x-2",
+        "workspace-document-enter resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4 xl:gap-x-2",
         "print:block print:h-auto print:overflow-visible print:p-0",
       )}
     >
@@ -76,7 +81,6 @@ function ResumeDetailContent({
           <DocumentPreviewCard
             ref={previewRef}
             variant="resume"
-            id={state.resumeItem?.id ?? "resume"}
             t={messages}
             resume={state.previewResume}
             typography={state.typography}
@@ -147,8 +151,10 @@ export function ResumeDetailWorkspaceView({
         {messages.skipToContent}
       </a>
       <AppToaster theme={model.state.theme} position="bottom-right" />
-      <ResumeDetailTitleDialog messages={messages} model={model} />
-      <ResumeDetailLeaveDialog messages={messages} model={model} />
+      <Suspense fallback={null}>
+        <ResumeDetailTitleDialog messages={messages} model={model} />
+        <ResumeDetailLeaveDialog messages={messages} model={model} />
+      </Suspense>
       <SidebarInset
         id="main-content"
         tabIndex={-1}
@@ -167,38 +173,19 @@ export function ResumeDetailWorkspaceView({
           onLocaleChange={onLocaleChange}
         />
 
-        <ViewTransitionBoundary
-          default="none"
-          enter={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          exit={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          update={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-        >
-          {model.state.hasLoadError ? (
-            <WorkspaceRouteError
-              messages={messages}
-              onRetry={model.commands.retryLoad}
-            />
-          ) : (
-            <ResumeDetailContent
-              locale={locale}
-              messages={messages}
-              model={model}
-              previewRef={previewRef}
-            />
-          )}
-        </ViewTransitionBoundary>
+        {model.state.hasLoadError ? (
+          <WorkspaceRouteError
+            messages={messages}
+            onRetry={model.commands.retryLoad}
+          />
+        ) : (
+          <ResumeDetailContent
+            locale={locale}
+            messages={messages}
+            model={model}
+            previewRef={previewRef}
+          />
+        )}
       </SidebarInset>
     </SidebarProvider>
   );

@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -16,6 +17,10 @@ import { importTemplatePayload } from "@/lib/import-api";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
+  normalizeWorkspaceTheme,
+  useWorkspaceTheme,
+} from "@/components/workspace/workspace-theme-context";
+import {
   prepareTemplateDetailRoute,
   preloadTemplateDetailRoute,
   WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
@@ -29,7 +34,6 @@ import {
   getTemplateById,
   getTemplateCatalog,
 } from "@/lib/templates";
-import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
 import {
@@ -37,7 +41,6 @@ import {
   fetchWorkspaceRouteData,
   moveTemplateToTrashApi,
   saveDefaultTemplateApi,
-  saveUserSettingsApi,
 } from "@/lib/workspace-api";
 import {
   createTemplateDetailRouteHandoff,
@@ -46,28 +49,22 @@ import {
 import type {
   ResumeTemplateDefinition,
   ResumeTemplateId,
-  ThemeMode,
 } from "@/types/resume";
 
 const baseTemplateId: ResumeTemplateId = "minimal";
 
-function normalizeWorkspaceTheme(value: unknown): ThemeMode {
-  return value === "dark" || value === "system" ? value : "light";
-}
-
 export function useTemplateGalleryWorkspace({
   locale,
   messages,
-  onLocaleChange,
   persistence,
 }: {
   locale: Locale;
   messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
   const preparedRouteData = useWorkspaceLateralRouteData("templates");
+  const { hydrateTheme, theme } = useWorkspaceTheme();
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -78,17 +75,9 @@ export function useTemplateGalleryWorkspace({
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
   const [isLoading, setIsLoading] = useState(!preparedRouteData);
-  const [theme, setTheme] = useState<ThemeMode>(
-    () =>
-      preparedRouteData?.theme
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : persistence.getSnapshot()?.theme ?? "light",
-  );
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
-    document.documentElement.classList.contains("dark") ? "dark" : "light",
-  );
   const [isCreating, setIsCreating] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [openingTemplateId, setOpeningTemplateId] = useState<string | null>(null);
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
@@ -110,31 +99,6 @@ export function useTemplateGalleryWorkspace({
   const previewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
-  useEffect(() => {
-    const root = document.documentElement;
-    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-
-    function applyTheme() {
-      const nextTheme =
-        theme === "system"
-          ? mediaQuery?.matches
-            ? "dark"
-            : "light"
-          : theme;
-      root.classList.toggle("dark", nextTheme === "dark");
-      root.style.colorScheme = nextTheme;
-      setResolvedTheme(nextTheme);
-    }
-
-    applyTheme();
-    if (theme !== "system" || !mediaQuery) {
-      return;
-    }
-
-    mediaQuery.addEventListener("change", applyTheme);
-    return () => mediaQuery.removeEventListener("change", applyTheme);
-  }, [theme]);
-
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
@@ -164,7 +128,7 @@ export function useTemplateGalleryWorkspace({
         const persistedAgentSettings =
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
 
-        setTheme(nextTheme);
+        hydrateTheme(nextTheme);
         setDefaultTemplateId(source.data.defaultTemplateId);
         setCustomTemplates(source.data.customTemplates);
         persistence.hydrate({
@@ -200,17 +164,19 @@ export function useTemplateGalleryWorkspace({
         }
       }
     },
-    [persistence],
+    [hydrateTheme, persistence],
   );
 
   useEffect(() => {
     if (preparedRouteData && retryKey === 0) {
       const persistedPreferences = persistence.getSnapshot();
+      const nextTheme = preparedRouteData.theme
+        ? normalizeWorkspaceTheme(preparedRouteData.theme)
+        : persistedPreferences?.theme ?? "light";
+      hydrateTheme(nextTheme);
       persistence.hydrate({
         locale: initialLocaleRef.current,
-        theme: preparedRouteData.theme
-          ? normalizeWorkspaceTheme(preparedRouteData.theme)
-          : persistedPreferences?.theme ?? "light",
+        theme: nextTheme,
         agentSettings:
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
       });
@@ -228,65 +194,42 @@ export function useTemplateGalleryWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
+  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
 
-  const changeTheme = useCallback(
-    (nextTheme: ThemeMode) => {
-      setTheme(nextTheme);
-      if (!hasLoaded || isLoading) {
-        return;
-      }
+  const preloadTemplateDetail = useCallback(() => {
+    void preloadTemplateDetailRoute().catch((error) => {
+      console.warn("Failed to warm the template detail route.", error);
+    });
+  }, []);
 
-      const snapshot = {
-        locale,
-        theme: nextTheme,
-        agentSettings:
-          persistence.getSnapshot()?.agentSettings ??
-          createDefaultAgentSettings(),
-      };
-      persistence.enqueue(
-        snapshot,
-        () =>
-          saveUserSettingsApi(snapshot.locale, {
-            agentSettings: snapshot.agentSettings,
-            theme: snapshot.theme,
-          }),
-        {
-          onRollback(persisted) {
-            onLocaleChange(persisted.locale);
-            setTheme(persisted.theme);
-          },
-          onError(error) {
-            console.error("Failed to save user settings.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(messages.loadError, { closeButton: true });
-            }
-          },
-        },
-      );
-    },
-    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
-  );
+  const clearOpeningTemplate = useCallback((templateId: string) => {
+    setOpeningTemplateId((current) =>
+      current === templateId ? null : current,
+    );
+  }, []);
 
   const commitTemplateDetailNavigation = useCallback(
     (
       intent: WorkspaceNavigationIntent,
       templateId: string,
       data: WorkspaceTemplateRouteData,
+      onCommit?: () => void,
     ) => {
       if (!intent.isCurrent()) {
         return;
       }
 
-      runViewTransition(() => {
+      startTransition(() => {
         if (!intent.isCurrent()) {
           return;
         }
+        onCommit?.();
+        setOpeningTemplateId(null);
         intent.finish();
         navigate(getTemplatePath(templateId), {
           state: createTemplateDetailRouteHandoff(templateId, data),
         });
-      }, "nav-forward");
+      });
     },
     [navigate],
   );
@@ -299,6 +242,12 @@ export function useTemplateGalleryWorkspace({
         return;
       }
 
+      setOpeningTemplateId(templateId);
+      intent.signal.addEventListener(
+        "abort",
+        () => clearOpeningTemplate(templateId),
+        { once: true },
+      );
       toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
       let data: WorkspaceTemplateRouteData;
       try {
@@ -311,8 +260,10 @@ export function useTemplateGalleryWorkspace({
           isAbortError(error) ||
           !intent.isCurrent()
         ) {
+          clearOpeningTemplate(templateId);
           return;
         }
+        clearOpeningTemplate(templateId);
         intent.finish();
         console.error("Failed to prepare the template detail route.", error);
         toast.error(messages.loadError, {
@@ -330,6 +281,7 @@ export function useTemplateGalleryWorkspace({
     },
     [
       beginNavigation,
+      clearOpeningTemplate,
       commitTemplateDetailNavigation,
       messages.loadError,
       persistence,
@@ -357,19 +309,28 @@ export function useTemplateGalleryWorkspace({
     try {
       const result = await createTemplateApi(draftTemplate);
       const nextCustomTemplates = [...customTemplates, result.template];
-      setCustomTemplates(nextCustomTemplates);
+      const publishCreatedTemplate = () => {
+        setCustomTemplates((current) =>
+          current.some((item) => item.id === result.template.id)
+            ? current
+            : [...current, result.template],
+        );
+      };
       if (!intent.isCurrent()) {
+        publishCreatedTemplate();
         return;
       }
       try {
         await detailRouteReady;
       } catch (error) {
         if (!intent.isCurrent()) {
+          publishCreatedTemplate();
           return;
         }
+        publishCreatedTemplate();
         intent.finish();
         console.error("Failed to prepare the created template route.", error);
-        toast.error(messages.loadError, {
+        toast.error(messages.templateCreatedOpenFailed, {
           closeButton: true,
           id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
         });
@@ -383,6 +344,7 @@ export function useTemplateGalleryWorkspace({
           defaultTemplateId,
           theme,
         },
+        publishCreatedTemplate,
       );
       toast.success(messages.templateCreated, { closeButton: true });
     } catch (error) {
@@ -558,7 +520,6 @@ export function useTemplateGalleryWorkspace({
   );
 
   return {
-    changeTheme,
     createCustomTemplate,
     defaultTemplateId,
     deleteTemplates,
@@ -568,13 +529,13 @@ export function useTemplateGalleryWorkspace({
     isCreating,
     isImporting,
     openTemplate,
+    openingTemplateId,
+    preloadTemplateDetail,
     previewResume,
     retryLoad: () => setRetryKey((current) => current + 1),
-    resolvedTheme,
     routeData,
     setDefaultTemplate,
     settingDefaultTemplateId,
     templateCatalog,
-    theme,
   };
 }

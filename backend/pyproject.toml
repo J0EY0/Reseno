@@ -45,3 +45,8 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+markers = [
+    "browser_smoke: critical real-browser regressions required by the default CI gate",
+]

@@ -35,7 +35,7 @@ function RuledSectionTitle({
   return (
     <div className="flex items-center gap-4">
       <h2
-        className="shrink-0 font-extrabold"
+        className="shrink-0 font-extrabold leading-[1.2]"
         style={{
           color: settings.headingColor,
           fontSize: `${settings.sectionTitleScale}em`,
@@ -77,7 +77,7 @@ function AccentSectionTitle({
         }}
       />
       <h2
-        className="relative px-4 text-center font-extrabold tracking-[0.18em]"
+        className="relative px-4 text-center font-extrabold leading-[1.2] tracking-[0.18em]"
         style={{
           color: settings.headingColor,
           backgroundColor: settings.pageBackground,
@@ -91,7 +91,6 @@ function AccentSectionTitle({
 }
 
 interface SectionBlockProps {
-  breakBeforeOffset?: number;
   diff?: SectionDiffLookup;
   isSidebarLayout: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
@@ -104,7 +103,6 @@ interface SectionBlockProps {
 }
 
 function SectionBlock({
-  breakBeforeOffset = 0,
   diff,
   isSidebarLayout,
   itemDiffById,
@@ -128,8 +126,6 @@ function SectionBlock({
       diffs={titleDiff ? [titleDiff] : []}
     />
   );
-  const sectionStyle =
-    breakBeforeOffset > 0 ? { marginTop: breakBeforeOffset } : undefined;
 
   if (layout.section === "boxed") {
     return (
@@ -143,7 +139,7 @@ function SectionBlock({
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
         data-resume-section-layout={layout.section}
-        style={{ ...sectionStyle, borderColor: settings.dividerColor }}
+        style={{ borderColor: settings.dividerColor }}
       >
         <ResumeDiffBadge diff={markerDiff} t={t} />
         {showTitle ? (
@@ -156,7 +152,7 @@ function SectionBlock({
             }}
           >
             <h2
-              className="font-extrabold"
+              className="font-extrabold leading-[1.2]"
               style={{
                 color: settings.headingColor,
                 fontSize: `${settings.sectionTitleScale}em`,
@@ -192,7 +188,6 @@ function SectionBlock({
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
         data-resume-section-layout={layout.section}
-        style={sectionStyle}
       >
         <ResumeDiffBadge diff={markerDiff} t={t} />
         {showTitle ? (
@@ -202,7 +197,7 @@ function SectionBlock({
             style={{ backgroundColor: settings.surfaceColor }}
           >
             <h2
-              className="font-extrabold"
+              className="font-extrabold leading-[1.2]"
               style={{
                 color: settings.headingColor,
                 fontSize: `${settings.sectionTitleScale}em`,
@@ -212,7 +207,7 @@ function SectionBlock({
             </h2>
           </div>
         ) : null}
-        <div className={showTitle ? "mt-3" : undefined}>
+        <div className={showTitle ? "mt-[0.25em]" : undefined}>
           <SectionItems
             section={section}
             t={t}
@@ -237,14 +232,13 @@ function SectionBlock({
       data-resume-diff-kind={markerDiff?.kind}
       data-resume-diff-label={getDiffLabel(markerDiff, t)}
       data-resume-section-layout={layout.section}
-      style={sectionStyle}
     >
       <ResumeDiffBadge diff={markerDiff} t={t} />
       {showTitle ? (
         <div className="resume-section-header" data-resume-section-header="true">
           {layout.section === "plain" ? (
             <h2
-              className="font-extrabold"
+              className="font-extrabold leading-[1.2]"
               style={{
                 color: settings.headingColor,
                 fontSize: `${settings.sectionTitleScale}em`,
@@ -266,7 +260,7 @@ function SectionBlock({
           )}
         </div>
       ) : null}
-      <div className={showTitle ? "mt-3" : undefined}>
+      <div className={showTitle ? "mt-[0.25em]" : undefined}>
         <SectionItems
           section={section}
           t={t}
@@ -281,7 +275,6 @@ function SectionBlock({
 }
 
 export function SectionsList({
-  breakBeforeSectionSpacers,
   className,
   isSidebarLayout,
   itemDiffById,
@@ -291,7 +284,6 @@ export function SectionsList({
   settings,
   t,
 }: {
-  breakBeforeSectionSpacers?: Record<string, number>;
   className?: string;
   isSidebarLayout: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
@@ -315,9 +307,6 @@ export function SectionsList({
           section={section.section}
           items={section.items}
           showTitle={section.showTitle}
-          breakBeforeOffset={
-            breakBeforeSectionSpacers?.[section.section.id] ?? 0
-          }
           t={t}
           settings={settings}
           layout={layout}

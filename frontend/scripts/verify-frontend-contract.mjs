@@ -131,6 +131,24 @@ const resumeDetailWorkspaceHeader = await readFile(
   ),
   "utf8",
 );
+const resumeDetailHeaderActions = await readFile(
+  join(
+    srcDir,
+    "components",
+    "workspace",
+    "resume-detail-header-actions.tsx",
+  ),
+  "utf8",
+);
+const templateDetailWorkspaceHeader = await readFile(
+  join(
+    srcDir,
+    "components",
+    "workspace",
+    "template-detail-workspace-header.tsx",
+  ),
+  "utf8",
+);
 const templateTypographyTab = await readFile(
   join(srcDir, "components", "templates", "editor", "typography-tab.tsx"),
   "utf8",
@@ -182,11 +200,26 @@ const hasExactBaseWidth = (tag, width) => {
   return widths.length === 1 && widths[0] === width;
 };
 const exportMenuTriggerButton =
-  resumeDetailWorkspaceHeader.match(
+  resumeDetailHeaderActions.match(
     /<DropdownMenuTrigger asChild>\s*(<Button\b[^>]*>)/,
   )?.[1] ?? "";
 const exportMenuContent =
-  resumeDetailWorkspaceHeader.match(/<DropdownMenuContent\b[^>]*>/)?.[0] ?? "";
+  resumeDetailHeaderActions.match(/<DropdownMenuContent\b[^>]*>/)?.[0] ?? "";
+const resumeBackButton =
+  resumeDetailWorkspaceHeader.match(
+    /<Button\b(?=[^>]*onClick=\{commands\.back\})[^>]*>/,
+  )?.[0] ?? "";
+const templateBackButton =
+  templateDetailWorkspaceHeader.match(
+    /<Button\b(?=[^>]*onClick=\{onBack\})[^>]*>/,
+  )?.[0] ?? "";
+
+assert(
+  [resumeBackButton, templateBackButton].every(
+    (tag) => tag.includes('variant="outline"') && !/\bsize=/.test(tag),
+  ),
+  "Detail-header back actions must remain outline buttons at the shared default toolbar size.",
+);
 
 assert(
   hasStaticClass(exportMenuTriggerButton, "min-w-32") &&

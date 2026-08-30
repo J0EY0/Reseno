@@ -32,14 +32,6 @@ export function ResumeDetailLeaveDialog({
         showCloseButton
         closeLabel={messages.close}
         className="w-[min(460px,calc(100vw-2rem))]"
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || state.leave.isResolving) {
-            return;
-          }
-
-          event.preventDefault();
-          void commands.saveAndLeave();
-        }}
       >
         <DialogHeader>
           <DialogTitle>{messages.unsavedChangesTitle}</DialogTitle>

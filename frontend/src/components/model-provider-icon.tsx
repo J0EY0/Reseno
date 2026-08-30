@@ -1,6 +1,4 @@
 import Anthropic from "@lobehub/icons/es/Anthropic";
-import Bedrock from "@lobehub/icons/es/Bedrock";
-import Cloudflare from "@lobehub/icons/es/Cloudflare";
 import DeepSeek from "@lobehub/icons/es/DeepSeek";
 import Google from "@lobehub/icons/es/Google";
 import Minimax from "@lobehub/icons/es/Minimax";
@@ -16,8 +14,6 @@ import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const PROVIDER_ALIASES: Record<string, string> = {
-  "amazon-bedrock": "bedrock",
-  "cloudflare-workers-ai": "cloudflare",
   "custom-cloud": "openai",
   glm: "zai",
   "google-vertex": "google",
@@ -31,8 +27,6 @@ const PROVIDER_ALIASES: Record<string, string> = {
 // ProviderIcon registry (and every icon it references) into the application.
 const PROVIDER_ICONS = {
   anthropic: Anthropic,
-  bedrock: Bedrock,
-  cloudflare: Cloudflare,
   deepseek: DeepSeek,
   google: Google,
   minimax: Minimax,

@@ -39,13 +39,6 @@ export function TemplateDetailLeaveDialog({
         showCloseButton
         closeLabel={messages.close}
         className="w-[min(460px,calc(100vw-2rem))]"
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || isResolving) {
-            return;
-          }
-          event.preventDefault();
-          void onSave();
-        }}
       >
         <DialogHeader>
           <DialogTitle>{messages.unsavedChangesTitle}</DialogTitle>

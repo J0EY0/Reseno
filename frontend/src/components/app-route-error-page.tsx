@@ -22,7 +22,7 @@ export function AppRouteErrorPage() {
     <main className="flex min-h-svh items-center justify-center bg-background p-6">
       <section
         role="alert"
-        className="w-full max-w-md rounded-3xl border border-border bg-card p-8 text-center shadow-sm"
+        className="w-full max-w-md rounded-(--radius-card) border border-border bg-card p-8 text-center shadow-card"
       >
         <h1 className="text-xl font-semibold text-foreground">
           {isDynamicImportError ? "页面资源加载失败" : "页面运行出错"}

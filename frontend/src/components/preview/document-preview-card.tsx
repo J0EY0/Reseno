@@ -3,12 +3,11 @@ import {
   memo,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
-  useState,
 } from "react";
 
 import { ResumePreview } from "@/components/preview/resume-preview";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import type { AppMessages } from "@/i18n";
 import type {
   ResumeData,
@@ -27,9 +26,9 @@ export interface DocumentPreviewHandle {
 }
 
 interface DocumentPreviewBaseProps {
-  id: string;
   onPaginationReadyChange?: (ready: boolean) => void;
   resume: ResumeData;
+  showPreviewTitle?: boolean;
   t: AppMessages;
   template: ResumeTemplateDefinition;
 }
@@ -41,7 +40,7 @@ type DocumentPreviewCardProps =
       variant: "resume";
     })
   | (DocumentPreviewBaseProps & {
-      onMoveTemplateImage: (
+      onMoveTemplateImage?: (
         imageId: string,
         patch: Pick<ResumeTemplateImageElement, "x" | "y">,
       ) => void;
@@ -75,10 +74,13 @@ async function measurePreviewPageCount(element: HTMLElement | null) {
 export const DocumentPreviewCard = memo(
   forwardRef<DocumentPreviewHandle, DocumentPreviewCardProps>(
     function DocumentPreviewCard(props, ref) {
-      const [previewScale, setPreviewScale] = useState(1);
-      const [previewPageHeight, setPreviewPageHeight] =
-        useState(A4_HEIGHT_PX);
+      const previewLayoutRef = useRef({
+        scale: 1,
+        pageHeight: A4_HEIGHT_PX,
+      });
       const previewScaleFrameRef = useRef<HTMLDivElement | null>(null);
+      const previewScaleBoxRef = useRef<HTMLDivElement | null>(null);
+      const previewScaleContentRef = useRef<HTMLDivElement | null>(null);
       const previewRef = useRef<HTMLElement | null>(null);
       const { onPaginationReadyChange } = props;
 
@@ -95,78 +97,83 @@ export const DocumentPreviewCard = memo(
         [onPaginationReadyChange],
       );
 
-      useEffect(() => {
+      useLayoutEffect(() => {
         const frameElement = previewScaleFrameRef.current;
+        const scaleBoxElement = previewScaleBoxRef.current;
+        const scaleContentElement = previewScaleContentRef.current;
 
-        if (!frameElement) {
+        if (!frameElement || !scaleBoxElement || !scaleContentElement) {
           return;
         }
 
-        let animationFrameId = 0;
+        let animationFrameId: number | null = null;
 
-        const syncPreviewScale = () => {
+        const syncPreviewLayout = () => {
           // A detail transition can temporarily detach the preview. Waiting for
           // its real width prevents the replacement from keeping a false shrink.
-          if (!frameElement.isConnected || frameElement.clientWidth <= 0) {
+          if (!frameElement.isConnected) {
             return;
           }
 
           const frameWidth = frameElement.clientWidth;
+          if (frameWidth <= 0) {
+            return;
+          }
+
           const availableWidth = Math.max(
             frameWidth - PREVIEW_FRAME_GUTTER_PX,
             frameWidth * 0.88,
           );
           const nextScale = Math.min(1, availableWidth / A4_WIDTH_PX);
           const pageHeight = previewRef.current?.offsetHeight || A4_HEIGHT_PX;
+          const currentLayout = previewLayoutRef.current;
+          const hasLayoutChange =
+            currentLayout.scale !== nextScale ||
+            currentLayout.pageHeight !== pageHeight;
 
-          setPreviewScale(nextScale);
-          setPreviewPageHeight(pageHeight);
+          if (!hasLayoutChange) {
+            return;
+          }
+
+          scaleBoxElement.style.width = `${A4_WIDTH_PX * nextScale}px`;
+          scaleBoxElement.style.height = `${pageHeight * nextScale}px`;
+          scaleContentElement.style.transform = `scale(${nextScale})`;
+
+          previewLayoutRef.current = { scale: nextScale, pageHeight };
         };
 
-        const syncPreviewScaleDuringLayoutTransition = () => {
-          window.cancelAnimationFrame(animationFrameId);
+        const schedulePreviewScaleSync = () => {
+          if (animationFrameId !== null) {
+            return;
+          }
 
-          let remainingFrames = 24;
-          const tick = () => {
-            syncPreviewScale();
-            remainingFrames -= 1;
-
-            if (remainingFrames > 0) {
-              animationFrameId = window.requestAnimationFrame(tick);
-            }
-          };
-
-          animationFrameId = window.requestAnimationFrame(tick);
+          animationFrameId = window.requestAnimationFrame(() => {
+            animationFrameId = null;
+            syncPreviewLayout();
+          });
         };
 
-        syncPreviewScale();
-        syncPreviewScaleDuringLayoutTransition();
+        syncPreviewLayout();
 
-        const resizeObserver = new ResizeObserver(
-          syncPreviewScaleDuringLayoutTransition,
-        );
+        const resizeObserver = new ResizeObserver(schedulePreviewScaleSync);
         resizeObserver.observe(frameElement);
 
         if (previewRef.current) {
           resizeObserver.observe(previewRef.current);
         }
 
-        window.addEventListener("resize", syncPreviewScaleDuringLayoutTransition);
+        window.addEventListener("resize", schedulePreviewScaleSync);
 
         return () => {
-          window.cancelAnimationFrame(animationFrameId);
+          if (animationFrameId !== null) {
+            window.cancelAnimationFrame(animationFrameId);
+          }
           resizeObserver.disconnect();
-          window.removeEventListener(
-            "resize",
-            syncPreviewScaleDuringLayoutTransition,
-          );
+          window.removeEventListener("resize", schedulePreviewScaleSync);
         };
       }, []);
 
       const isTemplatePreview = props.variant === "template";
-      const scaledPreviewWidth = A4_WIDTH_PX * previewScale;
-      const scaledPreviewHeight = previewPageHeight * previewScale;
-      const previewTransitionName = `${props.variant}-preview-${props.id}`;
       const fontFamily = isTemplatePreview
         ? props.template.typography.fontFamily
         : props.typography.fontFamily;
@@ -176,59 +183,49 @@ export const DocumentPreviewCard = memo(
 
       return (
         <section className="resume-preview-card relative flex min-w-0 flex-col overflow-x-hidden rounded-(--radius-preview) border border-border bg-card p-4 print:overflow-visible print:border-0 print:bg-white print:p-0 xl:self-start">
-          <div className="mb-4 print:hidden">
-            <p className="text-xs font-medium text-muted-foreground">
-              {props.t.previewTitle}
-            </p>
-          </div>
-          <ViewTransitionBoundary
-            name={previewTransitionName}
-            share="morph"
-            default="none"
+          {props.showPreviewTitle !== false ? (
+            <div className="mb-4 print:hidden">
+              <p className="text-xs font-medium text-muted-foreground">
+                {props.t.previewTitle}
+              </p>
+            </div>
+          ) : null}
+          <div
+            ref={previewScaleFrameRef}
+            className="resume-preview-scale-frame flex min-w-0 justify-center overflow-hidden print:block print:overflow-visible"
           >
             <div
-              ref={previewScaleFrameRef}
-              className="resume-preview-scale-frame flex min-w-0 justify-center overflow-hidden print:block print:overflow-visible"
+              ref={previewScaleBoxRef}
+              className="resume-preview-scale-box relative print:contents"
             >
               <div
-                className="resume-preview-scale-box relative print:contents"
-                style={{
-                  width: scaledPreviewWidth,
-                  height: scaledPreviewHeight,
-                }}
+                ref={previewScaleContentRef}
+                className="resume-preview-scale-content origin-top-left print:contents"
               >
-                <div
-                  className="resume-preview-scale-content origin-top-left print:contents"
-                  style={{
-                    width: "210mm",
-                    transform: `scale(${previewScale})`,
-                  }}
-                >
-                  <ResumePreview
-                    ref={previewRef}
-                    t={props.t}
-                    resume={props.resume}
-                    fontFamily={fontFamily}
-                    fontSize={fontSize}
-                    template={props.template}
-                    diffs={
-                      props.variant === "resume" ? props.diffs : undefined
-                    }
-                    editableTemplateImages={
-                      isTemplatePreview && !props.template.isBuiltIn
-                    }
-                    showEmptyTemplateImagePlaceholders={isTemplatePreview}
-                    onPaginationReadyChange={onPaginationReadyChange}
-                    onMoveTemplateImage={
-                      props.variant === "template"
-                        ? props.onMoveTemplateImage
-                        : undefined
-                    }
-                  />
-                </div>
+                <ResumePreview
+                  ref={previewRef}
+                  t={props.t}
+                  resume={props.resume}
+                  fontFamily={fontFamily}
+                  fontSize={fontSize}
+                  template={props.template}
+                  diffs={props.variant === "resume" ? props.diffs : undefined}
+                  editableTemplateImages={
+                    props.variant === "template" &&
+                    !props.template.isBuiltIn &&
+                    Boolean(props.onMoveTemplateImage)
+                  }
+                  showEmptyTemplateImagePlaceholders={isTemplatePreview}
+                  onPaginationReadyChange={onPaginationReadyChange}
+                  onMoveTemplateImage={
+                    props.variant === "template"
+                      ? props.onMoveTemplateImage
+                      : undefined
+                  }
+                />
               </div>
             </div>
-          </ViewTransitionBoundary>
+          </div>
         </section>
       );
     },

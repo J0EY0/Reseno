@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -28,7 +29,6 @@ import type { AppMessages, Locale } from "@/i18n";
 import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { isAbortError } from "@/lib/api-client";
 import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
-import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 import {
@@ -253,7 +253,7 @@ export function useResumeDetailWorkspace({
           return;
         }
 
-        runViewTransition(() => {
+        startTransition(() => {
           if (!intent.isCurrent()) {
             return;
           }
@@ -265,7 +265,7 @@ export function useResumeDetailWorkspace({
               nextResumeOrdinal,
             ),
           });
-        }, "nav-forward");
+        });
       };
 
       const prepareFreshRoute = () => {
@@ -351,7 +351,7 @@ export function useResumeDetailWorkspace({
   );
   const back = useCallback(
     () => {
-      void requestWorkspaceNavigation("resume", "nav-back");
+      void requestWorkspaceNavigation("resume");
     },
     [requestWorkspaceNavigation],
   );
@@ -468,7 +468,7 @@ export function useResumeDetailWorkspace({
         state: save.saveState,
         versions: save.versions,
       },
-      showSkeleton: !loader.hasLoaded || save.isVersionLoading,
+      showSkeleton: !loader.hasLoaded,
       template: session.template,
       templates: templateCatalog,
       theme: preferences.theme,

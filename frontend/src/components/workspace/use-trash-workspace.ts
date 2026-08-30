@@ -15,6 +15,10 @@ import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
 import { getTemplateCatalog } from "@/lib/templates";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
+import {
+  normalizeWorkspaceTheme,
+  useWorkspaceTheme,
+} from "@/components/workspace/workspace-theme-context";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
   deleteResumeForeverApi,
@@ -22,47 +26,30 @@ import {
   fetchWorkspaceRouteData,
   restoreResumeApi,
   restoreTemplateApi,
-  saveUserSettingsApi,
 } from "@/lib/workspace-api";
 import type {
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   ResumeTemplateDefinition,
   ResumeTemplateId,
-  ThemeMode,
 } from "@/types/resume";
-
-function normalizeWorkspaceTheme(value: unknown): ThemeMode {
-  return value === "dark" || value === "system" ? value : "light";
-}
 
 export function useTrashWorkspace({
   locale,
   messages,
-  onLocaleChange,
   persistence,
 }: {
   locale: Locale;
   messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   persistence: WorkspacePreferencesPersistence;
 }) {
   const preparedRouteData = useWorkspaceLateralRouteData("trash");
+  const { hydrateTheme, theme } = useWorkspaceTheme();
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
-  const [isLoading, setIsLoading] = useState(!preparedRouteData);
-  const [theme, setTheme] = useState<ThemeMode>(
-    () =>
-      preparedRouteData?.theme
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : persistence.getSnapshot()?.theme ?? "light",
-  );
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
-    document.documentElement.classList.contains("dark") ? "dark" : "light",
-  );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(() => preparedRouteData?.customTemplates ?? []);
@@ -99,36 +86,10 @@ export function useTrashWorkspace({
   const templatePreviewResume = useDeferredValue(
     useMemo(() => createTemplatePreviewResume(messages), [messages]),
   );
-  useEffect(() => {
-    const root = document.documentElement;
-    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-
-    function applyTheme() {
-      const nextTheme =
-        theme === "system"
-          ? mediaQuery?.matches
-            ? "dark"
-            : "light"
-          : theme;
-      root.classList.toggle("dark", nextTheme === "dark");
-      root.style.colorScheme = nextTheme;
-      setResolvedTheme(nextTheme);
-    }
-
-    applyTheme();
-    if (theme !== "system" || !mediaQuery) {
-      return;
-    }
-
-    mediaQuery.addEventListener("change", applyTheme);
-    return () => mediaQuery.removeEventListener("change", applyTheme);
-  }, [theme]);
-
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
-      setIsLoading(true);
       setHasLoadError(false);
       toast.dismiss("workspace-load-error");
 
@@ -153,7 +114,7 @@ export function useTrashWorkspace({
         const persistedAgentSettings =
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
 
-        setTheme(nextTheme);
+        hydrateTheme(nextTheme);
         setCustomTemplates(source.data.customTemplates);
         setDefaultTemplateId(source.data.defaultTemplateId);
         setDeletedResumes(source.data.deletedResumes);
@@ -182,26 +143,21 @@ export function useTrashWorkspace({
         }
         setHasLoaded(false);
         setHasLoadError(true);
-      } finally {
-        if (
-          !signal.aborted &&
-          requestIdRef.current === requestId
-        ) {
-          setIsLoading(false);
-        }
       }
     },
-    [persistence],
+    [hydrateTheme, persistence],
   );
 
   useEffect(() => {
     if (preparedRouteData && retryKey === 0) {
       const persistedPreferences = persistence.getSnapshot();
+      const nextTheme = preparedRouteData.theme
+        ? normalizeWorkspaceTheme(preparedRouteData.theme)
+        : persistedPreferences?.theme ?? "light";
+      hydrateTheme(nextTheme);
       persistence.hydrate({
         locale: initialLocaleRef.current,
-        theme: preparedRouteData.theme
-          ? normalizeWorkspaceTheme(preparedRouteData.theme)
-          : persistedPreferences?.theme ?? "light",
+        theme: nextTheme,
         agentSettings:
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
       });
@@ -219,45 +175,7 @@ export function useTrashWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadRouteData, persistence, preparedRouteData, retryKey]);
-
-  const changeTheme = useCallback(
-    (nextTheme: ThemeMode) => {
-      setTheme(nextTheme);
-      if (!hasLoaded || isLoading) {
-        return;
-      }
-
-      const snapshot = {
-        locale,
-        theme: nextTheme,
-        agentSettings:
-          persistence.getSnapshot()?.agentSettings ??
-          createDefaultAgentSettings(),
-      };
-      persistence.enqueue(
-        snapshot,
-        () =>
-          saveUserSettingsApi(snapshot.locale, {
-            agentSettings: snapshot.agentSettings,
-            theme: snapshot.theme,
-          }),
-        {
-          onRollback(persisted) {
-            onLocaleChange(persisted.locale);
-            setTheme(persisted.theme);
-          },
-          onError(error) {
-            console.error("Failed to save user settings.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(messages.loadError, { closeButton: true });
-            }
-          },
-        },
-      );
-    },
-    [hasLoaded, isLoading, locale, messages.loadError, onLocaleChange, persistence],
-  );
+  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
 
   const restoreResumes = useCallback(
     async (resumeIds: string[]) => {
@@ -404,20 +322,17 @@ export function useTrashWorkspace({
   );
 
   return {
-    changeTheme,
     deletedResumes,
     deletedTemplates,
     hasLoaded,
     hasLoadError,
     permanentlyDeleteResumes,
     permanentlyDeleteTemplates,
-    resolvedTheme,
     routeData,
     restoreResumes,
     restoreTemplates,
     retryLoad: () => setRetryKey((current) => current + 1),
     templatePreviewResume,
     templates,
-    theme,
   };
 }

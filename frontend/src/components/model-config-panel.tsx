@@ -1,32 +1,32 @@
-import { useMemo, useState } from 'react'
-import { Bot, Pencil, Trash2 } from 'lucide-react'
-import type { ColumnDef } from '@tanstack/react-table'
+import { useCallback, useState } from 'react'
+import { Bot } from 'lucide-react'
 import { toast } from 'sonner'
 
 import type { AppMessages, Locale } from '@/i18n'
-import {
-  formatApiKeyPreview,
-  getModelDisplayName,
-} from '@/lib/model-config'
 import { isApiErrorToastShown } from '@/lib/api-client'
-import { deleteModelConfig } from '@/lib/model-config-api'
+import {
+  deleteModelConfig,
+  deleteModelConfigs,
+} from '@/lib/model-config-api'
 import type { ModelConfig } from '@/types/resume'
 
 import { ConfirmActionDialog } from '@/components/confirm-action-dialog'
+import { GalleryPagination } from '@/components/gallery-pagination'
 import { ModelConfigFormPopover } from '@/components/model-config-form-popover'
-import { ModelProviderIcon } from '@/components/model-provider-icon'
+import { ModelConfigBulkDeleteAction } from '@/components/models/model-config-bulk-delete-action'
+import { ModelConfigTable } from '@/components/models/model-config-table'
+import {
+  MODEL_CONFIG_PAGE_SIZE,
+  useModelConfigTableSelection,
+} from '@/components/models/use-model-config-table-selection'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { DataTable } from '@/components/data-table'
 import {
   Empty,
-  EmptyContent,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
 } from '@/components/ui/empty'
-import { Spinner } from '@/components/ui/spinner'
 
 export function ModelConfigPanel({
   locale,
@@ -41,15 +41,35 @@ export function ModelConfigPanel({
 }) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null)
-  const contextWindowFormatter = useMemo(
-    () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US'),
-    [locale],
+  const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[]>([])
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
+  const [enteringModelId, setEnteringModelId] = useState<string | null>(null)
+  const [editDialog, setEditDialog] = useState<{
+    config: ModelConfig
+    returnFocus: HTMLButtonElement | null
+    session: number
+  } | null>(null)
+  const selection = useModelConfigTableSelection(configs)
+  const isDeleting = deletingModelId !== null || isBulkDeleting
+  const configIdSet = new Set(configs.map((config) => config.id))
+  const pendingBulkModelIds = pendingBulkDeleteIds.filter((id) =>
+    configIdSet.has(id),
+  )
+  const openEditDialog = useCallback(
+    (config: ModelConfig, returnFocus: HTMLButtonElement | null) => {
+      setEditDialog((current) => ({
+        config,
+        returnFocus,
+        session: (current?.session ?? 0) + 1,
+      }))
+    },
+    [],
   )
 
   async function confirmDeleteModel() {
     const modelId = pendingDeleteId
 
-    if (!modelId || deletingModelId) {
+    if (!modelId || isDeleting) {
       return
     }
 
@@ -57,7 +77,18 @@ export function ModelConfigPanel({
 
     try {
       await deleteModelConfig(modelId)
-      onChange(configs.filter((item) => item.id !== modelId))
+      const nextConfigs = configs.filter((item) => item.id !== modelId)
+      const nextTotalPages = Math.max(
+        1,
+        Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
+      )
+
+      selection.removeIds([modelId])
+      if (selection.currentPage > nextTotalPages) {
+        selection.changePage(nextTotalPages)
+      }
+
+      onChange(nextConfigs)
       toast.success(t.modelConfigDeleted, { closeButton: true })
     } catch (error) {
       console.error('Failed to delete model config.', error)
@@ -69,138 +100,45 @@ export function ModelConfigPanel({
     }
   }
 
-  const columns = useMemo<ColumnDef<ModelConfig>[]>(
-    () => [
-      {
-        accessorKey: 'model',
-        header: t.model,
-        cell: ({ row }) => {
-          return (
-            <div className="flex min-w-[220px] items-center gap-3">
-              <ModelProviderIcon
-                provider={row.original.iconProvider || row.original.provider}
-                size={22}
-              />
-              <div className="grid min-w-0 gap-1">
-                <span
-                  className="truncate font-medium text-foreground"
-                  title={getModelDisplayName(row.original)}
-                >
-                  {getModelDisplayName(row.original)}
-                </span>
-                <span
-                  className="truncate text-xs text-muted-foreground"
-                  title={row.original.apiUrl}
-                >
-                  {row.original.apiUrl}
-                </span>
-              </div>
-            </div>
-          )
-        },
-      },
-      {
-        accessorKey: 'apiKeyPreview',
-        header: () => <span className="block text-center">{t.apiKey}</span>,
-        cell: ({ row }) => (
-          <div className="flex justify-center">
-            <code className="text-xs text-muted-foreground">
-              {formatApiKeyPreview(row.original.apiKeyPreview)}
-            </code>
-          </div>
-        ),
-      },
-      {
-        accessorKey: 'contextWindowTokens',
-        header: () => <span className="block text-center">{t.contextWindow}</span>,
-        cell: ({ row }) => (
-          <div className="flex justify-center">
-            <span className="font-medium tabular-nums">
-              {contextWindowFormatter.format(row.original.contextWindowTokens)}
-            </span>
-          </div>
-        ),
-      },
-      {
-        accessorKey: 'supportsImage',
-        header: () => <span className="block text-center">{t.capabilities}</span>,
-        cell: ({ row }) => (
-          <div className="flex justify-center gap-1">
-            {row.original.supportsImage ? (
-              <Badge variant="outline">{t.imageInput}</Badge>
-            ) : null}
-            {row.original.supportsThinking ? (
-              <Badge variant="outline">{t.thinking}</Badge>
-            ) : null}
-            {!row.original.supportsImage && !row.original.supportsThinking ? (
-              <span className="text-muted-foreground">—</span>
-            ) : null}
-          </div>
-        ),
-      },
-      {
-        id: 'actions',
-        header: () => <span className="block text-center">{t.actions}</span>,
-        cell: ({ row }) => (
-          <div className="flex items-center justify-center gap-0.5">
-            <ModelConfigFormPopover
-              t={t}
-              locale={locale}
-              mode="edit"
-              initialConfig={row.original}
-              onSubmit={(nextConfig) =>
-                onChange(
-                  configs.map((item) =>
-                    item.id === row.original.id ? nextConfig : item,
-                  ),
-                )
-              }
-              trigger={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-md"
-                  disabled={deletingModelId !== null}
-                >
-                  <Pencil className="size-3.5" />
-                  <span className="sr-only">{t.editModelConfig}</span>
-                </Button>
-              }
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 rounded-md"
-              disabled={deletingModelId !== null}
-              onClick={() => setPendingDeleteId(row.original.id)}
-            >
-              {deletingModelId === row.original.id ? (
-                <Spinner aria-label={t.deleteModelConfig} />
-              ) : (
-                <Trash2 className="size-3.5" />
-              )}
-              <span className="sr-only">{t.deleteModelConfig}</span>
-            </Button>
-          </div>
-        ),
-      },
-    ],
-    [configs, contextWindowFormatter, deletingModelId, locale, onChange, t],
-  )
+  async function confirmBulkDeleteModels() {
+    const modelIds = pendingBulkModelIds
 
-  const addModelAction = (
-    <ModelConfigFormPopover
-      t={t}
-      locale={locale}
-      mode="create"
-      onSubmit={(nextConfig) => onChange([...configs, nextConfig])}
-    />
-  )
+    if (modelIds.length === 0 || isDeleting) {
+      setPendingBulkDeleteIds([])
+      return
+    }
+
+    setIsBulkDeleting(true)
+
+    try {
+      const response = await deleteModelConfigs(modelIds)
+      const deletedIdSet = new Set(response.ids)
+      const nextConfigs = configs.filter((item) => !deletedIdSet.has(item.id))
+      const nextTotalPages = Math.max(
+        1,
+        Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
+      )
+
+      selection.clearSelection()
+      if (selection.currentPage > nextTotalPages) {
+        selection.changePage(nextTotalPages)
+      }
+
+      onChange(nextConfigs)
+      setPendingBulkDeleteIds([])
+      toast.success(t.modelConfigsDeleted, { closeButton: true })
+    } catch (error) {
+      console.error('Failed to delete model configs.', error)
+      if (!isApiErrorToastShown(error)) {
+        toast.error(t.modelConfigsDeleteFailed, { closeButton: true })
+      }
+    } finally {
+      setIsBulkDeleting(false)
+    }
+  }
 
   return (
-    <div className="grid h-[calc(100vh-12rem)] min-h-[420px] gap-4 overflow-hidden">
+    <div data-slot="model-config-panel" className="grid gap-4">
       <ConfirmActionDialog
         open={pendingDeleteId !== null}
         title={t.deleteModelConfigConfirmTitle}
@@ -215,33 +153,106 @@ export function ModelConfigPanel({
         }}
       />
 
-      <Card className="flex min-h-0 flex-col rounded-(--radius-workspace) border-border/80">
-        <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-6">
-          {configs.length === 0 ? (
-            <Empty className="min-h-0 rounded-none p-6 md:p-8">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Bot />
-                </EmptyMedia>
-                <EmptyTitle>{t.emptyModelConfigs}</EmptyTitle>
-              </EmptyHeader>
-              <EmptyContent>{addModelAction}</EmptyContent>
-            </Empty>
-          ) : (
-            <>
-              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-                <Badge variant="outline">{`${configs.length} ${t.configuredModels}`}</Badge>
-                {addModelAction}
-              </div>
-              <div className="min-h-0 overflow-auto">
-                <DataTable
-                  columns={columns}
-                  data={configs}
-                  emptyMessage={t.emptyModelConfigs}
-                />
-              </div>
-            </>
-          )}
+      <ConfirmActionDialog
+        open={pendingBulkModelIds.length > 0}
+        title={t.deleteModelConfigsConfirmTitle}
+        description={t.deleteModelConfigsConfirmDescription}
+        confirmLabel={t.bulkDelete}
+        cancelLabel={t.cancel}
+        onConfirm={confirmBulkDeleteModels}
+        isPending={isBulkDeleting}
+        deferClose
+        onOpenChange={(open) => {
+          if (!open && !isBulkDeleting) {
+            setPendingBulkDeleteIds([])
+          }
+        }}
+      />
+
+      {editDialog ? (
+        <ModelConfigFormPopover
+          key={editDialog.session}
+          t={t}
+          locale={locale}
+          mode="edit"
+          defaultOpen
+          initialConfig={editDialog.config}
+          trigger={null}
+          restoreFocus={() => editDialog.returnFocus?.focus()}
+          onSubmit={(nextConfig) =>
+            onChange(
+              configs.map((item) =>
+                item.id === editDialog.config.id ? nextConfig : item,
+              ),
+            )
+          }
+        />
+      ) : null}
+
+      <Card className="min-w-0 rounded-(--radius-workspace) border-border/80 bg-muted/35 shadow-none py-0">
+        <CardContent className="grid min-w-0 gap-4 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Badge variant="outline">{`${configs.length} ${t.configuredModels}`}</Badge>
+            <div className="ml-auto flex items-center gap-2">
+              <ModelConfigBulkDeleteAction
+                label={t.bulkDelete}
+                selectedCount={selection.selectedIds.length}
+                disabled={isDeleting}
+                isPending={isBulkDeleting}
+                onDelete={() =>
+                  setPendingBulkDeleteIds([...selection.selectedIds])
+                }
+              />
+              <ModelConfigFormPopover
+                t={t}
+                locale={locale}
+                mode="create"
+                onSubmit={(nextConfig) => {
+                  const nextConfigs = [...configs, nextConfig]
+                  setEnteringModelId(nextConfig.id)
+                  selection.changePage(
+                    Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
+                  )
+                  onChange(nextConfigs)
+                }}
+              />
+            </div>
+          </div>
+          <div
+            data-slot="model-config-content"
+            className="flex min-h-[390px] min-w-0 flex-col gap-4"
+          >
+            {configs.length === 0 ? (
+              <Empty className="min-h-[390px] rounded-none p-6 md:p-8">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Bot />
+                  </EmptyMedia>
+                  <EmptyTitle>{t.emptyModelConfigs}</EmptyTitle>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <ModelConfigTable
+                locale={locale}
+                t={t}
+                configs={selection.pageConfigs}
+                rowSelection={selection.rowSelection}
+                onRowSelectionChange={selection.onRowSelectionChange}
+                deletingModelId={deletingModelId}
+                enteringModelId={enteringModelId}
+                disabled={isDeleting}
+                onDelete={setPendingDeleteId}
+                onEdit={openEditDialog}
+              />
+            )}
+            <GalleryPagination
+              currentPage={selection.currentPage}
+              totalPages={selection.totalPages}
+              t={t}
+              onPageChange={selection.changePage}
+              disabled={isDeleting}
+            />
+          </div>
         </CardContent>
       </Card>
     </div>

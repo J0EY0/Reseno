@@ -2,13 +2,12 @@ import { GalleryPagination } from "@/components/gallery-pagination";
 import {
   EmptyTrashState,
   RecycleBinThumbnail,
-  TrashItemRow,
-  TrashSelectionToolbar,
-} from "@/components/recycle-bin-item-row";
+  RecycleBinTable,
+  type RecycleBinTableItem,
+} from "@/components/recycle-bin-table";
 import { formatTrashTimestamp } from "@/components/recycle-bin-format";
 import { TabsContent } from "@/components/ui/tabs";
 import type { RecycleBinController } from "@/components/use-recycle-bin-controller";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import type { AppMessages, Locale } from "@/i18n";
 import type { ResumeData } from "@/types/resume";
 
@@ -24,66 +23,57 @@ export function DeletedTemplateTrashList({
   controller: RecycleBinController;
 }) {
   const items = controller.templates.items;
+  const tableItems: RecycleBinTableItem[] = items.map((item) => ({
+    id: item.id,
+    thumbnail: (
+      <RecycleBinThumbnail
+        t={t}
+        resume={templatePreviewResume}
+        template={item}
+        fontFamily={item.typography.fontFamily}
+        fontSize={item.typography.fontSize}
+        showEmptyTemplateImagePlaceholders
+      />
+    ),
+    title: item.name,
+    subtitle: item.description || t.templateDescriptionFallback,
+    deletedAtText: formatTrashTimestamp(locale, item.deletedAt),
+    isRestoring:
+      controller.runningActionKey === `template-restore:${item.id}`,
+    previewTarget: {
+      variant: "template",
+      title: item.name,
+      resume: templatePreviewResume,
+      template: item,
+    },
+  }));
 
   return (
     <TabsContent value="templates" className="mt-0">
-      <div className="overflow-hidden">
+      <div
+        data-slot="trash-list-content"
+        className="min-h-[390px] overflow-hidden"
+      >
         {items.length > 0 ? (
           <>
-            <TrashSelectionToolbar
-              selectionId="select-all-deleted-templates"
+            <RecycleBinTable
+              items={tableItems}
+              selectedIds={controller.templates.selectedPageIds}
+              itemLabel={t.templateRecycleBin}
+              deletedAtLabel={t.recycleBinDeletedAtLabel}
               selectAllLabel={t.selectAll}
-              restoreLabel={t.restoreSelected}
-              deleteLabel={t.deleteSelectedForever}
-              selectedCount={controller.templates.selectedPageIds.length}
-              itemCount={items.length}
-              onSelectAll={controller.templates.selectAll}
-              onRestore={controller.templates.restoreSelected}
-              onDelete={controller.templates.deleteSelected}
-              isRestoring={
-                controller.runningActionKey === "template-restore-selected"
-              }
+              selectLabel={t.selectItems}
+              previewLabel={t.preview}
+              restoreLabel={t.restore}
+              deleteLabel={t.deleteForever}
+              actionsLabel={t.actions}
+              emptyMessage={t.emptyTemplateTrash}
               disabled={controller.isBusy}
+              onPreview={controller.preview.show}
+              onSelectionChange={controller.templates.setSelectedIds}
+              onRestore={controller.templates.restoreOne}
+              onDelete={controller.templates.deleteOne}
             />
-
-            {items.map((item) => (
-              <ViewTransitionBoundary
-                key={item.id}
-                enter="fade-in"
-                exit="fade-out"
-                default="none"
-              >
-                <TrashItemRow
-                  thumbnail={
-                    <RecycleBinThumbnail
-                      t={t}
-                      resume={templatePreviewResume}
-                      template={item}
-                      fontFamily={item.typography.fontFamily}
-                      fontSize={item.typography.fontSize}
-                      showEmptyTemplateImagePlaceholders
-                    />
-                  }
-                  title={item.name}
-                  subtitle={item.description || t.templateDescriptionFallback}
-                  deletedAtText={`${t.recycleBinDeletedAtPrefix} ${formatTrashTimestamp(locale, item.deletedAt)}`}
-                  restoreLabel={t.restore}
-                  deleteLabel={t.deleteForever}
-                  isRestoring={
-                    controller.runningActionKey ===
-                    `template-restore:${item.id}`
-                  }
-                  disabled={controller.isBusy}
-                  selected={controller.templates.selectedIdSet.has(item.id)}
-                  selectLabel={t.selectItems}
-                  onSelectedChange={(selected) =>
-                    controller.templates.toggleSelected(item.id, selected)
-                  }
-                  onRestore={() => controller.templates.restoreOne(item.id)}
-                  onDelete={() => controller.templates.deleteOne(item.id)}
-                />
-              </ViewTransitionBoundary>
-            ))}
             <GalleryPagination
               currentPage={controller.currentPage}
               totalPages={controller.templates.totalPages}

@@ -10,19 +10,8 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { AppMessages } from '@/i18n'
@@ -44,6 +33,12 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
 
 const compactFieldClassName =
   'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
+
+const ResumeSectionDeleteDialog = lazy(() =>
+  import('./resume-section-delete-dialog').then((module) => ({
+    default: module.ResumeSectionDeleteDialog,
+  })),
+)
 
 export type ResumeSectionCardProps = {
   t: AppMessages
@@ -73,6 +68,7 @@ export function ResumeSectionCard({
   const [initiallyOpenItemId, setInitiallyOpenItemId] = useState<string | null>(
     null,
   )
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const Icon = sectionIcons[section.kind]
   const sectionTitle = section.title.trim() || t.sectionTitles[section.kind]
   const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
@@ -126,36 +122,27 @@ export function ResumeSectionCard({
           >
             <ArrowDown aria-hidden="true" />
           </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`${sectionTitle}: ${t.deleteSection}`}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <Trash2 aria-hidden="true" />
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent size="sm">
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t.confirmDeleteSectionTitle}</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {t.confirmDeleteSectionDescription}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{t.cancel}</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="destructive"
-                  onClick={() => onRemoveSection(section.id)}
-                >
-                  {t.deleteSection}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={`${sectionTitle}: ${t.deleteSection}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              setDeleteDialogOpen(true)
+            }}
+          >
+            <Trash2 aria-hidden="true" />
+          </Button>
+          <Suspense fallback={null}>
+            <ResumeSectionDeleteDialog
+              open={deleteDialogOpen}
+              sectionId={section.id}
+              t={t}
+              onOpenChange={setDeleteDialogOpen}
+              onRemoveSection={onRemoveSection}
+            />
+          </Suspense>
         </div>
       }
     >

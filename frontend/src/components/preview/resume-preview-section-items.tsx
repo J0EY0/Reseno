@@ -163,7 +163,7 @@ function TimelineItem({
 
   if (layout === "stacked") {
     heading = (
-      <div className="grid gap-1">
+      <div className="grid gap-1" data-resume-page-block="true">
         {title}
         {subtitle}
         {hasMetadata ? (
@@ -193,7 +193,10 @@ function TimelineItem({
     );
   } else if (layout === "compact") {
     heading = (
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1">
+      <div
+        className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1"
+        data-resume-page-block="true"
+      >
         {title}
         {hasPeriod ? (
           <span
@@ -232,7 +235,10 @@ function TimelineItem({
     );
   } else {
     heading = (
-      <div className="flex items-start justify-between gap-4 max-md:flex-col">
+      <div
+        className="flex items-start justify-between gap-4 max-md:flex-col"
+        data-resume-page-block="true"
+      >
         <div className="min-w-0">
           {title}
           {subtitle}
@@ -267,7 +273,7 @@ function TimelineItem({
   return (
     <article
       className={cn(
-        "resume-item relative grid gap-2",
+        "resume-item relative grid gap-[0.375em]",
         getDiffClassName(structuralDiff),
         markerDiff && "resume-diff-label-host",
       )}

@@ -33,7 +33,7 @@ export function EditorCardShell({
     <Card
       data-collapsed={collapsed ? 'true' : 'false'}
       className={cn(
-        'gap-0 overflow-hidden rounded-xl border-border/75 py-0 shadow-xs transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
+        'gap-0 overflow-hidden border-border/75 py-0 transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
         !collapsed && 'border-primary/20',
       )}
     >

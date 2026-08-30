@@ -104,7 +104,7 @@ export function AgentChangeSummary({
   );
 
   return (
-    <div className="mt-4 rounded-2xl border border-border/70 bg-muted/25 p-3">
+    <div className="mt-4 rounded-(--radius-card) border border-border/70 bg-muted/25 p-3">
       <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
         <ClipboardList className="size-3.5" />
         {t.agentChangeSummaryTitle}
@@ -120,7 +120,7 @@ export function AgentChangeSummary({
         </p>
       ) : null}
       {qualityWarnings.length > 0 ? (
-        <div className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
+        <div className="mt-1 text-xs leading-5 text-warning">
           <p>{formatCountMessage(t.agentQualityWarnings, qualityWarnings.length)}</p>
           <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
             {qualityWarnings.map((warning) => (
@@ -175,7 +175,7 @@ export function AgentChangeSummary({
                           <dt className="pt-1 text-[10px] font-medium uppercase tracking-[0.12em]">
                             {t.agentDiffAfter}
                           </dt>
-                          <dd className="whitespace-pre-wrap rounded-md bg-emerald-500/10 px-2 py-1 text-foreground">
+                          <dd className="whitespace-pre-wrap rounded-md bg-success/10 px-2 py-1 text-foreground">
                             {field.after}
                           </dd>
                         </div>

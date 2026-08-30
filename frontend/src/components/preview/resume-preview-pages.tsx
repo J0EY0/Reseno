@@ -6,7 +6,6 @@ import {
 } from "@/components/preview/resume-preview-content";
 import { TemplateImages } from "@/components/preview/resume-preview-media";
 import {
-  A4_HEIGHT_MM,
   createResumePageClassName,
   type ResumePreviewModel,
 } from "@/components/preview/resume-preview-model";
@@ -39,16 +38,12 @@ function StandardPaginatedResume({
   showEmptyTemplateImagePlaceholders,
 }: PaginatedResumePagesProps) {
   const pageClassName = createResumePageClassName(model);
-  const pageIndexes = Array.from(
-    { length: pagination.pageCount },
-    (_, index) => index,
-  );
 
   return (
     <section
       ref={forwardedRef}
       className="resume-page-stack"
-      data-resume-page-count={pagination.pageCount}
+      data-resume-page-count={pagination.pages.length}
       data-resume-pagination-ready={isPaginationReady ? "true" : "false"}
     >
       <div
@@ -61,13 +56,12 @@ function StandardPaginatedResume({
         <StandardResumeContent
           model={model}
           pageSections={model.fullPreviewSections}
-          breakBeforeSectionSpacers={pagination.breakBeforeSectionSpacers}
           enableContactLinks
         />
       </div>
 
-      {pageIndexes.map((pageIndex) => (
-        <div className="resume-page-shell" key={pageIndex}>
+      {pagination.pages.map((page, pageIndex) => (
+        <div className="resume-page-shell" key={page.startOffsetMm}>
           <p className="resume-page-label print:hidden">
             {`Page ${pageIndex + 1}`}
           </p>
@@ -88,22 +82,19 @@ function StandardPaginatedResume({
               className="resume-page-content-viewport"
               style={{
                 width: `${model.standardContentWidthMm}mm`,
-                height: `${model.standardContentHeightMm}mm`,
+                height: `${page.visibleHeightMm}mm`,
               }}
             >
               <div
                 className="resume-page-content-flow resume-page-content-fragment"
                 style={{
                   ...model.contentFlowStyle,
-                  transform: `translateY(-${pageIndex * model.standardContentHeightMm}mm)`,
+                  transform: `translateY(-${page.startOffsetMm}mm)`,
                 }}
               >
                 <StandardResumeContent
                   model={model}
                   pageSections={model.fullPreviewSections}
-                  breakBeforeSectionSpacers={
-                    pagination.breakBeforeSectionSpacers
-                  }
                   enableContactLinks
                 />
               </div>
@@ -126,16 +117,12 @@ function SidebarPaginatedResume({
   showEmptyTemplateImagePlaceholders,
 }: PaginatedResumePagesProps) {
   const pageClassName = createResumePageClassName(model);
-  const pageIndexes = Array.from(
-    { length: pagination.pageCount },
-    (_, index) => index,
-  );
 
   return (
     <section
       ref={forwardedRef}
       className="resume-page-stack"
-      data-resume-page-count={pagination.pageCount}
+      data-resume-page-count={pagination.pages.length}
       data-resume-pagination-ready={isPaginationReady ? "true" : "false"}
     >
       <div
@@ -148,13 +135,12 @@ function SidebarPaginatedResume({
         <ResumePageContent
           model={model}
           pageSections={model.fullPreviewSections}
-          breakBeforeSectionSpacers={pagination.breakBeforeSectionSpacers}
           enableContactLinks
         />
       </div>
 
-      {pageIndexes.map((pageIndex) => (
-        <div className="resume-page-shell" key={pageIndex}>
+      {pagination.pages.map((page, pageIndex) => (
+        <div className="resume-page-shell" key={page.startOffsetMm}>
           <p className="resume-page-label print:hidden">
             {`Page ${pageIndex + 1}`}
           </p>
@@ -164,25 +150,27 @@ function SidebarPaginatedResume({
             style={model.pageStyle}
           >
             <div
-              className="resume-page-flow resume-page-fragment resume-page-flow--sidebar"
-              style={{
-                ...model.pageStyle,
-                transform: `translateY(-${pageIndex * A4_HEIGHT_MM}mm)`,
-              }}
+              className="resume-page-flow-viewport"
+              style={{ height: `${page.visibleHeightMm}mm` }}
             >
-              <ResumePageContent
-                model={model}
-                pageSections={model.fullPreviewSections}
-                breakBeforeSectionSpacers={
-                  pagination.breakBeforeSectionSpacers
-                }
-                editableTemplateImages={editableTemplateImages}
-                showEmptyTemplateImagePlaceholders={
-                  showEmptyTemplateImagePlaceholders
-                }
-                onMoveTemplateImage={onMoveTemplateImage}
-                enableContactLinks
-              />
+              <div
+                className="resume-page-flow resume-page-fragment resume-page-flow--sidebar"
+                style={{
+                  ...model.pageStyle,
+                  transform: `translateY(-${page.startOffsetMm}mm)`,
+                }}
+              >
+                <ResumePageContent
+                  model={model}
+                  pageSections={model.fullPreviewSections}
+                  editableTemplateImages={editableTemplateImages}
+                  showEmptyTemplateImagePlaceholders={
+                    showEmptyTemplateImagePlaceholders
+                  }
+                  onMoveTemplateImage={onMoveTemplateImage}
+                  enableContactLinks
+                />
+              </div>
             </div>
           </article>
         </div>

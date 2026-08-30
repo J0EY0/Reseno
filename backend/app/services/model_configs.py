@@ -37,6 +37,10 @@ SUPPORTED_API_FAMILIES = {
 SUPPORTED_PROVIDER_KINDS = {"cloud", "local", "custom"}
 
 
+class ModelConfigNotFoundError(LookupError):
+    """Raised when a requested model config id does not exist."""
+
+
 def _row_to_response(row: Row) -> ModelConfigResponse:
     """Convert an llm_configs row into the frontend response shape."""
 
@@ -706,3 +710,40 @@ def delete_llm_config(conn: Connection, client_id: str) -> bool:
     )
 
     return cursor.rowcount > 0
+
+
+def delete_llm_configs(conn: Connection, client_ids: list[str]) -> list[str]:
+    """Soft-delete existing model configs atomically in request order."""
+
+    placeholders = ", ".join("?" for _ in client_ids)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT client_id
+            FROM llm_configs
+            WHERE client_id IN ({placeholders})
+            """,
+            client_ids,
+        ).fetchall()
+        if len(rows) != len(client_ids):
+            raise ModelConfigNotFoundError
+
+        conn.execute(
+            f"""
+            UPDATE llm_configs
+            SET
+                enabled = 0,
+                is_default = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE client_id IN ({placeholders})
+            """,
+            client_ids,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+    return client_ids

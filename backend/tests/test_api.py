@@ -1219,6 +1219,24 @@ def test_resume_save_rejects_incomplete_current_contract_without_new_version(
     assert [item["versionId"] for item in versions] == ["1"]
 
 
+def test_resume_save_accepts_compact_section_gap(client: TestClient) -> None:
+    created = client.post(
+        "/api/resumes",
+        json={"title": "Compact section gap"},
+    ).json()["data"]["resume"]
+
+    response = client.put(
+        f"/api/resumes/{created['id']}",
+        json=resume_save_payload(
+            created,
+            templateSettings={"sectionGap": 0.6},
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["resume"]["templateSettings"]["sectionGap"] == 0.6
+
+
 def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     client: TestClient,
 ) -> None:
@@ -1242,6 +1260,17 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
     assert created["versionId"] == "1"
     assert attachment_dir.exists()
 
+    lifecycle_section = {
+        "id": "lifecycle-skills",
+        "kind": "simple_list",
+        "title": "Skills",
+        "items": [
+            {
+                "id": "lifecycle-skills-content",
+                "content": "<ul><li>React</li><li>TypeScript</li></ul>",
+            }
+        ],
+    }
     save_payload = resume_save_payload(
         created["resume"],
         title="Backend Managed Resume",
@@ -1251,6 +1280,7 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
                 **created["resume"]["resume"]["basic"],
                 "name": "Backend Managed",
             },
+            "sections": [lifecycle_section],
         },
         templateSettings=None,
     )
@@ -1269,15 +1299,22 @@ def test_resume_command_flow_owns_identity_versions_and_lifecycle(
 
     trash_response = client.post(f"/api/resumes/{resume_id}/trash")
     deleted_list_response = client.get("/api/resumes?status=deleted")
+    trash_page_response = client.get("/api/workspace/pages/trash")
     save_deleted_response = client.put(f"/api/resumes/{resume_id}", json=save_payload)
     current_deleted_response = client.get(f"/api/resumes/{resume_id}")
     historical_response = client.get(f"/api/resumes/{resume_id}/versions/1")
 
     assert trash_response.status_code == 200
     assert trash_response.json()["data"]["resume"]["deletedAt"]
-    assert trash_response.json()["data"]["resume"]["resume"]["sections"] == []
+    saved_resume = first_save.json()["data"]["resume"]["resume"]
+    assert trash_response.json()["data"]["resume"]["resume"] == saved_resume
     assert trash_response.json()["data"]["resume"]["templateSettings"] is None
-    assert deleted_list_response.json()["data"]["resumes"][0]["id"] == resume_id
+    deleted_resume = deleted_list_response.json()["data"]["resumes"][0]
+    assert deleted_resume["id"] == resume_id
+    assert deleted_resume["resume"] == saved_resume
+    trash_page_resume = trash_page_response.json()["data"]["deletedResumes"][0]
+    assert trash_page_resume["id"] == resume_id
+    assert trash_page_resume["resume"] == saved_resume
     assert save_deleted_response.json()["code"] != 0
     assert current_deleted_response.json()["code"] != 0
     assert historical_response.status_code == 200

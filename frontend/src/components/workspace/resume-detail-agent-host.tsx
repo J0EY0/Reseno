@@ -1,9 +1,12 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 
+import {
+  AgentPanelLoadingBody,
+  CopilotPanelShell,
+} from "@/components/copilot/copilot-panel-shell";
+import type { AgentPanelStatus } from "@/components/copilot/copilot-panel-types";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
@@ -13,6 +16,8 @@ import {
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
+
+import "./resume-detail-agent-motion.css";
 
 let copilotPanelModulePromise:
   | Promise<typeof import("@/components/copilot/copilot-panel")>
@@ -33,93 +38,117 @@ const CopilotPanel = lazy(() =>
   })),
 );
 
-function AgentPanelFallback({
-  isPanelCollapsed,
+function ResumeDetailAgentPanel({
+  locale,
+  messages,
+  model,
+  panelStatus,
+  onStatusChange,
 }: {
-  isPanelCollapsed: boolean;
+  locale: Locale;
+  messages: AppMessages;
+  model: ResumeDetailWorkspaceModel;
+  panelStatus: AgentPanelStatus | null;
+  onStatusChange: (status: AgentPanelStatus) => void;
 }) {
-  const shouldDockAgent = !isPanelCollapsed;
+  const { commands, state } = model;
+  const shouldDockAgent = !state.agent.isPanelCollapsed;
+  const showStableLoader = panelStatus === null || panelStatus === "loading";
 
   return (
     <aside
       aria-hidden={!shouldDockAgent}
       className={cn(
         "agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden",
-        !shouldDockAgent && "pointer-events-none opacity-0",
+        !shouldDockAgent && "pointer-events-none",
       )}
       inert={!shouldDockAgent}
     >
-      <Card className="h-full min-h-0 rounded-[32px] border-border/60">
-        <CardContent className="space-y-5 p-4">
-          <div className="flex items-center gap-3">
-            <Skeleton className="size-11 rounded-2xl" />
-            <Skeleton className="h-5 w-28" />
+      <div className="agent-panel-motion-layer h-full">
+        <CopilotPanelShell t={messages}>
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            {showStableLoader ? (
+              <div
+                className="absolute inset-0 z-20 flex min-h-0 flex-col"
+                data-slot="agent-panel-stable-loader"
+              >
+                <AgentPanelLoadingBody t={messages} />
+              </div>
+            ) : null}
+            <div
+              aria-hidden={showStableLoader}
+              className={cn(
+                "flex min-h-0 flex-1 flex-col",
+                showStableLoader && "invisible",
+              )}
+              data-slot="agent-panel-live-body"
+              inert={showStableLoader}
+            >
+              <Suspense fallback={null}>
+                <CopilotPanel
+                  key={state.resumeItem?.id ?? "resume"}
+                  isPanelCollapsed={state.agent.isPanelCollapsed}
+                  resumeId={state.resumeItem?.id ?? undefined}
+                  t={messages}
+                  locale={locale}
+                  resume={state.resume}
+                  modelConfigs={state.agent.modelConfigs}
+                  selectedModelId={state.agent.selectedModelId}
+                  onSelectedModelChange={commands.agent.changeSelectedModel}
+                  hasAgentDraft={Boolean(state.agent.draft)}
+                  agentDraftState={state.agent.draftState}
+                  onPreviewAgentEdits={commands.agent.previewEdits}
+                  onReconcileAgentDraft={commands.agent.reconcileDraft}
+                  onRollbackAgentDraft={commands.agent.rollbackDraft}
+                  onApplyAgentDraft={commands.agent.applyDraft}
+                  onDiscardAgentDraft={commands.agent.discardDraft}
+                  onOpenModelSettings={commands.agent.openModelSettings}
+                  onStatusChange={onStatusChange}
+                  onBeforeSend={commands.agent.flushUserSettings}
+                />
+              </Suspense>
+            </div>
           </div>
-          <Skeleton className="h-36 rounded-3xl" />
-          <Skeleton className="h-48 rounded-3xl" />
-          <Skeleton className="mt-auto h-44 rounded-[26px]" />
-        </CardContent>
-      </Card>
+        </CopilotPanelShell>
+      </div>
     </aside>
-  );
-}
-
-function ResumeDetailAgentPanel({
-  locale,
-  messages,
-  model,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  model: ResumeDetailWorkspaceModel;
-}) {
-  const { commands, state } = model;
-
-  return (
-    <Suspense
-      fallback={
-        <AgentPanelFallback
-          isPanelCollapsed={state.agent.isPanelCollapsed}
-        />
-      }
-    >
-      <CopilotPanel
-        key={state.resumeItem?.id ?? "resume"}
-        isPanelCollapsed={state.agent.isPanelCollapsed}
-        resumeId={state.resumeItem?.id ?? undefined}
-        t={messages}
-        locale={locale}
-        resume={state.resume}
-        modelConfigs={state.agent.modelConfigs}
-        selectedModelId={state.agent.selectedModelId}
-        onSelectedModelChange={commands.agent.changeSelectedModel}
-        hasAgentDraft={Boolean(state.agent.draft)}
-        agentDraftState={state.agent.draftState}
-        onPreviewAgentEdits={commands.agent.previewEdits}
-        onReconcileAgentDraft={commands.agent.reconcileDraft}
-        onRollbackAgentDraft={commands.agent.rollbackDraft}
-        onApplyAgentDraft={commands.agent.applyDraft}
-        onDiscardAgentDraft={commands.agent.discardDraft}
-        onOpenModelSettings={commands.agent.openModelSettings}
-        onBeforeSend={commands.agent.flushUserSettings}
-      />
-    </Suspense>
   );
 }
 
 function ResumeDetailAgentSeamRail({
   messages,
   model,
+  panelStatus,
 }: {
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
+  panelStatus: AgentPanelStatus | null;
 }) {
   const { commands, state } = model;
   const isCollapsed = state.agent.isPanelCollapsed;
   const tooltip = isCollapsed
     ? messages.agentExpandPanel
     : messages.agentCollapsePanel;
-  const RailIcon = isCollapsed ? ChevronLeft : ChevronRight;
+  const railStatus =
+    panelStatus === "responding"
+      ? "responding"
+      : panelStatus === "loading"
+        ? "loading"
+        : panelStatus === "error"
+          ? "error"
+          : state.agent.draft
+            ? "attention"
+            : "idle";
+  const statusLabel =
+    railStatus === "responding"
+      ? messages.agentThinking
+      : railStatus === "loading"
+        ? messages.agentHistoryLoading
+        : railStatus === "error"
+          ? messages.agentHistoryLoadFailed
+          : railStatus === "attention"
+            ? messages.agentDraftReady
+            : null;
 
   return (
     <div
@@ -127,6 +156,7 @@ function ResumeDetailAgentSeamRail({
         "agent-seam-rail flex print:hidden",
         isCollapsed && "agent-seam-rail--collapsed",
       )}
+      data-agent-status={railStatus}
     >
       <TooltipProvider delayDuration={180}>
         <Tooltip>
@@ -139,6 +169,7 @@ function ResumeDetailAgentSeamRail({
               aria-expanded={!state.agent.isPanelCollapsed}
               className="agent-seam-rail-button"
               onFocus={() => void loadCopilotPanelModule()}
+              onPointerDown={() => void loadCopilotPanelModule()}
               onPointerEnter={() => void loadCopilotPanelModule()}
               onClick={() => {
                 commands.agent.setPanelCollapsed(
@@ -147,8 +178,19 @@ function ResumeDetailAgentSeamRail({
               }}
             >
               <span className="agent-seam-rail-track" aria-hidden="true">
-                <RailIcon className="agent-seam-rail-icon" />
+                <ChevronLeft className="agent-seam-rail-icon agent-seam-rail-icon--collapsed" />
+                <ChevronRight className="agent-seam-rail-icon agent-seam-rail-icon--expanded" />
               </span>
+              <span
+                aria-hidden="true"
+                className="agent-seam-rail-status"
+                data-slot="agent-status-indicator"
+              />
+              {isCollapsed && statusLabel ? (
+                <span className="sr-only" role="status">
+                  {statusLabel}
+                </span>
+              ) : null}
             </Button>
           </TooltipTrigger>
           <TooltipContent side="left">{tooltip}</TooltipContent>
@@ -168,9 +210,28 @@ export function ResumeDetailAgentHost({
   model: ResumeDetailWorkspaceModel;
 }) {
   const { state } = model;
+  const resumeId = state.resumeItem?.id;
   const [hasMountedAgent, setHasMountedAgent] = useState(
     () => !state.agent.isPanelCollapsed,
   );
+  const [reportedStatus, setReportedStatus] = useState<{
+    resumeId: string | undefined;
+    status: AgentPanelStatus;
+  } | null>(null);
+  const handleStatusChange = useCallback(
+    (status: AgentPanelStatus) => {
+      setReportedStatus((current) =>
+        current && current.resumeId === resumeId && current.status === status
+          ? current
+          : { resumeId, status },
+      );
+    },
+    [resumeId],
+  );
+  const panelStatus =
+    reportedStatus && reportedStatus.resumeId === resumeId
+      ? reportedStatus.status
+      : null;
   const shouldActivateAgent = !state.agent.isPanelCollapsed;
   // This one-way latch keeps the conversation controller alive when the dock
   // collapses. The resumeId key remains the only reason to remount its owner.
@@ -181,12 +242,18 @@ export function ResumeDetailAgentHost({
 
   return (
     <>
-      <ResumeDetailAgentSeamRail messages={messages} model={model} />
+      <ResumeDetailAgentSeamRail
+        messages={messages}
+        model={model}
+        panelStatus={panelStatus}
+      />
       {shouldMountAgent ? (
         <ResumeDetailAgentPanel
           locale={locale}
           messages={messages}
           model={model}
+          panelStatus={panelStatus}
+          onStatusChange={handleStatusChange}
         />
       ) : null}
     </>

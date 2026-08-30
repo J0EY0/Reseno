@@ -4,6 +4,7 @@ import { useRef, type ChangeEvent } from "react";
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
 import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
+import { useResumeThumbnailFonts } from "@/components/preview/resume-thumbnail-fonts";
 import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
@@ -24,7 +25,9 @@ interface TemplateGalleryProps {
   defaultTemplateId: string;
   isImporting: boolean;
   isCreating: boolean;
+  openingTemplateId: string | null;
   settingDefaultTemplateId: string | null;
+  onPreloadTemplateDetail: () => void;
   onOpenTemplate: (templateId: string) => void;
   onSetDefaultTemplate: (templateId: string) => void;
   onCreateCustomTemplate: () => void;
@@ -39,7 +42,9 @@ export function TemplateGallery({
   defaultTemplateId,
   isImporting,
   isCreating,
+  openingTemplateId,
   settingDefaultTemplateId,
+  onPreloadTemplateDetail,
   onOpenTemplate,
   onSetDefaultTemplate,
   onCreateCustomTemplate,
@@ -53,6 +58,11 @@ export function TemplateGallery({
     pageSize,
     onDeleteTemplates,
   });
+  useResumeThumbnailFonts(
+    gallery.paginatedTemplates.map(
+      (template) => template.typography.fontFamily,
+    ),
+  );
 
   function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -121,14 +131,15 @@ export function TemplateGallery({
             <Button
               type="button"
               disabled={isImporting || isCreating}
+              aria-busy={isCreating || undefined}
               onClick={onCreateCustomTemplate}
             >
               {isCreating ? (
-                <Spinner data-icon="inline-start" aria-label={t.newTemplate} />
+                <Spinner data-icon="inline-start" aria-label={t.creating} />
               ) : (
                 <CopyPlus data-icon="inline-start" />
               )}
-              {t.newTemplate}
+              {isCreating ? t.creating : t.newTemplate}
             </Button>
           </>
         }
@@ -144,7 +155,8 @@ export function TemplateGallery({
       ) : null}
       <div
         ref={gridRef}
-        className="grid auto-rows-fr grid-cols-[repeat(auto-fit,minmax(208px,228px))] gap-4"
+        data-slot="gallery-grid"
+        className="grid auto-rows-fr grid-cols-[repeat(auto-fill,minmax(208px,228px))] justify-center gap-4"
       >
         <TemplateGalleryGrid
           t={t}
@@ -153,7 +165,9 @@ export function TemplateGallery({
           defaultTemplateId={defaultTemplateId}
           isSelecting={gallery.isSelecting}
           selectedIdSet={gallery.selectedIdSet}
+          openingTemplateId={openingTemplateId}
           settingDefaultTemplateId={settingDefaultTemplateId}
+          onPreloadTemplateDetail={onPreloadTemplateDetail}
           onOpenTemplate={onOpenTemplate}
           onRequestDelete={gallery.requestDelete}
           onSetDefaultTemplate={onSetDefaultTemplate}

@@ -2,12 +2,35 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const sourceRoot = new URL("../src/", import.meta.url);
-const [mainEntry, fontLoader, previewStyles] = await Promise.all([
+const [
+  mainEntry,
+  fontLoader,
+  thumbnailFonts,
+  thumbnail,
+  resumeGallery,
+  templateGallery,
+  recycleBinPanel,
+  previewStyles,
+] = await Promise.all([
   readFile(new URL("main.tsx", sourceRoot), "utf8"),
   readFile(
     new URL("components/preview/resume-font-loader.ts", sourceRoot),
     "utf8",
   ),
+  readFile(
+    new URL("components/preview/resume-thumbnail-fonts.ts", sourceRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("components/preview/resume-thumbnail.tsx", sourceRoot),
+    "utf8",
+  ),
+  readFile(new URL("components/resume-gallery.tsx", sourceRoot), "utf8"),
+  readFile(
+    new URL("components/templates/template-gallery.tsx", sourceRoot),
+    "utf8",
+  ),
+  readFile(new URL("components/recycle-bin-panel.tsx", sourceRoot), "utf8"),
   readFile(
     new URL("components/preview/resume-preview-styles.ts", sourceRoot),
     "utf8",
@@ -40,6 +63,25 @@ assert(
     fontLoader,
   ),
   "Every persisted resume font must map to its required Noto fallback.",
+);
+assert(
+  /export function useResumeThumbnailFonts\(/.test(thumbnailFonts) &&
+    /useEffect\([\s\S]*?loadResumeFontStyles\(/.test(thumbnailFonts) &&
+    /\[needsSansStyles, needsSerifStyles\]/.test(thumbnailFonts),
+  "Thumbnail font styles must be prepared once by a shared owner hook.",
+);
+assert(
+  !thumbnail.includes("useResumeFontReadyToken") &&
+    !thumbnail.includes("resume-font-loader"),
+  "ResumeThumbnail must stay render-only and must not maintain font-ready state.",
+);
+assert(
+  [resumeGallery, templateGallery, recycleBinPanel].every(
+    (source) =>
+      source.includes("useResumeThumbnailFonts") &&
+      /useResumeThumbnailFonts\(/.test(source),
+  ),
+  "Each thumbnail collection must prepare its visible font set at collection scope.",
 );
 assert(
   /inter:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&

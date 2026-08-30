@@ -82,7 +82,7 @@ export function AgentUserMessageRow({
             className={cn(
               "ml-auto min-w-8 max-w-full self-end overflow-visible text-foreground",
               isEditing
-                ? "!w-full !rounded-2xl border border-border/70 !bg-background !px-2.5 !py-1.5 shadow-[0_4px_18px_rgba(15,23,42,0.08)] transition-[border-color,box-shadow] focus-within:border-ring/35 focus-within:shadow-[0_8px_26px_rgba(15,23,42,0.10)]"
+                ? "!w-full !rounded-xl border border-border/70 !bg-background !px-2.5 !py-1.5 shadow-sm transition-[border-color,box-shadow] focus-within:border-ring/35 focus-within:shadow-md"
                 : "w-fit !rounded-xl bg-secondary !px-3 !py-1 text-[15px] leading-5",
             )}
           >

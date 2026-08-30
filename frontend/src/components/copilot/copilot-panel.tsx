@@ -1,10 +1,9 @@
 import { PromptInputProvider } from '@/components/ai-elements/prompt-input-context'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
-import { useMemo } from 'react'
+import { useLayoutEffect, useMemo } from 'react'
 
 import { CopilotComposer } from './copilot-composer'
 import { CopilotConversationView } from './copilot-conversation-view'
+import { CopilotPanelBodyFrame } from './copilot-panel-shell'
 import type { CopilotPanelProps } from './copilot-panel-types'
 import { useAgentComposerLayout } from './use-agent-composer-layout'
 import { useAgentConversation } from './use-agent-conversation'
@@ -32,6 +31,7 @@ export function CopilotPanel({
   onApplyAgentDraft,
   onDiscardAgentDraft,
   onOpenModelSettings,
+  onStatusChange,
   onBeforeSend,
 }: CopilotPanelProps) {
   const agentModelConfigs = useMemo(
@@ -78,87 +78,49 @@ export function CopilotPanel({
   })
   const { composerRef, conversationContextRef, conversationLayoutRef } =
     useAgentComposerLayout()
-  const shouldDockAgent = !isPanelCollapsed
-  const globalDropActive = shouldDockAgent
+  const globalDropActive = !isPanelCollapsed
 
-  const panelSurface = (
-    <TooltipProvider>
-      <section
-        className={cn(
-          'agent-panel-card flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm print:hidden',
-          'h-full xl:self-start',
-        )}
-      >
-        <div className="px-4 pb-2 pt-3">
-          <h3 className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-            {t.aiTitle}
-          </h3>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div
-            className="agent-thread-layout relative flex min-h-0 flex-1 flex-col"
-            ref={conversationLayoutRef}
-          >
-            <CopilotConversationView
-              conversation={conversation}
-              conversationContextRef={conversationContextRef}
-              draft={{
-                hasAgentDraft,
-                onApply: conversation.applyAgentDraft,
-                onDiscard: conversation.discardAgentDraft,
-                state: agentDraftState,
-              }}
-              hasConfiguredModel={Boolean(selectedModel)}
-              messageActions={messageActions}
-              onOpenModelSettings={onOpenModelSettings}
-              promptActions={promptActions}
-              t={t}
-            />
-            <div
-              aria-hidden="true"
-              className="agent-thread-fade pointer-events-none absolute inset-y-0 left-3 right-3 z-[5]"
-              data-slot="agent-thread-fade"
-            />
-            <section
-              className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3"
-              data-slot="agent-composer"
-              ref={composerRef}
-            >
-              <div className="pointer-events-auto relative">
-                <CopilotComposer
-                  globalDropActive={globalDropActive}
-                  isResponding={conversation.isResponding}
-                  isSessionReady={conversation.isSessionReady}
-                  modelConfigs={agentModelConfigs}
-                  onOpenModelSettings={onOpenModelSettings}
-                  onSelectedModelChange={onSelectedModelChange}
-                  promptActions={promptActions}
-                  selectedModel={selectedModel}
-                  selectedModelId={selectedModelId}
-                  t={t}
-                />
-              </div>
-            </section>
-          </div>
-        </div>
-      </section>
-    </TooltipProvider>
-  )
+  useLayoutEffect(() => {
+    onStatusChange(conversation.status)
+  }, [conversation.status, onStatusChange])
 
   return (
     <PromptInputProvider>
-      <aside
-        aria-hidden={!shouldDockAgent}
-        className={cn(
-          'agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden',
-          'transition-opacity duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
-          !shouldDockAgent && 'pointer-events-none opacity-0',
-        )}
-        inert={!shouldDockAgent}
+      <CopilotPanelBodyFrame
+        composer={
+          <CopilotComposer
+            globalDropActive={globalDropActive}
+            isResponding={conversation.isResponding}
+            isSessionReady={conversation.isSessionReady}
+            modelConfigs={agentModelConfigs}
+            onOpenModelSettings={onOpenModelSettings}
+            onSelectedModelChange={onSelectedModelChange}
+            promptActions={promptActions}
+            selectedModel={selectedModel}
+            selectedModelId={selectedModelId}
+            t={t}
+          />
+        }
+        composerRef={composerRef}
+        conversationLayoutRef={conversationLayoutRef}
       >
-        {panelSurface}
-      </aside>
+        <CopilotConversationView
+          key={conversation.sessionResetVersion}
+          conversation={conversation}
+          conversationContextRef={conversationContextRef}
+          draft={{
+            hasAgentDraft,
+            onApply: conversation.applyAgentDraft,
+            onDiscard: conversation.discardAgentDraft,
+            state: agentDraftState,
+          }}
+          hasConfiguredModel={Boolean(selectedModel)}
+          messageActions={messageActions}
+          onOpenModelSettings={onOpenModelSettings}
+          promptActions={promptActions}
+          t={t}
+        />
+      </CopilotPanelBodyFrame>
     </PromptInputProvider>
   )
 }

@@ -27,6 +27,9 @@ const [
   avatarEntry,
   avatarController,
   avatarCanvas,
+  galleryPagination,
+  galleryToolbar,
+  saveStatusButton,
   resumeGallery,
   resumeGalleryCard,
   resumeGalleryGrid,
@@ -35,6 +38,7 @@ const [
   templateGalleryCard,
   templateGalleryGrid,
   templateGalleryController,
+  workspaceSkeletons,
   codeBlock,
   codeBlockHighlighter,
   sourceBudgets,
@@ -46,6 +50,9 @@ const [
   readSource("components/editor/avatar-crop-dialog.tsx"),
   readSource("components/editor/use-avatar-crop.ts"),
   readSource("components/editor/avatar-crop-canvas.tsx"),
+  readSource("components/gallery-pagination.tsx"),
+  readSource("components/gallery-toolbar.tsx"),
+  readSource("components/save-status-button.tsx"),
   readSource("components/resume-gallery.tsx"),
   readSource("components/resume-gallery-card.tsx"),
   readSource("components/resume-gallery-grid.tsx"),
@@ -54,6 +61,7 @@ const [
   readSource("components/templates/template-gallery-card.tsx"),
   readSource("components/templates/template-gallery-grid.tsx"),
   readSource("components/templates/use-template-gallery-controller.ts"),
+  readSource("components/workspace-skeletons.tsx"),
   readSource("components/ai-elements/code-block.tsx"),
   readSource("components/ai-elements/code-block-highlighter.ts"),
   readFile(new URL("verify-source-budgets.mjs", import.meta.url), "utf8"),
@@ -116,23 +124,109 @@ assert.equal(
   JSON.stringify({ x: 20, y: 0, width: 80, height: 100 }),
   "Avatar crop drawing must preserve direction while clamping to the stage.",
 );
+assert.match(
+  saveStatusButton,
+  /import[\s\S]*Popover[\s\S]*PopoverContent[\s\S]*PopoverTrigger[\s\S]*from ["']@\/components\/ui\/popover["']/,
+  "Resume version history must use the installed shadcn Popover primitive.",
+);
+assert.doesNotMatch(
+  saveStatusButton,
+  /HoverCard|components\/ui\/hover-card/,
+  "Actionable resume version history must not use a hover-only surface.",
+);
+assert.match(
+  saveStatusButton,
+  /const saveButton = \([\s\S]*onClick=\{onSave\}[\s\S]*role="group"[\s\S]*\{saveButton\}[\s\S]*<PopoverTrigger asChild>[\s\S]*aria-label=\{versionsLabel\}[\s\S]*<PopoverContent[\s\S]*aria-label=\{versionsLabel\}/,
+  "Saving must remain a direct action while version history receives its own keyboard and touch trigger.",
+);
+assert.match(
+  saveStatusButton,
+  /onClick=\{\(\) => onSelectVersion\(version\.versionId\)\}/,
+  "Selecting a resume version must keep the Popover stable while loading that version.",
+);
+assert.match(
+  saveStatusButton,
+  /role="status"[\s\S]{0,160}aria-live="polite"[\s\S]{0,160}aria-atomic="true"/,
+  "Saving and saved state changes must be announced without moving focus.",
+);
+assert.doesNotMatch(
+  saveStatusButton,
+  /setVersionsOpen\(false\)/,
+  "Selecting a resume version must not dismiss its hovered or focused history surface.",
+);
+assert.match(
+  galleryPagination,
+  /useLocation\(\)[\s\S]*new URLSearchParams\(location\.search\)/,
+  "Gallery pagination links must derive navigable URLs from the current route.",
+);
+assert.doesNotMatch(
+  galleryPagination,
+  /href=["']#["']/,
+  "Gallery pagination must not use fragment placeholders for URL-backed pages.",
+);
+for (const modifier of ["metaKey", "ctrlKey", "shiftKey", "altKey"]) {
+  assert(
+    galleryPagination.includes(`event.${modifier}`),
+    `Gallery pagination must preserve native ${modifier} link behavior.`,
+  );
+}
 for (const [entry, card, controller, name] of [
   [resumeGallery, resumeGalleryCard, resumeGalleryController, "resume"],
   [templateGallery, templateGalleryCard, templateGalleryController, "template"],
 ]) {
   assert(
-    /GalleryGrid/.test(entry) &&
+      /GalleryGrid/.test(entry) &&
       /GalleryController/.test(entry) &&
       /memo\(function .*GalleryCard/.test(card) &&
-      /-preview-\$\{/.test(card) &&
+      card.includes("ResumeThumbnail") &&
       controller.includes("useDeferredValue") &&
       controller.includes("selectedIdSet") &&
       controller.includes("safeCurrentPage") &&
       card.includes("event.metaKey") &&
       card.includes('event.key === " "'),
-    `The ${name} gallery must retain memoized cards, preview transitions, selection, and pagination ownership.`,
+    `The ${name} gallery must retain memoized cards, preview rendering, selection, and pagination ownership.`,
   );
 }
+for (const [gallery, name] of [
+  [resumeGallery, "resume"],
+  [templateGallery, "template"],
+]) {
+  assert.match(
+    gallery,
+    /import \{[^}]*\bCopyPlus\b[^}]*\} from ["']lucide-react["'][\s\S]*?<CopyPlus data-icon="inline-start" \/>/,
+    `The ${name} gallery create action must use the shared CopyPlus resource-create icon.`,
+  );
+}
+assert(
+  [resumeGallery, templateGallery, workspaceSkeletons].every((source) =>
+    /grid-cols-\[repeat\(auto-fill,minmax\(208px,228px\)\)\][^"\n]*justify-center/.test(
+      source,
+    ),
+  ),
+  "Resume, template, and skeleton galleries must center the available tracks while sparse rows start in the first track.",
+);
+assert(
+  /const canBulkDelete = isSelecting && selectedCount >= 2/.test(
+    galleryToolbar,
+  ) &&
+    galleryToolbar.includes('data-gallery-bulk-action=""') &&
+    /data-state=\{canBulkDelete \? "open" : "closed"\}/.test(
+      galleryToolbar,
+    ) &&
+    galleryToolbar.includes("transition-all duration-150 ease-out") &&
+    galleryToolbar.includes(
+      'gridTemplateColumns: canBulkDelete ? "1fr" : "0fr"',
+    ) &&
+    galleryToolbar.includes('marginLeft: canBulkDelete ? 0 : "-0.5rem"') &&
+    galleryToolbar.includes("opacity: canBulkDelete ? 1 : 0") &&
+    galleryToolbar.includes('"translateX(0.25rem) scale(0.98)"') &&
+    /aria-hidden=\{!canBulkDelete\}/.test(galleryToolbar) &&
+    /inert=\{!canBulkDelete\}/.test(galleryToolbar) &&
+    /key=\{selectedCount\}/.test(galleryToolbar) &&
+    galleryToolbar.includes("animate-in fade-in-0 zoom-in-95 duration-150") &&
+    galleryToolbar.includes('<Trash2 data-icon="inline-start"'),
+  "Gallery bulk actions and count changes must retain a restrained, accessible state transition.",
+);
 const getStaticClassTokens = (tag) =>
   tag.match(/\bclassName="([^"]*)"/)?.[1].split(/\s+/) ?? [];
 for (const [

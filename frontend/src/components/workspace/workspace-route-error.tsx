@@ -11,7 +11,7 @@ export function WorkspaceRouteError({
 }) {
   return (
     <div className="flex flex-1 p-4">
-      <Card className="flex min-h-80 flex-1 items-center justify-center rounded-3xl border-border/80 shadow-sm">
+      <Card className="flex min-h-80 flex-1 items-center justify-center rounded-(--radius-workspace) border-border/80 shadow-none">
         <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
           <p className="text-sm text-muted-foreground">
             {messages.contentNotLoaded}

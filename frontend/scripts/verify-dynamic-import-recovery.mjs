@@ -227,10 +227,10 @@ assert.match(
   /<Suspense[\s\S]{0,900}\{children\}\s*<DynamicImportRecoveryReset\s*\/>[\s\S]{0,200}<\/Suspense>/,
   "The reload guard reset must render after the lazy child inside resolved Suspense content.",
 );
-assert.match(appSource, /function AppRouteFallback[\s\S]{0,240}<Spinner/);
+assert.match(appSource, /const appRouteFallback = \([\s\S]{0,240}<Spinner/);
 assert.doesNotMatch(
   appSource.slice(
-    appSource.indexOf("function AppRouteFallback"),
+    appSource.indexOf("const appRouteFallback"),
     appSource.indexOf("function DynamicImportRecoveryReset"),
   ),
   /Skeleton/,

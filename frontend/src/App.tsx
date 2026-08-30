@@ -1,4 +1,11 @@
-import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Navigate,
   Route,
@@ -18,59 +25,42 @@ import {
   saveLocalePreferenceApi,
 } from "@/lib/preference-api";
 import { createWorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
-import { clearWorkspaceLateralRouteMemory } from "@/lib/workspace-route-memory";
 import { useAuthGate } from "@/hooks/use-auth-gate";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  loadModelsWorkspacePage,
+  loadResumeDetailWorkspacePage,
+  loadResumeGalleryWorkspacePage,
+  loadSettingsWorkspacePage,
+  loadTemplateDetailWorkspacePage,
+  loadTemplateGalleryWorkspacePage,
+  loadTrashWorkspacePage,
+  loadWorkspaceLateralLayout,
+} from "@/components/workspace/workspace-route-loaders";
 import { clearDynamicImportReloadGuard } from "@/lib/dynamic-import-recovery";
+import { createRouteLoader } from "@/lib/route-loader";
 
-const loadAuthStatusErrorPage = () =>
-  import("@/components/auth/auth-status-error-page").then((module) => ({
-    default: module.AuthStatusErrorPage,
-  }));
-const loadLoginPage = () =>
-  import("@/components/auth/login-page").then((module) => ({
-    default: module.LoginPage,
-  }));
-const loadSetupPage = () =>
-  import("@/components/auth/setup-page").then((module) => ({
-    default: module.SetupPage,
-  }));
-const loadResumeGalleryWorkspacePage = () =>
-  import("@/components/workspace/resume-gallery-workspace-page").then(
-    (module) => ({ default: module.ResumeGalleryWorkspacePage }),
-  );
-const loadResumeDetailWorkspacePage = () =>
-  import("@/components/workspace/resume-detail-workspace-page").then(
-    (module) => ({ default: module.ResumeDetailWorkspacePage }),
-  );
-const loadModelsWorkspacePage = () =>
-  import("@/components/workspace/models-workspace-page").then((module) => ({
-    default: module.ModelsWorkspacePage,
-  }));
-const loadSettingsWorkspacePage = () =>
-  import("@/components/workspace/settings-workspace-page").then((module) => ({
-    default: module.SettingsWorkspacePage,
-  }));
-const loadTemplateGalleryWorkspacePage = () =>
-  import("@/components/workspace/template-gallery-workspace-page").then(
-    (module) => ({ default: module.TemplateGalleryWorkspacePage }),
-  );
-const loadTemplateDetailWorkspacePage = () =>
-  import("@/components/workspace/template-detail-workspace-page").then(
-    (module) => ({ default: module.TemplateDetailWorkspacePage }),
-  );
-const loadTrashWorkspacePage = () =>
-  import("@/components/workspace/trash-workspace-page").then((module) => ({
-    default: module.TrashWorkspacePage,
-  }));
-const loadPdfExportRenderer = () =>
-  import("@/components/pdf-export-renderer").then((module) => ({
-    default: module.PdfExportRenderer,
-  }));
+const loadAuthStatusErrorPage = createRouteLoader(
+  () => import("@/components/auth/auth-status-error-page"),
+  "AuthStatusErrorPage",
+);
+const loadLoginPage = createRouteLoader(
+  () => import("@/components/auth/login-page"),
+  "LoginPage",
+);
+const loadSetupPage = createRouteLoader(
+  () => import("@/components/auth/setup-page"),
+  "SetupPage",
+);
+const loadPdfExportRenderer = createRouteLoader(
+  () => import("@/components/pdf-export-renderer"),
+  "PdfExportRenderer",
+);
 const AuthStatusErrorPage = lazy(loadAuthStatusErrorPage);
 const LoginPage = lazy(loadLoginPage);
 const SetupPage = lazy(loadSetupPage);
 const ResumeGalleryWorkspacePage = lazy(loadResumeGalleryWorkspacePage);
+const WorkspaceLateralLayout = lazy(loadWorkspaceLateralLayout);
 const ResumeDetailWorkspacePage = lazy(loadResumeDetailWorkspacePage);
 const ModelsWorkspacePage = lazy(loadModelsWorkspacePage);
 const SettingsWorkspacePage = lazy(loadSettingsWorkspacePage);
@@ -79,33 +69,23 @@ const TemplateDetailWorkspacePage = lazy(loadTemplateDetailWorkspacePage);
 const TrashWorkspacePage = lazy(loadTrashWorkspacePage);
 const PdfExportRenderer = lazy(loadPdfExportRenderer);
 
-function getInitialLocale(isAuthenticated: boolean) {
-  return isAuthenticated
-    ? (loadLocalePreferenceApi() ?? getSystemLocale())
-    : getSystemLocale();
-}
-
-function AppRouteFallback() {
-  return (
-    <div className="flex min-h-svh items-center justify-center bg-background">
-      <Spinner className="size-8 text-muted-foreground" />
-    </div>
-  );
-}
+const appRouteFallback = (
+  <div className="grid h-svh place-items-center">
+    <Spinner className="size-8" />
+  </div>
+);
 
 function DynamicImportRecoveryReset() {
-  const { key } = useLocation();
+  const key = useLocation().key;
 
-  useEffect(() => {
-    clearDynamicImportReloadGuard();
-  }, [key]);
+  useEffect(clearDynamicImportReloadGuard, [key]);
 
   return null;
 }
 
 function AppRouteSuspense({ children }: { children: ReactNode }) {
   return (
-    <Suspense fallback={<AppRouteFallback />}>
+    <Suspense fallback={appRouteFallback}>
       {children}
       <DynamicImportRecoveryReset />
     </Suspense>
@@ -151,11 +131,12 @@ function DocumentMetadata({
 function App() {
   const { pathname } = useLocation();
   const [initialLocale] = useState(() =>
-    getInitialLocale(loadAuthSession()),
+    (loadAuthSession() && loadLocalePreferenceApi()) || getSystemLocale(),
   );
   const [preferencesPersistence] = useState(() =>
     createWorkspacePreferencesPersistence(),
   );
+  const hasEnteredAuthenticatedAppRef = useRef(false);
   const {
     canPersistLocale,
     changeLocale,
@@ -175,9 +156,19 @@ function App() {
   });
 
   useEffect(() => {
-    if (authGate.phase !== "app") {
-      clearWorkspaceLateralRouteMemory();
+    if (authGate.phase === "app") {
+      hasEnteredAuthenticatedAppRef.current = true;
+      return;
     }
+    if (!hasEnteredAuthenticatedAppRef.current) {
+      return;
+    }
+
+    hasEnteredAuthenticatedAppRef.current = false;
+    void import("@/lib/workspace-route-memory").then(
+      ({ clearWorkspaceLateralRouteMemory }) =>
+        clearWorkspaceLateralRouteMemory(),
+    );
   }, [authGate.phase]);
 
   useEffect(() => {
@@ -243,6 +234,15 @@ function App() {
       <ResumeGalleryWorkspacePage
         locale={locale}
         messages={messages}
+        persistence={preferencesPersistence}
+      />
+    </AppRouteSuspense>
+  );
+  const renderWorkspaceLateralLayout = () => (
+    <AppRouteSuspense>
+      <WorkspaceLateralLayout
+        locale={locale}
+        messages={messages}
         onLocaleChange={changeLocale}
         onLogout={logout}
         persistence={preferencesPersistence}
@@ -266,7 +266,6 @@ function App() {
         locale={locale}
         messages={messages}
         onLocaleChange={changeLocale}
-        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -287,8 +286,6 @@ function App() {
       <TemplateGalleryWorkspacePage
         locale={locale}
         messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -309,8 +306,6 @@ function App() {
       <TrashWorkspacePage
         locale={locale}
         messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
         persistence={preferencesPersistence}
       />
     </AppRouteSuspense>
@@ -321,12 +316,8 @@ function App() {
     </AppRouteSuspense>
   );
 
-  if (!isMessagesReady) {
-    return <AppRouteFallback />;
-  }
-
-  if (authGate.phase === "loading") {
-    return <AppRouteFallback />;
+  if (!isMessagesReady || authGate.phase === "loading") {
+    return appRouteFallback;
   }
 
   if (authGate.phase === "error") {
@@ -370,13 +361,15 @@ function App() {
       <DocumentMetadata locale={locale} messages={messages} />
       <Routes>
         <Route path="/pdf-export" element={renderPdfExport()} />
-        <Route path="/resume" element={renderResumeGalleryWorkspace()} />
+        <Route element={renderWorkspaceLateralLayout()}>
+          <Route path="/resume" element={renderResumeGalleryWorkspace()} />
+          <Route path="/models" element={renderModelsWorkspace()} />
+          <Route path="/settings" element={renderSettingsWorkspace()} />
+          <Route path="/templates" element={renderTemplateGalleryWorkspace()} />
+          <Route path="/trash" element={renderTrashWorkspace()} />
+        </Route>
         <Route path="/resume/:id" element={renderResumeDetailWorkspace()} />
-        <Route path="/models" element={renderModelsWorkspace()} />
-        <Route path="/settings" element={renderSettingsWorkspace()} />
-        <Route path="/templates" element={renderTemplateGalleryWorkspace()} />
         <Route path="/template/:id" element={renderTemplateDetailWorkspace()} />
-        <Route path="/trash" element={renderTrashWorkspace()} />
         <Route path="/login" element={<Navigate to="/resume" replace />} />
         <Route path="/setup" element={<Navigate to="/resume" replace />} />
         <Route path="*" element={<Navigate to="/resume" replace />} />

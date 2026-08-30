@@ -4,7 +4,7 @@ import { FieldLegend, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { AppMessages } from '@/i18n'
-import { isRichTextEmpty } from '@/lib/rich-text'
+import { isRichTextEmpty, serializeHighlightsToHtml } from '@/lib/rich-text'
 import { parseCommaSeparatedItems } from '@/lib/resume-sections'
 
 const RichHighlightsEditor = lazy(() =>
@@ -16,15 +16,25 @@ const RichHighlightsEditor = lazy(() =>
 export const compactResumeFieldClassName =
   'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
 
-function RichHighlightsEditorSkeleton() {
+function RichHighlightsEditorSkeleton({ value }: { value: string[] }) {
+  const editorValue = serializeHighlightsToHtml(value)
+
   return (
     <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30">
-      <div className="flex items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
-        {Array.from({ length: 8 }, (_, index) => (
+      <div className="flex flex-wrap items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
+        {Array.from({ length: 7 }, (_, index) => (
           <Skeleton key={index} className="size-8 rounded-md" />
         ))}
       </div>
-      <Skeleton className="h-[120px] rounded-none" />
+      <div className="min-h-[140px] bg-background/65 px-3 py-2.5">
+        <Skeleton>
+          <div
+            aria-hidden="true"
+            className="tiptap rich-text-editor rich-text-editor-scroll invisible max-h-[160px] min-h-[120px] cursor-text overflow-y-auto overscroll-contain text-sm leading-[1.12] text-foreground outline-none"
+            dangerouslySetInnerHTML={{ __html: editorValue || '<p></p>' }}
+          />
+        </Skeleton>
+      </div>
     </div>
   )
 }
@@ -46,7 +56,7 @@ export function HighlightsField({
       >
         {t.fieldLabels.highlights}
       </FieldLegend>
-      <Suspense fallback={<RichHighlightsEditorSkeleton />}>
+      <Suspense fallback={<RichHighlightsEditorSkeleton value={value} />}>
         <RichHighlightsEditor
           t={t}
           value={value}
@@ -76,7 +86,13 @@ export function SimpleContentField({
       >
         {t.fieldLabels.content}
       </FieldLegend>
-      <Suspense fallback={<RichHighlightsEditorSkeleton />}>
+      <Suspense
+        fallback={
+          <RichHighlightsEditorSkeleton
+            value={isRichTextEmpty(value) ? [] : [value]}
+          />
+        }
+      >
         <RichHighlightsEditor
           t={t}
           value={isRichTextEmpty(value) ? [] : [value]}

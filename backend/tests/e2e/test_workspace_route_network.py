@@ -27,6 +27,7 @@ import pytest
 from playwright.sync_api import (
     Browser,
     BrowserContext,
+    Locator,
     Page,
     Request,
     Route,
@@ -313,8 +314,15 @@ def _install_workspace_frame_recorder(page: Page) -> None:
               const resumeGallery = visibleElement(
                 'input[name="resume-search"]',
               );
-              const routeSpinner = visibleElement(
-                '#root > .min-h-svh > svg[role="status"][aria-label="Loading"]',
+              const appFallback = visibleElement(
+                '#root .min-h-svh > svg[role="status"][aria-label="Loading"]',
+              );
+              const routeSkeleton = visibleElement(
+                '#root [data-slot="gallery-route-skeleton"], ' +
+                '#root [data-slot="workspace-route-skeleton"], ' +
+                '#root [data-slot="model-config-panel-skeleton"], ' +
+                '#root [data-slot="workspace-panel-skeleton"], ' +
+                '#root [data-slot="workspace-preview-skeleton"]',
               );
               const sidebar = visibleElement('[data-slot="sidebar-container"]');
               const resumeDetail = visibleElement(
@@ -349,7 +357,8 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 time: now,
                 path: window.location.pathname,
                 hasResumeGallery: Boolean(resumeGallery),
-                hasRouteSpinner: Boolean(routeSpinner),
+                hasAppFallback: Boolean(appFallback),
+                hasRouteSkeleton: Boolean(routeSkeleton),
                 hasSidebar: Boolean(sidebar),
                 hasResumeDetail: Boolean(resumeDetail),
                 resumePreviewFits,
@@ -415,6 +424,7 @@ def _assert_visible_once_mounted(
     assert all(states[first_visible_frame:]), _boolean_runs(states)
 
 
+@pytest.mark.browser_smoke
 @pytest.mark.parametrize(
     ("route", "expected_paths"),
     [
@@ -456,6 +466,7 @@ def test_workspace_route_request_allowlist(
     assert Counter(actual_paths) == Counter(expected_paths)
 
 
+@pytest.mark.browser_smoke
 def test_resume_editor_route_request_allowlist(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -615,7 +626,12 @@ def _seed_sourced_agent_response(page: Page, frontend_url: str) -> str:
     return resume_id
 
 
-def _seed_long_agent_history(page: Page, frontend_url: str) -> str:
+def _seed_long_agent_history(
+    page: Page,
+    frontend_url: str,
+    *,
+    rounds: int = 12,
+) -> str:
     create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
     assert create_response.ok
     resume_id = str(create_response.json()["data"]["resume"]["id"])
@@ -624,9 +640,9 @@ def _seed_long_agent_history(page: Page, frontend_url: str) -> str:
     ).json()["data"]
     messages: list[dict[str, Any]] = []
 
-    for index in range(12):
-        user_id = f"user-scroll-{index}"
-        assistant_id = f"assistant-scroll-{index}"
+    for index in range(rounds):
+        user_id = f"user-scroll-{resume_id}-{index}"
+        assistant_id = f"assistant-scroll-{resume_id}-{index}"
         user_text = f"第 {index + 1} 轮：分析这份简历与目标岗位的匹配情况。"
         assistant_text = (
             f"第 {index + 1} 轮分析结果：保留已有事实，"
@@ -789,6 +805,162 @@ def test_agent_history_fades_without_masking_native_scrollbar(
             """
         )
     finally:
+        context.close()
+
+
+def test_agent_history_hydrates_over_multiple_frames(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    held_run_routes: list[Route] = []
+
+    try:
+        resume_id = _seed_long_agent_history(page, frontend_url, rounds=30)
+        run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+
+        def hold_run(route: Route) -> None:
+            held_run_routes.append(route)
+
+        page.route(run_pattern, hold_run)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="domcontentloaded",
+        )
+        page.locator(
+            '[data-slot="agent-panel-stable-loader"] [data-slot="agent-panel-loading"]'
+        ).wait_for(
+            state="visible",
+            timeout=5_000,
+        )
+        page.wait_for_function("() => window.performance != null")
+        page.evaluate(
+            """
+            () => {
+              window.__agentHistoryFrames = [];
+              let remainingFrames = 120;
+              const sample = () => {
+                const owner = document.querySelector('.agent-thread-scroll');
+                window.__agentHistoryFrames.push({
+                  bottomGap: owner instanceof HTMLElement
+                    ? owner.scrollHeight - owner.clientHeight - owner.scrollTop
+                    : null,
+                  count: document.querySelectorAll(
+                    '.agent-thread-scroll .is-user, ' +
+                    '.agent-thread-scroll .is-assistant',
+                  ).length,
+                  hasNewest: document.body.textContent.includes(
+                    '第 30 轮：分析这份简历与目标岗位的匹配情况。',
+                  ),
+                  hasOldest: document.body.textContent.includes(
+                    '第 1 轮：分析这份简历与目标岗位的匹配情况。',
+                  ),
+                  time: performance.now(),
+                });
+                remainingFrames -= 1;
+                if (remainingFrames > 0) {
+                  requestAnimationFrame(sample);
+                }
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+
+        page.unroute(run_pattern, hold_run)
+        for route in held_run_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        held_run_routes.clear()
+
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '.agent-thread-scroll .is-user, ' +
+              '.agent-thread-scroll .is-assistant',
+            ).length === 60
+            """,
+            timeout=5_000,
+        )
+        page.wait_for_timeout(100)
+        frames = page.evaluate("() => window.__agentHistoryFrames")
+        positive_frames = [frame for frame in frames if frame["count"] > 0]
+        positive_counts = [frame["count"] for frame in positive_frames]
+
+        assert positive_counts, frames
+        assert positive_counts[0] < 60, frames
+        assert positive_counts[-1] == 60, frames
+        assert len(set(positive_counts)) >= 2, frames
+        assert positive_frames[0]["hasNewest"], frames
+        assert not positive_frames[0]["hasOldest"], frames
+        assert any(
+            frame["count"] < 60
+            and frame["bottomGap"] is not None
+            and abs(frame["bottomGap"]) <= 1
+            for frame in positive_frames
+        ), frames
+        expect(
+            page.get_by_text(
+                "第 1 轮：分析这份简历与目标岗位的匹配情况。",
+                exact=True,
+            )
+        ).to_be_visible()
+        expect(
+            page.get_by_text(
+                "第 12 轮：分析这份简历与目标岗位的匹配情况。",
+                exact=True,
+            )
+        ).to_be_visible()
+        expect(
+            page.get_by_text(
+                "第 30 轮：分析这份简历与目标岗位的匹配情况。",
+                exact=True,
+            )
+        ).to_be_visible()
+        page.wait_for_function(
+            """
+            () => {
+              const owner = document.querySelector('.agent-thread-scroll');
+              return owner instanceof HTMLElement &&
+                Math.abs(
+                  owner.scrollHeight - owner.clientHeight - owner.scrollTop
+                ) <= 1;
+            }
+            """
+        )
+        latest_user_message = page.locator(
+            ".agent-thread-scroll .is-user",
+            has_text="第 30 轮：分析这份简历与目标岗位的匹配情况。",
+        )
+        latest_user_message.hover()
+        latest_user_message.get_by_role(
+            "button",
+            name="修改消息",
+            exact=True,
+        ).click()
+        expect(latest_user_message.locator("textarea")).to_have_value(
+            "第 30 轮：分析这份简历与目标岗位的匹配情况。"
+        )
+        latest_user_message.get_by_role(
+            "button",
+            name="取消",
+            exact=True,
+        ).click()
+        expect(latest_user_message.locator("textarea")).to_have_count(0)
+    finally:
+        for route in held_run_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
         context.close()
 
 
@@ -1424,6 +1596,309 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
         context.close()
 
 
+@pytest.mark.browser_smoke
+def test_first_agent_expand_keeps_one_stable_loading_shell(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    held_module_routes: list[Route] = []
+    held_run_routes: list[Route] = []
+    module_pattern = "**/src/components/copilot/copilot-panel.tsx*"
+    run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+
+    def hold_module(route: Route) -> None:
+        held_module_routes.append(route)
+
+    def hold_run(route: Route) -> None:
+        held_run_routes.append(route)
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        page.route(module_pattern, hold_module)
+        page.route(run_pattern, hold_run)
+
+        trigger = page.locator(".resume-workspace .agent-seam-rail-button")
+        trigger.evaluate("button => button.click()")
+
+        loading = page.locator(
+            '[data-slot="agent-panel-stable-loader"] '
+            '[data-slot="agent-panel-loading"][role="status"]'
+        )
+        loading.wait_for(state="visible", timeout=5_000)
+        page.wait_for_timeout(320)
+        fallback_shell = page.evaluate(
+            """
+            () => {
+              const shell = document.querySelector(
+                '.resume-workspace .agent-panel-card',
+              );
+              if (!(shell instanceof HTMLElement)) {
+                throw new Error('Missing Agent loading shell.');
+              }
+              const loading = shell.querySelector(
+                '[data-slot="agent-panel-stable-loader"] ' +
+                '[data-slot="agent-panel-loading"]',
+              );
+              window.__firstAgentPanelShell = shell;
+              window.__firstAgentPanelLoading = loading;
+              const rect = shell.getBoundingClientRect();
+              const loadingRect = loading?.getBoundingClientRect();
+              return {
+                count: document.querySelectorAll(
+                  '.resume-workspace .agent-panel-card',
+                ).length,
+                radius: getComputedStyle(shell).borderTopLeftRadius,
+                rect: {
+                  height: rect.height,
+                  width: rect.width,
+                  x: rect.x,
+                  y: rect.y,
+                },
+                loadingRect: loadingRect ? {
+                  height: loadingRect.height,
+                  width: loadingRect.width,
+                  x: loadingRect.x,
+                  y: loadingRect.y,
+                } : null,
+                statusCount: document.querySelectorAll(
+                  '[data-slot="agent-panel-stable-loader"] ' +
+                  '[data-slot="agent-panel-loading"][role="status"]',
+                ).length,
+              };
+            }
+            """
+        )
+        assert fallback_shell["count"] == 1, fallback_shell
+        assert fallback_shell["statusCount"] == 1, fallback_shell
+
+        page.unroute(module_pattern, hold_module)
+        for route in held_module_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        held_module_routes.clear()
+        page.wait_for_function(
+            "() => window.__firstAgentPanelShell?.isConnected === true"
+        )
+        expect(page.locator(".resume-workspace .agent-seam-rail")).to_have_attribute(
+            "data-agent-status", "loading"
+        )
+        assert held_run_routes
+
+        hydration_shell = page.evaluate(
+            """
+            () => {
+              const shell = document.querySelector(
+                '.resume-workspace .agent-panel-card',
+              );
+              const rect = shell?.getBoundingClientRect();
+              const loading = shell?.querySelector(
+                '[data-slot="agent-panel-stable-loader"] ' +
+                '[data-slot="agent-panel-loading"]',
+              );
+              const loadingRect = loading?.getBoundingClientRect();
+              return {
+                count: document.querySelectorAll(
+                  '.resume-workspace .agent-panel-card',
+                ).length,
+                sameNode: shell === window.__firstAgentPanelShell,
+                sameLoadingNode:
+                  loading === window.__firstAgentPanelLoading,
+                radius: shell ? getComputedStyle(shell).borderTopLeftRadius : null,
+                rect: rect ? {
+                  height: rect.height,
+                  width: rect.width,
+                  x: rect.x,
+                  y: rect.y,
+                } : null,
+                loadingRect: loadingRect ? {
+                  height: loadingRect.height,
+                  width: loadingRect.width,
+                  x: loadingRect.x,
+                  y: loadingRect.y,
+                } : null,
+                statusCount: document.querySelectorAll(
+                  '[data-slot="agent-panel-stable-loader"] ' +
+                  '[data-slot="agent-panel-loading"][role="status"]',
+                ).length,
+              };
+            }
+            """
+        )
+        assert hydration_shell["count"] == 1, hydration_shell
+        assert hydration_shell["sameNode"], hydration_shell
+        assert hydration_shell["sameLoadingNode"], hydration_shell
+        assert hydration_shell["radius"] == fallback_shell["radius"]
+        assert hydration_shell["rect"] == fallback_shell["rect"]
+        assert hydration_shell["statusCount"] == 1, hydration_shell
+        assert hydration_shell["loadingRect"] is not None, hydration_shell
+        assert fallback_shell["loadingRect"] is not None, fallback_shell
+        assert all(
+            abs(
+                hydration_shell["loadingRect"][key] - fallback_shell["loadingRect"][key]
+            )
+            <= 1.5
+            for key in ("height", "width", "x", "y")
+        ), {"fallback": fallback_shell, "hydration": hydration_shell}
+
+        page.unroute(run_pattern, hold_run)
+        for route in held_run_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        held_run_routes.clear()
+        loading.wait_for(state="hidden")
+        ready_shell = page.evaluate(
+            """
+            () => {
+              const shell = document.querySelector(
+                '.resume-workspace .agent-panel-card',
+              );
+              return {
+                count: document.querySelectorAll(
+                  '.resume-workspace .agent-panel-card',
+                ).length,
+                sameNode: shell === window.__firstAgentPanelShell,
+              };
+            }
+            """
+        )
+        assert ready_shell == {"count": 1, "sameNode": True}
+    finally:
+        for route in held_module_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        for route in held_run_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
+def test_collapsed_agent_rail_keeps_active_run_status(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    run_id = "agent-rail-status-run"
+    held_event_routes: list[Route] = []
+    run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+    events_pattern = f"**/api/agent/runs/{run_id}/events*"
+
+    try:
+        resume_detail = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        base_resume = resume_detail["resume"]["resume"]
+
+        def fulfill_active_run(route: Route) -> None:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "code": 0,
+                        "message": "OK",
+                        "data": {
+                            "id": run_id,
+                            "resumeId": resume_id,
+                            "baseResume": base_resume,
+                            "status": "active",
+                            "executionState": "running",
+                            "errorCode": None,
+                            "lastEventId": 0,
+                        },
+                    }
+                ),
+            )
+
+        def hold_events(route: Route) -> None:
+            held_event_routes.append(route)
+
+        page.route(run_pattern, fulfill_active_run)
+        page.route(events_pattern, hold_events)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        trigger = page.locator(".resume-workspace .agent-seam-rail-button")
+        trigger.evaluate("button => button.click()")
+        rail = page.locator(".resume-workspace .agent-seam-rail")
+        expect(rail).to_have_attribute("data-agent-status", "responding")
+
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        page.wait_for_timeout(320)
+        expect(rail).to_be_visible()
+        indicator = rail.locator('[data-slot="agent-status-indicator"]')
+        indicator_state = indicator.evaluate(
+            """
+            element => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return {
+                height: rect.height,
+                opacity: Number.parseFloat(style.opacity),
+                width: rect.width,
+              };
+            }
+            """
+        )
+        assert indicator_state["height"] > 0, indicator_state
+        assert indicator_state["width"] > 0, indicator_state
+        assert indicator_state["opacity"] > 0.35, indicator_state
+        expect(trigger).to_have_attribute("aria-label", "展开 Agent 对话栏")
+        expect(rail.get_by_role("status")).to_have_text("正在生成建议…")
+        assert page.locator('.agent-panel-dock[aria-hidden="true"]').count() == 1
+        assert page.locator(".agent-panel-dock").evaluate("element => element.inert")
+
+        page.unroute(events_pattern, hold_events)
+        terminal_event = (
+            "id: 1\nevent: run_done\ndata: "
+            '{"status":"completed","executionState":"succeeded",'
+            '"errorCode":null}\n\n'
+        )
+        for route in held_event_routes:
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=terminal_event,
+            )
+        held_event_routes.clear()
+        expect(rail).to_have_attribute("data-agent-status", "idle")
+        expect(indicator).to_have_css("opacity", "0")
+        assert rail.get_by_role("status").count() == 0
+    finally:
+        for route in held_event_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
 def test_compact_resume_agent_expands_inline_from_right_rail(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -1442,7 +1917,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         )
 
         header = page.locator("header")
-        workspace = page.locator("main.resume-workspace")
+        workspace = page.locator(".resume-workspace")
         workspace.wait_for(state="visible")
 
         assert header.get_by_text("ResuMate AI", exact=True).count() == 0
@@ -1454,11 +1929,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         )
         assert page.get_by_role("dialog").count() == 0
 
-        trigger = page.get_by_role(
-            "button",
-            name="展开 Agent 对话栏",
-            exact=True,
-        )
+        trigger = workspace.locator(".agent-seam-rail-button")
         trigger.wait_for(state="visible")
         assert trigger.count() == 1
         assert trigger.get_attribute("aria-expanded") == "false"
@@ -1471,6 +1942,269 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
 
         panel = workspace.locator("section.agent-panel-card")
         assert not panel.is_visible()
+
+        def start_motion_probe() -> None:
+            page.evaluate(
+                """
+                () => {
+                  const samples = [];
+                  const startedAt = performance.now();
+
+                  const sample = timestamp => {
+                    const workspace = document.querySelector(
+                      '.resume-workspace',
+                    );
+                    const dock = workspace?.querySelector(
+                      '.agent-panel-dock',
+                    );
+                    const panelLayer = document.querySelector(
+                      '.resume-workspace .agent-panel-motion-layer',
+                    );
+                    const panelCard = document.querySelector(
+                      '.resume-workspace .agent-panel-card',
+                    );
+                    const editor = document.querySelector(
+                      '.resume-workspace .resume-editor-panel',
+                    );
+                    const previewFrame = document.querySelector(
+                      '.resume-workspace .resume-preview-scale-frame',
+                    );
+                    const previewBox = document.querySelector(
+                      '.resume-workspace .resume-preview-scale-box',
+                    );
+                    const previewContent = document.querySelector(
+                      '.resume-workspace .resume-preview-scale-content',
+                    );
+                    const workspaceStyle = workspace
+                      ? getComputedStyle(workspace)
+                      : null;
+                    const dockStyle = dock ? getComputedStyle(dock) : null;
+                    const panelStyle = panelLayer
+                      ? getComputedStyle(panelLayer)
+                      : null;
+                    const previewStyle = previewBox
+                      ? getComputedStyle(previewBox)
+                      : null;
+                    const frameRect = previewFrame?.getBoundingClientRect();
+                    const contentRect = previewContent?.getBoundingClientRect();
+                    const dockRect = dock?.getBoundingClientRect();
+                    const panelCardRect = panelCard?.getBoundingClientRect();
+                    const editorRect = editor?.getBoundingClientRect();
+                    const editorStyle = editor
+                      ? getComputedStyle(editor)
+                      : null;
+                    const editorCenterOwner = editorRect
+                      ? document.elementFromPoint(
+                          editorRect.left + editorRect.width / 2,
+                          Math.min(
+                            editorRect.bottom - 1,
+                            editorRect.top + 24,
+                          ),
+                        )
+                      : null;
+                    const columns = workspaceStyle?.gridTemplateColumns
+                      .split(/\\s+/)
+                      .map(value => Number.parseFloat(value)) ?? [];
+                    samples.push({
+                      elapsed: timestamp - startedAt,
+                      panelColumnWidth: columns[3] ?? null,
+                      dockOverflow: dockStyle?.overflow ?? null,
+                      panelLayerWidth: panelLayer
+                        ? panelLayer.getBoundingClientRect().width
+                        : null,
+                      panelLeftClip: dockRect && panelCardRect
+                        ? Math.max(0, dockRect.left - panelCardRect.left)
+                        : null,
+                      panelRightClip: dockRect && panelCardRect
+                        ? Math.max(0, panelCardRect.right - dockRect.right)
+                        : null,
+                      panelOpacity: panelStyle
+                        ? Number.parseFloat(panelStyle.opacity)
+                        : null,
+                      panelTransform: panelStyle?.transform ?? null,
+                      previewTransform: previewStyle?.transform ?? null,
+                      previewContentWillChange: previewContent
+                        ? getComputedStyle(previewContent).willChange
+                        : null,
+                      previewAnimationCount: previewBox
+                        ? previewBox.getAnimations().length
+                        : 0,
+                      previewClippedLeft: frameRect && contentRect
+                        ? Math.max(0, frameRect.left - contentRect.left)
+                        : null,
+                      previewClippedRight: frameRect && contentRect
+                        ? Math.max(0, contentRect.right - frameRect.right)
+                        : null,
+                      workspaceAnimationCount: workspace
+                        ? workspace.getAnimations().filter(animation =>
+                            ['pending', 'running'].includes(animation.playState)
+                          ).length
+                        : 0,
+                      editorVisible: editor instanceof HTMLElement &&
+                        editor.isConnected &&
+                        editorStyle?.display !== 'none' &&
+                        editorStyle?.visibility !== 'hidden' &&
+                        Number(editorStyle?.opacity ?? 0) > 0.99 &&
+                        Boolean(editorRect?.width) &&
+                        Boolean(editorRect?.height) &&
+                        editor.contains(editorCenterOwner),
+                      editorRect: editorRect ? {
+                        x: editorRect.x,
+                        y: editorRect.y,
+                        width: editorRect.width,
+                        height: editorRect.height,
+                      } : null,
+                    });
+                  };
+
+                  sample(startedAt);
+                  window.__agentPanelMotionProbe = {
+                    done: false,
+                    samples,
+                  };
+
+                  const tick = timestamp => {
+                    sample(timestamp);
+                    if (timestamp - startedAt < 320) {
+                      requestAnimationFrame(tick);
+                      return;
+                    }
+                    window.__agentPanelMotionProbe.done = true;
+                  };
+
+                  requestAnimationFrame(tick);
+                }
+                """
+            )
+
+        def finish_motion_probe(*, expanded: bool) -> None:
+            page.wait_for_function(
+                "() => window.__agentPanelMotionProbe?.done === true"
+            )
+            samples = page.evaluate(
+                """
+                () => {
+                  const result = window.__agentPanelMotionProbe;
+                  delete window.__agentPanelMotionProbe;
+                  return result.samples;
+                }
+                """
+            )
+            panel_opacities = [
+                sample["panelOpacity"]
+                for sample in samples
+                if sample["panelOpacity"] is not None
+            ]
+            panel_column_widths = [
+                sample["panelColumnWidth"]
+                for sample in samples
+                if sample["panelColumnWidth"] is not None
+            ]
+            panel_layer_widths = [
+                sample["panelLayerWidth"]
+                for sample in samples
+                if sample["panelLayerWidth"] is not None
+            ]
+            preview_clipping = [
+                max(sample["previewClippedLeft"], sample["previewClippedRight"])
+                for sample in samples
+                if sample["previewClippedLeft"] is not None
+                and sample["previewClippedRight"] is not None
+            ]
+            width_deltas = [
+                current - previous
+                for previous, current in zip(
+                    panel_column_widths,
+                    panel_column_widths[1:],
+                    strict=False,
+                )
+            ]
+            intermediate_widths = {
+                round(width) for width in panel_column_widths if 1 < width < 359
+            }
+            middle_panel_reveal_samples = [
+                sample
+                for sample in samples
+                if sample["panelColumnWidth"] is not None
+                and 72 < sample["panelColumnWidth"] < 288
+                and sample["panelOpacity"] is not None
+                and sample["panelOpacity"] > 0.05
+                and sample["panelLeftClip"] is not None
+                and sample["panelRightClip"] is not None
+            ]
+
+            assert len(samples) >= 4, samples
+            assert len(intermediate_widths) >= 3, samples
+            assert max(sample["workspaceAnimationCount"] for sample in samples) <= 1
+            assert all(
+                sample["dockOverflow"] in (None, "hidden") for sample in samples
+            ), samples
+            assert all(abs(width - 360) <= 1 for width in panel_layer_widths), samples
+            assert max(panel_opacities) - min(panel_opacities) >= 0.8, samples
+            assert any(0.05 < opacity < 0.95 for opacity in panel_opacities), samples
+            assert (panel_opacities[-1] >= 0.95) is expanded, samples
+            assert all(
+                sample["previewTransform"] in (None, "none") for sample in samples
+            ), samples
+            assert all(
+                sample["previewContentWillChange"] in (None, "auto")
+                for sample in samples
+            ), {
+                "message": (
+                    "The scaled preview kept a persistent compositor hint while "
+                    "its grid track was moving."
+                ),
+                "samples": samples,
+            }
+            assert all(sample["previewAnimationCount"] == 0 for sample in samples)
+            assert max(preview_clipping) <= 1.5, samples
+            assert all(sample["editorVisible"] for sample in samples), {
+                "message": "The resume editor disappeared during Agent motion.",
+                "samples": samples,
+            }
+            editor_rects = [
+                sample["editorRect"]
+                for sample in samples
+                if sample["editorRect"] is not None
+            ]
+            assert editor_rects, samples
+            for editor_rect in editor_rects[1:]:
+                for key in ("x", "y", "width", "height"):
+                    assert abs(editor_rect[key] - editor_rects[0][key]) <= 1, {
+                        "message": (
+                            "The fixed editor pane moved while the Agent column "
+                            "was resizing."
+                        ),
+                        "samples": samples,
+                    }
+            if expanded:
+                assert len(middle_panel_reveal_samples) >= 2, samples
+                assert (
+                    max(
+                        sample["panelLeftClip"]
+                        for sample in middle_panel_reveal_samples
+                    )
+                    <= 1.5
+                ), middle_panel_reveal_samples
+                assert (
+                    min(
+                        sample["panelRightClip"]
+                        for sample in middle_panel_reveal_samples
+                    )
+                    >= 24
+                ), middle_panel_reveal_samples
+                assert all(delta >= -1 for delta in width_deltas), samples
+                assert panel_column_widths[-1] >= 359, samples
+            else:
+                assert all(delta <= 1 for delta in width_deltas), samples
+                assert panel_column_widths[-1] <= 1, samples
+                assert all(
+                    sample["panelOpacity"] is None
+                    or sample["panelColumnWidth"] is None
+                    or sample["panelColumnWidth"] <= 8
+                    or sample["panelOpacity"] > 0.01
+                    for sample in samples
+                ), samples
 
         def layout_metrics() -> dict[str, Any]:
             return workspace.evaluate(
@@ -1522,26 +2256,137 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         assert collapsed["editorWidth"] > 0
         assert collapsed["previewWidth"] > 0
 
+        page.locator(
+            ".resume-workspace .resume-preview-card "
+            '[data-resume-pagination-ready="true"]'
+        ).wait_for(state="visible")
+        page.evaluate(
+            """
+            () => {
+              const frame = document.querySelector(
+                '.resume-workspace .resume-preview-scale-frame',
+              );
+              const box = frame?.querySelector('.resume-preview-scale-box');
+              const content = frame?.querySelector(
+                '.resume-preview-scale-content',
+              );
+              const preview = frame?.querySelector(
+                '[data-resume-pagination-ready="true"]',
+              );
+              if (!(frame instanceof HTMLElement) ||
+                  !(box instanceof HTMLElement) ||
+                  !(content instanceof HTMLElement) ||
+                  !(preview instanceof HTMLElement)) {
+                throw new Error('Missing preview scale elements.');
+              }
+
+              const clientWidthGetter = Object.getOwnPropertyDescriptor(
+                Element.prototype,
+                'clientWidth',
+              )?.get;
+              const offsetHeightGetter = Object.getOwnPropertyDescriptor(
+                HTMLElement.prototype,
+                'offsetHeight',
+              )?.get;
+              if (!clientWidthGetter || !offsetHeightGetter) {
+                throw new Error('Preview layout accessors are unavailable.');
+              }
+
+              const result = {
+                frameWidthReads: 0,
+                pageHeightReads: 0,
+                resizeCallbacks: 0,
+                styleMutations: 0,
+                frameWidthReadsByFrame: {},
+                pageHeightReadsByFrame: {},
+              };
+              let frameId = 0;
+              let frameMarkerId = 0;
+              const markFrame = () => {
+                frameId += 1;
+                frameMarkerId = requestAnimationFrame(markFrame);
+              };
+              frameMarkerId = requestAnimationFrame(markFrame);
+              const recordRead = key => {
+                const readsByFrame = result[key];
+                readsByFrame[frameId] = (readsByFrame[frameId] ?? 0) + 1;
+              };
+              Object.defineProperty(frame, 'clientWidth', {
+                configurable: true,
+                get() {
+                  result.frameWidthReads += 1;
+                  recordRead('frameWidthReadsByFrame');
+                  return clientWidthGetter.call(this);
+                },
+              });
+              Object.defineProperty(preview, 'offsetHeight', {
+                configurable: true,
+                get() {
+                  result.pageHeightReads += 1;
+                  recordRead('pageHeightReadsByFrame');
+                  return offsetHeightGetter.call(this);
+                },
+              });
+              const resizeObserver = new ResizeObserver(() => {
+                result.resizeCallbacks += 1;
+              });
+              const mutationObserver = new MutationObserver((records) => {
+                result.styleMutations += records.filter(
+                  record => record.target === box || record.target === content,
+                ).length;
+              });
+
+              resizeObserver.observe(frame);
+              mutationObserver.observe(frame, {
+                attributes: true,
+                attributeFilter: ['style'],
+                subtree: true,
+              });
+              const snapshot = () => {
+                result.styleMutations += mutationObserver
+                  .takeRecords()
+                  .filter(record =>
+                    record.target === box || record.target === content
+                  ).length;
+                return {
+                  ...result,
+                  maxFrameWidthReadsPerFrame: Math.max(
+                    0,
+                    ...Object.values(result.frameWidthReadsByFrame),
+                  ),
+                  maxPageHeightReadsPerFrame: Math.max(
+                    0,
+                    ...Object.values(result.pageHeightReadsByFrame),
+                  ),
+                };
+              };
+              window.__agentPanelPreviewProbe = {
+                snapshot,
+                stop() {
+                  cancelAnimationFrame(frameMarkerId);
+                  resizeObserver.disconnect();
+                  mutationObserver.disconnect();
+                  delete frame.clientWidth;
+                  delete preview.offsetHeight;
+                  return snapshot();
+                },
+              };
+            }
+            """
+        )
+
+        start_motion_probe()
         trigger.click()
 
-        collapse_trigger = page.get_by_role(
-            "button",
-            name="收起 Agent 对话栏",
-            exact=True,
-        )
+        collapse_trigger = trigger
         collapse_trigger.wait_for(state="visible")
-        assert collapse_trigger.get_attribute("aria-expanded") == "true"
-
-        workspace.evaluate(
-            """element => Promise.all(
-              element.getAnimations().map(animation => animation.finished)
-            )"""
-        )
+        expect(collapse_trigger).to_have_attribute("aria-expanded", "true")
+        finish_motion_probe(expanded=True)
 
         page.wait_for_function(
             """
             () => {
-              const workspace = document.querySelector("main.resume-workspace");
+              const workspace = document.querySelector(".resume-workspace");
               if (!(workspace instanceof HTMLElement)) return false;
               const columns = getComputedStyle(workspace)
                 .gridTemplateColumns
@@ -1553,6 +2398,81 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         )
 
         panel.wait_for(state="visible")
+
+        preview_probe_at_settle = page.evaluate(
+            """
+            () => window.__agentPanelPreviewProbe?.snapshot()
+            """
+        )
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              let remainingFrames = 8;
+              const tick = () => {
+                remainingFrames -= 1;
+                if (remainingFrames <= 0) {
+                  resolve();
+                  return;
+                }
+                requestAnimationFrame(tick);
+              };
+              requestAnimationFrame(tick);
+            })
+            """
+        )
+        preview_probe = page.evaluate(
+            """
+            () => {
+              const probe = window.__agentPanelPreviewProbe;
+              if (!probe) {
+                throw new Error('The Agent panel preview probe is unavailable.');
+              }
+              delete window.__agentPanelPreviewProbe;
+              return probe.stop();
+            }
+            """
+        )
+        assert preview_probe_at_settle is not None
+        assert preview_probe["resizeCallbacks"] >= 3, preview_probe
+        assert preview_probe["styleMutations"] >= 3, preview_probe
+        assert preview_probe["frameWidthReads"] >= 3, preview_probe
+        assert preview_probe["pageHeightReads"] >= 3, preview_probe
+        assert preview_probe["maxFrameWidthReadsPerFrame"] <= 1, preview_probe
+        assert preview_probe["maxPageHeightReadsPerFrame"] <= 1, preview_probe
+        assert preview_probe["frameWidthReads"] == preview_probe["pageHeightReads"]
+        assert (
+            preview_probe["frameWidthReads"]
+            == preview_probe_at_settle["frameWidthReads"]
+        ), preview_probe
+        assert (
+            preview_probe["pageHeightReads"]
+            == preview_probe_at_settle["pageHeightReads"]
+        ), preview_probe
+
+        preview_fit = page.evaluate(
+            """
+            () => {
+              const frame = document.querySelector(
+                '.resume-workspace .resume-preview-scale-frame',
+              );
+              const content = frame?.querySelector(
+                '.resume-preview-scale-content',
+              );
+              if (!(frame instanceof HTMLElement) ||
+                  !(content instanceof HTMLElement)) {
+                throw new Error('Missing scaled preview content.');
+              }
+              const frameRect = frame.getBoundingClientRect();
+              const contentRect = content.getBoundingClientRect();
+              return {
+                left: contentRect.left - frameRect.left,
+                right: frameRect.right - contentRect.right,
+              };
+            }
+            """
+        )
+        assert preview_fit["left"] >= -1, preview_fit
+        assert preview_fit["right"] >= -1, preview_fit
 
         assert (
             page.locator(
@@ -1572,8 +2492,230 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         assert expanded["rail"]["right"] <= expanded["panel"]["left"]
         assert abs(expanded["panel"]["width"] - expanded["columns"][3]) <= 1
 
+        agent_thread = workspace.locator(".agent-thread-layout")
+        agent_thread.wait_for(state="visible")
+        page.evaluate(
+            """
+            () => {
+              window.__retainedAgentThread = document.querySelector(
+                '.resume-workspace .agent-thread-layout',
+              );
+            }
+            """
+        )
+
+        start_motion_probe()
         collapse_trigger.click()
+        finish_motion_probe(expanded=False)
         trigger.wait_for(state="visible")
+        retained_after_collapse = page.evaluate(
+            """
+            () => {
+              const retained = window.__retainedAgentThread;
+              const current = document.querySelector(
+                '.resume-workspace .agent-thread-layout',
+              );
+              const dock = document.querySelector(
+                '.resume-workspace .agent-panel-dock',
+              );
+              return {
+                connected: retained?.isConnected ?? false,
+                sameNode: retained === current,
+                ariaHidden: dock?.getAttribute('aria-hidden'),
+                inert: dock instanceof HTMLElement ? dock.inert : false,
+              };
+            }
+            """
+        )
+        assert retained_after_collapse == {
+            "connected": True,
+            "sameNode": True,
+            "ariaHidden": "true",
+            "inert": True,
+        }
+
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+        page.wait_for_function(
+            """
+            () => {
+              const workspace = document.querySelector('.resume-workspace');
+              if (!(workspace instanceof HTMLElement)) return false;
+              const width = Number.parseFloat(
+                getComputedStyle(workspace).gridTemplateColumns.split(/\\s+/)[3]
+              );
+              return 24 < width && width < 336;
+            }
+            """
+        )
+        interrupted_reversal = workspace.evaluate(
+            """
+            element => {
+              const trigger = element.querySelector('.agent-seam-rail-button');
+              if (!(trigger instanceof HTMLButtonElement)) {
+                throw new Error('Missing Agent panel trigger.');
+              }
+              const readWidth = () => Number.parseFloat(
+                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[3]
+              );
+              const before = readWidth();
+              trigger.click();
+              return new Promise(resolve => {
+                requestAnimationFrame(() => resolve({
+                      before,
+                      after: readWidth(),
+                      ariaExpandedAfter: trigger.getAttribute('aria-expanded'),
+                      workspaceAnimationCount: element.getAnimations()
+                        .filter(animation =>
+                          ['pending', 'running'].includes(animation.playState)
+                        ).length,
+                    }));
+              });
+            }
+            """
+        )
+        assert 24 < interrupted_reversal["before"] < 336, interrupted_reversal
+        assert interrupted_reversal["ariaExpandedAfter"] == "false"
+        assert 1 < interrupted_reversal["after"] < 359, interrupted_reversal
+        assert interrupted_reversal["workspaceAnimationCount"] == 1
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        page.wait_for_timeout(320)
+        interrupted_motion = workspace.evaluate(
+            """
+            element => {
+              const panelLayer = element.querySelector(
+                '.agent-panel-motion-layer',
+              );
+              const columns = getComputedStyle(element)
+                .gridTemplateColumns
+                .split(/\\s+/)
+                .map(value => Number.parseFloat(value));
+              const activeAnimationCount = [element, panelLayer]
+                .filter(Boolean)
+                .flatMap(target => target.getAnimations())
+                .filter(animation =>
+                  ['pending', 'running'].includes(animation.playState)
+                ).length;
+              const retained = window.__retainedAgentThread;
+              return {
+                activeAnimationCount,
+                panelColumnWidth: columns[3],
+                retainedThread:
+                  retained?.isConnected === true &&
+                  retained === element.querySelector('.agent-thread-layout'),
+              };
+            }
+            """
+        )
+        assert interrupted_motion == {
+            "activeAnimationCount": 0,
+            "panelColumnWidth": 0,
+            "retainedThread": True,
+        }
+
+        page.emulate_media(reduced_motion="reduce")
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+        page.evaluate(
+            """
+            () => new Promise(resolve =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            )
+            """
+        )
+        reduced_motion = workspace.evaluate(
+            """
+            element => {
+              const panelLayer = element.querySelector(
+                '.agent-panel-motion-layer',
+              );
+              const previewBox = element.querySelector(
+                '.resume-preview-scale-box',
+              );
+              const columns = getComputedStyle(element)
+                .gridTemplateColumns
+                .split(/\\s+/)
+                .map(value => Number.parseFloat(value));
+              const activeAnimations = [element, panelLayer]
+                .filter(Boolean)
+                .flatMap(target => target.getAnimations())
+                .filter(animation => {
+                  const duration = animation.effect
+                    ?.getComputedTiming().duration;
+                  return duration !== 0 &&
+                    ['pending', 'running'].includes(animation.playState);
+                });
+              return {
+                activeAnimationCount: activeAnimations.length,
+                panelOpacity: panelLayer
+                  ? Number.parseFloat(getComputedStyle(panelLayer).opacity)
+                  : null,
+                previewTransform: previewBox
+                  ? getComputedStyle(previewBox).transform
+                  : null,
+                panelColumnWidth: columns[3],
+                retainedThread:
+                  window.__retainedAgentThread?.isConnected === true &&
+                  window.__retainedAgentThread ===
+                    element.querySelector('.agent-thread-layout'),
+              };
+            }
+            """
+        )
+        assert reduced_motion["activeAnimationCount"] == 0, reduced_motion
+        assert reduced_motion["panelOpacity"] == 1, reduced_motion
+        assert reduced_motion["previewTransform"] == "none", reduced_motion
+        assert reduced_motion["panelColumnWidth"] > 350, reduced_motion
+        assert reduced_motion["retainedThread"], reduced_motion
+
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        page.evaluate(
+            """
+            () => new Promise(resolve =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            )
+            """
+        )
+        reduced_collapse = workspace.evaluate(
+            """
+            element => {
+              const panelLayer = element.querySelector(
+                '.agent-panel-motion-layer',
+              );
+              const panelColumnWidth = Number.parseFloat(
+                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[3]
+              );
+              return {
+                activeAnimationCount: [element, panelLayer]
+                  .filter(Boolean)
+                  .flatMap(target => target.getAnimations())
+                  .filter(animation => {
+                    const duration = animation.effect
+                      ?.getComputedTiming().duration;
+                    return duration !== 0 &&
+                      ['pending', 'running'].includes(animation.playState);
+                  }).length,
+                panelColumnWidth,
+                panelOpacity: panelLayer
+                  ? Number.parseFloat(getComputedStyle(panelLayer).opacity)
+                  : null,
+                retainedThread:
+                  window.__retainedAgentThread?.isConnected === true &&
+                  window.__retainedAgentThread ===
+                    element.querySelector('.agent-thread-layout'),
+              };
+            }
+            """
+        )
+        assert reduced_collapse == {
+            "activeAnimationCount": 0,
+            "panelColumnWidth": 0,
+            "panelOpacity": 0,
+            "retainedThread": True,
+        }
+        page.emulate_media(reduced_motion="no-preference")
+        page.evaluate("delete window.__retainedAgentThread")
         page.set_viewport_size({"width": 1200, "height": 900})
 
         narrow_layout = workspace.evaluate(
@@ -2521,6 +3663,145 @@ def test_template_navigation_stays_on_gallery_when_target_preparation_fails(
         context.close()
 
 
+def test_resume_card_preloads_detail_module_and_reports_local_pending(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    requests: list[tuple[str, str]] = []
+    page.on(
+        "request",
+        lambda request: requests.append(
+            (request.method, urlparse(request.url).path)
+        ),
+    )
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        requests.clear()
+        resume_link = page.locator(f'a[href="/resume/{resume_id}"]')
+
+        resume_link.focus()
+        page.wait_for_timeout(300)
+
+        assert any(
+            "resume-detail-workspace-page" in path for _, path in requests
+        ), requests
+        assert not any(
+            path == "/api/workspace/pages/resume-editor"
+            or path == f"/api/resumes/{resume_id}"
+            or path == f"/api/resumes/{resume_id}/versions"
+            for _, path in requests
+        ), requests
+
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__releaseResumeDetailRoute = null;
+              window.fetch = async (input, init) => {
+                const request = new Request(input, init);
+                if (
+                  new URL(request.url).pathname ===
+                  "/api/workspace/pages/resume-editor"
+                ) {
+                  await new Promise((resolve) => {
+                    window.__releaseResumeDetailRoute = resolve;
+                  });
+                }
+                return originalFetch(input, init);
+              };
+            }
+            """
+        )
+
+        resume_link.click()
+        page.wait_for_function("window.__releaseResumeDetailRoute !== null")
+
+        expect(resume_link).to_have_attribute("aria-busy", "true")
+        assert resume_link.get_by_role("status").count() == 0
+        assert page.url == f"{frontend_url}/resume"
+
+        page.evaluate("window.__releaseResumeDetailRoute()")
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.locator(".resume-preview-card article.resume-page").wait_for(
+            state="visible"
+        )
+    finally:
+        context.close()
+
+
+def test_created_resume_is_not_published_before_detail_is_ready(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    created_resume_id: str | None = None
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        initial_card_count = page.locator('a[href^="/resume/"]').count()
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__releaseCreatedResumeDetail = null;
+              window.fetch = async (input, init) => {
+                const request = new Request(input, init);
+                if (
+                  new URL(request.url).pathname ===
+                  "/api/workspace/pages/resume-editor"
+                ) {
+                  await new Promise((resolve) => {
+                    window.__releaseCreatedResumeDetail = resolve;
+                  });
+                }
+                return originalFetch(input, init);
+              };
+            }
+            """
+        )
+
+        create_button = page.locator("button:has(.lucide-square-plus)").first
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and urlparse(response.url).path == "/api/resumes"
+            )
+        ) as create_response_info:
+            create_button.click()
+        created_resume_id = str(
+            create_response_info.value.json()["data"]["resume"]["id"]
+        )
+        page.wait_for_function("window.__releaseCreatedResumeDetail !== null")
+
+        pending_create_button = page.locator('button[aria-busy="true"]')
+        expect(pending_create_button).to_have_count(1)
+        assert pending_create_button.inner_text() in {"Creating…", "创建中…"}
+        assert page.locator('a[href^="/resume/"]').count() == initial_card_count
+        assert page.url == f"{frontend_url}/resume"
+
+        page.evaluate("window.__releaseCreatedResumeDetail()")
+        page.wait_for_url(f"{frontend_url}/resume/*")
+        page.locator(".resume-preview-card article.resume-page").wait_for(
+            state="visible"
+        )
+    finally:
+        if created_resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{created_resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(
+                    f"{frontend_url}/api/resumes/{created_resume_id}"
+                )
+        context.close()
+
+
 def test_lateral_navigation_stays_on_current_page_when_preparation_fails(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -2543,6 +3824,1255 @@ def test_lateral_navigation_stays_on_current_page_when_preparation_fails(
         assert page.url == f"{frontend_url}/resume"
         assert error_toasts.count() == 1
         assert page.get_by_role("button", name="重试", exact=True).count() == 0
+    finally:
+        context.close()
+
+
+def test_lateral_navigation_reports_pending_and_preserves_workspace_shell(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__releaseModelsRoute = null;
+              window.__workspaceSidebarBeforeNavigation = document.querySelector(
+                '[data-slot="sidebar-container"]',
+              );
+              window.fetch = async (input, init) => {
+                const request = new Request(input, init);
+                if (new URL(request.url).pathname === "/api/workspace/pages/models") {
+                  await new Promise((resolve) => {
+                    window.__releaseModelsRoute = resolve;
+                  });
+                }
+                return originalFetch(input, init);
+              };
+            }
+            """
+        )
+
+        models_link = page.locator('a[href="/models"]')
+        models_link.click()
+        page.wait_for_function("window.__releaseModelsRoute !== null")
+
+        expect(models_link).to_have_attribute("aria-busy", "true")
+        assert models_link.get_by_role("status").count() == 0
+        assert page.url == f"{frontend_url}/resume"
+        assert page.locator('input[name="resume-search"]').is_visible()
+
+        page.evaluate("window.__releaseModelsRoute()")
+        page.wait_for_url(f"{frontend_url}/models")
+        route_stage = page.locator(
+            '.workspace-route-stage[data-workspace-view="models"]'
+        )
+        route_stage.wait_for(state="attached")
+        assert route_stage.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "workspace-route-enter"
+        assert route_stage.evaluate(
+            "element => getComputedStyle(element).animationDuration"
+        ) == "0.18s"
+        page.locator('[data-slot="empty-title"]').wait_for(state="visible")
+
+        assert page.evaluate(
+            """
+            () => window.__workspaceSidebarBeforeNavigation ===
+              document.querySelector('[data-slot="sidebar-container"]')
+            """
+        ) is True
+    finally:
+        context.close()
+
+
+def test_models_route_uses_table_skeleton_and_preserves_dialog_exit(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    page.add_init_script(
+        script="""
+        (() => {
+          const originalFetch = window.fetch.bind(window);
+          window.__releaseModelsInitialRoute = null;
+          window.fetch = async (input, init) => {
+            const request = new Request(input, init);
+            if (new URL(request.url).pathname === "/api/workspace/pages/models") {
+              await new Promise((resolve) => {
+                window.__releaseModelsInitialRoute = resolve;
+              });
+            }
+            return originalFetch(input, init);
+          };
+        })();
+        """,
+    )
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="domcontentloaded")
+        page.wait_for_function("window.__releaseModelsInitialRoute !== null")
+
+        skeleton = page.locator('[data-slot="model-config-panel-skeleton"]')
+        skeleton.wait_for(state="visible")
+        assert skeleton.locator('[data-slot="table-header"]').count() == 1
+        assert skeleton.locator('[data-slot="table-row"]').count() >= 3
+        skeleton_content_height = skeleton.locator(
+            '[data-slot="model-config-content-skeleton"]'
+        ).evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
+        skeleton_table_height = skeleton.locator(
+            '[data-slot="data-table-skeleton"]'
+        ).evaluate("element => element.getBoundingClientRect().height")
+        skeleton_surface_height = skeleton.locator(
+            ':scope > [data-slot="card"]'
+        ).evaluate("element => element.getBoundingClientRect().height")
+        assert abs(skeleton_content_height - 390) <= 1
+        assert skeleton_table_height < skeleton_content_height
+        assert abs(skeleton_surface_height - 476) <= 1
+
+        page.evaluate("window.__releaseModelsInitialRoute()")
+        page.locator('[data-slot="empty-title"]').wait_for(state="visible")
+        empty_content = page.locator('[data-slot="model-config-content"]')
+        empty_content_height = empty_content.evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
+        empty_surface_height = page.locator(
+            '[data-slot="model-config-panel"] > [data-slot="card"]'
+        ).evaluate("element => element.getBoundingClientRect().height")
+        assert abs(empty_content_height - 390) <= 1
+        assert abs(empty_surface_height - 476) <= 1
+        assert abs(skeleton_surface_height - empty_surface_height) <= 1
+        trigger = page.locator('[data-slot="dialog-trigger"]').first
+        trigger.evaluate(
+            "element => { window.__modelDialogTrigger = element; }"
+        )
+        trigger.click()
+
+        dialog = page.locator('[data-slot="dialog-content"]')
+        expect(dialog).to_have_attribute("data-state", "open")
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-content-enter"
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationDuration"
+        ) == "0.21s"
+        page.keyboard.press("Escape")
+        expect(dialog).to_have_attribute("data-state", "closed")
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-content-exit"
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationDuration"
+        ) == "0.15s"
+        dialog.wait_for(state="detached")
+
+        assert page.evaluate(
+            """
+            () => window.__modelDialogTrigger ===
+              document.querySelector('[data-slot="dialog-trigger"]')
+            """
+        ) is True
+        assert trigger.evaluate("element => document.activeElement === element") is True
+    finally:
+        context.close()
+
+
+def test_first_model_creation_keeps_the_compact_panel_height(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+
+    def fulfill_empty_models(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = []
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def fulfill_local_provider(route: Route) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "providers": [
+                            {
+                                "id": "ollama",
+                                "label": "Ollama",
+                                "kind": "local",
+                                "apiFamily": "openai_compatible_chat",
+                                "iconProvider": "ollama",
+                                "defaultBaseUrl": "http://localhost:11434/v1",
+                                "officialUrl": "",
+                                "authRequired": False,
+                                "supportsModelDiscovery": False,
+                                "supportsCustomCapabilities": False,
+                                "supportsTools": True,
+                                "supportsStreaming": True,
+                            }
+                        ]
+                    },
+                }
+            ),
+        )
+
+    def fulfill_created_model(route: Route) -> None:
+        request_payload = route.request.post_data_json
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        **request_payload,
+                        "id": "llm-first-height",
+                        "providerLabel": "Ollama",
+                        "iconProvider": "ollama",
+                        "apiKeyPreview": "",
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/workspace/pages/models", fulfill_empty_models)
+    page.route("**/api/model-providers", fulfill_local_provider)
+    page.route("**/api/model-configs", fulfill_created_model)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        panel = page.locator('[data-slot="model-config-panel"]')
+        panel.wait_for(state="visible")
+        model_surface_height = panel.locator(
+            ':scope > [data-slot="card"]'
+        ).evaluate("element => element.getBoundingClientRect().height")
+
+        trash_page = context.new_page()
+
+        def fulfill_empty_trash(route: Route) -> None:
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["deletedResumes"] = []
+            payload["data"]["deletedTemplates"] = []
+            route.fulfill(
+                response=response,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        trash_page.route("**/api/workspace/pages/trash", fulfill_empty_trash)
+        trash_page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+        recycle_surface = trash_page.locator('[data-slot="recycle-bin-panel"]')
+        recycle_surface.wait_for(state="visible")
+        recycle_surface_height = recycle_surface.evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
+        trash_page.close()
+
+        assert abs(model_surface_height - 476) <= 1
+        assert abs(recycle_surface_height - 476) <= 1
+        assert abs(model_surface_height - recycle_surface_height) <= 1
+        page.evaluate(
+            """
+            () => {
+              window.__modelAddHeightFrames = [];
+              window.__recordModelAddHeightFrames = true;
+              const sample = () => {
+                const panel = document.querySelector(
+                  '[data-slot="model-config-panel"]',
+                );
+                const card = panel?.querySelector('[data-slot="card"]');
+                const content = panel?.querySelector(
+                  '[data-slot="model-config-content"]',
+                );
+                const row = content?.querySelector(
+                  '[data-slot="table-body"] [data-slot="table-row"]',
+                );
+                const rowStyle = row ? getComputedStyle(row) : null;
+                const rowTransform = rowStyle?.transform ?? null;
+                window.__modelAddHeightFrames.push({
+                  card: card?.getBoundingClientRect().height ?? null,
+                  content: content?.getBoundingClientRect().height ?? null,
+                  hasEmpty: Boolean(content?.querySelector('[data-slot="empty"]')),
+                  panel: panel?.getBoundingClientRect().height ?? null,
+                  rowAnimationName: rowStyle?.animationName ?? null,
+                  rowCount: content?.querySelectorAll(
+                    '[data-slot="table-body"] [data-slot="table-row"]',
+                  ).length ?? 0,
+                  rowOpacity: rowStyle?.opacity ?? null,
+                  rowTransform,
+                  rowTranslateY: rowTransform
+                    ? new DOMMatrixReadOnly(rowTransform).m42
+                    : null,
+                });
+                if (window.__recordModelAddHeightFrames) {
+                  requestAnimationFrame(sample);
+                }
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+
+        page.locator('[data-slot="dialog-trigger"]').first.click()
+        expect(page.locator("#model-nickname")).to_be_focused()
+        expect(page.locator("#model-provider")).to_contain_text("Ollama")
+        page.locator("#model-name").fill("height-test-model")
+        page.locator("#model-nickname").fill("Height test")
+        page.get_by_role("button", name="创建模型", exact=True).click()
+
+        expect(page.get_by_text("Height test", exact=False)).to_be_visible()
+        page.wait_for_timeout(240)
+        page.evaluate("window.__recordModelAddHeightFrames = false")
+        frames = page.evaluate("window.__modelAddHeightFrames")
+        empty_frames = [frame for frame in frames if frame["hasEmpty"]]
+        row_frames = [frame for frame in frames if frame["rowCount"] == 1]
+
+        assert empty_frames, frames
+        assert row_frames, frames
+        for key in ("card", "content", "panel"):
+            assert max(frame[key] for frame in frames) - min(
+                frame[key] for frame in frames
+            ) <= 1, frames
+        assert max(abs(frame["rowTranslateY"]) for frame in row_frames) <= 0.1, frames
+    finally:
+        context.close()
+
+
+def test_model_row_actions_menu_keeps_edit_and_delete_dialogs_stable(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+
+    def fulfill_model_config(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": "llm-row-actions",
+                "provider": "openai",
+                "providerLabel": "OpenAI",
+                "iconProvider": "openai",
+                "apiFamily": "openai_compatible_chat",
+                "providerKind": "cloud",
+                "nickname": "Row action model",
+                "apiKeyPreview": "sk-test****",
+                "model": "gpt-row-actions",
+                "apiUrl": "https://api.openai.com/v1",
+                "temperature": None,
+                "topP": None,
+                "maxTokens": None,
+                "contextWindowTokens": 128000,
+                "supportsImage": True,
+                "supportsThinking": True,
+                "supportsTools": True,
+                "supportsStreaming": True,
+            }
+        ]
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route("**/api/workspace/pages/models", fulfill_model_config)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        row = page.locator(
+            '[data-slot="table-body"] [data-slot="table-row"]'
+        ).first
+        row.wait_for(state="visible")
+        table_surface = page.locator('[data-slot="data-table"]')
+        table_head = page.locator('[data-slot="table-head"]').first
+        table_cell = row.locator('[data-slot="table-cell"]').first
+        table_heads = page.locator('[data-slot="table-head"]')
+        row_cells = row.locator('[data-slot="table-cell"]')
+        model_header = table_heads.nth(1).locator(":scope > span")
+        model_name = row_cells.nth(1).locator(":scope > div > div > span").first
+        context_header = table_heads.nth(3).locator(":scope > span")
+        context_value = row_cells.nth(3).locator(":scope > div > span")
+        capability_header = table_heads.nth(4).locator(":scope > span")
+        capability_group = row_cells.nth(4).locator(":scope > div")
+        provider_icon_box = (
+            row_cells.nth(1).locator(":scope > div > span").first
+        )
+        table_geometry = page.evaluate(
+            """
+            ([surface, head, row, cell]) => {
+              const surfaceStyle = getComputedStyle(surface);
+              const headStyle = getComputedStyle(head);
+              const cellStyle = getComputedStyle(cell);
+              return {
+                radius: surfaceStyle.borderTopLeftRadius,
+                shadow: surfaceStyle.boxShadow,
+                headHeight: head.getBoundingClientRect().height,
+                headPaddingLeft: headStyle.paddingLeft,
+                cellPaddingLeft: cellStyle.paddingLeft,
+                rowHeight: row.getBoundingClientRect().height,
+              };
+            }
+            """,
+            [
+                table_surface.element_handle(),
+                table_head.element_handle(),
+                row.element_handle(),
+                table_cell.element_handle(),
+            ],
+        )
+        assert table_geometry["radius"] == "10px", table_geometry
+        assert table_geometry["shadow"] == "none", table_geometry
+        assert table_geometry["headHeight"] == 40, table_geometry
+        assert table_geometry["headPaddingLeft"] == "8px", table_geometry
+        assert table_geometry["cellPaddingLeft"] == "8px", table_geometry
+        assert abs(table_geometry["rowHeight"] - 48) <= 1, table_geometry
+        provider_icon_style = provider_icon_box.evaluate(
+            """
+            element => {
+              const style = getComputedStyle(element);
+              return {
+                background: style.backgroundColor,
+                borderWidth: style.borderTopWidth,
+              };
+            }
+            """
+        )
+        assert provider_icon_style == {
+            "background": "rgba(0, 0, 0, 0)",
+            "borderWidth": "0px",
+        }, provider_icon_style
+        column_alignment = page.evaluate(
+            """
+            ([modelHeader, modelName, contextHeader, contextValue,
+              capabilityHeader, capabilityGroup]) => {
+              const contentRect = (element) => {
+                const range = document.createRange();
+                range.selectNodeContents(element);
+                return range.getBoundingClientRect();
+              };
+              const modelHeaderRect = contentRect(modelHeader);
+              const modelNameRect = modelName.getBoundingClientRect();
+              const contextHeaderRect = contentRect(contextHeader);
+              const contextValueRect = contextValue.getBoundingClientRect();
+              const capabilityHeaderRect = contentRect(capabilityHeader);
+              const capabilityItemRects = Array.from(capabilityGroup.children)
+                .map((item) => item.getBoundingClientRect());
+              const capabilityValueRect = {
+                left: Math.min(...capabilityItemRects.map((rect) => rect.left)),
+                right: Math.max(...capabilityItemRects.map((rect) => rect.right)),
+              };
+              return {
+                modelStartDelta: modelHeaderRect.left - modelNameRect.left,
+                contextEndDelta: contextHeaderRect.right - contextValueRect.right,
+                capabilityCenterDelta:
+                  (capabilityHeaderRect.left + capabilityHeaderRect.right) / 2 -
+                  (capabilityValueRect.left + capabilityValueRect.right) / 2,
+                contextCapabilityGap:
+                  capabilityValueRect.left - contextValueRect.right,
+              };
+            }
+            """,
+            [
+                model_header.element_handle(),
+                model_name.element_handle(),
+                context_header.element_handle(),
+                context_value.element_handle(),
+                capability_header.element_handle(),
+                capability_group.element_handle(),
+            ],
+        )
+        assert abs(column_alignment["modelStartDelta"]) <= 1, column_alignment
+        assert abs(column_alignment["contextEndDelta"]) <= 1, column_alignment
+        assert abs(column_alignment["capabilityCenterDelta"]) <= 1, column_alignment
+        assert column_alignment["contextCapabilityGap"] >= 48, column_alignment
+        actions_trigger = row.get_by_role("button", name="操作", exact=True)
+        actions_trigger_element = row.locator('button[aria-label="操作"]')
+        expect(actions_trigger).to_be_visible()
+        assert row.get_by_role("button", name="修改模型", exact=True).count() == 0
+        assert row.get_by_role("button", name="删除模型", exact=True).count() == 0
+
+        closed_trigger_background = actions_trigger_element.evaluate(
+            "element => getComputedStyle(element).backgroundColor"
+        )
+        actions_trigger.click()
+        expect(actions_trigger_element).to_have_attribute("data-state", "open")
+        page.wait_for_timeout(180)
+        open_trigger_background = actions_trigger_element.evaluate(
+            "element => getComputedStyle(element).backgroundColor"
+        )
+        assert open_trigger_background != closed_trigger_background
+        menu = page.get_by_role("menu")
+        expect(menu).to_be_visible()
+        expect(
+            menu.get_by_role("menuitem", name="修改", exact=True)
+        ).to_be_visible()
+        expect(
+            menu.get_by_role("menuitem", name="删除", exact=True)
+        ).to_be_visible()
+        assert menu.locator("svg").count() == 0
+
+        menu.get_by_role("menuitem", name="修改", exact=True).click()
+        menu.wait_for(state="detached")
+        edit_dialog = page.locator('[data-slot="dialog-content"]')
+        expect(edit_dialog).to_have_attribute("data-state", "open")
+        edit_heading = edit_dialog.get_by_role("heading", name="修改模型")
+        nickname_input = page.locator("#model-nickname")
+        expect(edit_heading).to_be_visible()
+        expect(nickname_input).to_have_value("Row action model")
+        expect(edit_heading).to_be_focused()
+        nickname_selection_collapsed = nickname_input.evaluate(
+            "element => element.selectionStart === element.selectionEnd"
+        )
+        assert nickname_selection_collapsed is True
+        page.wait_for_timeout(180)
+        expect(edit_dialog).to_have_attribute("data-state", "open")
+
+        page.keyboard.press("Escape")
+        edit_dialog.wait_for(state="detached")
+        assert actions_trigger.evaluate(
+            "element => document.activeElement === element"
+        ) is True
+
+        actions_trigger.click()
+        page.get_by_role("menuitem", name="删除", exact=True).click()
+        confirm_dialog = page.locator('[data-slot="alert-dialog-content"]')
+        expect(confirm_dialog).to_be_visible()
+        expect(
+            confirm_dialog.get_by_role("heading", name="删除这个模型？")
+        ).to_be_visible()
+        confirm_dialog.get_by_role("button", name="取消", exact=True).click()
+        confirm_dialog.wait_for(state="detached")
+        expect(row).to_contain_text("Row action model")
+    finally:
+        context.close()
+
+
+def test_model_table_selection_and_bulk_delete_are_page_scoped(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    bulk_delete_requests: list[list[str]] = []
+
+    def fulfill_model_configs(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": f"llm-selection-{index}",
+                "provider": "openai",
+                "providerLabel": "OpenAI",
+                "iconProvider": "openai",
+                "apiFamily": "openai_compatible_chat",
+                "providerKind": "custom",
+                "nickname": f"Selectable model {index}",
+                "apiKeyPreview": "sk-test****",
+                "model": f"gpt-selection-{index}",
+                "apiUrl": "https://api.openai.com/v1",
+                "temperature": None,
+                "topP": None,
+                "maxTokens": None,
+                "contextWindowTokens": 128000,
+                "supportsImage": False,
+                "supportsThinking": False,
+                "supportsTools": True,
+                "supportsStreaming": True,
+            }
+            for index in range(11)
+        ]
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def fulfill_bulk_delete(route: Route) -> None:
+        requested_ids = route.request.post_data_json["ids"]
+        bulk_delete_requests.append(requested_ids)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": {"ids": requested_ids},
+                }
+            ),
+        )
+
+    page.route("**/api/workspace/pages/models", fulfill_model_configs)
+    page.route("**/api/model-configs/bulk-delete", fulfill_bulk_delete)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        bulk_actions = page.locator('[data-slot="model-config-bulk-actions"]')
+        bulk_delete = bulk_actions.get_by_role("button")
+        new_model = page.get_by_role("button", name="新建模型", exact=True)
+        confirm_dialog = page.locator('[data-slot="alert-dialog-content"]')
+        select_all = page.locator('[data-slot="table-header"]').get_by_role(
+            "checkbox"
+        )
+        first_selection = page.locator('[data-slot="table-row"]').filter(
+            has=page.get_by_text(
+                "Selectable model 0 (gpt-selection-0)", exact=True
+            )
+        ).get_by_role("checkbox")
+        second_selection = page.locator('[data-slot="table-row"]').filter(
+            has=page.get_by_text(
+                "Selectable model 1 (gpt-selection-1)", exact=True
+            )
+        ).get_by_role("checkbox")
+
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        first_selection.check()
+        expect(select_all).to_have_attribute("data-state", "indeterminate")
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        expect(bulk_delete).to_be_visible()
+        expect(bulk_delete).to_have_attribute("data-variant", "destructive")
+        expect(bulk_delete).to_have_attribute("data-size", "default")
+        page.wait_for_timeout(180)
+        header_action_geometry = page.evaluate(
+            """
+            ([bulkDelete, newModel]) => {
+              const bulkRect = bulkDelete.getBoundingClientRect();
+              const newModelRect = newModel.getBoundingClientRect();
+              return {
+                centerDelta:
+                  (bulkRect.top + bulkRect.bottom) / 2 -
+                  (newModelRect.top + newModelRect.bottom) / 2,
+                gap: newModelRect.left - bulkRect.right,
+                heightDelta: bulkRect.height - newModelRect.height,
+              };
+            }
+            """,
+            [bulk_delete.element_handle(), new_model.element_handle()],
+        )
+        assert abs(header_action_geometry["centerDelta"]) <= 1, header_action_geometry
+        assert 0 <= header_action_geometry["gap"] <= 16, header_action_geometry
+        assert abs(header_action_geometry["heightDelta"]) <= 1, header_action_geometry
+        bulk_delete.click()
+        expect(confirm_dialog).to_be_visible()
+        expect(
+            confirm_dialog.get_by_role("heading", name="删除选中的模型？")
+        ).to_be_visible()
+        confirm_dialog.locator('[data-slot="alert-dialog-cancel"]').click()
+        confirm_dialog.wait_for(state="detached")
+        expect(first_selection).to_be_checked()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+
+        second_selection.check()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+
+        page.get_by_role("link", name="2", exact=True).click()
+        page.wait_for_url("**/models?page=2")
+        expect(page.get_by_text("Selectable model 10", exact=False)).to_be_visible()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(select_all).not_to_be_checked()
+
+        page.go_back()
+        page.wait_for_url(f"{frontend_url}/models")
+        expect(first_selection).not_to_be_checked()
+        expect(second_selection).not_to_be_checked()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+
+        select_all.check()
+        expect(
+            page.locator(
+                '[data-slot="table-body"] [data-slot="table-row"]'
+                '[data-state="selected"]'
+            )
+        ).to_have_count(10)
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        select_all.uncheck()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+
+        first_selection.check()
+        second_selection.check()
+        bulk_delete.click()
+        expect(confirm_dialog).to_be_visible()
+        assert confirm_dialog.locator(
+            '[data-slot="alert-dialog-title"]'
+        ).inner_text() in {
+            "删除选中的模型？",
+            "Delete the selected models?",
+        }
+        confirm_dialog.locator('[data-slot="alert-dialog-cancel"]').click()
+        confirm_dialog.wait_for(state="detached")
+        expect(first_selection).to_be_checked()
+        expect(second_selection).to_be_checked()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+
+        bulk_delete.click()
+        confirm_dialog.locator('[data-slot="alert-dialog-action"]').click()
+        confirm_dialog.wait_for(state="detached")
+
+        expect(first_selection).to_have_count(0)
+        expect(second_selection).to_have_count(0)
+        expect(page.get_by_text("Selectable model 2", exact=False)).to_be_visible()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(
+            page.locator('[data-slot="table-body"] [data-slot="table-row"]')
+        ).to_have_count(9)
+        assert bulk_delete_requests == [["llm-selection-0", "llm-selection-1"]]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("model_count", [1, 10, 11, 16])
+def test_models_configured_layout_grows_with_content_then_paginates(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    model_count: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+
+    def fulfill_model_configs(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": f"llm-layout-{index}",
+                "provider": "openai",
+                "providerLabel": "OpenAI",
+                "iconProvider": "openai",
+                "apiFamily": "openai_compatible_chat",
+                "providerKind": "custom",
+                "nickname": f"Layout model {index}",
+                "apiKeyPreview": "sk-test****",
+                "model": f"gpt-layout-{index}",
+                "apiUrl": "https://api.openai.com/v1",
+                "temperature": None,
+                "topP": None,
+                "maxTokens": None,
+                "contextWindowTokens": 128000,
+                "supportsImage": False,
+                "supportsThinking": False,
+                "supportsTools": True,
+                "supportsStreaming": True,
+            }
+            for index in range(model_count)
+        ]
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route("**/api/workspace/pages/models", fulfill_model_configs)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        panel = page.locator('[data-slot="model-config-panel"]')
+        content = page.locator('[data-slot="model-config-content"]')
+        panel.wait_for(state="visible")
+        content.wait_for(state="visible")
+        table_rows = content.locator(
+            '[data-slot="table-body"] [data-slot="table-row"]'
+        )
+        expect(table_rows).to_have_count(min(model_count, 10))
+        assert page.locator('[data-slot="model-config-table-scroll-area"]').count() == 0
+
+        content_height = content.evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
+        if model_count == 1:
+            assert abs(content_height - 390) <= 1
+        else:
+            assert content_height > 390
+
+        pagination = content.locator('[data-slot="pagination"]')
+        assert pagination.count() == (1 if model_count > 10 else 0)
+
+        if model_count > 10:
+            pagination.locator('[data-slot="pagination-link"]').last.click()
+            page.wait_for_url("**/models?page=2")
+            expect(table_rows).to_have_count(model_count - 10)
+            expect(page.get_by_text("Layout model 10", exact=False)).to_be_visible()
+    finally:
+        context.close()
+
+
+def test_model_discovery_ignores_stale_provider_refresh(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="en-US",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    held_refresh_routes: list[Route] = []
+
+    def discovery_body(model_id: str, source: str) -> str:
+        return json.dumps(
+            {
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "models": [
+                        {
+                            "id": model_id,
+                            "label": model_id,
+                            "contextWindowTokens": 128000,
+                            "maxOutputTokens": 32768,
+                            "supportsImage": False,
+                            "supportsThinking": False,
+                            "supportsTools": True,
+                            "supportsStreaming": True,
+                            "metadataSource": "test",
+                        }
+                    ],
+                    "source": source,
+                },
+            }
+        )
+
+    def handle_model_discovery(route: Route) -> None:
+        payload = route.request.post_data_json
+        assert isinstance(payload, dict)
+        provider = str(payload["provider"])
+
+        if provider == "openai" and payload.get("refresh") is True:
+            held_refresh_routes.append(route)
+            return
+
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=discovery_body(f"{provider}-latest-model", "cache"),
+        )
+
+    page.route(
+        "**/api/model-providers/discover-models",
+        handle_model_discovery,
+    )
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        page.locator('[data-slot="dialog-trigger"]').first.click()
+
+        model_trigger = page.locator("#model-select")
+        expect(model_trigger).to_contain_text("openai-latest-model")
+        page.locator("#model-api-key").fill("sk-race-test")
+
+        refresh_button = page.locator("#model-discovery")
+        refresh_button.click()
+        expect(refresh_button).to_be_disabled()
+        assert len(held_refresh_routes) == 1
+
+        provider_trigger = page.locator("#model-provider")
+        provider_trigger.click()
+        page.get_by_role("option").filter(has_text="Anthropic").click()
+
+        expect(provider_trigger).to_contain_text("Anthropic")
+        expect(model_trigger).to_contain_text("anthropic-latest-model")
+
+        held_refresh_routes.pop().fulfill(
+            status=200,
+            content_type="application/json",
+            body=discovery_body("openai-stale-model", "provider"),
+        )
+        page.wait_for_timeout(200)
+
+        expect(provider_trigger).to_contain_text("Anthropic")
+        expect(model_trigger).to_contain_text("anthropic-latest-model")
+        expect(model_trigger).not_to_contain_text("openai-stale-model")
+    finally:
+        for route in held_refresh_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
+def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 520},
+    )
+    page = context.new_page()
+
+    def fulfill_model_discovery(route: Route) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "models": [
+                            {
+                                "id": "gpt-ui-motion",
+                                "label": "GPT UI Motion",
+                                "contextWindowTokens": 128000,
+                                "maxOutputTokens": 32768,
+                                "supportsImage": True,
+                                "supportsThinking": True,
+                                "supportsTools": True,
+                                "supportsStreaming": True,
+                                "metadataSource": "test",
+                            }
+                        ],
+                        "source": "cache",
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/model-providers/discover-models", fulfill_model_discovery)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        page.locator('[data-slot="dialog-trigger"]').first.click()
+
+        dialog = page.locator('[data-slot="dialog-content"]')
+        advanced_trigger = page.locator("#model-output-settings")
+        scroll_viewport = dialog.locator(
+            'form > [data-slot="field-group"]'
+        )
+        advanced_trigger.wait_for(state="visible")
+        expect(advanced_trigger).to_have_attribute("aria-expanded", "false")
+        page.wait_for_timeout(240)
+
+        dialog_before = dialog.bounding_box()
+        scroll_before = scroll_viewport.evaluate("element => element.scrollTop")
+        assert dialog_before is not None
+        page.evaluate(
+            """
+            () => {
+              const originalScrollIntoView = Element.prototype.scrollIntoView;
+              const originalScrollTo = HTMLElement.prototype.scrollTo;
+              window.__modelOutputRevealBehaviors = [];
+              window.__modelOutputRevealFrames = [];
+              Element.prototype.scrollIntoView = function (options) {
+                if (this.id === 'model-max-tokens') {
+                  window.__modelOutputRevealBehaviors.push({
+                    behavior: options?.behavior,
+                    method: 'scrollIntoView',
+                  });
+                }
+                return originalScrollIntoView.call(this, options);
+              };
+              HTMLElement.prototype.scrollTo = function (options, y) {
+                if (this.matches(
+                  '[data-slot="dialog-content"] form > [data-slot="field-group"]',
+                )) {
+                  window.__modelOutputRevealBehaviors.push({
+                    behavior: typeof options === 'object'
+                      ? options.behavior
+                      : undefined,
+                    method: 'scrollTo',
+                  });
+                }
+                return arguments.length === 1
+                  ? originalScrollTo.call(this, options)
+                  : originalScrollTo.call(this, options, y);
+              };
+
+              const startedAt = performance.now();
+              const sample = timestamp => {
+                const content = document.querySelector(
+                  '#model-output-settings-content',
+                );
+                if (content instanceof HTMLElement) {
+                  const rect = content.getBoundingClientRect();
+                  window.__modelOutputRevealFrames.push({
+                    elapsed: timestamp - startedAt,
+                    height: rect.height,
+                  });
+                }
+                if (timestamp - startedAt < 340) {
+                  requestAnimationFrame(sample);
+                  return;
+                }
+                window.__modelOutputRevealFramesDone = true;
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+
+        advanced_trigger.click()
+        expect(advanced_trigger).to_have_attribute("aria-expanded", "true")
+        advanced_content = page.locator("#model-output-settings-content")
+        advanced_content.wait_for(state="visible")
+        page.wait_for_function("() => window.__modelOutputRevealFramesDone === true")
+        reveal_frames = page.evaluate("window.__modelOutputRevealFrames")
+        rendered_heights = [
+            frame["height"] for frame in reveal_frames if frame["height"] > 1
+        ]
+        assert len(rendered_heights) >= 5, reveal_frames
+        assert max(rendered_heights) - min(rendered_heights) <= 1, {
+            "message": "Advanced field was progressively clipped during reveal.",
+            "frames": reveal_frames,
+        }
+        page.wait_for_function(
+            """
+            () => {
+              const viewport = document.querySelector(
+                '[data-slot="dialog-content"] form > [data-slot="field-group"]',
+              );
+              const input = document.querySelector('#model-max-tokens');
+              if (!(viewport instanceof HTMLElement) ||
+                  !(input instanceof HTMLElement)) {
+                return false;
+              }
+              const viewportRect = viewport.getBoundingClientRect();
+              const inputRect = input.getBoundingClientRect();
+              return inputRect.top >= viewportRect.top - 1 &&
+                inputRect.bottom <= viewportRect.bottom + 1;
+            }
+            """,
+        )
+
+        dialog_after = dialog.bounding_box()
+        scroll_box = scroll_viewport.bounding_box()
+        input_box = page.locator("#model-max-tokens").bounding_box()
+        scroll_after = scroll_viewport.evaluate("element => element.scrollTop")
+        assert dialog_after is not None
+        assert scroll_box is not None
+        assert input_box is not None
+        for key in ("x", "y", "width", "height"):
+            assert abs(dialog_after[key] - dialog_before[key]) <= 1, (
+                dialog_before,
+                dialog_after,
+            )
+        assert scroll_after > scroll_before
+        assert input_box["y"] >= scroll_box["y"] - 1
+        assert input_box["y"] + input_box["height"] <= (
+            scroll_box["y"] + scroll_box["height"] + 1
+        )
+        assert page.evaluate("window.__modelOutputRevealBehaviors") == [
+            {"behavior": "smooth", "method": "scrollTo"}
+        ]
+
+        page.evaluate(
+            """
+            () => {
+              window.__modelOutputCollapseFrames = [];
+              const startedAt = performance.now();
+              const sample = timestamp => {
+                const dialog = document.querySelector(
+                  '[data-slot="dialog-content"]',
+                );
+                const content = document.querySelector(
+                  '#model-output-settings-content',
+                );
+                const inner = content?.querySelector(
+                  '.model-output-settings-content-inner',
+                );
+                const viewport = document.querySelector(
+                  '[data-slot="dialog-content"] form > [data-slot="field-group"]',
+                );
+                const dialogRect = dialog instanceof HTMLElement
+                  ? dialog.getBoundingClientRect()
+                  : null;
+                const dialogStyle = dialog instanceof HTMLElement
+                  ? getComputedStyle(dialog)
+                  : null;
+                const contentStyle = content instanceof HTMLElement
+                  ? getComputedStyle(content)
+                  : null;
+                const innerStyle = inner instanceof HTMLElement
+                  ? getComputedStyle(inner)
+                  : null;
+                const centerOwner = dialogRect
+                  ? document.elementFromPoint(
+                      dialogRect.left + dialogRect.width / 2,
+                      dialogRect.top + dialogRect.height / 2,
+                    )
+                  : null;
+                window.__modelOutputCollapseFrames.push({
+                  elapsed: timestamp - startedAt,
+                  height: content instanceof HTMLElement
+                    ? content.getBoundingClientRect().height
+                    : 0,
+                  dialogVisible: dialog instanceof HTMLElement &&
+                    dialog.isConnected &&
+                    dialogStyle?.display !== 'none' &&
+                    dialogStyle?.visibility !== 'hidden' &&
+                    Number(dialogStyle?.opacity ?? 0) > 0.99 &&
+                    Boolean(dialogRect?.width) &&
+                    Boolean(dialogRect?.height) &&
+                    dialog.contains(centerOwner),
+                  dialogOpacity: Number(dialogStyle?.opacity ?? 0),
+                  dialogRect: dialogRect ? {
+                    x: dialogRect.x,
+                    y: dialogRect.y,
+                    width: dialogRect.width,
+                    height: dialogRect.height,
+                  } : null,
+                  contentOpacity: contentStyle
+                    ? Number(contentStyle.opacity)
+                    : null,
+                  contentWillChange: contentStyle?.willChange ?? null,
+                  innerWillChange: innerStyle?.willChange ?? null,
+                  scrollTop: viewport instanceof HTMLElement
+                    ? viewport.scrollTop
+                    : null,
+                });
+                if (timestamp - startedAt < 520) {
+                  requestAnimationFrame(sample);
+                  return;
+                }
+                window.__modelOutputCollapseFramesDone = true;
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+        advanced_trigger.click()
+        expect(advanced_trigger).to_have_attribute("aria-expanded", "false")
+        assert advanced_content.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "model-output-settings-exit"
+        page.wait_for_function("() => window.__modelOutputCollapseFramesDone === true")
+        collapse_frames = page.evaluate("window.__modelOutputCollapseFrames")
+        assert collapse_frames
+        assert all(frame["dialogVisible"] for frame in collapse_frames), {
+            "message": (
+                "The model dialog disappeared during advanced-settings collapse."
+            ),
+            "frames": collapse_frames,
+        }
+        assert all(frame["dialogOpacity"] > 0.99 for frame in collapse_frames), {
+            "message": "The model dialog faded during an internal field transition.",
+            "frames": collapse_frames,
+        }
+        for frame in collapse_frames:
+            assert frame["dialogRect"] is not None, collapse_frames
+            for key in ("x", "y", "width", "height"):
+                assert abs(frame["dialogRect"][key] - dialog_before[key]) <= 1, {
+                    "message": "The fixed model dialog moved during collapse.",
+                    "frames": collapse_frames,
+                }
+        painted_content_frames = [
+            frame for frame in collapse_frames if frame["height"] > 1
+        ]
+        assert painted_content_frames, collapse_frames
+        assert all(
+            frame["contentOpacity"] is not None
+            and frame["contentOpacity"] > 0.99
+            and frame["contentWillChange"] == "auto"
+            and frame["innerWillChange"] == "auto"
+            for frame in painted_content_frames
+        ), {
+            "message": (
+                "Collapsing content created nested opacity/transform layers inside "
+                "the fixed dialog."
+            ),
+            "frames": collapse_frames,
+        }
+        expanded_height = max(frame["height"] for frame in collapse_frames)
+        intermediate_heights = [
+            frame["height"]
+            for frame in collapse_frames
+            if 1 < frame["height"] < expanded_height - 1
+        ]
+        assert len(intermediate_heights) >= 4, {
+            "message": "Advanced field height snapped closed instead of collapsing.",
+            "frames": collapse_frames,
+        }
+        collapse_scroll_positions = {
+            round(frame["scrollTop"], 1)
+            for frame in collapse_frames
+            if frame["scrollTop"] is not None
+        }
+        assert len(collapse_scroll_positions) >= 4, {
+            "message": "The form viewport snapped after advanced content unmounted.",
+            "frames": collapse_frames,
+        }
+        advanced_content.wait_for(state="hidden")
+        dialog_collapsed = dialog.bounding_box()
+        assert dialog_collapsed is not None
+        for key in ("x", "y", "width", "height"):
+            assert abs(dialog_collapsed[key] - dialog_before[key]) <= 1, (
+                dialog_before,
+                dialog_collapsed,
+            )
+
+        page.emulate_media(reduced_motion="reduce")
+        scroll_viewport.evaluate("element => { element.scrollTop = 0; }")
+        advanced_trigger.click()
+        expect(advanced_trigger).to_have_attribute("aria-expanded", "true")
+        advanced_content.wait_for(state="visible")
+        assert advanced_content.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "none"
+        page.wait_for_function(
+            """
+            () => {
+              const viewport = document.querySelector(
+                '[data-slot="dialog-content"] form > [data-slot="field-group"]',
+              );
+              const input = document.querySelector('#model-max-tokens');
+              if (!(viewport instanceof HTMLElement) ||
+                  !(input instanceof HTMLElement)) {
+                return false;
+              }
+              const viewportRect = viewport.getBoundingClientRect();
+              const inputRect = input.getBoundingClientRect();
+              return inputRect.top >= viewportRect.top - 1 &&
+                inputRect.bottom <= viewportRect.bottom + 1;
+            }
+            """,
+        )
+        assert page.evaluate("window.__modelOutputRevealBehaviors.at(-1)") == {
+            "behavior": "auto",
+            "method": "scrollTo",
+        }
     finally:
         context.close()
 
@@ -2765,12 +5295,17 @@ def test_agent_hydration_failure_stays_local_without_error_notification(
         context.close()
 
 
+@pytest.mark.browser_smoke
 def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -2816,6 +5351,12 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         assert len(routed_frames) >= 2
         _assert_visible_once_mounted(routed_frames, "hasResumeDetail")
         assert all(
+            bool(frame["hasResumeGallery"]) or bool(frame["hasResumeDetail"])
+            for frame in routed_frames
+        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_frames)
+        assert not any(bool(frame["hasRouteSkeleton"]) for frame in routed_frames)
+        assert all(
             bool(frame["resumePreviewFits"])
             for frame in routed_frames
             if frame["hasResumeDetail"]
@@ -2842,6 +5383,16 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         ]
         assert len(routed_gallery_frames) >= 2
         _assert_visible_once_mounted(routed_gallery_frames, "hasResumeGallery")
+        assert all(
+            bool(frame["hasResumeDetail"]) or bool(frame["hasResumeGallery"])
+            for frame in routed_gallery_frames
+        )
+        assert not any(
+            bool(frame["hasAppFallback"]) for frame in routed_gallery_frames
+        )
+        assert not any(
+            bool(frame["hasRouteSkeleton"]) for frame in routed_gallery_frames
+        )
     finally:
         context.close()
 
@@ -3033,12 +5584,457 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
         context.close()
 
 
+@pytest.mark.browser_smoke
+def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    held_version_routes: list[Route] = []
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Version switch stability regression"},
+        )
+        assert create_response.ok
+        created = create_response.json()["data"]["resume"]
+        resume_id = str(created["id"])
+        initial_name = str(created["resume"]["basic"]["name"])
+        second_name = "Version Switch Current Checkpoint"
+        second_resume = json.loads(json.dumps(created["resume"]))
+        second_resume["basic"]["name"] = second_name
+        checkpoint_response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}?saveMode=checkpoint",
+            data={
+                "jobBrief": created["jobBrief"],
+                "resume": second_resume,
+                "template": created["template"],
+                "templateSettings": created["templateSettings"],
+                "title": created["title"],
+                "typography": created["typography"],
+            },
+        )
+        assert checkpoint_response.ok
+        assert checkpoint_response.json()["data"]["versionId"] != "1"
+
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        preview = page.locator(
+            ".resume-preview-card article.resume-page",
+        )
+        expect(preview).to_contain_text(second_name)
+
+        history_trigger = page.locator(
+            '[data-slot="save-status-group"] [data-slot="popover-trigger"]'
+        )
+        history_trigger.click()
+        version_popover = page.locator(
+            '[data-slot="popover-content"][aria-label="保存版本"]'
+        )
+        expect(version_popover).to_be_visible()
+        version_buttons = version_popover.get_by_role("button")
+        expect(version_buttons).to_have_count(2)
+        historical_version = version_buttons.last
+        historical_version.hover()
+
+        before = page.evaluate(
+            """
+            () => {
+              const preview = document.querySelector(
+                '.resume-preview-card article.resume-page',
+              );
+              const editor = document.querySelector('.resume-editor-panel');
+              const popover = document.querySelector(
+                '[data-slot="popover-content"][aria-label="保存版本"]',
+              );
+              if (!(preview instanceof HTMLElement) ||
+                  !(editor instanceof HTMLElement) ||
+                  !(popover instanceof HTMLElement)) {
+                throw new Error('Missing version switch stability surface.');
+              }
+              window.__versionSwitchPreview = preview;
+              window.__versionSwitchEditor = editor;
+              window.__versionSwitchPopover = popover;
+              const previewRect = preview.getBoundingClientRect();
+              const editorRect = editor.getBoundingClientRect();
+              return {
+                editor: {
+                  height: editorRect.height,
+                  width: editorRect.width,
+                  x: editorRect.x,
+                  y: editorRect.y,
+                },
+                preview: {
+                  height: previewRect.height,
+                  width: previewRect.width,
+                  x: previewRect.x,
+                  y: previewRect.y,
+                },
+              };
+            }
+            """
+        )
+
+        version_pattern = f"**/api/resumes/{resume_id}/versions/1"
+
+        def hold_version(route: Route) -> None:
+            held_version_routes.append(route)
+
+        page.route(version_pattern, hold_version)
+        historical_version.click()
+        deadline = time.monotonic() + 3
+        while not held_version_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert held_version_routes
+        page.wait_for_timeout(250)
+
+        expect(version_popover).to_be_visible()
+        expect(historical_version).to_be_visible()
+        assert historical_version.evaluate("element => element.matches(':hover')")
+        during = page.evaluate(
+            """
+            () => {
+              const preview = window.__versionSwitchPreview;
+              const editor = window.__versionSwitchEditor;
+              const popover = window.__versionSwitchPopover;
+              const previewRect = preview?.getBoundingClientRect();
+              const editorRect = editor?.getBoundingClientRect();
+              return {
+                editorConnected: editor?.isConnected === true,
+                popoverConnected: popover?.isConnected === true,
+                previewConnected: preview?.isConnected === true,
+                skeletonCount: document.querySelectorAll(
+                  '[data-slot="workspace-panel-skeleton"], ' +
+                  '[data-slot="workspace-preview-skeleton"]',
+                ).length,
+                editor: editorRect ? {
+                  height: editorRect.height,
+                  width: editorRect.width,
+                  x: editorRect.x,
+                  y: editorRect.y,
+                } : null,
+                preview: previewRect ? {
+                  height: previewRect.height,
+                  width: previewRect.width,
+                  x: previewRect.x,
+                  y: previewRect.y,
+                } : null,
+              };
+            }
+            """
+        )
+        assert during["editorConnected"], during
+        assert during["popoverConnected"], during
+        assert during["previewConnected"], during
+        assert during["skeletonCount"] == 0, during
+        assert during["editor"] == pytest.approx(before["editor"], abs=1), during
+        assert during["preview"] == pytest.approx(before["preview"], abs=1), during
+
+        for route in held_version_routes:
+            route.continue_()
+        held_version_routes.clear()
+        page.unroute(version_pattern, hold_version)
+
+        expect(preview).to_contain_text(initial_name)
+        expect(version_popover).to_be_visible()
+        expect(historical_version).to_be_visible()
+        assert historical_version.evaluate("element => element.matches(':hover')")
+    finally:
+        for route in held_version_routes:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("template_id", "item_count"),
+    [("minimal", 36), ("compact", 80)],
+)
+def test_resume_pagination_does_not_split_text_lines(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    template_id: str,
+    item_count: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={
+                "title": f"{template_id} pagination line break regression",
+                "template": template_id,
+            },
+        )
+        assert create_response.ok
+        created = create_response.json()["data"]["resume"]
+        resume_id = created["id"]
+        list_html = (
+            "<ul>"
+            + "".join(
+                f"<li>Skill {index:02d} React</li>" for index in range(item_count)
+            )
+            + "</ul>"
+        )
+        save_response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                "title": created["title"],
+                "resume": {
+                    **created["resume"],
+                    "basic": {
+                        **created["resume"]["basic"],
+                        "name": "",
+                        "headline": "",
+                        "phone": "",
+                        "email": "",
+                        "location": "",
+                        "avatar": "",
+                        "summary": "",
+                    },
+                    "sections": [
+                        {
+                            "id": "pagination-skills",
+                            "kind": "simple_list",
+                            "title": "Skills",
+                            "items": [
+                                {
+                                    "id": "pagination-skills-content",
+                                    "content": list_html,
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "jobBrief": created["jobBrief"],
+                "typography": {"fontFamily": "inter", "fontSize": 16},
+                "template": created["template"],
+                "templateSettings": created["templateSettings"],
+            },
+        )
+        assert save_response.ok
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        preview = page.locator(
+            ".resume-workspace .resume-preview-card "
+            '[data-resume-pagination-ready="true"]'
+        )
+        preview.wait_for(state="visible")
+        line_geometry_script = """
+            stack => {
+              const violations = [];
+              const pageShells = [...stack.querySelectorAll('.resume-page-shell')];
+
+              pageShells.forEach((shell, pageIndex) => {
+                const viewport = shell.querySelector(
+                  '.resume-page-content-viewport, .resume-page-flow-viewport',
+                );
+                const fragment = shell.querySelector(
+                  '.resume-page-content-fragment, .resume-page-fragment',
+                );
+                if (!(viewport instanceof HTMLElement) ||
+                    !(fragment instanceof HTMLElement)) {
+                  throw new Error('Resume page slice is unavailable.');
+                }
+
+                const viewportRect = viewport.getBoundingClientRect();
+                const walker = document.createTreeWalker(
+                  fragment,
+                  NodeFilter.SHOW_TEXT,
+                  {
+                    acceptNode(node) {
+                      return node.textContent?.trim()
+                        ? NodeFilter.FILTER_ACCEPT
+                        : NodeFilter.FILTER_REJECT;
+                    },
+                  },
+                );
+                const range = document.createRange();
+                let textNode = walker.nextNode();
+
+                while (textNode) {
+                  range.selectNodeContents(textNode);
+                  for (const rect of range.getClientRects()) {
+                    const intersects =
+                      rect.bottom > viewportRect.top + 0.5 &&
+                      rect.top < viewportRect.bottom - 0.5;
+                    const contained =
+                      rect.top >= viewportRect.top - 1 &&
+                      rect.bottom <= viewportRect.bottom + 1;
+                    if (intersects && !contained) {
+                      violations.push({
+                        page: pageIndex + 1,
+                        text: textNode.textContent,
+                        lineTop: rect.top,
+                        lineBottom: rect.bottom,
+                        viewportTop: viewportRect.top,
+                        viewportBottom: viewportRect.bottom,
+                      });
+                    }
+                  }
+                  textNode = walker.nextNode();
+                }
+              });
+
+              return { pageCount: pageShells.length, violations };
+            }
+            """
+        geometry = preview.evaluate(line_geometry_script)
+        assert geometry["pageCount"] >= 2, geometry
+        assert geometry["violations"] == [], geometry
+
+        if template_id == "minimal":
+            format_button = page.locator(
+                "header button:has(svg.lucide-sliders-horizontal)"
+            )
+            format_button.click()
+            format_popover = page.locator('[data-slot="popover-content"]')
+            font_size_select = format_popover.get_by_role("combobox").nth(2)
+            font_size_select.click()
+            larger_font_option = page.get_by_role(
+                "option",
+                name="15 pt",
+                exact=True,
+            )
+            larger_font_option.wait_for(state="visible")
+            page.evaluate(
+                """() => {
+                  const inspect = """
+                + line_geometry_script
+                + """;
+                  const state = {
+                    done: false,
+                    frames: 0,
+                    hiddenPendingFrames: [],
+                    sawPending: false,
+                    settled: false,
+                    timedOut: false,
+                    violations: [],
+                  };
+                  window.__resumePaginationTransition = state;
+
+                  const sampleFrame = () => {
+                    const stack = document.querySelector(
+                      '.resume-workspace .resume-preview-card '
+                      + '[data-resume-page-count]',
+                    );
+                    state.frames += 1;
+
+                    if (stack instanceof HTMLElement) {
+                      const ready =
+                        stack.dataset.resumePaginationReady === 'true';
+                      state.sawPending ||= !ready;
+                      const firstPage = stack.querySelector('.resume-page-shell');
+                      const pagesVisible = stack.checkVisibility({
+                        checkOpacity: true,
+                        checkVisibilityCSS: true,
+                      }) && firstPage?.checkVisibility({
+                        checkOpacity: true,
+                        checkVisibilityCSS: true,
+                      });
+                      if (!ready && !pagesVisible) {
+                        state.hiddenPendingFrames.push(state.frames);
+                      }
+                      const geometry = inspect(stack);
+
+                      if (state.violations.length < 20) {
+                        state.violations.push(
+                          ...geometry.violations.slice(
+                            0,
+                            20 - state.violations.length,
+                          ).map(violation => ({
+                            ...violation,
+                            frame: state.frames,
+                            ready,
+                          })),
+                        );
+                      }
+
+                      if (state.sawPending && ready) {
+                        state.settled = true;
+                        state.done = true;
+                        return;
+                      }
+                    }
+
+                    if (state.frames >= 180) {
+                      state.timedOut = true;
+                      state.done = true;
+                      return;
+                    }
+                    requestAnimationFrame(sampleFrame);
+                  };
+
+                  requestAnimationFrame(sampleFrame);
+                }"""
+            )
+            larger_font_option.click()
+            page.wait_for_function("window.__resumePaginationTransition?.done === true")
+            transition = page.evaluate("window.__resumePaginationTransition")
+
+            assert transition["sawPending"], transition
+            assert transition["settled"], transition
+            assert not transition["timedOut"], transition
+            assert transition["hiddenPendingFrames"] == [], transition
+            assert transition["violations"] == [], transition
+
+        page.goto(
+            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
+            wait_until="networkidle",
+        )
+        page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
+        page.emulate_media(media="print")
+        export_preview = page.locator(
+            '.pdf-export-page [data-resume-pagination-ready="true"]'
+        )
+        export_geometry = export_preview.evaluate(line_geometry_script)
+
+        assert export_geometry["pageCount"] >= 2, export_geometry
+        assert export_geometry["violations"] == [], export_geometry
+    finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_template_navigation_keeps_cached_views_mounted(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -3064,6 +6060,17 @@ def test_template_navigation_keeps_cached_views_mounted(
         ]
         assert len(routed_detail_frames) >= 2
         _assert_visible_once_mounted(routed_detail_frames, "hasTemplateDetail")
+        assert all(
+            bool(frame["hasTemplateGallery"])
+            or bool(frame["hasTemplateDetail"])
+            for frame in routed_detail_frames
+        )
+        assert not any(
+            bool(frame["hasAppFallback"]) for frame in routed_detail_frames
+        )
+        assert not any(
+            bool(frame["hasRouteSkeleton"]) for frame in routed_detail_frames
+        )
 
         back_button = page.get_by_role(
             "button",
@@ -3084,6 +6091,17 @@ def test_template_navigation_keeps_cached_views_mounted(
         _assert_visible_once_mounted(
             routed_gallery_frames,
             "hasTemplateGallery",
+        )
+        assert all(
+            bool(frame["hasTemplateDetail"])
+            or bool(frame["hasTemplateGallery"])
+            for frame in routed_gallery_frames
+        )
+        assert not any(
+            bool(frame["hasAppFallback"]) for frame in routed_gallery_frames
+        )
+        assert not any(
+            bool(frame["hasRouteSkeleton"]) for frame in routed_gallery_frames
         )
     finally:
         context.close()
@@ -3193,6 +6211,7 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
         context.close()
 
 
+@pytest.mark.browser_smoke
 @pytest.mark.parametrize(
     ("target_route", "api_path", "frame_key"),
     [
@@ -3210,7 +6229,7 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
         ),
     ],
 )
-def test_lateral_navigation_keeps_target_content_mounted(
+def test_prepared_lateral_navigation_never_shows_loading_surface(
     browser: Browser,
     workspace_servers: tuple[str, str],
     target_route: str,
@@ -3249,11 +6268,17 @@ def test_lateral_navigation_keeps_target_content_mounted(
             bool(frame["hasResumeGallery"]) or bool(frame[frame_key])
             for frame in routed_frames
         ]
-        spinner_states = [bool(frame["hasRouteSpinner"]) for frame in routed_frames]
+        app_fallback_states = [
+            bool(frame["hasAppFallback"]) for frame in routed_frames
+        ]
+        skeleton_states = [
+            bool(frame["hasRouteSkeleton"]) for frame in routed_frames
+        ]
         sidebar_states = [bool(frame["hasSidebar"]) for frame in routed_frames]
 
         assert all(handoff_states), _boolean_runs(handoff_states)
-        assert not any(spinner_states), _boolean_runs(spinner_states)
+        assert not any(app_fallback_states), _boolean_runs(app_fallback_states)
+        assert not any(skeleton_states), _boolean_runs(skeleton_states)
         assert all(sidebar_states), _boolean_runs(sidebar_states)
     finally:
         context.close()
@@ -3299,7 +6324,8 @@ def test_lateral_history_uses_latest_view_snapshot_without_blank_frame(
             bool(frame["hasSettingsContent"]) or bool(frame["hasResumeGallery"])
             for frame in routed_back_frames
         )
-        assert not any(bool(frame["hasRouteSpinner"]) for frame in routed_back_frames)
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_back_frames)
+        assert not any(bool(frame["hasRouteSkeleton"]) for frame in routed_back_frames)
         assert all(bool(frame["hasSidebar"]) for frame in routed_back_frames)
 
         _start_workspace_frame_recording(page)
@@ -3321,7 +6347,10 @@ def test_lateral_history_uses_latest_view_snapshot_without_blank_frame(
             for frame in routed_forward_frames
         )
         assert not any(
-            bool(frame["hasRouteSpinner"]) for frame in routed_forward_frames
+            bool(frame["hasAppFallback"]) for frame in routed_forward_frames
+        )
+        assert not any(
+            bool(frame["hasRouteSkeleton"]) for frame in routed_forward_frames
         )
         assert all(bool(frame["hasSidebar"]) for frame in routed_forward_frames)
     finally:
@@ -3483,7 +6512,11 @@ def test_resume_title_preserves_draft_and_normalizes_on_commit(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
     save_payloads: list[dict[str, object]] = []
 
@@ -3535,6 +6568,33 @@ def test_resume_title_preserves_draft_and_normalizes_on_commit(
             page.wait_for_timeout(50)
 
         assert save_payloads[-1]["title"] == (fallback_title or "新建简历1")
+    finally:
+        context.close()
+
+
+def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.locator('button[aria-label$=": 删除板块"]').first.click()
+
+        dialog = page.locator('[data-slot="alert-dialog-content"]')
+        dialog.wait_for(state="visible")
+        expect(dialog).to_have_attribute("data-state", "open")
+
+        page.get_by_role("button", name="取消", exact=True).click()
+        expect(dialog).to_have_attribute("data-state", "closed")
+        dialog.wait_for(state="detached")
     finally:
         context.close()
 
@@ -3606,12 +6666,288 @@ def test_project_tech_stack_is_saved_without_blurring_the_input(
         context.close()
 
 
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize("item_count", [3, 16])
+def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    item_count: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        viewport={"width": 1672, "height": 870},
+        locale="zh-CN",
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+
+    def delay_rich_text_editor(route: Route) -> None:
+        time.sleep(0.16)
+        route.continue_()
+
+    page.route(
+        "**/src/components/editor/rich-highlights-editor.tsx*",
+        delay_rich_text_editor,
+    )
+    page.add_init_script(
+        """
+        (() => {
+          window.__richEditorFrames = [];
+          window.__recordRichEditorFrames = false;
+
+          const capture = (now) => {
+            if (window.__recordRichEditorFrames) {
+              const toggle = document.querySelector(
+                'button[aria-label="技能: 展开或收起模块"]',
+              );
+              const root = toggle?.closest('[data-slot="collapsible"]');
+              const content = root?.querySelector(
+                '[data-slot="collapsible-content"]',
+              );
+              const inner = content?.querySelector(
+                '.collapsible-content-inner',
+              );
+
+              if (content && inner) {
+                const contentStyle = window.getComputedStyle(content);
+                const innerStyle = window.getComputedStyle(inner);
+                window.__richEditorFrames.push({
+                  time: now,
+                  state: content.getAttribute('data-state'),
+                  contentHeight: content.getBoundingClientRect().height,
+                  innerHeight: inner.getBoundingClientRect().height,
+                  scrollHeight: content.scrollHeight,
+                  radixHeight: contentStyle
+                    .getPropertyValue('--radix-collapsible-content-height')
+                    .trim(),
+                  animationName: contentStyle.animationName,
+                  innerAnimationName: innerStyle.animationName,
+                  innerOpacity: Number(innerStyle.opacity),
+                  hasSkeleton: Boolean(
+                    inner.querySelector('[data-slot="skeleton"]'),
+                  ),
+                  hasEditor: Boolean(inner.querySelector('.ProseMirror')),
+                });
+              }
+            }
+
+            window.requestAnimationFrame(capture);
+          };
+
+          window.requestAnimationFrame(capture);
+        })();
+        """
+    )
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": f"Rich editor expand layout regression {item_count}"},
+        )
+        assert create_response.ok
+        created = create_response.json()["data"]["resume"]
+        resume_id = str(created["id"])
+        save_response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                "title": created["title"],
+                "resume": {
+                    **created["resume"],
+                    "sections": [
+                        {
+                            "id": "expand-layout-skills",
+                            "kind": "simple_list",
+                            "title": "技能",
+                            "items": [
+                                {
+                                    "id": "expand-layout-skills-content",
+                                    "content": (
+                                        "<ul>"
+                                        + "".join(
+                                            f"<li>Skill {index + 1}</li>"
+                                            for index in range(item_count)
+                                        )
+                                        + "</ul>"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "jobBrief": created["jobBrief"],
+                "typography": created["typography"],
+                "template": created["template"],
+                "templateSettings": created["templateSettings"],
+            },
+        )
+        assert save_response.ok
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        toggle = page.get_by_role(
+            "button",
+            name="技能: 展开或收起模块",
+            exact=True,
+        )
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+
+        page.evaluate(
+            """
+            () => {
+              window.__richEditorFrames = [];
+              window.__recordRichEditorFrames = true;
+            }
+            """
+        )
+        toggle.click()
+        editor = page.locator(
+            '[data-slot="collapsible-content"] .ProseMirror',
+        )
+        editor.wait_for(state="visible")
+        expect(editor).to_contain_text("Skill 1")
+        page.wait_for_timeout(360)
+        frames: list[dict[str, Any]] = page.evaluate(
+            """
+            () => {
+              window.__recordRichEditorFrames = false;
+              return window.__richEditorFrames;
+            }
+            """
+        )
+
+        skeleton_frames = [frame for frame in frames if frame["hasSkeleton"]]
+        editor_frames = [frame for frame in frames if frame["hasEditor"]]
+        assert skeleton_frames, frames
+        assert editor_frames, frames
+
+        last_skeleton = skeleton_frames[-1]
+        first_editor = next(
+            frame
+            for frame in editor_frames
+            if frame["time"] >= last_skeleton["time"]
+        )
+        assert first_editor["innerHeight"] == pytest.approx(
+            last_skeleton["innerHeight"],
+            abs=2,
+        ), {"lastSkeleton": last_skeleton, "firstEditor": first_editor}
+
+        final_frame = editor_frames[-1]
+        radix_height = float(str(final_frame["radixHeight"]).removesuffix("px"))
+        assert final_frame["innerHeight"] == pytest.approx(radix_height, abs=2), {
+            "finalFrame": final_frame,
+            "frames": frames,
+        }
+
+        opening_frames = [
+            frame
+            for frame in frames
+            if frame["state"] == "open" and frame["contentHeight"] > 1
+        ]
+        assert len(
+            {round(float(frame["contentHeight"]), 1) for frame in opening_frames}
+        ) >= 4, opening_frames
+        assert any(
+            frame["animationName"] == "collapsible-down"
+            for frame in opening_frames
+        ), opening_frames
+        assert any(
+            frame["innerAnimationName"] == "collapsible-inner-in"
+            for frame in opening_frames
+        ), opening_frames
+        assert any(
+            0 < float(frame["innerOpacity"]) < 1 for frame in opening_frames
+        ), opening_frames
+
+        if item_count == 3:
+            page.evaluate(
+                """
+                () => {
+                  window.__richEditorFrames = [];
+                  window.__recordRichEditorFrames = true;
+                }
+                """
+            )
+            toggle.click()
+            expect(toggle).to_have_attribute("aria-expanded", "false")
+            page.wait_for_timeout(260)
+            closing_frames: list[dict[str, Any]] = page.evaluate(
+                """
+                () => {
+                  window.__recordRichEditorFrames = false;
+                  return window.__richEditorFrames;
+                }
+                """
+            )
+            closing_visible_frames = [
+                frame
+                for frame in closing_frames
+                if frame["state"] == "closed" and frame["contentHeight"] > 1
+            ]
+            assert len(
+                {
+                    round(float(frame["contentHeight"]), 1)
+                    for frame in closing_visible_frames
+                }
+            ) >= 4, closing_frames
+            assert closing_visible_frames[0]["contentHeight"] > (
+                closing_visible_frames[-1]["contentHeight"]
+            ), closing_visible_frames
+            assert any(
+                frame["animationName"] == "collapsible-up"
+                for frame in closing_visible_frames
+            ), closing_visible_frames
+            assert any(
+                frame["innerAnimationName"] == "collapsible-inner-out"
+                for frame in closing_visible_frames
+            ), closing_visible_frames
+
+            page.emulate_media(reduced_motion="reduce")
+            page.evaluate(
+                """
+                () => {
+                  window.__richEditorFrames = [];
+                  window.__recordRichEditorFrames = true;
+                }
+                """
+            )
+            toggle.click()
+            editor.wait_for(state="visible")
+            expect(toggle).to_have_attribute("aria-expanded", "true")
+            page.wait_for_timeout(50)
+            reduced_motion_frames: list[dict[str, Any]] = page.evaluate(
+                """
+                () => {
+                  window.__recordRichEditorFrames = false;
+                  return window.__richEditorFrames;
+                }
+                """
+            )
+            assert reduced_motion_frames, reduced_motion_frames
+            assert all(
+                frame["animationName"] == "none"
+                and frame["innerAnimationName"] == "none"
+                for frame in reduced_motion_frames
+            ), reduced_motion_frames
+    finally:
+        if resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
     extra_resume_id: str | None = None
 
@@ -3634,9 +6970,20 @@ def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
         assert page.locator('button[aria-label="确认删除"]').count() == 1
 
         resume_cards.nth(1).click()
-        page.get_by_role("button", name="批量删除", exact=True).wait_for(
-            state="visible"
+        bulk_delete = page.get_by_role("button", name="批量删除", exact=True)
+        bulk_delete.wait_for(state="visible")
+        expect(bulk_delete).to_have_attribute("data-variant", "destructive")
+        expect(bulk_delete).to_have_attribute("data-size", "default")
+        new_resume = page.get_by_role("button", name="新建", exact=True)
+        toolbar_height_delta = page.evaluate(
+            """
+            ([bulkDelete, newResume]) =>
+              bulkDelete.getBoundingClientRect().height -
+              newResume.getBoundingClientRect().height
+            """,
+            [bulk_delete.element_handle(), new_resume.element_handle()],
         )
+        assert abs(toolbar_height_delta) <= 1, toolbar_height_delta
         assert page.locator('button[aria-label="确认删除"]').count() == 0
 
         resume_cards.nth(1).click()
@@ -3651,6 +6998,366 @@ def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
         context.close()
 
 
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("gallery_path", "detail_href_prefix"),
+    [
+        ("/resume", "/resume/"),
+        ("/templates", "/template/"),
+    ],
+)
+def test_detail_push_resets_document_scroll_and_focuses_main_content(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    detail_href_prefix: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 720},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        target_link = page.locator(
+            f'#main-content a[href^="{detail_href_prefix}"]'
+        ).first
+        target_link.wait_for(state="visible")
+        target_href = target_link.get_attribute("href")
+        assert target_href
+
+        scroll_top = target_link.evaluate(
+            """
+            element => {
+              const main = document.querySelector('#main-content');
+              if (!(main instanceof HTMLElement)) {
+                throw new Error('Workspace main content is unavailable.');
+              }
+              const spacer = document.createElement('div');
+              spacer.setAttribute('aria-hidden', 'true');
+              spacer.style.flex = '0 0 1400px';
+              main.append(spacer);
+              element.focus();
+              window.scrollTo({ top: 600, behavior: 'instant' });
+              return document.scrollingElement?.scrollTop ?? 0;
+            }
+            """
+        )
+        assert scroll_top > 0
+        expect(target_link).to_be_focused()
+
+        target_link.evaluate("element => element.click()")
+        page.wait_for_url(f"**{urlparse(target_href).path}")
+        main_content = page.locator("#main-content")
+        expect(main_content).to_be_focused()
+        page.wait_for_timeout(200)
+
+        assert page.evaluate(
+            "document.scrollingElement?.scrollTop ?? 0"
+        ) == 0
+        expect(main_content).to_be_focused()
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_save_status_announces_unsaved_saving_and_saved_states(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    held_saves: list[Route] = []
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Save status announcement regression"},
+        )
+        assert create_response.ok
+        resume_id = str(create_response.json()["data"]["resume"]["id"])
+
+        def hold_checkpoint_save(route: Route) -> None:
+            if (
+                route.request.method == "PUT"
+                and parse_qs(urlparse(route.request.url).query).get("saveMode")
+                == ["checkpoint"]
+            ):
+                held_saves.append(route)
+                return
+
+            route.continue_()
+
+        page.route(f"**/api/resumes/{resume_id}*", hold_checkpoint_save)
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        page.locator('input[name="name"]').fill("Accessible Save State")
+
+        announcement = page.locator(
+            '[data-slot="save-status-announcement"]'
+        )
+        expect(announcement).to_have_attribute("role", "status")
+        expect(announcement).to_have_attribute("aria-live", "polite")
+        expect(announcement).to_have_attribute("aria-atomic", "true")
+        expect(announcement).to_have_text("有未保存更改")
+
+        with page.expect_request(
+            lambda request: (
+                request.method == "PUT"
+                and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+                and parse_qs(urlparse(request.url).query).get("saveMode")
+                == ["checkpoint"]
+            )
+        ):
+            page.get_by_role(
+                "button",
+                name="保存状态",
+                exact=True,
+            ).click()
+
+        expect(announcement).to_have_text("正在保存")
+        assert len(held_saves) == 1
+        held_saves.pop().continue_()
+        expect(announcement).to_contain_text("已保存")
+    finally:
+        for route in held_saves:
+            try:
+                route.continue_()
+            except PlaywrightError:
+                pass
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    (
+        "gallery_path",
+        "search_name",
+        "baseline_query",
+        "single_query",
+        "seed_resume_count",
+    ),
+    [
+        ("/templates", "template-search", "", "Minimal", 0),
+        (
+            "/resume",
+            "resume-search",
+            "Gallery alignment",
+            "Gallery alignment 1",
+            6,
+        ),
+    ],
+)
+def test_gallery_sparse_results_start_at_centered_grid_first_column(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    search_name: str,
+    baseline_query: str,
+    single_query: str,
+    seed_resume_count: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 1100},
+    )
+    page = context.new_page()
+    seeded_resume_ids: list[str] = []
+
+    def gallery_geometry() -> dict[str, float | int]:
+        return page.locator('[data-slot="gallery-grid"]').evaluate(
+            """
+            element => {
+              const gridRect = element.getBoundingClientRect();
+              const items = [...element.children].map(child =>
+                child.getBoundingClientRect()
+              );
+              if (items.length === 0) {
+                throw new Error('Expected gallery items.');
+              }
+              const firstRow = items.filter(
+                item => Math.abs(item.top - items[0].top) <= 1
+              );
+              const rowTops = [];
+              for (const item of items) {
+                if (!rowTops.some(top => Math.abs(top - item.top) <= 1)) {
+                  rowTops.push(item.top);
+                }
+              }
+              return {
+                gridLeft: gridRect.left,
+                gridRight: gridRect.right,
+                firstLeft: firstRow[0].left,
+                lastRight: firstRow.at(-1).right,
+                firstRowCount: firstRow.length,
+                itemCount: items.length,
+                rowCount: rowTops.length,
+              };
+            }
+            """
+        )
+
+    try:
+        for index in range(seed_resume_count):
+            create_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={"title": f"Gallery alignment {index + 1}"},
+            )
+            assert create_response.ok
+            create_payload = create_response.json()
+            assert create_payload["code"] == 0
+            seeded_resume_ids.append(create_payload["data"]["resume"]["id"])
+
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        search = page.locator(f'input[name="{search_name}"]')
+        if baseline_query:
+            search.fill(baseline_query)
+
+        page.wait_for_function(
+            """
+            minimum => document.querySelector(
+              '[data-slot="gallery-grid"]'
+            )?.children.length >= minimum
+            """,
+            arg=max(2, seed_resume_count),
+        )
+        baseline = gallery_geometry()
+        left_gutter = baseline["firstLeft"] - baseline["gridLeft"]
+        right_gutter = baseline["gridRight"] - baseline["lastRight"]
+
+        assert baseline["rowCount"] >= 2, baseline
+        assert baseline["firstRowCount"] >= 2, baseline
+        assert abs(left_gutter - right_gutter) <= 1.5, baseline
+
+        search.fill(single_query)
+        page.wait_for_function(
+            """
+            () => document.querySelector(
+              '[data-slot="gallery-grid"]'
+            )?.children.length === 1
+            """
+        )
+        single = gallery_geometry()
+
+        assert single["itemCount"] == 1, single
+        assert abs(single["firstLeft"] - baseline["firstLeft"]) <= 1.5, {
+            "baseline": baseline,
+            "single": single,
+        }
+        assert single["gridRight"] - single["lastRight"] > 200, single
+    finally:
+        for resume_id in seeded_resume_ids:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("gallery_path", "search_name"),
+    [
+        ("/resume", "resume-search"),
+        ("/templates", "template-search"),
+    ],
+)
+def test_gallery_search_commits_chromium_ime_without_leaking_composition(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    search_name: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, locale="zh-CN")
+    page = context.new_page()
+
+    try:
+        page.goto(
+            f"{frontend_url}{gallery_path}?page=2",
+            wait_until="networkidle",
+        )
+        search = page.locator(f'input[name="{search_name}"]')
+        search.focus()
+        cdp = context.new_cdp_session(page)
+
+        cdp.send(
+            "Input.imeSetComposition",
+            {
+                "text": "ni",
+                "selectionStart": 2,
+                "selectionEnd": 2,
+                "replacementStart": 0,
+                "replacementEnd": 0,
+            },
+        )
+
+        expect(search).to_have_value("ni")
+        page.wait_for_timeout(100)
+        assert parse_qs(urlparse(page.url).query) == {"page": ["2"]}
+
+        cdp.send("Input.insertText", {"text": "你"})
+        page.wait_for_function(
+            "new URLSearchParams(window.location.search).get('q') === '你'"
+        )
+
+        expect(search).to_have_value("你")
+        assert parse_qs(urlparse(page.url).query) == {"q": ["你"]}
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_resume_gallery_search_keeps_latest_rapid_input(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, locale="zh-CN")
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume?page=2", wait_until="networkidle")
+        search = page.locator('input[name="resume-search"]')
+        search.focus()
+
+        page.keyboard.type("ab")
+        page.keyboard.press("Backspace")
+
+        assert search.input_value() == "a"
+        page.wait_for_function(
+            "new URLSearchParams(window.location.search).get('q') === 'a'"
+        )
+        page.wait_for_timeout(250)
+        expect(search).to_have_value("a")
+        assert parse_qs(urlparse(page.url).query) == {"q": ["a"]}
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
 def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -3671,22 +7378,33 @@ def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
             assert create_payload["code"] == 0
             extra_resume_ids.append(create_payload["data"]["resume"]["id"])
 
-        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.goto(
+            f"{frontend_url}/resume?q=Pagination",
+            wait_until="networkidle",
+        )
+        search = page.locator('input[name="resume-search"]')
+        expect(search).to_have_value("Pagination")
         pagination = page.locator('[data-slot="pagination-content"]')
         pagination.wait_for(state="visible")
-        previous_link = pagination.get_by_role(
-            "link",
-            name="上一页",
-            exact=True,
-        )
-        next_link = pagination.get_by_role(
-            "link",
-            name="下一页",
-            exact=True,
-        )
+        pagination_links = pagination.locator('[data-slot="pagination-link"]')
+        previous_link = pagination_links.first
+        next_link = pagination_links.last
         active_page_link = pagination.locator('[aria-current="page"]')
         inactive_page_link = pagination.get_by_role("link", name="2", exact=True)
         previous_label = previous_link.locator("span")
+        next_url = urlparse(next_link.get_attribute("href") or "")
+        inactive_page_url = urlparse(
+            inactive_page_link.get_attribute("href") or ""
+        )
+
+        assert previous_link.get_attribute("href") is None
+        assert previous_link.get_attribute("tabindex") == "-1"
+        assert next_url.path == "/resume"
+        assert parse_qs(next_url.query) == {
+            "q": ["Pagination"],
+            "page": ["2"],
+        }
+        assert inactive_page_url == next_url
 
         pagination_geometry = page.evaluate(
             r"""
@@ -3761,6 +7479,34 @@ def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
         assert not pagination_geometry["inactiveHasVisibleShadow"]
         assert pagination_geometry["inactiveWidth"] == 32
         assert pagination_geometry["inactiveHeight"] == 32
+
+        inactive_page_link.click()
+        page.wait_for_url("**/resume?q=Pagination&page=2")
+        second_page_previous = page.locator(
+            '[data-slot="pagination-content"] [data-slot="pagination-link"]'
+        ).first
+        expect(second_page_previous).to_have_attribute(
+            "href",
+            "/resume?q=Pagination",
+        )
+        previous_url = urlparse(second_page_previous.get_attribute("href") or "")
+        assert previous_url.path == "/resume"
+        assert parse_qs(previous_url.query) == {"q": ["Pagination"]}
+
+        page.go_back(wait_until="networkidle")
+        restored_url = urlparse(page.url)
+        assert restored_url.path == "/resume"
+        assert parse_qs(restored_url.query) == {"q": ["Pagination"]}
+        expect(search).to_have_value("Pagination")
+
+        page.go_forward(wait_until="networkidle")
+        forwarded_url = urlparse(page.url)
+        assert forwarded_url.path == "/resume"
+        assert parse_qs(forwarded_url.query) == {
+            "q": ["Pagination"],
+            "page": ["2"],
+        }
+        expect(search).to_have_value("Pagination")
     finally:
         for resume_id in extra_resume_ids:
             trash_response = page.request.post(
@@ -4769,7 +8515,11 @@ def test_template_return_checks_unsaved_changes_before_navigation(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
 
     try:
@@ -4807,6 +8557,208 @@ def test_template_return_checks_unsaved_changes_before_navigation(
         ).click()
         page.wait_for_url(f"{frontend_url}/templates")
     finally:
+        context.close()
+
+
+def test_template_leave_dialog_enter_activates_only_focused_action(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    template_id: str | None = None
+    template_url: str | None = None
+    save_payloads: list[dict[str, object]] = []
+
+    def capture_save(route: Route) -> None:
+        if route.request.method == "PUT":
+            payload = route.request.post_data_json
+            assert isinstance(payload, dict)
+            save_payloads.append(payload)
+        route.continue_()
+
+    def open_template_fields() -> None:
+        page.locator('[data-slot="collapsible-trigger"]').filter(
+            has_text="模板信息"
+        ).click()
+
+    def open_leave_dialog() -> None:
+        page.get_by_role(
+            "button",
+            name="返回模板列表",
+            exact=True,
+        ).click()
+        page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).wait_for(state="visible")
+
+    try:
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        template_url = page.url
+        template_id = urlparse(template_url).path.rsplit("/", maxsplit=1)[-1]
+        page.route(f"**/api/templates/{template_id}", capture_save)
+
+        open_template_fields()
+        template_name_input = page.get_by_label("模板名称", exact=True)
+        template_name_input.fill("Continue template editing via Enter")
+        open_leave_dialog()
+
+        continue_editing = page.get_by_role(
+            "button",
+            name="继续编辑",
+            exact=True,
+        )
+        continue_editing.focus()
+        page.keyboard.press("Enter")
+
+        page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).wait_for(state="hidden")
+        assert page.url == template_url
+        assert template_name_input.input_value() == (
+            "Continue template editing via Enter"
+        )
+
+        open_leave_dialog()
+        save_payloads.clear()
+        discard = page.get_by_role(
+            "button",
+            name="放弃更改",
+            exact=True,
+        )
+        discard.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_url(f"{frontend_url}/templates")
+
+        discarded_name = "Continue template editing via Enter"
+        assert all(
+            payload["template"]["name"] != discarded_name for payload in save_payloads
+        )
+
+        page.goto(template_url, wait_until="networkidle")
+        open_template_fields()
+        saved_name = "Save template and leave via Enter"
+        page.get_by_label("模板名称", exact=True).fill(saved_name)
+        open_leave_dialog()
+
+        save_payloads.clear()
+        save_and_leave = page.get_by_role(
+            "button",
+            name="保存并离开",
+            exact=True,
+        )
+        save_and_leave.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_url(f"{frontend_url}/templates")
+
+        assert any(
+            payload["template"]["name"] == saved_name for payload in save_payloads
+        )
+    finally:
+        if template_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/templates/{template_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/templates/{template_id}")
+        context.close()
+
+
+def test_template_editor_fields_use_visible_labels_as_accessible_names(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    template_id: str | None = None
+
+    try:
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
+
+        for label in (
+            "基本信息布局",
+            "模块标题样式",
+            "经历条目布局",
+            "列表条目布局",
+            "头像位置",
+            "页边距",
+            "内容密度",
+            "分割线样式",
+        ):
+            expect(
+                page.get_by_role("combobox", name=label, exact=True)
+            ).to_be_visible()
+
+        basic_info_select = page.get_by_role(
+            "combobox",
+            name="基本信息布局",
+            exact=True,
+        )
+        page.locator("label").filter(has=basic_info_select).get_by_text(
+            "基本信息布局",
+            exact=True,
+        ).click()
+        page.get_by_role("option", name="左对齐标题", exact=True).click()
+        expect(basic_info_select).to_have_text("左对齐标题")
+
+        page.get_by_role("tab", name="字体", exact=True).click()
+        for label in (
+            "姓名字号",
+            "模块标题字号",
+            "条目标题字号",
+            "辅助信息字号",
+            "正文字号",
+        ):
+            slider = page.get_by_role("slider", name=label, exact=True)
+            expect(slider).to_be_visible()
+            assert slider.get_attribute("aria-label") == label
+
+        page.get_by_role("tab", name="配色", exact=True).click()
+        for label in (
+            "页面背景",
+            "块面背景",
+            "标题颜色",
+            "正文字色",
+            "辅助文字颜色",
+            "分隔线颜色",
+        ):
+            color_input = page.get_by_label(label, exact=True)
+            expect(color_input).to_be_visible()
+            assert color_input.get_attribute("type") == "color"
+    finally:
+        if template_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/templates/{template_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/templates/{template_id}")
         context.close()
 
 
@@ -5260,7 +9212,11 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
 
     try:
@@ -5293,6 +9249,126 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
         ).click()
         assert page.url == f"{frontend_url}/resume/{resume_id}"
     finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_resume_leave_dialog_enter_activates_only_focused_action(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    save_payloads: list[dict[str, object]] = []
+
+    def capture_save(route: Route) -> None:
+        if route.request.method == "PUT":
+            payload = route.request.post_data_json
+            assert isinstance(payload, dict)
+            save_payloads.append(payload)
+        route.continue_()
+
+    def open_leave_dialog() -> None:
+        page.get_by_role(
+            "button",
+            name="返回简历列表",
+            exact=True,
+        ).click()
+        page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).wait_for(state="visible")
+
+    try:
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": "Leave dialog Enter actions"},
+        )
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+        page.route(f"**/api/resumes/{resume_id}*", capture_save)
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        name_input = page.locator('input[name="name"]')
+        name_input.fill("Continue editing via Enter")
+        open_leave_dialog()
+
+        continue_editing = page.get_by_role(
+            "button",
+            name="继续编辑",
+            exact=True,
+        )
+        continue_editing.focus()
+        page.keyboard.press("Enter")
+
+        page.get_by_role(
+            "heading",
+            name="有未保存的更改",
+            exact=True,
+        ).wait_for(state="hidden")
+        assert page.url == f"{frontend_url}/resume/{resume_id}"
+        assert name_input.input_value() == "Continue editing via Enter"
+
+        open_leave_dialog()
+        save_payloads.clear()
+        discard = page.get_by_role(
+            "button",
+            name="放弃更改",
+            exact=True,
+        )
+        discard.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_url(f"{frontend_url}/resume")
+
+        discarded_name = "Continue editing via Enter"
+        assert all(
+            payload["resume"]["basic"]["name"] != discarded_name
+            for payload in save_payloads
+        )
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role(
+            "button",
+            name="基本信息: 展开或收起模块",
+            exact=True,
+        ).click()
+        saved_name = "Save and leave via Enter"
+        page.locator('input[name="name"]').fill(saved_name)
+        open_leave_dialog()
+
+        save_payloads.clear()
+        save_and_leave = page.get_by_role(
+            "button",
+            name="保存并离开",
+            exact=True,
+        )
+        save_and_leave.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_url(f"{frontend_url}/resume")
+
+        assert any(
+            payload["resume"]["basic"]["name"] == saved_name
+            for payload in save_payloads
+        )
+    finally:
+        if resume_id:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
         context.close()
 
 
@@ -5411,4 +9487,860 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
             )
             if trash_response.ok:
                 context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_recycle_bin_keeps_baseline_then_paginates_six_table_rows(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    resume_ids: list[str] = []
+    visible_count = 1
+
+    def fulfill_seeded_trash(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        seeded_items = [
+            item
+            for item in payload["data"]["deletedResumes"]
+            if item["id"] in resume_ids
+        ]
+        payload["data"]["deletedResumes"] = seeded_items[:visible_count]
+        payload["data"]["deletedTemplates"] = []
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    try:
+        for index in range(7):
+            create_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={"title": f"Recycle height {index + 1}"},
+            )
+            assert create_response.ok
+            resume_id = create_response.json()["data"]["resume"]["id"]
+            resume_ids.append(resume_id)
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            assert trash_response.ok
+
+        page.route("**/api/workspace/pages/trash", fulfill_seeded_trash)
+        surface_heights: dict[int, float] = {}
+
+        for item_count in range(8):
+            visible_count = item_count
+            page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+            surface = page.locator('[data-slot="recycle-bin-panel"]')
+            surface.wait_for(state="visible")
+            table_rows = surface.locator(
+                '[data-slot="trash-table"] '
+                '[data-slot="table-body"] > [data-slot="table-row"]'
+            )
+            expect(table_rows).to_have_count(min(item_count, 6))
+            surface_heights[item_count] = surface.evaluate(
+                "element => element.getBoundingClientRect().height"
+            )
+            pagination = surface.locator('[data-slot="pagination"]')
+            expect(pagination).to_have_count(1 if item_count > 6 else 0)
+
+            if item_count == 6:
+                scroll_state = page.evaluate(
+                    """
+                    () => {
+                      const content = document.querySelector(
+                        '[data-slot="trash-list-content"]',
+                      );
+                      if (!content) {
+                        throw new Error('Missing trash list content');
+                      }
+
+                      return {
+                        contentClientHeight: content.clientHeight,
+                        contentScrollHeight: content.scrollHeight,
+                      };
+                    }
+                    """
+                )
+                assert scroll_state["contentScrollHeight"] == pytest.approx(
+                    scroll_state["contentClientHeight"], abs=1
+                )
+
+        for item_count in range(1, 5):
+            assert surface_heights[item_count] == pytest.approx(
+                surface_heights[0], abs=1
+            )
+        for item_count in range(5, 7):
+            assert surface_heights[item_count] > surface_heights[item_count - 1]
+        assert surface_heights[7] > surface_heights[6]
+
+        pagination = page.locator('[data-slot="pagination"]')
+        pagination.locator('[data-slot="pagination-link"]').last.click()
+        page.wait_for_url(f"{frontend_url}/trash?page=2")
+        expect(
+            page.locator(
+                '[data-slot="trash-table"] '
+                '[data-slot="table-body"] > [data-slot="table-row"]'
+            )
+        ).to_have_count(1)
+        second_page_height = page.locator(
+            '[data-slot="recycle-bin-panel"]'
+        ).evaluate("element => element.getBoundingClientRect().height")
+        assert second_page_height == pytest.approx(surface_heights[0], abs=1)
+    finally:
+        for resume_id in resume_ids:
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_recycle_bin_thumbnail_renders_full_resume_content(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    title = "Recycle thumbnail content"
+
+    try:
+        create_response = context.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": title},
+        )
+        assert create_response.ok
+        created = create_response.json()["data"]["resume"]
+        resume_id = created["id"]
+        sections = [
+            {
+                "id": f"thumbnail-section-{index}",
+                "kind": "simple_list",
+                "title": f"Thumbnail section {index + 1}",
+                "items": [
+                    {
+                        "id": f"thumbnail-section-{index}-content",
+                        "content": (
+                            "<ul><li>First detail</li><li>Second detail</li></ul>"
+                        ),
+                    }
+                ],
+            }
+            for index in range(4)
+        ]
+        save_response = context.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                "title": title,
+                "resume": {
+                    **created["resume"],
+                    "basic": {
+                        **created["resume"]["basic"],
+                        "name": "Thumbnail Candidate",
+                        "email": "thumbnail@example.com",
+                    },
+                    "sections": sections,
+                },
+                "jobBrief": created["jobBrief"],
+                "typography": created["typography"],
+                "template": created["template"],
+                "templateSettings": created["templateSettings"],
+            },
+        )
+        assert save_response.ok
+
+        geometry_script = """
+            element => {
+              const pageRect = element.getBoundingClientRect();
+              const sections = [
+                ...element.querySelectorAll('[data-resume-section-id]'),
+              ];
+              const contentBottom = sections.length > 0
+                ? Math.max(
+                    ...sections.map(
+                      section => section.getBoundingClientRect().bottom,
+                    ),
+                  )
+                : pageRect.top;
+
+              return {
+                contentFillRatio:
+                  (contentBottom - pageRect.top) / pageRect.height,
+                pageHeight: pageRect.height,
+                sectionCount: sections.length,
+              };
+            }
+        """
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.evaluate("document.fonts.ready")
+        active_thumbnail_page = page.locator(
+            "a", has_text=title
+        ).locator("article.resume-page").first
+        active_thumbnail_page.wait_for(state="visible")
+        active_geometry = active_thumbnail_page.evaluate(geometry_script)
+        assert active_geometry["sectionCount"] == 4, active_geometry
+        assert active_geometry["contentFillRatio"] >= 0.4, active_geometry
+
+        trash_response = context.request.post(
+            f"{frontend_url}/api/resumes/{resume_id}/trash"
+        )
+        assert trash_response.ok
+
+        page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+        page.evaluate("document.fonts.ready")
+        row = page.locator(
+            '[data-slot="trash-table"] '
+            '[data-slot="table-body"] > [data-slot="table-row"]',
+            has_text=title,
+        )
+        expect(row).to_have_count(1)
+        thumbnail_page = row.locator("article.resume-page").first
+        thumbnail_page.wait_for(state="visible")
+        geometry = thumbnail_page.evaluate(geometry_script)
+
+        assert geometry["sectionCount"] == active_geometry["sectionCount"]
+        assert geometry["contentFillRatio"] == pytest.approx(
+            active_geometry["contentFillRatio"], abs=0.01
+        )
+    finally:
+        if resume_id:
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    resume_ids: list[str] = []
+    titles = ["Bulk selection one", "Bulk selection two"]
+
+    try:
+        for title in titles:
+            create_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={"title": title},
+            )
+            assert create_response.ok
+            resume_id = create_response.json()["data"]["resume"]["id"]
+            resume_ids.append(resume_id)
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            assert trash_response.ok
+
+        page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+        bulk_actions = page.locator('[data-slot="trash-bulk-actions"]')
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
+        for title in titles:
+            expect(
+                page.get_by_role("button", name=f"操作: {title}", exact=True)
+            ).to_have_count(1)
+
+        page.get_by_role(
+            "button", name=f"操作: {titles[0]}", exact=True
+        ).click()
+        expect(page.get_by_role("menuitem", name="预览", exact=True)).to_be_visible()
+        expect(page.get_by_role("menuitem", name="恢复", exact=True)).to_be_visible()
+        expect(
+            page.get_by_role("menuitem", name="彻底删除", exact=True)
+        ).to_be_visible()
+        menu_groups = page.locator('[data-slot="dropdown-menu-group"]')
+        expect(menu_groups).to_have_count(2)
+        assert menu_groups.nth(0).get_by_role("menuitem").all_inner_texts() == [
+            "预览",
+            "恢复",
+        ]
+        assert menu_groups.nth(1).get_by_role("menuitem").all_inner_texts() == [
+            "彻底删除"
+        ]
+        page.keyboard.press("Escape")
+
+        first_selection = page.get_by_role(
+            "checkbox", name=f"选择: {titles[0]}"
+        )
+        second_selection = page.get_by_role(
+            "checkbox", name=f"选择: {titles[1]}"
+        )
+        first_selection.check()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
+
+        second_selection.check()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "false")
+        bulk_restore = page.get_by_role("button", name="批量恢复", exact=True)
+        expect(bulk_restore).to_be_visible()
+        expect(bulk_restore).to_have_attribute("data-size", "default")
+        bulk_delete = page.get_by_role("button", name="批量删除", exact=True)
+        expect(bulk_delete).to_be_visible()
+        expect(bulk_delete).to_have_attribute("data-variant", "destructive")
+        expect(bulk_delete).to_have_attribute("data-size", "default")
+        bulk_delete.click()
+        expect(page.get_by_text("确认彻底删除这些简历？", exact=True)).to_be_visible()
+        page.get_by_role("button", name="取消", exact=True).click()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+
+        second_selection.uncheck()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
+
+        select_all = page.get_by_role("checkbox", name="全选", exact=True)
+        select_all.check()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        select_all.uncheck()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        mobile_overflow = page.evaluate(
+            """
+            () => {
+              const tableContainer = document.querySelector(
+                '[data-slot="trash-table"] [data-slot="table-container"]',
+              );
+              if (!tableContainer) {
+                throw new Error('Missing recycle-bin table container');
+              }
+
+              return {
+                documentClientWidth: document.documentElement.clientWidth,
+                documentScrollWidth: document.documentElement.scrollWidth,
+                tableClientWidth: tableContainer.clientWidth,
+                tableScrollWidth: tableContainer.scrollWidth,
+              };
+            }
+            """
+        )
+        assert mobile_overflow["documentScrollWidth"] == pytest.approx(
+            mobile_overflow["documentClientWidth"], abs=1
+        )
+        assert (
+            mobile_overflow["tableScrollWidth"]
+            > mobile_overflow["tableClientWidth"]
+        )
+    finally:
+        for resume_id in resume_ids:
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_recycle_bin_preview_is_read_only_for_resume_and_template(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    template_id: str | None = None
+    resume_title = "Trash preview resume"
+    resume_marker = "回收站实际预览内容"
+    preview_writes: list[ApiRequest] = []
+
+    try:
+        create_resume_response = context.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"title": resume_title},
+        )
+        assert create_resume_response.ok
+        resume_id = create_resume_response.json()["data"]["resume"]["id"]
+        resume_detail = context.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]["resume"]
+        resume_detail["resume"]["basic"]["name"] = resume_marker
+        save_resume_response = context.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                key: resume_detail.get(key)
+                for key in (
+                    "title",
+                    "resume",
+                    "jobBrief",
+                    "typography",
+                    "template",
+                    "templateSettings",
+                )
+            },
+        )
+        assert save_resume_response.ok
+        trash_resume_response = context.request.post(
+            f"{frontend_url}/api/resumes/{resume_id}/trash"
+        )
+        assert trash_resume_response.ok
+
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        expect(page.get_by_text("实时预览", exact=True)).to_be_visible()
+        page.get_by_role(
+            "button",
+            name="创建可编辑副本",
+            exact=True,
+        ).click()
+        page.wait_for_url(f"{frontend_url}/template/template-*")
+        template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
+        template_route_data = context.request.get(
+            f"{frontend_url}/api/workspace/pages/templates"
+        ).json()["data"]
+        template_title = next(
+            item["name"]
+            for item in template_route_data["customTemplates"]
+            if item["id"] == template_id
+        )
+        trash_template_response = context.request.post(
+            f"{frontend_url}/api/templates/{template_id}/trash"
+        )
+        assert trash_template_response.ok
+
+        page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+
+        def record_preview_write(request: Request) -> None:
+            api_request = _api_request(request)
+            if api_request and request.method in {"PATCH", "POST", "PUT", "DELETE"}:
+                preview_writes.append(api_request)
+
+        page.on("request", record_preview_write)
+
+        def preview_item(title: str, expected_text: str | None = None) -> Locator:
+            trigger = page.get_by_role(
+                "button", name=f"操作: {title}", exact=True
+            )
+            trigger.click()
+            page.get_by_role("menuitem", name="预览", exact=True).click()
+            dialog = page.get_by_role(
+                "dialog", name=f"预览: {title}", exact=True
+            )
+            expect(dialog).to_be_visible()
+            initial_focus = dialog.locator('[data-slot="dialog-title"]')
+            expect(initial_focus).to_have_attribute("tabindex", "-1")
+            expect(initial_focus).to_be_focused()
+            dialog.locator('[data-resume-pagination-ready="true"]').wait_for(
+                state="visible"
+            )
+            expect(dialog.locator('[data-slot="dialog-header"]')).to_have_count(0)
+            expect(dialog.get_by_text("实时预览", exact=True)).to_have_count(0)
+            expect(
+                dialog.locator('article[data-export-root="resume-page"]').first
+            ).to_be_visible()
+            preview_shell = dialog.locator('[data-slot="trash-preview-dialog"]')
+            shell_geometry = preview_shell.evaluate(
+                """
+                (shell) => {
+                  const content = shell.closest('[data-slot="dialog-content"]');
+                  const previewCard = shell.querySelector('.resume-preview-card');
+                  if (!content || !previewCard) {
+                    throw new Error('Missing recycle preview surface');
+                  }
+
+                  const contentStyle = getComputedStyle(content);
+                  const shellStyle = getComputedStyle(shell);
+                  const cardStyle = getComputedStyle(previewCard);
+                  const contentRect = content.getBoundingClientRect();
+                  const shellRect = shell.getBoundingClientRect();
+                  const cardRect = previewCard.getBoundingClientRect();
+                  return {
+                    backgroundColor: contentStyle.backgroundColor,
+                    borderTopWidth: contentStyle.borderTopWidth,
+                    contentRadii: [
+                      contentStyle.borderTopLeftRadius,
+                      contentStyle.borderTopRightRadius,
+                      contentStyle.borderBottomRightRadius,
+                      contentStyle.borderBottomLeftRadius,
+                    ],
+                    cardRadii: [
+                      cardStyle.borderTopLeftRadius,
+                      cardStyle.borderTopRightRadius,
+                      cardStyle.borderBottomRightRadius,
+                      cardStyle.borderBottomLeftRadius,
+                    ],
+                    contentOverflowX: contentStyle.overflowX,
+                    contentOverflowY: contentStyle.overflowY,
+                    shellOverflowY: shellStyle.overflowY,
+                    shellClientHeight: shell.clientHeight,
+                    shellScrollHeight: shell.scrollHeight,
+                    contentRect: {
+                      top: contentRect.top,
+                      right: contentRect.right,
+                      bottom: contentRect.bottom,
+                      left: contentRect.left,
+                    },
+                    shellRect: {
+                      top: shellRect.top,
+                      right: shellRect.right,
+                      bottom: shellRect.bottom,
+                      left: shellRect.left,
+                    },
+                    cardTop: cardRect.top,
+                    paddingTop: shellStyle.paddingTop,
+                    paddingRight: shellStyle.paddingRight,
+                    paddingBottom: shellStyle.paddingBottom,
+                    paddingLeft: shellStyle.paddingLeft,
+                  };
+                }
+                """
+            )
+            assert shell_geometry["backgroundColor"] == "rgba(0, 0, 0, 0)"
+            assert shell_geometry["borderTopWidth"] == "0px"
+            assert shell_geometry["contentRadii"] == shell_geometry["cardRadii"]
+            assert all(
+                float(radius.removesuffix("px")) > 0
+                for radius in shell_geometry["contentRadii"]
+            )
+            assert {
+                shell_geometry["contentOverflowX"],
+                shell_geometry["contentOverflowY"],
+            } == {"hidden"}
+            assert shell_geometry["shellOverflowY"] == "auto"
+            assert (
+                shell_geometry["shellScrollHeight"]
+                > shell_geometry["shellClientHeight"]
+            )
+            for edge in ("top", "right", "bottom", "left"):
+                assert shell_geometry["shellRect"][edge] == pytest.approx(
+                    shell_geometry["contentRect"][edge], abs=1
+                )
+            assert {
+                shell_geometry["paddingTop"],
+                shell_geometry["paddingRight"],
+                shell_geometry["paddingBottom"],
+                shell_geometry["paddingLeft"],
+            } == {"0px"}
+            assert shell_geometry["cardTop"] == pytest.approx(
+                shell_geometry["contentRect"]["top"], abs=1
+            )
+            expect(initial_focus).to_be_focused()
+            expect(
+                dialog.get_by_role("button", name="关闭", exact=True)
+            ).not_to_be_focused()
+            if expected_text:
+                expect(
+                    dialog.get_by_text(expected_text, exact=True).last
+                ).to_be_visible()
+            close_button = dialog.get_by_role(
+                "button", name="关闭", exact=True
+            )
+            close_button.click()
+            expect(dialog).to_be_hidden()
+            expect(trigger).to_be_focused()
+            return trigger
+
+        preview_item(resume_title, resume_marker)
+
+        page.get_by_role("tab").filter(has_text="模板").click()
+        preview_item(template_title)
+
+        assert preview_writes == []
+        expect(
+            page.get_by_role(
+                "button", name=f"操作: {template_title}", exact=True
+            )
+        ).to_have_count(1)
+        deleted_route_data = context.request.get(
+            f"{frontend_url}/api/workspace/pages/trash"
+        ).json()["data"]
+        assert resume_id in {
+            item["id"] for item in deleted_route_data["deletedResumes"]
+        }
+        assert template_id in {
+            item["id"] for item in deleted_route_data["deletedTemplates"]
+        }
+    finally:
+        if resume_id:
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        if template_id:
+            context.request.delete(f"{frontend_url}/api/templates/{template_id}")
+        context.close()
+
+
+def test_recycle_bin_count_badges_contrast_with_their_tab_surfaces(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+
+    def tab_surface_colors() -> dict[str, Any]:
+        return page.locator('[data-slot="tabs-list"]').evaluate(
+            """
+            (list) => {
+              const tabs = [...list.querySelectorAll('[data-slot="tabs-trigger"]')];
+              const indicator = list.querySelector(':scope > span[aria-hidden="true"]');
+              return {
+                listBackground: getComputedStyle(list).backgroundColor,
+                indicatorBackground: indicator
+                  ? getComputedStyle(indicator).backgroundColor
+                  : null,
+                tabs: tabs.map((tab) => {
+                  const badge = tab.querySelector('[data-slot="badge"]');
+                  return {
+                    state: tab.getAttribute("data-state"),
+                    badgeBackground: badge
+                      ? getComputedStyle(badge).backgroundColor
+                      : null,
+                  };
+                }),
+              };
+            }
+            """
+        )
+
+    def assert_count_badge_contrast() -> None:
+        colors = tab_surface_colors()
+        assert len(colors["tabs"]) == 2
+        active = next(tab for tab in colors["tabs"] if tab["state"] == "active")
+        inactive = next(tab for tab in colors["tabs"] if tab["state"] == "inactive")
+        assert inactive["badgeBackground"] != colors["listBackground"]
+        assert active["badgeBackground"] != colors["indicatorBackground"]
+        assert active["badgeBackground"] != inactive["badgeBackground"]
+
+    try:
+        page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+        tabs = page.locator('[data-slot="tabs-trigger"]')
+        expect(tabs).to_have_count(2)
+
+        assert_count_badge_contrast()
+
+        inactive_tab = page.locator(
+            '[data-slot="tabs-trigger"][data-state="inactive"]'
+        )
+        inactive_tab_id = inactive_tab.get_attribute("id")
+        assert inactive_tab_id
+        target_tab = page.locator(
+            f'[data-slot="tabs-trigger"][id="{inactive_tab_id}"]'
+        )
+        target_tab.click()
+        expect(target_tab).to_have_attribute("data-state", "active")
+        assert_count_badge_contrast()
+
+        page.evaluate("document.documentElement.classList.add('dark')")
+        assert_count_badge_contrast()
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_mobile_workspace_headers_fit_and_keep_primary_actions(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="en-US",
+        viewport={"width": 390, "height": 844},
+    )
+    page = context.new_page()
+
+    def assert_header_fits_single_row() -> None:
+        header = page.locator("#main-content > header")
+        header.wait_for(state="visible")
+        geometry = header.evaluate(
+            """
+            (element) => {
+              const rect = element.getBoundingClientRect();
+              const visibleChildren = [...element.children]
+                .filter(child => {
+                  const style = getComputedStyle(child);
+                  const childRect = child.getBoundingClientRect();
+                  return style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    childRect.width > 0 && childRect.height > 0;
+                })
+                .map(child => {
+                  const childRect = child.getBoundingClientRect();
+                  return {
+                    left: childRect.left,
+                    right: childRect.right,
+                    top: childRect.top,
+                    bottom: childRect.bottom,
+                  };
+                });
+              return {
+                clientHeight: element.clientHeight,
+                clientWidth: element.clientWidth,
+                documentWidth: document.documentElement.scrollWidth,
+                header: {
+                  left: rect.left,
+                  right: rect.right,
+                  top: rect.top,
+                  bottom: rect.bottom,
+                  height: rect.height,
+                },
+                scrollHeight: element.scrollHeight,
+                scrollWidth: element.scrollWidth,
+                viewportWidth: window.innerWidth,
+                visibleChildren,
+              };
+            }
+            """
+        )
+
+        assert 63 <= geometry["header"]["height"] <= 65, geometry
+        assert geometry["scrollHeight"] <= geometry["clientHeight"] + 1, geometry
+        assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
+        assert geometry["documentWidth"] <= geometry["viewportWidth"], geometry
+        assert len(geometry["visibleChildren"]) >= 2, geometry
+        assert all(
+            child["left"] >= geometry["header"]["left"] - 1
+            and child["right"] <= geometry["header"]["right"] + 1
+            and child["top"] >= geometry["header"]["top"] - 1
+            and child["bottom"] <= geometry["header"]["bottom"] + 1
+            for child in geometry["visibleChildren"]
+        ), geometry
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        assert_header_fits_single_row()
+
+        gallery_header = page.locator("#main-content > header")
+        gallery_menu_trigger = gallery_header.locator(
+            '[data-slot="dropdown-menu-trigger"]'
+        )
+        expect(gallery_menu_trigger).to_be_visible()
+        expect(gallery_menu_trigger).to_have_attribute("aria-haspopup", "menu")
+        assert gallery_menu_trigger.get_attribute("aria-label")
+        gallery_menu_trigger.click()
+
+        gallery_menu = page.locator('[data-slot="dropdown-menu-content"]')
+        expect(gallery_menu).to_be_visible()
+        expect(gallery_menu.locator('[role="menuitemradio"]')).to_have_count(2)
+        expect(gallery_menu.locator('[role="menuitem"]')).to_have_count(2)
+        page.keyboard.press("Escape")
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.locator(".resume-preview-card article.resume-page").wait_for(
+            state="visible"
+        )
+        assert_header_fits_single_row()
+
+        detail_header = page.locator("#main-content > header")
+        format_trigger = detail_header.locator(
+            '[data-slot="popover-trigger"]'
+        ).first
+        save_group = detail_header.locator('[data-slot="save-status-group"]')
+        save_trigger = save_group.locator(
+            ':scope > button:not([data-slot="popover-trigger"])'
+        )
+        history_trigger = save_group.locator('[data-slot="popover-trigger"]')
+        detail_menu_trigger = detail_header.locator(
+            '[data-slot="dropdown-menu-trigger"]'
+        )
+        expect(format_trigger).to_be_visible()
+        assert format_trigger.get_attribute("aria-label")
+        expect(save_trigger).to_be_visible()
+        assert save_trigger.get_attribute("aria-label")
+        expect(history_trigger).to_be_visible()
+        assert history_trigger.get_attribute("aria-label")
+        expect(detail_menu_trigger).to_be_visible()
+        expect(detail_menu_trigger).to_have_attribute("aria-haspopup", "menu")
+
+        history_trigger.focus()
+        page.keyboard.press("Enter")
+        version_popover = page.locator('[data-slot="popover-content"]')
+        expect(version_popover).to_be_visible()
+        assert version_popover.get_attribute("aria-label")
+        first_version = version_popover.get_by_role("button").first
+        expect(first_version).to_be_focused()
+        page.keyboard.press("Enter")
+        expect(version_popover).to_be_visible()
+        expect(first_version).to_be_focused()
+
+        detail_menu_trigger.click()
+        detail_menu = page.locator('[data-slot="dropdown-menu-content"]')
+        expect(detail_menu).to_be_visible()
+        expect(detail_menu.locator('[role="menuitemradio"]')).to_have_count(2)
+        assert detail_menu.locator('[role="menuitem"]').count() >= 4
+        expect(
+            detail_menu.locator('[data-slot="dropdown-menu-sub-trigger"]')
+        ).to_have_count(1)
+
+        page.keyboard.press("Escape")
+        page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        page.locator(
+            ".template-workspace .resume-preview-card article.resume-page"
+        ).first.wait_for(state="visible")
+        assert_header_fits_single_row()
+
+        template_header = page.locator("#main-content > header")
+        template_menu_trigger = template_header.locator(
+            '[data-slot="dropdown-menu-trigger"]'
+        )
+        expect(template_menu_trigger).to_be_visible()
+        expect(template_menu_trigger).to_have_attribute("aria-haspopup", "menu")
+        assert template_menu_trigger.get_attribute("aria-label")
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("saved_theme", "os_color_scheme", "expects_dark"),
+    [
+        ("dark", "light", True),
+        ("light", "dark", False),
+        ("system", "dark", True),
+    ],
+)
+def test_theme_bootstrap_matches_saved_preference_before_react_mounts(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    saved_theme: str,
+    os_color_scheme: str,
+    expects_dark: bool,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(color_scheme=os_color_scheme)
+    context.add_init_script(
+        script=f"localStorage.setItem('resumate-theme', {json.dumps(saved_theme)});"
+    )
+    page = context.new_page()
+    blocked_main_requests = 0
+
+    def block_react_entry(route: Route) -> None:
+        nonlocal blocked_main_requests
+        blocked_main_requests += 1
+        route.abort()
+
+    page.route("**/src/main.tsx*", block_react_entry)
+
+    try:
+        page.goto(frontend_url, wait_until="domcontentloaded")
+        bootstrap_state = page.locator("html").evaluate(
+            """
+            element => ({
+              colorScheme: element.style.colorScheme,
+              hasDarkClass: element.classList.contains('dark'),
+              rootChildCount: document.querySelector('#root')?.childElementCount,
+            })
+            """
+        )
+
+        assert blocked_main_requests == 1
+        assert bootstrap_state["rootChildCount"] == 0
+        assert bootstrap_state["hasDarkClass"] is expects_dark
+        assert bootstrap_state["colorScheme"] == ("dark" if expects_dark else "light")
+    finally:
         context.close()

@@ -206,8 +206,8 @@ assert.match(
 );
 assert.match(
   modelConfigPopoverSource,
-  /\{open \? \([\s\S]*?<ModelConfigDialog/,
-  "/models must not mount the provider loader before the dialog opens.",
+  /const \[dialogSession, setDialogSession\] = useState<number \| null>\([\s\S]*?defaultOpen \? 1 : null[\s\S]*?\)[\s\S]*\{dialogSession !== null \? \([\s\S]*?<ModelConfigDialog/,
+  "/models must not mount the provider loader before the dialog opens and must retain it for the exit animation.",
 );
 assert.match(
   modelConfigDialogControllerSource,

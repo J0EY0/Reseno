@@ -42,7 +42,7 @@ class TemplateSettings(ArtifactModel):
     page_padding_top: float = Field(alias="pagePaddingTop", ge=8, le=20)
     page_padding_x: float = Field(alias="pagePaddingX", ge=8, le=18)
     page_padding_bottom: float = Field(alias="pagePaddingBottom", ge=8, le=18)
-    section_gap: float = Field(alias="sectionGap", ge=0.8, le=2.4)
+    section_gap: float = Field(alias="sectionGap", ge=0.6, le=2.4)
     item_gap: float = Field(alias="itemGap", ge=0.4, le=1.8)
     body_line_height: float = Field(alias="bodyLineHeight", ge=1.4, le=2.2)
     name_scale: float = Field(alias="nameScale", ge=1.6, le=2.8)
@@ -73,7 +73,7 @@ class TemplateSettingsOverrides(ArtifactModel):
     page_padding_bottom: float | None = Field(
         default=None, alias="pagePaddingBottom", ge=8, le=18
     )
-    section_gap: float | None = Field(default=None, alias="sectionGap", ge=0.8, le=2.4)
+    section_gap: float | None = Field(default=None, alias="sectionGap", ge=0.6, le=2.4)
     item_gap: float | None = Field(default=None, alias="itemGap", ge=0.4, le=1.8)
     body_line_height: float | None = Field(
         default=None, alias="bodyLineHeight", ge=1.4, le=2.2

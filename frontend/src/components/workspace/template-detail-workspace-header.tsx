@@ -1,5 +1,12 @@
-import { ChevronLeft, Languages, LogOut, Moon, Sun } from "lucide-react";
-import type { RefObject } from "react";
+import {
+  ChevronLeft,
+  Ellipsis,
+  Languages,
+  LogOut,
+  Moon,
+  Sun,
+} from "lucide-react";
+import { lazy, Suspense, type RefObject } from "react";
 
 import { SaveStatusButton } from "@/components/save-status-button";
 import { Button } from "@/components/ui/button";
@@ -12,11 +19,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { TemplateDetailSaveState } from "@/components/workspace/use-template-detail-save";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import type { AppMessages, Locale } from "@/i18n";
 import type { WorkspaceVersionSummary } from "@/types/api";
 import type { ResumeTemplateDefinition, ThemeMode } from "@/types/resume";
 
 const noWorkspaceVersions: WorkspaceVersionSummary[] = [];
+
+const WorkspaceMobileActionsMenu = lazy(() =>
+  import("@/components/workspace/workspace-mobile-actions-menu").then(
+    ({ WorkspaceMobileActionsMenu: Component }) => ({ default: Component }),
+  ),
+);
+const MOBILE_HEADER_MEDIA_QUERY = "(max-width: 767px)";
 
 export function TemplateDetailWorkspaceHeader({
   changeCount,
@@ -48,29 +63,31 @@ export function TemplateDetailWorkspaceHeader({
   template: ResumeTemplateDefinition | null;
 }) {
   const canSave = Boolean(template && !template.isBuiltIn);
+  const isMobile = useMediaQuery(MOBILE_HEADER_MEDIA_QUERY);
 
   return (
     <header
       ref={headerRef}
-      className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-4 py-2 print:hidden"
-      style={{ viewTransitionName: "persistent-header" }}
+      className="sticky top-0 z-20 grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border bg-background px-3 print:hidden sm:px-4 md:gap-3"
     >
       <div className="flex min-w-0 items-center gap-2">
         <Button
           type="button"
           variant="outline"
-          size="sm"
+          className="px-2.5 sm:px-3"
+          aria-label={messages.backToTemplates}
+          title={messages.backToTemplates}
           onClick={onBack}
         >
           <ChevronLeft className="size-4" />
-          {messages.backToTemplates}
+          <span className="hidden sm:inline">{messages.backToTemplates}</span>
         </Button>
-        <h1 className="max-w-48 truncate text-sm font-medium text-foreground">
+        <h1 className="truncate text-sm font-medium text-foreground md:max-w-48">
           {template?.name ?? messages.resumeTemplates}
         </h1>
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="hidden flex-wrap items-center justify-end gap-2 md:flex">
         {canSave ? (
           <SaveStatusButton
             locale={locale}
@@ -136,6 +153,55 @@ export function TemplateDetailWorkspaceHeader({
           <LogOut className="size-4" />
           {messages.logout}
         </Button>
+      </div>
+
+      <div className="flex items-center gap-2 md:hidden">
+        {canSave ? (
+          <SaveStatusButton
+            locale={locale}
+            label={messages.saveStatus}
+            savingText={messages.saving}
+            savedText={messages.saved}
+            unsavedText={messages.unsaved}
+            lastSavedLabel={messages.lastSavedAt}
+            state={saveState}
+            hasUnsavedChanges={changeCount > 0}
+            lastSavedAt={lastSavedAt}
+            versions={noWorkspaceVersions}
+            activeVersionId={null}
+            versionsLabel={messages.saveVersions}
+            currentVersionLabel={messages.currentVersion}
+            noVersionsText={messages.noSaveVersions}
+            onSave={() => void onSave()}
+            onSelectVersion={() => undefined}
+            showVersions={false}
+          />
+        ) : null}
+        {isMobile ? (
+          <Suspense
+            fallback={
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label={messages.actions}
+                title={messages.actions}
+                disabled
+              >
+                <Ellipsis />
+              </Button>
+            }
+          >
+            <WorkspaceMobileActionsMenu
+              locale={locale}
+              messages={messages}
+              onLocaleChange={onLocaleChange}
+              onLogout={onLogout}
+              onThemeChange={onThemeChange}
+              resolvedTheme={resolvedTheme}
+            />
+          </Suspense>
+        ) : null}
       </div>
     </header>
   );

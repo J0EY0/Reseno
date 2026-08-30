@@ -1,5 +1,11 @@
-import { Languages, LogOut, Moon, Sun } from "lucide-react";
-import type { ReactNode } from "react";
+import { Ellipsis, Languages, LogOut, Moon, Sun } from "lucide-react";
+import {
+  lazy,
+  startTransition,
+  Suspense,
+  useState,
+  type ReactNode,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -20,13 +26,14 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { ViewTransitionBoundary } from "@/components/view-transition";
 import {
   prepareWorkspaceRoute,
   preloadWorkspaceRoute,
   WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
 } from "@/components/workspace/workspace-route-preparation";
+import { useWorkspaceTheme } from "@/components/workspace/workspace-theme-context";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import type { AppMessages, Locale } from "@/i18n";
 import { isAbortError } from "@/lib/api-client";
 import {
@@ -35,7 +42,14 @@ import {
 } from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
-import type { ThemeMode, WorkspaceView } from "@/types/resume";
+import type { WorkspaceView } from "@/types/resume";
+
+const WorkspaceMobileActionsMenu = lazy(() =>
+  import("@/components/workspace/workspace-mobile-actions-menu").then(
+    ({ WorkspaceMobileActionsMenu: Component }) => ({ default: Component }),
+  ),
+);
+const MOBILE_HEADER_MEDIA_QUERY = "(max-width: 767px)";
 
 function getWorkspacePageTitle(view: WorkspaceView, messages: AppMessages) {
   switch (view) {
@@ -60,10 +74,7 @@ export function WorkspaceShell({
   messages,
   onLocaleChange,
   onLogout,
-  onThemeChange,
   persistence,
-  resolvedTheme,
-  theme,
 }: {
   activeView: WorkspaceView;
   children: ReactNode;
@@ -71,13 +82,13 @@ export function WorkspaceShell({
   messages: AppMessages;
   onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  onThemeChange: (theme: ThemeMode) => void;
   persistence: WorkspacePreferencesPersistence;
-  resolvedTheme: "light" | "dark";
-  theme: ThemeMode;
 }) {
   const navigate = useNavigate();
   const { beginNavigation } = useWorkspaceNavigationTransaction();
+  const { changeTheme, resolvedTheme, theme } = useWorkspaceTheme();
+  const isMobile = useMediaQuery(MOBILE_HEADER_MEDIA_QUERY);
+  const [pendingView, setPendingView] = useState<WorkspaceView | null>(null);
   const pageTitle = getWorkspacePageTitle(activeView, messages);
 
   function handleViewPreload(view: WorkspaceView) {
@@ -86,11 +97,17 @@ export function WorkspaceShell({
 
   async function handleViewChange(view: WorkspaceView) {
     const intent = beginNavigation();
+    const clearPendingView = () => {
+      setPendingView((current) => (current === view ? null : current));
+    };
+    intent.signal.addEventListener("abort", clearPendingView, { once: true });
     if (view === activeView) {
+      clearPendingView();
       intent.finish();
       return;
     }
 
+    setPendingView(view);
     const path = getWorkspacePath(view);
     toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
     let prepared;
@@ -106,6 +123,7 @@ export function WorkspaceShell({
       ) {
         return;
       }
+      clearPendingView();
       intent.finish();
       console.error("Failed to prepare the workspace route.", error);
       toast.error(messages.loadError, {
@@ -123,12 +141,16 @@ export function WorkspaceShell({
     try {
       const state = createWorkspaceLateralRouteHandoff(prepared);
       handoffToken = state.token;
+      clearPendingView();
       intent.finish();
-      navigate(path, { state });
+      startTransition(() => {
+        navigate(path, { state });
+      });
     } catch (error) {
       if (handoffToken) {
         deleteWorkspaceLateralRouteHandoff(handoffToken);
       }
+      clearPendingView();
       intent.finish();
       console.error("Failed to prepare the workspace route.", error);
       toast.error(messages.loadError, {
@@ -156,6 +178,7 @@ export function WorkspaceShell({
       <AppSidebar
         t={messages}
         activeView={activeView}
+        pendingView={pendingView}
         onViewChange={handleViewChange}
         onViewPreload={handleViewPreload}
       />
@@ -163,7 +186,6 @@ export function WorkspaceShell({
       <SidebarInset id="main-content" tabIndex={-1} className="app-shell">
         <header
           className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 print:hidden"
-          style={{ viewTransitionName: "persistent-header" }}
         >
           <div className="flex min-w-0 items-center gap-2">
             <SidebarTrigger
@@ -175,12 +197,12 @@ export function WorkspaceShell({
               orientation="vertical"
               className="mr-2 data-[orientation=vertical]:h-4"
             />
-            <h1 className="text-sm font-medium text-foreground">
+            <h1 className="truncate text-sm font-medium text-foreground">
               {pageTitle}
             </h1>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="hidden flex-wrap items-center justify-end gap-2 md:flex">
             {activeView !== "settings" ? (
               <>
                 <Select
@@ -216,7 +238,7 @@ export function WorkspaceShell({
                   title={messages.themeToggleLabel}
                   aria-label={messages.themeToggleLabel}
                   onClick={() =>
-                    onThemeChange(
+                    changeTheme(
                       resolvedTheme === "dark" ? "light" : "dark",
                     )
                   }
@@ -234,28 +256,42 @@ export function WorkspaceShell({
               {messages.logout}
             </Button>
           </div>
+
+          {isMobile ? (
+            <Suspense
+              fallback={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={messages.actions}
+                  title={messages.actions}
+                  disabled
+                >
+                  <Ellipsis />
+                </Button>
+              }
+            >
+              <WorkspaceMobileActionsMenu
+                locale={locale}
+                messages={messages}
+                onLocaleChange={onLocaleChange}
+                onLogout={handleLogout}
+                onThemeChange={changeTheme}
+                resolvedTheme={resolvedTheme}
+              />
+            </Suspense>
+          ) : null}
         </header>
 
-        <ViewTransitionBoundary
-          default="none"
-          enter={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          exit={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
-          update={{
-            "nav-forward": "nav-forward",
-            "nav-back": "nav-back",
-            default: "none",
-          }}
+        <div
+          key={activeView}
+          data-workspace-view={activeView}
+          className="workspace-route-stage flex min-h-0 flex-1 flex-col"
+          aria-busy={pendingView !== null}
         >
           {children}
-        </ViewTransitionBoundary>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );

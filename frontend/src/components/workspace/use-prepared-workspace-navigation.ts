@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { startTransition, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -9,7 +9,6 @@ import {
 } from "@/components/workspace/workspace-route-preparation";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { isAbortError } from "@/lib/api-client";
-import { runViewTransition } from "@/lib/view-transition";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
   createWorkspaceLateralRouteHandoff,
@@ -48,7 +47,7 @@ export function usePreparedWorkspaceNavigation({
   );
 
   const request = useCallback(
-    (view: WorkspaceView, transitionType?: "nav-back") => {
+    (view: WorkspaceView) => {
       const intent = beginNavigation();
       const path = getWorkspacePath(view);
 
@@ -81,11 +80,7 @@ export function usePreparedWorkspaceNavigation({
           }
         };
 
-        if (transitionType) {
-          runViewTransition(commitNavigation, transitionType);
-        } else {
-          commitNavigation();
-        }
+        startTransition(commitNavigation);
       };
 
       const prepareFreshRoute = () => {

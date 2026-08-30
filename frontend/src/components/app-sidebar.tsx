@@ -37,11 +37,13 @@ const navigationIcons: Record<WorkspaceView, typeof FolderOpen> = {
 export function AppSidebar({
   t,
   activeView,
+  pendingView,
   onViewChange,
   onViewPreload,
 }: {
   t: AppMessages;
   activeView: WorkspaceView;
+  pendingView: WorkspaceView | null;
   onViewChange: (view: WorkspaceView) => void;
   onViewPreload?: (view: WorkspaceView) => void;
 }) {
@@ -59,7 +61,6 @@ export function AppSidebar({
     <Sidebar
       collapsible="icon"
       className="print:hidden"
-      style={{ viewTransitionName: "persistent-sidebar" }}
     >
       <SidebarHeader className="min-h-20 justify-center border-sidebar-border px-2 py-3 group-data-[collapsible=icon]:min-h-16 group-data-[collapsible=icon]:items-center">
         <div className="flex items-center gap-3 group-data-[collapsible=icon]:justify-center">
@@ -88,6 +89,7 @@ export function AppSidebar({
             <SidebarMenu>
               {items.map((item) => {
                 const Icon = navigationIcons[item.id];
+                const isPending = pendingView === item.id;
 
                 return (
                   <SidebarMenuItem key={item.id}>
@@ -101,6 +103,7 @@ export function AppSidebar({
                       <NavLink
                         to={getWorkspacePath(item.id)}
                         aria-current={activeView === item.id ? "page" : undefined}
+                        aria-busy={isPending || undefined}
                         onClick={(event) => {
                           setOpenMobile(false);
 

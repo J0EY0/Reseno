@@ -278,7 +278,7 @@ export function createTemplateSettings(
     ),
     sectionGap: clampNumber(
       overrides.sectionGap ?? defaults.sectionGap,
-      0.8,
+      0.6,
       2.4,
       0.1,
     ),

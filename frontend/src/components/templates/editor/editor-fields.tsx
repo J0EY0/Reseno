@@ -1,5 +1,5 @@
 import { ChevronDown, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import {
   Collapsible,
@@ -20,8 +20,8 @@ export function TemplateTabLabel({
   children: ReactNode;
 }) {
   return (
-    <span className="inline-flex max-w-full min-w-0 translate-y-1 items-center justify-center gap-1.5">
-      <Icon className="size-4 shrink-0" />
+    <span className="inline-flex max-w-full min-w-0 items-center justify-center gap-1.5">
+      <Icon className="max-sm:hidden" />
       <span className="min-w-0 truncate">{children}</span>
     </span>
   );
@@ -37,15 +37,15 @@ export function TemplateSelectRow({
   children: ReactNode;
 }) {
   return (
-    <div className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4">
-      <div className="flex min-w-0 items-center gap-3">
+    <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4">
+      <span className="flex min-w-0 items-center gap-3">
         <Icon className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 truncate text-sm font-medium text-foreground">
           {label}
         </span>
-      </div>
+      </span>
       {children}
-    </div>
+    </label>
   );
 }
 
@@ -117,7 +117,9 @@ export function TemplateSliderField({
       )}
     >
       <div className="min-w-0">
-        <span className="text-sm font-medium">{label}</span>
+        <span className="text-sm font-medium">
+          {label}
+        </span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
           {displayValue}
         </span>
@@ -130,6 +132,9 @@ export function TemplateSliderField({
         onValueChange={(next) => onChange(next[0] ?? value)}
         disabled={disabled}
         className={disabled ? "cursor-not-allowed" : undefined}
+        thumbProps={{
+          "aria-label": label,
+        }}
       />
     </div>
   );
@@ -146,6 +151,8 @@ export function TemplateColorField({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const controlId = useId();
+
   return (
     <div
       className={cn(
@@ -154,13 +161,19 @@ export function TemplateColorField({
       )}
     >
       <div className="min-w-0">
-        <span className="block text-sm font-medium">{label}</span>
+        <label
+          htmlFor={controlId}
+          className="block text-sm font-medium"
+        >
+          {label}
+        </label>
         <span className="rounded-md border border-border/70 bg-background px-2 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           {value}
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-3">
         <Input
+          id={controlId}
           type="color"
           value={value}
           onChange={(event) => onChange(event.target.value)}

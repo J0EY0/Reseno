@@ -18,12 +18,19 @@ const [
   detailPage,
   detailRoute,
   routePreparation,
+  routeLoaders,
   detailView,
   detailSave,
   detailLeave,
   gallery,
+  galleryController,
+  galleryToolbar,
+  galleryGrid,
+  galleryCard,
   editor,
   editorTabs,
+  editorFields,
+  layoutTab,
   imagesTab,
   imageEditorState,
   imageCard,
@@ -51,6 +58,10 @@ const [
     "utf8",
   ),
   readFile(
+    new URL("components/workspace/workspace-route-loaders.ts", srcDir),
+    "utf8",
+  ),
+  readFile(
     new URL("components/workspace/template-detail-workspace-view.tsx", srcDir),
     "utf8",
   ),
@@ -63,8 +74,17 @@ const [
     "utf8",
   ),
   readFile(new URL("template-gallery.tsx", templatesDir), "utf8"),
+  readFile(
+    new URL("use-template-gallery-controller.ts", templatesDir),
+    "utf8",
+  ),
+  readFile(new URL("components/gallery-toolbar.tsx", srcDir), "utf8"),
+  readFile(new URL("template-gallery-grid.tsx", templatesDir), "utf8"),
+  readFile(new URL("template-gallery-card.tsx", templatesDir), "utf8"),
   readFile(new URL("template-editor.tsx", templatesDir), "utf8"),
   readFile(new URL("template-editor-tabs.tsx", templatesDir), "utf8"),
+  readFile(new URL("editor/editor-fields.tsx", templatesDir), "utf8"),
+  readFile(new URL("editor/layout-tab.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/images-tab.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/use-template-images-editor.ts", templatesDir), "utf8"),
   readFile(new URL("editor/template-image-card.tsx", templatesDir), "utf8"),
@@ -92,13 +112,13 @@ const galleryImportTemplates = galleryRoute.slice(
 );
 
 assert(
-  app.includes(
+  routeLoaders.includes(
     'import("@/components/workspace/template-gallery-workspace-page")',
   ) && app.includes('<Route path="/templates"'),
   "The gallery must remain a literal, independently registered lazy route.",
 );
 assert(
-  app.includes(
+  routeLoaders.includes(
     'import("@/components/workspace/template-detail-workspace-page")',
   ) && app.includes('<Route path="/template/:id"'),
   "Template detail must remain a literal, independently registered lazy route.",
@@ -119,10 +139,10 @@ assert(
 );
 assert(
   routePreparation.includes(
-    'import("@/components/workspace/template-detail-workspace-page")',
+    "loadTemplateDetailWorkspacePage()",
   ) &&
     routePreparation.includes(
-      'import("@/components/preview/document-preview-card")',
+      "loadDocumentPreviewCard()",
     ) &&
     !/from\s+["']@\/components\/templates\/template-editor["']/.test(
       galleryRoute,
@@ -137,10 +157,68 @@ assert(
     /commitTemplateDetailNavigation\(\s*intent,\s*templateId,\s*data/.test(
       galleryOpenTemplate,
     ) &&
-    /runViewTransition[\s\S]{0,240}intent\.finish\(\)[\s\S]{0,120}navigate\(getTemplatePath/.test(
+    /startTransition[\s\S]{0,240}intent\.finish\(\)[\s\S]{0,120}navigate\(getTemplatePath/.test(
       galleryDetailCommit,
     ),
-  "Cold gallery navigation must resolve fresh detail data and modules before its view transition.",
+  "Cold gallery navigation must resolve fresh detail data and modules before its transition commit.",
+);
+assert(
+  /const preloadTemplateDetail = useCallback\([\s\S]{0,300}preloadTemplateDetailRoute\(\)/.test(
+    galleryRoute,
+  ) &&
+    galleryPage.includes(
+      "onPreloadTemplateDetail={gallery.preloadTemplateDetail}",
+    ) &&
+    gallery.includes("onPreloadTemplateDetail") &&
+    galleryGrid.includes("onPreloadTemplateDetail") &&
+    galleryCard.includes("onPreloadDetail"),
+  "Template detail preload intent must flow explicitly from the route owner to each card.",
+);
+assert(
+  /aria-busy=\{isOpening \|\| undefined\}[\s\S]{0,900}onPointerEnter=\{preloadDetail\}[\s\S]{0,120}onFocus=\{preloadDetail\}[\s\S]{0,120}onPointerDown=\{preloadDetail\}/.test(
+    galleryCard,
+  ) &&
+    /setOpeningTemplateId\(templateId\)[\s\S]*prepareTemplateDetailRoute\([\s\S]*clearOpeningTemplate\(templateId\)/.test(
+      galleryOpenTemplate,
+    ),
+  "Template cards must preload on pointer, focus, and touch intent while reporting semantic pending navigation.",
+);
+assert(
+  !galleryCard.includes("<Spinner aria-label={t.loading}"),
+  "Opening an existing template must keep its card visually stable without a loading icon.",
+);
+assert(
+  /const toggleSelected = useCallback\([\s\S]{0,240}if \(!customTemplateIdSet\.has\(templateId\)\) \{\s*return;/.test(
+    galleryController,
+  ),
+  "Built-in template ids must never enter gallery selection state.",
+);
+assert(
+  galleryCard.includes(
+    "const canSelect = isSelecting && !template.isBuiltIn;",
+  ) &&
+    /if \(isSelecting\) \{[\s\S]{0,300}if \(canSelect\) \{[\s\S]{0,120}onToggleSelected\(template\.id\)/.test(
+      galleryCard,
+    ) &&
+    galleryCard.includes("{canSelect ? (") &&
+    galleryCard.includes("if (canSelect && event.key === \" \")") &&
+    galleryCard.includes("aria-disabled={isSelecting && template.isBuiltIn}") &&
+    galleryCard.includes(
+      "tabIndex={isSelecting && template.isBuiltIn ? -1 : undefined}",
+    ) &&
+    galleryCard.includes(
+      'isSelecting && !canSelect ? "cursor-default" : "cursor-pointer"',
+    ),
+  "Built-in template cards must remain visible but expose no selectable pointer, keyboard, or visual state.",
+);
+assert(
+  !galleryController.includes(
+    "const hasCustomTemplates = customTemplateIdSet.size > 0;",
+  ) &&
+    !gallery.includes("canSelect={gallery.hasCustomTemplates}") &&
+    !galleryToolbar.includes("canSelect: boolean") &&
+    !galleryToolbar.includes("disabled={!isSelecting && !canSelect}"),
+  "Template selection mode must remain available even when only built-in templates are visible.",
 );
 assert(
   /await persistence\.flush\(\)[\s\S]{0,1000}fetchWorkspaceRouteData\(\s*"template-gallery"/.test(
@@ -155,10 +233,13 @@ assert(
   /createCustomTemplateFromBase[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
     galleryCreateTemplate,
   ) &&
+    /await detailRouteReady[\s\S]*publishCreatedTemplate[\s\S]*messages\.templateCreatedOpenFailed[\s\S]*commitTemplateDetailNavigation\([\s\S]{0,260}publishCreatedTemplate/.test(
+      galleryCreateTemplate,
+    ) &&
     /importTemplatePayload[\s\S]*for \(const item of payload\.templates\)[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
       galleryImportTemplates,
     ),
-  "Create and import must persist templates before navigating to template detail.",
+  "Create must publish only after preparation or its failure, while import persists before detail navigation.",
 );
 assert(
   /templateIds\.filter[\s\S]*customTemplates\.some[\s\S]*moveTemplateToTrashApi[\s\S]*setCustomTemplates/.test(
@@ -221,6 +302,45 @@ assert(
       (moduleName) => editorTabs.includes(moduleName),
     ),
   "Editor tabs must be statically composed inside the editor route chunk.",
+);
+assert(
+  editorFields.includes("children: ReactNode") &&
+    (editorFields.match(/useId\(\);/g)?.length ?? 0) === 1 &&
+    !editorFields.includes("labelId") &&
+    (editorFields.match(/htmlFor=\{controlId\}/g)?.length ?? 0) === 1 &&
+    /<label className="grid min-h-\[58px\][\s\S]{0,600}\{children\}[\s\S]{0,60}<\/label>/.test(
+      editorFields,
+    ) &&
+    !layoutTab.includes("controlProps") &&
+    (layoutTab.match(/<SelectTrigger className="w-full">/g)?.length ?? 0) === 8,
+  "Every template Select trigger must derive its accessible name from its visible row label.",
+);
+assert(
+  /<Slider[\s\S]{0,500}thumbProps=\{\{[\s\S]{0,120}"aria-label": label/.test(
+    editorFields,
+  ) &&
+    /<Input[\s\S]{0,200}id=\{controlId\}[\s\S]{0,120}type="color"/.test(
+      editorFields,
+    ),
+  "Template sliders and color inputs must expose their visible labels on the actual focusable controls.",
+);
+assert(
+  editorTabs.includes('className="relative max-w-full"') &&
+    editorTabs.includes("flex-[0_1_auto]") &&
+    editorTabs.includes('aria-hidden="true"') &&
+    editorTabs.includes("useLayoutEffect") &&
+    editorTabs.includes("getBoundingClientRect()") &&
+    editorTabs.includes("new ResizeObserver(scheduleIndicatorSync)") &&
+    editorTabs.includes("requestAnimationFrame(syncIndicator)") &&
+    editorTabs.includes('indicator.style.width = `${width}px`') &&
+    editorTabs.includes(
+      'indicator.style.transform = `translate3d(${offset}px, 0, 0)`',
+    ) &&
+    !editorTabs.includes("grid-cols-[") &&
+    editorTabs.includes("motion-reduce:transition-none") &&
+    editorTabs.includes("dark:border-input dark:bg-input/30") &&
+    !editorTabs.includes('variant="line"'),
+  "Editor tabs must retain a content-sized shadcn control with a measured sliding indicator.",
 );
 assert(
   imagesTab.includes('from "./template-image-card"') &&

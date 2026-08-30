@@ -2,12 +2,127 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const projectRoot = new URL("../", import.meta.url);
-const [packageSource, themeSource, selectSource, appToasterSource] =
+const [
+  packageSource,
+  themeSource,
+  selectSource,
+  appToasterSource,
+  resumeDetailCommandsSource,
+  cardSource,
+  authPageShellSource,
+  templateEditorSource,
+  copilotPanelShellSource,
+  toolSource,
+  copilotChangeSummarySource,
+  pdfExportRendererSource,
+  modelConfigPanelSource,
+  workspaceSkeletonsSource,
+  documentPreviewCardSource,
+  settingsWorkspacePageSource,
+  settingsPanelSkeletonSource,
+  templateDetailWorkspaceViewSource,
+  resumeGalleryCardSource,
+  templateGalleryCardSource,
+  resumeGallerySource,
+  templateGallerySource,
+  recycleBinPanelSource,
+] =
   await Promise.all([
     readFile(new URL("package.json", projectRoot), "utf8"),
     readFile(new URL("src/index.css", projectRoot), "utf8"),
     readFile(new URL("src/components/ui/select.tsx", projectRoot), "utf8"),
     readFile(new URL("src/components/app-toaster.tsx", projectRoot), "utf8"),
+    readFile(
+      new URL(
+        "src/components/workspace/use-resume-detail-commands.ts",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(new URL("src/components/ui/card.tsx", projectRoot), "utf8"),
+    readFile(
+      new URL("src/components/auth/auth-page-shell.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/templates/template-editor.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/copilot/copilot-panel-shell.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/ai-elements/tool.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/copilot/copilot-change-summary.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/pdf-export-renderer.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/model-config-panel.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/workspace-skeletons.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/preview/document-preview-card.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/workspace/settings-workspace-page.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/settings-panel-skeleton.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/workspace/template-detail-workspace-view.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/resume-gallery-card.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/templates/template-gallery-card.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/resume-gallery.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/templates/template-gallery.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/recycle-bin-panel.tsx", projectRoot),
+      "utf8",
+    ),
   ]);
 const packageJson = JSON.parse(packageSource);
 
@@ -24,6 +139,12 @@ assert(
     (themeSource.match(/^\s*--input:/gm) ?? []).length === 2,
   "The input token must be mapped and defined for light and dark themes.",
 );
+assert(
+  themeSource.match(/\.dark\s*\{[\s\S]*?\}/)?.[0].includes(
+    "--input: oklch(1 0 0 / 15%);",
+  ),
+  "The dark input token must retain shadcn's translucent control border.",
+);
 for (const radiusToken of [
   "--radius-sm: calc(var(--radius) * 0.6);",
   "--radius-md: calc(var(--radius) * 0.8);",
@@ -35,6 +156,171 @@ for (const radiusToken of [
     `The shadcn radius scale is missing ${radiusToken}`,
   );
 }
+const surfaceRadiusValues = ["card", "workspace", "preview"].map(
+  (surface) => {
+    const value = themeSource.match(
+      new RegExp(`--radius-${surface}:\\s*([\\d.]+)rem;`),
+    )?.[1];
+    assert(value, `The product surface scale is missing --radius-${surface}.`);
+    return Number(value);
+  },
+);
+assert(
+  surfaceRadiusValues[0] < surfaceRadiusValues[1] &&
+    surfaceRadiusValues[1] < surfaceRadiusValues[2],
+  "Card, workspace, and preview radii must retain a visible semantic hierarchy.",
+);
+assert(
+  themeSource.includes("--shadow-card: var(--surface-shadow-card);"),
+  "The product surface scale is missing the card elevation token.",
+);
+assert.equal(
+  (themeSource.match(/^\s*--surface-shadow-card:/gm) ?? []).length,
+  2,
+  "The card elevation must be defined for both light and dark themes.",
+);
+assert(
+  cardSource.includes("rounded-(--radius-card)") &&
+    cardSource.includes("shadow-card"),
+  "Card must provide the shared content-surface radius and elevation.",
+);
+for (const [name, source] of [
+  ["auth shell", authPageShellSource],
+  ["template editor", templateEditorSource],
+]) {
+  const outerCardClassName = source.match(/<Card className="([^"]*)"/)?.[1] ?? "";
+  assert(
+    outerCardClassName.includes("rounded-(--radius-workspace)") &&
+      outerCardClassName.includes("shadow-none") &&
+      !/rounded-\[(?:30|32)px\]|shadow-xl|shadow-\[/.test(
+        outerCardClassName,
+      ),
+    `The ${name} must use the shared flat workspace surface.`,
+  );
+}
+assert(
+  copilotPanelShellSource.includes("rounded-(--radius-card)") &&
+    copilotPanelShellSource.includes("shadow-card"),
+  "The Agent panel must use the shared content-card surface.",
+);
+assert(
+  modelConfigPanelSource.includes(
+    "rounded-(--radius-workspace) border-border/80 bg-muted/35 shadow-none",
+  ) &&
+    /function ModelConfigPanelSkeleton[\s\S]*?<Card className="[^"]*rounded-\(--radius-workspace\)[^"]*bg-muted\/35[^"]*shadow-none/.test(
+      workspaceSkeletonsSource,
+    ),
+  "The model workspace and its skeleton must share the muted flat workspace surface.",
+);
+assert(
+  documentPreviewCardSource.includes("rounded-(--radius-preview)") &&
+    /function WorkspacePreviewSkeleton[\s\S]*?rounded-\(--radius-preview\)/.test(
+      workspaceSkeletonsSource,
+    ),
+  "The document preview and its skeleton must share the preview radius.",
+);
+assert(
+  settingsWorkspacePageSource.includes("<SettingsPanelSkeleton />") &&
+    settingsPanelSkeletonSource.includes("<SettingsSectionSkeleton") &&
+    settingsPanelSkeletonSource.includes("<Card") &&
+    settingsPanelSkeletonSource.includes("min-h-20") &&
+    settingsPanelSkeletonSource.includes("py-4") &&
+    settingsPanelSkeletonSource.includes("sm:min-h-16") &&
+    settingsPanelSkeletonSource.includes("sm:py-3"),
+  "Settings loading must preserve the live content-card hierarchy.",
+);
+assert(
+  /data-slot="template-editor-skeleton"[\s\S]{0,220}rounded-\(--radius-workspace\)[^"\n]*shadow-none/.test(
+    templateDetailWorkspaceViewSource,
+  ),
+  "Template loading must preserve the live flat workspace surface.",
+);
+for (const [name, source] of [
+  ["resume gallery card", resumeGalleryCardSource],
+  ["template gallery card", templateGalleryCardSource],
+  ["gallery card skeleton", workspaceSkeletonsSource],
+]) {
+  assert(
+    source.includes("rounded-(--radius-card)") &&
+      source.includes("shadow-card"),
+    `The ${name} must use the shared content-card surface.`,
+  );
+}
+for (const [name, source] of [
+  ["resume gallery", resumeGallerySource],
+  ["template gallery", templateGallerySource],
+  ["recycle bin", recycleBinPanelSource],
+]) {
+  const workspaceClassName = source.match(
+    /<section[\s\S]{0,120}?className="([^"]*)"/,
+  )?.[1] ?? "";
+  assert(
+    workspaceClassName.includes("rounded-(--radius-workspace)") &&
+      !/shadow-(?:card|xs|sm|md|lg|xl|2xl)|shadow-\[/.test(
+        workspaceClassName,
+      ),
+    `The ${name} must use the shared flat workspace surface.`,
+  );
+}
+assert(
+  workspaceSkeletonsSource.includes(
+    "h-full gap-0 rounded-(--radius-card)",
+  ) && workspaceSkeletonsSource.includes("bg-card py-0"),
+  "Gallery card skeletons must not inherit Card spacing around their content.",
+);
+
+for (const statusToken of ["success", "warning", "info"]) {
+  assert(
+    themeSource.includes(`--color-${statusToken}: var(--${statusToken});`) &&
+      (themeSource.match(new RegExp(`^\\s*--${statusToken}:`, "gm")) ?? [])
+        .length === 2,
+    `The ${statusToken} status token must be mapped and defined for both themes.`,
+  );
+}
+const statusComponentSource = [
+  toolSource,
+  copilotChangeSummarySource,
+  pdfExportRendererSource,
+].join("\n");
+assert(
+  !/(?:text|bg|border)-(?:yellow|blue|green|orange|red|amber|emerald|sky|cyan|rose|lime|teal|indigo|violet)-\d+/.test(
+    statusComponentSource,
+  ),
+  "Application status UI must use semantic status colors instead of palette utilities.",
+);
+for (const semanticClass of [
+  "text-success",
+  "text-warning",
+  "text-info",
+  "text-destructive",
+]) {
+  assert(
+    statusComponentSource.includes(semanticClass),
+    `Application status UI is missing ${semanticClass}.`,
+  );
+}
+for (const [state, semanticClass] of [
+  ["approval-requested", "text-warning"],
+  ["approval-responded", "text-info"],
+  ["output-available", "text-success"],
+  ["output-denied", "text-warning"],
+  ["output-error", "text-destructive"],
+]) {
+  assert(
+    new RegExp(`"${state}":[^\\n]*${semanticClass}`).test(toolSource),
+    `Tool state ${state} must use ${semanticClass}.`,
+  );
+}
+assert(
+  copilotChangeSummarySource.includes("text-warning") &&
+    copilotChangeSummarySource.includes("bg-success/10"),
+  "Agent change summaries must use semantic warning and success colors.",
+);
+assert(
+  pdfExportRendererSource.includes("bg-background") &&
+    !pdfExportRendererSource.includes("bg-white p-8 text-sm text-destructive"),
+  "PDF export errors must keep semantic destructive contrast in dark mode.",
+);
 assert(
   selectSource.includes("border-input") &&
     selectSource.includes("dark:bg-input/30") &&
@@ -62,31 +348,61 @@ const toastStyleSource =
   appToasterSource.match(
     /style:\s*\{([\s\S]*?)\}\s*as CSSProperties/,
   )?.[1] ?? "";
-let lastErrorVariableIndex = -1;
-for (const errorVariable of [
-  "--error-bg",
-  "--error-border",
-  "--error-text",
+let lastSemanticVariableIndex = -1;
+for (const [toastType, token] of [
+  ["success", "success"],
+  ["warning", "warning"],
+  ["info", "info"],
+  ["error", "destructive"],
 ]) {
-  const match = toastStyleSource.match(
-    new RegExp(`"${errorVariable}"\\s*:\\s*"([^"]+)"`),
-  );
-  assert(
-    match?.[1].includes("var(--destructive)"),
-    `AppToaster ${errorVariable} must use the app destructive token.`,
-  );
-  lastErrorVariableIndex = Math.max(
-    lastErrorVariableIndex,
-    match.index ?? -1,
-  );
+  for (const suffix of ["bg", "border", "text"]) {
+    const variable = `--${toastType}-${suffix}`;
+    const match = toastStyleSource.match(
+      new RegExp(`"${variable}"\\s*:\\s*"([^"]+)"`),
+    );
+    assert(
+      match?.[1].includes(`var(--${token})`),
+      `AppToaster ${variable} must use the app ${token} token.`,
+    );
+    lastSemanticVariableIndex = Math.max(
+      lastSemanticVariableIndex,
+      match.index ?? -1,
+    );
+  }
 }
 assert(
   appToasterSource.includes("richColors") &&
-    toastStyleSource.indexOf("...toastOptions?.style") >
-      lastErrorVariableIndex &&
+  toastStyleSource.indexOf("...toastOptions?.style") >
+      lastSemanticVariableIndex &&
     appToasterSource.includes("...toastOptions,") &&
     appToasterSource.includes("...toastOptions?.classNames,"),
-  "AppToaster must merge semantic error colors without discarding caller toast options.",
+  "AppToaster must merge semantic colors without discarding caller toast options.",
+);
+
+const toastActionClassName =
+  appToasterSource.match(
+    /actionButton:\s*cn\(\s*"([^"]*)",\s*toastOptions\?\.classNames\?\.actionButton/,
+  )?.[1] ?? "";
+for (const className of [
+  "border-current/20!",
+  "bg-transparent!",
+  "text-current!",
+  "hover:bg-current/10!",
+  "focus-visible:ring-current!",
+]) {
+  assert(
+    toastActionClassName.includes(className),
+    `AppToaster action buttons must retain ${className}`,
+  );
+}
+
+const smartOnePageToastOptions =
+  resumeDetailCommandsSource.match(
+    /toast\.success\(messages\.smartOnePageApplied,\s*\{([\s\S]*?)\n\s*\}\);/,
+  )?.[1] ?? "";
+assert(
+  smartOnePageToastOptions.includes("duration: 6_000"),
+  "Fit-to-one-page undo must remain available for six seconds.",
 );
 
 console.log("shadcn theme contract verified.");

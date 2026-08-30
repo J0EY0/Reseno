@@ -23,6 +23,12 @@ const [
   modelConfigApi,
   resumeTypes,
   agentSettingsTab,
+  modelConfigPanel,
+  modelConfigTable,
+  modelConfigBulkDeleteAction,
+  modelConfigSelection,
+  dataTable,
+  workspaceSkeletons,
   messages,
 ] =
   await Promise.all([
@@ -36,6 +42,12 @@ const [
     readText("src/lib/model-config-api.ts"),
     readText("src/types/resume.ts"),
     readText("src/components/agent-settings-tab.tsx"),
+    readText("src/components/model-config-panel.tsx"),
+    readText("src/components/models/model-config-table.tsx"),
+    readText("src/components/models/model-config-bulk-delete-action.tsx"),
+    readText("src/components/models/use-model-config-table-selection.ts"),
+    readText("src/components/data-table.tsx"),
+    readText("src/components/workspace-skeletons.tsx"),
     readText("src/i18n/locales/en.json").then(JSON.parse),
   ]);
 
@@ -46,13 +58,228 @@ assert.match(
 );
 assert.match(
   popover,
+  /const \[dialogSession, setDialogSession\] = useState<number \| null>\([\s\S]*?defaultOpen \? 1 : null[\s\S]*?\)[\s\S]*?nextOpen && !open[\s\S]*?setDialogSession\(nextDialogSessionRef\.current\)/,
+  "Provider metadata must stay deferred until the first dialog session opens, while each reopen receives a fresh form session.",
+);
+assert.match(
+  popover,
+  /\{dialogSession !== null \? \([\s\S]*?<ModelConfigDialog[\s\S]*?key=\{dialogSession\}/,
+  "Closing the model dialog must leave its Radix content mounted long enough to run exit presence.",
+);
+assert.doesNotMatch(
+  popover,
   /\{open \? \([\s\S]*?<ModelConfigDialog/,
-  "Provider metadata must stay deferred until the dialog opens.",
+  "The controlled open flag must not synchronously unmount Radix dialog content on close.",
+);
+assert.match(
+  popover,
+  /onExited=\{[\s\S]*?setDialogSession\(null\)/,
+  "The deferred dialog controller must unmount after Radix finishes its exit animation.",
+);
+assert.match(
+  modelDialog,
+  /onExited:[\s\S]*?onAnimationEnd=\{[\s\S]*?dataset\.state === "closed"[\s\S]*?onExited\(\)/,
+  "The dialog content must report its closed animation boundary before releasing the heavy controller.",
+);
+assert.match(
+  modelDialog,
+  /restoreFocus\?: \(\) => void[\s\S]*?onCloseAutoFocus=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\)[\s\S]*?restoreFocus\(\)/,
+  "A triggerless row edit dialog must explicitly return focus to its stable actions button.",
 );
 assert.doesNotMatch(
   popover,
   /\b(?:lazy|Suspense|LazyModelConfigDialog|loadModelConfigDialog)\b|<Spinner\b/,
   "Opening model configuration must render the final dialog directly, without a second lazy Spinner dialog.",
+);
+assert.match(
+  popover,
+  /defaultOpen = false[\s\S]*?useState\(defaultOpen\)[\s\S]*?defaultOpen \? 1 : null/,
+  "A row action must be able to mount one already-open edit dialog without a transient empty frame.",
+);
+assert.match(
+  popover,
+  /trigger === undefined \?[\s\S]*?trigger === null \? null[\s\S]*?<Dialog[\s\S]*?\{triggerElement \? \([\s\S]*?<DialogTrigger asChild>/,
+  "The create action must retain its default trigger while a row edit dialog may mount without a disposable menu trigger.",
+);
+assert.match(
+  popover,
+  /import \{[^}]*\bCopyPlus\b[^}]*\} from ["']lucide-react["'][\s\S]*?<CopyPlus data-icon="inline-start" \/>/,
+  "The Add model trigger must use the same CopyPlus resource-create icon as the galleries.",
+);
+
+assert.match(
+  modelConfigPanel,
+  /<CardContent[\s\S]*?<ModelConfigFormPopover[\s\S]*?mode="create"[\s\S]*?\{configs\.length === 0 \? \(/,
+  "The Add model trigger must stay in one stable parent outside the empty/table content switch.",
+);
+assert.doesNotMatch(
+  modelConfigPanel,
+  /const addModelAction\s*=/,
+  "The same Add model element must not be moved between different React parents.",
+);
+assert.match(
+  modelConfigTable,
+  /getRowId=\{\(config\) => config\.id\}/,
+  "Model table rows must use the persisted model config id instead of their array index.",
+);
+assert.match(
+  modelConfigTable,
+  /getRowClassName=\{\(config\) =>[\s\S]*?config\.id === enteringModelId[\s\S]*?animate-in[\s\S]*?fade-in/,
+  "Only the newly created model row must receive the entry animation class.",
+);
+assert.doesNotMatch(
+  modelConfigTable,
+  /slide-in-from-top/,
+  "New model feedback may fade in but must not move vertically like an expanding row.",
+);
+assert.match(
+  modelConfigTable,
+  /<span className="flex size-8 shrink-0 items-center justify-center">\s*<ModelProviderIcon/,
+  "Model provider icons must keep a stable alignment box without adding a decorative background or border.",
+);
+assert.match(
+  modelConfigTable,
+  /accessorKey: 'model',[\s\S]*?header: \(\) => <span className="block pl-11">\{t\.model\}<\/span>[\s\S]*?className="flex size-8[\s\S]*?className="grid min-w-0/,
+  "The model header must align with the primary model text after its icon alignment box.",
+);
+assert.match(
+  modelConfigTable,
+  /accessorKey: 'contextWindowTokens'[\s\S]*?className="block min-w-32 pr-2 text-right"[\s\S]*?className="flex min-w-32 justify-end pr-2"[\s\S]*?accessorKey: 'supportsImage'[\s\S]*?className="flex min-w-52 justify-center"[\s\S]*?className="flex min-w-52 justify-center gap-1\.5"/,
+  "Context values must stay right aligned while the capability heading and badge group share a centered, separated column.",
+);
+assert.match(
+  modelConfigTable,
+  /function ModelConfigRowActions[\s\S]*?<DropdownMenu>[\s\S]*?<DropdownMenuTrigger asChild>[\s\S]*?data-\[state=open\]:bg-muted[\s\S]*?aria-label=\{t\.actions\}[\s\S]*?<EllipsisVertical \/>[\s\S]*?<DropdownMenuContent align="end" className="w-32">[\s\S]*?<DropdownMenuGroup>[\s\S]*?<DropdownMenuItem[\s\S]*?onEdit\(config, triggerRef\.current\)[\s\S]*?\{t\.editModelConfigAction\}[\s\S]*?<DropdownMenuSeparator \/>[\s\S]*?variant="destructive"[\s\S]*?onDelete\(config\.id\)[\s\S]*?\{t\.deleteModelConfigAction\}/,
+  "Each model row must expose one accessible actions menu with text edit and destructive delete commands.",
+);
+assert.equal(
+  messages.editModelConfigAction,
+  "Edit",
+  "The English model row edit command must stay concise without changing dialog titles.",
+);
+assert.equal(
+  messages.deleteModelConfigAction,
+  "Delete",
+  "The English model row delete command must stay concise without changing dialog titles.",
+);
+assert.doesNotMatch(
+  modelConfigTable,
+  /\b(?:Pencil|Trash2)\b/,
+  "Model row actions must not duplicate the text menu with standalone edit or delete icons.",
+);
+assert.match(
+  modelConfigPanel,
+  /\{editDialog \? \([\s\S]*?<ModelConfigFormPopover[\s\S]*?key=\{editDialog\.session\}[\s\S]*?mode="edit"[\s\S]*?defaultOpen[\s\S]*?initialConfig=\{editDialog\.config\}[\s\S]*?trigger=\{null\}/,
+  "The edit dialog controller must remain outside the disposable dropdown content and remount for every row action.",
+);
+assert.match(
+  `${modelConfigTable}\n${modelConfigPanel}`,
+  /const triggerRef = useRef<HTMLButtonElement>\(null\)[\s\S]*?ref=\{triggerRef\}[\s\S]*?onEdit\(config, triggerRef\.current\)[\s\S]*?returnFocus,[\s\S]*?restoreFocus=\{\(\) => editDialog\.returnFocus\?\.focus\(\)\}/,
+  "Closing a menu-launched edit dialog must restore keyboard focus to the row actions trigger.",
+);
+assert.match(
+  dataTable,
+  /getRowId\?:[\s\S]*?getRowClassName\?:[\s\S]*?enableRowSelection\?:[\s\S]*?rowSelection\?: RowSelectionState[\s\S]*?onRowSelectionChange\?: OnChangeFn<RowSelectionState>[\s\S]*?useReactTable\(\{[\s\S]*?enableRowSelection[\s\S]*?onRowSelectionChange[\s\S]*?state: rowSelection === undefined \? undefined : \{ rowSelection \}[\s\S]*?data-state=\{row\.getIsSelected\(\) \? 'selected' : undefined\}/,
+  "The shared table must expose controlled TanStack row selection while retaining stable row identity and selected-row styling.",
+);
+assert.match(
+  `${dataTable}\n${modelConfigTable}`,
+  /tableClassName\?: string[\s\S]*?data-slot="data-table"[\s\S]*?w-full min-w-0 max-w-full overflow-hidden rounded-lg border bg-card[\s\S]*?<Table className=\{tableClassName\}>[\s\S]*?<TableHeader className="bg-muted">[\s\S]*?<TableHead key=\{header\.id\} scope="col">[\s\S]*?focus-within:bg-muted\/50[\s\S]*?<TableCell key=\{cell\.id\}>[\s\S]*?<DataTable[\s\S]*?tableClassName="min-w-\[760px\]"/,
+  "The model data table must use the dashboard table surface and the shadcn primitive's default cell density.",
+);
+assert.doesNotMatch(
+  dataTable,
+  /rounded-\(--radius-card\)|shadow-card|h-11 px-4|h-14|px-4 py-2\.5/,
+  "The model data table must not reintroduce the oversized card radius, shadow, or loose cell overrides.",
+);
+assert.match(
+  modelConfigSelection,
+  /export const MODEL_CONFIG_PAGE_SIZE = 10/,
+  "Model table rows must retain their predictable ten-item page size.",
+);
+assert.match(
+  modelConfigSelection,
+  /const \{ currentPage, setCurrentPage \} = useGalleryUrlState\(\)[\s\S]*?const totalPages = Math\.max\([\s\S]*?Math\.ceil\(configs\.length \/ MODEL_CONFIG_PAGE_SIZE\)[\s\S]*?const safeCurrentPage = Math\.min\(currentPage, totalPages\)[\s\S]*?const pageConfigs = configs\.slice\([\s\S]*?pageStart \+ MODEL_CONFIG_PAGE_SIZE/,
+  "Model pagination must preserve URL navigation, clamp the active page, and render one fixed-size slice.",
+);
+assert.match(
+  modelConfigSelection,
+  /const pageChanged = selection\.page !== safeCurrentPage[\s\S]*?useEffect\(\(\) => \{[\s\S]*?setSelection\(\{ page: safeCurrentPage, ids: \[\] \}\)[\s\S]*?\}, \[pageChanged, safeCurrentPage\]\)[\s\S]*?const selectedIds = pageChanged\s*\? \[\]/,
+  "URL POP navigation must clear the previous page selection before it can flash or reappear when returning to that page.",
+);
+assert.match(
+  modelConfigSelection,
+  /function changePage\(page: number\) \{\s*setSelection\(\{ page, ids: \[\] \}\)\s*setCurrentPage\(page\)/,
+  "Explicit pagination must clear row selection before updating the URL.",
+);
+assert.match(
+  modelConfigTable,
+  /id: 'select'[\s\S]*?getIsAllPageRowsSelected\(\)[\s\S]*?getIsSomePageRowsSelected\(\)[\s\S]*?'indeterminate'[\s\S]*?aria-label=\{t\.selectAll\}[\s\S]*?toggleAllPageRowsSelected\(checked === true\)[\s\S]*?checked=\{row\.getIsSelected\(\)\}[\s\S]*?row\.toggleSelected\(checked === true\)/,
+  "The model table must use TanStack v8 page and row selection APIs through the installed shadcn Checkbox.",
+);
+assert.match(
+  modelConfigBulkDeleteAction,
+  /const canBulkDelete = selectedCount > 0[\s\S]*?data-slot="model-config-bulk-actions"[\s\S]*?aria-hidden=\{!canBulkDelete\}[\s\S]*?inert=\{!canBulkDelete\}[\s\S]*?tabIndex=\{canBulkDelete \? undefined : -1\}/,
+  "Selecting any model must reveal the adjacent bulk delete action while collapsed controls remain inaccessible.",
+);
+assert.match(
+  modelConfigPanel,
+  /const pendingBulkModelIds = pendingBulkDeleteIds\.filter[\s\S]*?modelIds\.length === 0[\s\S]*?const response = await deleteModelConfigs\(modelIds\)[\s\S]*?selection\.clearSelection\(\)[\s\S]*?setPendingBulkDeleteIds\(\[\]\)[\s\S]*?open=\{pendingBulkModelIds\.length > 0\}[\s\S]*?title=\{t\.deleteModelConfigsConfirmTitle\}[\s\S]*?onConfirm=\{confirmBulkDeleteModels\}[\s\S]*?deferClose/,
+  "A selected batch must issue one atomic helper call, clear selection after success, and use one deferred-close confirmation.",
+);
+assert.match(
+  modelConfigApi,
+  /function deleteModelConfigs\(ids: string\[\]\)[\s\S]*?`\$\{apiRoutes\.modelConfigs\}\/bulk-delete`[\s\S]*?method: 'POST'[\s\S]*?body: \{ ids \}/,
+  "Bulk model deletion must use the POST /api/model-configs/bulk-delete contract.",
+);
+assert.doesNotMatch(
+  `${modelConfigPanel}\n${modelConfigTable}\n${modelConfigSelection}`,
+  /\b(?:DndContext|SortableContext|useSortable|draggable)\b/,
+  "Model selection must not add drag-and-drop behavior.",
+);
+assert.match(
+  modelConfigPanel,
+  /data-slot="model-config-content"[\s\S]{0,140}className="flex min-h-\[390px\] min-w-0 flex-col gap-4"[\s\S]*?<ModelConfigTable[\s\S]*?configs=\{selection\.pageConfigs\}[\s\S]*?rowSelection=\{selection\.rowSelection\}[\s\S]*?onRowSelectionChange=\{selection\.onRowSelectionChange\}[\s\S]*?<GalleryPagination[\s\S]*?currentPage=\{selection\.currentPage\}[\s\S]*?totalPages=\{selection\.totalPages\}[\s\S]*?onPageChange=\{selection\.changePage\}/,
+  "The model content must keep the recycle-bin baseline, grow with table rows, and paginate instead of scrolling internally.",
+);
+assert.doesNotMatch(
+  modelConfigPanel,
+  /100vh-12rem|model-config-table-scroll-area|overflow-auto/,
+  "The model panel must not reserve a viewport-height surface or hide extra rows inside an internal scroller.",
+);
+assert.match(
+  modelConfigPanel,
+  /<Card className="[^"]*\bmin-w-0\b[^"]*\bpy-0\b[^"]*">\s*<CardContent className="grid min-w-0 gap-4 p-4">/,
+  "The model surface must use the recycle-bin outer spacing instead of stacking Card and CardContent vertical padding.",
+);
+const modelConfigSkeletonSource = workspaceSkeletons.slice(
+  workspaceSkeletons.indexOf("export function ModelConfigPanelSkeleton"),
+  workspaceSkeletons.indexOf("function GalleryCardSkeleton"),
+);
+assert.match(
+  modelConfigSkeletonSource,
+  /data-slot="model-config-panel-skeleton"[\s\S]*?className="grid gap-4"[\s\S]*?data-slot="model-config-content-skeleton"[\s\S]*?className="flex min-h-\[390px\] min-w-0 flex-col gap-4"[\s\S]*?data-slot="data-table-skeleton"[\s\S]*?className="w-full min-w-0 max-w-full overflow-hidden rounded-lg border bg-card"/,
+  "The model route skeleton must reserve the same compact baseline without a viewport-height cap.",
+);
+assert.match(
+  modelConfigSkeletonSource,
+  /<Table className="min-w-\[760px\]">[\s\S]*?<TableHeader className="bg-muted">[\s\S]*?<TableHead key=\{index\}>[\s\S]*?<TableRow key=\{rowIndex\} className="h-12">[\s\S]*?<TableCell key=\{columnIndex\}>/,
+  "The model route skeleton must match the live table header and row geometry.",
+);
+assert.doesNotMatch(
+  modelConfigSkeletonSource,
+  /rounded-\(--radius-card\)|shadow-card|h-11 px-4|h-14|px-4 py-2\.5/,
+  "The model route skeleton must not retain the table's previous loose card styling.",
+);
+assert.doesNotMatch(
+  modelConfigSkeletonSource,
+  /100vh|max-h-|overflow-auto/,
+  "The model route skeleton must stay content-driven like the loaded panel.",
+);
+assert.match(
+  modelConfigSkeletonSource,
+  /<Card className="[^"]*\bmin-w-0\b[^"]*\bpy-0\b[^"]*">\s*<CardContent className="grid min-w-0 gap-4 p-4">/,
+  "The model route skeleton must preserve the loaded surface's compact outer spacing.",
 );
 
 assert.match(
@@ -90,6 +317,44 @@ assert.match(
   /refresh:\s*true/,
   "Only explicit refreshes may bypass the cached model list.",
 );
+const providerSelectionSource = controller.slice(
+  controller.indexOf("const selectProvider"),
+  controller.indexOf("const selectModel"),
+);
+const explicitDiscoverySource = controller.slice(
+  controller.indexOf("const refreshModels"),
+  controller.indexOf("const submit"),
+);
+assert.match(
+  controller,
+  /const discoveryRequestIdRef = useRef\(0\)/,
+  "Explicit model discovery must retain a latest-intent request identity outside render state.",
+);
+assert.match(
+  providerSelectionSource,
+  /discoveryRequestIdRef\.current \+= 1;[\s\S]*setDiscovering\(false\)/,
+  "Switching providers must immediately invalidate an in-flight discovery request and clear its pending state.",
+);
+assert.match(
+  explicitDiscoverySource,
+  /const requestId = \+\+discoveryRequestIdRef\.current;/,
+  "Every explicit discovery request must claim a new latest-intent identity.",
+);
+assert.match(
+  explicitDiscoverySource,
+  /if \(requestId !== discoveryRequestIdRef\.current\) \{\s*return;\s*\}\s*applyDiscoveredModels\(response\.models\)/,
+  "A stale discovery response must not apply models to the newly selected provider.",
+);
+assert.ok(
+  (explicitDiscoverySource.match(/requestId !== discoveryRequestIdRef\.current/g) ?? [])
+    .length >= 2,
+  "Stale model discovery failures must be ignored as well as stale successes.",
+);
+assert.match(
+  explicitDiscoverySource,
+  /if \(requestId === discoveryRequestIdRef\.current\) \{\s*setDiscovering\(false\);\s*\}/,
+  "Only the latest model discovery request may settle the shared pending state.",
+);
 assert.match(
   controller,
   /models\.length === 1 \? models\[0\] : null/,
@@ -109,6 +374,11 @@ assert.match(
   modelDialog,
   /<form[\s\S]*?ref=\{formRef\}/,
   "Invalid-field focus must stay scoped to the active model form.",
+);
+assert.match(
+  modelDialog,
+  /className="h-\[min\(34rem,calc\(100dvh-2rem\)\)\] overflow-hidden p-0 sm:max-w-xl"[\s\S]*?className="flex h-full min-h-0 flex-col"[\s\S]*?className="min-h-0 flex-1 gap-5 overflow-y-auto/,
+  "The model dialog frame must stay fixed while only its form body scrolls.",
 );
 
 assert.match(
@@ -173,6 +443,16 @@ assert.match(
   /id="model-discovery"/,
   "The discovery action must remain an explicit focus fallback.",
 );
+assert.match(
+  modelFields,
+  /<Collapsible open=\{expanded\} onOpenChange=\{handleOpenChange\}>[\s\S]*?<CollapsibleContent[\s\S]*?className="model-output-settings-content"[\s\S]*?className="model-output-settings-content-inner pt-3"/,
+  "Cloud advanced settings must reveal as one complete field instead of clipping through its controls.",
+);
+assert.match(
+  modelFields,
+  /closest<HTMLElement>[\s\S]*?viewport\.scrollTo\(\{[\s\S]*?prefers-reduced-motion: reduce/,
+  "User-expanded advanced settings must scroll only the form viewport and respect reduced motion.",
+);
 assert.doesNotMatch(
   `${providerFields}\n${modelFields}`,
   /name="model-temperature"|name="model-top-p"/,
@@ -195,7 +475,7 @@ assert.match(
 );
 assert.match(
   agentSettingsTab,
-  /const agentModelConfigs = modelConfigs\.filter\(\s*\(config\) => config\.supportsTools,?\s*\)[\s\S]{0,240}agentModelConfigs\.find\(\s*\(config\) => config\.id === agentSettings\.defaultModelId,?\s*\)[\s\S]{0,500}disabled=\{agentModelConfigs\.length === 0\}[\s\S]{0,900}agentModelConfigs\.map\(\(config\) =>/,
+  /const agentModelConfigs = modelConfigs\.filter\(\s*\(config\) => config\.supportsTools,?\s*\)[\s\S]*?agentModelConfigs\.find\(\s*\(config\) => config\.id === agentSettings\.defaultModelId,?\s*\)[\s\S]*?disabled=\{agentModelConfigs\.length === 0\}[\s\S]*?agentModelConfigs\.map\(\(config\) =>/,
   "Agent settings must list only tool-capable models and treat an unsupported saved selection as unconfigured.",
 );
 assert.doesNotMatch(
@@ -244,6 +524,28 @@ const server = await createServer({
 });
 
 try {
+  const { resolveSelectedModelIds } = await server.ssrLoadModule(
+    "/src/components/models/use-model-config-table-selection.ts",
+  );
+  assert.deepEqual(
+    resolveSelectedModelIds(
+      { page: 2, ids: ["model-a", "removed-model", "model-b"] },
+      2,
+      [{ id: "model-b" }, { id: "model-a" }],
+    ),
+    ["model-a", "model-b"],
+    "Selection must retain stable IDs in selection order while pruning rows removed or moved off the current page.",
+  );
+  assert.deepEqual(
+    resolveSelectedModelIds(
+      { page: 1, ids: ["model-a", "model-b"] },
+      2,
+      [{ id: "model-a" }, { id: "model-b" }],
+    ),
+    [],
+    "A URL page change must make the previous page selection unavailable before the clearing effect settles.",
+  );
+
   const { classifyModelConfigSaveFailure } = await server.ssrLoadModule(
     "/src/components/models/use-model-config-dialog.ts",
   );

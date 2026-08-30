@@ -16,6 +16,7 @@ import {
 } from './copilot-message-model'
 import type {
   AgentConversationController,
+  AgentPanelStatus,
   CopilotPanelProps,
 } from './copilot-panel-types'
 import { useAgentRunStream } from './use-agent-run-stream'
@@ -193,17 +194,26 @@ export function useAgentConversation({
   const retrySession = useCallback(() => {
     setSessionLoadAttempt((attempt) => attempt + 1)
   }, [])
+  const isConversationReady = isSessionReady && !isSessionMutationPending
+  const status: AgentPanelStatus = sessionLoadError
+    ? 'error'
+    : !isConversationReady
+      ? 'loading'
+      : isResponding
+        ? 'responding'
+        : 'ready'
 
   return {
     applyAgentDraft,
     discardAgentDraft,
     isResponding,
-    isSessionReady: isSessionReady && !isSessionMutationPending,
+    isSessionReady: isConversationReady,
     messages,
     retrySession,
     sendPrompt,
     sessionLoadError,
     sessionResetVersion: sessionLoadAttempt,
+    status,
     stopResponding,
     streamingMessage,
     visibleMessages,

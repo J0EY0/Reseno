@@ -1,7 +1,6 @@
 import { memo } from "react";
 
 import { ResumePageContent } from "@/components/preview/resume-preview-content";
-import { useResumeFontReadyToken } from "@/components/preview/resume-font-loader";
 import {
   createResumePageClassName,
   useResumePreviewModel,
@@ -30,7 +29,6 @@ export const ResumeThumbnail = memo(function ResumeThumbnail({
   t,
   template,
 }: ResumeThumbnailProps) {
-  useResumeFontReadyToken(fontFamily, resume, t);
   const model = useResumePreviewModel({
     fontFamily,
     fontSize,

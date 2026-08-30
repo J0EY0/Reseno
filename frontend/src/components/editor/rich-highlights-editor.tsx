@@ -20,6 +20,10 @@ import {
 } from "@/lib/rich-text";
 
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const richHighlightsEditorContentClassName =
+  "tiptap rich-text-editor rich-text-editor-scroll max-h-[160px] min-h-[120px] overflow-y-auto overscroll-contain cursor-text text-sm leading-[1.12] text-foreground outline-none";
 
 function preventToolbarBlur(event: MouseEvent<HTMLButtonElement>) {
   event.preventDefault();
@@ -66,8 +70,7 @@ export function RichHighlightsEditor({
       content: editorValue || "<p></p>",
       editorProps: {
         attributes: {
-          class:
-            "tiptap rich-text-editor rich-text-editor-scroll max-h-[160px] min-h-[120px] overflow-y-auto overscroll-contain cursor-text text-sm leading-[1.12] text-foreground outline-none",
+          class: richHighlightsEditorContentClassName,
         },
       },
       onUpdate({ editor: currentEditor }) {
@@ -212,9 +215,26 @@ export function RichHighlightsEditor({
         </Button>
       </div>
 
-      <div className="bg-background/65 px-3 py-2.5" onClick={() => editor?.chain().focus().run()}>
-        <EditorContent editor={editor} />
-      </div>
+      {editor ? (
+        <div
+          className="min-h-[140px] bg-background/65 px-3 py-2.5"
+          onClick={() => editor.chain().focus().run()}
+        >
+          <EditorContent editor={editor} />
+        </div>
+      ) : (
+        <div className="min-h-[140px] bg-background/65 px-3 py-2.5">
+          <Skeleton>
+            <div
+              aria-hidden="true"
+              className={`${richHighlightsEditorContentClassName} invisible`}
+              dangerouslySetInnerHTML={{
+                __html: editorValue || "<p></p>",
+              }}
+            />
+          </Skeleton>
+        </div>
+      )}
     </div>
   );
 }

@@ -25,16 +25,21 @@ export function ModelConfigDialog({
   messages,
   mode,
   onClose,
+  onExited,
   onSaved,
+  restoreFocus,
 }: {
   initialConfig?: ModelConfig;
   locale: Locale;
   messages: AppMessages;
   mode: "create" | "edit";
   onClose: () => void;
+  onExited: () => void;
   onSaved: (config: ModelConfig) => void;
+  restoreFocus?: () => void;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const initialFocusRef = useRef<HTMLHeadingElement>(null);
   const controller = useModelConfigDialog({
     initialConfig,
     locale,
@@ -62,16 +67,39 @@ export function ModelConfigDialog({
   return (
     <DialogContent
       closeLabel={messages.close}
-      className="overflow-hidden p-0 sm:max-w-xl"
+      className="h-[min(34rem,calc(100dvh-2rem))] overflow-hidden p-0 sm:max-w-xl"
+      onOpenAutoFocus={(event) => {
+        if (mode === "edit") {
+          event.preventDefault();
+          initialFocusRef.current?.focus({ preventScroll: true });
+        }
+      }}
+      onCloseAutoFocus={(event) => {
+        if (restoreFocus) {
+          event.preventDefault();
+          restoreFocus();
+        }
+      }}
+      onAnimationEnd={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          event.currentTarget.dataset.state === "closed"
+        ) {
+          onExited();
+        }
+      }}
     >
       <form
         ref={formRef}
         noValidate
-        className="flex max-h-[min(680px,calc(100dvh-2rem))] min-h-0 flex-col"
+        className="flex h-full min-h-0 flex-col"
         onSubmit={(event) => void handleSubmit(event)}
       >
         <DialogHeader className="shrink-0 px-6 pt-6">
-          <DialogTitle>
+          <DialogTitle
+            ref={initialFocusRef}
+            tabIndex={mode === "edit" ? -1 : undefined}
+          >
             {mode === "create" ? messages.addModelConfig : messages.editModelConfig}
           </DialogTitle>
           <DialogDescription className="sr-only">

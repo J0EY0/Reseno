@@ -3,6 +3,8 @@ import {
   getCoreRowModel,
   useReactTable,
   type ColumnDef,
+  type OnChangeFn,
+  type RowSelectionState,
 } from '@tanstack/react-table'
 
 import {
@@ -13,31 +15,51 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { cn } from '@/lib/utils'
 
 export function DataTable<TData, TValue>({
   columns,
   data,
   emptyMessage,
+  tableClassName,
+  getRowId,
+  getRowClassName,
+  enableRowSelection,
+  rowSelection,
+  onRowSelectionChange,
 }: {
   columns: ColumnDef<TData, TValue>[]
   data: TData[]
   emptyMessage: string
+  tableClassName?: string
+  getRowId?: (originalRow: TData, index: number) => string
+  getRowClassName?: (originalRow: TData) => string | undefined
+  enableRowSelection?: boolean
+  rowSelection?: RowSelectionState
+  onRowSelectionChange?: OnChangeFn<RowSelectionState>
 }) {
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,
+    getRowId,
+    enableRowSelection,
+    onRowSelectionChange,
+    state: rowSelection === undefined ? undefined : { rowSelection },
     getCoreRowModel: getCoreRowModel(),
   })
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      <Table>
-        <TableHeader>
+    <div
+      data-slot="data-table"
+      className="w-full min-w-0 max-w-full overflow-hidden rounded-lg border bg-card"
+    >
+      <Table className={tableClassName}>
+        <TableHeader className="bg-muted">
           {table.getHeaderGroups().map((headerGroup) => (
             <TableRow key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
-                <TableHead key={header.id}>
+                <TableHead key={header.id} scope="col">
                   {header.isPlaceholder
                     ? null
                     : flexRender(
@@ -52,7 +74,14 @@ export function DataTable<TData, TValue>({
         <TableBody>
           {table.getRowModel().rows.length ? (
             table.getRowModel().rows.map((row) => (
-              <TableRow key={row.id}>
+              <TableRow
+                key={row.id}
+                data-state={row.getIsSelected() ? 'selected' : undefined}
+                className={cn(
+                  'focus-within:bg-muted/50',
+                  getRowClassName?.(row.original),
+                )}
+              >
                 {row.getVisibleCells().map((cell) => (
                   <TableCell key={cell.id}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}

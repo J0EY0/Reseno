@@ -1,6 +1,7 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 ApiFamily = Literal[
     "openai_responses",
@@ -112,6 +113,34 @@ class ModelConfigUpsertRequest(BaseModel):
     supports_thinking: bool = Field(default=False, alias="supportsThinking")
     supports_tools: bool = Field(default=True, alias="supportsTools")
     supports_streaming: bool = Field(default=True, alias="supportsStreaming")
+
+
+class ModelConfigBulkDeleteRequest(BaseModel):
+    """Unique model config ids to soft-delete in one operation."""
+
+    ids: list[str] = Field(min_length=1)
+
+    @field_validator("ids")
+    @classmethod
+    def validate_ids(cls, ids: list[str]) -> list[str]:
+        normalized_ids = [client_id.strip() for client_id in ids]
+        if any(not client_id for client_id in normalized_ids):
+            raise PydanticCustomError(
+                "model_config_id_empty",
+                "Model config ids must not be empty.",
+            )
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise PydanticCustomError(
+                "model_config_ids_duplicate",
+                "Model config ids must be unique.",
+            )
+        return normalized_ids
+
+
+class ModelConfigBulkDeleteResponse(BaseModel):
+    """Model config ids accepted by a successful bulk delete."""
+
+    ids: list[str]
 
 
 class ModelConfigResponse(BaseModel):

@@ -226,7 +226,7 @@ export function PdfExportRenderer() {
   if (activeError) {
     return (
       <main
-        className="pdf-export-page flex min-h-svh items-center justify-center bg-white p-8 text-sm text-red-600"
+        className="pdf-export-page flex min-h-svh items-center justify-center bg-background p-8 text-sm text-destructive"
         data-pdf-ready="false"
       >
         {activeError}

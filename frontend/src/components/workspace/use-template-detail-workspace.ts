@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -9,6 +10,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
+import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
 import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
@@ -20,9 +22,12 @@ import {
   createTemplateSettings,
   getTemplateCatalog,
 } from "@/lib/templates";
-import { runViewTransition } from "@/lib/view-transition";
 import { createTemplateFingerprint } from "@/lib/workspace-change-tracking";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import {
+  loadWorkspaceThemePreference,
+  normalizeWorkspaceTheme,
+} from "@/lib/workspace-theme";
 import {
   createTemplateApi,
   saveDefaultTemplateApi,
@@ -52,10 +57,6 @@ interface TemplateDetailWorkspaceOptions {
   persistence: WorkspacePreferencesPersistence;
   routeState: unknown;
   templateId: string;
-}
-
-function normalizeWorkspaceTheme(value: unknown): ThemeMode {
-  return value === "dark" || value === "system" ? value : "light";
 }
 
 function resolveInitialTemplate(
@@ -108,7 +109,7 @@ export function useTemplateDetailWorkspace({
   const [theme, setTheme] = useState<ThemeMode>(() =>
     initialDetail?.data.theme
       ? normalizeWorkspaceTheme(initialDetail.data.theme)
-      : initialPreferences?.theme ?? "light",
+      : initialPreferences?.theme ?? loadWorkspaceThemePreference(),
   );
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
@@ -212,7 +213,7 @@ export function useTemplateDetailWorkspace({
       setIsLoading(true);
       setHasLoadError(false);
       toast.dismiss("workspace-load-error");
-      void import("@/components/preview/document-preview-card");
+      void loadDocumentPreviewCard();
 
       try {
         const routeData = await loadTemplateDetailRouteData(
@@ -381,22 +382,19 @@ export function useTemplateDetailWorkspace({
       }
 
       adoptPersistedTemplate(result.template);
-      runViewTransition(
-        () => {
-          if (!intent.isCurrent()) {
-            return;
-          }
-          intent.finish();
-          navigate(getTemplatePath(result.template.id), {
-            state: createTemplateDetailRouteHandoff(result.template.id, {
-              customTemplates: nextCustomTemplates,
-              defaultTemplateId,
-              theme,
-            }),
-          });
-        },
-        "nav-forward",
-      );
+      startTransition(() => {
+        if (!intent.isCurrent()) {
+          return;
+        }
+        intent.finish();
+        navigate(getTemplatePath(result.template.id), {
+          state: createTemplateDetailRouteHandoff(result.template.id, {
+            customTemplates: nextCustomTemplates,
+            defaultTemplateId,
+            theme,
+          }),
+        });
+      });
       toast.success(messages.templateCreated, { closeButton: true });
     } catch (error) {
       if (intent.isCurrent()) {
@@ -528,7 +526,7 @@ export function useTemplateDetailWorkspace({
   );
   const goBack = useCallback(
     () => {
-      void requestWorkspaceNavigation("templates", "nav-back");
+      void requestWorkspaceNavigation("templates");
     },
     [requestWorkspaceNavigation],
   );

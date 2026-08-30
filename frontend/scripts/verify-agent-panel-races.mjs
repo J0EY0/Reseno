@@ -32,6 +32,7 @@ const [
   panelSource,
   panelTypesSource,
   agentHostSource,
+  agentMotionStylesSource,
   agentLayoutSource,
   workspaceViewSource,
   workspaceHeaderSource,
@@ -56,6 +57,16 @@ const [
         "components",
         "workspace",
         "resume-detail-agent-host.tsx",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "resume-detail-agent-motion.css",
       ),
       "utf8",
     ),
@@ -482,16 +493,114 @@ assert(
   "The Agent composer textarea must keep a localized accessible name even when its placeholder is empty.",
 );
 assert(
-  panelSource.includes("inert={!shouldDockAgent}"),
+  agentHostSource.includes("inert={!shouldDockAgent}"),
   "A retained hidden dock must be inert.",
 );
 assert(
-  panelSource.includes("const globalDropActive = shouldDockAgent"),
+  panelSource.includes("const globalDropActive = !isPanelCollapsed"),
   "A retained hidden dock must not register a global file-drop target.",
 );
 assert(
   agentHostSource.includes("hasMountedAgent"),
   "The Agent controller must remain mounted after its first inline presentation.",
+);
+
+const desktopWorkspaceGridRule =
+  appStylesSource.match(
+    /@media\s*\(min-width:\s*1280px\)\s*\{[\s\S]*?\n\s*\.resume-workspace\s*\{([^}]*)\}/,
+  )?.[1] ?? "";
+const panelMotionRule =
+  agentMotionStylesSource.match(
+    /\.app-shell--document\s+\.agent-panel-motion-layer\s*\{([^}]*)\}/,
+  )?.[1] ?? "";
+const hiddenPanelMotionRule =
+  agentMotionStylesSource.match(
+    /\.agent-panel-dock\[aria-hidden='true'\]\s+\.agent-panel-motion-layer\s*\{([^}]*)\}/,
+  )?.[1] ?? "";
+
+assert(
+  (`${appStylesSource}\n${agentMotionStylesSource}`.match(
+    /transition(?:-property)?\s*:[^;{}]*\bgrid-template-columns\b/g,
+  )?.length ?? 0) === 1 &&
+    /--duration-move:\s*240ms/.test(appStylesSource) &&
+    /--ease-move:\s*cubic-bezier\(0\.2,\s*0,\s*0,\s*1\)/.test(
+      appStylesSource,
+    ) &&
+    /transition:\s*grid-template-columns\s+var\(--duration-move\)\s+var\(--ease-move\)/.test(
+      desktopWorkspaceGridRule,
+    ),
+  "The desktop workspace must own the single tokenized 240ms grid-track transition.",
+);
+assert(
+  workspaceViewSource.includes('"--agent-panel-width": "360px"'),
+  "The desktop Agent motion layer must keep its final 360px width while the grid track clips it.",
+);
+assert(
+  /className=\{cn\([\s\S]{0,180}agent-panel-dock[^\n]*overflow-hidden/.test(
+    agentHostSource,
+  ) &&
+    /position:\s*absolute/.test(panelMotionRule) &&
+    /left:\s*0/.test(panelMotionRule) &&
+    !/right:\s*0/.test(panelMotionRule) &&
+    /width:\s*var\(--agent-panel-width\)/.test(panelMotionRule) &&
+    /opacity\s+var\(--duration-move\)\s+var\(--ease-move\)/.test(
+      panelMotionRule,
+    ) &&
+    /transform\s+var\(--duration-move\)\s+var\(--ease-move\)/.test(
+      panelMotionRule,
+    ) &&
+    /opacity:\s*0/.test(hiddenPanelMotionRule) &&
+    /transform:\s*translateX\(12px\)/.test(hiddenPanelMotionRule) &&
+    !/agent-panel-dock\s*\{[\s\S]{0,120}overflow:\s*visible/.test(
+      agentMotionStylesSource,
+    ),
+  "The Agent surface must keep a fixed inner width while one 240ms timeline coordinates grid, transform, and opacity.",
+);
+assert(
+  agentHostSource.includes("<CopilotPanelShell") &&
+    agentHostSource.includes("<AgentPanelLoadingBody") &&
+    agentHostSource.includes('data-slot="agent-panel-stable-loader"') &&
+    agentHostSource.includes('data-slot="agent-panel-live-body"') &&
+    agentHostSource.includes("<Suspense fallback={null}>") &&
+    agentHostSource.includes("aria-hidden={showStableLoader}") &&
+    agentHostSource.includes("inert={showStableLoader}") &&
+    panelSource.includes("<CopilotPanelBodyFrame") &&
+    /useLayoutEffect\(\(\) => \{\s*onStatusChange\(conversation\.status\)/.test(
+      panelSource,
+    ) &&
+    !conversationViewSource.includes("<AgentSessionLoading"),
+  "Lazy loading and session hydration must keep one visible loading body while the live panel mounts inertly behind it.",
+);
+assert(
+  conversationViewSource.includes(
+    "const INITIAL_AGENT_HISTORY_RENDER_COUNT = 10",
+  ) &&
+    conversationViewSource.includes(
+      "const AGENT_HISTORY_RENDER_BATCH_SIZE = 6",
+    ) &&
+    conversationViewSource.includes("requestAnimationFrame(() =>") &&
+    conversationViewSource.includes("startTransition(() =>") &&
+    conversationViewSource.includes(
+      "const renderedMessages = visibleMessages.slice(startIndex)",
+    ) &&
+    conversationViewSource.includes("renderedMessages.map((message)") &&
+    panelSource.includes("key={conversation.sessionResetVersion}"),
+  "Hydrated Agent history must render its newest messages first and progressively prepend older rows without trimming controller state.",
+);
+assert(
+  panelTypesSource.includes("export type AgentPanelStatus") &&
+    panelTypesSource.includes("onStatusChange: (status: AgentPanelStatus) => void") &&
+    conversationSource.includes("status,") &&
+    /onStatusChange\(conversation\.status\)/.test(panelSource) &&
+    agentHostSource.includes("data-agent-status={railStatus}") &&
+    agentHostSource.includes('className="agent-seam-rail-status"'),
+  "A retained conversation must report its low-frequency status to the collapsed Agent rail.",
+);
+assert(
+  /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\*,\s*\*::before,\s*\*::after\s*\{[^}]*transition:\s*none\s*!important/.test(
+    appStylesSource,
+  ),
+  "Reduced-motion users must not receive workspace or panel transitions.",
 );
 assert(
   !agentHostSource.includes("-${mode}"),

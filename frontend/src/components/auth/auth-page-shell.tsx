@@ -25,7 +25,7 @@ export function AuthPageShell({
       <AppToaster position="bottom-right" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(24,24,27,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(24,24,27,0.06),transparent_24%)]" />
       <div className="relative flex min-h-svh items-center justify-center p-5 sm:p-8">
-        <Card className="w-full max-w-5xl overflow-hidden rounded-[32px] border-border/80 shadow-xl">
+        <Card className="w-full max-w-5xl overflow-hidden rounded-(--radius-workspace) border-border/80 shadow-none">
           <div className="grid lg:grid-cols-[1.08fr_0.92fr]">
             <div className="flex items-center border-b border-border bg-muted/25 p-8 lg:border-b-0 lg:border-r lg:p-10">
               <div>

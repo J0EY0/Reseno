@@ -74,3 +74,13 @@ export async function deleteModelConfig(id: string) {
     },
   )
 }
+
+export async function deleteModelConfigs(ids: string[]) {
+  return requestApi<{ ids: string[] }>(
+    `${apiRoutes.modelConfigs}/bulk-delete`,
+    {
+      method: 'POST',
+      body: { ids },
+    },
+  )
+}
