@@ -73,7 +73,7 @@ export function AgentSettingsTab({
     value: AgentResponseLanguage;
     label: string;
   }> = [
-    { value: "follow", label: t.followSystemLanguage },
+    { value: "follow", label: t.followResumeLanguage },
     { value: "zh", label: t.languageChinese },
     { value: "en", label: t.languageEnglish },
   ];

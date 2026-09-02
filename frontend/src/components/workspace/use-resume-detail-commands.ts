@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { DocumentPreviewHandle } from "@/components/preview/document-preview-card";
 import type { ResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import type { ResumeDetailSaveController } from "@/components/workspace/use-resume-detail-save";
-import type { AppMessages, Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { isApiErrorToastShown } from "@/lib/api-client";
 import {
   createDefaultResumeTitle,
@@ -23,7 +23,6 @@ import type {
 interface ResumeDetailCommandsOptions {
   activeTemplate: ResumeTemplateDefinition;
   isLoading: boolean;
-  locale: Locale;
   messages: AppMessages;
   navigateToResume: (detail: ResumeDetailResponse) => void;
   resumeOrdinal: number;
@@ -36,7 +35,6 @@ interface ResumeDetailCommandsOptions {
 export function useResumeDetailCommands({
   activeTemplate,
   isLoading,
-  locale,
   messages,
   navigateToResume,
   resumeOrdinal,
@@ -188,7 +186,7 @@ export function useResumeDetailCommands({
         return;
       }
 
-      const detail = await duplicateResumeApi(session.resumeItem.id, locale);
+      const detail = await duplicateResumeApi(session.resumeItem.id);
       toast.success(messages.resumeDuplicated, {
         action: {
           label: messages.viewDuplicateResume,
@@ -212,7 +210,7 @@ export function useResumeDetailCommands({
       duplicateInFlightRef.current = false;
       setIsDuplicating(false);
     }
-  }, [isLoading, locale, messages, navigateToResume, save, session.resumeItem]);
+  }, [isLoading, messages, navigateToResume, save, session.resumeItem]);
 
   return {
     applyTemplate,

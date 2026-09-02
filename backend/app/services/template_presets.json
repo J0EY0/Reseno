@@ -1,0 +1,254 @@
+{
+  "minimal": {
+    "starter": "earlyCareer",
+    "layout": {
+      "basicInfo": "centered",
+      "section": "ruled",
+      "timelineItemLayout": "split",
+      "listItemLayout": "list",
+      "avatarPosition": "right",
+      "avatarShape": "rounded",
+      "avatarWidth": 25,
+      "avatarHeight": 32,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 0,
+      "avatarBorderColor": "#e5e7eb",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "inter",
+      "fontSize": 16
+    },
+    "settings": {
+      "pagePaddingTop": 13,
+      "pagePaddingX": 12,
+      "pagePaddingBottom": 11,
+      "sectionGap": 0.7,
+      "itemGap": 0.88,
+      "bodyLineHeight": 1.7,
+      "nameScale": 2.15,
+      "sectionTitleScale": 1.28,
+      "itemTitleScale": 1.02,
+      "metaScale": 0.92,
+      "bodyScale": 0.96,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#f8fafc",
+      "headingColor": "#111827",
+      "bodyColor": "#334155",
+      "mutedColor": "#64748b",
+      "dividerColor": "#202020",
+      "dividerThickness": 1
+    }
+  },
+  "modern": {
+    "starter": "experienced",
+    "layout": {
+      "basicInfo": "profile",
+      "section": "accent",
+      "timelineItemLayout": "stacked",
+      "listItemLayout": "inline",
+      "avatarPosition": "center",
+      "avatarShape": "circle",
+      "avatarWidth": 24,
+      "avatarHeight": 24,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 2,
+      "avatarBorderColor": "#ffffff",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "serif",
+      "fontSize": 16
+    },
+    "settings": {
+      "pagePaddingTop": 10,
+      "pagePaddingX": 12,
+      "pagePaddingBottom": 10,
+      "sectionGap": 0.6,
+      "itemGap": 0.62,
+      "bodyLineHeight": 1.46,
+      "nameScale": 1.98,
+      "sectionTitleScale": 0.82,
+      "itemTitleScale": 1.04,
+      "metaScale": 0.92,
+      "bodyScale": 0.95,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#f8fafc",
+      "headingColor": "#2563eb",
+      "bodyColor": "#000000",
+      "mutedColor": "#71717a",
+      "dividerColor": "#3b82f6",
+      "dividerThickness": 1
+    }
+  },
+  "compact": {
+    "starter": "experienced",
+    "layout": {
+      "basicInfo": "left",
+      "section": "accent",
+      "timelineItemLayout": "compact",
+      "listItemLayout": "columns",
+      "avatarPosition": "right",
+      "avatarShape": "square",
+      "avatarWidth": 26,
+      "avatarHeight": 32,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 0,
+      "avatarBorderColor": "#ffffff",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "plex",
+      "fontSize": 14
+    },
+    "settings": {
+      "pagePaddingTop": 11,
+      "pagePaddingX": 10,
+      "pagePaddingBottom": 10,
+      "sectionGap": 0.7,
+      "itemGap": 0.82,
+      "bodyLineHeight": 1.66,
+      "nameScale": 1.9,
+      "sectionTitleScale": 0.98,
+      "itemTitleScale": 1,
+      "metaScale": 0.9,
+      "bodyScale": 0.94,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#be123c",
+      "headingColor": "#be123c",
+      "bodyColor": "#18181b",
+      "mutedColor": "#71717a",
+      "dividerColor": "#be123c",
+      "dividerThickness": 1
+    }
+  },
+  "classic": {
+    "starter": "experienced",
+    "layout": {
+      "basicInfo": "left",
+      "section": "ruled",
+      "timelineItemLayout": "split",
+      "listItemLayout": "list",
+      "avatarPosition": "right",
+      "avatarShape": "rounded",
+      "avatarWidth": 25,
+      "avatarHeight": 32,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 0,
+      "avatarBorderColor": "#d6d3d1",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "serif",
+      "fontSize": 16
+    },
+    "settings": {
+      "pagePaddingTop": 13,
+      "pagePaddingX": 14,
+      "pagePaddingBottom": 12,
+      "sectionGap": 0.8,
+      "itemGap": 0.78,
+      "bodyLineHeight": 1.58,
+      "nameScale": 2.05,
+      "sectionTitleScale": 1.12,
+      "itemTitleScale": 1.03,
+      "metaScale": 0.9,
+      "bodyScale": 0.95,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#f5f5f4",
+      "headingColor": "#1c1917",
+      "bodyColor": "#292524",
+      "mutedColor": "#78716c",
+      "dividerColor": "#44403c",
+      "dividerThickness": 1
+    }
+  },
+  "executive": {
+    "starter": "executive",
+    "layout": {
+      "basicInfo": "split",
+      "section": "band",
+      "timelineItemLayout": "compact",
+      "listItemLayout": "list",
+      "avatarPosition": "right",
+      "avatarShape": "square",
+      "avatarWidth": 25,
+      "avatarHeight": 32,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 0,
+      "avatarBorderColor": "#cbd5e1",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "inter",
+      "fontSize": 16
+    },
+    "settings": {
+      "pagePaddingTop": 12,
+      "pagePaddingX": 13,
+      "pagePaddingBottom": 11,
+      "sectionGap": 0.7,
+      "itemGap": 0.68,
+      "bodyLineHeight": 1.5,
+      "nameScale": 2.2,
+      "sectionTitleScale": 0.94,
+      "itemTitleScale": 1.05,
+      "metaScale": 0.92,
+      "bodyScale": 0.94,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#e7f2f0",
+      "headingColor": "#0f172a",
+      "bodyColor": "#334155",
+      "mutedColor": "#64748b",
+      "dividerColor": "#0f766e",
+      "dividerThickness": 1.5
+    }
+  },
+  "academic": {
+    "starter": "research",
+    "layout": {
+      "basicInfo": "left",
+      "section": "plain",
+      "timelineItemLayout": "split",
+      "listItemLayout": "list",
+      "avatarPosition": "none",
+      "avatarShape": "rounded",
+      "avatarWidth": 25,
+      "avatarHeight": 32,
+      "avatarOffsetX": 0,
+      "avatarOffsetY": 0,
+      "avatarBorderWidth": 0,
+      "avatarBorderColor": "#d1d5db",
+      "images": []
+    },
+    "typography": {
+      "fontFamily": "serif",
+      "fontSize": 16
+    },
+    "settings": {
+      "pagePaddingTop": 18,
+      "pagePaddingX": 18,
+      "pagePaddingBottom": 16,
+      "sectionGap": 0.8,
+      "itemGap": 0.6,
+      "bodyLineHeight": 1.45,
+      "nameScale": 1.9,
+      "sectionTitleScale": 1.1,
+      "itemTitleScale": 1,
+      "metaScale": 0.85,
+      "bodyScale": 0.92,
+      "pageBackground": "#ffffff",
+      "surfaceColor": "#f8fafc",
+      "headingColor": "#111827",
+      "bodyColor": "#374151",
+      "mutedColor": "#6b7280",
+      "dividerColor": "#9ca3af",
+      "dividerThickness": 1
+    }
+  }
+}

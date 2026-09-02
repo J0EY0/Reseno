@@ -111,6 +111,7 @@ if (
 
 for (const requiredContract of [
   /resumes:\s*ResumeWorkspaceItem\[\]/,
+  /defaultTemplateIds:\s*DefaultTemplateIds/,
   /customTemplates:\s*ResumeTemplateDefinition\[\]/,
   /deletedResumes:\s*DeletedResumeWorkspaceItem\[\]/,
   /deletedTemplates:\s*DeletedResumeTemplateDefinition\[\]/,

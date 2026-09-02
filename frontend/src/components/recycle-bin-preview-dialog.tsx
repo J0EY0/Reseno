@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { WorkspacePreviewSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 
 const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
 
@@ -27,6 +28,13 @@ export function RecycleBinPreviewDialog({
   restoreFocus: () => void;
 }) {
   const initialFocusRef = useRef<HTMLHeadingElement>(null);
+  const documentLocale =
+    target?.variant === "resume" ? target.documentLocale : null;
+  const documentMessages = useLocalizedMessages(documentLocale);
+  const previewMessages = target?.variant === "resume" ? documentMessages : t;
+  const previewSkeleton = (
+    <WorkspacePreviewSkeleton showPreviewTitle={false} />
+  );
 
   return (
     <Dialog
@@ -65,13 +73,13 @@ export function RecycleBinPreviewDialog({
             data-slot="trash-preview-dialog"
             className="min-h-0 overflow-y-auto overscroll-contain"
           >
-            <Suspense
-              fallback={<WorkspacePreviewSkeleton showPreviewTitle={false} />}
-            >
-              {target.variant === "resume" ? (
+            <Suspense fallback={previewSkeleton}>
+              {!previewMessages ? (
+                previewSkeleton
+              ) : target.variant === "resume" ? (
                 <DocumentPreviewCard
                   variant="resume"
-                  t={t}
+                  t={previewMessages}
                   resume={target.resume}
                   showPreviewTitle={false}
                   template={target.template}
@@ -80,7 +88,7 @@ export function RecycleBinPreviewDialog({
               ) : (
                 <DocumentPreviewCard
                   variant="template"
-                  t={t}
+                  t={previewMessages}
                   resume={target.resume}
                   showPreviewTitle={false}
                   template={target.template}

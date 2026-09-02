@@ -5,24 +5,23 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    field_validator,
     model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
 
-JsonObject = dict[str, Any]
-BuiltinTemplateId = Literal[
-    "minimal",
-    "modern",
-    "compact",
-    "classic",
-    "executive",
-    "academic",
-]
-BUILTIN_TEMPLATE_IDS = frozenset(
-    {"minimal", "modern", "compact", "classic", "executive", "academic"}
+from app.document_locales import DocumentLocale
+from app.services.template_presets import (
+    BUILT_IN_TEMPLATE_IDS as BUILTIN_TEMPLATE_IDS,
 )
+
+JsonObject = dict[str, Any]
 HexColor = str
+
+
+def _add_builtin_template_id_schema(schema: dict[str, Any]) -> None:
+    schema["enum"] = sorted(BUILTIN_TEMPLATE_IDS)
 
 
 class ArtifactModel(BaseModel):
@@ -193,6 +192,7 @@ class ResumeArtifactItem(ArtifactModel):
     """Portable resume content without backend-owned identity metadata."""
 
     title: str = Field(min_length=1, max_length=50)
+    document_locale: DocumentLocale = Field(alias="documentLocale")
     resume: JsonObject
     job_brief: str = Field(alias="jobBrief")
     typography: TypographySettings
@@ -205,12 +205,19 @@ class ResumeArtifactItem(ArtifactModel):
 class TemplateArtifactItem(ArtifactModel):
     """Portable template content without backend-owned identity metadata."""
 
-    preset: BuiltinTemplateId
+    preset: str = Field(json_schema_extra=_add_builtin_template_id_schema)
     name: str = Field(min_length=1)
     description: str
     layout: TemplateLayout
     typography: TypographySettings
     settings: TemplateSettings
+
+    @field_validator("preset")
+    @classmethod
+    def validate_builtin_preset(cls, value: str) -> str:
+        if value not in BUILTIN_TEMPLATE_IDS:
+            raise ValueError("Template preset must reference a built-in template.")
+        return value
 
 
 class EmbeddedTemplate(ArtifactModel):

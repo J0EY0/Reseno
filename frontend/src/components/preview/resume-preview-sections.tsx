@@ -92,6 +92,7 @@ function AccentSectionTitle({
 
 interface SectionBlockProps {
   diff?: SectionDiffLookup;
+  enableContactLinks: boolean;
   isSidebarLayout: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
   items?: RenderableSectionItem[];
@@ -104,6 +105,7 @@ interface SectionBlockProps {
 
 function SectionBlock({
   diff,
+  enableContactLinks,
   isSidebarLayout,
   itemDiffById,
   items,
@@ -168,6 +170,7 @@ function SectionBlock({
             t={t}
             settings={settings}
             layout={layout}
+            enableContactLinks={enableContactLinks}
             items={visibleItems}
             itemDiffById={itemDiffById}
           />
@@ -213,6 +216,7 @@ function SectionBlock({
             t={t}
             settings={settings}
             layout={layout}
+            enableContactLinks={enableContactLinks}
             items={visibleItems}
             itemDiffById={itemDiffById}
           />
@@ -266,6 +270,7 @@ function SectionBlock({
           t={t}
           settings={settings}
           layout={layout}
+          enableContactLinks={enableContactLinks}
           items={visibleItems}
           itemDiffById={itemDiffById}
         />
@@ -276,6 +281,7 @@ function SectionBlock({
 
 export function SectionsList({
   className,
+  enableContactLinks,
   isSidebarLayout,
   itemDiffById,
   layout,
@@ -285,6 +291,7 @@ export function SectionsList({
   t,
 }: {
   className?: string;
+  enableContactLinks: boolean;
   isSidebarLayout: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
   layout: ResumeTemplateLayout;
@@ -310,6 +317,7 @@ export function SectionsList({
           t={t}
           settings={settings}
           layout={layout}
+          enableContactLinks={enableContactLinks}
           isSidebarLayout={isSidebarLayout}
           diff={sectionDiffById?.get(section.section.id)}
           itemDiffById={itemDiffById}

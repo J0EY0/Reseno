@@ -12,7 +12,6 @@ import { toast } from "sonner";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
-import { createDefaultResumeTitle } from "@/lib/resume-title";
 import { getTemplateCatalog } from "@/lib/templates";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import { importResumesIntoWorkspace } from "@/components/workspace/resume-gallery-import";
@@ -41,13 +40,17 @@ import {
   getResumePath,
 } from "@/lib/workspace-route";
 import type {
+  DefaultTemplateIds,
+  DocumentLocale,
   ResumeTemplateDefinition,
-  ResumeTemplateId,
   ResumeWorkspaceItem,
 } from "@/types/resume";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 
-const defaultTemplateId: ResumeTemplateId = "minimal";
+const initialDefaultTemplateIds: DefaultTemplateIds = {
+  zh: "minimal",
+  en: "minimal",
+};
 
 export function useResumeGalleryWorkspace({
   locale,
@@ -76,9 +79,9 @@ export function useResumeGalleryWorkspace({
   const [resumes, setResumes] = useState<ResumeWorkspaceItem[]>(
     () => preparedRouteData?.resumes ?? [],
   );
-  const [activeDefaultTemplateId, setActiveDefaultTemplateId] =
-    useState<ResumeTemplateId>(
-      () => preparedRouteData?.defaultTemplateId ?? defaultTemplateId,
+  const [defaultTemplateIds, setDefaultTemplateIds] =
+    useState<DefaultTemplateIds>(
+      () => preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
     );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
@@ -90,11 +93,11 @@ export function useResumeGalleryWorkspace({
   const routeData = useMemo(
     () => ({
       customTemplates,
-      defaultTemplateId: activeDefaultTemplateId,
+      defaultTemplateIds,
       resumes,
       theme,
     }),
-    [activeDefaultTemplateId, customTemplates, resumes, theme],
+    [customTemplates, defaultTemplateIds, resumes, theme],
   );
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
@@ -125,7 +128,7 @@ export function useResumeGalleryWorkspace({
 
         hydrateTheme(nextTheme);
         setResumes(source.data.resumes);
-        setActiveDefaultTemplateId(source.data.defaultTemplateId);
+        setDefaultTemplateIds(source.data.defaultTemplateIds);
         setCustomTemplates(source.data.customTemplates);
         persistence.hydrate({
           locale: initialLocaleRef.current,
@@ -308,7 +311,7 @@ export function useResumeGalleryWorkspace({
     ],
   );
 
-  const createResume = useCallback(async () => {
+  const createResume = useCallback(async (documentLocale: DocumentLocale) => {
     if (isLoading || createInFlightRef.current) {
       return;
     }
@@ -320,8 +323,7 @@ export function useResumeGalleryWorkspace({
 
     try {
       const result = await createResumeApi({
-        title: createDefaultResumeTitle(messages, resumes.length + 1),
-        template: activeDefaultTemplateId,
+        documentLocale,
       });
       const publishCreatedResume = () => {
         setResumes((current) =>
@@ -381,7 +383,6 @@ export function useResumeGalleryWorkspace({
       setIsCreating(false);
     }
   }, [
-    activeDefaultTemplateId,
     beginNavigation,
     commitResumeDetailNavigation,
     isLoading,
@@ -406,14 +407,7 @@ export function useResumeGalleryWorkspace({
 
       try {
         const { savedImports, savedTemplates } =
-          await importResumesIntoWorkspace(file, {
-            defaultTemplateId: activeDefaultTemplateId,
-            fallbackResumeTitle: createDefaultResumeTitle(
-              messages,
-              resumes.length + 1,
-            ),
-            fallbackSectionTitle: messages.importedResumeFallbackSection,
-          });
+          await importResumesIntoWorkspace(file);
 
         const firstSavedImport = savedImports[0];
         if (!firstSavedImport) {
@@ -477,7 +471,6 @@ export function useResumeGalleryWorkspace({
       }
     },
     [
-      activeDefaultTemplateId,
       beginNavigation,
       commitResumeDetailNavigation,
       customTemplates,

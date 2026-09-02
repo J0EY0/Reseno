@@ -1,5 +1,4 @@
 import { useCallback, useState } from 'react'
-import { Bot } from 'lucide-react'
 import { toast } from 'sonner'
 
 import type { AppMessages, Locale } from '@/i18n'
@@ -21,12 +20,7 @@ import {
 } from '@/components/models/use-model-config-table-selection'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import {
-  Empty,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty'
+import { Empty, EmptyDescription } from '@/components/ui/empty'
 
 export function ModelConfigPanel({
   locale,
@@ -224,12 +218,9 @@ export function ModelConfigPanel({
           >
             {configs.length === 0 ? (
               <Empty className="min-h-[390px] rounded-none p-6 md:p-8">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Bot />
-                  </EmptyMedia>
-                  <EmptyTitle>{t.emptyModelConfigs}</EmptyTitle>
-                </EmptyHeader>
+                <EmptyDescription className="font-medium">
+                  {t.emptyModelConfigs}
+                </EmptyDescription>
               </Empty>
             ) : (
               <ModelConfigTable

@@ -107,6 +107,22 @@ def _resume() -> dict:
                     {"id": "skill-1", "content": "React: proficient"},
                 ],
             },
+            {
+                "id": "publications",
+                "kind": "publication",
+                "title": "Selected Publications",
+                "items": [
+                    {
+                        "id": "publication-1",
+                        "title": "Traceable Feedback in AI-Assisted Writing",
+                        "authors": "Ruoan Shen, Maya Li",
+                        "venue": "National HCI Conference",
+                        "date": "2026",
+                        "url": "https://example.com/paper",
+                        "description": "Poster accepted.",
+                    }
+                ],
+            },
         ],
     }
 
@@ -124,6 +140,21 @@ def test_resume_v2_accepts_every_discriminated_section() -> None:
     resume = _resume()
 
     assert validate_resume_document(resume) is resume
+
+
+@pytest.mark.parametrize("invalid_shape", ["missing_authors", "extra_status"])
+def test_resume_v2_requires_exact_publication_fields(invalid_shape: str) -> None:
+    resume = _resume()
+    publication = resume["sections"][5]["items"][0]
+    if invalid_shape == "missing_authors":
+        publication.pop("authors")
+    else:
+        publication["status"] = "accepted"
+
+    with pytest.raises(ResumeDocumentContractError) as error:
+        validate_resume_document(resume)
+
+    assert error.value.code == RESUME_DOCUMENT_INVALID
 
 
 @pytest.mark.parametrize(
@@ -280,6 +311,55 @@ def test_agent_insert_item_accepts_exact_canonical_target_shape() -> None:
     assert resume_edit_operation_error(operation) is None
 
     _apply_edit_operation(resume, operation)
+    assert validate_resume_document(resume) is resume
+
+
+def test_agent_can_insert_and_update_structured_publication() -> None:
+    resume = _resume()
+
+    insert = _parse_operation(
+        resume,
+        {
+            "type": "insert_item",
+            "sectionId": "publications",
+            "item": {
+                "id": "publication-2",
+                "title": "When Explanations Help",
+                "authors": "Ruoan Shen, Maya Li",
+                "venue": "Human-Centered AI Workshop",
+                "date": "2026",
+            },
+        },
+    )
+
+    assert insert is not None
+    assert insert["item"] == {
+        "id": "publication-2",
+        "title": "When Explanations Help",
+        "authors": "Ruoan Shen, Maya Li",
+        "venue": "Human-Centered AI Workshop",
+        "date": "2026",
+        "url": "",
+        "description": "",
+    }
+    _apply_edit_operation(resume, insert)
+
+    update = _parse_operation(
+        resume,
+        {
+            "type": "update_item",
+            "sectionId": "publications",
+            "itemId": "publication-2",
+            "patch": {
+                "title": "When Explanations Improve Revision Decisions",
+                "venue": "HCAI Workshop",
+            },
+        },
+    )
+
+    assert update is not None
+    _apply_edit_operation(resume, update)
+    assert resume["sections"][5]["items"][1]["venue"] == "HCAI Workshop"
     assert validate_resume_document(resume) is resume
 
 

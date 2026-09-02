@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import type { AppMessages, Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { isApiErrorToastShown } from "@/lib/api-client";
 import {
   downloadExportedFile,
@@ -18,7 +18,6 @@ import type {
 
 interface ResumeDetailExportOptions {
   getSnapshot: (updatedAt: string) => ResumeWorkspaceItem | null;
-  locale: Locale;
   messages: AppMessages;
   save: () => Promise<SaveResponse>;
   template: ResumeTemplateDefinition;
@@ -27,7 +26,6 @@ interface ResumeDetailExportOptions {
 /** Serializes exports and checkpoints the exact document they reference. */
 export function useResumeDetailExport({
   getSnapshot,
-  locale,
   messages,
   save,
   template,
@@ -69,7 +67,6 @@ export function useResumeDetailExport({
       await runExport("pdf", async (activeResume, savedVersion) => {
         const result = await requestResumePdfExport({
           fileNameSeed: activeResume.title,
-          locale,
           resumeId: activeResume.id,
           savedAt: savedVersion.savedAt,
           versionId: savedVersion.versionId,
@@ -83,14 +80,13 @@ export function useResumeDetailExport({
         toast.error(messages.exportFailed, { closeButton: true });
       }
     }
-  }, [locale, messages.exportFailed, messages.exportSuccess, runExport]);
+  }, [messages.exportFailed, messages.exportSuccess, runExport]);
 
   const exportImages = useCallback(async () => {
     try {
       await runExport("images", async (activeResume, savedVersion) => {
         const result = await requestResumeImagesExport({
           fileNameSeed: activeResume.title,
-          locale,
           resumeId: activeResume.id,
           savedAt: savedVersion.savedAt,
           versionId: savedVersion.versionId,
@@ -104,7 +100,7 @@ export function useResumeDetailExport({
         toast.error(messages.exportImagesFailed, { closeButton: true });
       }
     }
-  }, [locale, messages.exportImagesFailed, messages.exportImagesSuccess, runExport]);
+  }, [messages.exportImagesFailed, messages.exportImagesSuccess, runExport]);
 
   const exportJson = useCallback(async () => {
     try {

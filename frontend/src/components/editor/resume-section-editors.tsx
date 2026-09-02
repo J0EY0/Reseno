@@ -8,6 +8,7 @@ import { AchievementSectionEditor } from './achievement-section-editor'
 import { EducationSectionEditor } from './education-section-editor'
 import { ExperienceSectionEditor } from './experience-section-editor'
 import { ProjectSectionEditor } from './project-section-editor'
+import { PublicationSectionEditor } from './publication-section-editor'
 import type { ItemUpdateMutation } from './resume-section-editor-types'
 import { SimpleListSectionEditor } from './simple-list-section-editor'
 
@@ -53,6 +54,15 @@ export function ResumeSectionItemsEditor({
         }
         break
       case 'project':
+        restoreMutation = {
+          type: 'item.restore',
+          sectionId: section.id,
+          sectionKind: section.kind,
+          item: section.items[itemIndex],
+          index: itemIndex,
+        }
+        break
+      case 'publication':
         restoreMutation = {
           type: 'item.restore',
           sectionId: section.id,
@@ -112,6 +122,17 @@ export function ResumeSectionItemsEditor({
     case 'project':
       return (
         <ProjectSectionEditor
+          t={t}
+          section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
+          onUpdateItem={onUpdateItem}
+          onRemoveItem={onRemoveItem}
+          onMoveItem={onMoveItem}
+        />
+      )
+    case 'publication':
+      return (
+        <PublicationSectionEditor
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}

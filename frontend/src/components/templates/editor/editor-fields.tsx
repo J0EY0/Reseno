@@ -1,11 +1,6 @@
-import { ChevronDown, type LucideIcon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useId, type ReactNode } from "react";
 
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
@@ -28,65 +23,21 @@ export function TemplateTabLabel({
 }
 
 export function TemplateSelectRow({
-  icon: Icon,
   label,
   children,
 }: {
-  icon: LucideIcon;
   label: string;
   children: ReactNode;
 }) {
   return (
     <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4">
-      <span className="flex min-w-0 items-center gap-3">
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
+      <span className="flex min-w-0 items-center">
         <span className="min-w-0 truncate text-sm font-medium text-foreground">
           {label}
         </span>
       </span>
       {children}
     </label>
-  );
-}
-
-export function TemplateEditorPanel({
-  title,
-  description,
-  badge,
-  defaultOpen = true,
-  children,
-}: {
-  title: string;
-  description?: string;
-  badge?: ReactNode;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <Collapsible
-      defaultOpen={defaultOpen}
-      className="rounded-(--radius-card) bg-muted/20 ring-1 ring-border/25"
-    >
-      <CollapsibleTrigger className="group flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold tracking-[-0.02em] text-foreground">
-              {title}
-            </p>
-            {badge}
-          </div>
-          {description ? (
-            <p className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
-              {description}
-            </p>
-          ) : null}
-        </div>
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="collapsible-content px-4 pb-4">
-        {children}
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 

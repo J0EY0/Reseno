@@ -46,6 +46,7 @@ export function StandardResumeContent({
         settings={model.settings}
         layout={model.layout}
         isSidebarLayout={false}
+        enableContactLinks={enableContactLinks}
         className="mt-[1.25em]"
         sectionDiffById={model.diffLookup.sectionDiffById}
         itemDiffById={model.diffLookup.itemDiffById}
@@ -96,6 +97,7 @@ export function ResumePageContent({
               settings={model.settings}
               layout={model.layout}
               isSidebarLayout
+              enableContactLinks={enableContactLinks}
               sectionDiffById={model.diffLookup.sectionDiffById}
               itemDiffById={model.diffLookup.itemDiffById}
             />

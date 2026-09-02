@@ -26,36 +26,27 @@ export function ModelConfigBulkDeleteAction({
       aria-hidden={!canBulkDelete}
       inert={!canBulkDelete}
       className={cn(
-        'grid min-w-0 transition-all duration-150 ease-out',
-        !canBulkDelete && 'pointer-events-none',
+        'transition-[opacity,transform]',
+        canBulkDelete
+          ? 'opacity-100 [transform:translateX(0)] [transition-duration:var(--duration-enter)] [transition-timing-function:var(--ease-move)]'
+          : 'pointer-events-none opacity-0 [transform:translateX(0.25rem)] [transition-duration:var(--duration-exit)] ease-in',
       )}
-      style={{
-        gridTemplateColumns: canBulkDelete ? '1fr' : '0fr',
-        marginRight: canBulkDelete ? 0 : '-0.5rem',
-        opacity: canBulkDelete ? 1 : 0,
-        transform: canBulkDelete
-          ? 'translateX(0) scale(1)'
-          : 'translateX(0.25rem) scale(0.98)',
-        transformOrigin: 'right center',
-      }}
     >
-      <div className="min-w-0 overflow-hidden">
-        <Button
-          type="button"
-          variant="destructive"
-          size="default"
-          tabIndex={canBulkDelete ? undefined : -1}
-          disabled={disabled || !canBulkDelete}
-          onClick={onDelete}
-        >
-          {isPending ? (
-            <Spinner data-icon="inline-start" aria-label={label} />
-          ) : (
-            <Trash2 data-icon="inline-start" />
-          )}
-          {label}
-        </Button>
-      </div>
+      <Button
+        type="button"
+        variant="destructive"
+        size="default"
+        tabIndex={canBulkDelete ? undefined : -1}
+        disabled={disabled}
+        onClick={onDelete}
+      >
+        {isPending ? (
+          <Spinner data-icon="inline-start" aria-label={label} />
+        ) : (
+          <Trash2 data-icon="inline-start" />
+        )}
+        {label}
+      </Button>
     </div>
   )
 }

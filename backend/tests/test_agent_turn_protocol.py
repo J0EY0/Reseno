@@ -173,6 +173,7 @@ def _persist_committed_draft(
 def _resume_save_payload(*, headline: str) -> dict:
     return {
         "title": "Agent protocol test resume",
+        "documentLocale": "en",
         "resume": {
             "schemaVersion": 2,
             "basic": {

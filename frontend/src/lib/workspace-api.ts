@@ -24,6 +24,7 @@ import type {
 } from "@/types/api";
 import type {
   AgentSettings,
+  DocumentLocale,
   ResumeTemplateDefinition,
   ThemeMode,
 } from "@/types/resume";
@@ -58,27 +59,29 @@ export function saveUserSettingsApi(
   });
 }
 
-export function saveDefaultTemplateApi(templateId: string) {
+export function saveDefaultTemplateApi(
+  documentLocale: DocumentLocale,
+  templateId: string,
+) {
   return requestApi<DefaultTemplateSaveResponse>(
     apiRoutes.workspaceDefaultTemplate,
     {
-      body: { templateId },
+      body: { documentLocale, templateId },
       method: "PUT",
     },
   );
 }
 
-export function createResumeApi(request: ResumeCreateRequest = {}) {
+export function createResumeApi(request: ResumeCreateRequest) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resumes, {
     body: request,
     method: "POST",
   });
 }
 
-export function duplicateResumeApi(resumeId: string, locale: Locale) {
+export function duplicateResumeApi(resumeId: string) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resumeDuplicate(resumeId), {
     method: "POST",
-    searchParams: { locale },
   });
 }
 

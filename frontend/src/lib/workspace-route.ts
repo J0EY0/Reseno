@@ -1,6 +1,6 @@
 import { matchPath } from "react-router-dom";
 
-import type { WorkspaceView } from "@/types/resume";
+import type { DocumentLocale, WorkspaceView } from "@/types/resume";
 import type {
   PreparedResumeDetailRouteData,
   WorkspaceTemplateRouteData,
@@ -16,9 +16,19 @@ export type WorkspaceRoute =
   | { kind: "settings" }
   | { kind: "unknown" };
 
+function hasDefaultTemplateIds(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.zh === "string" && typeof candidate.en === "string";
+}
+
 export interface TemplateDetailRouteHandoff {
   data: WorkspaceTemplateRouteData;
   kind: "template-detail-handoff";
+  templateLocale: DocumentLocale;
   templateId: string;
 }
 
@@ -59,7 +69,7 @@ export function getResumeDetailRouteHandoff(
     candidate.resumeId !== resumeId ||
     payload?.detail?.resume?.id !== resumeId ||
     !payload.routeData ||
-    typeof payload.routeData.defaultTemplateId !== "string" ||
+    !hasDefaultTemplateIds(payload.routeData.defaultTemplateIds) ||
     !Array.isArray(payload.routeData.customTemplates) ||
     !Array.isArray(payload.routeData.modelConfigs) ||
     !payload.routeData.agentSettings ||
@@ -78,8 +88,14 @@ export function getResumeDetailRouteHandoff(
 export function createTemplateDetailRouteHandoff(
   templateId: string,
   data: WorkspaceTemplateRouteData,
+  templateLocale: DocumentLocale,
 ): TemplateDetailRouteHandoff {
-  return { data, kind: "template-detail-handoff", templateId };
+  return {
+    data,
+    kind: "template-detail-handoff",
+    templateId,
+    templateLocale,
+  };
 }
 
 export function getTemplateDetailRouteHandoff(
@@ -94,8 +110,9 @@ export function getTemplateDetailRouteHandoff(
   if (
     candidate.kind !== "template-detail-handoff" ||
     candidate.templateId !== templateId ||
+    (candidate.templateLocale !== "zh" && candidate.templateLocale !== "en") ||
     !candidate.data ||
-    typeof candidate.data.defaultTemplateId !== "string" ||
+    !hasDefaultTemplateIds(candidate.data.defaultTemplateIds) ||
     !Array.isArray(candidate.data.customTemplates)
   ) {
     return null;

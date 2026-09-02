@@ -17,6 +17,7 @@ def _create_resume(client: TestClient) -> str:
     response = client.post(
         "/api/resumes",
         json={
+            "documentLocale": "en",
             "title": "Export retention",
             "resume": {
                 "schemaVersion": 2,
@@ -68,7 +69,6 @@ def test_pdf_export_returns_one_hour_expiry(
         "/api/exports/resume-pdf",
         json={
             "resumeId": resume_id,
-            "locale": "en",
             "fileNameSeed": "resume",
             "savedAt": "2026-08-09T00:00:00.000Z",
         },
@@ -113,7 +113,6 @@ def test_image_export_returns_one_hour_expiry(
         "/api/exports/resume-images",
         json={
             "resumeId": resume_id,
-            "locale": "en",
             "fileNameSeed": "resume",
             "savedAt": "2026-08-09T00:00:00.000Z",
         },
@@ -243,7 +242,6 @@ def test_pdf_generation_removes_expired_export_artifacts(
         "/api/exports/resume-pdf",
         json={
             "resumeId": resume_id,
-            "locale": "en",
             "fileNameSeed": "resume",
             "savedAt": "2026-08-09T00:00:00.000Z",
         },
@@ -288,7 +286,6 @@ def test_image_generation_removes_expired_export_artifacts(
         "/api/exports/resume-images",
         json={
             "resumeId": resume_id,
-            "locale": "en",
             "fileNameSeed": "resume",
             "savedAt": "2026-08-09T00:00:00.000Z",
         },

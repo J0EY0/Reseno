@@ -25,6 +25,7 @@ from playwright.sync_api import (
 )
 
 from app.config import get_settings
+from app.document_locales import DocumentLocale
 from app.schemas.exports import ExportResumeRenderRequest
 
 EXPORT_FILE_TTL = timedelta(hours=1)
@@ -118,7 +119,10 @@ def _normalize_render_base_url() -> str:
     return base_url
 
 
-def build_render_url(request: ExportResumeRenderRequest) -> str:
+def build_render_url(
+    request: ExportResumeRenderRequest,
+    document_locale: DocumentLocale,
+) -> str:
     """Build the frontend URL that Playwright will render for an export."""
 
     base_url = _normalize_render_base_url()
@@ -127,7 +131,7 @@ def build_render_url(request: ExportResumeRenderRequest) -> str:
     query = urlencode(
         {
             "resumeId": request.resume_id,
-            "locale": request.locale,
+            "documentLocale": document_locale,
             "savedAt": request.saved_at,
             "versionId": request.version_id or "",
         },
@@ -219,6 +223,7 @@ def write_resume_pdf(
     export_id: str,
     request: ExportResumeRenderRequest,
     *,
+    document_locale: DocumentLocale,
     access_token: str | None = None,
     token_expires_at: str | None = None,
     username: str | None = None,
@@ -229,7 +234,7 @@ def write_resume_pdf(
     export_dir = settings.export_dir
     export_dir.mkdir(parents=True, exist_ok=True)
     export_path = get_export_path(export_id)
-    render_url = build_render_url(request)
+    render_url = build_render_url(request, document_locale)
     timeout = settings.pdf_render_timeout_ms
 
     try:
@@ -302,6 +307,7 @@ def write_resume_images(
     export_id: str,
     request: ExportResumeRenderRequest,
     *,
+    document_locale: DocumentLocale,
     access_token: str | None = None,
     token_expires_at: str | None = None,
     username: str | None = None,
@@ -310,7 +316,7 @@ def write_resume_images(
 
     settings = get_settings()
     settings.export_dir.mkdir(parents=True, exist_ok=True)
-    render_url = build_render_url(request)
+    render_url = build_render_url(request, document_locale)
     timeout = settings.pdf_render_timeout_ms
 
     try:

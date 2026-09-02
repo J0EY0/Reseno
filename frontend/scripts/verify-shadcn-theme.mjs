@@ -5,6 +5,8 @@ const projectRoot = new URL("../", import.meta.url);
 const [
   packageSource,
   themeSource,
+  dialogSource,
+  alertDialogSource,
   selectSource,
   appToasterSource,
   resumeDetailCommandsSource,
@@ -30,6 +32,8 @@ const [
   await Promise.all([
     readFile(new URL("package.json", projectRoot), "utf8"),
     readFile(new URL("src/index.css", projectRoot), "utf8"),
+    readFile(new URL("src/components/ui/dialog.tsx", projectRoot), "utf8"),
+    readFile(new URL("src/components/ui/alert-dialog.tsx", projectRoot), "utf8"),
     readFile(new URL("src/components/ui/select.tsx", projectRoot), "utf8"),
     readFile(new URL("src/components/app-toaster.tsx", projectRoot), "utf8"),
     readFile(
@@ -133,6 +137,18 @@ assert(
 assert(
   themeSource.includes('@import "tw-animate-css";'),
   "The global stylesheet must load the shadcn animation styles.",
+);
+for (const motionClass of ["dialog-overlay-motion", "dialog-content-motion"]) {
+  assert(
+    dialogSource.includes(motionClass) && alertDialogSource.includes(motionClass),
+    `Dialog and AlertDialog must share ${motionClass}.`,
+  );
+}
+assert(
+  !alertDialogSource.includes("data-[state=open]:animate-in") &&
+    !alertDialogSource.includes("data-[state=closed]:animate-out") &&
+    !alertDialogSource.includes("duration-200"),
+  "AlertDialog must not override the shared product dialog motion.",
 );
 assert(
   themeSource.includes("--color-input: var(--input);") &&

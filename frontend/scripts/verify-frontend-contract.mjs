@@ -68,6 +68,28 @@ async function loadAgentMessageRenderingHelpers() {
 const files = await collectFiles(srcDir);
 const resumeTypes = await readFile(join(srcDir, "types", "resume.ts"), "utf8");
 const apiTypes = await readFile(join(srcDir, "types", "api.ts"), "utf8");
+const newResumeDialog = await readFile(
+  join(srcDir, "components", "new-resume-dialog.tsx"),
+  "utf8",
+);
+const resumeGalleryWorkspace = await readFile(
+  join(
+    srcDir,
+    "components",
+    "workspace",
+    "use-resume-gallery-workspace.ts",
+  ),
+  "utf8",
+);
+const resumeDetailAgentHost = await readFile(
+  join(
+    srcDir,
+    "components",
+    "workspace",
+    "resume-detail-agent-host.tsx",
+  ),
+  "utf8",
+);
 const modelProviderIcon = await readFile(
   join(srcDir, "components", "model-provider-icon.tsx"),
   "utf8",
@@ -159,6 +181,26 @@ const zhMessages = JSON.parse(
 );
 const enMessages = JSON.parse(
   await readFile(join(srcDir, "i18n", "locales", "en.json"), "utf8"),
+);
+
+const createResumeSource = resumeGalleryWorkspace.slice(
+  resumeGalleryWorkspace.indexOf("const createResume"),
+  resumeGalleryWorkspace.indexOf("const importResume"),
+);
+assert(
+  newResumeDialog.includes("useState<DocumentLocale | null>(null)") &&
+    newResumeDialog.includes("<FieldGroup>") &&
+    newResumeDialog.includes("<SelectValue placeholder={messages.selectResumeLanguage}") &&
+    /createResumeApi\(\{\s*documentLocale,\s*\}\)/.test(createResumeSource) &&
+    !/\b(?:locale|template|title):/.test(createResumeSource),
+  "New resumes must require an explicit document language and let the backend choose that language's default template.",
+);
+assert(
+  enMessages.followResumeLanguage === "Follow resume language" &&
+    zhMessages.followResumeLanguage === "跟随简历语言" &&
+    !("followSystemLanguage" in enMessages) &&
+    !("followSystemLanguage" in zhMessages),
+  "The follow response-language option must describe the resume language, not the UI language.",
 );
 
 assert(
@@ -342,6 +384,14 @@ assert(
 assert(
   !/settings:\s*agentSettings/.test(agentSendController),
   "Agent chat requests must not resend backend-owned Agent preferences.",
+);
+assert(
+  resumeDetailAgentHost.includes(
+    "documentLocale={state.resumeItem.documentLocale}",
+  ) &&
+    !resumeDetailAgentHost.includes("locale={locale}") &&
+    /locale:\s*documentLocale/.test(agentSendController),
+  "Agent requests must use the active resume language instead of the UI locale.",
 );
 const agentChatRequestType =
   apiTypes.match(/export interface AgentChatRequest \{[\s\S]*?\n\}/)?.[0] ?? "";

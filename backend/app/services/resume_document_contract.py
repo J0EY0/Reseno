@@ -22,6 +22,7 @@ SECTION_KINDS = (
     "education",
     "experience",
     "project",
+    "publication",
     "achievement",
     "simple_list",
 )
@@ -43,6 +44,7 @@ ITEM_STRING_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
         "description",
     ),
     "project": ("name", "role", "period", "url", "description"),
+    "publication": ("title", "authors", "venue", "date", "url", "description"),
     "achievement": ("name", "issuer", "date", "url", "description"),
     "simple_list": ("content",),
 }
@@ -50,6 +52,7 @@ ITEM_LIST_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
     "education": ("highlights",),
     "experience": ("highlights",),
     "project": ("techStack", "highlights"),
+    "publication": (),
     "achievement": (),
     "simple_list": (),
 }

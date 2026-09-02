@@ -88,6 +88,13 @@
   "duplicateResumeChangedDuringSave": "Content changed while saving. Create the copy again.",
   "createResumeHint": "Start from a blank resume or import a text-based PDF resume.",
   "newResume": "New",
+  "newResumeDialogDescription": "Choose the language of the resume content. The app interface language will not change it.",
+  "resumeLanguage": "Resume language",
+  "selectResumeLanguage": "Select a language",
+  "chineseTemplate": "Chinese template",
+  "englishTemplate": "English template",
+  "chinesePreview": "Chinese preview",
+  "englishPreview": "English preview",
   "newTemplate": "New",
   "creating": "Creating…",
   "importResume": "Import",
@@ -99,7 +106,7 @@
   "selected": "Selected",
   "backToResumes": "Back to Gallery",
   "backToTemplates": "Back to Templates",
-  "searchResumesPlaceholder": "Search resumes",
+  "searchResumesPlaceholder": "Search by resume name, title, email, or phone",
   "searchResumesLabel": "Search resumes",
   "emptyResumes": "No resumes",
   "emptyResumeSearch": "No matching resumes",
@@ -137,10 +144,11 @@
   "selectAll": "Select all",
   "restore": "Restore",
   "restoreSelected": "Restore selected",
+  "deleteTrashItemAction": "Delete",
   "deleteForever": "Delete Forever",
   "deleteSelectedForever": "Delete selected",
-  "emptyResumeTrash": "There are no deleted resumes.",
-  "emptyTemplateTrash": "There are no deleted templates.",
+  "emptyResumeTrash": "No deleted resumes",
+  "emptyTemplateTrash": "No deleted templates",
   "resumeDeleted": "Resume moved to trash",
   "resumesDeleted": "Selected resumes moved to trash",
   "resumeRestored": "Resume restored",
@@ -243,85 +251,332 @@
   "templateReadonlyHint": "This is a system built-in template and can only be previewed. Create a copy to adjust layout, typography, colors, and decorations.",
   "templateCurrent": "Current Template",
   "templateReadonlyStatus": "Built-in · Read-only",
-  "templateEditableStatus": "Custom · Editable",
   "createEditableCopy": "Create Editable Copy",
-  "templatePreviewSample": {
-    "basic": {
-      "name": "Alex Lin",
-      "headline": "Software Engineering | Product-minded Frontend",
-      "phone": "138-0000-0000",
-      "email": "alex.lin@example.com",
-      "location": "Remote / Open to relocate",
-      "summary": "Turns user pain points into reliable forms, preview workflows, and practical AI tools."
-    },
-    "education": {
-      "title": "Sample Institute",
-      "subtitle": "B.S. in Software Engineering",
-      "meta": "GPA: 3.8/4.0",
-      "period": "2021.09 - 2025.06",
-      "highlights": [
-        "Coursework: Data Structures, Software Engineering, Databases, Human-Computer Interaction"
-      ]
-    },
-    "internship": {
-      "title": "Collaboration Tools Team",
-      "subtitle": "Frontend Engineering Intern",
-      "meta": "Collaboration Tools",
-      "period": "2024.06 - 2024.09",
-      "highlights": [
-        "Facing scattered setup flows, mapped the user journey and rebuilt three form states, reducing submission errors by 28%.",
-        "To support weekly releases, added contract checks and a regression list, cutting validation time to 40 minutes."
-      ]
-    },
-    "projectPrimary": {
-      "title": "Structured Resume Editor",
-      "subtitle": "Personal Project",
-      "meta": "React / TypeScript / PDF Preview",
-      "period": "2023.03 - 2023.06",
-      "highlights": [
-        "When previews drifted across pages, designed a pagination measurement layer, reducing export rework by 35%.",
-        "To lower editing friction, merged duplicate input paths and added instant validation, shortening first-draft time by 20%."
-      ]
-    },
-    "projectSecondary": {
-      "title": "Task Review Dashboard",
-      "subtitle": "Course Project",
-      "meta": "Node.js / SQL / Dashboard",
-      "period": "2022.09 - 2022.12",
-      "highlights": [
-        "Facing scattered review records, normalized the data model and shipped filters, reducing lookup time by 30%."
-      ]
-    },
-    "skills": [
-      {
-        "title": "Languages",
-        "subtitle": "TypeScript, JavaScript, Python, SQL"
+  "templatePreviewListSeparator": ": ",
+  "templatePreviewSamples": {
+    "earlyCareer": {
+      "basic": {
+        "name": "Alex Lin",
+        "headline": "Software Engineering Graduate | Frontend Development",
+        "phone": "138-0000-0000",
+        "email": "alex.lin@example.com",
+        "location": "Shanghai",
+        "websiteLabel": "Portfolio",
+        "website": "lin.example.com",
+        "summary": ""
       },
-      {
-        "title": "Engineering",
-        "subtitle": "React, Node.js, PDF rendering, testing and automation"
-      }
-    ],
-    "awards": [
-      {
-        "title": "Awards",
-        "subtitle": "Merit Scholarship, Product Prototype Showcase"
+      "experienceSectionTitle": "Internship Experience",
+      "projectSectionTitle": "Projects",
+      "achievementSectionTitle": "Awards",
+      "skillsSectionTitle": "Skills",
+      "education": {
+        "school": "Sample University",
+        "degree": "Bachelor of Engineering",
+        "major": "Software Engineering",
+        "gpa": "GPA 3.8/4.0",
+        "location": "Shanghai",
+        "period": "2022.09 - 2026.06",
+        "description": "",
+        "highlights": [
+          "Coursework: Data Structures, Software Engineering, Databases, Human-Computer Interaction"
+        ]
       },
-      {
-        "title": "Language",
-        "subtitle": "Comfortable reading and discussing English technical docs"
-      }
-    ],
-    "other": {
-      "sectionTitle": "Self Evaluation",
-      "title": "Strengths",
-      "description": "Fast learner who cares about engineering quality and user experience; clarifies goals early and drives delivery."
+      "internship": {
+        "company": "Collaboration Cloud",
+        "position": "Frontend Engineering Intern",
+        "location": "Shanghai",
+        "period": "2025.06 - 2025.09",
+        "description": "",
+        "highlights": [
+          "Mapped configuration flows and rebuilt three form states, reducing submission errors by 28%.",
+          "Added contract checks and a release checklist, cutting validation time to 40 minutes."
+        ]
+      },
+      "project": {
+        "name": "Structured Resume Editor",
+        "role": "Personal Project",
+        "techStack": [
+          "React",
+          "TypeScript",
+          "PDF"
+        ],
+        "period": "2025.03 - 2025.06",
+        "description": "",
+        "highlights": [
+          "Designed a pagination measurement layer, reducing export rework by 35%.",
+          "Merged duplicate inputs and added instant validation, shortening first-draft time by 20%."
+        ]
+      },
+      "achievement": {
+        "name": "Merit Scholarship",
+        "issuer": "Sample University",
+        "date": "2025.10",
+        "description": ""
+      },
+      "skills": [
+        {
+          "title": "Frontend",
+          "subtitle": "TypeScript, React, CSS"
+        },
+        {
+          "title": "Tools",
+          "subtitle": "Git, Vitest, Playwright"
+        }
+      ]
+    },
+    "experienced": {
+      "basic": {
+        "name": "Jordan Zhou",
+        "headline": "Frontend Engineer | B2B Products and Design Systems",
+        "phone": "139-0000-0000",
+        "email": "jordan.zhou@example.com",
+        "location": "Shenzhen",
+        "websiteLabel": "Portfolio",
+        "website": "zhou.example.com",
+        "summary": "Four years building B2B workspaces, design systems, and reliable delivery."
+      },
+      "experienceSectionTitle": "Experience",
+      "projectSectionTitle": "Selected Project",
+      "achievementSectionTitle": "Certification",
+      "skillsSectionTitle": "Core Skills",
+      "education": {
+        "school": "South China Sample University",
+        "degree": "Bachelor of Engineering",
+        "major": "Software Engineering",
+        "gpa": "",
+        "location": "Guangzhou",
+        "period": "2018.09 - 2022.06",
+        "description": "",
+        "highlights": []
+      },
+      "experiences": [
+        {
+          "company": "Vision Collaboration",
+          "position": "Senior Frontend Engineer",
+          "location": "Shenzhen",
+          "period": "2024.03 - Present",
+          "description": "",
+          "highlights": [
+            "Rebuilt permission and form infrastructure, reducing critical-flow errors by 31%.",
+            "Expanded the design system to six product teams, shortening page delivery by 26%."
+          ]
+        },
+        {
+          "company": "DataBridge Software",
+          "position": "Frontend Engineer",
+          "location": "Guangzhou",
+          "period": "2022.07 - 2024.02",
+          "description": "",
+          "highlights": [
+            "Set performance and release budgets, improving first paint by 38% and cutting defects by 42%."
+          ]
+        }
+      ],
+      "project": {
+        "name": "Enterprise Design System Upgrade",
+        "role": "Project Lead",
+        "techStack": [
+          "React",
+          "TypeScript",
+          "Storybook"
+        ],
+        "period": "2024.08 - 2025.04",
+        "description": "",
+        "highlights": [
+          "Coordinated design and six product teams to upgrade more than 40 pages with zero downtime."
+        ]
+      },
+      "achievement": {
+        "name": "AWS Certified Developer",
+        "issuer": "Amazon Web Services",
+        "date": "2025.06",
+        "description": ""
+      },
+      "skills": [
+        {
+          "title": "Engineering",
+          "subtitle": "React, TypeScript, Node.js"
+        },
+        {
+          "title": "Quality",
+          "subtitle": "Testing, performance"
+        },
+        {
+          "title": "Collaboration",
+          "subtitle": "Design systems, delivery"
+        }
+      ]
+    },
+    "executive": {
+      "basic": {
+        "name": "Evelyn Zhao",
+        "headline": "VP, Product & Engineering | Enterprise Software",
+        "phone": "136-0000-0000",
+        "email": "evelyn.zhao@example.com",
+        "location": "Shanghai",
+        "websiteLabel": "Profile",
+        "website": "evelyn.example.com",
+        "summary": "Enterprise software executive scaling product portfolios, teams, and recurring revenue."
+      },
+      "experienceSectionTitle": "Executive Experience",
+      "projectSectionTitle": "Selected Transformation",
+      "achievementSectionTitle": "Board & Advisory",
+      "skillsSectionTitle": "Leadership Capabilities",
+      "education": {
+        "school": "Sample School of Management",
+        "degree": "Master of Business Administration",
+        "major": "Strategy and Operations",
+        "gpa": "",
+        "location": "Shanghai",
+        "period": "2008 - 2010",
+        "description": "",
+        "highlights": []
+      },
+      "experiences": [
+        {
+          "company": "Northstar Cloud",
+          "position": "Vice President, Product & Engineering",
+          "location": "Shanghai",
+          "period": "2021 - Present",
+          "description": "",
+          "highlights": [
+            "Directed a 48-person product, design, and engineering organization; reorganized 14 squads into five outcome portfolios and grew annual recurring revenue by 32%.",
+            "Introduced quarterly planning and service-level objectives, raising release predictability from 72% to 91% and reducing severity-one incidents by 44%."
+          ]
+        },
+        {
+          "company": "Meridian Data Systems",
+          "position": "General Manager, Enterprise Products",
+          "location": "Beijing",
+          "period": "2016 - 2021",
+          "description": "",
+          "highlights": [
+            "Expanded revenue from CNY 180M to CNY 460M while improving gross margin by 11 percentage points."
+          ]
+        }
+      ],
+      "project": {
+        "name": "Enterprise Operating Model Transformation",
+        "role": "Executive Sponsor",
+        "techStack": [
+          "Portfolio Strategy",
+          "Operating Cadence",
+          "Talent Systems"
+        ],
+        "period": "2022 - 2024",
+        "description": "",
+        "highlights": [
+          "Reduced duplicate investment by 21% and shortened cross-functional decisions from six weeks to 12 days."
+        ]
+      },
+      "achievements": [
+        {
+          "name": "Advisory Board Member",
+          "issuer": "Regional Enterprise Software Council",
+          "date": "2023 - Present",
+          "description": ""
+        }
+      ],
+      "skills": [
+        {
+          "title": "Growth",
+          "subtitle": "Portfolio strategy, P&L, recurring revenue"
+        },
+        {
+          "title": "Organization",
+          "subtitle": "Executive hiring, succession, operating models"
+        }
+      ]
+    },
+    "research": {
+      "basic": {
+        "name": "Ruoan Shen",
+        "headline": "M.S. Applicant in HCI | Explainable AI",
+        "phone": "137-0000-0000",
+        "email": "ruoan.shen@example.com",
+        "location": "Hangzhou",
+        "websiteLabel": "Website",
+        "website": "ruoan.example.com",
+        "summary": "Research interests: explainable AI, user trust, and human-AI collaborative decision-making."
+      },
+      "researchSectionTitle": "Research Experience",
+      "publicationSectionTitle": "Selected Publications",
+      "teachingSectionTitle": "Teaching Experience",
+      "achievementSectionTitle": "Honors & Grants",
+      "skillsSectionTitle": "Research Skills",
+      "education": {
+        "school": "Sample University",
+        "degree": "Bachelor of Engineering",
+        "major": "Computer Science and Technology",
+        "gpa": "GPA 3.86/4.0",
+        "location": "Hangzhou",
+        "period": "2023.09 - 2027.06",
+        "description": "",
+        "highlights": [
+          "Thesis: How traceable feedback shapes trust in AI-assisted writing",
+          "Advisor: Prof. Maya Li",
+          "Top 8% of the major"
+        ]
+      },
+      "researchExperiences": [
+        {
+          "company": "Human-AI Collaboration Lab",
+          "position": "Undergraduate Research Assistant",
+          "location": "Hangzhou",
+          "period": "2025.09 - Present",
+          "description": "",
+          "highlights": [
+            "Conducted a 24-participant mixed-methods study, coded interviews, and performed preregistered statistical analysis.",
+            "Iterated an explainable-feedback prototype, reducing review time by 19%."
+          ]
+        }
+      ],
+      "publications": [
+        {
+          "title": "How Traceable Feedback Shapes Trust in AI-Assisted Writing",
+          "authors": "Ruoan Shen*, Maya Li, Daniel Wu",
+          "venue": "National HCI Conference",
+          "date": "2026",
+          "url": "ruoan.example.com/papers/traceable-feedback",
+          "description": "Poster accepted · *First author"
+        }
+      ],
+      "teachingExperience": {
+        "company": "Sample University, School of Computing",
+        "position": "Teaching Assistant — Human-Computer Interaction",
+        "location": "Hangzhou",
+        "period": "Spring 2026",
+        "description": "",
+        "highlights": [
+          "Led weekly labs for 42 students and designed a reproducible-study grading rubric."
+        ]
+      },
+      "achievements": [
+        {
+          "name": "Undergraduate Research Grant",
+          "issuer": "Sample University",
+          "date": "2025",
+          "description": "Project lead · CNY 20,000"
+        }
+      ],
+      "skills": [
+        {
+          "title": "Methods",
+          "subtitle": "Interviews, controlled studies, thematic analysis"
+        },
+        {
+          "title": "Tools",
+          "subtitle": "Python, R, Figma, LaTeX"
+        }
+      ]
     }
   },
   "templateName": "Template Name",
   "templateDescription": "Template Description",
   "templateDescriptionFallback": "Add the intended role or usage notes for this layout in the template editor.",
-  "templateInfoPanel": "Template Info",
+  "editTemplateInfo": "Edit template details",
+  "editTemplateInfoDescription": "Update the template name and add notes about its intended role or use case.",
+  "saveTemplateInfo": "Save",
   "templatePreset": "Base Preset",
   "basicInfoLayout": "Basic Info Layout",
   "basicInfoLayoutCentered": "Centered Header",
@@ -348,6 +603,11 @@
   "avatarPositionRight": "Right",
   "avatarPositionLeft": "Left",
   "avatarPositionCenter": "Center",
+  "avatarSize": "Avatar Size",
+  "avatarSizeSmall": "Small",
+  "avatarSizeStandard": "Standard",
+  "avatarSizeLarge": "Large",
+  "avatarSizeCustom": "Custom",
   "avatarShape": "Avatar Shape",
   "avatarShapeRounded": "Rounded",
   "avatarShapeCircle": "Circle",
@@ -448,7 +708,7 @@
   "defaultAgentModelHint": "Choose the LLM config the Agent uses by default.",
   "agentResponseLanguage": "Response Language",
   "agentResponseLanguageHint": "Control which language the Agent uses in its suggestions.",
-  "followSystemLanguage": "Follow UI",
+  "followResumeLanguage": "Follow resume language",
   "agentBehavior": "Suggestion Style",
   "agentBehaviorHint": "Control how conservative or enhanced the Agent suggestions should be.",
   "agentBehaviorBalanced": "Balanced",
@@ -523,7 +783,7 @@
   "modelConfigsDeleted": "Selected models deleted",
   "modelConfigDeleteFailed": "Failed to delete model. Try again.",
   "modelConfigsDeleteFailed": "Failed to delete the selected models. Try again.",
-  "emptyModelConfigs": "No LLM has been configured yet.",
+  "emptyModelConfigs": "No models",
   "noApiKeyConfigured": "Not configured",
   "modelConfigCount": "Model Count",
   "modelConfigSideHint": "These settings are loaded from the backend so you can switch across different LLM endpoints.",
@@ -753,6 +1013,9 @@
     "projectName": "Project Name",
     "role": "Project Role",
     "techStack": "Technology Stack",
+    "publicationTitle": "Publication Title",
+    "authors": "Authors",
+    "venue": "Journal / Conference",
     "url": "Link",
     "achievementName": "Certificate / Honor",
     "issuer": "Issuer / Organizer",
@@ -792,6 +1055,10 @@
     "projectName": "For example: ResuMate",
     "role": "For example: Core Developer",
     "techStack": "For example: React, TypeScript, FastAPI",
+    "publicationTitle": "For example: How Traceable Feedback Shapes Trust in AI-Assisted Writing",
+    "authors": "Keep the publication order and contribution markers, for example: Ruoan Shen*, Maya Li, Daniel Wu",
+    "venue": "For example: Proceedings of the ACM CHI Conference",
+    "publicationDescription": "Optional status, contribution note, or citation detail.",
     "url": "For example: https://example.com",
     "achievementName": "For example: First Prize, National Competition",
     "issuer": "For example: Competition Committee",
@@ -808,6 +1075,7 @@
     "education": "Education",
     "experience": "Work / Internship Experience",
     "project": "Projects",
+    "publication": "Publications",
     "achievement": "Certificates & Honors",
     "simple_list": "Other"
   },
@@ -815,33 +1083,34 @@
     "education": "Education and academic achievements",
     "experience": "Professional experience and impact",
     "project": "Project work and individual contributions",
+    "publication": "Articles, conference papers, and other scholarly outputs",
     "achievement": "Credentials and recognized achievements",
     "simple_list": "Skills, languages, and additional information"
   },
   "templateCards": {
     "minimal": {
       "name": "Minimal",
-      "description": "Classic single-column layout for general applications."
+      "description": "Classic single-column layout for early-career and general applications."
     },
     "modern": {
       "name": "Modern",
-      "description": "Sharper hierarchy for product, design, and hybrid roles."
+      "description": "Stacked hierarchy and inline skills for product and technical roles."
     },
     "compact": {
       "name": "Compact",
-      "description": "Denser layout for fitting more experience into one page."
+      "description": "Compact headings and two-column skills for information-dense resumes."
     },
     "classic": {
       "name": "Classic",
-      "description": "A traditional layout for law, finance, and operations."
+      "description": "A traditional left-aligned layout for clear, conservative professional applications."
     },
     "executive": {
       "name": "Executive",
-      "description": "Highlights seniority and outcomes for leadership roles."
+      "description": "Compact presentation of progression and outcomes for experienced candidates."
     },
     "academic": {
       "name": "Academic",
-      "description": "A restrained layout for study, research, and teaching."
+      "description": "Photo-free scholarly CV for research, teaching, and publications."
     }
   }
 }

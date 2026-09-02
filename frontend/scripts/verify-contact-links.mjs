@@ -86,7 +86,25 @@ try {
             summary: "",
             customFields: [],
           },
-          sections: [],
+          sections: [
+            {
+              id: "project-section",
+              kind: "project",
+              title: "Projects",
+              items: [
+                {
+                  id: "project-item",
+                  name: "Linked project",
+                  role: "Lead",
+                  techStack: [],
+                  period: "2026",
+                  url: "https://example.com/project",
+                  description: "",
+                  highlights: [],
+                },
+              ],
+            },
+          ],
         },
         fontFamily: "inter",
         fontSize: 16,
@@ -100,6 +118,8 @@ try {
           layout: {
             basicInfo: "centered",
             section: "ruled",
+            timelineItemLayout: "split",
+            listItemLayout: "list",
             avatarPosition: "none",
             avatarShape: "rounded",
             avatarWidth: 25,

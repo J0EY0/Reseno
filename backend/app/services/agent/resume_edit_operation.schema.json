@@ -15,6 +15,7 @@
         { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/educationItem" },
         { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/experienceItem" },
         { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/projectItem" },
+        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/publicationItem" },
         { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/achievementItem" },
         { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/simpleListItem" }
       ]
@@ -34,7 +35,7 @@
     },
     "itemPatch": {
       "type": "object",
-      "description": "Patch only fields belonging to the target section kind. Experience: company is the employer; position is the role or title; location is a geographic place. When no dedicated team field exists, keep a team or product-line fact in description. Project: name is the project or product name; role is the candidate's role only; techStack contains individual technologies only; description states project purpose or scope; highlights contain distinct grounded contributions or capabilities. Move misplaced existing content to the correct fields in the same patch and clear obsolete source fields.",
+      "description": "Patch only fields belonging to the target section kind. Experience: company is the employer; position is the role or title; location is a geographic place. When no dedicated team field exists, keep a team or product-line fact in description. Project: name is the project or product name; role is the candidate's role only; techStack contains individual technologies only; description states project purpose or scope; highlights contain distinct grounded contributions or capabilities. Publication: title is the work title; authors preserves the cited order and contribution markers; venue is the journal or conference; date is the publication year or date. Move misplaced existing content to the correct fields in the same patch and clear obsolete source fields.",
       "properties": {
         "school": { "type": "string" },
         "degree": { "type": "string" },
@@ -48,6 +49,9 @@
         "company": { "type": "string" },
         "position": { "type": "string" },
         "name": { "type": "string" },
+        "title": { "type": "string" },
+        "authors": { "type": "string" },
+        "venue": { "type": "string" },
         "role": {
           "type": "string",
           "description": "The candidate's role in a project, never a technology list. After moving misplaced technologies to techStack, clear it with an empty string when no grounded role is known."

@@ -48,6 +48,9 @@ export type ResumeEditOperation =
       company?: string;
       position?: string;
       name?: string;
+      title?: string;
+      authors?: string;
+      venue?: string;
       role?: string;
       techStack?: string[];
       url?: string;

@@ -23,8 +23,10 @@ import {
 import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 import { cn } from "@/lib/utils";
 import type {
+  DocumentLocale,
   ResumeData,
   ResumeTemplateDefinition,
 } from "@/types/resume";
@@ -56,6 +58,7 @@ export function RecycleBinThumbnail({
   template,
   fontFamily,
   fontSize,
+  documentLocale,
   showEmptyTemplateImagePlaceholders = false,
 }: {
   t: AppMessages;
@@ -63,29 +66,35 @@ export function RecycleBinThumbnail({
   template: ResumeTemplateDefinition;
   fontFamily: ResumeTemplateDefinition["typography"]["fontFamily"];
   fontSize: number;
+  documentLocale?: DocumentLocale;
   showEmptyTemplateImagePlaceholders?: boolean;
 }) {
+  const documentMessages = useLocalizedMessages(documentLocale ?? null);
+  const previewMessages = documentLocale ? documentMessages : t;
+
   return (
     <div
       aria-hidden="true"
       className="relative h-[68px] w-12 shrink-0 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm"
     >
       {/* Trash thumbnails are visual context only and must never expose editor controls. */}
-      <div
-        className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.0605]"
-        style={{ width: "210mm", height: "297mm" }}
-      >
-        <ResumeThumbnail
-          t={t}
-          resume={resume}
-          fontFamily={fontFamily}
-          fontSize={fontSize}
-          template={template}
-          showEmptyTemplateImagePlaceholders={
-            showEmptyTemplateImagePlaceholders
-          }
-        />
-      </div>
+      {previewMessages ? (
+        <div
+          className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.0605]"
+          style={{ width: "210mm", height: "297mm" }}
+        >
+          <ResumeThumbnail
+            t={previewMessages}
+            resume={resume}
+            fontFamily={fontFamily}
+            fontSize={fontSize}
+            template={template}
+            showEmptyTemplateImagePlaceholders={
+              showEmptyTemplateImagePlaceholders
+            }
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -212,7 +221,10 @@ function RecycleBinRowActions({
             )}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-36">
+        <DropdownMenuContent
+          align="end"
+          className="w-32 whitespace-nowrap"
+        >
           <DropdownMenuGroup>
             <DropdownMenuItem
               onSelect={() => onPreview(item.previewTarget, item.id)}

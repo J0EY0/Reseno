@@ -15,30 +15,27 @@ from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.db.connection import connect
+from app.document_locales import DOCUMENT_LOCALES, DocumentLocale
+from app.services.template_presets import (
+    BUILT_IN_TEMPLATE_IDS,
+    get_builtin_template_preset,
+)
 from app.services.workspace_state import (
     DEFAULT_TEMPLATE_ID,
-    load_default_template_id,
+    load_default_template_ids,
     store_default_template_id,
 )
 
 TEMPLATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 TEMPLATE_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 TEMPLATE_ID_LENGTH = 16
-BUILT_IN_TEMPLATE_IDS = {
-    "minimal",
-    "modern",
-    "compact",
-    "classic",
-    "executive",
-    "academic",
-}
 
 
 @dataclass(frozen=True)
 class TemplateCatalog:
     """Active templates together with the currently selected default."""
 
-    default_template_id: str
+    default_template_ids: dict[DocumentLocale, str]
     templates: list[dict[str, Any]]
 
 
@@ -301,6 +298,29 @@ def is_visible_template(conn: Connection, template_id: str) -> bool:
     return _template_row(conn, safe_template_id) is not None
 
 
+def resolve_visible_template(
+    conn: Connection,
+    template_id: str,
+) -> dict[str, Any]:
+    """Resolve one selectable template inside the caller's transaction."""
+
+    safe_template_id = _validate_template_id(template_id.strip())
+    if safe_template_id in BUILT_IN_TEMPLATE_IDS:
+        return {
+            "id": safe_template_id,
+            "preset": safe_template_id,
+            **get_builtin_template_preset(safe_template_id),
+        }
+
+    if _template_row(conn, safe_template_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="TEMPLATE_NOT_FOUND",
+        )
+
+    return _read_template_json(safe_template_id)
+
+
 def is_deleted_template(conn: Connection, template_id: str) -> bool:
     """Return whether a custom template exists in the recycle bin."""
 
@@ -332,7 +352,7 @@ def load_template_catalog() -> TemplateCatalog:
     with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         catalog = TemplateCatalog(
-            default_template_id=load_default_template_id(conn),
+            default_template_ids=load_default_template_ids(conn),
             templates=_load_template_items(conn, deleted=False),
         )
         conn.execute("COMMIT")
@@ -443,21 +463,26 @@ def trash_template(template_id: str) -> dict[str, Any]:
             deleted_at = _utc_now()
             row = _require_custom_template_row(conn, template_id)
             template_item = _read_template_json(row["id"])
-            default_template_id = load_default_template_id(conn)
-            fallback_template_id = (
-                DEFAULT_TEMPLATE_ID
-                if default_template_id == row["id"]
-                else default_template_id
-            )
+            default_template_ids = load_default_template_ids(conn)
+            fallback_template_ids = {
+                locale: (
+                    DEFAULT_TEMPLATE_ID
+                    if default_template_ids[locale] == row["id"]
+                    else default_template_ids[locale]
+                )
+                for locale in DOCUMENT_LOCALES
+            }
 
             rebind_result = rebind_current_resume_template_references(
                 conn,
                 source_template_id=row["id"],
-                target_template_id=fallback_template_id,
+                target_template_ids=fallback_template_ids,
                 saved_at=deleted_at,
             )
-            if default_template_id == row["id"]:
-                store_default_template_id(conn, DEFAULT_TEMPLATE_ID)
+            for locale in DOCUMENT_LOCALES:
+                selected_default_template_id = default_template_ids[locale]
+                if selected_default_template_id == row["id"]:
+                    store_default_template_id(conn, locale, DEFAULT_TEMPLATE_ID)
             conn.execute(
                 """
                 UPDATE templates
@@ -564,7 +589,10 @@ def empty_template_trash() -> dict[str, Any]:
     return {"deletedCount": len(template_ids)}
 
 
-def save_default_template(template_id: str) -> dict[str, Any]:
+def save_default_template(
+    document_locale: DocumentLocale,
+    template_id: str,
+) -> dict[str, Any]:
     """Persist the workspace default template after validating the reference."""
 
     safe_template_id = _validate_template_id(template_id.strip())
@@ -576,7 +604,8 @@ def save_default_template(template_id: str) -> dict[str, Any]:
                 detail="Template not found.",
             )
 
-        store_default_template_id(conn, safe_template_id)
+        store_default_template_id(conn, document_locale, safe_template_id)
+        default_template_ids = load_default_template_ids(conn)
         conn.execute("COMMIT")
 
-    return {"defaultTemplateId": safe_template_id}
+    return {"defaultTemplateIds": default_template_ids}

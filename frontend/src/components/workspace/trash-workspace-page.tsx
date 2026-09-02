@@ -40,7 +40,7 @@ export function TrashWorkspacePage({
       deletedResumes={trash.deletedResumes}
       deletedTemplates={trash.deletedTemplates}
       templates={trash.templates}
-      templatePreviewResume={trash.templatePreviewResume}
+      templatePreviewResumes={trash.templatePreviewResumes}
       onRestoreResume={trash.restoreResumes}
       onDeleteResumeForever={trash.permanentlyDeleteResumes}
       onRestoreTemplate={trash.restoreTemplates}

@@ -50,6 +50,7 @@ export function DeletedResumeTrashList({
           template={template}
           fontFamily={item.typography.fontFamily}
           fontSize={item.typography.fontSize}
+          documentLocale={item.documentLocale}
         />
       ),
       title,
@@ -63,6 +64,7 @@ export function DeletedResumeTrashList({
       previewTarget: {
         variant: "resume",
         title,
+        documentLocale: item.documentLocale,
         resume: item.resume,
         template,
         typography: item.typography,
@@ -87,7 +89,7 @@ export function DeletedResumeTrashList({
               selectLabel={t.selectItems}
               previewLabel={t.preview}
               restoreLabel={t.restore}
-              deleteLabel={t.deleteForever}
+              deleteLabel={t.deleteTrashItemAction}
               actionsLabel={t.actions}
               emptyMessage={t.emptyResumeTrash}
               disabled={controller.isBusy}

@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.db.connection import connect
-from app.services import templates
+from app.services import resumes, templates
+from app.services.template_presets import get_builtin_template_preset
 
 
 class _CommitThenRaiseConnection:
@@ -207,6 +208,90 @@ def test_template_readers_do_not_read_uncommitted_template_json(
     assert isinstance(writer_errors[0], OSError)
     assert not reader_errors
     assert reader_results == [[created]]
+
+
+def test_resume_creation_does_not_read_uncommitted_template_json(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before_typography = {"fontFamily": "plex", "fontSize": 14}
+    minimal_preset = get_builtin_template_preset("minimal")
+    created = templates.create_template(
+        {
+            "preset": "minimal",
+            "name": "Before",
+            "description": "",
+            "layout": minimal_preset["layout"],
+            "typography": before_typography,
+            "settings": minimal_preset["settings"],
+        }
+    )["template"]
+    template_id = created["id"]
+    original_write_template_json = templates._write_template_json
+    published = Event()
+    release_update = Event()
+    creator_finished = Event()
+    writer_errors: list[BaseException] = []
+    creator_errors: list[BaseException] = []
+    creator_results: list[dict[str, object]] = []
+
+    def publish_then_fail(
+        saved_template_id: str,
+        template_item: dict[str, object],
+    ) -> None:
+        original_write_template_json(saved_template_id, template_item)
+        published.set()
+        if not release_update.wait(timeout=2):
+            raise TimeoutError("test did not release the update")
+        raise OSError("forced failure after publication")
+
+    def update_template() -> None:
+        try:
+            templates.update_template(
+                template_id,
+                {
+                    "name": "After",
+                    "typography": {"fontFamily": "serif", "fontSize": 18},
+                },
+            )
+        except BaseException as exc:
+            writer_errors.append(exc)
+
+    def create_resume() -> None:
+        try:
+            creator_results.append(
+                resumes.create_resume(
+                    {
+                        "documentLocale": "en",
+                        "title": "Concurrent template read",
+                        "template": template_id,
+                    }
+                )["resume"]
+            )
+        except BaseException as exc:
+            creator_errors.append(exc)
+        finally:
+            creator_finished.set()
+
+    monkeypatch.setattr(templates, "_write_template_json", publish_then_fail)
+    writer = Thread(target=update_template)
+    writer.start()
+    assert published.wait(timeout=2)
+
+    creator = Thread(target=create_resume)
+    creator.start()
+    creator_was_blocked = not creator_finished.wait(timeout=0.2)
+    release_update.set()
+    writer.join(timeout=2)
+    creator.join(timeout=2)
+
+    assert creator_was_blocked
+    assert not writer.is_alive()
+    assert not creator.is_alive()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], OSError)
+    assert not creator_errors
+    assert creator_results[0]["typography"] == before_typography
 
 
 def test_update_does_not_restore_json_after_commit_succeeds(

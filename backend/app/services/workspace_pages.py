@@ -11,6 +11,7 @@ from app.schemas.templates import (
     TemplateDefinitionResponse,
 )
 from app.schemas.workspace import (
+    DefaultTemplateIds,
     ModelsPageResponse,
     ResumeEditorPageResponse,
     ResumesPageResponse,
@@ -25,14 +26,17 @@ from app.services.templates import list_templates, load_template_catalog
 from app.services.user_preferences import load_user_settings, normalize_theme
 
 
-def _template_context() -> tuple[str, list[TemplateDefinitionResponse]]:
+def _template_context() -> tuple[
+    DefaultTemplateIds,
+    list[TemplateDefinitionResponse],
+]:
     """Load the active template catalog and its default selection."""
 
     catalog = load_template_catalog()
     templates = [
         TemplateDefinitionResponse.model_validate(item) for item in catalog.templates
     ]
-    return catalog.default_template_id, templates
+    return DefaultTemplateIds.model_validate(catalog.default_template_ids), templates
 
 
 def _model_context(
@@ -50,7 +54,7 @@ def load_resumes_page() -> ResumesPageResponse:
     """Load the exact initialization contract for the resume gallery."""
 
     settings = load_user_settings()
-    default_template_id, custom_templates = _template_context()
+    default_template_ids, custom_templates = _template_context()
     resumes = [
         ResumeWorkspaceItemResponse.model_validate(item)
         for item in list_resumes("active")["resumes"]
@@ -58,7 +62,7 @@ def load_resumes_page() -> ResumesPageResponse:
 
     return ResumesPageResponse(
         theme=normalize_theme(settings.get("theme")),
-        defaultTemplateId=default_template_id,
+        defaultTemplateIds=default_template_ids,
         customTemplates=custom_templates,
         resumes=resumes,
     )
@@ -68,12 +72,12 @@ def load_resume_editor_page() -> ResumeEditorPageResponse:
     """Load shared dependencies required by a resume editor page."""
 
     settings = load_user_settings()
-    default_template_id, custom_templates = _template_context()
+    default_template_ids, custom_templates = _template_context()
     model_configs, agent_settings = _model_context(settings)
 
     return ResumeEditorPageResponse(
         theme=normalize_theme(settings.get("theme")),
-        defaultTemplateId=default_template_id,
+        defaultTemplateIds=default_template_ids,
         customTemplates=custom_templates,
         modelConfigs=model_configs,
         agentSettings=agent_settings,
@@ -84,11 +88,11 @@ def load_templates_page() -> TemplatesPageResponse:
     """Load the template catalog used by template pages and PDF export."""
 
     settings = load_user_settings()
-    default_template_id, custom_templates = _template_context()
+    default_template_ids, custom_templates = _template_context()
 
     return TemplatesPageResponse(
         theme=normalize_theme(settings.get("theme")),
-        defaultTemplateId=default_template_id,
+        defaultTemplateIds=default_template_ids,
         customTemplates=custom_templates,
     )
 
@@ -97,7 +101,7 @@ def load_trash_page() -> TrashPageResponse:
     """Load deleted items and the active templates used to preview them."""
 
     settings = load_user_settings()
-    default_template_id, custom_templates = _template_context()
+    default_template_ids, custom_templates = _template_context()
     deleted_resumes = [
         DeletedResumeWorkspaceItemResponse.model_validate(item)
         for item in list_resumes("deleted")["resumes"]
@@ -109,7 +113,7 @@ def load_trash_page() -> TrashPageResponse:
 
     return TrashPageResponse(
         theme=normalize_theme(settings.get("theme")),
-        defaultTemplateId=default_template_id,
+        defaultTemplateIds=default_template_ids,
         customTemplates=custom_templates,
         deletedResumes=deleted_resumes,
         deletedTemplates=deleted_templates,

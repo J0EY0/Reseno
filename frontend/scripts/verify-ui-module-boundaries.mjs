@@ -31,6 +31,7 @@ const [
   galleryToolbar,
   saveStatusButton,
   resumeGallery,
+  newResumeDialog,
   resumeGalleryCard,
   resumeGalleryGrid,
   resumeGalleryController,
@@ -54,6 +55,7 @@ const [
   readSource("components/gallery-toolbar.tsx"),
   readSource("components/save-status-button.tsx"),
   readSource("components/resume-gallery.tsx"),
+  readSource("components/new-resume-dialog.tsx"),
   readSource("components/resume-gallery-card.tsx"),
   readSource("components/resume-gallery-grid.tsx"),
   readSource("components/use-resume-gallery-controller.ts"),
@@ -187,12 +189,12 @@ for (const [entry, card, controller, name] of [
     `The ${name} gallery must retain memoized cards, preview rendering, selection, and pagination ownership.`,
   );
 }
-for (const [gallery, name] of [
-  [resumeGallery, "resume"],
+for (const [createAction, name] of [
+  [newResumeDialog, "resume"],
   [templateGallery, "template"],
 ]) {
   assert.match(
-    gallery,
+    createAction,
     /import \{[^}]*\bCopyPlus\b[^}]*\} from ["']lucide-react["'][\s\S]*?<CopyPlus data-icon="inline-start" \/>/,
     `The ${name} gallery create action must use the shared CopyPlus resource-create icon.`,
   );

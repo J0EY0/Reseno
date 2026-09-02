@@ -90,6 +90,9 @@ const [
 const resumeDetailCommandsSource = await readText(
   "src/components/workspace/use-resume-detail-commands.ts",
 );
+const templateDetailInitialRouteSource = await readText(
+  "src/components/workspace/template-detail-initial-route.ts",
+);
 
 for (const routeEntry of [
   "resume-gallery-workspace-page",
@@ -593,9 +596,14 @@ assert.match(
   "Cancelled and stale template detail requests must exit before retry state and Toast.",
 );
 assert.match(
-  templateDetailRouteSource,
+  templateDetailInitialRouteSource,
   /getTemplateDetailRouteHandoff\(routeState, templateId\)[\s\S]{0,500}getTemplateCatalog/,
   "Template detail must seed its first frame from the typed gallery handoff.",
+);
+assert.match(
+  templateDetailRouteSource,
+  /resolveInitialTemplateDetail\(messages, routeState, templateId\)/,
+  "Template detail must consume its typed initial-route resolver.",
 );
 assert.match(
   templateDetailRouteSource,

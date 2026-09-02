@@ -52,6 +52,32 @@
       ]
     },
     {
+      "kind": "publication",
+      "defaultLayout": "timeline",
+      "labels": {
+        "zh": "学术发表",
+        "en": "Publications"
+      },
+      "aliases": [
+        "publication",
+        "publications",
+        "selected publications",
+        "peer-reviewed publications",
+        "journal articles",
+        "conference papers",
+        "papers",
+        "research outputs",
+        "发表",
+        "学术发表",
+        "论文",
+        "学术论文",
+        "发表论文",
+        "论文发表",
+        "代表性论文",
+        "科研成果"
+      ]
+    },
+    {
       "kind": "achievement",
       "defaultLayout": "timeline",
       "labels": {

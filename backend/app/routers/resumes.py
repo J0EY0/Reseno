@@ -47,7 +47,7 @@ def get_resumes(
 def post_resume(
     request: ResumeCreateRequest,
 ) -> ApiResponse[ResumeDetailResponse]:
-    """Create a backend-owned empty resume."""
+    """Create a backend-owned resume from a template starter or document."""
 
     return ok_response(
         ResumeDetailResponse.model_validate(
@@ -113,12 +113,11 @@ def put_resume(
 @router.post("/{resume_id}/duplicate", response_model=ApiResponse[ResumeDetailResponse])
 def post_resume_duplicate(
     resume_id: str,
-    locale: Literal["zh", "en"] = Query(default="en"),
 ) -> ApiResponse[ResumeDetailResponse]:
     """Create an independent copy of one active resume."""
 
     return ok_response(
-        ResumeDetailResponse.model_validate(duplicate_resume(resume_id, locale))
+        ResumeDetailResponse.model_validate(duplicate_resume(resume_id))
     )
 
 

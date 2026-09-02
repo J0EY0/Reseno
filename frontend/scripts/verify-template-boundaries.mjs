@@ -28,6 +28,7 @@ const [
   galleryGrid,
   galleryCard,
   editor,
+  metadataDialog,
   editorTabs,
   editorFields,
   layoutTab,
@@ -82,6 +83,7 @@ const [
   readFile(new URL("template-gallery-grid.tsx", templatesDir), "utf8"),
   readFile(new URL("template-gallery-card.tsx", templatesDir), "utf8"),
   readFile(new URL("template-editor.tsx", templatesDir), "utf8"),
+  readFile(new URL("template-metadata-dialog.tsx", templatesDir), "utf8"),
   readFile(new URL("template-editor-tabs.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/editor-fields.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/layout-tab.tsx", templatesDir), "utf8"),
@@ -184,8 +186,20 @@ assert(
   "Template cards must preload on pointer, focus, and touch intent while reporting semantic pending navigation.",
 );
 assert(
-  !galleryCard.includes("<Spinner aria-label={t.loading}"),
-  "Opening an existing template must keep its card visually stable without a loading icon.",
+  !galleryCard.includes("<Spinner") &&
+    galleryCard.includes("const isSettingDefaultTemplate =") &&
+    galleryCard.includes(
+      "aria-busy={isSettingDefaultTemplate || undefined}",
+    ),
+  "Opening or setting a default template must keep its card visually stable without a loading icon.",
+);
+assert(
+  galleryCard.includes("{isDefaultTemplate ? (") &&
+    galleryCard.includes(
+      "disabled={isSelecting || settingDefaultTemplateId !== null}",
+    ) &&
+    !galleryCard.includes("{isSelecting ? null : isDefaultTemplate ?"),
+  "Template default controls must remain rendered but disabled during selection mode.",
 );
 assert(
   /const toggleSelected = useCallback\([\s\S]{0,240}if \(!customTemplateIdSet\.has\(templateId\)\) \{\s*return;/.test(
@@ -245,10 +259,52 @@ assert(
   /templateIds\.filter[\s\S]*customTemplates\.some[\s\S]*moveTemplateToTrashApi[\s\S]*setCustomTemplates/.test(
     galleryRoute,
   ) &&
-    /saveDefaultTemplateApi\(templateId\)[\s\S]*setDefaultTemplateId/.test(
+    /saveDefaultTemplateApi\(\s*templateLocale,\s*templateId,?\s*\)[\s\S]*setDefaultTemplateIds/.test(
       galleryRoute,
     ),
   "Delete and default-template mutations must remain gallery-owned and server-backed.",
+);
+assert(
+  galleryRoute.includes("useLocalizedMessages(templateLocale)") &&
+    galleryRoute.includes("defaultTemplateIds[templateLocale]") &&
+    gallery.includes("<TemplateLocaleSelect") &&
+    editor.includes("<TemplateLocaleSelect"),
+  "Template preview language and per-language defaults must remain independent from the UI locale.",
+);
+assert(
+  !editor.includes("t.templateEditableStatus") &&
+    !editor.includes("template.description || t.templateDescriptionFallback") &&
+    !editor.includes("{template.description ? (") &&
+    editor.includes('data-slot="template-editor-header"') &&
+    editor.includes('data-slot="template-editor-actions"') &&
+    !editor.includes("flex flex-wrap items-start justify-between gap-4") &&
+    editor.includes('data-slot="template-description"') &&
+    editor.includes("mt-1 min-h-6 max-w-[460px]") &&
+    editor.includes("<TemplateMetadataDialog") &&
+    !editor.includes("<TemplateEditorPanel") &&
+    !editor.includes("t.templateInfoPanel"),
+  "Custom template headers must expose metadata editing beside the title without a redundant details panel.",
+);
+assert(
+  metadataDialog.includes('data-template-metadata-trigger="true"') &&
+    metadataDialog.includes("<DialogTrigger asChild>") &&
+    metadataDialog.includes("<DialogTitle>{messages.editTemplateInfo}</DialogTitle>") &&
+    metadataDialog.includes("<FieldGroup") &&
+    metadataDialog.includes("<FieldLabel htmlFor={nameInputId}>") &&
+    metadataDialog.includes("<FieldLabel htmlFor={descriptionInputId}>") &&
+    metadataDialog.includes("const trimmedName = name.trim()") &&
+    metadataDialog.includes("onSave({ name: trimmedName, description })"),
+  "Template metadata editing must use the shared accessible Dialog and commit name and description together.",
+);
+assert(
+  editor.includes('data-slot="template-default-button"') &&
+    editor.includes("const isSettingDefaultTemplate =") &&
+    editor.includes("aria-busy={isSettingDefaultTemplate || undefined}") &&
+    !editor.includes("min-w-36") &&
+    editor.includes('className="invisible col-start-1 row-start-1"') &&
+    editor.includes("transition-colors") &&
+    editor.includes("disabled:opacity-100"),
+  "The template default action must reserve translated label width without forcing the action row to wrap.",
 );
 assert(
   detailPage.includes("useTemplateDetailWorkspace") &&
@@ -312,8 +368,27 @@ assert(
       editorFields,
     ) &&
     !layoutTab.includes("controlProps") &&
-    (layoutTab.match(/<SelectTrigger className="w-full">/g)?.length ?? 0) === 8,
+    (layoutTab.match(/<SelectTrigger className="w-full">/g)?.length ?? 0) === 9,
   "Every template Select trigger must derive its accessible name from its visible row label.",
+);
+assert(
+  !/<TemplateSelectRow[^>]*\bicon=/.test(layoutTab) &&
+    !/export function TemplateSelectRow\([\s\S]{0,500}<Icon/.test(
+      editorFields,
+    ) &&
+    editorFields.includes("icon: LucideIcon") &&
+    editorFields.includes("<Icon className=\"max-sm:hidden\" />"),
+  "Template setting rows must stay text-led while tab icons remain visible.",
+);
+assert(
+  layoutTab.includes('template.layout.avatarPosition !== "none"') &&
+    /avatarSizeScalePercentValues[\s\S]*avatarWidth[\s\S]*avatarHeight/.test(
+      layoutTab,
+    ) &&
+    /updateLayout\([\s\S]*getAvatarSizeLayout\([\s\S]*template\.preset/.test(
+      layoutTab,
+    ),
+  "Avatar sizing must stay proportional to the template preset and disappear when the avatar is hidden.",
 );
 assert(
   /<Slider[\s\S]{0,500}thumbProps=\{\{[\s\S]{0,120}"aria-label": label/.test(

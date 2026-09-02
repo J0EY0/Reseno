@@ -2,43 +2,61 @@
 
 from sqlite3 import Connection
 
+from app.document_locales import DOCUMENT_LOCALES, DocumentLocale
+
 DEFAULT_TEMPLATE_ID = "minimal"
 
 
-def load_default_template_id(conn: Connection) -> str:
-    """Load the selected template id, falling back to the built-in default."""
+def load_default_template_ids(conn: Connection) -> dict[DocumentLocale, str]:
+    """Load the default template selected for each document language."""
 
     row = conn.execute(
         """
-        SELECT default_template_id
+        SELECT default_template_zh, default_template_en
         FROM workspace_state
         WHERE id = 1
         """,
     ).fetchone()
     if row is None:
-        return DEFAULT_TEMPLATE_ID
+        return {locale: DEFAULT_TEMPLATE_ID for locale in DOCUMENT_LOCALES}
 
-    template_id = row["default_template_id"]
-    return (
-        template_id.strip()
-        if isinstance(template_id, str) and template_id.strip()
-        else DEFAULT_TEMPLATE_ID
-    )
+    return {
+        "zh": str(row["default_template_zh"]),
+        "en": str(row["default_template_en"]),
+    }
 
 
-def store_default_template_id(conn: Connection, template_id: str) -> None:
-    """Persist the selected template id inside the caller's transaction."""
+def load_default_template_id(
+    conn: Connection,
+    document_locale: DocumentLocale,
+) -> str:
+    """Load the default template selected for one document language."""
+
+    return load_default_template_ids(conn)[document_locale]
+
+
+def store_default_template_id(
+    conn: Connection,
+    document_locale: DocumentLocale,
+    template_id: str,
+) -> None:
+    """Persist one language's default template in the caller's transaction."""
+
+    column = {
+        "zh": "default_template_zh",
+        "en": "default_template_en",
+    }[document_locale]
 
     conn.execute(
-        """
+        f"""
         INSERT INTO workspace_state (
             id,
-            default_template_id,
+            {column},
             updated_at
         )
         VALUES (1, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
-            default_template_id = excluded.default_template_id,
+            {column} = excluded.{column},
             updated_at = CURRENT_TIMESTAMP
         """,
         (template_id,),

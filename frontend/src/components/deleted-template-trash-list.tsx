@@ -9,44 +9,51 @@ import { formatTrashTimestamp } from "@/components/recycle-bin-format";
 import { TabsContent } from "@/components/ui/tabs";
 import type { RecycleBinController } from "@/components/use-recycle-bin-controller";
 import type { AppMessages, Locale } from "@/i18n";
-import type { ResumeData } from "@/types/resume";
+import {
+  getTemplatePreviewResume,
+  type TemplatePreviewResumes,
+} from "@/lib/template-preview-resume";
 
 export function DeletedTemplateTrashList({
   locale,
   t,
-  templatePreviewResume,
+  templatePreviewResumes,
   controller,
 }: {
   locale: Locale;
   t: AppMessages;
-  templatePreviewResume: ResumeData;
+  templatePreviewResumes: TemplatePreviewResumes;
   controller: RecycleBinController;
 }) {
   const items = controller.templates.items;
-  const tableItems: RecycleBinTableItem[] = items.map((item) => ({
-    id: item.id,
-    thumbnail: (
-      <RecycleBinThumbnail
-        t={t}
-        resume={templatePreviewResume}
-        template={item}
-        fontFamily={item.typography.fontFamily}
-        fontSize={item.typography.fontSize}
-        showEmptyTemplateImagePlaceholders
-      />
-    ),
-    title: item.name,
-    subtitle: item.description || t.templateDescriptionFallback,
-    deletedAtText: formatTrashTimestamp(locale, item.deletedAt),
-    isRestoring:
-      controller.runningActionKey === `template-restore:${item.id}`,
-    previewTarget: {
-      variant: "template",
+  const tableItems: RecycleBinTableItem[] = items.map((item) => {
+    const previewResume = getTemplatePreviewResume(templatePreviewResumes, item);
+
+    return {
+      id: item.id,
+      thumbnail: (
+        <RecycleBinThumbnail
+          t={t}
+          resume={previewResume}
+          template={item}
+          fontFamily={item.typography.fontFamily}
+          fontSize={item.typography.fontSize}
+          showEmptyTemplateImagePlaceholders
+        />
+      ),
       title: item.name,
-      resume: templatePreviewResume,
-      template: item,
-    },
-  }));
+      subtitle: item.description || t.templateDescriptionFallback,
+      deletedAtText: formatTrashTimestamp(locale, item.deletedAt),
+      isRestoring:
+        controller.runningActionKey === `template-restore:${item.id}`,
+      previewTarget: {
+        variant: "template",
+        title: item.name,
+        resume: previewResume,
+        template: item,
+      },
+    };
+  });
 
   return (
     <TabsContent value="templates" className="mt-0">
@@ -65,7 +72,7 @@ export function DeletedTemplateTrashList({
               selectLabel={t.selectItems}
               previewLabel={t.preview}
               restoreLabel={t.restore}
-              deleteLabel={t.deleteForever}
+              deleteLabel={t.deleteTrashItemAction}
               actionsLabel={t.actions}
               emptyMessage={t.emptyTemplateTrash}
               disabled={controller.isBusy}

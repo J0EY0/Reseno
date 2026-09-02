@@ -11,11 +11,16 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import { resolveInitialTemplateDetail } from "@/components/workspace/template-detail-initial-route";
 import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
-import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
+import {
+  createTemplatePreviewResumes,
+  getTemplatePreviewResume,
+} from "@/lib/template-preview-resume";
 import {
   createCustomTemplateFromBase,
   createTemplateLayout,
@@ -35,10 +40,11 @@ import {
 } from "@/lib/workspace-api";
 import {
   createTemplateDetailRouteHandoff,
-  getTemplateDetailRouteHandoff,
   getTemplatePath,
 } from "@/lib/workspace-route";
 import type {
+  DefaultTemplateIds,
+  DocumentLocale,
   ResumeTemplateDefinition,
   ResumeTemplateImageElement,
   ThemeMode,
@@ -59,23 +65,10 @@ interface TemplateDetailWorkspaceOptions {
   templateId: string;
 }
 
-function resolveInitialTemplate(
-  messages: AppMessages,
-  routeState: unknown,
-  templateId: string,
-) {
-  const handoff = getTemplateDetailRouteHandoff(routeState, templateId);
-  if (!handoff) {
-    return null;
-  }
-
-  const template = getTemplateCatalog(
-    messages,
-    handoff.data.customTemplates,
-  ).find((item) => item.id === templateId);
-
-  return template ? { data: handoff.data, template } : null;
-}
+const initialDefaultTemplateIds: DefaultTemplateIds = {
+  zh: "minimal",
+  en: "minimal",
+};
 
 /** Owns only the /template/:id route data, draft, and route commands. */
 export function useTemplateDetailWorkspace({
@@ -91,7 +84,7 @@ export function useTemplateDetailWorkspace({
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialLocaleRef = useRef(locale);
   const initialDetail = useMemo(
-    () => resolveInitialTemplate(messages, routeState, templateId),
+    () => resolveInitialTemplateDetail(messages, routeState, templateId),
     [messages, routeState, templateId],
   );
   const initialPreferences = persistence.getSnapshot();
@@ -103,6 +96,9 @@ export function useTemplateDetailWorkspace({
   const [hasLoadError, setHasLoadError] = useState(false);
   const [isLoading, setIsLoading] = useState(!initialDetail);
   const [isCreating, setIsCreating] = useState(false);
+  const [templateLocale, setTemplateLocale] = useState<DocumentLocale>(
+    () => initialDetail?.templateLocale ?? locale,
+  );
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
@@ -114,9 +110,11 @@ export function useTemplateDetailWorkspace({
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
-  const [defaultTemplateId, setDefaultTemplateId] = useState(
-    initialDetail?.data.defaultTemplateId ?? "minimal",
-  );
+  const [defaultTemplateIds, setDefaultTemplateIds] =
+    useState<DefaultTemplateIds>(
+      () =>
+        initialDetail?.data.defaultTemplateIds ?? initialDefaultTemplateIds,
+    );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.data.customTemplates ?? []);
@@ -131,8 +129,18 @@ export function useTemplateDetailWorkspace({
     () => templateCatalog.find((item) => item.id === templateId) ?? null,
     [templateCatalog, templateId],
   );
+  const templatePreviewMessages = useLocalizedMessages(templateLocale);
+  const templatePreviewResumes = useMemo(
+    () =>
+      templatePreviewMessages
+        ? createTemplatePreviewResumes(templatePreviewMessages)
+        : null,
+    [templatePreviewMessages],
+  );
   const templatePreviewResume = useDeferredValue(
-    useMemo(() => createTemplatePreviewResume(messages), [messages]),
+    template && templatePreviewResumes
+      ? getTemplatePreviewResume(templatePreviewResumes, template)
+      : null,
   );
 
   const adoptSavedTemplate = useCallback(
@@ -241,7 +249,7 @@ export function useTemplateDetailWorkspace({
           createDefaultAgentSettings();
 
         setTheme(nextTheme);
-        setDefaultTemplateId(routeData.defaultTemplateId);
+        setDefaultTemplateIds(routeData.defaultTemplateIds);
         setCustomTemplates(routeData.customTemplates);
         hydratePersistedTemplate(targetTemplate);
         persistence.hydrate({
@@ -390,9 +398,9 @@ export function useTemplateDetailWorkspace({
         navigate(getTemplatePath(result.template.id), {
           state: createTemplateDetailRouteHandoff(result.template.id, {
             customTemplates: nextCustomTemplates,
-            defaultTemplateId,
+            defaultTemplateIds,
             theme,
-          }),
+          }, templateLocale),
         });
       });
       toast.success(messages.templateCreated, { closeButton: true });
@@ -411,7 +419,7 @@ export function useTemplateDetailWorkspace({
   }, [
     beginNavigation,
     customTemplates,
-    defaultTemplateId,
+    defaultTemplateIds,
     isLoading,
     messages,
     navigate,
@@ -419,6 +427,7 @@ export function useTemplateDetailWorkspace({
     save,
     saveState,
     template,
+    templateLocale,
     theme,
   ]);
 
@@ -475,6 +484,7 @@ export function useTemplateDetailWorkspace({
 
   const setDefaultTemplate = useCallback(
     async (targetId: string) => {
+      const defaultTemplateId = defaultTemplateIds[templateLocale];
       if (
         targetId === defaultTemplateId ||
         setDefaultInFlightRef.current ||
@@ -486,8 +496,8 @@ export function useTemplateDetailWorkspace({
       setDefaultInFlightRef.current = true;
       setSettingDefaultTemplateId(targetId);
       try {
-        const result = await saveDefaultTemplateApi(targetId);
-        setDefaultTemplateId(result.defaultTemplateId);
+        const result = await saveDefaultTemplateApi(templateLocale, targetId);
+        setDefaultTemplateIds(result.defaultTemplateIds);
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
         console.error("Failed to update the default template.", error);
@@ -499,7 +509,7 @@ export function useTemplateDetailWorkspace({
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateId, messages, templateCatalog],
+    [defaultTemplateIds, messages, templateCatalog, templateLocale],
   );
 
   const leave = useTemplateDetailLeave({
@@ -551,7 +561,7 @@ export function useTemplateDetailWorkspace({
     changeTheme,
     changeView,
     createCustomTemplate,
-    defaultTemplateId,
+    defaultTemplateId: defaultTemplateIds[templateLocale],
     goBack,
     hasLoadError,
     hasLoaded,
@@ -569,7 +579,10 @@ export function useTemplateDetailWorkspace({
     saveState,
     setDefaultTemplate,
     settingDefaultTemplateId,
+    setTemplateLocale,
     template,
+    templateLocale,
+    templatePreviewMessages,
     templatePreviewResume,
     theme,
     updateTemplate,

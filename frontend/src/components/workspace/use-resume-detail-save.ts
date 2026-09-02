@@ -226,6 +226,7 @@ export function useResumeDetailSave({
           const saved = await saveResumeApi(
             stableResume.id,
             {
+              documentLocale: stableResume.documentLocale,
               jobBrief: stableResume.jobBrief,
               resume: stableResume.resume,
               template: stableResume.template,
@@ -373,6 +374,7 @@ export function useResumeDetailSave({
     const restored = await saveResumeApi(
       persistedResume.id,
       {
+        documentLocale: persistedResume.documentLocale,
         jobBrief: persistedResume.jobBrief,
         resume: persistedResume.resume,
         template: persistedResume.template,

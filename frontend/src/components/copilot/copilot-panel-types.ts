@@ -1,4 +1,4 @@
-import type { AppMessages, Locale } from '@/i18n'
+import type { AppMessages } from '@/i18n'
 import type {
   AgentChatAttachment,
   AgentDraftState,
@@ -8,7 +8,7 @@ import type {
   AgentSessionResponse,
   AgentTransactionState,
 } from '@/types/api'
-import type { ModelConfig, ResumeData } from '@/types/resume'
+import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 
 import type { AgentPanelMessage } from './copilot-message-model'
 
@@ -18,7 +18,7 @@ export interface CopilotPanelProps {
   isPanelCollapsed: boolean
   resumeId?: string
   t: AppMessages
-  locale: Locale
+  documentLocale: DocumentLocale
   resume: ResumeData
   modelConfigs: ModelConfig[]
   selectedModelId: string

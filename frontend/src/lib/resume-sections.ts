@@ -4,6 +4,7 @@ import type {
   EducationItem,
   ExperienceItem,
   ProjectItem,
+  PublicationItem,
   ResumeData,
   ResumeSection,
   SectionItemByKind,
@@ -45,6 +46,7 @@ export const SECTION_RENDER_FAMILY: Record<SectionKind, SectionLayout> = {
   education: 'timeline',
   experience: 'timeline',
   project: 'timeline',
+  publication: 'timeline',
   achievement: 'timeline',
   simple_list: 'list',
 }
@@ -77,6 +79,7 @@ export const SECTION_ITEM_FIELDS = {
     'description',
     'highlights',
   ],
+  publication: ['title', 'authors', 'venue', 'date', 'url', 'description'],
   achievement: ['name', 'issuer', 'date', 'url', 'description'],
   simple_list: ['content'],
 } as const satisfies Record<SectionKind, readonly string[]>
@@ -148,6 +151,8 @@ export function isSectionItemForKind<K extends SectionKind>(
         Array.isArray(value.highlights) &&
         value.highlights.every((entry) => typeof entry === 'string')
       )
+    case 'publication':
+      return hasStringFields(value, SECTION_ITEM_FIELDS.publication)
     case 'achievement':
       return hasStringFields(value, [
         'name',
@@ -282,6 +287,18 @@ function createProjectItem(): ProjectItem {
   }
 }
 
+function createPublicationItem(): PublicationItem {
+  return {
+    id: createId('item'),
+    title: '',
+    authors: '',
+    venue: '',
+    date: '',
+    url: '',
+    description: '',
+  }
+}
+
 function createAchievementItem(): AchievementItem {
   return {
     id: createId('item'),
@@ -311,6 +328,8 @@ export function createSectionItem<K extends SectionKind>(
       return createExperienceItem() as SectionItemByKind[K]
     case 'project':
       return createProjectItem() as SectionItemByKind[K]
+    case 'publication':
+      return createPublicationItem() as SectionItemByKind[K]
     case 'achievement':
       return createAchievementItem() as SectionItemByKind[K]
     case 'simple_list':
@@ -328,6 +347,8 @@ export function createResumeSection(kind: SectionKind): ResumeSection {
       return { id, kind, title: '', items: [createExperienceItem()] }
     case 'project':
       return { id, kind, title: '', items: [createProjectItem()] }
+    case 'publication':
+      return { id, kind, title: '', items: [createPublicationItem()] }
     case 'achievement':
       return { id, kind, title: '', items: [createAchievementItem()] }
     case 'simple_list':
@@ -355,6 +376,10 @@ export function hasSectionItemContent(
   item: ExperienceItem,
 ): boolean
 export function hasSectionItemContent(kind: 'project', item: ProjectItem): boolean
+export function hasSectionItemContent(
+  kind: 'publication',
+  item: PublicationItem,
+): boolean
 export function hasSectionItemContent(
   kind: 'achievement',
   item: AchievementItem,
@@ -404,6 +429,12 @@ export function hasSectionItemContent(
         ...value.highlights,
       ])
     }
+    case 'publication': {
+      const value = item as PublicationItem
+      return hasText(
+        SECTION_ITEM_FIELDS.publication.map((field) => value[field]),
+      )
+    }
     case 'achievement': {
       const value = item as AchievementItem
       return hasText([
@@ -427,6 +458,10 @@ export function hasSectionContent(section: ResumeSection) {
       return section.items.some((item) => hasSectionItemContent('experience', item))
     case 'project':
       return section.items.some((item) => hasSectionItemContent('project', item))
+    case 'publication':
+      return section.items.some((item) =>
+        hasSectionItemContent('publication', item),
+      )
     case 'achievement':
       return section.items.some((item) => hasSectionItemContent('achievement', item))
     case 'simple_list':
@@ -502,6 +537,23 @@ export function projectResumeSection(
             period: item.period,
             description: item.description,
             highlights: item.highlights,
+            url: item.url,
+          }),
+        ),
+      }
+    case 'publication':
+      return {
+        ...section,
+        layout: SECTION_RENDER_FAMILY.publication,
+        items: section.items.map((item) =>
+          createRenderableItem({
+            id: item.id,
+            title: item.title,
+            subtitle: item.authors,
+            meta: item.venue,
+            period: item.date,
+            description: item.description,
+            highlights: [],
             url: item.url,
           }),
         ),

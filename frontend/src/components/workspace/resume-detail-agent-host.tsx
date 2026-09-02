@@ -14,7 +14,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
-import type { AppMessages, Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 import "./resume-detail-agent-motion.css";
@@ -39,13 +39,11 @@ const CopilotPanel = lazy(() =>
 );
 
 function ResumeDetailAgentPanel({
-  locale,
   messages,
   model,
   panelStatus,
   onStatusChange,
 }: {
-  locale: Locale;
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
   panelStatus: AgentPanelStatus | null;
@@ -85,27 +83,29 @@ function ResumeDetailAgentPanel({
               inert={showStableLoader}
             >
               <Suspense fallback={null}>
-                <CopilotPanel
-                  key={state.resumeItem?.id ?? "resume"}
-                  isPanelCollapsed={state.agent.isPanelCollapsed}
-                  resumeId={state.resumeItem?.id ?? undefined}
-                  t={messages}
-                  locale={locale}
-                  resume={state.resume}
-                  modelConfigs={state.agent.modelConfigs}
-                  selectedModelId={state.agent.selectedModelId}
-                  onSelectedModelChange={commands.agent.changeSelectedModel}
-                  hasAgentDraft={Boolean(state.agent.draft)}
-                  agentDraftState={state.agent.draftState}
-                  onPreviewAgentEdits={commands.agent.previewEdits}
-                  onReconcileAgentDraft={commands.agent.reconcileDraft}
-                  onRollbackAgentDraft={commands.agent.rollbackDraft}
-                  onApplyAgentDraft={commands.agent.applyDraft}
-                  onDiscardAgentDraft={commands.agent.discardDraft}
-                  onOpenModelSettings={commands.agent.openModelSettings}
-                  onStatusChange={onStatusChange}
-                  onBeforeSend={commands.agent.flushUserSettings}
-                />
+                {state.resumeItem ? (
+                  <CopilotPanel
+                    key={state.resumeItem.id}
+                    documentLocale={state.resumeItem.documentLocale}
+                    isPanelCollapsed={state.agent.isPanelCollapsed}
+                    resumeId={state.resumeItem.id}
+                    t={messages}
+                    resume={state.resume}
+                    modelConfigs={state.agent.modelConfigs}
+                    selectedModelId={state.agent.selectedModelId}
+                    onSelectedModelChange={commands.agent.changeSelectedModel}
+                    hasAgentDraft={Boolean(state.agent.draft)}
+                    agentDraftState={state.agent.draftState}
+                    onPreviewAgentEdits={commands.agent.previewEdits}
+                    onReconcileAgentDraft={commands.agent.reconcileDraft}
+                    onRollbackAgentDraft={commands.agent.rollbackDraft}
+                    onApplyAgentDraft={commands.agent.applyDraft}
+                    onDiscardAgentDraft={commands.agent.discardDraft}
+                    onOpenModelSettings={commands.agent.openModelSettings}
+                    onStatusChange={onStatusChange}
+                    onBeforeSend={commands.agent.flushUserSettings}
+                  />
+                ) : null}
               </Suspense>
             </div>
           </div>
@@ -201,11 +201,9 @@ function ResumeDetailAgentSeamRail({
 }
 
 export function ResumeDetailAgentHost({
-  locale,
   messages,
   model,
 }: {
-  locale: Locale;
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
 }) {
@@ -249,7 +247,6 @@ export function ResumeDetailAgentHost({
       />
       {shouldMountAgent ? (
         <ResumeDetailAgentPanel
-          locale={locale}
           messages={messages}
           model={model}
           panelStatus={panelStatus}

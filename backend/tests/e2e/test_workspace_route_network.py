@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -202,7 +203,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
 
             create_request = urllib.request.Request(
                 f"{backend_url}/api/resumes",
-                data=b"{}",
+                data=b'{"documentLocale":"en"}',
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
@@ -341,7 +342,7 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 '[data-slot="sidebar-inset"] section [data-slot="tabs-trigger"]',
               );
               const modelsContent = visibleElement(
-                '[data-slot="sidebar-inset"] [data-slot="empty-title"]',
+                '[data-slot="sidebar-inset"] [data-slot="empty-description"]',
               );
               const settingsContent = visibleElement(
                 '[data-slot="sidebar-inset"] ' +
@@ -493,7 +494,10 @@ def _seed_pending_agent_draft(
     message_id: str,
     summary: str,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    create_response = page.request.post(
+        f"{frontend_url}/api/resumes",
+        data={"documentLocale": "zh"},
+    )
     assert create_response.ok
     resume_id = str(create_response.json()["data"]["resume"]["id"])
     detail = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()["data"]
@@ -547,7 +551,10 @@ def _seed_pending_agent_draft(
 
 
 def _seed_sourced_agent_response(page: Page, frontend_url: str) -> str:
-    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    create_response = page.request.post(
+        f"{frontend_url}/api/resumes",
+        data={"documentLocale": "zh"},
+    )
     assert create_response.ok
     resume_id = str(create_response.json()["data"]["resume"]["id"])
     session = page.request.get(
@@ -632,7 +639,10 @@ def _seed_long_agent_history(
     *,
     rounds: int = 12,
 ) -> str:
-    create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+    create_response = page.request.post(
+        f"{frontend_url}/api/resumes",
+        data={"documentLocale": "zh"},
+    )
     assert create_response.ok
     resume_id = str(create_response.json()["data"]["resume"]["id"])
     session = page.request.get(
@@ -2795,6 +2805,7 @@ def test_builtin_templates_render_optional_avatars_without_layout_regressions(
             create_response = page.request.post(
                 f"{frontend_url}/api/resumes",
                 data={
+                    "documentLocale": "zh",
                     "title": f"{template_id} optional avatar regression",
                     "template": template_id,
                 },
@@ -2817,6 +2828,7 @@ def test_builtin_templates_render_optional_avatars_without_layout_regressions(
 
             save_payload = {
                 "title": created["title"],
+                "documentLocale": created["documentLocale"],
                 "resume": {
                     **created["resume"],
                     "basic": {
@@ -3016,6 +3028,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
             data={
+                "documentLocale": "zh",
                 "title": "Empty optional avatar layout regression",
                 "template": template_id,
             },
@@ -3030,7 +3043,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
         assert right_position_layout
 
         page.goto(
-            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
+            f"{frontend_url}/pdf-export?resumeId={resume_id}&documentLocale=zh",
             wait_until="networkidle",
         )
         page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
@@ -3118,6 +3131,7 @@ def test_format_reset_restores_current_template_defaults_and_persists(
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
             data={
+                "documentLocale": "zh",
                 "title": "Template defaults reset regression",
                 "template": "classic",
                 "typography": {"fontFamily": "inter", "fontSize": 20},
@@ -3282,7 +3296,10 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "王小明-zh-minimal（1）-frontend-fullstack-resume-2026"},
+            data={
+                "documentLocale": "zh",
+                "title": "王小明-zh-minimal（1）-frontend-fullstack-resume-2026",
+            },
         )
         assert create_response.ok
         create_payload = create_response.json()
@@ -3293,8 +3310,9 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
         page.evaluate("document.fonts.ready")
         page.get_by_role(
             "button",
-            name="基本信息: 展开或收起模块",
-            exact=True,
+            name=re.compile(
+                r"^(Basic Info: Toggle section|基本信息: 展开或收起模块)$"
+            ),
         ).click()
         page.locator('input[name="name"]').fill("Duplicate Regression Source")
 
@@ -3304,7 +3322,10 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
                 and urlparse(response.url).path == f"/api/resumes/{resume_id}"
             )
         ) as save_response_info:
-            page.get_by_role("button", name="保存状态", exact=True).click()
+            page.get_by_role(
+                "button",
+                name=re.compile(r"^(Save Status|保存状态)$"),
+            ).click()
         save_response = save_response_info.value
         assert save_response.ok
         assert save_response.json()["code"] == 0
@@ -3324,24 +3345,28 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
                 and urlparse(response.url).path == f"/api/resumes/{resume_id}/duplicate"
             )
         ) as duplicate_response_info:
-            page.get_by_role("button", name="创建副本", exact=True).click()
+            page.get_by_role(
+                "button",
+                name=re.compile(r"^(Duplicate|创建副本)$"),
+            ).click()
 
         duplicate_response = duplicate_response_info.value
         assert duplicate_response.ok
+        assert urlparse(duplicate_response.request.url).query == ""
         duplicate_payload = duplicate_response.json()
         assert duplicate_payload["code"] == 0
         duplicate_id = duplicate_payload["data"]["resume"]["id"]
         duplicate_title = duplicate_payload["data"]["resume"]["title"]
-        page.get_by_text("副本已创建", exact=True).wait_for(state="visible")
+        copy_created_label = re.compile(r"Copy created|副本已创建")
+        page.get_by_text(copy_created_label, exact=True).wait_for(state="visible")
         open_copy_action = page.get_by_role(
             "button",
-            name="查看副本",
-            exact=True,
+            name=re.compile(r"^(View copy|查看副本)$"),
         )
         open_copy_action.wait_for(state="visible")
-        success_toast = page.locator('[data-sonner-toast][data-type="success"]').filter(
-            has_text="副本已创建"
-        )
+        success_toast = page.locator(
+            '[data-sonner-toast][data-type="success"]'
+        ).filter(has_text=copy_created_label)
         toast_description = success_toast.locator("[data-description]")
         assert toast_description.inner_text() == duplicate_title
         assert (
@@ -3489,7 +3514,7 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={},
+            data={"documentLocale": "zh"},
         )
         assert create_response.ok
         create_payload = create_response.json()
@@ -3766,14 +3791,30 @@ def test_created_resume_is_not_published_before_detail_is_ready(
             """
         )
 
-        create_button = page.locator("button:has(.lucide-square-plus)").first
+        create_button = page.get_by_role(
+            "button",
+            name=re.compile(r"^(New|新建)$"),
+        ).first
+        create_button.click()
+        create_dialog = page.get_by_role("dialog")
+        create_dialog.get_by_role(
+            "combobox",
+            name=re.compile(r"^(Resume language|简历语言)$"),
+        ).click()
+        page.get_by_role("option", name="EN", exact=True).click()
         with page.expect_response(
             lambda response: (
                 response.request.method == "POST"
                 and urlparse(response.url).path == "/api/resumes"
             )
         ) as create_response_info:
-            create_button.click()
+            create_dialog.get_by_role(
+                "button",
+                name=re.compile(r"^(Create Resume|创建简历)$"),
+            ).click()
+        assert create_response_info.value.request.post_data_json == {
+            "documentLocale": "en"
+        }
         created_resume_id = str(
             create_response_info.value.json()["data"]["resume"]["id"]
         )
@@ -3799,6 +3840,274 @@ def test_created_resume_is_not_published_before_detail_is_ready(
                 page.request.delete(
                     f"{frontend_url}/api/resumes/{created_resume_id}"
                 )
+        context.close()
+
+
+def test_template_language_select_keeps_default_templates_independent(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    created_resume_ids: list[str] = []
+
+    def delay_default_template_response(route: Route) -> None:
+        response = route.fetch()
+        time.sleep(0.25)
+        route.fulfill(response=response)
+
+    def select_template_language(document_locale: str) -> None:
+        labels = {
+            "zh": re.compile(r"^(Chinese template|中文模板)$"),
+            "en": re.compile(r"^(English template|英文模板)$"),
+        }
+        page.get_by_role(
+            "combobox",
+            name=re.compile(r"^(Resume language|简历语言)$"),
+        ).click()
+        page.get_by_role("option", name=labels[document_locale]).click()
+
+    def set_default(template_id: str, document_locale: str) -> None:
+        card = page.locator(f'[data-gallery-item-id="{template_id}"]')
+        button = card.get_by_role(
+            "button",
+            name=re.compile(r"^(Set as Default|设为默认模板)$"),
+        )
+        button.evaluate(
+            """
+            button => {
+              const frames = [];
+              window.__galleryDefaultButtonFrames = frames;
+              const startedAt = performance.now();
+              const sample = () => {
+                frames.push({
+                  isBusy: button.getAttribute('aria-busy') === 'true',
+                  hasSpinner: Boolean(button.querySelector('[role="status"]')),
+                });
+                if (performance.now() - startedAt < 500) {
+                  requestAnimationFrame(sample);
+                }
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path == "/api/workspace/default-template"
+            )
+        ) as response_info:
+            button.click()
+        page.wait_for_timeout(300)
+        frames = page.evaluate("window.__galleryDefaultButtonFrames")
+        assert any(frame["isBusy"] for frame in frames)
+        assert not any(frame["hasSpinner"] for frame in frames)
+        assert response_info.value.request.post_data_json == {
+            "documentLocale": document_locale,
+            "templateId": template_id,
+        }
+        expect(
+            card.get_by_text(
+                re.compile(r"^(Default Template|默认模板)$"),
+                exact=True,
+            )
+        ).to_be_visible()
+
+    try:
+        page.route(
+            "**/api/workspace/default-template",
+            delay_default_template_response,
+        )
+        page.goto(f"{frontend_url}/templates", wait_until="networkidle")
+
+        select_template_language("zh")
+        set_default("modern", "zh")
+        select_template_language("en")
+        set_default("academic", "en")
+
+        route_response = page.request.get(
+            f"{frontend_url}/api/workspace/pages/templates"
+        )
+        assert route_response.ok
+        assert route_response.json()["data"]["defaultTemplateIds"] == {
+            "zh": "modern",
+            "en": "academic",
+        }
+
+        for document_locale, template_id in (
+            ("zh", "modern"),
+            ("en", "academic"),
+        ):
+            create_response = page.request.post(
+                f"{frontend_url}/api/resumes",
+                data={"documentLocale": document_locale},
+            )
+            assert create_response.ok
+            resume = create_response.json()["data"]["resume"]
+            created_resume_ids.append(str(resume["id"]))
+            assert resume["documentLocale"] == document_locale
+            assert resume["template"] == template_id
+    finally:
+        for document_locale in ("zh", "en"):
+            page.request.put(
+                f"{frontend_url}/api/workspace/default-template",
+                data={
+                    "documentLocale": document_locale,
+                    "templateId": "minimal",
+                },
+            )
+        for resume_id in created_resume_ids:
+            trash_response = page.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                page.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_template_selection_keeps_default_actions_visible_but_disabled(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    default_template_requests: list[str] = []
+
+    def track_default_template_requests(request: Request) -> None:
+        if (
+            request.method == "PUT"
+            and urlparse(request.url).path == "/api/workspace/default-template"
+        ):
+            default_template_requests.append(request.url)
+
+    page.on("request", track_default_template_requests)
+
+    try:
+        page.goto(f"{frontend_url}/templates", wait_until="networkidle")
+        default_card = page.locator('[data-gallery-item-id="minimal"]')
+        action = page.locator('[data-gallery-item-id="modern"]').get_by_role(
+            "button",
+            name="设为默认模板",
+            exact=True,
+        )
+        default_badge = default_card.get_by_text("默认模板", exact=True)
+        expect(action).to_be_visible()
+        expect(action).to_be_enabled()
+        expect(default_badge).to_be_visible()
+        initial_box = action.bounding_box()
+        assert initial_box is not None
+
+        page.get_by_role("button", name="选择", exact=True).click()
+        expect(
+            page.get_by_role("button", name="取消选择", exact=True)
+        ).to_be_visible()
+        expect(action).to_be_visible()
+        expect(action).to_be_disabled()
+        expect(default_badge).to_be_visible()
+        selecting_box = action.bounding_box()
+        assert selecting_box is not None
+        for key in ("x", "y", "width", "height"):
+            assert abs(initial_box[key] - selecting_box[key]) <= 1
+
+        action.evaluate("button => button.click()")
+        page.wait_for_timeout(100)
+        assert default_template_requests == []
+
+        page.get_by_role("button", name="取消选择", exact=True).click()
+        expect(action).to_be_enabled()
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_template_gallery_default_actions_do_not_animate_during_theme_changes(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        color_scheme="light",
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/templates", wait_until="networkidle")
+        default_action = page.get_by_role(
+            "button",
+            name="设为默认模板",
+            exact=True,
+        ).first
+        theme_toggle = page.get_by_role(
+            "button",
+            name="切换日间 / 夜间模式",
+            exact=True,
+        )
+        expect(default_action).to_be_visible()
+        expect(theme_toggle).to_be_visible()
+
+        result = page.evaluate(
+            """
+            async ([button, toggle]) => {
+              const initialDark = document.documentElement.classList.contains('dark');
+              const frames = [];
+              const originalButton = button;
+              const startedAt = performance.now();
+              toggle.click();
+              await new Promise(resolve => {
+                const sample = now => {
+                  const rect = button.getBoundingClientRect();
+                  frames.push({
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    connected: button.isConnected,
+                    transitions: button.getAnimations().flatMap(animation =>
+                      animation instanceof CSSTransition
+                        ? [animation.transitionProperty]
+                        : []
+                    ),
+                  });
+                  if (now - startedAt >= 320) {
+                    resolve();
+                    return;
+                  }
+                  requestAnimationFrame(sample);
+                };
+                requestAnimationFrame(sample);
+              });
+              return {
+                initialDark,
+                finalDark: document.documentElement.classList.contains('dark'),
+                sameNode: originalButton === button,
+                frames,
+              };
+            }
+            """,
+            [default_action.element_handle(), theme_toggle.element_handle()],
+        )
+
+        assert result["finalDark"] is not result["initialDark"], result
+        assert result["sameNode"], result
+        assert len(result["frames"]) >= 5, result
+        assert all(frame["connected"] for frame in result["frames"]), result
+        assert not any(
+            frame["transitions"] for frame in result["frames"]
+        ), result
+        for key in ("x", "y", "width", "height"):
+            values = [frame[key] for frame in result["frames"]]
+            assert max(values) - min(values) <= 1, (key, result)
+    finally:
         context.close()
 
 
@@ -3880,7 +4189,7 @@ def test_lateral_navigation_reports_pending_and_preserves_workspace_shell(
         assert route_stage.evaluate(
             "element => getComputedStyle(element).animationDuration"
         ) == "0.18s"
-        page.locator('[data-slot="empty-title"]').wait_for(state="visible")
+        page.locator('[data-slot="empty-description"]').wait_for(state="visible")
 
         assert page.evaluate(
             """
@@ -3903,10 +4212,15 @@ def test_models_route_uses_table_skeleton_and_preserves_dialog_exit(
         script="""
         (() => {
           const originalFetch = window.fetch.bind(window);
+          let hasHeldInitialModelsRoute = false;
           window.__releaseModelsInitialRoute = null;
           window.fetch = async (input, init) => {
             const request = new Request(input, init);
-            if (new URL(request.url).pathname === "/api/workspace/pages/models") {
+            if (
+              !hasHeldInitialModelsRoute &&
+              new URL(request.url).pathname === "/api/workspace/pages/models"
+            ) {
+              hasHeldInitialModelsRoute = true;
               await new Promise((resolve) => {
                 window.__releaseModelsInitialRoute = resolve;
               });
@@ -3941,7 +4255,7 @@ def test_models_route_uses_table_skeleton_and_preserves_dialog_exit(
         assert abs(skeleton_surface_height - 476) <= 1
 
         page.evaluate("window.__releaseModelsInitialRoute()")
-        page.locator('[data-slot="empty-title"]').wait_for(state="visible")
+        page.locator('[data-slot="empty-description"]').wait_for(state="visible")
         empty_content = page.locator('[data-slot="model-config-content"]')
         empty_content_height = empty_content.evaluate(
             "element => element.getBoundingClientRect().height"
@@ -4444,7 +4758,7 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
     try:
         page.goto(f"{frontend_url}/models", wait_until="networkidle")
         bulk_actions = page.locator('[data-slot="model-config-bulk-actions"]')
-        bulk_delete = bulk_actions.get_by_role("button")
+        bulk_delete = bulk_actions.locator("button")
         new_model = page.get_by_role("button", name="新建模型", exact=True)
         confirm_dialog = page.locator('[data-slot="alert-dialog-content"]')
         select_all = page.locator('[data-slot="table-header"]').get_by_role(
@@ -4461,14 +4775,121 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
             )
         ).get_by_role("checkbox")
 
+        def record_selection_motion(selection: Locator) -> dict[str, Any]:
+            return page.evaluate(
+                """
+                async ([checkbox, bulkAction, newModel]) => {
+                  const button = bulkAction.querySelector('button');
+                  const frames = [];
+                  const readFrame = () => {
+                    const actionStyle = getComputedStyle(bulkAction);
+                    const buttonStyle = getComputedStyle(button);
+                    const actionRect = bulkAction.getBoundingClientRect();
+                    const newModelRect = newModel.getBoundingClientRect();
+                    return {
+                      opacity: Number(actionStyle.opacity),
+                      translateX:
+                        actionStyle.transform === 'none'
+                          ? 0
+                          : new DOMMatrixReadOnly(actionStyle.transform).m41,
+                      actionWidth: actionRect.width,
+                      actionHeight: actionRect.height,
+                      newModelX: newModelRect.x,
+                      newModelY: newModelRect.y,
+                      newModelWidth: newModelRect.width,
+                      newModelHeight: newModelRect.height,
+                      buttonOpacity: Number(buttonStyle.opacity),
+                      buttonDisabled: button.disabled,
+                      buttonAnimationCount: button.getAnimations().length,
+                    };
+                  };
+
+                  frames.push(readFrame());
+                  checkbox.click();
+                  const startedAt = performance.now();
+                  await new Promise(resolve => {
+                    const sample = now => {
+                      frames.push(readFrame());
+                      const isRunning = bulkAction.getAnimations().some(
+                        animation => animation.playState === 'running'
+                      );
+                      if (
+                        (now - startedAt >= 50 && !isRunning) ||
+                        now - startedAt >= 650
+                      ) {
+                        resolve();
+                        return;
+                      }
+                      requestAnimationFrame(sample);
+                    };
+                    requestAnimationFrame(sample);
+                  });
+                  frames.push(readFrame());
+
+                  return {
+                    frames,
+                    actionNodeStable:
+                      document.querySelector(
+                        '[data-slot="model-config-bulk-actions"]'
+                      ) === bulkAction,
+                    actionConnected: bulkAction.isConnected,
+                    newModelConnected: newModel.isConnected,
+                  };
+                }
+                """,
+                [
+                    selection.element_handle(),
+                    bulk_actions.element_handle(),
+                    new_model.element_handle(),
+                ],
+            )
+
+        def assert_selection_motion(
+            motion: dict[str, Any], final_opacity: float
+        ) -> None:
+            frames = motion["frames"]
+            opacities = [frame["opacity"] for frame in frames]
+            assert motion["actionNodeStable"], motion
+            assert motion["actionConnected"], motion
+            assert motion["newModelConnected"], motion
+            assert any(0.02 < opacity < 0.98 for opacity in opacities), motion
+            assert opacities[-1] == pytest.approx(final_opacity, abs=0.02), motion
+            translations = [frame["translateX"] for frame in frames]
+            assert max(translations) - min(translations) >= 3.5, motion
+            assert any(
+                0.25 < translation < 3.75 for translation in translations
+            ), motion
+            for key in (
+                "actionWidth",
+                "actionHeight",
+                "newModelX",
+                "newModelY",
+                "newModelWidth",
+                "newModelHeight",
+            ):
+                values = [frame[key] for frame in frames]
+                assert max(values) - min(values) <= 1, (key, motion)
+            assert all(
+                frame["buttonOpacity"] == pytest.approx(1, abs=0.01)
+                for frame in frames
+            ), motion
+            assert all(not frame["buttonDisabled"] for frame in frames), motion
+            assert all(
+                frame["buttonAnimationCount"] == 0 for frame in frames
+            ), motion
+
         expect(bulk_actions).to_have_attribute("data-state", "closed")
-        first_selection.check()
+        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
+        expect(bulk_delete).to_have_attribute("tabindex", "-1")
+        enter_motion = record_selection_motion(first_selection)
+        assert_selection_motion(enter_motion, 1)
+        expect(first_selection).to_be_checked()
         expect(select_all).to_have_attribute("data-state", "indeterminate")
         expect(bulk_actions).to_have_attribute("data-state", "open")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "false")
         expect(bulk_delete).to_be_visible()
         expect(bulk_delete).to_have_attribute("data-variant", "destructive")
         expect(bulk_delete).to_have_attribute("data-size", "default")
-        page.wait_for_timeout(180)
         header_action_geometry = page.evaluate(
             """
             ([bulkDelete, newModel]) => {
@@ -4488,6 +4909,65 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
         assert abs(header_action_geometry["centerDelta"]) <= 1, header_action_geometry
         assert 0 <= header_action_geometry["gap"] <= 16, header_action_geometry
         assert abs(header_action_geometry["heightDelta"]) <= 1, header_action_geometry
+
+        exit_motion = record_selection_motion(first_selection)
+        assert_selection_motion(exit_motion, 0)
+        expect(first_selection).not_to_be_checked()
+        expect(bulk_actions).to_have_attribute("data-state", "closed")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
+        expect(bulk_delete).to_have_attribute("tabindex", "-1")
+
+        rapid_reversal = page.evaluate(
+            """
+            async ([checkbox, bulkAction]) => {
+              const originalAction = bulkAction;
+              checkbox.click();
+              await new Promise(requestAnimationFrame);
+              checkbox.click();
+              await new Promise(requestAnimationFrame);
+              checkbox.click();
+              const startedAt = performance.now();
+              await new Promise(resolve => {
+                const waitForRest = now => {
+                  const isRunning = bulkAction.getAnimations().some(
+                    animation => animation.playState === 'running'
+                  );
+                  if (
+                    (now - startedAt >= 50 && !isRunning) ||
+                    now - startedAt >= 650
+                  ) {
+                    resolve();
+                    return;
+                  }
+                  requestAnimationFrame(waitForRest);
+                };
+                requestAnimationFrame(waitForRest);
+              });
+              return {
+                sameNode:
+                  document.querySelector(
+                    '[data-slot="model-config-bulk-actions"]'
+                  ) === originalAction,
+                state: bulkAction.dataset.state,
+                opacity: Number(getComputedStyle(bulkAction).opacity),
+                runningAnimations: bulkAction.getAnimations().filter(
+                  animation => animation.playState === 'running'
+                ).length,
+              };
+            }
+            """,
+            [
+                first_selection.element_handle(),
+                bulk_actions.element_handle(),
+            ],
+        )
+        assert rapid_reversal == {
+            "sameNode": True,
+            "state": "open",
+            "opacity": 1,
+            "runningAnimations": 0,
+        }
+        expect(first_selection).to_be_checked()
         bulk_delete.click()
         expect(confirm_dialog).to_be_visible()
         expect(
@@ -4513,6 +4993,7 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
         expect(second_selection).not_to_be_checked()
         expect(bulk_actions).to_have_attribute("data-state", "closed")
 
+        page.emulate_media(reduced_motion="reduce")
         select_all.check()
         expect(
             page.locator(
@@ -4521,8 +5002,37 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
             )
         ).to_have_count(10)
         expect(bulk_actions).to_have_attribute("data-state", "open")
+        reduced_motion_open = bulk_actions.evaluate(
+            """
+            action => ({
+              opacity: Number(getComputedStyle(action).opacity),
+              transitionProperty: getComputedStyle(action).transitionProperty,
+              animationCount: action.getAnimations().length,
+            })
+            """
+        )
+        assert reduced_motion_open == {
+            "opacity": 1,
+            "transitionProperty": "none",
+            "animationCount": 0,
+        }
         select_all.uncheck()
         expect(bulk_actions).to_have_attribute("data-state", "closed")
+        reduced_motion_closed = bulk_actions.evaluate(
+            """
+            action => ({
+              opacity: Number(getComputedStyle(action).opacity),
+              transitionProperty: getComputedStyle(action).transitionProperty,
+              animationCount: action.getAnimations().length,
+            })
+            """
+        )
+        assert reduced_motion_closed == {
+            "opacity": 0,
+            "transitionProperty": "none",
+            "animationCount": 0,
+        }
+        page.emulate_media(reduced_motion="no-preference")
 
         first_selection.check()
         second_selection.check()
@@ -5440,7 +5950,10 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Prepared checkpoint regression"},
+            data={
+                "documentLocale": "zh",
+                "title": "Prepared checkpoint regression",
+            },
         )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
@@ -5602,7 +6115,10 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Version switch stability regression"},
+            data={
+                "documentLocale": "zh",
+                "title": "Version switch stability regression",
+            },
         )
         assert create_response.ok
         created = create_response.json()["data"]["resume"]
@@ -5614,6 +6130,7 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
         checkpoint_response = page.request.put(
             f"{frontend_url}/api/resumes/{resume_id}?saveMode=checkpoint",
             data={
+                "documentLocale": created["documentLocale"],
                 "jobBrief": created["jobBrief"],
                 "resume": second_resume,
                 "template": created["template"],
@@ -5786,6 +6303,7 @@ def test_resume_pagination_does_not_split_text_lines(
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
             data={
+                "documentLocale": "zh",
                 "title": f"{template_id} pagination line break regression",
                 "template": template_id,
             },
@@ -5804,6 +6322,7 @@ def test_resume_pagination_does_not_split_text_lines(
             f"{frontend_url}/api/resumes/{resume_id}",
             data={
                 "title": created["title"],
+                "documentLocale": created["documentLocale"],
                 "resume": {
                     **created["resume"],
                     "basic": {
@@ -6003,7 +6522,7 @@ def test_resume_pagination_does_not_split_text_lines(
             assert transition["violations"] == [], transition
 
         page.goto(
-            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
+            f"{frontend_url}/pdf-export?resumeId={resume_id}&documentLocale=zh",
             wait_until="networkidle",
         )
         page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
@@ -6112,7 +6631,11 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
     preparation_requests = 0
 
@@ -6149,13 +6672,11 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
             () => {{
               window.__templatePreparationDraftEdited = false;
               const deadline = performance.now() + 5_000;
-              let openedTemplateInfo = false;
+              let openedTemplateMetadata = false;
               const editWhenReady = () => {{
-                const labels = [...document.querySelectorAll("label")];
-                const label = labels.find((candidate) =>
-                  candidate.textContent?.includes("模板名称"),
+                const input = document.querySelector(
+                  'input[name="templateName"]',
                 );
-                const input = label?.querySelector("input");
                 const valueSetter = Object.getOwnPropertyDescriptor(
                   HTMLInputElement.prototype,
                   "value",
@@ -6167,22 +6688,22 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
                 ) {{
                   valueSetter.call(input, "Local Edit After Preparation");
                   input.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                  window.__templatePreparationDraftEdited = true;
+                  const form = input.closest("form");
+                  if (form instanceof HTMLFormElement) {{
+                    form.requestSubmit();
+                    window.__templatePreparationDraftEdited = true;
+                  }}
                   return;
                 }}
                 if (
                   window.location.pathname === "/template/{template_id}" &&
-                  !openedTemplateInfo
+                  !openedTemplateMetadata
                 ) {{
-                  const trigger = [
-                    ...document.querySelectorAll(
-                      '[data-slot="collapsible-trigger"]',
-                    ),
-                  ].find((candidate) =>
-                    candidate.textContent?.includes("模板信息"),
+                  const trigger = document.querySelector(
+                    '[data-template-metadata-trigger="true"]',
                   );
                   if (trigger instanceof HTMLElement) {{
-                    openedTemplateInfo = true;
+                    openedTemplateMetadata = true;
                     trigger.click();
                   }}
                 }}
@@ -6200,11 +6721,14 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
         deadline = time.monotonic() + 5
         while preparation_requests < 1 and time.monotonic() < deadline:
             page.wait_for_timeout(50)
-        page.wait_for_timeout(100)
+        page.wait_for_function(
+            "window.__templatePreparationDraftEdited === true",
+            timeout=5_000,
+        )
 
         assert preparation_requests == 1
         assert page.evaluate("window.__templatePreparationDraftEdited") is True
-        assert page.get_by_label("模板名称", exact=True).input_value() == (
+        assert page.locator('[data-slot="template-editor-title"]').inner_text() == (
             "Local Edit After Preparation"
         )
     finally:
@@ -6369,7 +6893,7 @@ def test_pdf_export_route_request_allowlist(
     ]
     actual_paths = _observe_api_requests(
         browser,
-        f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=en",
+        f"{frontend_url}/pdf-export?resumeId={resume_id}&documentLocale=en",
     )
 
     assert Counter(actual_paths) == Counter(expected_paths)
@@ -6589,11 +7113,30 @@ def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
         page.locator('button[aria-label$=": 删除板块"]').first.click()
 
         dialog = page.locator('[data-slot="alert-dialog-content"]')
+        overlay = page.locator('[data-slot="alert-dialog-overlay"]')
         dialog.wait_for(state="visible")
         expect(dialog).to_have_attribute("data-state", "open")
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-content-enter"
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationDuration"
+        ) == "0.21s"
+        assert overlay.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-overlay-enter"
 
         page.get_by_role("button", name="取消", exact=True).click()
         expect(dialog).to_have_attribute("data-state", "closed")
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-content-exit"
+        assert dialog.evaluate(
+            "element => getComputedStyle(element).animationDuration"
+        ) == "0.15s"
+        assert overlay.evaluate(
+            "element => getComputedStyle(element).animationName"
+        ) == "dialog-overlay-exit"
         dialog.wait_for(state="detached")
     finally:
         context.close()
@@ -6743,7 +7286,10 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": f"Rich editor expand layout regression {item_count}"},
+            data={
+                "documentLocale": "zh",
+                "title": f"Rich editor expand layout regression {item_count}",
+            },
         )
         assert create_response.ok
         created = create_response.json()["data"]["resume"]
@@ -6752,6 +7298,7 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
             f"{frontend_url}/api/resumes/{resume_id}",
             data={
                 "title": created["title"],
+                "documentLocale": created["documentLocale"],
                 "resume": {
                     **created["resume"],
                     "sections": [
@@ -6954,7 +7501,10 @@ def test_resume_gallery_hides_card_delete_actions_for_multi_selection(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Multi-selection delete regression"},
+            data={
+                "documentLocale": "zh",
+                "title": "Multi-selection delete regression",
+            },
         )
         assert create_response.ok
         create_payload = create_response.json()
@@ -7081,7 +7631,10 @@ def test_save_status_announces_unsaved_saving_and_saved_states(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Save status announcement regression"},
+            data={
+                "documentLocale": "zh",
+                "title": "Save status announcement regression",
+            },
         )
         assert create_response.ok
         resume_id = str(create_response.json()["data"]["resume"]["id"])
@@ -7222,7 +7775,10 @@ def test_gallery_sparse_results_start_at_centered_grid_first_column(
         for index in range(seed_resume_count):
             create_response = context.request.post(
                 f"{frontend_url}/api/resumes",
-                data={"title": f"Gallery alignment {index + 1}"},
+                data={
+                    "documentLocale": "zh",
+                    "title": f"Gallery alignment {index + 1}",
+                },
             )
             assert create_response.ok
             create_payload = create_response.json()
@@ -7273,6 +7829,231 @@ def test_gallery_sparse_results_start_at_centered_grid_first_column(
             )
             if trash_response.ok:
                 context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_sidebar_reflows_gallery_cards_with_position_motion(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 1100},
+    )
+    page = context.new_page()
+    seeded_resume_ids: list[str] = []
+
+    def gallery_layout() -> dict[str, Any]:
+        return page.locator('[data-slot="gallery-grid"]').evaluate(
+            """
+            grid => {
+              const items = [...grid.querySelectorAll(
+                ':scope > [data-gallery-item-id]'
+              )];
+              const rects = items.map(item => item.getBoundingClientRect());
+              return {
+                columns: getComputedStyle(grid).gridTemplateColumns
+                  .split(' ')
+                  .filter(Boolean).length,
+                ids: items.map(item => item.dataset.galleryItemId),
+                rowTops: [...new Set(rects.map(rect => Math.round(rect.top)))],
+                activeReflows: document.getAnimations().filter(
+                  animation => animation.id === 'gallery-grid-reflow'
+                ).length,
+              };
+            }
+            """
+        )
+
+    def sidebar_layout() -> dict[str, float]:
+        return page.locator('[data-slot="sidebar-container"]').evaluate(
+            """
+            container => {
+              const header = container.querySelector(
+                '[data-slot="sidebar-header"]'
+              );
+              const logo = header?.querySelector('img')?.parentElement;
+              const brand = header?.querySelector('p')?.parentElement;
+              const containerRect = container.getBoundingClientRect();
+              const logoRect = logo?.getBoundingClientRect();
+              return {
+                width: containerRect.width,
+                headerHeight: header?.getBoundingClientRect().height ?? 0,
+                logoSize: logoRect?.width ?? 0,
+                logoCenterOffset: logoRect
+                  ? logoRect.left + logoRect.width / 2
+                    - (containerRect.left + containerRect.width / 2)
+                  : 0,
+                brandOpacity: brand
+                  ? Number(getComputedStyle(brand).opacity)
+                  : 0,
+              };
+            }
+            """
+        )
+
+    try:
+        for index in range(6):
+            create_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={
+                    "documentLocale": "zh",
+                    "title": f"Sidebar motion {index + 1}",
+                },
+            )
+            assert create_response.ok
+            seeded_resume_ids.append(create_response.json()["data"]["resume"]["id"])
+
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        page.locator('input[name="resume-search"]').fill("Sidebar motion")
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '[data-slot="gallery-grid"] > [data-gallery-item-id]'
+            ).length === 6
+            """
+        )
+
+        trigger = page.locator('[data-slot="sidebar-trigger"]')
+        expanded = gallery_layout()
+        expanded_sidebar = sidebar_layout()
+        assert expanded["columns"] == 5, expanded
+        assert len(expanded["rowTops"]) == 2, expanded
+        assert expanded_sidebar["width"] == pytest.approx(256, abs=1)
+        assert expanded_sidebar["headerHeight"] == pytest.approx(80, abs=1)
+        assert expanded_sidebar["logoSize"] == pytest.approx(40, abs=1)
+        assert expanded_sidebar["brandOpacity"] == pytest.approx(1, abs=0.01)
+
+        page.locator("[data-gallery-item-id]").nth(5).evaluate(
+            "item => window.__galleryMotionCard = item"
+        )
+        trigger.click()
+        page.wait_for_timeout(60)
+        moving_sidebar = sidebar_layout()
+        assert 48 < moving_sidebar["width"] < 256, moving_sidebar
+        page.wait_for_function(
+            """
+            () => document.getAnimations().some(
+              animation => animation.id === 'gallery-grid-reflow'
+            )
+            """
+        )
+        assert page.evaluate(
+            """
+            () => document.querySelectorAll('[data-gallery-item-id]')[5]
+              === window.__galleryMotionCard
+            """
+        )
+
+        page.wait_for_timeout(320)
+        collapsed = gallery_layout()
+        collapsed_sidebar = sidebar_layout()
+        assert collapsed["columns"] == 6, collapsed
+        assert len(collapsed["rowTops"]) == 1, collapsed
+        assert collapsed["activeReflows"] == 0, collapsed
+        assert collapsed_sidebar["width"] == pytest.approx(48, abs=1)
+        assert collapsed_sidebar["headerHeight"] == pytest.approx(64, abs=1)
+        assert collapsed_sidebar["logoSize"] == pytest.approx(32, abs=1)
+        assert collapsed_sidebar["logoCenterOffset"] == pytest.approx(0, abs=1)
+        assert collapsed_sidebar["brandOpacity"] == pytest.approx(0, abs=0.01)
+
+        trigger.click()
+        page.wait_for_function(
+            """
+            () => document.getAnimations().some(
+              animation => animation.id === 'gallery-grid-reflow'
+            )
+            """
+        )
+        trigger.click()
+        page.wait_for_timeout(400)
+        reversed_layout = gallery_layout()
+        assert reversed_layout["columns"] == 6, reversed_layout
+        assert reversed_layout["activeReflows"] == 0, reversed_layout
+
+        page.emulate_media(reduced_motion="reduce")
+        trigger.click()
+        page.wait_for_timeout(50)
+        reduced_motion_layout = gallery_layout()
+        reduced_motion_sidebar = sidebar_layout()
+        assert reduced_motion_layout["columns"] == 5, reduced_motion_layout
+        assert reduced_motion_layout["activeReflows"] == 0, reduced_motion_layout
+        assert reduced_motion_sidebar["width"] == pytest.approx(256, abs=1)
+    finally:
+        for resume_id in seeded_resume_ids:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_template_gallery_reflow_finishes_with_sidebar_motion(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 1100},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/templates", wait_until="networkidle")
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '[data-slot="gallery-grid"] > [data-gallery-item-id]'
+            ).length === 6
+            """
+        )
+
+        motion_state = page.locator('[data-slot="sidebar-trigger"]').evaluate(
+            """
+            async trigger => {
+              const sidebarGap = document.querySelector(
+                '[data-slot="sidebar-gap"]'
+              );
+              let sawSidebarMotion = false;
+
+              trigger.click();
+              for (let index = 0; index < 60; index += 1) {
+                await new Promise(requestAnimationFrame);
+                const hasSidebarMotion = sidebarGap
+                  .getAnimations()
+                  .some(animation => animation.transitionProperty === 'width');
+                sawSidebarMotion ||= hasSidebarMotion;
+
+                if (sawSidebarMotion && !hasSidebarMotion) {
+                  return {
+                    sidebarFinished: true,
+                    activeReflows: document.getAnimations().filter(
+                      animation => animation.id === 'gallery-grid-reflow'
+                    ).length,
+                  };
+                }
+              }
+
+              return {
+                sidebarFinished: false,
+                activeReflows: document.getAnimations().filter(
+                  animation => animation.id === 'gallery-grid-reflow'
+                ).length,
+              };
+            }
+            """
+        )
+
+        assert motion_state["sidebarFinished"], motion_state
+        assert motion_state["activeReflows"] == 0, motion_state
+    finally:
         context.close()
 
 
@@ -7371,7 +8152,10 @@ def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
         for index in range(8):
             create_response = page.request.post(
                 f"{frontend_url}/api/resumes",
-                data={"title": f"Pagination spacing regression {index + 1}"},
+                data={
+                    "documentLocale": "zh",
+                    "title": f"Pagination spacing regression {index + 1}",
+                },
             )
             assert create_response.ok
             create_payload = create_response.json()
@@ -7613,7 +8397,11 @@ def test_template_autosave_preserves_edit_made_during_active_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
     page = context.new_page()
 
     try:
@@ -7641,30 +8429,40 @@ def test_template_autosave_preserves_edit_made_during_active_save(
             route.continue_()
 
         page.route(f"**/api/templates/{template_id}", delay_first_save)
-        page.locator('[data-slot="collapsible-trigger"]').filter(
-            has_text="模板信息"
+        page.get_by_role(
+            "button",
+            name="修改模板信息",
+            exact=True,
         ).click()
-        template_name_input = page.get_by_label("模板名称", exact=True)
-        template_name_input.fill("First Template Save")
+        page.get_by_label("模板名称", exact=True).fill("First Template Save")
+        page.get_by_role("button", name="保存", exact=True).click()
         page.wait_for_timeout(50)
         page.evaluate(
             """
             () => {
-              const labels = [...document.querySelectorAll("label")];
-              const label = labels.find((candidate) =>
-                candidate.textContent?.includes("模板名称"),
-              );
-              const input = label?.querySelector("input");
-              const valueSetter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype,
-                "value",
-              )?.set;
-              if (!(input instanceof HTMLInputElement) || !valueSetter) {
-                throw new Error("Template name input is unavailable.");
-              }
               window.setTimeout(() => {
-                valueSetter.call(input, "Latest Template During Save");
-                input.dispatchEvent(new Event("input", { bubbles: true }));
+                const trigger = document.querySelector(
+                  '[data-template-metadata-trigger="true"]',
+                );
+                if (!(trigger instanceof HTMLButtonElement)) {
+                  throw new Error("Template metadata trigger is unavailable.");
+                }
+                trigger.click();
+                requestAnimationFrame(() => {
+                  const input = document.querySelector(
+                    'input[name="templateName"]',
+                  );
+                  const valueSetter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    "value",
+                  )?.set;
+                  if (!(input instanceof HTMLInputElement) || !valueSetter) {
+                    throw new Error("Template name input is unavailable.");
+                  }
+                  valueSetter.call(input, "Latest Template During Save");
+                  input.dispatchEvent(new Event("input", { bubbles: true }));
+                  input.closest("form")?.requestSubmit();
+                });
               }, 200);
             }
             """
@@ -8424,6 +9222,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
             data={
+                "documentLocale": "zh",
                 "title": "Empty template image placeholder regression",
                 "template": template_id,
             },
@@ -8439,7 +9238,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         ).count()
 
         page.goto(
-            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
+            f"{frontend_url}/pdf-export?resumeId={resume_id}&documentLocale=zh",
             wait_until="networkidle",
         )
         page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
@@ -8480,7 +9279,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
         )
 
         page.goto(
-            f"{frontend_url}/pdf-export?resumeId={resume_id}&locale=zh",
+            f"{frontend_url}/pdf-export?resumeId={resume_id}&documentLocale=zh",
             wait_until="networkidle",
         )
         page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
@@ -8530,10 +9329,13 @@ def test_template_return_checks_unsaved_changes_before_navigation(
             exact=True,
         ).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
-        page.locator('[data-slot="collapsible-trigger"]').filter(
-            has_text="模板信息"
+        page.get_by_role(
+            "button",
+            name="修改模板信息",
+            exact=True,
         ).click()
         page.get_by_label("模板名称", exact=True).fill("Template Saved Before Return")
+        page.get_by_role("button", name="保存", exact=True).click()
         page.get_by_role(
             "button",
             name="返回模板列表",
@@ -8582,10 +9384,14 @@ def test_template_leave_dialog_enter_activates_only_focused_action(
             save_payloads.append(payload)
         route.continue_()
 
-    def open_template_fields() -> None:
-        page.locator('[data-slot="collapsible-trigger"]').filter(
-            has_text="模板信息"
+    def update_template_name(name: str) -> None:
+        page.get_by_role(
+            "button",
+            name="修改模板信息",
+            exact=True,
         ).click()
+        page.get_by_label("模板名称", exact=True).fill(name)
+        page.get_by_role("button", name="保存", exact=True).click()
 
     def open_leave_dialog() -> None:
         page.get_by_role(
@@ -8611,9 +9417,7 @@ def test_template_leave_dialog_enter_activates_only_focused_action(
         template_id = urlparse(template_url).path.rsplit("/", maxsplit=1)[-1]
         page.route(f"**/api/templates/{template_id}", capture_save)
 
-        open_template_fields()
-        template_name_input = page.get_by_label("模板名称", exact=True)
-        template_name_input.fill("Continue template editing via Enter")
+        update_template_name("Continue template editing via Enter")
         open_leave_dialog()
 
         continue_editing = page.get_by_role(
@@ -8630,7 +9434,7 @@ def test_template_leave_dialog_enter_activates_only_focused_action(
             exact=True,
         ).wait_for(state="hidden")
         assert page.url == template_url
-        assert template_name_input.input_value() == (
+        assert page.locator('[data-slot="template-editor-title"]').inner_text() == (
             "Continue template editing via Enter"
         )
 
@@ -8651,9 +9455,8 @@ def test_template_leave_dialog_enter_activates_only_focused_action(
         )
 
         page.goto(template_url, wait_until="networkidle")
-        open_template_fields()
         saved_name = "Save template and leave via Enter"
-        page.get_by_label("模板名称", exact=True).fill(saved_name)
+        update_template_name(saved_name)
         open_leave_dialog()
 
         save_payloads.clear()
@@ -8679,6 +9482,158 @@ def test_template_leave_dialog_enter_activates_only_focused_action(
         context.close()
 
 
+def test_builtin_template_header_keeps_actions_on_one_row(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/template/modern", wait_until="networkidle")
+
+        action_boxes = [
+            locator.bounding_box()
+            for locator in (
+                page.get_by_role("combobox", name="简历语言", exact=True),
+                page.get_by_role("button", name="创建可编辑副本", exact=True),
+                page.get_by_role("button", name="设为默认模板", exact=True),
+            )
+        ]
+        assert all(box is not None for box in action_boxes)
+        action_rows = {round(float(box["y"])) for box in action_boxes if box}
+        assert len(action_rows) == 1, action_boxes
+    finally:
+        context.close()
+
+
+def test_builtin_template_previews_default_to_one_page(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    templates = {
+        "minimal": "Alex Lin",
+        "modern": "Jordan Zhou",
+        "compact": "Jordan Zhou",
+        "classic": "Jordan Zhou",
+        "executive": "Evelyn Zhao",
+        "academic": "Ruoan Shen",
+    }
+
+    try:
+        for template_id, english_name in templates.items():
+            page.goto(
+                f"{frontend_url}/template/{template_id}",
+                wait_until="networkidle",
+            )
+            preview = page.locator(
+                ".template-workspace .resume-preview-card "
+                '[data-resume-pagination-ready="true"]'
+            )
+            expect(preview).to_have_attribute("data-resume-page-count", "1")
+
+            locale_select = page.get_by_role(
+                "combobox",
+                name="简历语言",
+                exact=True,
+            )
+            locale_select.click()
+            page.get_by_role(
+                "option",
+                name="英文预览",
+                exact=True,
+            ).click()
+
+            expect(locale_select).to_have_text("英文预览")
+            expect(
+                preview.locator(".resume-page-shell").first.locator("h1")
+            ).to_have_text(english_name)
+            expect(preview).to_have_attribute("data-resume-page-count", "1")
+    finally:
+        context.close()
+
+
+def test_template_editor_and_preview_share_page_scroll(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 720},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/template/modern", wait_until="networkidle")
+        page.evaluate("window.scrollTo(0, 0)")
+
+        editor_panel = page.locator(".template-workspace .resume-template-editor-panel")
+        editor_card = editor_panel.locator('[data-slot="card"]')
+        preview_card = page.locator(".template-workspace .resume-preview-card")
+        panel_box = editor_panel.bounding_box()
+        assert panel_box is not None
+
+        before = {
+            "editor": editor_card.bounding_box(),
+            "preview": preview_card.bounding_box(),
+        }
+        assert before["editor"] is not None
+        assert before["preview"] is not None
+
+        page.mouse.move(
+            panel_box["x"] + panel_box["width"] / 2,
+            panel_box["y"] + min(panel_box["height"] / 2, 360),
+        )
+        page.mouse.wheel(0, 160)
+        page.wait_for_timeout(150)
+
+        after = {
+            "editor": editor_card.bounding_box(),
+            "preview": preview_card.bounding_box(),
+        }
+        assert after["editor"] is not None
+        assert after["preview"] is not None
+        scroll_state = editor_panel.evaluate(
+            """
+            element => ({
+              overflowY: getComputedStyle(element).overflowY,
+              position: getComputedStyle(element).position,
+              previewPosition: getComputedStyle(
+                document.querySelector('.template-workspace .resume-preview-card')
+              ).position,
+              scrollTop: element.scrollTop,
+              windowScrollY: window.scrollY,
+            })
+            """
+        )
+        editor_delta = after["editor"]["y"] - before["editor"]["y"]
+        preview_delta = after["preview"]["y"] - before["preview"]["y"]
+
+        assert scroll_state["overflowY"] == "visible"
+        assert scroll_state["position"] == "relative"
+        assert scroll_state["previewPosition"] == "relative"
+        assert scroll_state["scrollTop"] == 0
+        assert scroll_state["windowScrollY"] > 0
+        assert editor_delta < -100
+        assert editor_delta == pytest.approx(preview_delta, abs=1)
+    finally:
+        context.close()
+
+
 def test_template_editor_fields_use_visible_labels_as_accessible_names(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -8692,8 +9647,33 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
     page = context.new_page()
     template_id: str | None = None
 
+    def assert_template_header_rows() -> None:
+        description_box = page.locator(
+            '[data-slot="template-description"]'
+        ).bounding_box()
+        actions_box = page.locator(
+            '[data-slot="template-editor-actions"]'
+        ).bounding_box()
+        assert description_box is not None
+        assert actions_box is not None
+        assert abs(actions_box["x"] - description_box["x"]) <= 1
+        assert actions_box["y"] >= description_box["y"] + description_box["height"]
+
+    def delay_default_template_response(route: Route) -> None:
+        response = route.fetch()
+        time.sleep(0.25)
+        route.fulfill(response=response)
+
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
+        assert_template_header_rows()
+        expect(
+            page.get_by_role(
+                "button",
+                name="修改模板信息",
+                exact=True,
+            )
+        ).to_have_count(0)
         page.get_by_role(
             "button",
             name="创建可编辑副本",
@@ -8702,12 +9682,207 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
 
+        expect(
+            page.get_by_text("自定义模板 · 可编辑", exact=True)
+        ).to_have_count(0)
+        expect(page.get_by_text("模板信息", exact=True)).to_have_count(0)
+
+        metadata_trigger = page.get_by_role(
+            "button",
+            name="修改模板信息",
+            exact=True,
+        )
+        expect(metadata_trigger).to_be_visible()
+        original_title = page.locator(
+            '[data-slot="template-editor-title"]'
+        ).inner_text()
+        original_description = page.locator(
+            '[data-slot="template-description"]'
+        ).inner_text()
+        page.evaluate(
+            """
+            () => {
+              window.__templateDialogAnimations = [];
+              document.addEventListener('animationstart', (event) => {
+                const target = event.target;
+                if (!(target instanceof HTMLElement)) {
+                  return;
+                }
+                if (
+                  target.matches(
+                    '[data-slot="dialog-content"], [data-slot="dialog-overlay"]',
+                  )
+                ) {
+                  window.__templateDialogAnimations.push({
+                    animationName: event.animationName,
+                    slot: target.dataset.slot,
+                  });
+                }
+              }, true);
+            }
+            """
+        )
+
+        metadata_trigger.click()
+        page.get_by_role(
+            "heading",
+            name="修改模板信息",
+            exact=True,
+        ).wait_for(state="visible")
+        name_input = page.get_by_label("模板名称", exact=True)
+        description_input = page.get_by_placeholder(
+            "可在模板编辑器中补充这套版式适用的岗位或使用场景",
+            exact=True,
+        )
+        expect(name_input).to_have_value(original_title)
+        expect(description_input).to_have_value(original_description)
+        expect(description_input).to_have_attribute(
+            "placeholder",
+            "可在模板编辑器中补充这套版式适用的岗位或使用场景",
+        )
+        name_input.fill("不应保存的模板名称")
+        description_input.fill("不应保存的模板描述")
+        page.get_by_role("button", name="取消", exact=True).click()
+        page.get_by_role(
+            "heading",
+            name="修改模板信息",
+            exact=True,
+        ).wait_for(state="hidden")
+        expect(metadata_trigger).to_be_focused()
+        expect(
+            page.locator('[data-slot="template-editor-title"]')
+        ).to_have_text(original_title)
+        expect(
+            page.locator('[data-slot="template-description"]')
+        ).to_have_text(original_description)
+
+        template_name = "产品岗位模板"
+        template_description = "适合产品岗位与跨职能项目经历"
+        metadata_trigger.click()
+        page.get_by_label("模板名称", exact=True).fill(template_name)
+        description_input = page.get_by_label("模板描述", exact=True)
+        description_input.fill(template_description)
+        page.get_by_role("button", name="保存", exact=True).click()
+        page.get_by_role(
+            "heading",
+            name="修改模板信息",
+            exact=True,
+        ).wait_for(state="hidden")
+        page.wait_for_timeout(200)
+        expect(metadata_trigger).to_be_focused()
+
+        dialog_animation_names = {
+            item["animationName"]
+            for item in page.evaluate("window.__templateDialogAnimations")
+        }
+        assert {
+            "dialog-content-enter",
+            "dialog-content-exit",
+            "dialog-overlay-enter",
+            "dialog-overlay-exit",
+        }.issubset(dialog_animation_names)
+
+        expect(
+            page.locator('[data-slot="template-editor-title"]')
+        ).to_have_text(template_name)
+        description_note = page.locator('[data-slot="template-description"]')
+        expect(description_note).to_be_visible()
+        expect(description_note).to_have_text(template_description)
+        expect(
+            page.get_by_text(
+                "可在模板编辑器中补充这套版式适用的岗位或使用场景",
+                exact=True,
+            )
+        ).to_have_count(0)
+        description_note_box = description_note.bounding_box()
+        assert description_note_box is not None
+        assert description_note_box["height"] >= 24
+        assert_template_header_rows()
+
+        with page.expect_request(
+            lambda request: (
+                request.method == "PUT"
+                and urlparse(request.url).path == f"/api/templates/{template_id}"
+            )
+        ) as save_request:
+            page.keyboard.press("Control+S")
+        save_payload = save_request.value.post_data_json
+        assert save_payload["template"]["name"] == template_name
+        assert save_payload["template"]["description"] == template_description
+
+        page.route(
+            "**/api/workspace/default-template",
+            delay_default_template_response,
+        )
+        set_default_button = page.locator(
+            '[data-slot="template-default-button"]'
+        )
+        expect(set_default_button).to_have_attribute(
+            "aria-label",
+            "设为默认模板",
+        )
+        set_default_button.evaluate(
+            """
+            (button) => {
+              const frames = [];
+              window.__defaultTemplateButtonFrames = frames;
+              const startedAt = performance.now();
+              const sample = () => {
+                const rect = button.getBoundingClientRect();
+                frames.push({
+                  elapsed: performance.now() - startedAt,
+                  x: rect.x,
+                  y: rect.y,
+                  width: rect.width,
+                  height: rect.height,
+                  label: button.getAttribute('aria-label'),
+                  isBusy: button.getAttribute('aria-busy') === 'true',
+                  hasSpinner: Boolean(button.querySelector('[role="status"]')),
+                });
+                if (performance.now() - startedAt < 900) {
+                  requestAnimationFrame(sample);
+                }
+              };
+              requestAnimationFrame(sample);
+            }
+            """
+        )
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path
+                == "/api/workspace/default-template"
+            )
+        ):
+            set_default_button.click()
+        expect(set_default_button).to_have_attribute(
+            "aria-label",
+            "默认模板",
+        )
+        page.wait_for_timeout(700)
+        default_button_frames = page.evaluate(
+            "window.__defaultTemplateButtonFrames"
+        )
+        assert len(default_button_frames) >= 20
+        assert any(frame["isBusy"] for frame in default_button_frames)
+        assert not any(frame["hasSpinner"] for frame in default_button_frames)
+        assert any(
+            frame["label"] == "默认模板" for frame in default_button_frames
+        )
+        for key in ("x", "y", "width", "height"):
+            values = [frame[key] for frame in default_button_frames]
+            assert max(values) - min(values) <= 1, {
+                "key": key,
+                "frames": default_button_frames,
+            }
+
         for label in (
             "基本信息布局",
             "模块标题样式",
             "经历条目布局",
             "列表条目布局",
             "头像位置",
+            "头像尺寸",
             "页边距",
             "内容密度",
             "分割线样式",
@@ -8727,6 +9902,27 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         ).click()
         page.get_by_role("option", name="左对齐标题", exact=True).click()
         expect(basic_info_select).to_have_text("左对齐标题")
+
+        avatar_size_select = page.get_by_role(
+            "combobox",
+            name="头像尺寸",
+            exact=True,
+        )
+        avatar_size_select.click()
+        page.get_by_role("option", name="大", exact=True).click()
+        expect(avatar_size_select).to_have_text("大")
+        assert page.locator('[data-avatar-frame="true"]').first.evaluate(
+            "element => [element.style.width, element.style.height]"
+        ) == ["29mm", "37mm"]
+
+        avatar_position_select = page.get_by_role(
+            "combobox",
+            name="头像位置",
+            exact=True,
+        )
+        avatar_position_select.click()
+        page.get_by_role("option", name="不显示头像", exact=True).click()
+        expect(avatar_size_select).to_have_count(0)
 
         page.get_by_role("tab", name="字体", exact=True).click()
         for label in (
@@ -8753,6 +9949,10 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             expect(color_input).to_be_visible()
             assert color_input.get_attribute("type") == "color"
     finally:
+        page.request.put(
+            f"{frontend_url}/api/workspace/default-template",
+            data={"documentLocale": "zh", "templateId": "minimal"},
+        )
         if template_id:
             trash_response = page.request.post(
                 f"{frontend_url}/api/templates/{template_id}/trash"
@@ -8787,7 +9987,10 @@ def test_leave_reprepares_gallery_after_edit_during_target_load(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Before Target Preparation"},
+            data={
+                "documentLocale": "zh",
+                "title": "Before Target Preparation",
+            },
         )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
@@ -8916,7 +10119,10 @@ def test_latest_navigation_waits_for_active_checkpoint_promotion(
     resume_id: str | None = None
 
     try:
-        create_response = page.request.post(f"{frontend_url}/api/resumes", data={})
+        create_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"documentLocale": "zh"},
+        )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
 
@@ -9289,7 +10495,10 @@ def test_resume_leave_dialog_enter_activates_only_focused_action(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Leave dialog Enter actions"},
+            data={
+                "documentLocale": "zh",
+                "title": "Leave dialog Enter actions",
+            },
         )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
@@ -9384,7 +10593,10 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
     try:
         create_response = page.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": "Consumed history handoff"},
+            data={
+                "documentLocale": "zh",
+                "title": "Consumed history handoff",
+            },
         )
         assert create_response.ok
         resume_id = create_response.json()["data"]["resume"]["id"]
@@ -9472,8 +10684,9 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
         if not page.locator('input[name="name"]').is_visible():
             page.get_by_role(
                 "button",
-                name="基本信息: 展开或收起模块",
-                exact=True,
+                name=re.compile(
+                    r"^(Basic Info: Toggle section|基本信息: 展开或收起模块)$"
+                ),
             ).click()
 
         assert page.evaluate("window.__staleResumeHandoffEdited") is False
@@ -9524,7 +10737,10 @@ def test_recycle_bin_keeps_baseline_then_paginates_six_table_rows(
         for index in range(7):
             create_response = context.request.post(
                 f"{frontend_url}/api/resumes",
-                data={"title": f"Recycle height {index + 1}"},
+                data={
+                    "documentLocale": "zh",
+                    "title": f"Recycle height {index + 1}",
+                },
             )
             assert create_response.ok
             resume_id = create_response.json()["data"]["resume"]["id"]
@@ -9619,7 +10835,7 @@ def test_recycle_bin_thumbnail_renders_full_resume_content(
     try:
         create_response = context.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": title},
+            data={"documentLocale": "zh", "title": title},
         )
         assert create_response.ok
         created = create_response.json()["data"]["resume"]
@@ -9644,6 +10860,7 @@ def test_recycle_bin_thumbnail_renders_full_resume_content(
             f"{frontend_url}/api/resumes/{resume_id}",
             data={
                 "title": title,
+                "documentLocale": created["documentLocale"],
                 "resume": {
                     **created["resume"],
                     "basic": {
@@ -9720,6 +10937,74 @@ def test_recycle_bin_thumbnail_renders_full_resume_content(
         context.close()
 
 
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("locale", "actions_label", "menu_labels"),
+    [
+        ("zh-CN", "操作", ["预览", "恢复", "删除"]),
+        ("en-US", "Actions", ["Preview", "Restore", "Delete"]),
+    ],
+    ids=["zh", "en"],
+)
+def test_recycle_bin_row_menu_fits_localized_actions(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    locale: str,
+    actions_label: str,
+    menu_labels: list[str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale=locale,
+        viewport={"width": 1280, "height": 800},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    title = f"Localized trash menu {locale}"
+
+    try:
+        create_response = context.request.post(
+            f"{frontend_url}/api/resumes",
+            data={
+                "documentLocale": "zh" if locale == "zh-CN" else "en",
+                "title": title,
+            },
+        )
+        assert create_response.ok
+        resume_id = create_response.json()["data"]["resume"]["id"]
+        trash_response = context.request.post(
+            f"{frontend_url}/api/resumes/{resume_id}/trash"
+        )
+        assert trash_response.ok
+
+        page.goto(f"{frontend_url}/trash", wait_until="networkidle")
+        page.get_by_role(
+            "button", name=f"{actions_label}: {title}", exact=True
+        ).click()
+        menu = page.locator('[data-slot="dropdown-menu-content"]')
+        expect(menu).to_be_visible()
+        assert menu.get_by_role("menuitem").all_inner_texts() == menu_labels
+        geometry = menu.evaluate(
+            """
+            element => ({
+              width: Number.parseFloat(getComputedStyle(element).width),
+              clientWidth: element.clientWidth,
+              scrollWidth: element.scrollWidth,
+              itemOverflow: [...element.querySelectorAll('[role="menuitem"]')]
+                .map(item => item.scrollWidth > item.clientWidth),
+            })
+            """
+        )
+        assert geometry["width"] == pytest.approx(128, abs=1)
+        assert geometry["scrollWidth"] <= geometry["clientWidth"]
+        assert geometry["itemOverflow"] == [False, False, False]
+    finally:
+        if resume_id:
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -9738,7 +11023,7 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
         for title in titles:
             create_response = context.request.post(
                 f"{frontend_url}/api/resumes",
-                data={"title": title},
+                data={"documentLocale": "zh", "title": title},
             )
             assert create_response.ok
             resume_id = create_response.json()["data"]["resume"]["id"]
@@ -9762,9 +11047,8 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
         ).click()
         expect(page.get_by_role("menuitem", name="预览", exact=True)).to_be_visible()
         expect(page.get_by_role("menuitem", name="恢复", exact=True)).to_be_visible()
-        expect(
-            page.get_by_role("menuitem", name="彻底删除", exact=True)
-        ).to_be_visible()
+        delete_menu_item = page.get_by_role("menuitem", name="删除", exact=True)
+        expect(delete_menu_item).to_be_visible()
         menu_groups = page.locator('[data-slot="dropdown-menu-group"]')
         expect(menu_groups).to_have_count(2)
         assert menu_groups.nth(0).get_by_role("menuitem").all_inner_texts() == [
@@ -9772,7 +11056,7 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
             "恢复",
         ]
         assert menu_groups.nth(1).get_by_role("menuitem").all_inner_texts() == [
-            "彻底删除"
+            "删除"
         ]
         page.keyboard.press("Escape")
 
@@ -9864,7 +11148,7 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
     try:
         create_resume_response = context.request.post(
             f"{frontend_url}/api/resumes",
-            data={"title": resume_title},
+            data={"documentLocale": "zh", "title": resume_title},
         )
         assert create_resume_response.ok
         resume_id = create_resume_response.json()["data"]["resume"]["id"]
@@ -9878,6 +11162,7 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
                 key: resume_detail.get(key)
                 for key in (
                     "title",
+                    "documentLocale",
                     "resume",
                     "jobBrief",
                     "typography",

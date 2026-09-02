@@ -43,10 +43,50 @@ export function buildSectionItems(
     return buildListSectionItems(lines, kind);
   }
 
-  const groups = groupExperienceLines(lines, lexiconContext);
+  const groups =
+    kind === "publication"
+      ? groupPublicationLines(lines, lexiconContext)
+      : groupExperienceLines(lines, lexiconContext);
   return groups
     .map((group) => groupToItem(group, kind, lexiconContext))
     .filter(hasItemText);
+}
+
+function groupPublicationLines(
+  lines: TextLine[],
+  lexiconContext: ResumeImportLexiconContext,
+) {
+  const groups: ExperienceLine[][] = [];
+  let current: ExperienceLine[] = [];
+  let currentHasPeriod = false;
+  const rows = groupExperienceRows(
+    lines
+      .map((line) => {
+        const parsed = parseExperienceLine(line, lexiconContext);
+        return {
+          ...parsed,
+          hasPeriod:
+            parsed.hasPeriod || Boolean(extractStandaloneYear(parsed.text)),
+        };
+      })
+      .filter((line) => line.text),
+  );
+
+  for (const row of rows) {
+    const rowHasPeriod = row.some((line) => line.hasPeriod);
+    if (current.length > 0 && currentHasPeriod && rowHasPeriod) {
+      groups.push(current);
+      current = [];
+      currentHasPeriod = false;
+    }
+    current.push(...row);
+    currentHasPeriod ||= rowHasPeriod;
+  }
+
+  if (current.length > 0) {
+    groups.push(current);
+  }
+  return groups;
 }
 
 export function isListSectionKind(kind: SectionKind) {
@@ -263,7 +303,11 @@ function groupToItem(
   // highlights. This intentionally avoids content dictionaries such as tech
   // names or action verbs; structure is more stable across languages/domains.
   const textLines = group.map((line) => line.text);
-  const period = extractPeriod(textLines, lexiconContext);
+  const period =
+    extractPeriod(textLines, lexiconContext) ||
+    (kind === "publication"
+      ? textLines.map(extractStandaloneYear).find(Boolean) ?? ""
+      : "");
   const headerLines: ExperienceLine[] = [];
   const highlightLines: string[] = [];
   let description = "";
@@ -344,6 +388,16 @@ function groupToItem(
     description,
     highlights,
   });
+}
+
+function extractStandaloneYear(value: string) {
+  const match = value.trim().match(/^\d{4}$/);
+  if (!match) {
+    return "";
+  }
+  const year = Number(match[0]);
+  const { minYear, maxYear } = PDF_IMPORT_PROFILE.dates;
+  return year >= minYear && year <= maxYear ? match[0] : "";
 }
 
 function looksLikeWrappedBodyContinuation(
@@ -541,8 +595,6 @@ function hasItemText(item: ParsedSectionItem) {
 function normalizeBulletLine(line: string) {
   return normalizeWhitespace(line.replace(/^[•·*●○◦▪▫-]+\s*/, ""));
 }
-
 export function isBulletLine(line: string) {
   return /^[\s•·*●○◦▪▫-]+/.test(line);
 }
-

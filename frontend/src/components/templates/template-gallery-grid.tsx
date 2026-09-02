@@ -1,16 +1,18 @@
 import { memo } from "react";
 
 import type { AppMessages } from "@/i18n";
-import type {
-  ResumeData,
-  ResumeTemplateDefinition,
-} from "@/types/resume";
+import {
+  getTemplatePreviewResume,
+  type TemplatePreviewResumes,
+} from "@/lib/template-preview-resume";
+import type { ResumeTemplateDefinition } from "@/types/resume";
 
 import { TemplateGalleryCard } from "./template-gallery-card";
 
 export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   t,
-  previewResume,
+  previewMessages,
+  previewResumes,
   templates,
   defaultTemplateId,
   isSelecting,
@@ -24,7 +26,8 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   onToggleSelected,
 }: {
   t: AppMessages;
-  previewResume: ResumeData;
+  previewMessages: AppMessages | null;
+  previewResumes: TemplatePreviewResumes | null;
   templates: ResumeTemplateDefinition[];
   defaultTemplateId: string;
   isSelecting: boolean;
@@ -37,22 +40,29 @@ export const TemplateGalleryGrid = memo(function TemplateGalleryGrid({
   onSetDefaultTemplate: (templateId: string) => void;
   onToggleSelected: (templateId: string) => void;
 }) {
-  return templates.map((template) => (
-    <TemplateGalleryCard
-      key={template.id}
-      t={t}
-      previewResume={previewResume}
-      template={template}
-      isDefaultTemplate={defaultTemplateId === template.id}
-      isSelecting={isSelecting}
-      isSelected={selectedIdSet.has(template.id)}
-      isOpening={openingTemplateId === template.id}
-      settingDefaultTemplateId={settingDefaultTemplateId}
-      onPreloadDetail={onPreloadTemplateDetail}
-      onOpenTemplate={onOpenTemplate}
-      onRequestDelete={onRequestDelete}
-      onSetDefaultTemplate={onSetDefaultTemplate}
-      onToggleSelected={onToggleSelected}
-    />
-  ));
+  return templates.map((template) => {
+    const previewResume = previewResumes
+      ? getTemplatePreviewResume(previewResumes, template)
+      : null;
+
+    return (
+      <TemplateGalleryCard
+        key={template.id}
+        t={t}
+        previewMessages={previewMessages}
+        previewResume={previewResume}
+        template={template}
+        isDefaultTemplate={defaultTemplateId === template.id}
+        isSelecting={isSelecting}
+        isSelected={selectedIdSet.has(template.id)}
+        isOpening={openingTemplateId === template.id}
+        settingDefaultTemplateId={settingDefaultTemplateId}
+        onPreloadDetail={onPreloadTemplateDetail}
+        onOpenTemplate={onOpenTemplate}
+        onRequestDelete={onRequestDelete}
+        onSetDefaultTemplate={onSetDefaultTemplate}
+        onToggleSelected={onToggleSelected}
+      />
+    );
+  });
 });

@@ -33,7 +33,10 @@ const {
 const resume = {
   data: {
     customTemplates: [],
-    defaultTemplateId: "minimal",
+    defaultTemplateIds: {
+      zh: "minimal",
+      en: "classic",
+    },
     resumes: [],
     theme: "light",
   },

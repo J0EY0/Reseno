@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 
-import type { AppMessages, Locale } from '@/i18n'
+import type { AppMessages } from '@/i18n'
 import { loadAgentSession } from '@/lib/agent-session-run-client'
 import { mergeStreamingAgentMessage } from '@/lib/agent-panel-state'
 import type { AgentDraftState, AgentSessionResponse } from '@/types/api'
-import type { ModelConfig, ResumeData } from '@/types/resume'
+import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 
 import {
   useAgentConversationRuntime,
@@ -27,7 +27,7 @@ export function useAgentConversation({
   agentDraftState,
   onApplyAgentDraft,
   onDiscardAgentDraft,
-  locale,
+  documentLocale,
   onBeforeSend,
   onPreviewAgentEdits,
   onReconcileAgentDraft,
@@ -40,7 +40,7 @@ export function useAgentConversation({
   agentDraftState: AgentDraftState | null
   onApplyAgentDraft: CopilotPanelProps['onApplyAgentDraft']
   onDiscardAgentDraft: CopilotPanelProps['onDiscardAgentDraft']
-  locale: Locale
+  documentLocale: DocumentLocale
   onBeforeSend?: () => Promise<void>
   onPreviewAgentEdits: CopilotPanelProps['onPreviewAgentEdits']
   onReconcileAgentDraft: CopilotPanelProps['onReconcileAgentDraft']
@@ -166,7 +166,7 @@ export function useAgentConversation({
     useAgentSendController({
       agentDraftState,
       consumeRunStream,
-      locale,
+      documentLocale,
       messages,
       onBeforeSend,
       refreshAgentSession,

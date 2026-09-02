@@ -72,7 +72,7 @@ export function TemplateTypographyTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectGroup>
                 <SelectItem value="inter">{t.fontInter}</SelectItem>
                 <SelectItem value="noto_sans_sc">{t.fontNotoSans}</SelectItem>
@@ -100,7 +100,7 @@ export function TemplateTypographyTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               {resumeFontSizeOptions.map((size) => (
                 <SelectItem key={size} value={String(size)}>
                   {getResumeFontSizeInPoints(size)} pt

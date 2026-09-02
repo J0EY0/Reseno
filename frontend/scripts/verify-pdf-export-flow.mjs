@@ -159,7 +159,11 @@ const requestFields = new Map(
 );
 
 assert.equal(requestFields.get("resumeId"), "activeResume.id");
-assert.equal(requestFields.get("locale"), "locale");
+assert.equal(
+  requestFields.has("documentLocale"),
+  false,
+  "The backend must resolve PDF render language from the saved resume.",
+);
 assert.equal(requestFields.get("fileNameSeed"), "activeResume.title");
 assert.equal(requestFields.get("savedAt"), "savedVersion.savedAt");
 assert.equal(requestFields.get("versionId"), "savedVersion.versionId");

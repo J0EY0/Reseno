@@ -8,10 +8,15 @@ const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = path.join(frontendRoot, "src");
 const domainModules = new Map([
   [
+    "lib/template-presets.generated.ts",
+    ["GeneratedBuiltinTemplateId", "builtinTemplatePresets"],
+  ],
+  [
     "lib/template-presets.ts",
     [
       "builtinTemplateIds",
       "getBuiltinTemplatePreset",
+      "getBuiltinTemplateStarter",
       "isBuiltinTemplateId",
     ],
   ],
@@ -221,8 +226,13 @@ assert.deepEqual(
 );
 assert.deepEqual(
   [...graph.get("lib/template-presets.ts")],
+  ["lib/template-presets.generated.ts"],
+  "The preset registry must depend only on its generated canonical data.",
+);
+assert.deepEqual(
+  [...graph.get("lib/template-presets.generated.ts")],
   [],
-  "The preset registry must not depend on template normalization or catalog code.",
+  "Generated preset data must not depend on handwritten domain modules.",
 );
 assert.deepEqual(
   [...graph.get("lib/resume-section-mutations.ts")],

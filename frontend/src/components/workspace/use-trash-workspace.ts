@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
-import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
+import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
 import { getTemplateCatalog } from "@/lib/templates";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
@@ -28,11 +28,16 @@ import {
   restoreTemplateApi,
 } from "@/lib/workspace-api";
 import type {
+  DefaultTemplateIds,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   ResumeTemplateDefinition,
-  ResumeTemplateId,
 } from "@/types/resume";
+
+const initialDefaultTemplateIds: DefaultTemplateIds = {
+  zh: "minimal",
+  en: "minimal",
+};
 
 export function useTrashWorkspace({
   locale,
@@ -53,9 +58,9 @@ export function useTrashWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(() => preparedRouteData?.customTemplates ?? []);
-  const [defaultTemplateId, setDefaultTemplateId] =
-    useState<ResumeTemplateId>(
-      () => preparedRouteData?.defaultTemplateId ?? "minimal",
+  const [defaultTemplateIds, setDefaultTemplateIds] =
+    useState<DefaultTemplateIds>(
+      () => preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
     );
   const [deletedResumes, setDeletedResumes] = useState<
     DeletedResumeWorkspaceItem[]
@@ -70,21 +75,21 @@ export function useTrashWorkspace({
   const routeData = useMemo(
     () => ({
       customTemplates,
-      defaultTemplateId,
+      defaultTemplateIds,
       deletedResumes,
       deletedTemplates,
       theme,
     }),
     [
       customTemplates,
-      defaultTemplateId,
+      defaultTemplateIds,
       deletedResumes,
       deletedTemplates,
       theme,
     ],
   );
-  const templatePreviewResume = useDeferredValue(
-    useMemo(() => createTemplatePreviewResume(messages), [messages]),
+  const templatePreviewResumes = useDeferredValue(
+    useMemo(() => createTemplatePreviewResumes(messages), [messages]),
   );
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
@@ -116,7 +121,7 @@ export function useTrashWorkspace({
 
         hydrateTheme(nextTheme);
         setCustomTemplates(source.data.customTemplates);
-        setDefaultTemplateId(source.data.defaultTemplateId);
+        setDefaultTemplateIds(source.data.defaultTemplateIds);
         setDeletedResumes(source.data.deletedResumes);
         setDeletedTemplates(source.data.deletedTemplates);
         persistence.hydrate({
@@ -332,7 +337,7 @@ export function useTrashWorkspace({
     restoreResumes,
     restoreTemplates,
     retryLoad: () => setRetryKey((current) => current + 1),
-    templatePreviewResume,
+    templatePreviewResumes,
     templates,
   };
 }

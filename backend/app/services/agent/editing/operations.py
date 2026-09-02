@@ -28,7 +28,16 @@ def _string_list(value: object) -> list[str]:
 
 
 QUALIFIED_ITEM_DIFF_FIELDS = frozenset(
-    {"name", "role", "url", "description", "highlights"},
+    {
+        "name",
+        "title",
+        "authors",
+        "venue",
+        "role",
+        "url",
+        "description",
+        "highlights",
+    },
 )
 
 
@@ -492,6 +501,9 @@ def _operation_replacement(operation: dict[str, Any]) -> str | None:
             for field in (
                 "content",
                 "name",
+                "title",
+                "authors",
+                "venue",
                 "school",
                 "company",
                 "position",
@@ -650,6 +662,8 @@ def _item_kind_from_shape(item: dict[str, Any]) -> str:
         return "experience"
     if "techStack" in item:
         return "project"
+    if "authors" in item:
+        return "publication"
     if "issuer" in item:
         return "achievement"
     if "content" in item:

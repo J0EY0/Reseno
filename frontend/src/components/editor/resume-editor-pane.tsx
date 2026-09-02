@@ -41,6 +41,7 @@ const AvatarCropDialog = lazy(() =>
 // owns only transient avatar UI and translates editor actions into state updates.
 type ResumeEditorPaneProps = {
   t: AppMessages;
+  documentT: AppMessages | null;
   resume: ResumeData;
   setResume: Dispatch<SetStateAction<ResumeData>>;
   collapsedState: CollapsedState;
@@ -61,6 +62,7 @@ function collapseAllExcept(current: CollapsedState, openId: string) {
 
 export const ResumeEditorPane = memo(function ResumeEditorPane({
   t,
+  documentT,
   resume,
   setResume,
   collapsedState,
@@ -193,7 +195,14 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
   }
 
   function addResumeSection(kind: SectionKind) {
-    const nextSection = createResumeSection(kind);
+    if (!documentT) {
+      return;
+    }
+
+    const nextSection = {
+      ...createResumeSection(kind),
+      title: documentT.sectionTitles[kind],
+    };
 
     startTransition(() => {
       setResume((current) => ({
@@ -260,6 +269,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
               <ResumeSectionCard
                 key={section.id}
                 t={t}
+                documentT={documentT}
                 section={section}
                 canMoveUp={resume.sections[0]?.id !== section.id}
                 canMoveDown={

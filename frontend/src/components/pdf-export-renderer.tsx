@@ -3,11 +3,9 @@ import { useSearchParams } from "react-router-dom";
 
 import { ResumePreview } from "@/components/preview/resume-preview";
 import {
-  defaultMessages,
   getMessagesSync,
   loadMessages,
   type AppMessages,
-  type Locale,
 } from "@/i18n";
 import {
   createTemplateSettings,
@@ -21,6 +19,7 @@ import {
   fetchWorkspaceRouteData,
 } from "@/lib/workspace-api";
 import type {
+  DocumentLocale,
   ResumeTemplateDefinition,
   ResumeTypographySettings,
   ResumeWorkspaceItem,
@@ -36,7 +35,6 @@ declare global {
 interface PdfExportState {
   loadKey: string;
   messages: AppMessages;
-  locale: Locale;
   resumeItem: ResumeWorkspaceItem;
   template: ResumeTemplateDefinition;
   typography: ResumeTypographySettings;
@@ -47,8 +45,8 @@ interface PdfExportError {
   message: string;
 }
 
-function resolveLocale(value: string | null): Locale {
-  return value === "en" || value === "zh" ? value : "zh";
+function resolveDocumentLocale(value: string | null): DocumentLocale | null {
+  return value === "en" || value === "zh" ? value : null;
 }
 
 async function waitForRenderAssets() {
@@ -82,10 +80,12 @@ async function waitForRenderAssets() {
 
 export function PdfExportRenderer() {
   const [searchParams] = useSearchParams();
-  const locale = resolveLocale(searchParams.get("locale"));
+  const documentLocale = resolveDocumentLocale(
+    searchParams.get("documentLocale"),
+  );
   const resumeId = searchParams.get("resumeId") ?? "";
   const versionId = searchParams.get("versionId");
-  const loadKey = `${locale}:${resumeId}:${versionId ?? "current"}`;
+  const loadKey = `${documentLocale ?? "invalid"}:${resumeId}:${versionId ?? "current"}`;
   const [state, setState] = useState<PdfExportState | null>(null);
   const [error, setError] = useState<PdfExportError | null>(null);
   const [assetsReadyLoadKey, setAssetsReadyLoadKey] = useState<string | null>(
@@ -94,9 +94,17 @@ export function PdfExportRenderer() {
   const [paginationReadyLoadKey, setPaginationReadyLoadKey] = useState<
     string | null
   >(null);
-  const initialMessages = useMemo(() => getMessagesSync(locale), [locale]);
+  const initialMessages = useMemo(
+    () => (documentLocale ? getMessagesSync(documentLocale) : null),
+    [documentLocale],
+  );
   const activeState = state?.loadKey === loadKey ? state : null;
-  const activeError = error?.loadKey === loadKey ? error.message : null;
+  const activeError =
+    documentLocale === null
+      ? "Invalid document locale."
+      : error?.loadKey === loadKey
+        ? error.message
+        : null;
   const isReady = Boolean(
     activeState &&
       assetsReadyLoadKey === loadKey &&
@@ -118,21 +126,26 @@ export function PdfExportRenderer() {
 
   useEffect(() => {
     window.__RESUMATE_PDF_READY__ = false;
-    window.__RESUMATE_PDF_ERROR__ = undefined;
-  }, [loadKey]);
+    window.__RESUMATE_PDF_ERROR__ = activeError ?? undefined;
+  }, [activeError, loadKey]);
 
   useEffect(() => {
     window.__RESUMATE_PDF_READY__ = isReady;
   }, [isReady]);
 
   useEffect(() => {
+    const exportDocumentLocale = documentLocale;
+    if (!exportDocumentLocale) {
+      return;
+    }
+
     let cancelled = false;
     const controller = new AbortController();
 
-    async function loadExportData() {
+    async function loadExportData(activeDocumentLocale: DocumentLocale) {
       try {
         const [messages, result, resumeResult] = await Promise.all([
-          loadMessages(locale).catch(() => defaultMessages),
+          loadMessages(activeDocumentLocale),
           fetchWorkspaceRouteData("pdf-export", {
             signal: controller.signal,
           }),
@@ -167,7 +180,6 @@ export function PdfExportRenderer() {
           setState({
             loadKey,
             messages,
-            locale,
             resumeItem,
             template,
             typography: resumeItem.typography,
@@ -194,7 +206,7 @@ export function PdfExportRenderer() {
     // real effect still owns an AbortController for route/query changes.
     const loadTimer = window.setTimeout(() => {
       if (!controller.signal.aborted) {
-        void loadExportData();
+        void loadExportData(exportDocumentLocale);
       }
     }, 0);
 
@@ -203,7 +215,7 @@ export function PdfExportRenderer() {
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [loadKey, locale, resumeId, versionId]);
+  }, [documentLocale, loadKey, resumeId, versionId]);
 
   useEffect(() => {
     if (!activeState) {
@@ -240,7 +252,7 @@ export function PdfExportRenderer() {
         className="pdf-export-page flex min-h-svh items-center justify-center bg-white p-8 text-sm text-muted-foreground"
         data-pdf-ready="false"
       >
-        {initialMessages.loading}
+        {initialMessages?.loading}
       </main>
     );
   }

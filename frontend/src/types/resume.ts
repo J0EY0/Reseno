@@ -1,7 +1,10 @@
+import type { GeneratedBuiltinTemplateId } from '@/lib/template-presets.generated'
+
 export const SECTION_KINDS = [
   'education',
   'experience',
   'project',
+  'publication',
   'achievement',
   'simple_list',
 ] as const
@@ -11,13 +14,7 @@ export type ResumeTimelineItemLayout = 'split' | 'stacked' | 'compact'
 export type ResumeListItemLayout = 'list' | 'inline' | 'columns'
 export type ResumeFontFamily = 'inter' | 'noto_sans_sc' | 'serif' | 'plex'
 export type ThemeMode = 'light' | 'dark' | 'system'
-export type BuiltinResumeTemplateId =
-  | 'minimal'
-  | 'modern'
-  | 'compact'
-  | 'classic'
-  | 'executive'
-  | 'academic'
+export type BuiltinResumeTemplateId = GeneratedBuiltinTemplateId
 export type ResumeBasicInfoLayout =
   | 'centered'
   | 'left'
@@ -91,6 +88,16 @@ export interface ProjectItem {
   highlights: string[]
 }
 
+export interface PublicationItem {
+  id: string
+  title: string
+  authors: string
+  venue: string
+  date: string
+  url: string
+  description: string
+}
+
 export interface AchievementItem {
   id: string
   name: string
@@ -109,6 +116,7 @@ export interface SectionItemByKind {
   education: EducationItem
   experience: ExperienceItem
   project: ProjectItem
+  publication: PublicationItem
   achievement: AchievementItem
   simple_list: SimpleListItem
 }
@@ -138,6 +146,8 @@ export interface ResumeData {
   basic: ResumeBasicInfo
   sections: ResumeSection[]
 }
+
+export type DocumentLocale = 'zh' | 'en'
 
 export type ResumeDraftDiffKind = 'added' | 'modified' | 'deleted' | 'moved'
 
@@ -266,12 +276,15 @@ export interface ResumeWorkspaceItem {
   id: string
   title: string
   updatedAt: string
+  documentLocale: DocumentLocale
   resume: ResumeData
   jobBrief: string
   typography: ResumeTypographySettings
   template: ResumeTemplateId
   templateSettings: ResumeTemplateSettingsOverrides | null
 }
+
+export type DefaultTemplateIds = Record<DocumentLocale, ResumeTemplateId>
 
 export interface DeletedResumeWorkspaceItem extends ResumeWorkspaceItem {
   deletedAt: string

@@ -14,7 +14,8 @@ from app.services.resume_document_contract import (
     validate_resume_document,
 )
 
-ARTIFACT_FORMAT_VERSION = 1
+RESUME_ARTIFACT_FORMAT_VERSION = 1
+TEMPLATE_ARTIFACT_FORMAT_VERSION = 1
 RESUME_ARTIFACT_FORMAT = "resumate.resume"
 TEMPLATE_ARTIFACT_FORMAT = "resumate.template"
 MAX_JSON_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -43,13 +44,14 @@ def _validate_artifact_version(
     payload: Any,
     *,
     artifact_format: str,
+    expected_version: int,
     unsupported_version_detail: str,
 ) -> None:
     if (
         isinstance(payload, dict)
         and payload.get("format") == artifact_format
         and type(payload.get("formatVersion")) is int
-        and payload["formatVersion"] != ARTIFACT_FORMAT_VERSION
+        and payload["formatVersion"] != expected_version
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -63,6 +65,7 @@ def parse_resume_artifact(payload: Any) -> ResumeArtifactV1:
     _validate_artifact_version(
         payload,
         artifact_format=RESUME_ARTIFACT_FORMAT,
+        expected_version=RESUME_ARTIFACT_FORMAT_VERSION,
         unsupported_version_detail="RESUME_ARTIFACT_VERSION_UNSUPPORTED",
     )
     try:
@@ -91,6 +94,7 @@ def parse_template_artifact(payload: Any) -> list[TemplateArtifactItem]:
     _validate_artifact_version(
         payload,
         artifact_format=TEMPLATE_ARTIFACT_FORMAT,
+        expected_version=TEMPLATE_ARTIFACT_FORMAT_VERSION,
         unsupported_version_detail="TEMPLATE_ARTIFACT_VERSION_UNSUPPORTED",
     )
     try:

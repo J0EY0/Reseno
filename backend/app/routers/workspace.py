@@ -110,6 +110,6 @@ def put_default_template(
 
     return ok_response(
         DefaultTemplateSaveResponse.model_validate(
-            save_default_template(request.template_id)
+            save_default_template(request.document_locale, request.template_id)
         )
     )

@@ -1,13 +1,4 @@
 import {
-  CircleUserRound,
-  Image as ImageIcon,
-  LayoutTemplate,
-  ListMinus,
-  SlidersHorizontal,
-  SquareDashed,
-} from "lucide-react";
-
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -16,6 +7,7 @@ import {
 } from "@/components/ui/select";
 import { TabsContent } from "@/components/ui/tabs";
 import type { AppMessages } from "@/i18n";
+import { createTemplateLayout } from "@/lib/templates";
 import type {
   ResumeAvatarPosition,
   ResumeBasicInfoLayout,
@@ -32,6 +24,14 @@ type TemplatePageMarginPreset = "compact" | "standard" | "relaxed";
 type TemplateContentDensityPreset = "compact" | "standard" | "relaxed";
 type TemplateContentDensity = TemplateContentDensityPreset | "custom";
 type TemplateDividerStyle = "thin" | "medium" | "bold";
+type TemplateAvatarSizePreset = "small" | "standard" | "large";
+type TemplateAvatarSize = TemplateAvatarSizePreset | "custom";
+
+const avatarSizeScalePercentValues: Record<TemplateAvatarSizePreset, number> = {
+  small: 85,
+  standard: 100,
+  large: 115,
+};
 
 const pageMarginPresetValues: Record<
   TemplatePageMarginPreset,
@@ -83,6 +83,40 @@ const contentDensityValues: Record<
     bodyLineHeight: 1.75,
   },
 };
+
+function getAvatarSizeLayout(
+  preset: ResumeTemplateDefinition["preset"],
+  size: TemplateAvatarSizePreset,
+): Pick<ResumeTemplateDefinition["layout"], "avatarWidth" | "avatarHeight"> {
+  const defaults = createTemplateLayout(preset);
+  const scalePercent = avatarSizeScalePercentValues[size];
+  const scaled = createTemplateLayout(preset, {
+    avatarWidth: (defaults.avatarWidth * scalePercent) / 100,
+    avatarHeight: (defaults.avatarHeight * scalePercent) / 100,
+  });
+
+  return {
+    avatarWidth: scaled.avatarWidth,
+    avatarHeight: scaled.avatarHeight,
+  };
+}
+
+function getAvatarSize(template: ResumeTemplateDefinition): TemplateAvatarSize {
+  const sizes = Object.keys(
+    avatarSizeScalePercentValues,
+  ) as TemplateAvatarSizePreset[];
+
+  return (
+    sizes.find((size) => {
+      const layout = getAvatarSizeLayout(template.preset, size);
+
+      return (
+        template.layout.avatarWidth === layout.avatarWidth &&
+        template.layout.avatarHeight === layout.avatarHeight
+      );
+    }) ?? "custom"
+  );
+}
 
 function getPageMarginPreset(
   settings: ResumeTemplateSettings,
@@ -179,10 +213,15 @@ export function TemplateLayoutTab({
     });
   }
 
+  function updateAvatarSize(size: TemplateAvatarSize) {
+    if (size !== "custom") {
+      updateLayout(getAvatarSizeLayout(template.preset, size));
+    }
+  }
   return (
     <TabsContent value="layout" className="m-0 px-1 py-4">
       <div className="grid">
-        <TemplateSelectRow icon={ImageIcon} label={t.basicInfoLayout}>
+        <TemplateSelectRow label={t.basicInfoLayout}>
           <Select
             value={template.layout.basicInfo}
             disabled={isReadonly}
@@ -193,7 +232,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="centered">{t.basicInfoLayoutCentered}</SelectItem>
               <SelectItem value="left">{t.basicInfoLayoutLeft}</SelectItem>
               <SelectItem value="split">{t.basicInfoLayoutSplit}</SelectItem>
@@ -203,10 +242,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow
-          icon={SlidersHorizontal}
-          label={t.sectionTemplateStyle}
-        >
+        <TemplateSelectRow label={t.sectionTemplateStyle}>
           <Select
             value={template.layout.section}
             disabled={isReadonly}
@@ -219,7 +255,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="ruled">{t.sectionStyleRuled}</SelectItem>
               <SelectItem value="boxed">{t.sectionStyleBoxed}</SelectItem>
               <SelectItem value="accent">{t.sectionStyleAccent}</SelectItem>
@@ -229,10 +265,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow
-          icon={LayoutTemplate}
-          label={t.timelineItemLayout}
-        >
+        <TemplateSelectRow label={t.timelineItemLayout}>
           <Select
             value={template.layout.timelineItemLayout}
             disabled={isReadonly}
@@ -245,7 +278,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="split">{t.timelineItemLayoutSplit}</SelectItem>
               <SelectItem value="stacked">{t.timelineItemLayoutStacked}</SelectItem>
               <SelectItem value="compact">{t.timelineItemLayoutCompact}</SelectItem>
@@ -253,7 +286,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow icon={ListMinus} label={t.listItemLayout}>
+        <TemplateSelectRow label={t.listItemLayout}>
           <Select
             value={template.layout.listItemLayout}
             disabled={isReadonly}
@@ -266,7 +299,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="list">{t.listItemLayoutList}</SelectItem>
               <SelectItem value="inline">{t.listItemLayoutInline}</SelectItem>
               <SelectItem value="columns">{t.listItemLayoutColumns}</SelectItem>
@@ -274,7 +307,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow icon={CircleUserRound} label={t.avatarPosition}>
+        <TemplateSelectRow label={t.avatarPosition}>
           <Select
             value={template.layout.avatarPosition}
             disabled={isReadonly}
@@ -285,7 +318,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="none">{t.avatarPositionNone}</SelectItem>
               <SelectItem value="right">{t.avatarPositionRight}</SelectItem>
               <SelectItem value="left">{t.avatarPositionLeft}</SelectItem>
@@ -294,7 +327,29 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow icon={SquareDashed} label={t.pageMargin}>
+        {template.layout.avatarPosition !== "none" ? (
+          <TemplateSelectRow label={t.avatarSize}>
+            <Select
+              value={getAvatarSize(template)}
+              disabled={isReadonly}
+              onValueChange={(value) => updateAvatarSize(value as TemplateAvatarSize)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end" position="popper" sideOffset={4}>
+                <SelectItem value="small">{t.avatarSizeSmall}</SelectItem>
+                <SelectItem value="standard">{t.avatarSizeStandard}</SelectItem>
+                <SelectItem value="large">{t.avatarSizeLarge}</SelectItem>
+                <SelectItem value="custom" disabled>
+                  {t.avatarSizeCustom}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </TemplateSelectRow>
+        ) : null}
+
+        <TemplateSelectRow label={t.pageMargin}>
           <Select
             value={getPageMarginPreset(template.settings)}
             disabled={isReadonly}
@@ -307,7 +362,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="compact">{t.pageMarginCompact}</SelectItem>
               <SelectItem value="standard">{t.pageMarginStandard}</SelectItem>
               <SelectItem value="relaxed">{t.pageMarginRelaxed}</SelectItem>
@@ -315,10 +370,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow
-          icon={SlidersHorizontal}
-          label={t.templateContentDensity}
-        >
+        <TemplateSelectRow label={t.templateContentDensity}>
           <Select
             value={getContentDensity(template.settings)}
             disabled={isReadonly}
@@ -335,7 +387,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="compact">{t.templateDensityCompact}</SelectItem>
               <SelectItem value="standard">{t.templateDensityStandard}</SelectItem>
               <SelectItem value="relaxed">{t.templateDensityRelaxed}</SelectItem>
@@ -346,7 +398,7 @@ export function TemplateLayoutTab({
           </Select>
         </TemplateSelectRow>
 
-        <TemplateSelectRow icon={ListMinus} label={t.templateDividerStyle}>
+        <TemplateSelectRow label={t.templateDividerStyle}>
           <Select
             value={getDividerStyle(template.settings)}
             disabled={isReadonly}
@@ -360,7 +412,7 @@ export function TemplateLayoutTab({
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="thin">{t.templateDividerThin}</SelectItem>
               <SelectItem value="medium">{t.templateDividerMedium}</SelectItem>
               <SelectItem value="bold">{t.templateDividerBold}</SelectItem>

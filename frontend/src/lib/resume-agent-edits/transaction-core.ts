@@ -112,6 +112,7 @@ export function itemLabel(item: ResumeSectionItem) {
   if ("school" in item) return item.school.trim() || item.degree.trim() || item.id;
   if ("company" in item) return item.company.trim() || item.position.trim() || item.id;
   if ("role" in item) return item.name.trim() || item.role.trim() || item.id;
+  if ("authors" in item) return item.title.trim() || item.venue.trim() || item.id;
   if ("issuer" in item) return item.name.trim() || item.issuer.trim() || item.id;
   return item.content.trim() || item.id;
 }

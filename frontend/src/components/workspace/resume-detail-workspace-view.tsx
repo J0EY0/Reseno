@@ -19,6 +19,7 @@ import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-d
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspacePreviewSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages, Locale } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 import { cn } from "@/lib/utils";
 
 // Pagination and PDF-ready preview code are owned by the document surface,
@@ -36,17 +37,19 @@ const ResumeDetailTitleDialog = lazy(() =>
 );
 
 function ResumeDetailContent({
-  locale,
   messages,
   model,
   previewRef,
 }: {
-  locale: Locale;
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
   previewRef: RefObject<DocumentPreviewHandle | null>;
 }) {
   const { commands, state } = model;
+  const documentMessages = useLocalizedMessages(
+    state.resumeItem?.documentLocale ?? null,
+  );
+  const showDocumentSkeleton = state.showSkeleton || !documentMessages;
   const shouldDockAgent = !state.agent.isPanelCollapsed;
   const workspaceStyle = {
     "--agent-panel-width": "360px",
@@ -66,22 +69,23 @@ function ResumeDetailContent({
     >
       <ResumeEditorPane
         t={messages}
+        documentT={documentMessages}
         resume={state.resume}
         setResume={commands.setResume}
         collapsedState={state.collapsedState}
         setCollapsedState={commands.setCollapsedState}
         hasLoadError={state.hasVersionLoadError}
-        showSkeleton={state.showSkeleton}
+        showSkeleton={showDocumentSkeleton}
       />
 
-      {state.showSkeleton ? (
+      {showDocumentSkeleton ? (
         <WorkspacePreviewSkeleton />
       ) : (
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
           <DocumentPreviewCard
             ref={previewRef}
             variant="resume"
-            t={messages}
+            t={documentMessages}
             resume={state.previewResume}
             typography={state.typography}
             template={state.activeTemplate}
@@ -92,7 +96,6 @@ function ResumeDetailContent({
       )}
 
       <ResumeDetailAgentHost
-        locale={locale}
         messages={messages}
         model={model}
       />
@@ -180,7 +183,6 @@ export function ResumeDetailWorkspaceView({
           />
         ) : (
           <ResumeDetailContent
-            locale={locale}
             messages={messages}
             model={model}
             previewRef={previewRef}

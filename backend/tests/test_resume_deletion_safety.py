@@ -12,7 +12,7 @@ from app.services.agent.attachments import (
 def _create_deleted_resume(client: TestClient, title: str) -> str:
     resume_id = client.post(
         "/api/resumes",
-        json={"title": title},
+        json={"documentLocale": "en", "title": title},
     ).json()["data"]["resume"]["id"]
     response = client.post(f"/api/resumes/{resume_id}/trash")
     assert response.status_code == 200
@@ -167,7 +167,7 @@ def test_running_agent_turn_blocks_permanent_resume_deletion(
 ) -> None:
     resume_id = client.post(
         "/api/resumes",
-        json={"title": "Running private resume"},
+        json={"documentLocale": "en", "title": "Running private resume"},
     ).json()["data"]["resume"]["id"]
     attachment = store_resume_agent_attachment(
         resume_id=resume_id,
@@ -202,7 +202,7 @@ def test_running_agent_turn_blocks_empty_trash_before_any_file_deletion(
     resume_ids = [
         client.post(
             "/api/resumes",
-            json={"title": title},
+            json={"documentLocale": "en", "title": title},
         ).json()["data"]["resume"]["id"]
         for title in ("First private resume", "Running private resume")
     ]

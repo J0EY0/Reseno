@@ -144,6 +144,67 @@ try {
     ["sections.experience.items.tencent.position"],
     "Only the position slot must receive the position diff.",
   );
+
+  const publicationLookup = createResumeDiffLookup([
+    {
+      id: "diff-publication-title",
+      operationId: "edit-publication-title",
+      path: "sections.publications.items.paper-1.title",
+      kind: "modified",
+      label: "Update publication title",
+      sectionId: "publications",
+      itemId: "paper-1",
+      before: "Old title",
+      after: "New title",
+    },
+    {
+      id: "diff-publication-authors",
+      operationId: "edit-publication-authors",
+      path: "sections.publications.items.paper-1.authors",
+      kind: "modified",
+      label: "Update authors",
+      sectionId: "publications",
+      itemId: "paper-1",
+      before: "Ruoan Shen",
+      after: "Ruoan Shen, Maya Li",
+    },
+    {
+      id: "diff-publication-venue",
+      operationId: "edit-publication-venue",
+      path: "sections.publications.items.paper-1.venue",
+      kind: "modified",
+      label: "Update venue",
+      sectionId: "publications",
+      itemId: "paper-1",
+      before: "Workshop",
+      after: "National HCI Conference",
+    },
+  ]).itemDiffById.get("paper-1");
+  assert.deepEqual(
+    {
+      title: getRenderableFieldDiffs(
+        publicationLookup,
+        "publication",
+        "title",
+      ).map((diff) => diff.path),
+      subtitle: getRenderableFieldDiffs(
+        publicationLookup,
+        "publication",
+        "subtitle",
+      ).map((diff) => diff.path),
+      meta: getRenderableFieldDiffs(
+        publicationLookup,
+        "publication",
+        "meta",
+      ).map((diff) => diff.path),
+    },
+    {
+      title: ["sections.publications.items.paper-1.title"],
+      subtitle: ["sections.publications.items.paper-1.authors"],
+      meta: ["sections.publications.items.paper-1.venue"],
+    },
+    "Publication diffs must highlight the matching citation slots.",
+  );
   assert.deepEqual(
     [...createListDiff(
       ["第一条不变", "第二条旧文本"],

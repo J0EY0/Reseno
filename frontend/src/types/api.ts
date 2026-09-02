@@ -3,6 +3,8 @@ import type { ResumeEditOperation } from "@/types/resume-edit-operation.generate
 import type {
   AgentSettings,
   BuiltinResumeTemplateId,
+  DefaultTemplateIds,
+  DocumentLocale,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   ModelConfig,
@@ -46,6 +48,7 @@ export interface WorkspaceVersionsResponse {
 }
 
 export interface ResumeCreateRequest {
+  documentLocale: DocumentLocale;
   title?: string;
   resume?: ResumeData;
   jobBrief?: string;
@@ -58,6 +61,7 @@ export type ResumeSaveMode = "autosave" | "checkpoint";
 
 export interface ResumeSaveRequest {
   title: string;
+  documentLocale: DocumentLocale;
   resume: ResumeData;
   jobBrief: string;
   typography: ResumeWorkspaceItem["typography"];
@@ -88,7 +92,7 @@ export interface ResumeDeleteResponse {
 }
 
 export interface DefaultTemplateSaveResponse {
-  defaultTemplateId: string;
+  defaultTemplateIds: DefaultTemplateIds;
 }
 
 export interface UserSettingsSaveResponse {
@@ -122,6 +126,7 @@ export type CustomTemplateArtifactRef = `custom:${number}`;
 
 export interface ResumeArtifactItem {
   title: string;
+  documentLocale: DocumentLocale;
   resume: ResumeData;
   jobBrief: string;
   typography: NonNullable<ResumeWorkspaceItem["typography"]>;
@@ -148,7 +153,6 @@ export type TemplateArtifactItem = Omit<
 
 export interface ExportResumePdfRequest {
   resumeId: string;
-  locale: Locale;
   fileNameSeed: string;
   savedAt: string;
   versionId?: string;
@@ -243,7 +247,7 @@ export interface AgentChatRequest {
   expectedRevision?: string;
   message: AgentChatUserMessage;
   messages: AgentConversationMessage[];
-  locale: Locale;
+  locale: DocumentLocale;
   resume: ResumeData;
   draftState?: AgentDraftState | null;
   modelConfig: ModelConfig | null;
@@ -352,7 +356,7 @@ export interface AgentSessionResponse {
 }
 
 export interface AgentSessionReplaceRequest {
-  locale: Locale;
+  locale: DocumentLocale;
   revision: string;
   messages: AgentConversationMessage[];
 }

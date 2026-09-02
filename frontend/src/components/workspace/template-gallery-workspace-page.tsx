@@ -43,9 +43,11 @@ export function TemplateGalleryWorkspacePage({
     <div className="flex-1 p-4">
       <TemplateGallery
         t={messages}
-        previewResume={gallery.previewResume}
+        previewMessages={gallery.previewMessages}
+        previewResumes={gallery.previewResumes}
         templates={gallery.templateCatalog}
         defaultTemplateId={gallery.defaultTemplateId}
+        templateLocale={gallery.templateLocale}
         isImporting={gallery.isImporting}
         isCreating={gallery.isCreating}
         openingTemplateId={gallery.openingTemplateId}
@@ -53,6 +55,7 @@ export function TemplateGalleryWorkspacePage({
         onPreloadTemplateDetail={gallery.preloadTemplateDetail}
         onOpenTemplate={(templateId) => void gallery.openTemplate(templateId)}
         onSetDefaultTemplate={gallery.setDefaultTemplate}
+        onTemplateLocaleChange={gallery.setTemplateLocale}
         onCreateCustomTemplate={() => void gallery.createCustomTemplate()}
         onImportTemplates={(file) => void gallery.importTemplates(file)}
         onDeleteTemplates={(ids) => void gallery.deleteTemplates(ids)}

@@ -3,6 +3,7 @@ import {
   BriefcaseBusiness,
   FolderKanban,
   GraduationCap,
+  LibraryBig,
   ListPlus,
   Plus,
   type LucideIcon,
@@ -29,6 +30,7 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
   experience: BriefcaseBusiness,
   project: FolderKanban,
+  publication: LibraryBig,
   achievement: Award,
   simple_list: ListPlus,
 }

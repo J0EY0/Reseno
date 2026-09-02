@@ -49,7 +49,9 @@ export function ResumeGalleryWorkspacePage({
         openingResumeId={gallery.openingResumeId}
         onPreloadResumeDetail={gallery.preloadResumeDetail}
         onOpenResume={(resumeId) => void gallery.openResume(resumeId)}
-        onCreateResume={() => void gallery.createResume()}
+        onCreateResume={(documentLocale) =>
+          void gallery.createResume(documentLocale)
+        }
         onImportResume={(file) => void gallery.importResume(file)}
         onDeleteResume={(resumeId) =>
           void gallery.moveResumesToTrash([resumeId])

@@ -18,7 +18,7 @@ export function CopilotPanel({
   isPanelCollapsed,
   resumeId,
   t,
-  locale,
+  documentLocale,
   resume,
   modelConfigs,
   selectedModelId,
@@ -46,7 +46,7 @@ export function CopilotPanel({
   )
   const conversation = useAgentConversation({
     agentDraftState,
-    locale,
+    documentLocale,
     onApplyAgentDraft,
     onBeforeSend,
     onDiscardAgentDraft,

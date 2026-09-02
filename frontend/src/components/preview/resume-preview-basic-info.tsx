@@ -102,7 +102,7 @@ function ContactLine({
       )}
     >
       {items.map((item, index) => (
-        <span key={item.id}>
+        <span key={item.id} className="whitespace-nowrap">
           <ContactItemText item={item} enableLink={enableLinks} />
           {index < items.length - 1 ? (
             <span className="resume-tone-subtle ml-3">|</span>
@@ -196,7 +196,10 @@ export function StandardBasicInfo({
     <ContactLine
       items={contactItems}
       enableLinks={enableContactLinks}
-      className="resume-tone-body mt-3"
+      className={cn(
+        "resume-tone-body mt-3",
+        isLeftAligned && "justify-start",
+      )}
     />
   );
   const infoContent = (
@@ -206,7 +209,7 @@ export function StandardBasicInfo({
     </>
   );
   const basicInfoContent = isSplit ? (
-    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-end gap-8">
+    <div className="grid min-w-0 grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] items-end gap-5">
       <div className="text-left">{identityContent}</div>
       <div className="min-w-0">
         <ContactLine
@@ -220,6 +223,7 @@ export function StandardBasicInfo({
     <div
       className={cn(
         "min-w-0",
+        shouldFloatSideAvatar && "px-[124px]",
         isLeftAligned ||
           (isProfile && hasAvatar && avatarPosition === "left")
           ? "text-left"

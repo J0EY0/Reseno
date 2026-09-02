@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.document_locales import DocumentLocale
 from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
 
 JsonObject = dict[str, Any]
@@ -24,6 +25,7 @@ class ResumeWorkspaceItemResponse(BaseModel):
     id: str
     title: str
     updated_at: str = Field(alias="updatedAt")
+    document_locale: DocumentLocale = Field(alias="documentLocale")
     resume: JsonObject
     job_brief: str = Field(alias="jobBrief")
     typography: TypographySettings
@@ -44,6 +46,7 @@ class ResumeCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    document_locale: DocumentLocale = Field(alias="documentLocale")
     title: str | None = Field(default=None, max_length=MAX_RESUME_TITLE_LENGTH)
     resume: JsonObject | None = None
     job_brief: str | None = Field(default=None, alias="jobBrief")
@@ -61,6 +64,7 @@ class ResumeSaveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     title: str = Field(max_length=MAX_RESUME_TITLE_LENGTH)
+    document_locale: DocumentLocale = Field(alias="documentLocale")
     resume: JsonObject
     job_brief: str = Field(alias="jobBrief")
     typography: TypographySettings

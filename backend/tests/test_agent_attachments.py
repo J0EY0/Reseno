@@ -1429,7 +1429,7 @@ def test_permanent_resume_delete_preserves_records_when_attachment_cleanup_fails
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Protected attachment"},
+        json={"documentLocale": "en", "title": "Protected attachment"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     initial_session = client.get(
@@ -1543,7 +1543,7 @@ def test_attachment_upload_rejects_permanently_deleted_resume(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Deleted attachment owner"},
+        json={"documentLocale": "en", "title": "Deleted attachment owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
@@ -1567,7 +1567,7 @@ def test_attachment_upload_rejects_permanently_deleted_resume(
 def test_attachment_upload_rejects_trashed_resume(client: TestClient) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Trashed attachment owner"},
+        json={"documentLocale": "en", "title": "Trashed attachment owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     assert client.post(f"/api/resumes/{resume_id}/trash").status_code == 200
@@ -1586,7 +1586,7 @@ def test_session_replace_rejects_permanently_deleted_resume(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Deleted session owner"},
+        json={"documentLocale": "en", "title": "Deleted session owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     revision = client.get(
@@ -1633,7 +1633,7 @@ def test_agent_chat_rejects_permanently_deleted_resume(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Deleted chat owner"},
+        json={"documentLocale": "en", "title": "Deleted chat owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     revision = client.get(
@@ -1687,7 +1687,7 @@ def test_inflight_attachment_upload_is_removed_by_permanent_delete(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Concurrent attachment owner"},
+        json={"documentLocale": "en", "title": "Concurrent attachment owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     upload_entered = Event()
@@ -1757,7 +1757,7 @@ def test_chat_prevalidation_cannot_recreate_cache_after_permanent_delete(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Concurrent chat attachment owner"},
+        json={"documentLocale": "en", "title": "Concurrent chat attachment owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     attachment = _upload(

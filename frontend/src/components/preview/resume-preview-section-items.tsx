@@ -18,6 +18,7 @@ import {
   getRenderableItems,
 } from "@/components/preview/resume-preview-model";
 import type { AppMessages } from "@/i18n";
+import { createContactHref } from "@/lib/contact-links";
 import type {
   RenderableResumeSection,
   RenderableSectionItem,
@@ -96,6 +97,7 @@ function hasTextSlot(
 
 function TimelineItem({
   diff,
+  enableContactLinks,
   item,
   kind,
   layout,
@@ -103,6 +105,7 @@ function TimelineItem({
   t,
 }: {
   diff?: ItemDiffLookup;
+  enableContactLinks: boolean;
   item: RenderableSectionItem;
   kind: SectionKind;
   layout: ResumeTimelineItemLayout;
@@ -119,6 +122,7 @@ function TimelineItem({
   const subtitleDiffs = fieldDiffs("subtitle");
   const metaDiffs = fieldDiffs("meta");
   const periodDiffs = fieldDiffs("period");
+  const urlHref = createContactHref("url", item.url);
   const hasSubtitle = hasTextSlot(
     item.subtitle,
     subtitleDiffs,
@@ -292,7 +296,18 @@ function TimelineItem({
           )}
           style={{ fontSize: `${settings.metaScale}em` }}
         >
-          <ResumeDiffText value={item.url} diffs={urlDiffs} />
+          {enableContactLinks && urlHref ? (
+            <a
+              href={urlHref}
+              className="text-inherit no-underline hover:underline"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              <ResumeDiffText value={item.url} diffs={urlDiffs} />
+            </a>
+          ) : (
+            <ResumeDiffText value={item.url} diffs={urlDiffs} />
+          )}
         </p>
       ) : null}
 
@@ -334,6 +349,7 @@ function TimelineItem({
 }
 
 function TimelineItems({
+  enableContactLinks,
   itemDiffById,
   items,
   kind,
@@ -341,6 +357,7 @@ function TimelineItems({
   settings,
   t,
 }: SectionItemsProps & {
+  enableContactLinks: boolean;
   kind: SectionKind;
   layout: ResumeTimelineItemLayout;
 }) {
@@ -354,6 +371,7 @@ function TimelineItems({
         <TimelineItem
           key={item.id}
           item={item}
+          enableContactLinks={enableContactLinks}
           kind={kind}
           t={t}
           settings={settings}
@@ -410,6 +428,7 @@ function SimpleListContent({
 }
 
 export function SectionItems({
+  enableContactLinks,
   itemDiffById,
   items,
   layout,
@@ -417,6 +436,7 @@ export function SectionItems({
   settings,
   t,
 }: {
+  enableContactLinks: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
   items?: RenderableSectionItem[];
   layout: ResumeTemplateLayout;
@@ -446,6 +466,7 @@ export function SectionItems({
   return (
     <TimelineItems
       items={visibleItems}
+      enableContactLinks={enableContactLinks}
       kind={section.kind}
       t={t}
       settings={settings}

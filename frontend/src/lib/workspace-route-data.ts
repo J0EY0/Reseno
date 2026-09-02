@@ -1,10 +1,10 @@
 import type {
   AgentSettings,
+  DefaultTemplateIds,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
   ModelConfig,
   ResumeTemplateDefinition,
-  ResumeTemplateId,
   ResumeWorkspaceItem,
   ThemeMode,
 } from "@/types/resume";
@@ -35,7 +35,7 @@ interface WorkspaceRoutePreferences {
 
 export interface WorkspaceTemplateRouteData
   extends WorkspaceRoutePreferences {
-  defaultTemplateId: ResumeTemplateId;
+  defaultTemplateIds: DefaultTemplateIds;
   customTemplates: ResumeTemplateDefinition[];
 }
 

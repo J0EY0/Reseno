@@ -61,9 +61,14 @@ function hasValidTheme(data: Record<string, unknown>) {
 }
 
 function hasTemplateRouteData(data: Record<string, unknown>) {
+  const defaultTemplateIds = data.defaultTemplateIds;
+
   return (
     hasValidTheme(data) &&
-    typeof data.defaultTemplateId === "string" &&
+    Boolean(defaultTemplateIds) &&
+    typeof defaultTemplateIds === "object" &&
+    typeof (defaultTemplateIds as Record<string, unknown>).zh === "string" &&
+    typeof (defaultTemplateIds as Record<string, unknown>).en === "string" &&
     Array.isArray(data.customTemplates)
   );
 }

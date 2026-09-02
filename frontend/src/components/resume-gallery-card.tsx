@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { ResumeThumbnail } from "@/components/preview/resume-thumbnail";
 import { Button } from "@/components/ui/button";
 import type { AppMessages } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 import { cn } from "@/lib/utils";
 import type {
   ResumeTemplateDefinition,
@@ -40,9 +41,13 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
 }) {
   const resumeLabel = item.title || item.resume.basic.name || t.untitledResume;
   const preloadDetail = isSelecting ? undefined : onPreloadDetail;
+  const documentMessages = useLocalizedMessages(item.documentLocale);
 
   return (
-    <div className="group relative h-full">
+    <div
+      data-gallery-item-id={item.id}
+      className="group relative h-full"
+    >
         <Link
           to={`/resume/${item.id}`}
           role={isSelecting ? "button" : undefined}
@@ -98,19 +103,21 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
                     <Check className="size-3.5" />
                   </span>
                 ) : null}
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
-                  style={{ width: "210mm", height: "297mm" }}
-                >
-                  <ResumeThumbnail
-                    t={t}
-                    resume={item.resume}
-                    fontFamily={item.typography.fontFamily}
-                    fontSize={item.typography.fontSize}
-                    template={template}
-                  />
-                </div>
+                {documentMessages ? (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"
+                    style={{ width: "210mm", height: "297mm" }}
+                  >
+                    <ResumeThumbnail
+                      t={documentMessages}
+                      resume={item.resume}
+                      fontFamily={item.typography.fontFamily}
+                      fontSize={item.typography.fontSize}
+                      template={template}
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="flex min-h-[92px] flex-1 flex-col justify-between px-1 pt-3">

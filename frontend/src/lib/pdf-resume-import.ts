@@ -1,14 +1,19 @@
-import type { ResumeData } from "@/types/resume";
+import type { DocumentLocale, ResumeData } from "@/types/resume";
 
 import { hasMeaningfulResumeText } from "./pdf-resume-import/basic-contact";
+import {
+  detectPdfResumeDocumentLocale,
+} from "./pdf-resume-import/document-language";
 import { extractPdfLines } from "./pdf-resume-import/pdf-text-extraction";
 import { fetchResumeImportParserConfig } from "./pdf-resume-import/parser-config";
 import { buildResumeFromPdfLines } from "./pdf-resume-import/parser";
 
 export async function importResumeFromPdf(
   file: File,
-  fallbackSectionTitle: string,
-): Promise<ResumeData> {
+): Promise<{
+  resume: ResumeData;
+  documentLocale: DocumentLocale;
+}> {
   const [lines, { registry, lexicon }] = await Promise.all([
     extractPdfLines(file),
     fetchResumeImportParserConfig(),
@@ -19,10 +24,21 @@ export async function importResumeFromPdf(
     throw new Error("PDF_IMPORT_NO_TEXT");
   }
 
-  return buildResumeFromPdfLines(
-    lines,
-    fallbackSectionTitle,
-    registry,
-    lexicon,
-  );
+  const documentLocale = detectPdfResumeDocumentLocale(lines);
+  const fallbackSectionTitle = registry.sections.find(
+    (section) => section.kind === "simple_list",
+  )?.labels[documentLocale];
+  if (!fallbackSectionTitle) {
+    throw new Error("INVALID_RESUME_IMPORT_PARSER_CONFIG");
+  }
+
+  return {
+    resume: buildResumeFromPdfLines(
+      lines,
+      fallbackSectionTitle,
+      registry,
+      lexicon,
+    ),
+    documentLocale,
+  };
 }

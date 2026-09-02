@@ -223,6 +223,16 @@ assert.match(
   "Selecting any model must reveal the adjacent bulk delete action while collapsed controls remain inaccessible.",
 );
 assert.match(
+  modelConfigBulkDeleteAction,
+  /transition-\[opacity,transform\][\s\S]*?\[transition-duration:var\(--duration-enter\)\][\s\S]*?\[transition-timing-function:var\(--ease-move\)\][\s\S]*?\[transition-duration:var\(--duration-exit\)\][\s\S]*?ease-in/,
+  "The bulk delete action must use the product's asymmetric enter and exit motion without changing the header layout.",
+);
+assert.doesNotMatch(
+  modelConfigBulkDeleteAction,
+  /transition-all|gridTemplateColumns|marginRight|scale\(|disabled=\{disabled \|\| !canBulkDelete\}/,
+  "Bulk action feedback must not squeeze its label, animate spacing, scale the destructive button, or double-fade through its disabled state.",
+);
+assert.match(
   modelConfigPanel,
   /const pendingBulkModelIds = pendingBulkDeleteIds\.filter[\s\S]*?modelIds\.length === 0[\s\S]*?const response = await deleteModelConfigs\(modelIds\)[\s\S]*?selection\.clearSelection\(\)[\s\S]*?setPendingBulkDeleteIds\(\[\]\)[\s\S]*?open=\{pendingBulkModelIds\.length > 0\}[\s\S]*?title=\{t\.deleteModelConfigsConfirmTitle\}[\s\S]*?onConfirm=\{confirmBulkDeleteModels\}[\s\S]*?deferClose/,
   "A selected batch must issue one atomic helper call, clear selection after success, and use one deferred-close confirmation.",

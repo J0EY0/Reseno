@@ -6,6 +6,7 @@ import {
   FolderKanban,
   GraduationCap,
   List,
+  LibraryBig,
   Plus,
   Trash2,
   type LucideIcon,
@@ -27,6 +28,7 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
   experience: Briefcase,
   project: FolderKanban,
+  publication: LibraryBig,
   achievement: Award,
   simple_list: List,
 }
@@ -42,6 +44,7 @@ const ResumeSectionDeleteDialog = lazy(() =>
 
 export type ResumeSectionCardProps = {
   t: AppMessages
+  documentT: AppMessages | null
   section: ResumeSection
   collapsed: boolean
   onToggle: () => void
@@ -55,6 +58,7 @@ export type ResumeSectionCardProps = {
 
 export function ResumeSectionCard({
   t,
+  documentT,
   section,
   collapsed,
   onToggle,
@@ -70,7 +74,8 @@ export function ResumeSectionCard({
   )
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const Icon = sectionIcons[section.kind]
-  const sectionTitle = section.title.trim() || t.sectionTitles[section.kind]
+  const sectionTitle =
+    section.title.trim() || documentT?.sectionTitles[section.kind] || ''
   const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
   const itemCountLabel = `${section.items.length} ${itemLabel}`
 

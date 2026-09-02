@@ -23,6 +23,10 @@ export function getMessagesSync(locale: Locale) {
   return messageCache[locale] ?? defaultMessages
 }
 
+export function getLoadedMessages(locale: Locale): AppMessages | null {
+  return messageCache[locale] ?? null
+}
+
 export function loadMessages(locale: Locale): Promise<AppMessages> {
   const cachedMessages = messageCache[locale]
   if (cachedMessages) {

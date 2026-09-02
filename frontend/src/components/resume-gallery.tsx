@@ -1,9 +1,10 @@
-import { CopyPlus, FileUp } from "lucide-react";
+import { FileUp } from "lucide-react";
 import { useRef, type ChangeEvent } from "react";
 
 import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
 import { GalleryPagination } from "@/components/gallery-pagination";
 import { GalleryToolbar } from "@/components/gallery-toolbar";
+import { NewResumeDialog } from "@/components/new-resume-dialog";
 import { useResumeThumbnailFonts } from "@/components/preview/resume-thumbnail-fonts";
 import { ResumeGalleryGrid } from "@/components/resume-gallery-grid";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size"
 import { useResumeGalleryController } from "@/components/use-resume-gallery-controller";
 import type { AppMessages, Locale } from "@/i18n";
 import type {
+  DocumentLocale,
   ResumeTemplateDefinition,
   ResumeWorkspaceItem,
 } from "@/types/resume";
@@ -41,7 +43,7 @@ export function ResumeGallery({
   openingResumeId: string | null;
   onPreloadResumeDetail: () => void;
   onOpenResume: (resumeId: string) => void;
-  onCreateResume: () => void;
+  onCreateResume: (documentLocale: DocumentLocale) => void;
   onImportResume: (file: File) => void;
   onDeleteResume: (resumeId: string) => void;
   onBulkDeleteResumes: (resumeIds: string[]) => void;
@@ -92,7 +94,7 @@ export function ResumeGallery({
         type="file"
         accept=".pdf,application/pdf,.json,application/json"
         className="hidden"
-        disabled={isImporting}
+        disabled={isImporting || isCreating}
         onChange={handleImportChange}
       />
       <GalleryToolbar
@@ -113,7 +115,7 @@ export function ResumeGallery({
             <Button
               type="button"
               variant="outline"
-              disabled={isImporting}
+              disabled={isImporting || isCreating}
               onClick={() => fileInputRef.current?.click()}
             >
               {isImporting ? (
@@ -123,19 +125,12 @@ export function ResumeGallery({
               )}
               {isImporting ? t.importing : t.importResume}
             </Button>
-            <Button
-              type="button"
+            <NewResumeDialog
               disabled={isImporting || isCreating}
-              aria-busy={isCreating || undefined}
-              onClick={onCreateResume}
-            >
-              {isCreating ? (
-                <Spinner data-icon="inline-start" aria-label={t.creating} />
-              ) : (
-                <CopyPlus data-icon="inline-start" />
-              )}
-              {isCreating ? t.creating : t.newResume}
-            </Button>
+              isCreating={isCreating}
+              messages={t}
+              onCreateResume={onCreateResume}
+            />
           </>
         }
       />

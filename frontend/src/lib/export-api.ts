@@ -86,6 +86,7 @@ export function createResumeArtifact(
 
   const exportDocument: ResumeArtifactItem = {
     title: resume.title,
+    documentLocale: resume.documentLocale,
     resume: resume.resume,
     jobBrief: resume.jobBrief,
     typography: resume.typography,

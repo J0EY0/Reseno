@@ -5,57 +5,34 @@ import {
   createTemplateApi,
 } from "@/lib/workspace-api";
 import type { ResumeDetailResponse } from "@/types/api";
-import type {
-  ResumeTemplateDefinition,
-  ResumeTemplateId,
-  ResumeTypographySettings,
-} from "@/types/resume";
+import type { ResumeTemplateDefinition } from "@/types/resume";
 
-const defaultTypography: ResumeTypographySettings = {
-  fontFamily: "inter",
-  fontSize: 16,
-};
-
-export async function importResumesIntoWorkspace(
-  file: File,
-  {
-    defaultTemplateId,
-    fallbackResumeTitle,
-    fallbackSectionTitle,
-  }: {
-    defaultTemplateId: ResumeTemplateId;
-    fallbackResumeTitle: string;
-    fallbackSectionTitle: string;
-  },
-) {
+export async function importResumesIntoWorkspace(file: File) {
   const isPdfImport =
     file.type === "application/pdf" ||
     file.name.toLowerCase().endsWith(".pdf");
-  const importedBundle = await (async () => {
-    if (!isPdfImport) {
-      return importResumePayload(file);
-    }
-
+  if (isPdfImport) {
     // The parser and PDF.js are loaded only after PDF intent is known.
     const { importResumeFromPdf } = await import("@/lib/pdf-resume-import");
+    const { documentLocale, resume } = await importResumeFromPdf(file);
+    const result = await createResumeApi({
+      documentLocale,
+      jobBrief: "",
+      resume,
+      title: normalizeResumeTitle(
+        file.name.replace(/\.pdf$/i, ""),
+        documentLocale === "zh" ? "简历" : "Resume",
+      ),
+      templateSettings: null,
+    });
 
     return {
-      templates: [],
-      resumes: [
-        {
-          title: normalizeResumeTitle(
-            file.name.replace(/\.pdf$/i, ""),
-            fallbackResumeTitle,
-          ),
-          resume: await importResumeFromPdf(file, fallbackSectionTitle),
-          jobBrief: "",
-          typography: defaultTypography,
-          template: defaultTemplateId,
-          templateSettings: null,
-        },
-      ],
+      savedImports: [result],
+      savedTemplates: [],
     };
-  })();
+  }
+
+  const importedBundle = await importResumePayload(file);
   if (importedBundle.resumes.length === 0) {
     throw new Error("No valid resume documents found in the imported file.");
   }
@@ -76,6 +53,7 @@ export async function importResumesIntoWorkspace(
     }
     savedImports.push(
       await createResumeApi({
+        documentLocale: item.documentLocale,
         title: item.title,
         resume: item.resume,
         jobBrief: item.jobBrief,

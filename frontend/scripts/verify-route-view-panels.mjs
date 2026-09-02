@@ -136,6 +136,17 @@ for (const moduleName of modules) {
   sources.set(moduleName, source);
 }
 
+const [enMessages, zhMessages] = await Promise.all([
+  readFile(
+    path.join(frontendRoot, "src", "i18n", "locales", "en.json"),
+    "utf8",
+  ).then(JSON.parse),
+  readFile(
+    path.join(frontendRoot, "src", "i18n", "locales", "zh.json"),
+    "utf8",
+  ).then(JSON.parse),
+]);
+
 assertAcyclic(graph);
 
 const settingsPanel = sources.get("settings-panel.tsx");
@@ -359,6 +370,16 @@ assert.match(
   /<DropdownMenu[\s\S]*?<DropdownMenuGroup>[\s\S]*?onPreview\(item\.previewTarget[\s\S]*?onRestore\(item\.id\)[\s\S]*?<\/DropdownMenuGroup>[\s\S]*?<DropdownMenuSeparator \/>[\s\S]*?<DropdownMenuGroup>[\s\S]*?variant="destructive"[\s\S]*?onDelete\(item\.id\)/,
   "Recycle-bin table rows must group preview with restore and isolate destructive delete.",
 );
+assert.match(
+  recycleTable,
+  /<DropdownMenuContent[\s\S]{0,120}className="w-32 whitespace-nowrap"/,
+  "Recycle-bin row menus must use the compact width while keeping localized actions on one line.",
+);
+assert.match(resumeTrash, /deleteLabel=\{t\.deleteTrashItemAction\}/);
+assert.match(templateTrash, /deleteLabel=\{t\.deleteTrashItemAction\}/);
+assert.match(deleteDialog, /:\s*t\.deleteForever/);
+assert.equal(enMessages.deleteTrashItemAction, "Delete");
+assert.equal(zhMessages.deleteTrashItemAction, "删除");
 assert.match(
   recyclePreviewDialog,
   /<DialogTitle[\s\S]*?className="sr-only"[\s\S]*?tabIndex=\{-1\}/,

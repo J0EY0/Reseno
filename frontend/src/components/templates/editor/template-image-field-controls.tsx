@@ -108,7 +108,7 @@ function TemplateImageSourceFields({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="end" position="popper" sideOffset={4}>
             <SelectGroup>
               <SelectItem value="contain">{t.imageFitContain}</SelectItem>
               <SelectItem value="cover">{t.imageFitCover}</SelectItem>

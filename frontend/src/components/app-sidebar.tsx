@@ -62,16 +62,16 @@ export function AppSidebar({
       collapsible="icon"
       className="print:hidden"
     >
-      <SidebarHeader className="min-h-20 justify-center border-sidebar-border px-2 py-3 group-data-[collapsible=icon]:min-h-16 group-data-[collapsible=icon]:items-center">
-        <div className="flex items-center gap-3 group-data-[collapsible=icon]:justify-center">
-          <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl group-data-[collapsible=icon]:size-8">
+      <SidebarHeader className="min-h-20 justify-center overflow-hidden border-sidebar-border px-2 py-3 transition-[min-height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:min-h-16">
+        <div className="flex h-10 w-full items-center gap-3 overflow-hidden transition-[height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:h-8">
+          <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-8">
             <img
               src="/logo.svg"
               alt="ResuMate"
-              className="size-[170%] max-w-none object-cover group-data-[collapsible=icon]:size-[150%]"
+              className="size-[170%] max-w-none object-cover transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-[150%]"
             />
           </div>
-          <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+          <div className="min-w-0 transition-[opacity,visibility] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:invisible group-data-[collapsible=icon]:opacity-0">
             <p className="truncate text-base font-semibold tracking-tight">
               {t.brandTitle}
             </p>
@@ -124,7 +124,9 @@ export function AppSidebar({
                         }}
                       >
                         <Icon />
-                        <span>{item.label}</span>
+                        <span className="transition-opacity [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:opacity-0">
+                          {item.label}
+                        </span>
                       </NavLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

@@ -11,10 +11,11 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
+import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { importTemplatePayload } from "@/lib/import-api";
-import { createTemplatePreviewResume } from "@/lib/template-preview-resume";
+import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
   normalizeWorkspaceTheme,
@@ -47,11 +48,16 @@ import {
   getTemplatePath,
 } from "@/lib/workspace-route";
 import type {
+  DefaultTemplateIds,
+  DocumentLocale,
   ResumeTemplateDefinition,
-  ResumeTemplateId,
 } from "@/types/resume";
 
-const baseTemplateId: ResumeTemplateId = "minimal";
+const baseTemplateId = "minimal";
+const initialDefaultTemplateIds: DefaultTemplateIds = {
+  zh: baseTemplateId,
+  en: baseTemplateId,
+};
 
 export function useTemplateGalleryWorkspace({
   locale,
@@ -77,13 +83,15 @@ export function useTemplateGalleryWorkspace({
   const [isLoading, setIsLoading] = useState(!preparedRouteData);
   const [isCreating, setIsCreating] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [templateLocale, setTemplateLocale] =
+    useState<DocumentLocale>(() => locale);
   const [openingTemplateId, setOpeningTemplateId] = useState<string | null>(null);
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
-  const [defaultTemplateId, setDefaultTemplateId] =
-    useState<ResumeTemplateId>(
-      () => preparedRouteData?.defaultTemplateId ?? baseTemplateId,
+  const [defaultTemplateIds, setDefaultTemplateIds] =
+    useState<DefaultTemplateIds>(
+      () => preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
     );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
@@ -93,11 +101,18 @@ export function useTemplateGalleryWorkspace({
     [customTemplates, messages],
   );
   const routeData = useMemo(
-    () => ({ customTemplates, defaultTemplateId, theme }),
-    [customTemplates, defaultTemplateId, theme],
+    () => ({ customTemplates, defaultTemplateIds, theme }),
+    [customTemplates, defaultTemplateIds, theme],
   );
-  const previewResume = useDeferredValue(
-    useMemo(() => createTemplatePreviewResume(messages), [messages]),
+  const previewMessages = useLocalizedMessages(templateLocale);
+  const previewResumes = useDeferredValue(
+    useMemo(
+      () =>
+        previewMessages
+          ? createTemplatePreviewResumes(previewMessages)
+          : null,
+      [previewMessages],
+    ),
   );
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
@@ -129,7 +144,7 @@ export function useTemplateGalleryWorkspace({
           persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
 
         hydrateTheme(nextTheme);
-        setDefaultTemplateId(source.data.defaultTemplateId);
+        setDefaultTemplateIds(source.data.defaultTemplateIds);
         setCustomTemplates(source.data.customTemplates);
         persistence.hydrate({
           locale: initialLocaleRef.current,
@@ -213,6 +228,7 @@ export function useTemplateGalleryWorkspace({
       intent: WorkspaceNavigationIntent,
       templateId: string,
       data: WorkspaceTemplateRouteData,
+      targetLocale: DocumentLocale,
       onCommit?: () => void,
     ) => {
       if (!intent.isCurrent()) {
@@ -227,7 +243,11 @@ export function useTemplateGalleryWorkspace({
         setOpeningTemplateId(null);
         intent.finish();
         navigate(getTemplatePath(templateId), {
-          state: createTemplateDetailRouteHandoff(templateId, data),
+          state: createTemplateDetailRouteHandoff(
+            templateId,
+            data,
+            targetLocale,
+          ),
         });
       });
     },
@@ -277,6 +297,7 @@ export function useTemplateGalleryWorkspace({
         intent,
         templateId,
         data,
+        templateLocale,
       );
     },
     [
@@ -286,6 +307,7 @@ export function useTemplateGalleryWorkspace({
       messages.loadError,
       persistence,
       templateCatalog,
+      templateLocale,
     ],
   );
 
@@ -341,9 +363,10 @@ export function useTemplateGalleryWorkspace({
         result.template.id,
         {
           customTemplates: nextCustomTemplates,
-          defaultTemplateId,
+          defaultTemplateIds,
           theme,
         },
+        templateLocale,
         publishCreatedTemplate,
       );
       toast.success(messages.templateCreated, { closeButton: true });
@@ -363,10 +386,11 @@ export function useTemplateGalleryWorkspace({
     beginNavigation,
     commitTemplateDetailNavigation,
     customTemplates,
-    defaultTemplateId,
+    defaultTemplateIds,
     isLoading,
     messages,
     templateCatalog,
+    templateLocale,
     theme,
   ]);
 
@@ -425,9 +449,10 @@ export function useTemplateGalleryWorkspace({
           firstImportedTemplate.id,
           {
             customTemplates: nextCustomTemplates,
-            defaultTemplateId,
+            defaultTemplateIds,
             theme,
           },
+          templateLocale,
         );
         toast.success(messages.templateImported, { closeButton: true });
       } catch (error) {
@@ -447,8 +472,9 @@ export function useTemplateGalleryWorkspace({
       beginNavigation,
       commitTemplateDetailNavigation,
       customTemplates,
-      defaultTemplateId,
+      defaultTemplateIds,
       messages,
+      templateLocale,
       theme,
     ],
   );
@@ -477,9 +503,10 @@ export function useTemplateGalleryWorkspace({
       setCustomTemplates((current) =>
         current.filter((item) => !customTemplateIds.includes(item.id)),
       );
-      if (customTemplateIds.includes(defaultTemplateId)) {
-        setDefaultTemplateId(baseTemplateId);
-      }
+      setDefaultTemplateIds((current) => ({
+        zh: customTemplateIds.includes(current.zh) ? baseTemplateId : current.zh,
+        en: customTemplateIds.includes(current.en) ? baseTemplateId : current.en,
+      }));
       toast.success(
         customTemplateIds.length > 1
           ? messages.templatesDeleted
@@ -487,11 +514,12 @@ export function useTemplateGalleryWorkspace({
         { closeButton: true },
       );
     },
-    [customTemplates, defaultTemplateId, messages],
+    [customTemplates, messages],
   );
 
   const setDefaultTemplate = useCallback(
     async (templateId: string) => {
+      const defaultTemplateId = defaultTemplateIds[templateLocale];
       if (
         templateId === defaultTemplateId ||
         setDefaultInFlightRef.current ||
@@ -503,8 +531,11 @@ export function useTemplateGalleryWorkspace({
       setDefaultInFlightRef.current = true;
       setSettingDefaultTemplateId(templateId);
       try {
-        const result = await saveDefaultTemplateApi(templateId);
-        setDefaultTemplateId(result.defaultTemplateId);
+        const result = await saveDefaultTemplateApi(
+          templateLocale,
+          templateId,
+        );
+        setDefaultTemplateIds(result.defaultTemplateIds);
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
         console.error("Failed to update default template.", error);
@@ -516,12 +547,12 @@ export function useTemplateGalleryWorkspace({
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateId, messages, templateCatalog],
+    [defaultTemplateIds, messages, templateCatalog, templateLocale],
   );
 
   return {
     createCustomTemplate,
-    defaultTemplateId,
+    defaultTemplateId: defaultTemplateIds[templateLocale],
     deleteTemplates,
     hasLoaded,
     hasLoadError,
@@ -531,11 +562,14 @@ export function useTemplateGalleryWorkspace({
     openTemplate,
     openingTemplateId,
     preloadTemplateDetail,
-    previewResume,
+    previewMessages,
+    previewResumes,
     retryLoad: () => setRetryKey((current) => current + 1),
     routeData,
     setDefaultTemplate,
     settingDefaultTemplateId,
+    setTemplateLocale,
     templateCatalog,
+    templateLocale,
   };
 }

@@ -5,6 +5,7 @@ import type {
   EducationItem,
   ExperienceItem,
   ProjectItem,
+  PublicationItem,
   ResumeSection,
   SectionKind,
 } from "@/types/resume";
@@ -228,6 +229,21 @@ function createCanonicalSection(
           url: "",
           description: item.description,
           highlights: item.highlights,
+        })),
+      };
+    case "publication":
+      return {
+        id,
+        kind,
+        title,
+        items: items.map<PublicationItem>((item) => ({
+          id: item.id,
+          title: item.title,
+          authors: item.subtitle,
+          venue: item.meta,
+          date: item.period,
+          url: "",
+          description: item.description || item.highlights.join(" "),
         })),
       };
     case "achievement":

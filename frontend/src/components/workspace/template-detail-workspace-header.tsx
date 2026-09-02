@@ -82,7 +82,7 @@ export function TemplateDetailWorkspaceHeader({
           <ChevronLeft className="size-4" />
           <span className="hidden sm:inline">{messages.backToTemplates}</span>
         </Button>
-        <h1 className="truncate text-sm font-medium text-foreground md:max-w-48">
+        <h1 className="sr-only">
           {template?.name ?? messages.resumeTemplates}
         </h1>
       </div>

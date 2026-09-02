@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS workspace_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    default_template_id TEXT NOT NULL DEFAULT 'minimal',
+    default_template_zh TEXT NOT NULL DEFAULT 'minimal',
+    default_template_en TEXT NOT NULL DEFAULT 'minimal',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

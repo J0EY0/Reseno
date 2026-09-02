@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.document_locales import DocumentLocale
 from app.schemas.agent_settings import AgentSettings
 from app.schemas.model_configs import ModelConfigResponse
 from app.schemas.resumes import (
@@ -41,9 +42,21 @@ class UserSettingsSaveResponse(BaseModel):
     agent_settings: AgentSettings | None = Field(default=None, alias="agentSettings")
 
 
+class DefaultTemplateIds(BaseModel):
+    """Default template id selected independently for each resume language."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    zh: str
+    en: str
+
+
 class DefaultTemplateSaveRequest(BaseModel):
     """Request body for setting the workspace default template."""
 
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", strict=True)
+
+    document_locale: DocumentLocale = Field(alias="documentLocale")
     template_id: str = Field(alias="templateId")
 
 
@@ -52,7 +65,7 @@ class DefaultTemplateSaveResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    default_template_id: str = Field(alias="defaultTemplateId")
+    default_template_ids: DefaultTemplateIds = Field(alias="defaultTemplateIds")
 
 
 class WorkspacePageResponse(BaseModel):
@@ -69,7 +82,7 @@ class WorkspacePageResponse(BaseModel):
 class TemplateContextPageResponse(WorkspacePageResponse):
     """Template catalog fields shared by template-aware pages."""
 
-    default_template_id: str = Field(alias="defaultTemplateId")
+    default_template_ids: DefaultTemplateIds = Field(alias="defaultTemplateIds")
     custom_templates: list[TemplateDefinitionResponse] = Field(alias="customTemplates")
 
 

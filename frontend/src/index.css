@@ -450,14 +450,18 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 }
 
 .resume-rich-text[data-resume-list-layout='columns'] > ul,
-.resume-rich-text[data-resume-list-layout='columns'] > ol {
+.resume-rich-text[data-resume-list-layout='columns'] > ol,
+.resume-rich-text[data-resume-list-layout='columns'] > div > ul,
+.resume-rich-text[data-resume-list-layout='columns'] > div > ol {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 1.5em;
 }
 
 .resume-rich-text[data-resume-list-layout='inline'] > ul,
-.resume-rich-text[data-resume-list-layout='inline'] > ol {
+.resume-rich-text[data-resume-list-layout='inline'] > ol,
+.resume-rich-text[data-resume-list-layout='inline'] > div > ul,
+.resume-rich-text[data-resume-list-layout='inline'] > div > ol {
   display: flex;
   flex-wrap: wrap;
   gap: 0 1em;
@@ -465,7 +469,9 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 }
 
 .resume-rich-text[data-resume-list-layout='inline'] > ul > li,
-.resume-rich-text[data-resume-list-layout='inline'] > ol > li {
+.resume-rich-text[data-resume-list-layout='inline'] > ol > li,
+.resume-rich-text[data-resume-list-layout='inline'] > div > ul > li,
+.resume-rich-text[data-resume-list-layout='inline'] > div > ol > li {
   margin-left: 1em;
 }
 
@@ -808,7 +814,20 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     background-color: var(--muted-foreground);
   }
 
-  /* Keep the resume editor scrollable without reserving visible scrollbar chrome. */
+  .app-shell--document .template-workspace .resume-template-editor-panel,
+  .app-shell--document .template-workspace .resume-preview-card {
+    position: relative;
+    top: auto;
+  }
+
+  .app-shell--document .template-workspace .resume-template-editor-panel {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior-y: auto;
+  }
+
+  /* Keep the resume editor scrollable without visible scrollbar chrome. */
   .app-shell--document .resume-workspace .resume-editor-panel {
     scrollbar-gutter: auto;
     scrollbar-width: none;

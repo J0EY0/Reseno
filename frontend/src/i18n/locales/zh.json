@@ -88,6 +88,13 @@
   "duplicateResumeChangedDuringSave": "保存期间内容发生变化，请再次创建副本",
   "createResumeHint": "从空白简历开始，或导入可复制文本的 PDF 简历",
   "newResume": "新建",
+  "newResumeDialogDescription": "选择这份简历的内容语言，界面语言不会改变它",
+  "resumeLanguage": "简历语言",
+  "selectResumeLanguage": "选择简历语言",
+  "chineseTemplate": "中文模板",
+  "englishTemplate": "英文模板",
+  "chinesePreview": "中文预览",
+  "englishPreview": "英文预览",
   "newTemplate": "新建",
   "creating": "创建中…",
   "importResume": "导入",
@@ -137,10 +144,11 @@
   "selectAll": "全选",
   "restore": "恢复",
   "restoreSelected": "批量恢复",
+  "deleteTrashItemAction": "删除",
   "deleteForever": "彻底删除",
   "deleteSelectedForever": "批量删除",
-  "emptyResumeTrash": "当前没有已删除的简历",
-  "emptyTemplateTrash": "当前没有已删除的模板",
+  "emptyResumeTrash": "无已删除简历",
+  "emptyTemplateTrash": "无已删除模板",
   "resumeDeleted": "简历已移入回收站",
   "resumesDeleted": "简历已批量移入回收站",
   "resumeRestored": "简历已恢复",
@@ -243,85 +251,332 @@
   "templateReadonlyHint": "当前模板为系统内置模板，只能预览。创建副本后，可以调整布局、字体、颜色和装饰元素",
   "templateCurrent": "当前模板",
   "templateReadonlyStatus": "内置模板 · 只读",
-  "templateEditableStatus": "自定义模板 · 可编辑",
   "createEditableCopy": "创建可编辑副本",
-  "templatePreviewSample": {
-    "basic": {
-      "name": "林知予",
-      "headline": "软件工程方向 | 产品型前端工程师",
-      "phone": "138-0000-0000",
-      "email": "lin.zhiyu@example.com",
-      "location": "远程 / 可到岗",
-      "summary": "关注复杂表单、预览工作流与 AI 工具落地，能把用户问题拆成可验证方案。"
-    },
-    "education": {
-      "title": "示例学院",
-      "subtitle": "软件工程（本科）",
-      "meta": "GPA：3.8/4.0",
-      "period": "2021.09 - 2025.06",
-      "highlights": [
-        "主修课程：数据结构、软件工程、数据库系统、人机交互"
-      ]
-    },
-    "internship": {
-      "title": "协作工具项目组",
-      "subtitle": "前端开发实习生",
-      "meta": "协作工具方向",
-      "period": "2024.06 - 2024.09",
-      "highlights": [
-        "面对配置流程分散的问题，梳理用户路径并重构 3 个表单状态，使提交错误率下降 28%。",
-        "为支持周迭代交付，补齐契约测试与回归清单，将发布验证时间缩短至 40 分钟。"
-      ]
-    },
-    "projectPrimary": {
-      "title": "结构化简历编辑器",
-      "subtitle": "个人项目",
-      "meta": "React / TypeScript / PDF Preview",
-      "period": "2023.03 - 2023.06",
-      "highlights": [
-        "针对预览频繁错位，设计分页测量方案并抽象渲染状态，使导出返工减少 35%。",
-        "为降低填写成本，合并重复输入路径并增加即时校验，使首版填写时间缩短 20%。"
-      ]
-    },
-    "projectSecondary": {
-      "title": "任务复盘面板",
-      "subtitle": "课程项目",
-      "meta": "Node.js / SQL / Dashboard",
-      "period": "2022.09 - 2022.12",
-      "highlights": [
-        "面对复盘信息分散的问题，设计统一数据表并实现筛选面板，使记录查找时间减少 30%。"
-      ]
-    },
-    "skills": [
-      {
-        "title": "编程语言",
-        "subtitle": "TypeScript、JavaScript、Python、SQL"
+  "templatePreviewListSeparator": "：",
+  "templatePreviewSamples": {
+    "earlyCareer": {
+      "basic": {
+        "name": "林知予",
+        "headline": "软件工程毕业生 | 前端开发",
+        "phone": "138-0000-0000",
+        "email": "lin.zhiyu@example.com",
+        "location": "上海",
+        "websiteLabel": "作品集",
+        "website": "lin.example.com",
+        "summary": ""
       },
-      {
-        "title": "工程能力",
-        "subtitle": "React、Node.js、PDF 渲染、测试与自动化"
-      }
-    ],
-    "awards": [
-      {
-        "title": "奖项",
-        "subtitle": "综合奖学金、产品原型赛优秀作品"
+      "experienceSectionTitle": "实习经历",
+      "projectSectionTitle": "项目经历",
+      "achievementSectionTitle": "荣誉奖项",
+      "skillsSectionTitle": "技能",
+      "education": {
+        "school": "示例大学",
+        "degree": "工学学士",
+        "major": "软件工程",
+        "gpa": "GPA 3.8/4.0",
+        "location": "上海",
+        "period": "2022.09 - 2026.06",
+        "description": "",
+        "highlights": [
+          "核心课程：数据结构、软件工程、数据库系统、人机交互"
+        ]
       },
-      {
-        "title": "语言",
-        "subtitle": "具备英文技术文档阅读与沟通能力"
-      }
-    ],
-    "other": {
-      "sectionTitle": "自我评价",
-      "title": "综合素质",
-      "description": "学习能力强，注重工程质量和用户体验；能主动澄清目标并推进落地。"
+      "internship": {
+        "company": "协作云科技",
+        "position": "前端开发实习生",
+        "location": "上海",
+        "period": "2025.06 - 2025.09",
+        "description": "",
+        "highlights": [
+          "梳理配置路径并重构 3 个表单状态，使提交错误率下降 28%。",
+          "补齐契约测试与回归清单，将发布验证时间缩短至 40 分钟。"
+        ]
+      },
+      "project": {
+        "name": "结构化简历编辑器",
+        "role": "个人项目",
+        "techStack": [
+          "React",
+          "TypeScript",
+          "PDF"
+        ],
+        "period": "2025.03 - 2025.06",
+        "description": "",
+        "highlights": [
+          "设计分页测量方案并统一渲染状态，使导出返工减少 35%。",
+          "合并重复输入路径并增加即时校验，使首版填写时间缩短 20%。"
+        ]
+      },
+      "achievement": {
+        "name": "综合奖学金",
+        "issuer": "示例大学",
+        "date": "2025.10",
+        "description": ""
+      },
+      "skills": [
+        {
+          "title": "前端",
+          "subtitle": "TypeScript、React、CSS"
+        },
+        {
+          "title": "工具",
+          "subtitle": "Git、Vitest、Playwright"
+        }
+      ]
+    },
+    "experienced": {
+      "basic": {
+        "name": "周行远",
+        "headline": "前端工程师 | B 端产品与设计系统",
+        "phone": "139-0000-0000",
+        "email": "zhou.xingyuan@example.com",
+        "location": "深圳",
+        "websiteLabel": "作品集",
+        "website": "zhou.example.com",
+        "summary": "4 年 B 端经验，专注复杂工作台、设计系统与可靠交付。"
+      },
+      "experienceSectionTitle": "工作经历",
+      "projectSectionTitle": "代表项目",
+      "achievementSectionTitle": "专业认证",
+      "skillsSectionTitle": "核心技能",
+      "education": {
+        "school": "华南示例大学",
+        "degree": "工学学士",
+        "major": "软件工程",
+        "gpa": "",
+        "location": "广州",
+        "period": "2018.09 - 2022.06",
+        "description": "",
+        "highlights": []
+      },
+      "experiences": [
+        {
+          "company": "远景协作科技",
+          "position": "高级前端工程师",
+          "location": "深圳",
+          "period": "2024.03 - 至今",
+          "description": "",
+          "highlights": [
+            "重构权限与表单基础设施，使关键流程错误率下降 31%。",
+            "推动设计系统覆盖 6 个产品团队，将页面交付周期缩短 26%。"
+          ]
+        },
+        {
+          "company": "数桥软件",
+          "position": "前端工程师",
+          "location": "广州",
+          "period": "2022.07 - 2024.02",
+          "description": "",
+          "highlights": [
+            "建立性能与发布预算，使首屏时间缩短 38%、季度缺陷减少 42%。"
+          ]
+        }
+      ],
+      "project": {
+        "name": "企业设计系统升级",
+        "role": "项目负责人",
+        "techStack": [
+          "React",
+          "TypeScript",
+          "Storybook"
+        ],
+        "period": "2024.08 - 2025.04",
+        "description": "",
+        "highlights": [
+          "协调设计与 6 个业务团队，完成 40 余页面的渐进升级并保持零停机。"
+        ]
+      },
+      "achievement": {
+        "name": "AWS Certified Developer",
+        "issuer": "Amazon Web Services",
+        "date": "2025.06",
+        "description": ""
+      },
+      "skills": [
+        {
+          "title": "工程",
+          "subtitle": "React、TypeScript、Node.js"
+        },
+        {
+          "title": "质量",
+          "subtitle": "测试、性能"
+        },
+        {
+          "title": "协作",
+          "subtitle": "设计系统、交付"
+        }
+      ]
+    },
+    "executive": {
+      "basic": {
+        "name": "赵澜",
+        "headline": "产品与工程副总裁 | 企业软件",
+        "phone": "136-0000-0000",
+        "email": "zhao.lan@example.com",
+        "location": "上海",
+        "websiteLabel": "职业主页",
+        "website": "zhao.example.com",
+        "summary": "15 年企业软件管理经验，专注产品组合、组织扩张与订阅增长。"
+      },
+      "experienceSectionTitle": "高管经历",
+      "projectSectionTitle": "代表性转型项目",
+      "achievementSectionTitle": "董事会与行业参与",
+      "skillsSectionTitle": "领导力能力",
+      "education": {
+        "school": "示例管理学院",
+        "degree": "工商管理硕士",
+        "major": "战略与运营",
+        "gpa": "",
+        "location": "上海",
+        "period": "2008 - 2010",
+        "description": "",
+        "highlights": []
+      },
+      "experiences": [
+        {
+          "company": "北辰云科技",
+          "position": "产品与工程副总裁",
+          "location": "上海",
+          "period": "2021 - 至今",
+          "description": "",
+          "highlights": [
+            "管理 48 人产品、设计与工程组织，将 14 个团队重组为 5 个结果型产品组合，推动年度经常性收入增长 32%。",
+            "建立季度经营规划与服务目标，使版本按期交付率由 72% 提升至 91%，一级事故减少 44%。"
+          ]
+        },
+        {
+          "company": "经纬数据系统",
+          "position": "企业产品事业部总经理",
+          "location": "北京",
+          "period": "2016 - 2021",
+          "description": "",
+          "highlights": [
+            "将业务收入由 1.8 亿元提升至 4.6 亿元，同时推动毛利率提高 11 个百分点。"
+          ]
+        }
+      ],
+      "project": {
+        "name": "企业运营模式转型",
+        "role": "高管发起人",
+        "techStack": [
+          "产品组合战略",
+          "经营节奏",
+          "人才体系"
+        ],
+        "period": "2022 - 2024",
+        "description": "",
+        "highlights": [
+          "重复投入减少 21%，跨部门重大决策周期由 6 周缩短至 12 天。"
+        ]
+      },
+      "achievements": [
+        {
+          "name": "顾问委员会成员",
+          "issuer": "区域企业软件理事会",
+          "date": "2023 - 至今",
+          "description": ""
+        }
+      ],
+      "skills": [
+        {
+          "title": "增长",
+          "subtitle": "产品组合战略、损益、订阅收入"
+        },
+        {
+          "title": "组织",
+          "subtitle": "高管招聘、继任、运营模式"
+        }
+      ]
+    },
+    "research": {
+      "basic": {
+        "name": "沈若安",
+        "headline": "人机交互硕士申请 | 可解释 AI",
+        "phone": "137-0000-0000",
+        "email": "ruoan.shen@example.com",
+        "location": "杭州",
+        "websiteLabel": "个人主页",
+        "website": "ruoan.example.com",
+        "summary": "研究兴趣聚焦可解释 AI、用户信任与人机协作决策。"
+      },
+      "researchSectionTitle": "研究经历",
+      "publicationSectionTitle": "代表性论文",
+      "teachingSectionTitle": "教学经历",
+      "achievementSectionTitle": "荣誉与资助",
+      "skillsSectionTitle": "研究技能",
+      "education": {
+        "school": "示例大学",
+        "degree": "工学学士",
+        "major": "计算机科学与技术",
+        "gpa": "GPA 3.86/4.0",
+        "location": "杭州",
+        "period": "2023.09 - 2027.06",
+        "description": "",
+        "highlights": [
+          "毕业论文：可追溯反馈对 AI 辅助写作信任的影响",
+          "指导教师：李明雅教授",
+          "专业排名前 8%"
+        ]
+      },
+      "researchExperiences": [
+        {
+          "company": "人机协作实验室",
+          "position": "本科研究助理",
+          "location": "杭州",
+          "period": "2025.09 - 至今",
+          "description": "",
+          "highlights": [
+            "完成 24 名参与者的混合方法研究、访谈编码与预注册统计分析。",
+            "迭代可解释反馈原型，使任务复核时间缩短 19%。"
+          ]
+        }
+      ],
+      "publications": [
+        {
+          "title": "可追溯反馈如何影响 AI 辅助写作信任",
+          "authors": "沈若安*、李明雅、吴启文",
+          "venue": "全国人机交互学术会议",
+          "date": "2026",
+          "url": "ruoan.example.com/papers/traceable-feedback",
+          "description": "海报已接收 · *第一作者"
+        }
+      ],
+      "teachingExperience": {
+        "company": "示例大学计算机学院",
+        "position": "人机交互课程助教",
+        "location": "杭州",
+        "period": "2026 春季",
+        "description": "",
+        "highlights": [
+          "为 42 名学生主持每周实验课，并设计可复现研究作业评分标准。"
+        ]
+      },
+      "achievements": [
+        {
+          "name": "本科生科研资助",
+          "issuer": "示例大学",
+          "date": "2025",
+          "description": "项目负责人 · 资助 2 万元"
+        }
+      ],
+      "skills": [
+        {
+          "title": "方法",
+          "subtitle": "用户访谈、对照实验、主题分析"
+        },
+        {
+          "title": "工具",
+          "subtitle": "Python、R、Figma、LaTeX"
+        }
+      ]
     }
   },
   "templateName": "模板名称",
   "templateDescription": "模板描述",
   "templateDescriptionFallback": "可在模板编辑器中补充这套版式适用的岗位或使用场景",
-  "templateInfoPanel": "模板信息",
+  "editTemplateInfo": "修改模板信息",
+  "editTemplateInfoDescription": "修改模板名称，并补充适用岗位或使用场景。",
+  "saveTemplateInfo": "保存",
   "templatePreset": "模板基底",
   "basicInfoLayout": "基本信息布局",
   "basicInfoLayoutCentered": "居中标题",
@@ -348,6 +603,11 @@
   "avatarPositionRight": "右侧",
   "avatarPositionLeft": "左侧",
   "avatarPositionCenter": "居中",
+  "avatarSize": "头像尺寸",
+  "avatarSizeSmall": "小",
+  "avatarSizeStandard": "标准",
+  "avatarSizeLarge": "大",
+  "avatarSizeCustom": "自定义",
   "avatarShape": "头像形状",
   "avatarShapeRounded": "圆角矩形",
   "avatarShapeCircle": "圆形",
@@ -448,7 +708,7 @@
   "defaultAgentModelHint": "选择 Agent 默认调用的 LLM 配置",
   "agentResponseLanguage": "响应语言",
   "agentResponseLanguageHint": "控制 Agent 返回建议时使用的语言",
-  "followSystemLanguage": "跟随界面语言",
+  "followResumeLanguage": "跟随简历语言",
   "agentBehavior": "建议风格",
   "agentBehaviorHint": "控制 Agent 建议的保守或增强程度",
   "agentBehaviorBalanced": "平衡",
@@ -523,7 +783,7 @@
   "modelConfigsDeleted": "选中的模型已删除",
   "modelConfigDeleteFailed": "模型删除失败，请重试",
   "modelConfigsDeleteFailed": "选中的模型删除失败，请重试",
-  "emptyModelConfigs": "当前还没有配置任何 LLM",
+  "emptyModelConfigs": "无模型",
   "noApiKeyConfigured": "未配置",
   "modelConfigCount": "模型数量",
   "modelConfigSideHint": "这些配置由后端返回，便于切换不同 LLM 提供方",
@@ -753,6 +1013,9 @@
     "projectName": "项目名称",
     "role": "项目职责",
     "techStack": "技术栈",
+    "publicationTitle": "论文标题",
+    "authors": "作者",
+    "venue": "期刊 / 会议",
     "url": "链接",
     "achievementName": "证书 / 荣誉名称",
     "issuer": "颁发机构 / 主办方",
@@ -792,6 +1055,10 @@
     "projectName": "例如：ResuMate",
     "role": "例如：核心开发者",
     "techStack": "例如：React、TypeScript、FastAPI",
+    "publicationTitle": "例如：可追溯反馈如何影响 AI 辅助写作信任",
+    "authors": "按发表顺序填写并保留共同作者标记，例如：沈若安*、李明雅、吴启文",
+    "venue": "例如：ACM CHI Conference 会议论文集",
+    "publicationDescription": "可选：接收状态、作者贡献或引文补充信息",
     "url": "例如：https://example.com",
     "achievementName": "例如：全国大学生竞赛一等奖",
     "issuer": "例如：竞赛组委会",
@@ -808,6 +1075,7 @@
     "education": "教育经历",
     "experience": "工作 / 实习经历",
     "project": "项目经历",
+    "publication": "学术发表",
     "achievement": "证书与荣誉",
     "simple_list": "其他"
   },
@@ -815,6 +1083,7 @@
     "education": "教育背景与学术成果",
     "experience": "职业经历与工作成果",
     "project": "项目实践与个人贡献",
+    "publication": "期刊论文、会议论文与其他学术成果",
     "achievement": "专业资质与获奖成果",
     "simple_list": "技能、语言与补充信息"
   },
@@ -825,23 +1094,23 @@
     },
     "modern": {
       "name": "Modern",
-      "description": "标题更强调层级，适合产品与设计岗位"
+      "description": "纵向信息层级与行内技能，适合产品和技术岗位"
     },
     "compact": {
       "name": "Compact",
-      "description": "更紧凑的数据密度，适合经历较多的单页简历"
+      "description": "紧凑双行与双列技能，适合信息密度较高的职业简历"
     },
     "classic": {
       "name": "Classic",
-      "description": "传统左对齐版式，适合法律、金融与行政岗位"
+      "description": "传统左对齐版式，适合强调稳重与清晰层级的职业申请"
     },
     "executive": {
       "name": "Executive",
-      "description": "强调资历与成果，适合高年资和管理岗位"
+      "description": "紧凑呈现资历与成果，适合强调职业进阶的求职者"
     },
     "academic": {
       "name": "Academic",
-      "description": "克制的学术版式，适合升学、科研与教学申请"
+      "description": "无照片学术 CV，适合展示研究、教学与论文成果"
     }
   }
 }

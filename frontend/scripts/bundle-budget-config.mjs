@@ -8,7 +8,7 @@ export const DEFAULT_DYNAMIC_ENTRY_GZIP_BYTES = 65 * KIB
 // dialogs, popovers, selects, and sheets retain their enter/exit transitions.
 // Keep this ceiling close to that measured production baseline so future CSS
 // growth still fails here instead of silently accumulating.
-export const MAX_SHELL_CSS_RAW_BYTES = 160_000
+export const MAX_SHELL_CSS_RAW_BYTES = 161_000
 export const MAX_SHELL_CSS_GZIP_BYTES = 26_500
 export const RATCHET_THRESHOLD = 0.95
 
@@ -39,7 +39,7 @@ export const routeBudgets = [
   {
     name: 'shell',
     roots: ['index.html'],
-    maxGzipBytes: 128 * KIB,
+    maxGzipBytes: 130 * KIB,
   },
   {
     name: 'resume detail',
@@ -49,7 +49,7 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 231 * KIB,
+    maxGzipBytes: 233 * KIB,
   },
   {
     name: 'resume gallery',
@@ -59,7 +59,7 @@ export const routeBudgets = [
       'src/components/workspace/resume-gallery-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 212 * KIB,
+    maxGzipBytes: 217 * KIB,
   },
   {
     name: 'template gallery',
@@ -72,7 +72,7 @@ export const routeBudgets = [
       'src/components/resume-builder.tsx',
       'src/components/templates/template-editor.tsx',
     ],
-    maxGzipBytes: 212 * KIB,
+    maxGzipBytes: 217 * KIB,
   },
   {
     name: 'template detail',
@@ -84,7 +84,7 @@ export const routeBudgets = [
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // Keep both workspace and preview skeletons in the lazy route so loading
     // preserves the final surface hierarchy without a second visual jump.
-    maxGzipBytes: 222 * KIB,
+    maxGzipBytes: 229 * KIB,
   },
   {
     name: 'trash',
@@ -94,7 +94,7 @@ export const routeBudgets = [
       'src/components/workspace/trash-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 233 * KIB,
+    maxGzipBytes: 236 * KIB,
   },
   {
     name: 'models',
@@ -106,7 +106,7 @@ export const routeBudgets = [
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // The final dialog ships with the already-lazy route so first open never
     // swaps a nested lazy Spinner surface for the form.
-    maxGzipBytes: 250 * KIB,
+    maxGzipBytes: 251 * KIB,
   },
   {
     name: 'settings',
@@ -116,7 +116,7 @@ export const routeBudgets = [
       'src/components/workspace/settings-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 222 * KIB,
+    maxGzipBytes: 224 * KIB,
   },
   {
     name: 'Agent',
@@ -127,6 +127,6 @@ export const routeBudgets = [
       'src/components/preview/document-preview-card.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 295 * KIB,
+    maxGzipBytes: 296 * KIB,
   },
 ]

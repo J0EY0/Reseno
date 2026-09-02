@@ -143,6 +143,28 @@
       ],
       "additionalProperties": false
     },
+    "publicationItem": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/definitions/nodeId" },
+        "title": { "type": "string" },
+        "authors": { "type": "string" },
+        "venue": { "type": "string" },
+        "date": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": [
+        "id",
+        "title",
+        "authors",
+        "venue",
+        "date",
+        "url",
+        "description"
+      ],
+      "additionalProperties": false
+    },
     "achievementItem": {
       "type": "object",
       "properties": {
@@ -210,6 +232,20 @@
       "required": ["id", "kind", "title", "items"],
       "additionalProperties": false
     },
+    "publicationSection": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/definitions/nodeId" },
+        "kind": { "const": "publication" },
+        "title": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/publicationItem" }
+        }
+      },
+      "required": ["id", "kind", "title", "items"],
+      "additionalProperties": false
+    },
     "achievementSection": {
       "type": "object",
       "properties": {
@@ -245,6 +281,7 @@
         { "$ref": "#/definitions/educationSection" },
         { "$ref": "#/definitions/experienceSection" },
         { "$ref": "#/definitions/projectSection" },
+        { "$ref": "#/definitions/publicationSection" },
         { "$ref": "#/definitions/achievementSection" },
         { "$ref": "#/definitions/simpleListSection" }
       ]

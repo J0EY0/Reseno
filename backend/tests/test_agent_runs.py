@@ -350,7 +350,7 @@ def test_permanent_resume_delete_purges_completed_run_replay(
 ) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Completed run owner"},
+        json={"documentLocale": "en", "title": "Completed run owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     revision = client.get(
@@ -393,7 +393,7 @@ def test_permanent_resume_delete_purges_completed_run_replay(
 def test_empty_trash_purges_completed_run_replay(client: TestClient) -> None:
     created = client.post(
         "/api/resumes",
-        json={"title": "Trash purge run owner"},
+        json={"documentLocale": "en", "title": "Trash purge run owner"},
     ).json()["data"]["resume"]
     resume_id = created["id"]
     revision = client.get(
@@ -433,7 +433,10 @@ def test_partially_failed_empty_trash_purges_runs_already_hard_deleted(
     for index in range(2):
         resume_id = client.post(
             "/api/resumes",
-            json={"title": f"Partial purge owner {index}"},
+            json={
+                "documentLocale": "en",
+                "title": f"Partial purge owner {index}",
+            },
         ).json()["data"]["resume"]["id"]
         revision = client.get(
             f"/api/agent/resumes/{resume_id}/session",
@@ -504,7 +507,7 @@ def test_hard_delete_purges_durably_finished_run_before_memory_terminal(
 ) -> None:
     resume_id = client.post(
         "/api/resumes",
-        json={"title": "Terminal purge race"},
+        json={"documentLocale": "en", "title": "Terminal purge race"},
     ).json()["data"]["resume"]["id"]
     stream_may_finish = asyncio.Event()
     durable_finish_committed = threading.Event()
@@ -582,7 +585,7 @@ def test_cancelled_hard_delete_waits_for_completed_run_purge(
 ) -> None:
     resume_id = client.post(
         "/api/resumes",
-        json={"title": "Cancelled hard delete"},
+        json={"documentLocale": "en", "title": "Cancelled hard delete"},
     ).json()["data"]["resume"]["id"]
     delete_committed = threading.Event()
     deletion_may_return = threading.Event()

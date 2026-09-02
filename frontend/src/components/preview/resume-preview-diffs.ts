@@ -54,6 +54,14 @@ const renderFields: Record<
     highlights: "highlights",
     url: "url",
   },
+  publication: {
+    title: "title",
+    subtitle: "authors",
+    meta: "venue",
+    period: "date",
+    description: "description",
+    url: "url",
+  },
   achievement: {
     title: "name",
     subtitle: "issuer",

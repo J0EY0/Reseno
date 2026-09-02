@@ -147,11 +147,8 @@ export function useResumeDetailWorkspace({
         messages,
         routeData.customTemplates,
       );
-      const nextDefaultTemplateId = nextTemplateCatalog.some(
-        (item) => item.id === routeData.defaultTemplateId,
-      )
-        ? routeData.defaultTemplateId
-        : "minimal";
+      const nextDefaultTemplateId =
+        routeData.defaultTemplateIds[detail.resume.documentLocale];
 
       setCustomTemplates(routeData.customTemplates);
       preferences.hydrateRoutePreferences(routeData);
@@ -326,7 +323,6 @@ export function useResumeDetailWorkspace({
   const documentCommands = useResumeDetailCommands({
     activeTemplate: baseTemplate,
     isLoading,
-    locale,
     messages,
     navigateToResume,
     resumeOrdinal: initialDetail?.resumeOrdinal ?? 1,
@@ -336,7 +332,6 @@ export function useResumeDetailWorkspace({
   });
   const exporter = useResumeDetailExport({
     getSnapshot: session.getSnapshot,
-    locale,
     messages,
     save: () => save.save(),
     template: activeTemplate,

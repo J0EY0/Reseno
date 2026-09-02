@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.db.connection import connect
+from app.document_locales import DocumentLocale
 from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
 from app.schemas.resumes import (
     MAX_RESUME_TITLE_LENGTH,
@@ -25,18 +26,22 @@ from app.services.resume_document_contract import (
     ResumeDocumentContractError,
     validate_resume_document,
 )
-from app.services.templates import is_deleted_template, is_visible_template
+from app.services.resume_starters import create_empty_resume
+from app.services.template_presets import get_builtin_template_preset
+from app.services.templates import (
+    is_deleted_template,
+    is_visible_template,
+    resolve_visible_template,
+)
 from app.services.workspace_state import load_default_template_id
 
-SUPPORTED_LOCALES = {"zh", "en"}
-RESUME_COPY_LABELS = {"zh": "副本", "en": "Copy"}
+RESUME_COPY_LABELS: dict[DocumentLocale, str] = {"zh": "副本", "en": "Copy"}
 RESUME_COPY_SUFFIX_PATTERN = re.compile(
     r"\s+-\s+(?:(?P<en_label>Copy)(?:\((?P<en_index>\d+)\))?"
     r"|(?P<zh_label>副本)(?:（(?P<zh_index>\d+)）)?)$"
 )
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
-DEFAULT_TYPOGRAPHY = {"fontFamily": "inter", "fontSize": 16}
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
 ResumeVersionKind = Literal["autosave", "checkpoint"]
@@ -58,90 +63,10 @@ class ResumeSaveTransaction(NamedTuple):
     obsolete_autosave: ResumeVersionFile | None
 
 
-def _normalize_locale(locale: str) -> str:
-    """Return a supported locale, falling back to English."""
-
-    return locale if locale in SUPPORTED_LOCALES else "en"
-
-
 def generate_resume_id() -> str:
     """Generate a compact backend-owned resume id."""
 
     return "".join(secrets.choice(RESUME_ID_ALPHABET) for _ in range(RESUME_ID_LENGTH))
-
-
-def _generate_document_id(prefix: str) -> str:
-    """Generate a compact id for nested resume document nodes."""
-
-    return f"{prefix}-{secrets.token_hex(4)}"
-
-
-def _create_empty_resume() -> dict[str, Any]:
-    """Create the default editable resume document."""
-
-    item_defaults: dict[str, dict[str, Any]] = {
-        "education": {
-            "school": "",
-            "degree": "",
-            "major": "",
-            "gpa": "",
-            "location": "",
-            "period": "",
-            "description": "",
-            "highlights": [],
-        },
-        "experience": {
-            "company": "",
-            "position": "",
-            "location": "",
-            "period": "",
-            "description": "",
-            "highlights": [],
-        },
-        "project": {
-            "name": "",
-            "role": "",
-            "techStack": [],
-            "period": "",
-            "url": "",
-            "description": "",
-            "highlights": [],
-        },
-    }
-
-    def create_section(kind: str) -> dict[str, Any]:
-        # The title is intentionally empty. Clients localize the default label,
-        # while an explicit non-empty value remains a user-owned override.
-        return {
-            "id": _generate_document_id("section"),
-            "kind": kind,
-            "title": "",
-            "items": [
-                {
-                    "id": _generate_document_id("item"),
-                    **item_defaults[kind],
-                }
-            ],
-        }
-
-    return {
-        "schemaVersion": 2,
-        "basic": {
-            "name": "",
-            "headline": "",
-            "phone": "",
-            "email": "",
-            "location": "",
-            "avatar": "",
-            "summary": "",
-            "customFields": [],
-        },
-        "sections": [
-            create_section("education"),
-            create_section("experience"),
-            create_section("project"),
-        ],
-    }
 
 
 def _allocate_resume_id(conn: Connection) -> str:
@@ -365,12 +290,11 @@ def _duplicate_resume_title(
     conn: Connection,
     *,
     source_title: str,
-    locale: str,
+    document_locale: DocumentLocale,
 ) -> str:
     """Return the first available localized copy title."""
 
-    normalized_locale = _normalize_locale(locale)
-    copy_label = RESUME_COPY_LABELS[normalized_locale]
+    copy_label = RESUME_COPY_LABELS[document_locale]
     normalized_source_title = source_title.strip() or "Untitled"
     source_suffix_match = RESUME_COPY_SUFFIX_PATTERN.search(normalized_source_title)
     base_title = _resume_copy_base_title(normalized_source_title) or "Untitled"
@@ -394,7 +318,7 @@ def _duplicate_resume_title(
         if copy_index is not None:
             suffix = (
                 f"{copy_suffix}（{copy_index}）"
-                if normalized_locale == "zh"
+                if document_locale == "zh"
                 else f"{copy_suffix}({copy_index})"
             )
             return title_with_suffix(suffix)
@@ -602,18 +526,17 @@ def rebind_current_resume_template_references(
     conn: Connection,
     *,
     source_template_id: str,
-    target_template_id: str,
+    target_template_ids: dict[DocumentLocale, str],
     saved_at: str,
 ) -> ResumeTemplateRebindResult:
     """Rebind current resume snapshots while the caller owns the transaction."""
 
-    if source_template_id == target_template_id:
-        return ResumeTemplateRebindResult((), ())
-    if not is_visible_template(conn, target_template_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="TEMPLATE_NOT_FOUND",
-        )
+    for target_template_id in set(target_template_ids.values()):
+        if not is_visible_template(conn, target_template_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="TEMPLATE_NOT_FOUND",
+            )
 
     rows = conn.execute(
         """
@@ -631,6 +554,9 @@ def rebind_current_resume_template_references(
             resume_item = _read_resume_json(row["id"], current_version_id)
             if resume_item["template"] != source_template_id:
                 continue
+            target_template_id = target_template_ids[
+                cast(DocumentLocale, resume_item["documentLocale"])
+            ]
 
             # A template change necessarily changes the content hash, so the
             # command owns the next version file until the transaction commits.
@@ -705,6 +631,7 @@ def _deleted_resume_preview(
         "id": row["id"],
         "title": resume_item["title"],
         "updatedAt": row["saved_at"],
+        "documentLocale": resume_item["documentLocale"],
         "resume": resume,
         "jobBrief": "",
         "typography": resume_item["typography"],
@@ -891,6 +818,7 @@ def _normalize_resume_item_payload(
     job_brief = payload.get("jobBrief")
     typography = payload.get("typography")
     template_id = payload.get("template")
+    document_locale = payload.get("documentLocale")
 
     if not isinstance(template_id, str) or not template_id.strip():
         raise HTTPException(
@@ -934,6 +862,7 @@ def _normalize_resume_item_payload(
         if isinstance(title, str) and title.strip()
         else _resume_title({"id": resume_id, "resume": resume_document}),
         "updatedAt": saved_at,
+        "documentLocale": document_locale,
         "resume": resume_document,
         "jobBrief": job_brief if isinstance(job_brief, str) else "",
         "typography": normalized_typography,
@@ -964,12 +893,12 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
 
 
 def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
-    """Create a backend-owned empty resume and initial version."""
+    """Create a backend-owned resume and initial version."""
 
     saved_at = _utc_now()
 
     with connect() as conn:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         resume_id = _allocate_resume_id(conn)
         count_row = conn.execute(
             """
@@ -978,24 +907,36 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
             WHERE deleted = 0
             """,
         ).fetchone()
-        default_title = f"Untitled Resume {int(count_row['resume_count']) + 1}"
+        document_locale = cast(DocumentLocale, payload["documentLocale"])
+        resume_number = int(count_row["resume_count"]) + 1
+        default_title = (
+            f"未命名简历 {resume_number}"
+            if document_locale == "zh"
+            else f"Untitled Resume {resume_number}"
+        )
         template_id = payload.get("template")
         if not isinstance(template_id, str) or not template_id.strip():
-            template_id = load_default_template_id(conn)
+            template_id = load_default_template_id(conn, document_locale)
         template_id = template_id.strip()
-        if not is_visible_template(conn, template_id):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="TEMPLATE_NOT_FOUND",
-            )
+        template = resolve_visible_template(conn, template_id)
+        typography = payload.get("typography")
+        if typography is None:
+            typography = template.get("typography")
+        if "resume" in payload:
+            resume_document = payload["resume"]
+        else:
+            preset = template["preset"]
+            starter_id = get_builtin_template_preset(preset)["starter"]
+            resume_document = create_empty_resume(starter_id, document_locale)
 
         resume_item = _normalize_resume_item_payload(
             resume_id=resume_id,
             payload={
                 "title": payload.get("title", default_title),
-                "resume": payload.get("resume", _create_empty_resume()),
+                "documentLocale": document_locale,
+                "resume": resume_document,
                 "jobBrief": payload.get("jobBrief", ""),
-                "typography": payload.get("typography", DEFAULT_TYPOGRAPHY),
+                "typography": typography,
                 "template": template_id,
                 "templateSettings": payload.get("templateSettings"),
             },
@@ -1017,7 +958,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
+def duplicate_resume(resume_id: str) -> dict[str, Any]:
     """Create an independent resume from the source's current content."""
 
     saved_at = _utc_now()
@@ -1037,6 +978,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
             )
 
         source_item = _read_resume_json(row["id"], current_version_id)
+        document_locale = cast(DocumentLocale, source_item["documentLocale"])
         # Name allocation and insert must share the write lock; otherwise two
         # simultaneous duplicate requests can choose the same available title.
         conn.execute("BEGIN IMMEDIATE")
@@ -1044,7 +986,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
         duplicate_title = _duplicate_resume_title(
             conn,
             source_title=_resume_title(source_item),
-            locale=locale,
+            document_locale=document_locale,
         )
 
         source_template_id = source_item.get("template")
@@ -1062,7 +1004,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
                 )
             # A template in the recycle bin is no longer selectable. A copy is
             # a new resume, so bind it to the current visible workspace default.
-            source_template_id = load_default_template_id(conn)
+            source_template_id = load_default_template_id(conn, document_locale)
 
         # Keep this whitelist explicit: job context, Agent sessions, drafts, and
         # version history belong to the source resume and must not cross IDs.
@@ -1070,6 +1012,7 @@ def duplicate_resume(resume_id: str, locale: str) -> dict[str, Any]:
             resume_id=duplicate_id,
             payload={
                 "title": duplicate_title,
+                "documentLocale": document_locale,
                 "resume": source_item.get("resume"),
                 "jobBrief": "",
                 "typography": source_item.get("typography"),
@@ -1184,6 +1127,7 @@ def save_resume_document_in_transaction(
         resume_id,
         {
             "title": current_item["title"],
+            "documentLocale": current_item["documentLocale"],
             "resume": resume,
             "jobBrief": current_item["jobBrief"],
             "typography": current_item["typography"],

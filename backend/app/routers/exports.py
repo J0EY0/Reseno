@@ -1,8 +1,10 @@
+from typing import cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
+from app.document_locales import DocumentLocale
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.exports import (
     ExportResumeImagesRequest,
@@ -28,19 +30,22 @@ from app.services.resumes import load_resume, load_resume_version
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 
 
-def _require_resume_for_export(request: ExportResumeRenderRequest) -> None:
-    """Ensure the requested current or historical resume version exists."""
+def _load_document_locale_for_export(
+    request: ExportResumeRenderRequest,
+) -> DocumentLocale:
+    """Load the document language from the requested resume version."""
 
     try:
         if request.version_id:
-            load_resume_version(request.resume_id, request.version_id)
+            detail = load_resume_version(request.resume_id, request.version_id)
         else:
-            load_resume(request.resume_id)
+            detail = load_resume(request.resume_id)
     except HTTPException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Resume not found for export.",
         ) from exc
+    return cast(DocumentLocale, detail["resume"]["documentLocale"])
 
 
 def _render_auth_kwargs(http_request: Request) -> dict[str, str | None]:
@@ -63,7 +68,7 @@ def export_resume_pdf(
 ) -> ApiResponse[ExportResumePdfResponse]:
     """Generate a PDF export for a saved resume."""
 
-    _require_resume_for_export(request)
+    document_locale = _load_document_locale_for_export(request)
     cleanup_expired_exports()
 
     export_id = create_export_id()
@@ -71,6 +76,7 @@ def export_resume_pdf(
     export_path = write_resume_pdf(
         export_id,
         request,
+        document_locale=document_locale,
         **_render_auth_kwargs(http_request),
     )
     download_query = urlencode({"fileName": file_name})
@@ -95,12 +101,13 @@ def export_resume_images(
 ) -> ApiResponse[ExportResumeImagesResponse]:
     """Export each saved resume page as PNG, archiving multi-page output."""
 
-    _require_resume_for_export(request)
+    document_locale = _load_document_locale_for_export(request)
     cleanup_expired_exports()
     export_id = create_export_id()
     result = write_resume_images(
         export_id,
         request,
+        document_locale=document_locale,
         **_render_auth_kwargs(http_request),
     )
     file_name = safe_image_file_name(

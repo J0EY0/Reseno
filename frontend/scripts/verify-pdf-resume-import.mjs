@@ -222,7 +222,13 @@ const server = await createServer({
 });
 
 try {
-  const [productEntry, parser, pdfTextExtraction, textHeuristics] =
+  const [
+    productEntry,
+    parser,
+    pdfTextExtraction,
+    textHeuristics,
+    documentLanguage,
+  ] =
     await Promise.all([
       server.ssrLoadModule("/src/lib/pdf-resume-import.ts"),
       server.ssrLoadModule("/src/lib/pdf-resume-import/parser.ts"),
@@ -230,6 +236,9 @@ try {
         "/src/lib/pdf-resume-import/pdf-text-extraction.ts",
       ),
       server.ssrLoadModule("/src/lib/pdf-resume-import/text-heuristics.ts"),
+      server.ssrLoadModule(
+        "/src/lib/pdf-resume-import/document-language.ts",
+      ),
     ]);
   assert.deepEqual(
     Object.keys(productEntry).sort(),
@@ -240,6 +249,7 @@ try {
   const { buildResumeFromPdfLines } = parser;
   const { textContentToLinesForResumeImport } = pdfTextExtraction;
   const { countTextGraphemes } = textHeuristics;
+  const { detectPdfResumeDocumentLocale } = documentLanguage;
   const buildResumeFromLines = (
     lines,
     fallbackSectionTitle,
@@ -258,6 +268,7 @@ try {
   verifyDisjointTwoColumnReadingOrder(buildResumeFromLines);
   verifyContactLocationExtraction(buildResumeFromLines);
   verifyProjectItemGrouping(buildResumeFromLines);
+  verifyPublicationItemGrouping(buildResumeFromLines);
   verifyFallbackSectionShape(buildResumeFromLines);
   verifyInlineSectionHeading(buildResumeFromLines);
   verifyWrappedLabeledListContinuation(buildResumeFromLines);
@@ -296,10 +307,12 @@ try {
   );
   verifyRotatedTextFontSize(textContentToLinesForResumeImport);
   verifyContinuousHanGlyphTokens(textContentToLinesForResumeImport);
+  verifyDocumentLanguageDetection(detectPdfResumeDocumentLocale);
   verifyShortUnmarkedBodySplitsAdjacentExperiences(buildResumeFromLines);
   verifyZhMinimalStructureRegression(
     textContentToLinesForResumeImport,
     buildResumeFromLines,
+    detectPdfResumeDocumentLocale,
   );
   await verifyPublicPdfImportEntry(importResumeFromPdf);
 
@@ -372,49 +385,49 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
   ]);
 
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     Error,
     "a failed parser-config request should reject the import",
   );
 
   parserConfigResponseMode = "malformed";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "a malformed successful response must not poison the parser-config cache",
   );
 
   parserConfigResponseMode = "registry-conflict";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "aliases that collide after PDF text normalization must be rejected",
   );
 
   parserConfigResponseMode = "registry-duplicate";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "duplicate aliases within one kind must match backend validation",
   );
 
   parserConfigResponseMode = "registry-unknown";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "a section kind unsupported by the frontend domain must be rejected",
   );
 
   parserConfigResponseMode = "registry-incomplete";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "a registry missing a frontend section kind must be rejected",
   );
 
   parserConfigResponseMode = "empty-term";
   await assert.rejects(
-    importResumeFromPdf(pdf, "Imported content"),
+    importResumeFromPdf(pdf),
     /INVALID_RESUME_IMPORT_PARSER_CONFIG/,
     "blank lexicon terms must be rejected before regex construction",
   );
@@ -424,7 +437,9 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
   Date.now = () => fakeNow;
   try {
     parserConfigResponseMode = "success";
-    const imported = await importResumeFromPdf(pdf, "Imported content");
+    const { resume: imported, documentLocale } =
+      await importResumeFromPdf(pdf);
+    assert.equal(documentLocale, "en");
     assert.equal(imported.basic.name, "Test User");
     assert.equal(imported.basic.email, "test.user@example.com");
     assert.equal(requiredSection(imported, "education").items.length, 1);
@@ -434,7 +449,7 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
       registry: 8,
     });
 
-    await importResumeFromPdf(pdf, "Imported content");
+    await importResumeFromPdf(pdf);
     assert.deepEqual(
       parserConfigRequestCounts,
       { lexicon: 8, registry: 8 },
@@ -442,7 +457,7 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
     );
 
     fakeNow += 5 * 60 * 1000 + 1;
-    await importResumeFromPdf(pdf, "Imported content");
+    await importResumeFromPdf(pdf);
     assert.deepEqual(
       parserConfigRequestCounts,
       { lexicon: 9, registry: 9 },
@@ -461,19 +476,32 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
       "2020 - 2024",
     ],
   ]);
-  const shortImport = await importResumeFromPdf(
-    shortPdf,
-    "Imported content",
-  );
+  const shortImport = await importResumeFromPdf(shortPdf);
   assert.equal(
-    shortImport.basic.name,
+    shortImport.resume.basic.name,
     "Short User",
     "a short text-layer resume must not be rejected by an arbitrary length floor",
+  );
+  assert.equal(shortImport.documentLocale, "en");
+
+  const freeformPdf = createPdfFile([
+    [
+      "Test User",
+      "test@example.com",
+      "Built accessible internal tools.",
+      "Improved delivery quality across teams.",
+    ],
+  ]);
+  const freeformImport = await importResumeFromPdf(freeformPdf);
+  assert.equal(
+    requiredSection(freeformImport.resume, "other").title,
+    "Other",
+    "fallback section titles must come from the registry and detected document language",
   );
 
   const noisePdf = createPdfFile([["1"]]);
   await assert.rejects(
-    importResumeFromPdf(noisePdf, "Imported content"),
+    importResumeFromPdf(noisePdf),
     /PDF_IMPORT_NO_TEXT/,
     "a non-empty but meaningless text layer must not create a fake resume",
   );
@@ -657,6 +685,53 @@ function verifyProjectItemGrouping(buildResumeFromLines) {
   assert.equal(project?.items[0]?.name, "ResuMate");
   assert.equal(project?.items[0]?.period, "2026.03 - 至今");
   assert.equal(project?.items[0]?.highlights.length, 2);
+}
+
+function verifyPublicationItemGrouping(buildResumeFromLines) {
+  const resume = buildResumeFromLines(
+    [
+      positionedLine("Ruoan Shen", 800),
+      positionedLine("ruoan@example.com", 780),
+      positionedLine("Selected Publications", 750, 40, 14),
+      positionedLine("How Traceable Feedback Shapes Trust", 720),
+      positionedLine("2026", 720, 500),
+      positionedLine("Ruoan Shen, Maya Li", 700),
+      positionedLine("National HCI Conference", 680),
+      positionedLine("Poster accepted.", 660),
+      positionedLine("When Explanations Improve Revision Decisions", 630),
+      positionedLine("2025", 630, 500),
+      positionedLine("Ruoan Shen, Daniel Wu", 610),
+      positionedLine("Human-Centered AI Workshop", 590),
+      positionedLine("Peer-reviewed workshop paper.", 570),
+    ],
+    "Imported content",
+  );
+  const publications = requiredSection(resume, "publication");
+
+  assert.equal(publications.items.length, 2);
+  assert.deepEqual(
+    publications.items.map((item) => ({
+      title: item.title,
+      authors: item.authors,
+      venue: item.venue,
+      date: item.date,
+    })),
+    [
+      {
+        title: "How Traceable Feedback Shapes Trust",
+        authors: "Ruoan Shen, Maya Li",
+        venue: "National HCI Conference",
+        date: "2026",
+      },
+      {
+        title: "When Explanations Improve Revision Decisions",
+        authors: "Ruoan Shen, Daniel Wu",
+        venue: "Human-Centered AI Workshop",
+        date: "2025",
+      },
+    ],
+    "Publication import must preserve separate citation fields and item boundaries.",
+  );
 }
 
 function verifyFallbackSectionShape(buildResumeFromLines) {
@@ -1367,9 +1442,42 @@ function verifyContinuousHanGlyphTokens(textContentToLines) {
   );
 }
 
+function verifyDocumentLanguageDetection(detectDocumentLocale) {
+  assert.equal(
+    detectDocumentLocale([
+      line("Élodie Martin", 0),
+      line("Expérience professionnelle", 1),
+    ]),
+    "en",
+    "accented Latin letters should remain an English document",
+  );
+  assert.equal(
+    detectDocumentLocale([
+      line("王小明", 0),
+      line("Software Engineer", 1),
+    ]),
+    "zh",
+    "mixed Han and Latin text should default to Chinese",
+  );
+  assert.equal(
+    detectDocumentLocale([
+      line("Иван Петров", 0),
+      line("Software Engineer", 1),
+    ]),
+    "zh",
+    "a non-Latin script should default to Chinese",
+  );
+  assert.equal(
+    detectDocumentLocale([line("Resume", 0)]),
+    "en",
+    "all-Latin text should be classified as English after import text validation",
+  );
+}
+
 function verifyZhMinimalStructureRegression(
   textContentToLines,
   buildResumeFromLines,
+  detectDocumentLocale,
 ) {
   // Keep selected PDF.js token boundaries and x/y coordinates from the source
   // PDF. Flattened, hand-ordered strings cannot reproduce same-row right
@@ -1379,6 +1487,8 @@ function verifyZhMinimalStructureRegression(
     zhMinimalStructureFixture.page,
   );
   const resume = buildResumeFromLines(lines, "导入内容");
+
+  assert.equal(detectDocumentLocale(lines), "zh");
 
   for (const section of resume.sections.filter(
     (candidate) => candidate.kind === "simple_list",

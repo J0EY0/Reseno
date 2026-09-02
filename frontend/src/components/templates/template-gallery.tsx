@@ -10,19 +10,23 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
+import type { TemplatePreviewResumes } from "@/lib/template-preview-resume";
 import type {
-  ResumeData,
+  DocumentLocale,
   ResumeTemplateDefinition,
 } from "@/types/resume";
 
 import { TemplateGalleryGrid } from "./template-gallery-grid";
+import { TemplateLocaleSelect } from "./template-locale-select";
 import { useTemplateGalleryController } from "./use-template-gallery-controller";
 
 interface TemplateGalleryProps {
   t: AppMessages;
-  previewResume: ResumeData;
+  previewMessages: AppMessages | null;
+  previewResumes: TemplatePreviewResumes | null;
   templates: ResumeTemplateDefinition[];
   defaultTemplateId: string;
+  templateLocale: DocumentLocale;
   isImporting: boolean;
   isCreating: boolean;
   openingTemplateId: string | null;
@@ -30,6 +34,7 @@ interface TemplateGalleryProps {
   onPreloadTemplateDetail: () => void;
   onOpenTemplate: (templateId: string) => void;
   onSetDefaultTemplate: (templateId: string) => void;
+  onTemplateLocaleChange: (locale: DocumentLocale) => void;
   onCreateCustomTemplate: () => void;
   onImportTemplates: (file: File) => void;
   onDeleteTemplates: (templateIds: string[]) => void;
@@ -37,9 +42,11 @@ interface TemplateGalleryProps {
 
 export function TemplateGallery({
   t,
-  previewResume,
+  previewMessages,
+  previewResumes,
   templates,
   defaultTemplateId,
+  templateLocale,
   isImporting,
   isCreating,
   openingTemplateId,
@@ -47,6 +54,7 @@ export function TemplateGallery({
   onPreloadTemplateDetail,
   onOpenTemplate,
   onSetDefaultTemplate,
+  onTemplateLocaleChange,
   onCreateCustomTemplate,
   onImportTemplates,
   onDeleteTemplates,
@@ -115,6 +123,14 @@ export function TemplateGallery({
         onBulkDelete={() => gallery.requestDelete(gallery.selectedTemplateIds)}
         leadingActions={
           <>
+            <TemplateLocaleSelect
+              disabled={settingDefaultTemplateId !== null}
+              chineseLabel={t.chineseTemplate}
+              englishLabel={t.englishTemplate}
+              messages={t}
+              value={templateLocale}
+              onValueChange={onTemplateLocaleChange}
+            />
             <Button
               type="button"
               variant="outline"
@@ -160,7 +176,8 @@ export function TemplateGallery({
       >
         <TemplateGalleryGrid
           t={t}
-          previewResume={previewResume}
+          previewMessages={previewMessages}
+          previewResumes={previewResumes}
           templates={gallery.paginatedTemplates}
           defaultTemplateId={defaultTemplateId}
           isSelecting={gallery.isSelecting}

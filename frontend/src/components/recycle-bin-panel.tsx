@@ -19,7 +19,7 @@ export function RecycleBinPanel(props: RecycleBinPanelProps) {
     deletedResumes,
     deletedTemplates,
     templates,
-    templatePreviewResume,
+    templatePreviewResumes,
   } = props;
   const controller = useRecycleBinController(props);
   useResumeThumbnailFonts(
@@ -111,7 +111,7 @@ export function RecycleBinPanel(props: RecycleBinPanelProps) {
           <DeletedTemplateTrashList
             locale={locale}
             t={t}
-            templatePreviewResume={templatePreviewResume}
+            templatePreviewResumes={templatePreviewResumes}
             controller={controller}
           />
         </Tabs>

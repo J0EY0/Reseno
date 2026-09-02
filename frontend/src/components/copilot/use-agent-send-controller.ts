@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 
-import type { Locale } from '@/i18n'
 import {
   replaceAgentSession,
   stopAgentRun,
@@ -22,7 +21,7 @@ import type {
   AgentDraftState,
   AgentRunStatus,
 } from '@/types/api'
-import type { ModelConfig, ResumeData } from '@/types/resume'
+import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 
 import {
   isPendingSendOwner,
@@ -93,8 +92,8 @@ function ownsAgentSendPreflight(
 export function useAgentSendController({
   agentDraftState,
   consumeRunStream,
+  documentLocale,
   isSessionMutationPending,
-  locale,
   messages,
   onBeforeSend,
   refreshAgentSession,
@@ -106,8 +105,8 @@ export function useAgentSendController({
 }: {
   agentDraftState: AgentDraftState | null
   consumeRunStream: ConsumeAgentRunStream
+  documentLocale: DocumentLocale
   isSessionMutationPending: boolean
-  locale: Locale
   messages: AgentPanelMessage[]
   onBeforeSend?: () => Promise<void>
   refreshAgentSession: RefreshAgentSession
@@ -363,7 +362,7 @@ export function useAgentSendController({
                   }
 
                   const session = await replaceAgentSession(resumeId, {
-                    locale,
+                    locale: documentLocale,
                     messages: apiMessages,
                     revision,
                   })
@@ -380,7 +379,7 @@ export function useAgentSendController({
                       sendAgentChatMessage(
                         {
                           expectedRevision,
-                          locale,
+                          locale: documentLocale,
                           message: currentMessage,
                           messages: resumeId ? [] : priorMessages,
                           modelConfig: selectedModel,
@@ -504,8 +503,8 @@ export function useAgentSendController({
       agentDraftState,
       cancelScheduledSend,
       consumeRunStream,
+      documentLocale,
       isSessionMutationPending,
-      locale,
       messages,
       onBeforeSend,
       refreshAgentSession,

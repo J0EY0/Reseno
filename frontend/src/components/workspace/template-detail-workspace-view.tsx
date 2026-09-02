@@ -44,12 +44,14 @@ function TemplateDetailContent({
             t={messages}
             template={template}
             defaultTemplateId={controller.defaultTemplateId}
+            templateLocale={controller.templateLocale}
             isImporting={false}
             isCreating={controller.isCreating}
             settingDefaultTemplateId={controller.settingDefaultTemplateId}
             onSetDefaultTemplate={(templateId) =>
               void controller.setDefaultTemplate(templateId)
             }
+            onTemplateLocaleChange={controller.setTemplateLocale}
             onCreateCustomTemplate={() =>
               void controller.createCustomTemplate()
             }
@@ -65,11 +67,14 @@ function TemplateDetailContent({
         )}
       </section>
 
-      {controller.hasLoaded && template ? (
+      {controller.hasLoaded &&
+      template &&
+      controller.templatePreviewMessages &&
+      controller.templatePreviewResume ? (
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
           <DocumentPreviewCard
             variant="template"
-            t={messages}
+            t={controller.templatePreviewMessages}
             resume={controller.templatePreviewResume}
             template={template}
             onMoveTemplateImage={controller.moveTemplateImage}

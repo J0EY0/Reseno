@@ -266,6 +266,47 @@ try {
     "Preview/PDF projection must retain the semantic project fields.",
   );
 
+  const publication = createResumeSection("publication");
+  Object.assign(publication.items[0], {
+    title: "How Traceable Feedback Shapes Trust",
+    authors: "Ruoan Shen, Maya Li",
+    venue: "National HCI Conference",
+    date: "2026",
+    url: "https://example.com/paper",
+    description: "Poster accepted.",
+  });
+  const renderablePublication = projectResumeSection(publication);
+  assert.deepEqual(
+    {
+      layout: renderablePublication.layout,
+      title: renderablePublication.items[0].title,
+      subtitle: renderablePublication.items[0].subtitle,
+      meta: renderablePublication.items[0].meta,
+      period: renderablePublication.items[0].period,
+      url: renderablePublication.items[0].url,
+      description: renderablePublication.items[0].description,
+    },
+    {
+      layout: "timeline",
+      title: "How Traceable Feedback Shapes Trust",
+      subtitle: "Ruoan Shen, Maya Li",
+      meta: "National HCI Conference",
+      period: "2026",
+      url: "https://example.com/paper",
+      description: "Poster accepted.",
+    },
+    "Structured publications must retain citation fields in preview and export projection.",
+  );
+  assert.equal(isCanonicalResumeSection(publication), true);
+  assert.equal(
+    isCanonicalResumeSection({
+      ...publication,
+      items: [{ ...publication.items[0], status: "accepted" }],
+    }),
+    false,
+    "Publication items must reject fields outside the canonical citation shape.",
+  );
+
   assert.equal(isCanonicalResumeSection(project), true);
   assert.equal(
     isCanonicalResumeSection({ ...project, id: "project:archive" }),

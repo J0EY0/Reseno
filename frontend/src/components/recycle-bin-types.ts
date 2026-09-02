@@ -1,7 +1,9 @@
 import type { AppMessages, Locale } from "@/i18n";
+import type { TemplatePreviewResumes } from "@/lib/template-preview-resume";
 import type {
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
+  DocumentLocale,
   ResumeData,
   ResumeTemplateDefinition,
   ResumeTypographySettings,
@@ -13,7 +15,7 @@ export interface RecycleBinPanelProps {
   deletedResumes: DeletedResumeWorkspaceItem[];
   deletedTemplates: DeletedResumeTemplateDefinition[];
   templates: ResumeTemplateDefinition[];
-  templatePreviewResume: ResumeData;
+  templatePreviewResumes: TemplatePreviewResumes;
   onRestoreResume: (resumeIds: string[]) => Promise<boolean>;
   onDeleteResumeForever: (resumeIds: string[]) => Promise<boolean>;
   onRestoreTemplate: (templateIds: string[]) => Promise<boolean>;
@@ -26,6 +28,7 @@ export type RecycleBinPreviewTarget =
   | {
       variant: "resume";
       title: string;
+      documentLocale: DocumentLocale;
       resume: ResumeData;
       template: ResumeTemplateDefinition;
       typography: ResumeTypographySettings;
