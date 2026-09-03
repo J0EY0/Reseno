@@ -10,7 +10,7 @@ const sources = new Map(
       "src/components/deleted-resume-trash-list.tsx",
       "src/components/deleted-template-trash-list.tsx",
       "src/components/gallery-pagination.tsx",
-      "src/components/preview/document-preview-card.tsx",
+      "src/components/preview/document-canvas.tsx",
       "src/components/resume-gallery-card.tsx",
       "src/components/templates/template-gallery-card.tsx",
       "src/components/workspace/resume-detail-workspace-header.tsx",

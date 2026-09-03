@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
-import type { DocumentPreviewHandle } from "@/components/preview/document-preview-card";
+import type { DocumentCanvasHandle } from "@/components/preview/document-canvas";
 import type { ResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import type { ResumeDetailSaveController } from "@/components/workspace/use-resume-detail-save";
 import type { AppMessages } from "@/i18n";
@@ -43,7 +43,7 @@ export function useResumeDetailCommands({
   templateCatalog,
 }: ResumeDetailCommandsOptions) {
   const duplicateInFlightRef = useRef(false);
-  const documentPreviewRef = useRef<DocumentPreviewHandle | null>(null);
+  const documentPreviewRef = useRef<DocumentCanvasHandle | null>(null);
   const [isDuplicating, setIsDuplicating] = useState(false);
   const [isSmartFitting, setIsSmartFitting] = useState(false);
   const [isPreviewReady, setIsPreviewReady] = useState(false);
@@ -215,7 +215,7 @@ export function useResumeDetailCommands({
   return {
     applyTemplate,
     changeTitleDraft,
-    documentPreviewRef: documentPreviewRef as RefObject<DocumentPreviewHandle | null>,
+    documentPreviewRef: documentPreviewRef as RefObject<DocumentCanvasHandle | null>,
     duplicate,
     fitOnePage,
     isDuplicating,

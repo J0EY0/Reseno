@@ -33,23 +33,14 @@ export function WorkspacePanelSkeleton() {
   );
 }
 
-export function WorkspacePreviewSkeleton({
-  showPreviewTitle = true,
-}: {
-  showPreviewTitle?: boolean;
-}) {
+export function WorkspacePreviewSkeleton() {
   return (
     <section
       data-slot="workspace-preview-skeleton"
       className="resume-preview-card relative flex min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border border-border bg-card p-4 xl:self-start"
     >
-      {showPreviewTitle ? (
-        <div className="mb-4">
-          <Skeleton className="h-3 w-24" />
-        </div>
-      ) : null}
       <div className="flex justify-center">
-        <div className="w-[min(100%,640px)] rounded-(--radius-card) border border-border bg-background p-10 shadow-[0_18px_60px_rgba(15,23,42,0.10)]">
+        <div className="w-[min(100%,640px)] rounded-md border border-border bg-background p-10 shadow-card">
           <div className="mx-auto grid max-w-[520px] gap-5">
             <Skeleton className="mx-auto h-8 w-32" />
             <Skeleton className="mx-auto h-4 w-72" />

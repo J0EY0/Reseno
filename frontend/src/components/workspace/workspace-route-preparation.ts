@@ -9,7 +9,7 @@ import type {
   PreparedResumeDetailRouteData,
   WorkspaceTemplateRouteData,
 } from "@/lib/workspace-route-data";
-import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import {
   loadModelsWorkspacePage,
   loadResumeDetailWorkspacePage,
@@ -116,7 +116,7 @@ export async function prepareWorkspaceRoute<View extends WorkspaceView>(
 export function preloadResumeDetailRoute() {
   return Promise.all([
     loadResumeDetailWorkspacePage(),
-    loadDocumentPreviewCard(),
+    loadDocumentCanvas(),
   ]);
 }
 
@@ -203,7 +203,7 @@ export async function prepareCreatedResumeDetailRoute(
 export function preloadTemplateDetailRoute() {
   return Promise.all([
     loadTemplateDetailWorkspacePage(),
-    loadDocumentPreviewCard(),
+    loadDocumentCanvas(),
   ]);
 }
 

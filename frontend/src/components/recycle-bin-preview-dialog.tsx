@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef } from "react";
 
-import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import type { RecycleBinPreviewTarget } from "@/components/recycle-bin-types";
 import {
   Dialog,
@@ -12,7 +12,7 @@ import { WorkspacePreviewSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
 
-const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
+const DocumentCanvas = lazy(loadDocumentCanvas);
 
 export function RecycleBinPreviewDialog({
   t,
@@ -32,9 +32,7 @@ export function RecycleBinPreviewDialog({
     target?.variant === "resume" ? target.documentLocale : null;
   const documentMessages = useLocalizedMessages(documentLocale);
   const previewMessages = target?.variant === "resume" ? documentMessages : t;
-  const previewSkeleton = (
-    <WorkspacePreviewSkeleton showPreviewTitle={false} />
-  );
+  const previewSkeleton = <WorkspacePreviewSkeleton />;
 
   return (
     <Dialog
@@ -71,26 +69,26 @@ export function RecycleBinPreviewDialog({
 
           <div
             data-slot="trash-preview-dialog"
-            className="min-h-0 overflow-y-auto overscroll-contain"
+            className="min-h-0 overflow-hidden"
           >
             <Suspense fallback={previewSkeleton}>
               {!previewMessages ? (
                 previewSkeleton
               ) : target.variant === "resume" ? (
-                <DocumentPreviewCard
+                <DocumentCanvas
                   variant="resume"
-                  t={previewMessages}
+                  t={t}
+                  documentT={previewMessages}
                   resume={target.resume}
-                  showPreviewTitle={false}
                   template={target.template}
                   typography={target.typography}
                 />
               ) : (
-                <DocumentPreviewCard
+                <DocumentCanvas
                   variant="template"
-                  t={previewMessages}
+                  t={t}
+                  documentT={previewMessages}
                   resume={target.resume}
-                  showPreviewTitle={false}
                   template={target.template}
                 />
               )}

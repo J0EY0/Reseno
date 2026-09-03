@@ -388,17 +388,17 @@ assert.match(
 assert.match(recyclePreviewDialog, /<DialogDescription className="sr-only">/);
 assert.match(recyclePreviewDialog, /closeLabel=\{t\.close\}/);
 assert.match(recyclePreviewDialog, /onOpenAutoFocus=/);
-assert.match(recyclePreviewDialog, /lazy\(loadDocumentPreviewCard\)/);
+assert.match(recyclePreviewDialog, /lazy\(loadDocumentCanvas\)/);
 assert.match(recyclePreviewDialog, /data-slot="trash-preview-dialog"/);
 assert.match(
   recyclePreviewDialog,
   /<DialogContent[\s\S]*?rounded-\(--radius-preview\)/,
   "The dialog clip must use the same radius as the visible preview card.",
 );
-assert.equal(
-  (recyclePreviewDialog.match(/showPreviewTitle=\{false\}/g) ?? []).length,
-  3,
-  "The recycle preview and its loading state must omit the redundant visual preview title.",
+assert.doesNotMatch(
+  recyclePreviewDialog,
+  /showPreviewTitle/,
+  "The recycle preview must not retain the removed visual preview title option.",
 );
 assert.match(
   recyclePreviewDialog,

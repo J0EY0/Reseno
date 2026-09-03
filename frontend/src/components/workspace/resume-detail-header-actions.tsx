@@ -1,5 +1,6 @@
 import {
   ChevronDown,
+  ChevronRight,
   CopyPlus,
   Download,
   FileJson,
@@ -103,68 +104,91 @@ function ResumeDetailCompactActions({
         showVersions
       />
 
-      <WorkspaceMobileActionsMenu
-        locale={locale}
-        messages={messages}
-        onLocaleChange={onLocaleChange}
-        onLogout={commands.logout}
-        onThemeChange={commands.changeTheme}
-        resolvedTheme={state.resolvedTheme}
+      <div
+        className="relative"
+        data-agent-draft={Boolean(state.agent.draft)}
+        data-agent-status={state.agent.panelStatus ?? "idle"}
       >
-        <DropdownMenuItem
-          disabled={
-            state.document.isSmartFittingOnePage ||
-            !state.document.isPreviewReady
-          }
-          onSelect={() => void commands.fitOnePage()}
+        <WorkspaceMobileActionsMenu
+          locale={locale}
+          messages={messages}
+          onLocaleChange={onLocaleChange}
+          onLogout={commands.logout}
+          onThemeChange={commands.changeTheme}
+          resolvedTheme={state.resolvedTheme}
         >
-          {state.document.isSmartFittingOnePage ? (
-            <Spinner aria-label={messages.smartOnePage} />
-          ) : (
-            <Minimize2 />
-          )}
-          {messages.smartOnePage}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={
-            state.isDuplicatingResume ||
-            state.isLoading ||
-            state.save.state === "saving"
-          }
-          onSelect={() => void commands.duplicateResume()}
-        >
-          {state.isDuplicatingResume ? <Spinner /> : <CopyPlus />}
-          {messages.duplicateResume}
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger
-            disabled={state.isExporting || state.isLoading}
+          <DropdownMenuItem
+            onSelect={() =>
+              commands.agent.setPanelCollapsed(!state.agent.isPanelCollapsed)
+            }
           >
-            {state.isExporting ? (
-              <Spinner aria-label={messages.exporting} />
+            <ChevronRight />
+            {state.agent.isPanelCollapsed
+              ? messages.agentExpandPanel
+              : messages.agentCollapsePanel}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={
+              state.document.isSmartFittingOnePage ||
+              !state.document.isPreviewReady
+            }
+            onSelect={() => void commands.fitOnePage()}
+          >
+            {state.document.isSmartFittingOnePage ? (
+              <Spinner aria-label={messages.smartOnePage} />
             ) : (
-              <Download />
+              <Minimize2 />
             )}
-            {state.isExporting ? messages.exporting : messages.export}
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuGroup>
-              <DropdownMenuItem onSelect={() => void commands.exportPdf()}>
-                <FileText />
-                {messages.exportPdf}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void commands.exportImages()}>
-                <Images />
-                {messages.exportImages}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void commands.exportJson()}>
-                <FileJson />
-                {messages.exportJson}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-      </WorkspaceMobileActionsMenu>
+            {messages.smartOnePage}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={
+              state.isDuplicatingResume ||
+              state.isLoading ||
+              state.save.state === "saving"
+            }
+            onSelect={() => void commands.duplicateResume()}
+          >
+            {state.isDuplicatingResume ? <Spinner /> : <CopyPlus />}
+            {messages.duplicateResume}
+          </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              disabled={state.isExporting || state.isLoading}
+            >
+              {state.isExporting ? (
+                <Spinner aria-label={messages.exporting} />
+              ) : (
+                <Download />
+              )}
+              {state.isExporting ? messages.exporting : messages.export}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuGroup>
+                <DropdownMenuItem onSelect={() => void commands.exportPdf()}>
+                  <FileText />
+                  {messages.exportPdf}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => void commands.exportImages()}
+                >
+                  <Images />
+                  {messages.exportImages}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void commands.exportJson()}>
+                  <FileJson />
+                  {messages.exportJson}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </WorkspaceMobileActionsMenu>
+        <span
+          aria-hidden="true"
+          className="agent-compact-status-indicator"
+          data-slot="agent-compact-status-indicator"
+        />
+      </div>
     </div>
   );
 }

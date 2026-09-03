@@ -10,7 +10,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
-import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import { resolveInitialTemplateDetail } from "@/components/workspace/template-detail-initial-route";
 import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
@@ -221,7 +221,7 @@ export function useTemplateDetailWorkspace({
       setIsLoading(true);
       setHasLoadError(false);
       toast.dismiss("workspace-load-error");
-      void loadDocumentPreviewCard();
+      void loadDocumentCanvas();
 
       try {
         const routeData = await loadTemplateDetailRouteData(

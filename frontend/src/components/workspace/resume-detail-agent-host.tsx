@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { lazy, Suspense, useCallback, useState } from "react";
+import { ChevronRight } from "lucide-react";
+import { lazy, Suspense, useState } from "react";
 
 import {
   AgentPanelLoadingBody,
@@ -22,14 +22,17 @@ import "./resume-detail-agent-motion.css";
 let copilotPanelModulePromise:
   | Promise<typeof import("@/components/copilot/copilot-panel")>
   | null = null;
+const RESUME_DETAIL_AGENT_PANEL_ID = "resume-detail-agent-panel";
 
-// Keep the conversation runtime out of the detail entry chunk until the Agent
-// panel renders or its collapsed rail warms the same module.
 function loadCopilotPanelModule() {
   copilotPanelModulePromise ??= import(
     "@/components/copilot/copilot-panel"
   );
   return copilotPanelModulePromise;
+}
+
+function preloadCopilotPanelModule() {
+  void loadCopilotPanelModule();
 }
 
 const CopilotPanel = lazy(() =>
@@ -55,6 +58,8 @@ function ResumeDetailAgentPanel({
 
   return (
     <aside
+      id={RESUME_DETAIL_AGENT_PANEL_ID}
+      aria-label={messages.aiTitle}
       aria-hidden={!shouldDockAgent}
       className={cn(
         "agent-panel-dock relative min-w-0 self-start overflow-hidden print:hidden",
@@ -115,88 +120,77 @@ function ResumeDetailAgentPanel({
   );
 }
 
-function ResumeDetailAgentSeamRail({
+export function ResumeDetailAgentToggle({
   messages,
   model,
-  panelStatus,
 }: {
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
-  panelStatus: AgentPanelStatus | null;
 }) {
   const { commands, state } = model;
+  const panelStatus = state.agent.panelStatus;
   const isCollapsed = state.agent.isPanelCollapsed;
   const tooltip = isCollapsed
     ? messages.agentExpandPanel
     : messages.agentCollapsePanel;
-  const railStatus =
-    panelStatus === "responding"
-      ? "responding"
-      : panelStatus === "loading"
-        ? "loading"
-        : panelStatus === "error"
-          ? "error"
-          : state.agent.draft
-            ? "attention"
-            : "idle";
   const statusLabel =
-    railStatus === "responding"
+    panelStatus === "responding"
       ? messages.agentThinking
-      : railStatus === "loading"
+      : panelStatus === "loading"
         ? messages.agentHistoryLoading
-        : railStatus === "error"
+        : panelStatus === "error"
           ? messages.agentHistoryLoadFailed
-          : railStatus === "attention"
+          : state.agent.draft
             ? messages.agentDraftReady
             : null;
 
   return (
-    <div
-      className={cn(
-        "agent-seam-rail flex print:hidden",
-        isCollapsed && "agent-seam-rail--collapsed",
-      )}
-      data-agent-status={railStatus}
-    >
-      <TooltipProvider delayDuration={180}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={tooltip}
-              aria-expanded={!state.agent.isPanelCollapsed}
-              className="agent-seam-rail-button"
-              onFocus={() => void loadCopilotPanelModule()}
-              onPointerDown={() => void loadCopilotPanelModule()}
-              onPointerEnter={() => void loadCopilotPanelModule()}
-              onClick={() => {
-                commands.agent.setPanelCollapsed(
-                  !state.agent.isPanelCollapsed,
-                );
-              }}
-            >
-              <span className="agent-seam-rail-track" aria-hidden="true">
-                <ChevronLeft className="agent-seam-rail-icon agent-seam-rail-icon--collapsed" />
-                <ChevronRight className="agent-seam-rail-icon agent-seam-rail-icon--expanded" />
-              </span>
-              <span
-                aria-hidden="true"
-                className="agent-seam-rail-status"
-                data-slot="agent-status-indicator"
-              />
-              {isCollapsed && statusLabel ? (
-                <span className="sr-only" role="status">
-                  {statusLabel}
-                </span>
-              ) : null}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="left">{tooltip}</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    </div>
+    <TooltipProvider delayDuration={180}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            aria-controls={RESUME_DETAIL_AGENT_PANEL_ID}
+            aria-label={tooltip}
+            aria-expanded={!isCollapsed}
+            className={cn(
+              "agent-panel-toggle relative hidden w-10 rounded-md bg-background/95 shadow-lg xl:inline-flex",
+              !isCollapsed && "bg-accent text-accent-foreground",
+            )}
+            data-agent-draft={Boolean(state.agent.draft)}
+            data-agent-status={panelStatus ?? "idle"}
+            data-slot="agent-panel-toggle"
+            onFocus={preloadCopilotPanelModule}
+            onPointerDown={preloadCopilotPanelModule}
+            onPointerEnter={preloadCopilotPanelModule}
+            onClick={() => {
+              commands.agent.setPanelCollapsed(!isCollapsed);
+            }}
+          >
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                "transition-transform duration-200",
+                !isCollapsed && "rotate-180",
+              )}
+            />
+            <span
+              aria-hidden="true"
+              className="agent-panel-toggle-status"
+              data-slot="agent-status-indicator"
+            />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{tooltip}</TooltipContent>
+      </Tooltip>
+      {isCollapsed && statusLabel ? (
+        <span className="sr-only" role="status">
+          {statusLabel}
+        </span>
+      ) : null}
+    </TooltipProvider>
   );
 }
 
@@ -207,52 +201,22 @@ export function ResumeDetailAgentHost({
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
 }) {
-  const { state } = model;
-  const resumeId = state.resumeItem?.id;
+  const { commands, state } = model;
   const [hasMountedAgent, setHasMountedAgent] = useState(
     () => !state.agent.isPanelCollapsed,
   );
-  const [reportedStatus, setReportedStatus] = useState<{
-    resumeId: string | undefined;
-    status: AgentPanelStatus;
-  } | null>(null);
-  const handleStatusChange = useCallback(
-    (status: AgentPanelStatus) => {
-      setReportedStatus((current) =>
-        current && current.resumeId === resumeId && current.status === status
-          ? current
-          : { resumeId, status },
-      );
-    },
-    [resumeId],
-  );
-  const panelStatus =
-    reportedStatus && reportedStatus.resumeId === resumeId
-      ? reportedStatus.status
-      : null;
   const shouldActivateAgent = !state.agent.isPanelCollapsed;
-  // This one-way latch keeps the conversation controller alive when the dock
-  // collapses. The resumeId key remains the only reason to remount its owner.
   if (!hasMountedAgent && shouldActivateAgent) {
     setHasMountedAgent(true);
   }
   const shouldMountAgent = hasMountedAgent || shouldActivateAgent;
 
-  return (
-    <>
-      <ResumeDetailAgentSeamRail
-        messages={messages}
-        model={model}
-        panelStatus={panelStatus}
-      />
-      {shouldMountAgent ? (
-        <ResumeDetailAgentPanel
-          messages={messages}
-          model={model}
-          panelStatus={panelStatus}
-          onStatusChange={handleStatusChange}
-        />
-      ) : null}
-    </>
-  );
+  return shouldMountAgent ? (
+    <ResumeDetailAgentPanel
+      messages={messages}
+      model={model}
+      panelStatus={state.agent.panelStatus}
+      onStatusChange={commands.agent.reportPanelStatus}
+    />
+  ) : null;
 }

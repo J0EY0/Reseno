@@ -60,11 +60,8 @@ function StandardPaginatedResume({
         />
       </div>
 
-      {pagination.pages.map((page, pageIndex) => (
+      {pagination.pages.map((page) => (
         <div className="resume-page-shell" key={page.startOffsetMm}>
-          <p className="resume-page-label print:hidden">
-            {`Page ${pageIndex + 1}`}
-          </p>
           <article
             data-export-root="resume-page"
             className={cn(pageClassName, "resume-page--content-paged")}
@@ -139,11 +136,8 @@ function SidebarPaginatedResume({
         />
       </div>
 
-      {pagination.pages.map((page, pageIndex) => (
+      {pagination.pages.map((page) => (
         <div className="resume-page-shell" key={page.startOffsetMm}>
-          <p className="resume-page-label print:hidden">
-            {`Page ${pageIndex + 1}`}
-          </p>
           <article
             data-export-root="resume-page"
             className={cn(pageClassName, "resume-page--paged")}

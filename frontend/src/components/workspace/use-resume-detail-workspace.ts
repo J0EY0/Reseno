@@ -336,7 +336,7 @@ export function useResumeDetailWorkspace({
     save: () => save.save(),
     template: activeTemplate,
   });
-  const agentLayout = useResumeDetailAgentLayout();
+  const agentLayout = useResumeDetailAgentLayout(session.resumeItem?.id);
 
   const changeView = useCallback(
     (view: WorkspaceView) => {
@@ -398,6 +398,7 @@ export function useResumeDetailWorkspace({
         openModelSettings,
         previewEdits: session.previewAgentEdits,
         reconcileDraft: session.reconcileAgentDraft,
+        reportPanelStatus: agentLayout.reportPanelStatus,
         rollbackDraft: session.rollbackAgentDraft,
         setPanelCollapsed: agentLayout.setIsPanelCollapsed,
       },
@@ -435,6 +436,7 @@ export function useResumeDetailWorkspace({
         draftState: session.agentDraftState,
         isPanelCollapsed: agentLayout.isPanelCollapsed,
         modelConfigs: preferences.modelConfigs,
+        panelStatus: agentLayout.panelStatus,
         selectedModelId: preferences.agentSettings.defaultModelId,
       },
       collapsedState: session.collapsedState,

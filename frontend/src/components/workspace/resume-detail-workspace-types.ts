@@ -3,6 +3,7 @@ import type {
   SetStateAction,
 } from "react";
 
+import type { AgentPanelStatus } from "@/components/copilot/copilot-panel-types";
 import type {
   AgentDraftState,
   AgentDraftSnapshot,
@@ -53,6 +54,7 @@ export interface ResumeDetailAgentViewState {
   draftState: AgentDraftState | null;
   isPanelCollapsed: boolean;
   modelConfigs: ModelConfig[];
+  panelStatus: AgentPanelStatus | null;
   selectedModelId: string;
 }
 
@@ -94,6 +96,7 @@ export interface ResumeDetailAgentCommands {
     transactionState?: AgentTransactionState,
   ) => void;
   reconcileDraft: (snapshot: AgentDraftSnapshot | null) => void;
+  reportPanelStatus: (status: AgentPanelStatus) => void;
   rollbackDraft: (sourceMessageId?: string) => void;
   setPanelCollapsed: (collapsed: boolean) => void;
 }

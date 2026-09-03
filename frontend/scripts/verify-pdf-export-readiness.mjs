@@ -30,10 +30,10 @@ function assert(condition, message) {
 }
 
 assert(
-  /onPaginationReadyChange\?:\s*\(ready:\s*boolean\)\s*=>\s*void/.test(
+  /onPaginationReadyChange\?:\s*\(ready:\s*boolean,\s*pageCount:\s*number\)\s*=>\s*void/.test(
     resumePreview,
   ),
-  "ResumePreview must expose explicit pagination readiness.",
+  "ResumePreview must expose pagination readiness and the settled page count.",
 );
 assert(
   /PAGINATION_STABLE_FRAME_COUNT\s*=\s*2/.test(resumePagination),

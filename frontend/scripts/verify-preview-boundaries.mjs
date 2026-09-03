@@ -78,7 +78,9 @@ const [
   templateGallery,
   templateGalleryCard,
   recycleBinThumbnail,
-  documentPreview,
+  documentCanvas,
+  documentCanvasHook,
+  documentCanvasModel,
   indexCss,
   pdfExport,
   previewDiffText,
@@ -97,7 +99,9 @@ const [
     readSource("components/templates/template-gallery.tsx"),
     readSource("components/templates/template-gallery-card.tsx"),
     readSource("components/recycle-bin-table.tsx"),
-    readSource("components/preview/document-preview-card.tsx"),
+    readSource("components/preview/document-canvas.tsx"),
+    readSource("components/preview/use-document-canvas.ts"),
+    readSource("components/preview/document-canvas-model.ts"),
     readSource("index.css"),
     readSource("components/pdf-export-renderer.tsx"),
     readSource("components/preview/resume-preview-diff-text.tsx"),
@@ -115,6 +119,11 @@ const thumbnailCallers = [
   templateGalleryCard,
   recycleBinThumbnail,
 ];
+const thumbnailPaperRule = readCssRule(indexCss, ".resume-page--thumbnail");
+const printPaperRule = readCssRule(
+  indexCss.slice(indexCss.indexOf("@media print")),
+  ".resume-page",
+);
 
 assert(
   !/from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(
@@ -131,6 +140,11 @@ assert(
   "Both standard and sidebar measurement copies must be aria-hidden and inert.",
 );
 assert(
+  !/resume-page-label|Page \$\{pageIndex \+ 1\}/.test(previewPages) &&
+    !/\.resume-page-label\s*\{/.test(indexCss),
+  "Page numbering must live in the canvas controls instead of repeating above every sheet.",
+);
+assert(
   thumbnailCallers.every(
     (source) =>
       /from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(
@@ -145,40 +159,52 @@ assert(
 );
 
 assert(
-  [documentPreview, pdfExport].every((source) =>
+  [documentCanvas, pdfExport].every((source) =>
     /from\s+["']@\/components\/preview\/resume-preview["']/.test(source),
   ),
   "Detail and PDF renderers must retain the paginated ResumePreview seam.",
 );
 assert(
   !/layoutTransitionKey|PREVIEW_LAYOUT_MOTION|previewLayoutAnimationRef|previewScaleBoxRectRef|shouldAnimateNextLayoutRef|\.animate\(/.test(
-    documentPreview,
+    documentCanvas,
   ),
   "Preview resizing must not recreate a FLIP animation or a layout-transition prop.",
 );
 assert(
-  /showPreviewTitle\?: boolean/.test(documentPreview) &&
-    /props\.showPreviewTitle !== false/.test(documentPreview),
-  "Document preview callers must be able to omit the visual preview title without changing the document surface.",
+  !/showPreviewTitle|previewTitle/.test(documentCanvas),
+  "The document surface must not render a redundant visual preview title.",
 );
 assert(
-  /let animationFrameId:\s*number \| null = null/.test(documentPreview) &&
-    /const schedulePreviewScaleSync = \(\) => \{[\s\S]{0,300}if \(animationFrameId !== null\) \{\s*return;\s*\}[\s\S]{0,300}window\.requestAnimationFrame\(\(\) => \{[\s\S]{0,180}syncPreviewLayout\(\)/.test(
-      documentPreview,
+  [thumbnailPaperRule, printPaperRule].every(
+    (rule) =>
+      /border:\s*0/.test(rule) &&
+      /border-radius:\s*0/.test(rule) &&
+      /box-shadow:\s*none/.test(rule),
+  ),
+  "Thumbnail and print renderers must remove interactive paper chrome.",
+);
+assert(
+  /new ResizeObserver\(/.test(documentCanvasHook) &&
+    /resizeObserver\.observe\(viewport\)/.test(documentCanvasHook) &&
+    /scrollBy/.test(documentCanvasHook) &&
+    /setPointerCapture/.test(documentCanvasHook) &&
+    /addEventListener\("wheel", handleWheel, \{ passive: false \}\)/.test(
+      documentCanvasHook,
     ) &&
-    /animationFrameId\s*=\s*window\.requestAnimationFrame\(\(\) => \{\s*animationFrameId\s*=\s*null;\s*syncPreviewLayout\(\);\s*\}\)/.test(
-      documentPreview,
+    /event\.key === "0"/.test(documentCanvasHook) &&
+    /viewport\.style\.setProperty\("--canvas-scale", String\(scale\)\)/.test(
+      documentCanvasHook,
     ) &&
-    /new ResizeObserver\(schedulePreviewScaleSync\)/.test(documentPreview) &&
-    /resizeObserver\.observe\(frameElement\)/.test(documentPreview) &&
-    (documentPreview.match(/requestAnimationFrame/g)?.length ?? 0) === 3 &&
-    /scaleBoxElement\.style\.width[\s\S]{0,180}scaleBoxElement\.style\.height[\s\S]{0,180}scaleContentElement\.style\.transform/.test(
-      documentPreview,
-    ) &&
-    !/syncPreviewScaleDuringLayoutTransition|remainingFrames\s*=\s*24/.test(
-      documentPreview,
+    /data-document-canvas-paper/.test(documentCanvas) &&
+    /zoom:\s*var\(--canvas-scale, 1\)/.test(indexCss) &&
+    /role="region"/.test(documentCanvas) &&
+    /canvasControls\.map/.test(documentCanvas) &&
+    /DOCUMENT_CANVAS_MIN_SCALE = 0\.25/.test(documentCanvasModel) &&
+    /DOCUMENT_CANVAS_MAX_SCALE = 2/.test(documentCanvasModel) &&
+    !/layoutTransitionKey|PREVIEW_LAYOUT_MOTION|\.animate\(/.test(
+      documentCanvas + documentCanvasHook,
     ),
-  "Preview scaling must stay event-driven, coalesce to one rAF, and write DOM styles without React frame state.",
+  "The document canvas must own bounded wheel and keyboard zoom, anchored scrolling, and pointer panning without FLIP motion.",
 );
 assert(
   /className="mt-\[1\.25em\]"/.test(previewContent) &&
@@ -299,8 +325,8 @@ assert(
   "ResumeThumbnail must remain non-interactive inside linked gallery cards.",
 );
 assert(
-  /onMoveTemplateImage\?:/.test(documentPreview) &&
-    /Boolean\(props\.onMoveTemplateImage\)/.test(documentPreview),
+  /onMoveTemplateImage\?:/.test(documentCanvas) &&
+    /Boolean\(props\.onMoveTemplateImage\)/.test(documentCanvas),
   "Template previews must become editable only when an image-move command is provided.",
 );
 

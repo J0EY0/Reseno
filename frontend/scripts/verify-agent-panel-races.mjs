@@ -36,6 +36,7 @@ const [
   agentLayoutSource,
   workspaceViewSource,
   workspaceHeaderSource,
+  headerActionsSource,
   appStylesSource,
 ] =
   await Promise.all([
@@ -97,6 +98,16 @@ const [
         "components",
         "workspace",
         "resume-detail-workspace-header.tsx",
+      ),
+      "utf8",
+    ),
+    readFile(
+      join(
+        frontendRoot,
+        "src",
+        "components",
+        "workspace",
+        "resume-detail-header-actions.tsx",
       ),
       "utf8",
     ),
@@ -592,9 +603,10 @@ assert(
     panelTypesSource.includes("onStatusChange: (status: AgentPanelStatus) => void") &&
     conversationSource.includes("status,") &&
     /onStatusChange\(conversation\.status\)/.test(panelSource) &&
-    agentHostSource.includes("data-agent-status={railStatus}") &&
-    agentHostSource.includes('className="agent-seam-rail-status"'),
-  "A retained conversation must report its low-frequency status to the collapsed Agent rail.",
+    agentHostSource.includes('data-agent-status={panelStatus ?? "idle"}') &&
+    agentHostSource.includes('className="agent-panel-toggle-status"') &&
+    agentLayoutSource.includes("reportedStatus && reportedStatus.resumeId === resumeId"),
+  "A retained conversation must report its low-frequency status to the collapsed Agent toggle without leaking across resumes.",
 );
 assert(
   /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\*,\s*\*::before,\s*\*::after\s*\{[^}]*transition:\s*none\s*!important/.test(
@@ -607,19 +619,25 @@ assert(
   "Collapsing the inline panel must not key-remount the Agent controller.",
 );
 assert(
-  !workspaceHeaderSource.includes("messages.agentExpandPanel"),
-  "Compact layouts must not move the Agent trigger into the workspace header.",
+  !workspaceHeaderSource.includes("messages.agentExpandPanel") &&
+    headerActionsSource.includes("messages.agentExpandPanel") &&
+    headerActionsSource.includes("messages.agentCollapsePanel") &&
+    headerActionsSource.includes("commands.agent.setPanelCollapsed(") &&
+    headerActionsSource.includes('data-slot="agent-compact-status-indicator"'),
+  "Compact layouts must expose the same Agent state through the existing actions menu.",
 );
 assert(
   agentHostSource.includes("commands.agent.setPanelCollapsed(") &&
-    !agentHostSource.includes('"hidden 2xl:flex"') &&
+    agentHostSource.includes('data-slot="agent-panel-toggle"') &&
+    agentHostSource.includes("aria-controls={RESUME_DETAIL_AGENT_PANEL_ID}") &&
+    agentHostSource.includes("id={RESUME_DETAIL_AGENT_PANEL_ID}") &&
+    agentHostSource.includes('"agent-panel-toggle relative hidden') &&
+    agentHostSource.includes("xl:inline-flex") &&
     agentHostSource.includes("aria-expanded={") &&
     !agentHostSource.includes("aria-haspopup") &&
-    agentHostSource.includes("onFocus={() => void loadCopilotPanelModule()}") &&
-    agentHostSource.includes(
-      "onPointerEnter={() => void loadCopilotPanelModule()}",
-    ),
-  "Every desktop width must toggle the same accessible inline Agent rail.",
+    agentHostSource.includes("onFocus={preloadCopilotPanelModule}") &&
+    agentHostSource.includes("onPointerEnter={preloadCopilotPanelModule}"),
+  "The canvas toolbar must toggle the accessible inline Agent panel and preload its lazy runtime.",
 );
 assert(
   !panelSource.includes("Sheet") &&
@@ -627,7 +645,7 @@ assert(
     !panelTypesSource.includes("isSheetOpen") &&
     !agentHostSource.includes("setSheetOpen") &&
     !agentLayoutSource.includes("isSheetOpen") &&
-    !appStylesSource.includes("agent-seam-rail--sheet"),
+    !appStylesSource.includes("agent-seam-rail"),
   "Agent presentation must not retain a Sheet or overlay state branch.",
 );
 assert(
@@ -645,28 +663,30 @@ assert(
   workspaceViewSource.includes(
     "const shouldDockAgent = !state.agent.isPanelCollapsed",
   ) &&
+    workspaceViewSource.includes("<ResumeDetailAgentToggle") &&
+    workspaceViewSource.includes("toolbarTrailing={") &&
+    workspaceViewSource.includes(
+      'minmax(0,1fr) var(--agent-panel-width)',
+    ) &&
     /@media \(min-width: 1280px\) \{[\s\S]{0,2400}\.resume-workspace\s*\{[\s\S]{0,400}grid-template-columns:\s*var\(\s*--resume-workspace-columns/.test(
       appStylesSource,
     ),
-  "The four-track inline Agent grid must be active throughout desktop layouts.",
+  "Desktop layouts must compose the editor, canvas, and inline Agent as three tracks with the toggle inside the canvas toolbar.",
 );
 assert(
   appStylesSource.includes(
-    "grid-template-columns: minmax(0, 1fr) 18px;",
+    "grid-template-columns: minmax(0, 1fr);",
   ) &&
     appStylesSource.includes(
-      ".resume-workspace > .agent-seam-rail {\n    grid-column: 2;\n    grid-row: 1;",
+      ".resume-workspace > .agent-panel-dock {\n    grid-column: 1;\n    grid-row: 2;",
     ) &&
     appStylesSource.includes(
-      ".resume-workspace > .agent-panel-dock {\n    grid-column: 1 / -1;\n    grid-row: 2;",
-    ) &&
-    appStylesSource.includes(
-      ".resume-workspace > .resume-preview-card {\n    grid-column: 1 / -1;\n    grid-row: 2;",
+      ".resume-workspace > .resume-preview-card {\n    grid-column: 1;\n    grid-row: 2;",
     ) &&
     appStylesSource.includes(
       '.resume-workspace[data-agent-expanded="true"] > .resume-preview-card {\n    grid-row: 3;',
     ),
-  "Sub-1280 layouts must keep the inline rail in the first viewport and place the expanded Agent before the preview.",
+  "Sub-1280 layouts must use one column and place the expanded Agent before the preview.",
 );
 assert(
   !panelSource.includes("data-mode="),

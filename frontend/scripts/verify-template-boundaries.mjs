@@ -144,7 +144,7 @@ assert(
     "loadTemplateDetailWorkspacePage()",
   ) &&
     routePreparation.includes(
-      "loadDocumentPreviewCard()",
+      "loadDocumentCanvas()",
     ) &&
     !/from\s+["']@\/components\/templates\/template-editor["']/.test(
       galleryRoute,
@@ -286,6 +286,15 @@ assert(
   "Custom template headers must expose metadata editing beside the title without a redundant details panel.",
 );
 assert(
+  editor.includes('data-slot="template-editor"') &&
+    !editor.includes('@/components/ui/card') &&
+    !editor.includes("<Card") &&
+    detailView.includes(
+      "xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]",
+    ),
+  "Template editing must use the same cardless inspector width as resume editing.",
+);
+assert(
   metadataDialog.includes('data-template-metadata-trigger="true"') &&
     metadataDialog.includes("<DialogTrigger asChild>") &&
     metadataDialog.includes("<DialogTitle>{messages.editTemplateInfo}</DialogTitle>") &&
@@ -317,7 +326,7 @@ assert(
     'import { TemplateEditor } from "@/components/templates/template-editor"',
   ) &&
     detailView.includes("<TemplateEditor") &&
-    detailView.includes("<DocumentPreviewCard") &&
+    detailView.includes("<DocumentCanvas") &&
     !detailView.includes("resume-builder") &&
     !/<TemplateEditor[\s\S]*?key=/.test(detailView),
   "TemplateEditor must keep its identity across template-detail navigation.",

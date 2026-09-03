@@ -330,7 +330,7 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 ".resume-workspace .resume-preview-card article.resume-page",
               );
               const resumePreviewFrame = visibleElement(
-                ".resume-workspace .resume-preview-scale-frame",
+                '.resume-workspace [data-slot="document-canvas-viewport"]',
               );
               const templateGallery = visibleElement(
                 '[data-slot="sidebar-inset"] a[href="/template/minimal"]',
@@ -1637,7 +1637,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         page.route(module_pattern, hold_module)
         page.route(run_pattern, hold_run)
 
-        trigger = page.locator(".resume-workspace .agent-seam-rail-button")
+        trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
         trigger.evaluate("button => button.click()")
 
         loading = page.locator(
@@ -1701,9 +1701,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         page.wait_for_function(
             "() => window.__firstAgentPanelShell?.isConnected === true"
         )
-        expect(page.locator(".resume-workspace .agent-seam-rail")).to_have_attribute(
-            "data-agent-status", "loading"
-        )
+        expect(trigger).to_have_attribute("data-agent-status", "loading")
         assert held_run_routes
 
         hydration_shell = page.evaluate(
@@ -1800,7 +1798,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         context.close()
 
 
-def test_collapsed_agent_rail_keeps_active_run_status(
+def test_collapsed_agent_toggle_keeps_active_run_status(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
@@ -1811,7 +1809,7 @@ def test_collapsed_agent_rail_keeps_active_run_status(
         viewport={"width": 1440, "height": 900},
     )
     page = context.new_page()
-    run_id = "agent-rail-status-run"
+    run_id = "agent-toggle-status-run"
     held_event_routes: list[Route] = []
     run_pattern = f"**/api/agent/resumes/{resume_id}/run"
     events_pattern = f"**/api/agent/runs/{run_id}/events*"
@@ -1853,16 +1851,15 @@ def test_collapsed_agent_rail_keeps_active_run_status(
             wait_until="networkidle",
         )
 
-        trigger = page.locator(".resume-workspace .agent-seam-rail-button")
+        trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
         trigger.evaluate("button => button.click()")
-        rail = page.locator(".resume-workspace .agent-seam-rail")
-        expect(rail).to_have_attribute("data-agent-status", "responding")
+        expect(trigger).to_have_attribute("data-agent-status", "responding")
 
         trigger.click()
         expect(trigger).to_have_attribute("aria-expanded", "false")
         page.wait_for_timeout(320)
-        expect(rail).to_be_visible()
-        indicator = rail.locator('[data-slot="agent-status-indicator"]')
+        expect(trigger).to_be_visible()
+        indicator = trigger.locator('[data-slot="agent-status-indicator"]')
         indicator_state = indicator.evaluate(
             """
             element => {
@@ -1879,10 +1876,33 @@ def test_collapsed_agent_rail_keeps_active_run_status(
         assert indicator_state["height"] > 0, indicator_state
         assert indicator_state["width"] > 0, indicator_state
         assert indicator_state["opacity"] > 0.35, indicator_state
-        expect(trigger).to_have_attribute("aria-label", "展开 Agent 对话栏")
-        expect(rail.get_by_role("status")).to_have_text("正在生成建议…")
+        expect(trigger).to_have_attribute("aria-label", "展开 AI 助手")
+        live_status = page.locator(".resume-workspace").get_by_role("status")
+        expect(live_status).to_have_text("正在生成建议…")
         assert page.locator('.agent-panel-dock[aria-hidden="true"]').count() == 1
         assert page.locator(".agent-panel-dock").evaluate("element => element.inert")
+
+        page.set_viewport_size({"width": 1200, "height": 900})
+        expect(trigger).to_be_hidden()
+        compact_indicator = page.locator(
+            '[data-slot="agent-compact-status-indicator"]'
+        )
+        compact_indicator_state = compact_indicator.evaluate(
+            """
+            element => {
+              const rect = element.getBoundingClientRect();
+              return {
+                opacity: Number.parseFloat(getComputedStyle(element).opacity),
+                width: rect.width,
+              };
+            }
+            """
+        )
+        assert compact_indicator_state["width"] > 0, compact_indicator_state
+        assert compact_indicator_state["opacity"] > 0.35, compact_indicator_state
+        expect(live_status).to_have_text("正在生成建议…")
+        page.set_viewport_size({"width": 1440, "height": 900})
+        expect(trigger).to_be_visible()
 
         page.unroute(events_pattern, hold_events)
         terminal_event = (
@@ -1897,9 +1917,9 @@ def test_collapsed_agent_rail_keeps_active_run_status(
                 body=terminal_event,
             )
         held_event_routes.clear()
-        expect(rail).to_have_attribute("data-agent-status", "idle")
+        expect(trigger).to_have_attribute("data-agent-status", "ready")
         expect(indicator).to_have_css("opacity", "0")
-        assert rail.get_by_role("status").count() == 0
+        assert live_status.count() == 0
     finally:
         for route in held_event_routes:
             try:
@@ -1909,13 +1929,284 @@ def test_collapsed_agent_rail_keeps_active_run_status(
         context.close()
 
 
-def test_compact_resume_agent_expands_inline_from_right_rail(
+def test_document_canvas_defaults_to_and_remembers_manual_zoom(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
     context = _authenticated_context(
         browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        viewport = page.locator('[data-slot="document-canvas-viewport"]')
+        viewport.wait_for(state="visible")
+        actual_size = page.get_by_role(
+            "button",
+            name="实际大小",
+            exact=True,
+        )
+        expect(actual_size).to_have_text("90%")
+
+        page.get_by_role("button", name="放大", exact=True).click()
+        expect(actual_size).to_have_text("100%")
+        page.reload(wait_until="networkidle")
+        expect(actual_size).to_have_text("100%")
+
+        fit_to_width = page.get_by_role(
+            "button",
+            name="适合宽度",
+            exact=True,
+        )
+        fit_to_width.click()
+        fitted_scale = actual_size.inner_text()
+        expect(fit_to_width).to_have_attribute("aria-pressed", "true")
+
+        page.reload(wait_until="networkidle")
+        expect(actual_size).to_have_text(fitted_scale)
+        expect(fit_to_width).to_have_attribute("aria-pressed", "false")
+    finally:
+        context.close()
+
+
+def test_document_canvas_supports_trackpad_and_keyboard_zoom(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        viewport = page.locator('[data-slot="document-canvas-viewport"]')
+        viewport.wait_for(state="visible")
+        page.locator(
+            '[data-slot="document-canvas-viewport"] '
+            '[data-resume-pagination-ready="true"]'
+        ).wait_for(state="visible")
+        actual_size = page.get_by_role(
+            "button",
+            name="实际大小",
+            exact=True,
+        )
+        actual_size.click()
+        expect(actual_size).to_have_text("100%")
+
+        plain_wheel_prevented = viewport.evaluate(
+            """
+            element => {
+              const event = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 100,
+              });
+              element.dispatchEvent(event);
+              return event.defaultPrevented;
+            }
+            """
+        )
+        assert plain_wheel_prevented is False
+        expect(actual_size).to_have_text("100%")
+
+        viewport.evaluate(
+            "element => { element.scrollTop = Math.min(220, element.scrollHeight); }"
+        )
+        viewport_box = viewport.bounding_box()
+        assert viewport_box is not None
+        gesture_point = {
+            "clientX": viewport_box["x"] + viewport_box["width"] * 0.5,
+            "clientY": viewport_box["y"] + viewport_box["height"] * 0.45,
+        }
+        anchor_before = page.evaluate(
+            """
+            point => {
+              const paper = document.querySelector(
+                '[data-document-canvas-paper]',
+              );
+              if (!(paper instanceof HTMLElement)) {
+                throw new Error('Missing document canvas paper.');
+              }
+              const bounds = paper.getBoundingClientRect();
+              return {
+                ...point,
+                paperXRatio: (point.clientX - bounds.left) / bounds.width,
+                paperYRatio: (point.clientY - bounds.top) / bounds.height,
+              };
+            }
+            """,
+            gesture_point,
+        )
+        pinch_result = viewport.evaluate(
+            """
+            (element, point) => {
+              const event = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                clientX: point.clientX,
+                clientY: point.clientY,
+                ctrlKey: true,
+                deltaY: -100,
+              });
+              const dispatched = element.dispatchEvent(event);
+              return {
+                defaultPrevented: event.defaultPrevented,
+                dispatched,
+              };
+            }
+            """,
+            gesture_point,
+        )
+        assert pinch_result == {
+            "defaultPrevented": True,
+            "dispatched": False,
+        }
+        expect(actual_size).to_have_text("126%")
+
+        anchor_after = page.evaluate(
+            """
+            anchor => {
+              const paper = document.querySelector(
+                '[data-document-canvas-paper]',
+              );
+              if (!(paper instanceof HTMLElement)) {
+                throw new Error('Missing document canvas paper.');
+              }
+              const bounds = paper.getBoundingClientRect();
+              return {
+                x: bounds.left + bounds.width * anchor.paperXRatio,
+                y: bounds.top + bounds.height * anchor.paperYRatio,
+              };
+            }
+            """,
+            anchor_before,
+        )
+        assert abs(anchor_after["x"] - anchor_before["clientX"]) <= 1
+        assert abs(anchor_after["y"] - anchor_before["clientY"]) <= 1
+
+        actual_size.press("Control+-")
+        expect(actual_size).to_have_text("116%")
+        actual_size.press("Control+0")
+        expect(actual_size).to_have_text("100%")
+        actual_size.press("Control+=")
+        expect(actual_size).to_have_text("110%")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("document_type", ["resume", "template"])
+def test_document_canvas_safely_centers_small_documents(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    document_type: str,
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        document_path = (
+            f"resume/{resume_id}"
+            if document_type == "resume"
+            else "template/minimal"
+        )
+        page.goto(
+            f"{frontend_url}/{document_path}",
+            wait_until="networkidle",
+        )
+
+        viewport = page.locator('[data-slot="document-canvas-viewport"]')
+        viewport.wait_for(state="visible")
+        page.locator(
+            '[data-slot="document-canvas-viewport"] '
+            '[data-resume-pagination-ready="true"]'
+        ).wait_for(state="visible")
+        actual_size = page.get_by_role(
+            "button",
+            name="实际大小",
+            exact=True,
+        )
+        actual_size.click()
+        for _ in range(5):
+            actual_size.press("Control+-")
+        expect(actual_size).to_have_text("50%")
+
+        def canvas_geometry() -> dict[str, float]:
+            return viewport.evaluate(
+                """
+                element => {
+                  const stage = element.querySelector('.document-canvas-stage');
+                  const paper = element.querySelector(
+                    '[data-document-canvas-paper]',
+                  );
+                  if (!(stage instanceof HTMLElement) ||
+                      !(paper instanceof HTMLElement)) {
+                    throw new Error('Missing document canvas geometry.');
+                  }
+                  const stageBounds = stage.getBoundingClientRect();
+                  const paperBounds = paper.getBoundingClientRect();
+                  const stageStyle = getComputedStyle(stage);
+                  const paddingTop = Number.parseFloat(stageStyle.paddingTop);
+                  const paddingBottom = Number.parseFloat(stageStyle.paddingBottom);
+                  return {
+                    bottomGap:
+                      stageBounds.bottom - paddingBottom - paperBounds.bottom,
+                    clientHeight: element.clientHeight,
+                    scrollHeight: element.scrollHeight,
+                    topGap: paperBounds.top - stageBounds.top - paddingTop,
+                  };
+                }
+                """
+            )
+
+        centered = canvas_geometry()
+        assert centered["scrollHeight"] == pytest.approx(
+            centered["clientHeight"],
+            abs=1,
+        )
+        assert centered["topGap"] > 0
+        assert centered["topGap"] == pytest.approx(
+            centered["bottomGap"],
+            abs=1,
+        )
+
+        actual_size.press("Control+0")
+        expect(actual_size).to_have_text("100%")
+        overflowing = canvas_geometry()
+        assert overflowing["scrollHeight"] > overflowing["clientHeight"]
+        assert overflowing["topGap"] == pytest.approx(0, abs=1)
+    finally:
+        context.close()
+
+
+def test_resume_agent_uses_canvas_toggle_and_compact_actions_menu(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
         viewport={"width": 1440, "height": 900},
     )
     page = context.new_page()
@@ -1939,19 +2230,47 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         )
         assert page.get_by_role("dialog").count() == 0
 
-        trigger = workspace.locator(".agent-seam-rail-button")
+        trigger = workspace.locator('[data-slot="agent-panel-toggle"]')
         trigger.wait_for(state="visible")
         assert trigger.count() == 1
         assert trigger.get_attribute("aria-expanded") == "false"
 
         trigger_box = trigger.bounding_box()
-        viewport_width = page.evaluate("window.innerWidth")
+        canvas_controls = workspace.locator('[data-slot="document-canvas-controls"]')
+        controls_box = canvas_controls.bounding_box()
         assert trigger_box is not None
-        assert trigger_box["width"] >= 44
-        assert 0 <= viewport_width - (trigger_box["x"] + trigger_box["width"]) <= 26
+        assert controls_box is not None
+        assert trigger_box["width"] >= 40
+        assert 30 <= trigger_box["height"] <= 34
+        assert 30 <= controls_box["height"] <= 34
+        assert trigger_box["width"] > trigger_box["height"]
+        controls_gap = trigger_box["x"] - (
+            controls_box["x"] + controls_box["width"]
+        )
+        assert 4 <= controls_gap <= 16
+        assert abs(trigger_box["y"] - controls_box["y"]) <= 1
+
+        fit_to_width = page.get_by_role(
+            "button",
+            name="适合宽度",
+            exact=True,
+        )
+        fit_to_width.click()
+        expect(fit_to_width).to_have_attribute("aria-pressed", "true")
 
         panel = workspace.locator("section.agent-panel-card")
         assert not panel.is_visible()
+
+        def assert_no_horizontal_page_overflow() -> None:
+            overflow = page.evaluate(
+                """
+                () => ({
+                  clientWidth: document.documentElement.clientWidth,
+                  scrollWidth: document.documentElement.scrollWidth,
+                })
+                """
+            )
+            assert overflow["scrollWidth"] <= overflow["clientWidth"] + 1, overflow
 
         def start_motion_probe() -> None:
             page.evaluate(
@@ -1977,13 +2296,10 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                       '.resume-workspace .resume-editor-panel',
                     );
                     const previewFrame = document.querySelector(
-                      '.resume-workspace .resume-preview-scale-frame',
+                      '.resume-workspace [data-slot="document-canvas-viewport"]',
                     );
-                    const previewBox = document.querySelector(
-                      '.resume-workspace .resume-preview-scale-box',
-                    );
-                    const previewContent = document.querySelector(
-                      '.resume-workspace .resume-preview-scale-content',
+                    const previewElement = document.querySelector(
+                      '.resume-workspace .document-canvas-scale-content',
                     );
                     const workspaceStyle = workspace
                       ? getComputedStyle(workspace)
@@ -1992,11 +2308,11 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                     const panelStyle = panelLayer
                       ? getComputedStyle(panelLayer)
                       : null;
-                    const previewStyle = previewBox
-                      ? getComputedStyle(previewBox)
+                    const previewStyle = previewElement
+                      ? getComputedStyle(previewElement)
                       : null;
                     const frameRect = previewFrame?.getBoundingClientRect();
-                    const contentRect = previewContent?.getBoundingClientRect();
+                    const contentRect = previewElement?.getBoundingClientRect();
                     const dockRect = dock?.getBoundingClientRect();
                     const panelCardRect = panelCard?.getBoundingClientRect();
                     const editorRect = editor?.getBoundingClientRect();
@@ -2017,7 +2333,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                       .map(value => Number.parseFloat(value)) ?? [];
                     samples.push({
                       elapsed: timestamp - startedAt,
-                      panelColumnWidth: columns[3] ?? null,
+                      panelColumnWidth: columns[2] ?? null,
                       dockOverflow: dockStyle?.overflow ?? null,
                       panelLayerWidth: panelLayer
                         ? panelLayer.getBoundingClientRect().width
@@ -2033,11 +2349,11 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                         : null,
                       panelTransform: panelStyle?.transform ?? null,
                       previewTransform: previewStyle?.transform ?? null,
-                      previewContentWillChange: previewContent
-                        ? getComputedStyle(previewContent).willChange
+                      previewContentWillChange: previewElement
+                        ? getComputedStyle(previewElement).willChange
                         : null,
-                      previewAnimationCount: previewBox
-                        ? previewBox.getAnimations().length
+                      previewAnimationCount: previewElement
+                        ? previewElement.getAnimations().length
                         : 0,
                       previewClippedLeft: frameRect && contentRect
                         ? Math.max(0, frameRect.left - contentRect.left)
@@ -2167,7 +2483,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 "samples": samples,
             }
             assert all(sample["previewAnimationCount"] == 0 for sample in samples)
-            assert max(preview_clipping) <= 1.5, samples
+            assert preview_clipping[-1] <= 1.5, samples
             assert all(sample["editorVisible"] for sample in samples), {
                 "message": "The resume editor disappeared during Agent motion.",
                 "samples": samples,
@@ -2222,37 +2538,45 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 element => {
                   const editor = element.querySelector(".resume-editor-panel");
                   const preview = element.querySelector(".resume-preview-card");
-                  const rail = element.querySelector(".agent-seam-rail");
                   const panel = element.querySelector(".agent-panel-card");
                   if (!(editor instanceof HTMLElement) ||
-                      !(preview instanceof HTMLElement) ||
-                      !(rail instanceof HTMLElement)) {
+                      !(preview instanceof HTMLElement)) {
                     throw new Error("Missing resume workspace panes.");
                   }
 
                   const editorRect = editor.getBoundingClientRect();
                   const previewRect = preview.getBoundingClientRect();
-                  const railRect = rail.getBoundingClientRect();
                   const panelRect = panel?.getBoundingClientRect();
+                  const headerRect = element.ownerDocument
+                    .querySelector("header")
+                    ?.getBoundingClientRect();
                   return {
                     columns: getComputedStyle(element)
                       .gridTemplateColumns
                       .split(/\\s+/)
                       .map(value => Number.parseFloat(value)),
+                    headerBottom: headerRect?.bottom ?? null,
                     editorPreviewSpan: previewRect.right - editorRect.left,
                     editorWidth: editorRect.width,
                     previewWidth: previewRect.width,
+                    previewBottomGap: window.innerHeight - previewRect.bottom,
+                    editor: {
+                      bottom: editorRect.bottom,
+                      left: editorRect.left,
+                      right: editorRect.right,
+                      top: editorRect.top,
+                    },
                     preview: {
+                      bottom: previewRect.bottom,
                       left: previewRect.left,
                       right: previewRect.right,
-                    },
-                    rail: {
-                      left: railRect.left,
-                      right: railRect.right,
+                      top: previewRect.top,
                     },
                     panel: panelRect ? {
+                      bottom: panelRect.bottom,
                       left: panelRect.left,
                       right: panelRect.right,
+                      top: panelRect.top,
                       width: panelRect.width,
                     } : null,
                   };
@@ -2261,10 +2585,17 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
             )
 
         collapsed = layout_metrics()
-        assert len(collapsed["columns"]) == 4
-        assert collapsed["columns"][3] <= 1
+        assert len(collapsed["columns"]) == 3
+        assert collapsed["columns"][2] <= 1
         assert collapsed["editorWidth"] > 0
         assert collapsed["previewWidth"] > 0
+        assert abs(collapsed["previewBottomGap"]) <= 1
+        assert collapsed["headerBottom"] is not None
+        assert abs(collapsed["editor"]["top"] - collapsed["headerBottom"]) <= 1
+        assert abs(collapsed["preview"]["top"] - collapsed["headerBottom"]) <= 1
+        assert abs(collapsed["editor"]["bottom"] - collapsed["preview"]["bottom"]) <= 1
+        assert abs(collapsed["editor"]["right"] - collapsed["preview"]["left"]) <= 1
+        assert_no_horizontal_page_overflow()
 
         page.locator(
             ".resume-workspace .resume-preview-card "
@@ -2273,42 +2604,31 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         page.evaluate(
             """
             () => {
-              const frame = document.querySelector(
-                '.resume-workspace .resume-preview-scale-frame',
+              const viewport = document.querySelector(
+                '.resume-workspace [data-slot="document-canvas-viewport"]',
               );
-              const box = frame?.querySelector('.resume-preview-scale-box');
-              const content = frame?.querySelector(
-                '.resume-preview-scale-content',
+              const content = viewport?.querySelector(
+                '.document-canvas-scale-content',
               );
-              const preview = frame?.querySelector(
-                '[data-resume-pagination-ready="true"]',
-              );
-              if (!(frame instanceof HTMLElement) ||
-                  !(box instanceof HTMLElement) ||
-                  !(content instanceof HTMLElement) ||
-                  !(preview instanceof HTMLElement)) {
-                throw new Error('Missing preview scale elements.');
+              if (!(viewport instanceof HTMLElement) ||
+                  !(content instanceof HTMLElement)) {
+                throw new Error('Missing document canvas elements.');
               }
 
               const clientWidthGetter = Object.getOwnPropertyDescriptor(
                 Element.prototype,
                 'clientWidth',
               )?.get;
-              const offsetHeightGetter = Object.getOwnPropertyDescriptor(
-                HTMLElement.prototype,
-                'offsetHeight',
-              )?.get;
-              if (!clientWidthGetter || !offsetHeightGetter) {
-                throw new Error('Preview layout accessors are unavailable.');
+              if (!clientWidthGetter) {
+                throw new Error('Canvas viewport width accessor is unavailable.');
               }
 
               const result = {
-                frameWidthReads: 0,
-                pageHeightReads: 0,
+                viewportWidthReads: 0,
                 resizeCallbacks: 0,
                 styleMutations: 0,
-                frameWidthReadsByFrame: {},
-                pageHeightReadsByFrame: {},
+                postResizeClipping: [],
+                viewportWidthReadsByFrame: {},
               };
               let frameId = 0;
               let frameMarkerId = 0;
@@ -2321,52 +2641,44 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 const readsByFrame = result[key];
                 readsByFrame[frameId] = (readsByFrame[frameId] ?? 0) + 1;
               };
-              Object.defineProperty(frame, 'clientWidth', {
+              Object.defineProperty(viewport, 'clientWidth', {
                 configurable: true,
                 get() {
-                  result.frameWidthReads += 1;
-                  recordRead('frameWidthReadsByFrame');
+                  result.viewportWidthReads += 1;
+                  recordRead('viewportWidthReadsByFrame');
                   return clientWidthGetter.call(this);
-                },
-              });
-              Object.defineProperty(preview, 'offsetHeight', {
-                configurable: true,
-                get() {
-                  result.pageHeightReads += 1;
-                  recordRead('pageHeightReadsByFrame');
-                  return offsetHeightGetter.call(this);
                 },
               });
               const resizeObserver = new ResizeObserver(() => {
                 result.resizeCallbacks += 1;
+                const viewportRect = viewport.getBoundingClientRect();
+                const contentRect = content.getBoundingClientRect();
+                result.postResizeClipping.push(Math.max(
+                  viewportRect.left - contentRect.left,
+                  contentRect.right - viewportRect.right,
+                  0,
+                ));
               });
               const mutationObserver = new MutationObserver((records) => {
                 result.styleMutations += records.filter(
-                  record => record.target === box || record.target === content,
+                  record => record.target === viewport,
                 ).length;
               });
 
-              resizeObserver.observe(frame);
-              mutationObserver.observe(frame, {
+              resizeObserver.observe(viewport);
+              mutationObserver.observe(viewport, {
                 attributes: true,
                 attributeFilter: ['style'],
-                subtree: true,
               });
               const snapshot = () => {
                 result.styleMutations += mutationObserver
                   .takeRecords()
-                  .filter(record =>
-                    record.target === box || record.target === content
-                  ).length;
+                  .filter(record => record.target === viewport).length;
                 return {
                   ...result,
-                  maxFrameWidthReadsPerFrame: Math.max(
+                  maxViewportWidthReadsPerFrame: Math.max(
                     0,
-                    ...Object.values(result.frameWidthReadsByFrame),
-                  ),
-                  maxPageHeightReadsPerFrame: Math.max(
-                    0,
-                    ...Object.values(result.pageHeightReadsByFrame),
+                    ...Object.values(result.viewportWidthReadsByFrame),
                   ),
                 };
               };
@@ -2376,8 +2688,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                   cancelAnimationFrame(frameMarkerId);
                   resizeObserver.disconnect();
                   mutationObserver.disconnect();
-                  delete frame.clientWidth;
-                  delete preview.offsetHeight;
+                  delete viewport.clientWidth;
                   return snapshot();
                 },
               };
@@ -2402,7 +2713,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 .gridTemplateColumns
                 .split(/\\s+/)
                 .map(value => Number.parseFloat(value));
-              return columns.length === 4 && columns[3] > 350;
+              return columns.length === 3 && columns[2] > 350;
             }
             """
         )
@@ -2445,28 +2756,23 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         assert preview_probe_at_settle is not None
         assert preview_probe["resizeCallbacks"] >= 3, preview_probe
         assert preview_probe["styleMutations"] >= 3, preview_probe
-        assert preview_probe["frameWidthReads"] >= 3, preview_probe
-        assert preview_probe["pageHeightReads"] >= 3, preview_probe
-        assert preview_probe["maxFrameWidthReadsPerFrame"] <= 1, preview_probe
-        assert preview_probe["maxPageHeightReadsPerFrame"] <= 1, preview_probe
-        assert preview_probe["frameWidthReads"] == preview_probe["pageHeightReads"]
+        assert preview_probe["viewportWidthReads"] >= 3, preview_probe
+        assert preview_probe["maxViewportWidthReadsPerFrame"] <= 1, preview_probe
+        assert preview_probe["postResizeClipping"], preview_probe
+        assert max(preview_probe["postResizeClipping"]) <= 1.5, preview_probe
         assert (
-            preview_probe["frameWidthReads"]
-            == preview_probe_at_settle["frameWidthReads"]
-        ), preview_probe
-        assert (
-            preview_probe["pageHeightReads"]
-            == preview_probe_at_settle["pageHeightReads"]
+            preview_probe["viewportWidthReads"]
+            == preview_probe_at_settle["viewportWidthReads"]
         ), preview_probe
 
         preview_fit = page.evaluate(
             """
             () => {
               const frame = document.querySelector(
-                '.resume-workspace .resume-preview-scale-frame',
+                '.resume-workspace [data-slot="document-canvas-viewport"]',
               );
               const content = frame?.querySelector(
-                '.resume-preview-scale-content',
+                '.document-canvas-scale-content',
               );
               if (!(frame instanceof HTMLElement) ||
                   !(content instanceof HTMLElement)) {
@@ -2493,14 +2799,18 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         assert page.get_by_role("dialog").count() == 0
 
         expanded = layout_metrics()
-        assert len(expanded["columns"]) == 4
-        assert expanded["columns"][3] > 350
+        assert len(expanded["columns"]) == 3
+        assert expanded["columns"][2] > 350
         assert collapsed["editorPreviewSpan"] - expanded["editorPreviewSpan"] > 300
         assert collapsed["previewWidth"] - expanded["previewWidth"] > 300
         assert expanded["panel"] is not None
-        assert expanded["preview"]["right"] <= expanded["rail"]["left"]
-        assert expanded["rail"]["right"] <= expanded["panel"]["left"]
-        assert abs(expanded["panel"]["width"] - expanded["columns"][3]) <= 1
+        assert expanded["preview"]["right"] <= expanded["panel"]["left"]
+        assert abs(expanded["panel"]["width"] - expanded["columns"][2]) <= 1
+        assert abs(expanded["panel"]["top"] - expanded["headerBottom"]) <= 1
+        assert abs(expanded["panel"]["bottom"] - expanded["preview"]["bottom"]) <= 1
+        assert abs(expanded["editor"]["right"] - expanded["preview"]["left"]) <= 1
+        assert abs(expanded["preview"]["right"] - expanded["panel"]["left"]) <= 1
+        assert_no_horizontal_page_overflow()
 
         agent_thread = workspace.locator(".agent-thread-layout")
         agent_thread.wait_for(state="visible")
@@ -2552,7 +2862,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
               const workspace = document.querySelector('.resume-workspace');
               if (!(workspace instanceof HTMLElement)) return false;
               const width = Number.parseFloat(
-                getComputedStyle(workspace).gridTemplateColumns.split(/\\s+/)[3]
+                getComputedStyle(workspace).gridTemplateColumns.split(/\\s+/)[2]
               );
               return 24 < width && width < 336;
             }
@@ -2561,12 +2871,14 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         interrupted_reversal = workspace.evaluate(
             """
             element => {
-              const trigger = element.querySelector('.agent-seam-rail-button');
+              const trigger = element.querySelector(
+                '[data-slot="agent-panel-toggle"]',
+              );
               if (!(trigger instanceof HTMLButtonElement)) {
                 throw new Error('Missing Agent panel trigger.');
               }
               const readWidth = () => Number.parseFloat(
-                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[3]
+                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[2]
               );
               const before = readWidth();
               trigger.click();
@@ -2609,7 +2921,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
               const retained = window.__retainedAgentThread;
               return {
                 activeAnimationCount,
-                panelColumnWidth: columns[3],
+                panelColumnWidth: columns[2],
                 retainedThread:
                   retained?.isConnected === true &&
                   retained === element.querySelector('.agent-thread-layout'),
@@ -2639,8 +2951,8 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
               const panelLayer = element.querySelector(
                 '.agent-panel-motion-layer',
               );
-              const previewBox = element.querySelector(
-                '.resume-preview-scale-box',
+              const previewElement = element.querySelector(
+                '.document-canvas-scale-content',
               );
               const columns = getComputedStyle(element)
                 .gridTemplateColumns
@@ -2660,10 +2972,10 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 panelOpacity: panelLayer
                   ? Number.parseFloat(getComputedStyle(panelLayer).opacity)
                   : null,
-                previewTransform: previewBox
-                  ? getComputedStyle(previewBox).transform
+                previewTransform: previewElement
+                  ? getComputedStyle(previewElement).transform
                   : null,
-                panelColumnWidth: columns[3],
+                panelColumnWidth: columns[2],
                 retainedThread:
                   window.__retainedAgentThread?.isConnected === true &&
                   window.__retainedAgentThread ===
@@ -2694,7 +3006,7 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
                 '.agent-panel-motion-layer',
               );
               const panelColumnWidth = Number.parseFloat(
-                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[3]
+                getComputedStyle(element).gridTemplateColumns.split(/\\s+/)[2]
               );
               return {
                 activeAnimationCount: [element, panelLayer]
@@ -2733,27 +3045,25 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
             element => {
               const editor = element.querySelector(".resume-editor-panel");
               const preview = element.querySelector(".resume-preview-card");
-              const rail = element.querySelector(".agent-seam-rail");
               if (!(editor instanceof HTMLElement) ||
-                  !(preview instanceof HTMLElement) ||
-                  !(rail instanceof HTMLElement)) {
+                  !(preview instanceof HTMLElement)) {
                 throw new Error("Missing narrow resume workspace panes.");
               }
               const editorRect = editor.getBoundingClientRect();
               const previewRect = preview.getBoundingClientRect();
-              const railRect = rail.getBoundingClientRect();
               return {
                 editorTop: editorRect.top,
                 previewTop: previewRect.top,
-                railTop: railRect.top,
               };
             }
             """
         )
-        assert abs(narrow_layout["railTop"] - narrow_layout["editorTop"]) <= 1
         assert narrow_layout["previewTop"] > narrow_layout["editorTop"]
+        expect(trigger).to_be_hidden()
 
-        trigger.click()
+        actions_menu = header.get_by_role("button", name="操作", exact=True)
+        actions_menu.click()
+        page.get_by_role("menuitem", name="展开 AI 助手", exact=True).click()
         panel.wait_for(state="visible")
         narrow_expanded = workspace.evaluate(
             """
@@ -2777,6 +3087,15 @@ def test_compact_resume_agent_expands_inline_from_right_rail(
         assert narrow_expanded["panelTop"] < narrow_expanded["previewTop"]
         assert narrow_expanded["panelBottom"] <= narrow_expanded["previewTop"]
         assert page.get_by_role("dialog").count() == 0
+        assert_no_horizontal_page_overflow()
+
+        actions_menu.click()
+        page.get_by_role("menuitem", name="收起 AI 助手", exact=True).click()
+        panel.wait_for(state="hidden")
+        compact_dock = workspace.locator(".agent-panel-dock")
+        expect(compact_dock).to_have_attribute("aria-hidden", "true")
+        assert compact_dock.evaluate("element => element.inert")
+        assert_no_horizontal_page_overflow()
     finally:
         context.close()
 
@@ -5838,7 +6157,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         page.wait_for_timeout(600)
         detail_frames = _stop_workspace_frame_recording(page)
 
-        preview_frame = page.locator(".resume-preview-scale-frame")
+        preview_frame = page.locator('[data-slot="document-canvas-viewport"]')
         preview_page = page.locator(
             ".resume-preview-card article.resume-page",
         )
@@ -6283,7 +6602,7 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
 
 @pytest.mark.parametrize(
     ("template_id", "item_count"),
-    [("minimal", 36), ("compact", 80)],
+    [("minimal", 80), ("compact", 80)],
 )
 def test_resume_pagination_does_not_split_text_lines(
     browser: Browser,
@@ -6425,6 +6744,20 @@ def test_resume_pagination_does_not_split_text_lines(
         geometry = preview.evaluate(line_geometry_script)
         assert geometry["pageCount"] >= 2, geometry
         assert geometry["violations"] == [], geometry
+
+        canvas_page = page.locator('[data-slot="document-canvas-page"]')
+        canvas_viewport = page.locator(
+            '.resume-workspace [data-slot="document-canvas-viewport"]'
+        )
+        expect(canvas_page).to_have_text(f"Page 1 / {geometry['pageCount']}")
+        canvas_viewport.evaluate(
+            "element => { element.scrollTop = element.scrollHeight; }"
+        )
+        expect(canvas_page).to_have_text(
+            f"Page {geometry['pageCount']} / {geometry['pageCount']}"
+        )
+        canvas_viewport.evaluate("element => { element.scrollTop = 0; }")
+        expect(canvas_page).to_have_text(f"Page 1 / {geometry['pageCount']}")
 
         if template_id == "minimal":
             format_button = page.locator(
@@ -9565,7 +9898,7 @@ def test_builtin_template_previews_default_to_one_page(
         context.close()
 
 
-def test_template_editor_and_preview_share_page_scroll(
+def test_template_editor_matches_workspace_boundaries_and_page_scroll(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
@@ -9582,13 +9915,60 @@ def test_template_editor_and_preview_share_page_scroll(
         page.evaluate("window.scrollTo(0, 0)")
 
         editor_panel = page.locator(".template-workspace .resume-template-editor-panel")
-        editor_card = editor_panel.locator('[data-slot="card"]')
+        editor_surface = editor_panel.locator('[data-slot="template-editor"]')
         preview_card = page.locator(".template-workspace .resume-preview-card")
         panel_box = editor_panel.bounding_box()
         assert panel_box is not None
+        workspace_geometry = page.locator(".template-workspace").evaluate(
+            """
+            element => {
+              const header = element.parentElement?.querySelector(':scope > header');
+              const editor = element.querySelector('.resume-template-editor-panel');
+              const preview = element.querySelector('.resume-preview-card');
+              if (!(header instanceof HTMLElement) ||
+                  !(editor instanceof HTMLElement) ||
+                  !(preview instanceof HTMLElement)) {
+                throw new Error('Missing template workspace panes.');
+              }
+              const headerRect = header.getBoundingClientRect();
+              const editorRect = editor.getBoundingClientRect();
+              const previewRect = preview.getBoundingClientRect();
+              return {
+                headerBottom: headerRect.bottom,
+                editorTop: editorRect.top,
+                editorRight: editorRect.right,
+                previewTop: previewRect.top,
+                previewLeft: previewRect.left,
+                previewRight: previewRect.right,
+                previewBottom: previewRect.bottom,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+              };
+            }
+            """
+        )
+
+        assert workspace_geometry["editorTop"] == pytest.approx(
+            workspace_geometry["headerBottom"], abs=1
+        )
+        assert workspace_geometry["previewTop"] == pytest.approx(
+            workspace_geometry["headerBottom"], abs=1
+        )
+        assert workspace_geometry["editorRight"] == pytest.approx(
+            panel_box["x"] + panel_box["width"], abs=1
+        )
+        assert workspace_geometry["editorRight"] == pytest.approx(
+            workspace_geometry["previewLeft"], abs=1
+        )
+        assert workspace_geometry["previewRight"] == pytest.approx(
+            workspace_geometry["viewportWidth"], abs=1
+        )
+        assert workspace_geometry["previewBottom"] == pytest.approx(
+            workspace_geometry["viewportHeight"], abs=1
+        )
 
         before = {
-            "editor": editor_card.bounding_box(),
+            "editor": editor_surface.bounding_box(),
             "preview": preview_card.bounding_box(),
         }
         assert before["editor"] is not None
@@ -9602,7 +9982,7 @@ def test_template_editor_and_preview_share_page_scroll(
         page.wait_for_timeout(150)
 
         after = {
-            "editor": editor_card.bounding_box(),
+            "editor": editor_surface.bounding_box(),
             "preview": preview_card.bounding_box(),
         }
         assert after["editor"] is not None
@@ -9610,7 +9990,10 @@ def test_template_editor_and_preview_share_page_scroll(
         scroll_state = editor_panel.evaluate(
             """
             element => ({
+              borderRightWidth: getComputedStyle(element).borderRightWidth,
               overflowY: getComputedStyle(element).overflowY,
+              paddingLeft: getComputedStyle(element).paddingLeft,
+              paddingRight: getComputedStyle(element).paddingRight,
               position: getComputedStyle(element).position,
               previewPosition: getComputedStyle(
                 document.querySelector('.template-workspace .resume-preview-card')
@@ -9623,13 +10006,114 @@ def test_template_editor_and_preview_share_page_scroll(
         editor_delta = after["editor"]["y"] - before["editor"]["y"]
         preview_delta = after["preview"]["y"] - before["preview"]["y"]
 
+        expect(editor_panel.locator('[data-slot="card"]')).to_have_count(0)
+        assert scroll_state["borderRightWidth"] == "1px"
         assert scroll_state["overflowY"] == "visible"
+        assert scroll_state["paddingLeft"] == "16px"
+        assert scroll_state["paddingRight"] == "16px"
         assert scroll_state["position"] == "relative"
         assert scroll_state["previewPosition"] == "relative"
         assert scroll_state["scrollTop"] == 0
         assert scroll_state["windowScrollY"] > 0
         assert editor_delta < -100
         assert editor_delta == pytest.approx(preview_delta, abs=1)
+
+        page.evaluate("window.scrollTo(0, 0)")
+        page.set_viewport_size({"width": 1440, "height": 1000})
+
+        def divider_geometry() -> dict[str, float | str]:
+            return page.locator(".template-workspace").evaluate(
+                """
+                element => {
+                  const editor = element.querySelector(
+                    '.resume-template-editor-panel',
+                  );
+                  const surface = editor?.querySelector(
+                    '[data-slot="template-editor"]',
+                  );
+                  if (!(editor instanceof HTMLElement) ||
+                      !(surface instanceof HTMLElement)) {
+                    throw new Error('Missing template editor surface.');
+                  }
+                  const editorRect = editor.getBoundingClientRect();
+                  const surfaceRect = surface.getBoundingClientRect();
+                  const workspaceRect = element.getBoundingClientRect();
+                  return {
+                    alignSelf: getComputedStyle(editor).alignSelf,
+                    editorBottom: editorRect.bottom,
+                    editorHeight: editorRect.height,
+                    overflowY: getComputedStyle(editor).overflowY,
+                    surfaceBottom: surfaceRect.bottom,
+                    viewportHeight: window.innerHeight,
+                    workspaceBottom: workspaceRect.bottom,
+                  };
+                }
+                """
+            )
+
+        short_editor = divider_geometry()
+        assert short_editor["surfaceBottom"] < short_editor["workspaceBottom"]
+        assert short_editor["editorBottom"] == pytest.approx(
+            short_editor["workspaceBottom"], abs=1
+        )
+        assert short_editor["alignSelf"] == "stretch"
+
+        editor_surface.evaluate(
+            "element => { element.style.minHeight = '1500px'; }"
+        )
+        tall_editor = divider_geometry()
+        assert tall_editor["overflowY"] == "visible"
+        assert tall_editor["editorHeight"] > tall_editor["viewportHeight"]
+        assert tall_editor["editorBottom"] > short_editor["editorBottom"]
+        assert tall_editor["surfaceBottom"] <= tall_editor["editorBottom"]
+        assert tall_editor["editorBottom"] == pytest.approx(
+            tall_editor["workspaceBottom"], abs=1
+        )
+        editor_surface.evaluate("element => { element.style.minHeight = ''; }")
+
+        page.set_viewport_size({"width": 1200, "height": 900})
+        narrow_geometry = page.locator(".template-workspace").evaluate(
+            """
+            element => {
+              const editor = element.querySelector('.resume-template-editor-panel');
+              const preview = element.querySelector('.resume-preview-card');
+              if (!(editor instanceof HTMLElement) ||
+                  !(preview instanceof HTMLElement)) {
+                throw new Error('Missing narrow template workspace panes.');
+              }
+              const editorRect = editor.getBoundingClientRect();
+              const previewRect = preview.getBoundingClientRect();
+              const editorStyle = getComputedStyle(editor);
+              return {
+                borderRightWidth: editorStyle.borderRightWidth,
+                documentScrollWidth: document.documentElement.scrollWidth,
+                editorBottom: editorRect.bottom,
+                editorLeft: editorRect.left,
+                editorRight: editorRect.right,
+                paddingLeft: editorStyle.paddingLeft,
+                paddingRight: editorStyle.paddingRight,
+                previewLeft: previewRect.left,
+                previewRight: previewRect.right,
+                previewTop: previewRect.top,
+                viewportWidth: window.innerWidth,
+              };
+            }
+            """
+        )
+        assert narrow_geometry["editorBottom"] <= narrow_geometry["previewTop"]
+        assert narrow_geometry["editorLeft"] == pytest.approx(
+            narrow_geometry["previewLeft"], abs=1
+        )
+        assert narrow_geometry["editorRight"] == pytest.approx(
+            narrow_geometry["previewRight"], abs=1
+        )
+        assert narrow_geometry["borderRightWidth"] == "0px"
+        assert narrow_geometry["paddingLeft"] == "0px"
+        assert narrow_geometry["paddingRight"] == "0px"
+        assert (
+            narrow_geometry["documentScrollWidth"]
+            <= narrow_geometry["viewportWidth"]
+        )
     finally:
         context.close()
 
@@ -11178,7 +11662,6 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
         assert trash_resume_response.ok
 
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        expect(page.get_by_text("实时预览", exact=True)).to_be_visible()
         page.get_by_role(
             "button",
             name="创建可编辑副本",
@@ -11235,13 +11718,17 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
                 (shell) => {
                   const content = shell.closest('[data-slot="dialog-content"]');
                   const previewCard = shell.querySelector('.resume-preview-card');
-                  if (!content || !previewCard) {
+                  const canvasViewport = shell.querySelector(
+                    '[data-slot="document-canvas-viewport"]',
+                  );
+                  if (!content || !previewCard || !canvasViewport) {
                     throw new Error('Missing recycle preview surface');
                   }
 
                   const contentStyle = getComputedStyle(content);
                   const shellStyle = getComputedStyle(shell);
                   const cardStyle = getComputedStyle(previewCard);
+                  const canvasViewportStyle = getComputedStyle(canvasViewport);
                   const contentRect = content.getBoundingClientRect();
                   const shellRect = shell.getBoundingClientRect();
                   const cardRect = previewCard.getBoundingClientRect();
@@ -11263,8 +11750,9 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
                     contentOverflowX: contentStyle.overflowX,
                     contentOverflowY: contentStyle.overflowY,
                     shellOverflowY: shellStyle.overflowY,
-                    shellClientHeight: shell.clientHeight,
-                    shellScrollHeight: shell.scrollHeight,
+                    canvasViewportOverflowY: canvasViewportStyle.overflowY,
+                    canvasViewportClientHeight: canvasViewport.clientHeight,
+                    canvasViewportScrollHeight: canvasViewport.scrollHeight,
                     contentRect: {
                       top: contentRect.top,
                       right: contentRect.right,
@@ -11297,10 +11785,11 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
                 shell_geometry["contentOverflowX"],
                 shell_geometry["contentOverflowY"],
             } == {"hidden"}
-            assert shell_geometry["shellOverflowY"] == "auto"
+            assert shell_geometry["shellOverflowY"] == "hidden"
+            assert shell_geometry["canvasViewportOverflowY"] == "auto"
             assert (
-                shell_geometry["shellScrollHeight"]
-                > shell_geometry["shellClientHeight"]
+                shell_geometry["canvasViewportScrollHeight"]
+                > shell_geometry["canvasViewportClientHeight"]
             )
             for edge in ("top", "right", "bottom", "left"):
                 assert shell_geometry["shellRect"][edge] == pytest.approx(

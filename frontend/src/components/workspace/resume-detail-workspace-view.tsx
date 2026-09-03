@@ -10,10 +10,13 @@ import {
 
 import { AppToaster } from "@/components/app-toaster";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
-import type { DocumentPreviewHandle } from "@/components/preview/document-preview-card";
-import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import type { DocumentCanvasHandle } from "@/components/preview/document-canvas";
+import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { ResumeDetailAgentHost } from "@/components/workspace/resume-detail-agent-host";
+import {
+  ResumeDetailAgentHost,
+  ResumeDetailAgentToggle,
+} from "@/components/workspace/resume-detail-agent-host";
 import { ResumeDetailWorkspaceHeader } from "@/components/workspace/resume-detail-workspace-header";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
@@ -24,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 // Pagination and PDF-ready preview code are owned by the document surface,
 // rather than the route shell that must render immediately.
-const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
+const DocumentCanvas = lazy(loadDocumentCanvas);
 const ResumeDetailLeaveDialog = lazy(() =>
   import("@/components/workspace/resume-detail-leave-dialog").then((module) => ({
     default: module.ResumeDetailLeaveDialog,
@@ -43,7 +46,7 @@ function ResumeDetailContent({
 }: {
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
-  previewRef: RefObject<DocumentPreviewHandle | null>;
+  previewRef: RefObject<DocumentCanvasHandle | null>;
 }) {
   const { commands, state } = model;
   const documentMessages = useLocalizedMessages(
@@ -53,9 +56,11 @@ function ResumeDetailContent({
   const shouldDockAgent = !state.agent.isPanelCollapsed;
   const workspaceStyle = {
     "--agent-panel-width": "360px",
+    "--document-sticky-bottom-gap": "0px",
+    "--document-workspace-gutter": "0px",
     "--resume-workspace-columns": shouldDockAgent
-      ? "clamp(340px,27vw,400px) minmax(0,1fr) 18px var(--agent-panel-width)"
-      : "clamp(340px,27vw,400px) minmax(0,1fr) 18px 0px",
+      ? "clamp(372px,calc(27vw + 32px),432px) minmax(0,1fr) var(--agent-panel-width)"
+      : "clamp(372px,calc(27vw + 32px),432px) minmax(0,1fr) 0px",
   } as CSSProperties;
 
   return (
@@ -63,7 +68,7 @@ function ResumeDetailContent({
       style={workspaceStyle}
       data-agent-expanded={shouldDockAgent}
       className={cn(
-        "workspace-document-enter resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4 xl:gap-x-2",
+        "workspace-document-enter resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4",
         "print:block print:h-auto print:overflow-visible print:p-0",
       )}
     >
@@ -82,15 +87,19 @@ function ResumeDetailContent({
         <WorkspacePreviewSkeleton />
       ) : (
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
-          <DocumentPreviewCard
+          <DocumentCanvas
             ref={previewRef}
             variant="resume"
-            t={documentMessages}
+            t={messages}
+            documentT={documentMessages}
             resume={state.previewResume}
             typography={state.typography}
             template={state.activeTemplate}
             diffs={state.agent.draft?.diffs}
             onPaginationReadyChange={commands.onPreviewReadyChange}
+            toolbarTrailing={
+              <ResumeDetailAgentToggle messages={messages} model={model} />
+            }
           />
         </Suspense>
       )}
@@ -114,10 +123,10 @@ export function ResumeDetailWorkspaceView({
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
   onLocaleChange: (locale: Locale) => void;
-  previewRef: RefObject<DocumentPreviewHandle | null>;
+  previewRef: RefObject<DocumentCanvasHandle | null>;
 }) {
   const headerRef = useRef<HTMLElement | null>(null);
-  const [documentStickyTop, setDocumentStickyTop] = useState(96);
+  const [documentStickyTop, setDocumentStickyTop] = useState(64);
 
   useEffect(() => {
     const headerElement = headerRef.current;
@@ -127,7 +136,7 @@ export function ResumeDetailWorkspaceView({
 
     const syncDocumentStickyTop = () => {
       const nextStickyTop = Math.ceil(
-        headerElement.getBoundingClientRect().height + 16,
+        headerElement.getBoundingClientRect().height,
       );
       setDocumentStickyTop((current) =>
         current === nextStickyTop ? current : nextStickyTop,

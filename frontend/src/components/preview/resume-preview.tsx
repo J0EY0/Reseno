@@ -22,7 +22,7 @@ interface ResumePreviewProps {
     imageId: string,
     patch: Pick<ResumeTemplateImageElement, "x" | "y">,
   ) => void;
-  onPaginationReadyChange?: (ready: boolean) => void;
+  onPaginationReadyChange?: (ready: boolean, pageCount: number) => void;
   resume: ResumeData;
   showEmptyTemplateImagePlaceholders?: boolean;
   t: AppMessages;
@@ -60,8 +60,15 @@ export const ResumePreview = memo(
     );
 
     useEffect(() => {
-      onPaginationReadyChange?.(isPaginationReady);
-    }, [isPaginationReady, onPaginationReadyChange]);
+      onPaginationReadyChange?.(
+        isPaginationReady,
+        pagination.pages.length,
+      );
+    }, [
+      isPaginationReady,
+      onPaginationReadyChange,
+      pagination.pages.length,
+    ]);
 
     return (
       <PaginatedResumePages

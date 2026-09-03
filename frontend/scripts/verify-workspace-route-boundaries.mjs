@@ -525,7 +525,7 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /loadTemplateDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentPreviewCard\(\)/,
+  /loadTemplateDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentCanvas\(\)/,
   "Template preparation must preload the independent detail route entry.",
 );
 const openTemplateSource = templateGalleryRouteSource.slice(
@@ -767,7 +767,7 @@ assert.doesNotMatch(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /loadResumeDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentPreviewCard\(\)/,
+  /loadResumeDetailWorkspacePage\(\)[\s\S]{0,100}loadDocumentCanvas\(\)/,
   "Resume preparation must preload the independent resume-detail route entry.",
 );
 assert.doesNotMatch(

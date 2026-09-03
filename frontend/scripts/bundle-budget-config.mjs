@@ -46,10 +46,10 @@ export const routeBudgets = [
     roots: [
       'index.html',
       'src/components/workspace/resume-detail-workspace-page.tsx',
-      'src/components/preview/document-preview-card.tsx',
+      'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 233 * KIB,
+    maxGzipBytes: 234 * KIB,
   },
   {
     name: 'resume gallery',
@@ -79,12 +79,12 @@ export const routeBudgets = [
     roots: [
       'index.html',
       'src/components/workspace/template-detail-workspace-page.tsx',
-      'src/components/preview/document-preview-card.tsx',
+      'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // Keep both workspace and preview skeletons in the lazy route so loading
     // preserves the final surface hierarchy without a second visual jump.
-    maxGzipBytes: 229 * KIB,
+    maxGzipBytes: 230 * KIB,
   },
   {
     name: 'trash',
@@ -124,9 +124,9 @@ export const routeBudgets = [
       'index.html',
       'src/components/workspace/resume-detail-workspace-page.tsx',
       'src/components/copilot/copilot-panel.tsx',
-      'src/components/preview/document-preview-card.tsx',
+      'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 296 * KIB,
+    maxGzipBytes: 297 * KIB,
   },
 ]

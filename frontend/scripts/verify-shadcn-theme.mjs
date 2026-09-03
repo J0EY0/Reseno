@@ -81,7 +81,7 @@ const [
     ),
     readFile(
       new URL(
-        "src/components/preview/document-preview-card.tsx",
+        "src/components/preview/document-canvas.tsx",
         projectRoot,
       ),
       "utf8",
@@ -200,24 +200,32 @@ assert(
     cardSource.includes("shadow-card"),
   "Card must provide the shared content-surface radius and elevation.",
 );
-for (const [name, source] of [
-  ["auth shell", authPageShellSource],
-  ["template editor", templateEditorSource],
-]) {
-  const outerCardClassName = source.match(/<Card className="([^"]*)"/)?.[1] ?? "";
-  assert(
-    outerCardClassName.includes("rounded-(--radius-workspace)") &&
-      outerCardClassName.includes("shadow-none") &&
-      !/rounded-\[(?:30|32)px\]|shadow-xl|shadow-\[/.test(
-        outerCardClassName,
-      ),
-    `The ${name} must use the shared flat workspace surface.`,
-  );
-}
+const authShellCardClassName =
+  authPageShellSource.match(/<Card className="([^"]*)"/)?.[1] ?? "";
+assert(
+  authShellCardClassName.includes("rounded-(--radius-workspace)") &&
+    authShellCardClassName.includes("shadow-none") &&
+    !/rounded-\[(?:30|32)px\]|shadow-xl|shadow-\[/.test(
+      authShellCardClassName,
+    ),
+  "The auth shell must use the shared flat workspace surface.",
+);
+assert(
+  templateEditorSource.includes('data-slot="template-editor"') &&
+    !templateEditorSource.includes("<Card"),
+  "The template editor must use the shared cardless inspector surface.",
+);
 assert(
   copilotPanelShellSource.includes("rounded-(--radius-card)") &&
-    copilotPanelShellSource.includes("shadow-card"),
-  "The Agent panel must use the shared content-card surface.",
+    copilotPanelShellSource.includes("shadow-card") &&
+    themeSource.includes(`.app-shell--document .agent-panel-card {
+    height: 100%;
+    max-height: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }`),
+  "The Agent panel must retain compact card chrome and meet the desktop workspace edges.",
 );
 assert(
   modelConfigPanelSource.includes(
@@ -233,7 +241,47 @@ assert(
     /function WorkspacePreviewSkeleton[\s\S]*?rounded-\(--radius-preview\)/.test(
       workspaceSkeletonsSource,
     ),
-  "The document preview and its skeleton must share the preview radius.",
+  "The recycle-bin document preview and its skeleton must share the preview radius.",
+);
+assert(
+  themeSource.includes(`@media screen {
+  .app-shell--document .resume-preview-card {
+    border: 0;
+    border-radius: 0;
+    background-color: color-mix(
+      in oklab,
+      var(--muted) 35%,
+      transparent
+    );
+  }
+}`),
+  "Document detail previews must use the same muted background as the galleries without card chrome.",
+);
+assert(
+  /\.resume-page \{[\s\S]{0,320}border-radius: var\(--radius-md\);[\s\S]{0,120}border: 1px solid var\(--border\);[\s\S]{0,320}box-shadow:\s*var\(--surface-shadow-card\),\s*0 16px 40px -24px rgb\(9 9 11 \/ 0\.28\);/.test(
+    themeSource,
+  ) &&
+    workspaceSkeletonsSource.includes(
+      "rounded-md border border-border bg-background p-10 shadow-card",
+    ),
+  "A4 previews and their skeleton must share restrained paper chrome.",
+);
+assert(
+  themeSource.includes(`.app-shell--document {
+    --document-sticky-bottom-gap: 16px;
+    --document-sticky-top: 96px;
+    --document-workspace-gutter: 16px;`) &&
+    themeSource.includes(`.app-shell--document .resume-preview-card {
+    top: calc(
+      var(--document-sticky-top) - var(--document-workspace-gutter)
+    );
+    height: calc(
+      100svh - var(--document-sticky-top) +
+        var(--document-workspace-gutter)
+    );
+    margin-top: calc(var(--document-workspace-gutter) * -1);
+  }`),
+  "Desktop document canvases must meet the header and fill the available viewport height.",
 );
 assert(
   settingsWorkspacePageSource.includes("<SettingsPanelSkeleton />") &&
@@ -246,10 +294,13 @@ assert(
   "Settings loading must preserve the live content-card hierarchy.",
 );
 assert(
-  /data-slot="template-editor-skeleton"[\s\S]{0,220}rounded-\(--radius-workspace\)[^"\n]*shadow-none/.test(
+  /data-slot="template-editor-skeleton"[\s\S]{0,120}className="min-h-\[520px\]"/.test(
     templateDetailWorkspaceViewSource,
-  ),
-  "Template loading must preserve the live flat workspace surface.",
+  ) &&
+    !/data-slot="template-editor-skeleton"[\s\S]{0,220}rounded-\(--radius-workspace\)/.test(
+      templateDetailWorkspaceViewSource,
+    ),
+  "Template loading must preserve the cardless editor surface.",
 );
 for (const [name, source] of [
   ["resume gallery card", resumeGalleryCardSource],
@@ -272,6 +323,7 @@ for (const [name, source] of [
   )?.[1] ?? "";
   assert(
     workspaceClassName.includes("rounded-(--radius-workspace)") &&
+      workspaceClassName.includes("bg-muted/35") &&
       !/shadow-(?:card|xs|sm|md|lg|xl|2xl)|shadow-\[/.test(
         workspaceClassName,
       ),

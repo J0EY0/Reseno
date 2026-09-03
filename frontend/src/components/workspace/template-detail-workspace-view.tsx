@@ -8,7 +8,7 @@ import {
 } from "react";
 
 import { AppToaster } from "@/components/app-toaster";
-import { loadDocumentPreviewCard } from "@/components/preview/document-preview-card-loader";
+import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import { TemplateEditor } from "@/components/templates/template-editor";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TemplateDetailWorkspaceHeader } from "@/components/workspace/template-detail-workspace-header";
@@ -20,7 +20,7 @@ import {
 import type { TemplateDetailWorkspaceController } from "@/components/workspace/use-template-detail-workspace";
 import type { AppMessages, Locale } from "@/i18n";
 
-const DocumentPreviewCard = lazy(loadDocumentPreviewCard);
+const DocumentCanvas = lazy(loadDocumentCanvas);
 const TemplateDetailLeaveDialog = lazy(() =>
   import("@/components/workspace/template-detail-leave-dialog").then((module) => ({
     default: module.TemplateDetailLeaveDialog,
@@ -34,10 +34,14 @@ function TemplateDetailContent({
   controller: TemplateDetailWorkspaceController;
   messages: AppMessages;
 }) {
-  const template = controller.template;
+  const {
+    template,
+    templatePreviewMessages,
+    templatePreviewResume,
+  } = controller;
 
   return (
-    <div className="workspace-document-enter template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[460px_minmax(0,1fr)]">
+    <div className="workspace-document-enter template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]">
       <section className="resume-editor-panel resume-template-editor-panel flex flex-col gap-4 print:hidden">
         {controller.hasLoaded && template ? (
           <TemplateEditor
@@ -60,7 +64,7 @@ function TemplateDetailContent({
         ) : (
           <div
             data-slot="template-editor-skeleton"
-            className="min-h-[520px] rounded-(--radius-workspace) border border-border/80 bg-card p-4 shadow-none"
+            className="min-h-[520px]"
           >
             <WorkspacePanelSkeleton />
           </div>
@@ -69,13 +73,14 @@ function TemplateDetailContent({
 
       {controller.hasLoaded &&
       template &&
-      controller.templatePreviewMessages &&
-      controller.templatePreviewResume ? (
+      templatePreviewMessages &&
+      templatePreviewResume ? (
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
-          <DocumentPreviewCard
+          <DocumentCanvas
             variant="template"
-            t={controller.templatePreviewMessages}
-            resume={controller.templatePreviewResume}
+            t={messages}
+            documentT={templatePreviewMessages}
+            resume={templatePreviewResume}
             template={template}
             onMoveTemplateImage={controller.moveTemplateImage}
           />
@@ -99,7 +104,7 @@ export function TemplateDetailWorkspaceView({
   onLocaleChange: (locale: Locale) => void;
 }) {
   const headerRef = useRef<HTMLElement | null>(null);
-  const [documentStickyTop, setDocumentStickyTop] = useState(96);
+  const [documentStickyTop, setDocumentStickyTop] = useState(64);
 
   useEffect(() => {
     const headerElement = headerRef.current;
@@ -109,7 +114,7 @@ export function TemplateDetailWorkspaceView({
 
     const syncDocumentStickyTop = () => {
       const nextStickyTop = Math.ceil(
-        headerElement.getBoundingClientRect().height + 16,
+        headerElement.getBoundingClientRect().height,
       );
       setDocumentStickyTop((current) =>
         current === nextStickyTop ? current : nextStickyTop,
@@ -152,7 +157,9 @@ export function TemplateDetailWorkspaceView({
         className="app-shell app-shell--document"
         style={
           {
+            "--document-sticky-bottom-gap": "0px",
             "--document-sticky-top": `${documentStickyTop}px`,
+            "--document-workspace-gutter": "0px",
           } as CSSProperties
         }
       >

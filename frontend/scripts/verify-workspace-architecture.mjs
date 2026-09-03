@@ -256,14 +256,14 @@ try {
   );
   const documentPreviewSource = await readFile(
     new URL(
-      "src/components/preview/document-preview-card.tsx",
+      "src/components/preview/document-canvas.tsx",
       frontendRoot,
     ),
     "utf8",
   );
   const documentPreviewLoaderSource = await readFile(
     new URL(
-      "src/components/preview/document-preview-card-loader.ts",
+      "src/components/preview/document-canvas-loader.ts",
       frontendRoot,
     ),
     "utf8",
@@ -337,18 +337,18 @@ try {
     !/from\s+["']@\/components\/preview\/resume-preview["']/.test(
       resumeDetailViewSource,
     ) &&
-      /lazy\(loadDocumentPreviewCard\)/.test(resumeDetailViewSource) &&
-      /lazy\(loadDocumentPreviewCard\)/.test(templateDetailViewSource) &&
-      /import\(["']@\/components\/preview\/document-preview-card["']\)/.test(
+      /lazy\(loadDocumentCanvas\)/.test(resumeDetailViewSource) &&
+      /lazy\(loadDocumentCanvas\)/.test(templateDetailViewSource) &&
+      /import\(["']@\/components\/preview\/document-canvas["']\)/.test(
         documentPreviewLoaderSource,
       ),
     "Document preview rendering must remain behind its detail-route chunk.",
   );
   assert.ok(
-    /void loadDocumentPreviewCard\(\)/.test(
+    /void loadDocumentCanvas\(\)/.test(
       resumeDetailLoaderSource,
     ) &&
-      /void loadDocumentPreviewCard\(\)/.test(
+      /void loadDocumentCanvas\(\)/.test(
         templateDetailRouteSource,
       ),
     "Each direct detail route must preload the preview chunk while route data loads.",
@@ -356,25 +356,14 @@ try {
   assert.ok(
     /useImperativeHandle\(/.test(documentPreviewSource) &&
       /measurePageCount:\s*\(\)\s*=>/.test(documentPreviewSource) &&
-      /remainingFrames = 8/.test(documentPreviewSource) &&
-      !/remainingFrames = 24/.test(documentPreviewSource) &&
-      /new ResizeObserver\(schedulePreviewScaleSync\)/.test(
-        documentPreviewSource,
-      ) &&
-      !/scaleBoxElement\.animate\(|layoutTransitionKey|PREVIEW_LAYOUT_MOTION|shouldAnimateNextLayoutRef/.test(
-        documentPreviewSource,
-      ) &&
-      /if \(animationFrameId !== null\) \{\s*return;\s*\}[\s\S]{0,300}window\.requestAnimationFrame\(\(\) => \{[\s\S]{0,180}syncPreviewLayout\(\)/.test(
-        documentPreviewSource,
-      ) &&
-      /animationFrameId\s*=\s*window\.requestAnimationFrame\(\(\) => \{\s*animationFrameId\s*=\s*null;\s*syncPreviewLayout\(\);\s*\}\)/.test(
-        documentPreviewSource,
-      ) &&
-      /resizeObserver\.observe\(frameElement\)/.test(documentPreviewSource) &&
+      /frame < 8/.test(documentPreviewSource) &&
+      /canvasControls\.map/.test(documentPreviewSource) &&
+      /useDocumentCanvas\(\)/.test(documentPreviewSource) &&
+      /data-slot="document-canvas-viewport"/.test(documentPreviewSource) &&
       /measurePageCount:\s*\(\)\s*=>\s*previewHandle\.measurePageCount\(\)/.test(
         resumeDetailCommandsSource,
       ),
-    "The preview module must own event-driven single-rAF scaling and pagination measurement without FLIP motion.",
+    "The document canvas must own viewport controls while retaining pagination measurement.",
   );
   assert.ok(
     /<Suspense fallback=\{<WorkspacePreviewSkeleton \/>\}>/.test(
@@ -383,8 +372,8 @@ try {
       /<Suspense fallback=\{<WorkspacePreviewSkeleton \/>\}>/.test(
         templateDetailViewSource,
       ) &&
-      !/<DocumentPreviewCard[^>]*\bkey=/.test(resumeDetailViewSource) &&
-      !/<DocumentPreviewCard[^>]*\bkey=/.test(templateDetailViewSource),
+      !/<DocumentCanvas[^>]*\bkey=/.test(resumeDetailViewSource) &&
+      !/<DocumentCanvas[^>]*\bkey=/.test(templateDetailViewSource),
     "Both detail routes need a preview fallback without forcing preview remounts.",
   );
   assert.ok(

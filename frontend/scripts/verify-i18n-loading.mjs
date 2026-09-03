@@ -172,6 +172,20 @@ assert.ok(
 const enMessages = JSON.parse(enSource);
 const zhMessages = JSON.parse(zhSource);
 assert.equal(
+  enMessages.canvasPage
+    .replace("{current}", "1")
+    .replace("{total}", "3"),
+  "Page 1 / 3",
+  "English canvas pagination must show the current and total page count.",
+);
+assert.equal(
+  zhMessages.canvasPage
+    .replace("{current}", "1")
+    .replace("{total}", "3"),
+  "第 1 / 3 页",
+  "Chinese canvas pagination must show the current and total page count.",
+);
+assert.equal(
   Object.hasOwn(enMessages, "thinkingEnabled") ||
     Object.hasOwn(zhMessages, "thinkingEnabled"),
   false,
