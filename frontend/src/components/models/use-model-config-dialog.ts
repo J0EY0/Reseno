@@ -52,6 +52,17 @@ export function classifyModelConfigSaveFailure(
     } as const;
   }
 
+  const isThinkingModeError =
+    isApiErrorCode(error, "MODEL_CONFIG_THINKING_MODE_INVALID") ||
+    isApiErrorCode(error, "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED");
+
+  if (isThinkingModeError) {
+    return {
+      status: "invalid",
+      errors: { thinkingMode: message },
+    } as const;
+  }
+
   return {
     status: "failed",
     errors: { discovery: message },
@@ -114,6 +125,8 @@ export function useModelConfigDialog({
           contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
           supportsImage: false,
           supportsThinking: false,
+          thinkingMode: "auto",
+          availableThinkingModes: ["auto"],
           supportsTools: true,
           supportsStreaming: true,
         };
@@ -326,6 +339,8 @@ export function useModelConfigDialog({
           model: "",
           supportsImage: false,
           supportsThinking: false,
+          thinkingMode: "auto",
+          availableThinkingModes: ["auto"],
           supportsTools: selectedProvider?.supportsTools ?? true,
           supportsStreaming: selectedProvider?.supportsStreaming ?? true,
         }));

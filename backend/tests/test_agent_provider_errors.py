@@ -52,11 +52,6 @@ def test_provider_response_body_never_enters_agent_sse(
         raise LlmRequestError(raw_body, status_code=429)
         yield  # pragma: no cover - keeps this an async iterator
 
-    monkeypatch.setattr(
-        streaming,
-        "resolve_agent_llm_config",
-        lambda conn, model_config: _config(),
-    )
     monkeypatch.setattr(streaming, "async_iter_agent_tool_call_loop", failing_loop)
 
     async def collect() -> str:
@@ -70,7 +65,7 @@ def test_provider_response_body_never_enters_agent_sse(
                 ),
                 resume={"basic": {}, "sections": []},
             ),
-            object(),
+            _config(),
         ):
             frames.append(streaming.serialize_agent_event(event))
         return "".join(frames)
@@ -208,11 +203,6 @@ def test_local_context_window_error_is_not_presented_as_provider_failure(
         raise AgentContextWindowError("local context overflow")
         yield  # pragma: no cover - keeps this an async iterator
 
-    monkeypatch.setattr(
-        streaming,
-        "resolve_agent_llm_config",
-        lambda conn, model_config: _config(),
-    )
     monkeypatch.setattr(streaming, "async_iter_agent_tool_call_loop", failing_loop)
 
     async def collect() -> str:
@@ -228,7 +218,7 @@ def test_local_context_window_error_is_not_presented_as_provider_failure(
                     locale="zh",
                     resume={"basic": {}, "sections": []},
                 ),
-                object(),
+                _config(),
             )
         ]
         return "".join(frames)
@@ -483,15 +473,11 @@ def test_agent_reuses_opaque_prompt_cache_key_across_model_turns(
             yield LlmStreamEvent(type="text_delta", delta=response.content)
             yield LlmStreamEvent(type="done", message=response)
 
-        monkeypatch.setattr(
-            streaming,
-            "resolve_agent_llm_config",
-            lambda conn, model_config: replace(
-                _config(),
-                base_url="https://api.openai.com/v1",
-                provider_kind="cloud",
-                api_family="openai_responses",
-            ),
+        config = replace(
+            _config(),
+            base_url="https://api.openai.com/v1",
+            provider_kind="cloud",
+            api_family="openai_responses",
         )
         monkeypatch.setattr(
             agent_loop,
@@ -516,7 +502,7 @@ def test_agent_reuses_opaque_prompt_cache_key_across_model_turns(
                         locale="en",
                         resume={"basic": {}, "sections": []},
                     ),
-                    object(),
+                    config,
                 )
             ]
             assert "Tool loop done." in "".join(frames)

@@ -42,6 +42,7 @@ const AvatarCropDialog = lazy(() =>
 type ResumeEditorPaneProps = {
   t: AppMessages;
   documentT: AppMessages | null;
+  disabled: boolean;
   resume: ResumeData;
   setResume: Dispatch<SetStateAction<ResumeData>>;
   collapsedState: CollapsedState;
@@ -63,6 +64,7 @@ function collapseAllExcept(current: CollapsedState, openId: string) {
 export const ResumeEditorPane = memo(function ResumeEditorPane({
   t,
   documentT,
+  disabled,
   resume,
   setResume,
   collapsedState,
@@ -239,7 +241,11 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
         />
       </Suspense>
 
-      <section className="resume-editor-panel flex flex-col gap-2.5 print:hidden">
+      <section
+        aria-busy={disabled || undefined}
+        className="resume-editor-panel flex flex-col gap-2.5 print:hidden"
+        inert={disabled || undefined}
+      >
         {hasLoadError ? (
           <Card className="border-border/80">
             <CardContent className="p-5 text-sm text-muted-foreground">

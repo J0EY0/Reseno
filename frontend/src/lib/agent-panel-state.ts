@@ -1,6 +1,4 @@
 import type {
-  AgentChatMessage,
-  AgentDraftState,
   AgentToolInvocation,
 } from "@/types/api";
 
@@ -29,30 +27,6 @@ export function mergeStreamingAgentMessage<T extends { id: string }>(
   );
 }
 
-export function shouldShowAgentDraftActions({
-  draft,
-  isResponding,
-  isSessionReady,
-  messageId,
-  response,
-}: {
-  draft: AgentDraftState | null;
-  isResponding: boolean;
-  isSessionReady: boolean;
-  messageId: string;
-  response: AgentChatMessage | undefined;
-}) {
-  return Boolean(
-    isSessionReady &&
-      !isResponding &&
-      draft?.status === "pending" &&
-      draft.transactionState === "committed" &&
-      draft.sourceMessageId === messageId &&
-      response?.transactionState === "committed" &&
-      response.edits?.length,
-  );
-}
-
 export function shouldRollbackOptimisticAgentMessages({
   runAccepted,
 }: {
@@ -71,19 +45,19 @@ export function shouldRollbackOptimisticAgentMessages({
  */
 export function canSubmitAgentPrompt({
   hasConfiguredModel,
-  isResponding,
+  isRequestBusy,
   isSessionReady,
   isSubmitting,
 }: {
   hasConfiguredModel: boolean;
-  isResponding: boolean;
+  isRequestBusy: boolean;
   isSessionReady: boolean;
   isSubmitting: boolean;
 }) {
   return (
     hasConfiguredModel &&
     isSessionReady &&
-    !isResponding &&
+    !isRequestBusy &&
     !isSubmitting
   );
 }

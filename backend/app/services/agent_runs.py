@@ -48,7 +48,7 @@ from app.services.agent_sessions import (
     accept_agent_turn,
     persist_agent_terminal_outcome,
 )
-from app.services.llm import LlmUsage
+from app.services.llm import AgentLlmConfig, LlmUsage, resolve_agent_llm_config
 from app.services.llm.types import LlmStopReason
 
 logger = logging.getLogger("uvicorn.error")
@@ -428,7 +428,7 @@ class AgentRunManager:
             # then propagate cancellation to the HTTP caller.
             while True:
                 try:
-                    turn = await asyncio.shield(preparation_task)
+                    turn, resolved_config = await asyncio.shield(preparation_task)
                     break
                 except asyncio.CancelledError as exc:
                     if preparation_task.cancelled():
@@ -444,7 +444,7 @@ class AgentRunManager:
             async with self._lock:
                 self._runs[run.id] = run
                 run.task = asyncio.create_task(
-                    self._execute(run),
+                    self._execute(run, resolved_config),
                     name=f"agent-run:{run.id}",
                 )
             logger.info(
@@ -578,7 +578,19 @@ class AgentRunManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _execute(self, run: AgentRun) -> None:
+    async def _execute(
+        self,
+        run: AgentRun,
+        resolved_config: AgentLlmConfig | None,
+    ) -> None:
+        """Execute one run with the model configuration frozen at acceptance.
+
+        ``AgentLlmConfig`` contains the plaintext provider credential, so it is
+        kept on the transient execution path and is never attached to
+        ``AgentRun`` or persisted. ``AgentRun`` retains event replay state after
+        completion and must never retain that secret-bearing object.
+        """
+
         async def is_cancelled() -> bool:
             return run.cancel_event.is_set()
 
@@ -592,33 +604,32 @@ class AgentRunManager:
         )
         final_status: AgentRunStatus = "failed"
         try:
-            with closing(connect()) as conn:
-                iterator = async_iter_agent_events(
-                    run.request,
-                    conn,
-                    runtime,
-                )
-                async for event in iterator:
-                    if isinstance(event, AgentCompleted):
-                        run.completion = event
-                        # The tool loop streams provisional edits immediately,
-                        # then carries the authoritative commit/rollback only
-                        # on its completed message. Consume that terminal state
-                        # here even though message_done waits for persistence.
-                        if event.message.transaction_state in {
-                            "committed",
-                            "rolled_back",
-                        }:
-                            run.has_provisional_edits = False
-                        continue
-                    if isinstance(event, AgentEditsUpdate):
-                        if event.transaction_state == "provisional":
-                            run.has_provisional_edits = True
-                        elif event.transaction_state in {"committed", "rolled_back"}:
-                            run.has_provisional_edits = False
-                    if isinstance(event, AgentStreamError):
-                        run.error_code = run.error_code or event.error_code
-                    await self._publish(run, event)
+            iterator = async_iter_agent_events(
+                run.request,
+                resolved_config,
+                runtime,
+            )
+            async for event in iterator:
+                if isinstance(event, AgentCompleted):
+                    run.completion = event
+                    # The tool loop streams provisional edits immediately,
+                    # then carries the authoritative commit/rollback only
+                    # on its completed message. Consume that terminal state
+                    # here even though message_done waits for persistence.
+                    if event.message.transaction_state in {
+                        "committed",
+                        "rolled_back",
+                    }:
+                        run.has_provisional_edits = False
+                    continue
+                if isinstance(event, AgentEditsUpdate):
+                    if event.transaction_state == "provisional":
+                        run.has_provisional_edits = True
+                    elif event.transaction_state in {"committed", "rolled_back"}:
+                        run.has_provisional_edits = False
+                if isinstance(event, AgentStreamError):
+                    run.error_code = run.error_code or event.error_code
+                await self._publish(run, event)
 
             if run.cancel_event.is_set() and run.completion is None:
                 await self._rollback_provisional_edits(run)
@@ -932,11 +943,26 @@ def _existing_resume_ids(resume_ids: tuple[str, ...]) -> set[str]:
 def _prepare_run_request(
     request: AgentChatRequest,
     run_id: str,
-) -> AcceptedAgentTurn:
-    """Accept one turn on a worker so SQLite and parsing never block asyncio."""
+) -> tuple[AcceptedAgentTurn, AgentLlmConfig | None]:
+    """Resolve and accept one immutable model/run snapshot off the event loop.
+
+    The same resolved object validates native attachments and drives every
+    provider call in the accepted run. A later model selection or config edit
+    is therefore observed only by the next invocation of this function.
+    """
 
     with closing(connect()) as conn:
-        return accept_agent_turn(conn, request, run_id=run_id)
+        selected_model_config_id = (
+            request.model_selection.id if request.model_selection is not None else None
+        )
+        resolved_config = resolve_agent_llm_config(conn, selected_model_config_id)
+        turn = accept_agent_turn(
+            conn,
+            request,
+            run_id=run_id,
+            resolved_config=resolved_config,
+        )
+        return turn, resolved_config
 
 
 def _finish_agent_run_execution(

@@ -34,7 +34,7 @@ try {
     updatedAt: "2026-01-01T00:00:00.000Z",
     savedAt: "2026-01-01T00:00:00.000Z",
     theme: "light",
-    agentSettings: { defaultModelId: "model-a" },
+    agentSettings: { defaultModelConfigId: "model-a" },
     resume: {
       basic: { name: "Ada" },
       sections: [{ id: "experience", items: [{ title: "Engineer" }] }],
@@ -49,7 +49,7 @@ try {
     updatedAt: "2026-02-01T00:00:00.000Z",
     savedAt: "2026-02-01T00:00:00.000Z",
     theme: "dark",
-    agentSettings: { defaultModelId: "model-b" },
+    agentSettings: { defaultModelConfigId: "model-b" },
   };
   const contentChange = {
     ...volatileOnlyChange,

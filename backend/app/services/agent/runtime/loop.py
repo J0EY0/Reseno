@@ -30,6 +30,7 @@ from app.services.llm.types import (
 )
 from app.services.llm.validation import validation_error_observation
 
+from ..draft.review import build_draft_review_items
 from ..environment import EnvironmentResult, ResumeToolEnvironment
 from ..localization import agent_text
 from .compaction import prepare_agent_prompt
@@ -136,7 +137,10 @@ def _turn_result(
             sources=list(environment.sources),
             edits=list(environment.edits),
             draft=(
-                AgentCommittedDraft(baseResume=environment.base_resume)
+                AgentCommittedDraft(
+                    baseResume=environment.base_resume,
+                    reviewItems=build_draft_review_items(environment.edits),
+                )
                 if environment.transaction_state == "committed" and environment.edits
                 else None
             ),

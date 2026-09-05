@@ -28,11 +28,11 @@ class AgentSettings(BaseModel):
 
     model_config = ConfigDict(
         populate_by_name=True,
-        extra="ignore",
+        extra="forbid",
         frozen=True,
     )
 
-    default_model_id: str = Field(default="", alias="defaultModelId")
+    default_model_config_id: str = Field(default="", alias="defaultModelConfigId")
     response_language: AgentResponseLanguage = Field(
         default=AgentResponseLanguage.FOLLOW,
         alias="responseLanguage",
@@ -76,9 +76,11 @@ def normalize_agent_settings(value: Any) -> AgentSettings:
     if not isinstance(value, dict):
         return AgentSettings()
 
-    default_model_id = value.get("defaultModelId")
+    default_model_config_id = value.get("defaultModelConfigId")
     return AgentSettings(
-        defaultModelId=default_model_id if isinstance(default_model_id, str) else "",
+        defaultModelConfigId=(
+            default_model_config_id if isinstance(default_model_config_id, str) else ""
+        ),
         responseLanguage=_supported_enum(
             AgentResponseLanguage,
             value.get("responseLanguage"),

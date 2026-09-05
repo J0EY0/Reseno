@@ -50,6 +50,10 @@ export function StandardResumeContent({
         className="mt-[1.25em]"
         sectionDiffById={model.diffLookup.sectionDiffById}
         itemDiffById={model.diffLookup.itemDiffById}
+        deletedItemDiffsBySectionId={
+          model.diffLookup.deletedItemDiffsBySectionId
+        }
+        deletedSectionDiffs={model.diffLookup.deletedSectionDiffs}
       />
     </div>
   );
@@ -100,6 +104,10 @@ export function ResumePageContent({
               enableContactLinks={enableContactLinks}
               sectionDiffById={model.diffLookup.sectionDiffById}
               itemDiffById={model.diffLookup.itemDiffById}
+              deletedItemDiffsBySectionId={
+                model.diffLookup.deletedItemDiffsBySectionId
+              }
+              deletedSectionDiffs={model.diffLookup.deletedSectionDiffs}
             />
           </div>
         </div>

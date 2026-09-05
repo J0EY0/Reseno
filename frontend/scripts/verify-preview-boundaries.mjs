@@ -90,6 +90,9 @@ const [
   previewBasicInfo,
   previewContent,
   previewDiffBadge,
+  previewDeletedAnchor,
+  draftReviewComparison,
+  draftReviewPopover,
   previewSectionItems,
   previewSections,
 ] =
@@ -111,6 +114,9 @@ const [
     readSource("components/preview/resume-preview-basic-info.tsx"),
     readSource("components/preview/resume-preview-content.tsx"),
     readSource("components/preview/resume-preview-diff-badge.tsx"),
+    readSource("components/preview/resume-preview-deleted-anchor.tsx"),
+    readSource("components/preview/resume-draft-review-comparison.tsx"),
+    readSource("components/preview/resume-draft-review-popover.tsx"),
     readSource("components/preview/resume-preview-section-items.tsx"),
     readSource("components/preview/resume-preview-sections.tsx"),
   ]);
@@ -223,7 +229,7 @@ const boxedSectionDiffRule = readCssRule(
   indexCss,
   '.resume-section[data-resume-section-layout="boxed"].resume-diff',
 );
-const diffSurfaceRules = ["added", "moved"].map(
+const diffSurfaceRules = ["added", "moved", "deleted"].map(
   (kind) => readCssRule(indexCss, `.resume-diff--${kind}`),
 );
 
@@ -260,8 +266,11 @@ assert(
   "Every visible resume diff kind must use one quiet flat surface without a left rail or gradient.",
 );
 assert(
-  !/\.resume-diff--deleted/.test(indexCss),
-  "Deleted content must not create a preview surface over the candidate resume.",
+  /resume-diff-deleted-anchor/.test(previewDeletedAnchor) &&
+    /data-resume-diff-path/.test(previewDeletedAnchor) &&
+    /interleaveDeletedDiffs/.test(previewSectionItems) &&
+    /interleaveDeletedDiffs/.test(previewSections),
+  "Deleted items and sections must retain a locatable review anchor beside surviving content.",
 );
 assert(
   !/\.resume-diff--modified\s*\{/.test(indexCss) &&
@@ -274,21 +283,16 @@ assert(
   "Modified drafts must mark canonical fields and inline fragments instead of styling an entire item.",
 );
 assert(
-  !/resume-preview-deletion-marker|resume-diff-(?:deletion-marker|inline-deletion|structural-deletion|deletion-anchor)/.test(
-    [
-      indexCss,
-      previewDiffPrecision,
-      previewRichDiff,
-      previewSectionItems,
-      previewSections,
-    ].join("\n"),
-  ) &&
-    !/IntersectionObserver|TooltipProvider|TooltipTrigger/.test(
+  !/IntersectionObserver|TooltipProvider|TooltipTrigger/.test(
       [previewDiffPrecision, previewRichDiff, previewSectionItems, previewSections].join(
         "\n",
       ),
-    ),
-  "Resume previews must never place deletion controls over candidate text; deleted values belong in the change summary.",
+    ) &&
+    /<Popover/.test(draftReviewPopover) &&
+    /ResumeDraftReviewComparison/.test(draftReviewPopover) &&
+    /formatAgentDiffValue/.test(draftReviewComparison) &&
+    /onSelectReviewItem/.test(draftReviewPopover),
+  "Diff comparison must use one delegated popover while the preview content remains free of duplicated controls.",
 );
 assert(
   /font-size:\s*7px/.test(diffBadgeRule),

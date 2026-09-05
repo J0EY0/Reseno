@@ -11,6 +11,10 @@ import {
 
 import { ResumePreview } from "@/components/preview/resume-preview";
 import {
+  type ResumeDraftReviewPresentation,
+  useResumeDraftReviewInteraction,
+} from "@/components/preview/resume-draft-review-popover";
+import {
   DOCUMENT_CANVAS_MAX_SCALE,
   DOCUMENT_CANVAS_MIN_SCALE,
 } from "@/components/preview/document-canvas-model";
@@ -48,6 +52,7 @@ type CanvasControl = [
 
 type DocumentCanvasProps =
   | (DocumentCanvasBaseProps & {
+      draftReview?: ResumeDraftReviewPresentation;
       diffs?: ResumeDraftDiff[];
       typography: ResumeTypographySettings;
       variant: "resume";
@@ -78,6 +83,8 @@ export const DocumentCanvas = memo(
     const {
       currentPage,
       isFitToWidth,
+      onBlur: onViewportBlur,
+      onClick,
       onKeyDown,
       onPointer,
       onScroll,
@@ -108,6 +115,12 @@ export const DocumentCanvas = memo(
     );
 
     const isTemplatePreview = props.variant === "template";
+    const draftReviewInteraction = useResumeDraftReviewInteraction({
+      diffs: !isTemplatePreview ? props.diffs : undefined,
+      presentation: !isTemplatePreview ? props.draftReview : undefined,
+      previewRef,
+      t,
+    });
     const typography = isTemplatePreview
       ? template.typography
       : props.typography;
@@ -144,9 +157,20 @@ export const DocumentCanvas = memo(
           role="region"
           aria-label={t.preview}
           className="document-canvas-viewport min-h-0 flex-1 cursor-default overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          onAuxClick={onClick}
+          onClick={onClick}
+          onClickCapture={draftReviewInteraction.onClick}
+          onBlur={(event) => {
+            onViewportBlur(event);
+            draftReviewInteraction.onBlur(event);
+          }}
+          onFocus={draftReviewInteraction.onFocus}
           onLostPointerCapture={onPointer}
           onPointerDown={onPointer}
           onPointerMove={onPointer}
+          onPointerOut={draftReviewInteraction.onPointerOut}
+          onPointerOver={draftReviewInteraction.onPointerOver}
+          onKeyDownCapture={draftReviewInteraction.onKeyDown}
           onScroll={onScroll}
         >
           <div className="document-canvas-stage flex min-h-full w-max min-w-full items-start justify-center p-6 pb-20">
@@ -178,6 +202,8 @@ export const DocumentCanvas = memo(
             </div>
           </div>
         </div>
+
+        {draftReviewInteraction.popover}
 
         <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 print:hidden">
           <div className="relative">

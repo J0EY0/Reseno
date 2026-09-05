@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -81,6 +82,58 @@ def test_anthropic_native_auto_uses_adaptive_without_effort_or_sampling(
     assert "output_config" not in payload
     assert "temperature" not in payload
     assert "top_p" not in payload
+
+
+def test_anthropic_native_off_uses_disabled_without_effort_or_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_post_json(_: str, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "id": "msg-disabled-thinking",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Done"}],
+        }
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
+
+    asyncio.run(
+        async_complete_chat(
+            _config(thinking_control="native_off"),
+            LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+        ),
+    )
+
+    payload = captured["payload"]
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "output_config" not in payload
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+
+
+def test_anthropic_native_off_fails_closed_for_an_unverified_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unexpected_post_json(_: str, **__: Any) -> dict[str, Any]:
+        raise AssertionError("The invalid Off request must fail before network I/O.")
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", unexpected_post_json)
+
+    with pytest.raises(
+        LlmRequestError,
+        match="Thinking Off is unavailable for this model configuration",
+    ):
+        asyncio.run(
+            async_complete_chat(
+                replace(
+                    _config(thinking_control="native_off"),
+                    base_url="https://anthropic-compatible.example.test/v1",
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+            ),
+        )
 
 
 @pytest.mark.parametrize(

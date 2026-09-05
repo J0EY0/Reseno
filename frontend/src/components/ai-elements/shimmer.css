@@ -8,12 +8,12 @@
   }
 }
 
-.text-shimmer {
+.shimmer-text {
   animation: text-shimmer var(--text-shimmer-duration) linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .text-shimmer {
+  .shimmer-text {
     animation: none;
   }
 }

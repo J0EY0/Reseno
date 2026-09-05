@@ -1,7 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from sqlite3 import Connection
 from typing import Literal
 from uuid import uuid4
 
@@ -16,7 +15,6 @@ from app.services.llm import (
     AgentLlmConfig,
     LlmRequestError,
     LlmTimeoutError,
-    resolve_agent_llm_config,
 )
 
 from ..localization import agent_text
@@ -341,14 +339,18 @@ def stream_agent_message(
 
 async def async_iter_agent_events(
     request: AgentChatRequest,
-    conn: Connection,
+    resolved_config: AgentLlmConfig | None,
     runtime: AgentRuntimeContext | None = None,
 ) -> AsyncIterator[AgentRuntimeEvent]:
-    """Run provider work after the user turn has crossed the acceptance seam."""
+    """Run one accepted turn against its immutable model configuration.
+
+    Resolution belongs to the acceptance seam. Keeping this function free of
+    database lookups guarantees that every model/tool iteration observes the
+    same provider, context window, thinking mode, and request limits.
+    """
 
     runtime = runtime or AgentRuntimeContext()
-    config = resolve_agent_llm_config(conn, request.model_config_data)
-    if config is None:
+    if resolved_config is None:
         message = _model_setup_message(request)
         for event in stream_agent_message(message):
             yield event
@@ -356,7 +358,7 @@ async def async_iter_agent_events(
 
     async for event in async_iter_resolved_agent_events(
         request,
-        config,
+        resolved_config,
         runtime=runtime,
     ):
         yield event

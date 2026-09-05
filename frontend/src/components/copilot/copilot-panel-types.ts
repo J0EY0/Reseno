@@ -1,4 +1,5 @@
 import type { AppMessages } from '@/i18n'
+import type { AgentDraftReviewController } from '@/hooks/use-resume-agent-draft'
 import type {
   AgentChatAttachment,
   AgentDraftState,
@@ -11,6 +12,7 @@ import type {
 import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 
 import type { AgentPanelMessage } from './copilot-message-model'
+import type { AgentRequestPhase } from './agent-conversation-runtime'
 
 export type AgentPanelStatus = 'loading' | 'ready' | 'responding' | 'error'
 
@@ -21,10 +23,10 @@ export interface CopilotPanelProps {
   documentLocale: DocumentLocale
   resume: ResumeData
   modelConfigs: ModelConfig[]
-  selectedModelId: string
-  onSelectedModelChange: (modelId: string) => void
-  hasAgentDraft: boolean
+  selectedModelConfigId: string
+  onSelectedModelConfigChange: (modelConfigId: string) => void
   agentDraftState: AgentDraftState | null
+  agentDraftReview: AgentDraftReviewController | null
   onPreviewAgentEdits: (
     edits: AgentResumeEditSuggestion[],
     baseResume: ResumeData,
@@ -46,11 +48,9 @@ export interface AgentSendOptions {
   replaceSessionBeforeSend?: boolean
 }
 
-/**
- * Server acceptance and run completion are intentionally separate. Composer
- * input may clear after acceptance without waiting for a potentially long run.
- */
+/** Local submission, server acceptance, and run completion are separate. */
 export interface AgentSendOperation {
+  submitted: boolean
   accepted: Promise<boolean>
   completion: Promise<AgentRunStatus>
 }
@@ -64,9 +64,9 @@ export type SendAgentPrompt = (
 export interface AgentConversationController {
   applyAgentDraft: () => Promise<void>
   discardAgentDraft: () => Promise<void>
-  isResponding: boolean
   isSessionReady: boolean
   messages: AgentPanelMessage[]
+  requestPhase: AgentRequestPhase
   retrySession: () => void
   sessionResetVersion: number
   sendPrompt: SendAgentPrompt

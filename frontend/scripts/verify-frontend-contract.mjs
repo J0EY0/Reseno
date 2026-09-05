@@ -459,7 +459,7 @@ assert(
   "Persisted chat POSTs must omit client history, temporary chats must retain it, and session replacement must include the full edited history.",
 );
 assert(
-  /if\s*\(\s*\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.isResponding/.test(
+  /if\s*\(\s*\(!prompt\s*&&\s*files\.length\s*===\s*0\)\s*\|\|\s*runtime\.requestPhase\s*!==\s*['"]idle['"]/.test(
     agentSendController,
   ) &&
     /const\s+userMessage:[\s\S]{0,240}\bfiles,?[\s\S]{0,240}\btext:\s*prompt/.test(
@@ -547,14 +547,16 @@ assert(
 );
 assert(
   /const\s+sendOperation\s*=\s*sendPrompt\(/.test(submitPromptSource) &&
-    /requestAccepted\s*=\s*await\s+sendOperation\.accepted/.test(
+    /requestSubmitted\s*=\s*sendOperation\.submitted/.test(
       submitPromptSource,
     ) &&
-    /if\s*\(!requestAccepted\)\s*\{[\s\S]{0,180}await\s+sendOperation\.completion[\s\S]{0,180}throw/.test(
+    /if\s*\(!requestSubmitted\)\s*\{[\s\S]{0,180}await\s+sendOperation\.completion[\s\S]{0,180}throw/.test(
       submitPromptSource,
     ) &&
-    /void\s+sendOperation\.completion/.test(submitPromptSource),
-  "The composer must clear after the uploaded prompt is accepted, not after the full Agent run completes.",
+    /void \(async \(\) => \{[\s\S]{0,160}await sendOperation\.accepted[\s\S]{0,320}await sendOperation\.completion/.test(
+      submitPromptSource,
+    ),
+  "The composer must clear after local submission while acceptance and completion continue in the background.",
 );
 assert(
   /const convertedFiles = await Promise\.all\([\s\S]*?if \(!mountedRef\.current\) \{\s*return;\s*\}[\s\S]*?const result = onSubmit\(/.test(
@@ -572,7 +574,7 @@ assert(
     /catch \{\s*\/\/ Keep the captured input and attachments available for retry\./.test(
       promptInputForm,
     ),
-  "Unmounting may block a stale request, but an accepted submission must still clear only its captured attachments and unchanged text.",
+  "Unmounting may block a stale request, but a submitted prompt must still clear only its captured attachments and unchanged text.",
 );
 
 for (const file of files) {

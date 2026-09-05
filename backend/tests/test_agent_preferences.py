@@ -51,14 +51,14 @@ def _request(*, locale: str = "zh") -> AgentChatRequest:
 def test_agent_settings_normalize_each_field_independently() -> None:
     settings = normalize_agent_settings(
         {
-            "defaultModelId": "llm-primary",
+            "defaultModelConfigId": "llm-primary",
             "responseLanguage": "unsupported",
             "behaviorMode": "strict",
             "confirmationMode": "suggestOnly",
         },
     )
 
-    assert settings.default_model_id == "llm-primary"
+    assert settings.default_model_config_id == "llm-primary"
     assert settings.response_language == AgentResponseLanguage.FOLLOW
     assert settings.behavior_mode == AgentBehaviorMode.STRICT
     assert settings.confirmation_mode == AgentConfirmationMode.SUGGEST_ONLY
@@ -204,8 +204,6 @@ def test_chat_route_freezes_persisted_settings_for_each_turn(
             },
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
-            # Legacy client values must not override persisted preferences.
-            "settings": {"confirmationMode": "always"},
         },
     )
 

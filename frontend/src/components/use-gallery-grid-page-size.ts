@@ -7,19 +7,35 @@ const reflowEasing = "cubic-bezier(0.2, 0, 0, 1)";
 
 type ItemPositions = Map<string, DOMRect>;
 
-type PendingReflow = {
-  targetColumnCount: number;
-  firstPositions: ItemPositions;
+type ReflowTiming = {
+  duration: number;
+  easing: string;
+  source: Animation;
 };
 
-function getGridColumnCount(element: HTMLElement) {
-  const templateColumns = window.getComputedStyle(element).gridTemplateColumns;
+function getReflowTiming(source: Animation): ReflowTiming {
+  const timing = source.effect?.getTiming();
+  const duration = Number(timing?.duration);
 
+  return {
+    duration: Number.isFinite(duration) ? duration : reflowDurationMs,
+    easing: timing?.easing || reflowEasing,
+    source,
+  };
+}
+
+function getColumnCount(templateColumns: string) {
   if (!templateColumns || templateColumns === "none") {
     return fallbackGalleryColumns;
   }
 
   return Math.max(1, templateColumns.split(" ").filter(Boolean).length);
+}
+
+function getGridColumnCount(element: HTMLElement) {
+  return getColumnCount(
+    window.getComputedStyle(element).gridTemplateColumns,
+  );
 }
 
 function getItemPositions(element: HTMLElement): ItemPositions {
@@ -45,17 +61,21 @@ function cancelAnimations(animations: Map<HTMLElement, Animation>) {
   animations.clear();
 }
 
-function getReflowDuration(grid: HTMLElement) {
-  const sidebarGap = grid
+function getSidebarWidthTransition(grid: HTMLElement) {
+  return grid
     .closest('[data-slot="sidebar-wrapper"]')
-    ?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]');
-  const widthTransition = sidebarGap
+    ?.querySelector<HTMLElement>('[data-slot="sidebar-gap"]')
     ?.getAnimations()
-    .find(
+    .filter(
       (animation): animation is CSSTransition =>
         animation instanceof CSSTransition &&
         animation.transitionProperty === "width",
-    );
+    )
+    .at(-1);
+}
+
+function getReflowDuration(grid: HTMLElement) {
+  const widthTransition = getSidebarWidthTransition(grid);
 
   if (!widthTransition) {
     return reflowDurationMs;
@@ -69,14 +89,56 @@ function getReflowDuration(grid: HTMLElement) {
   );
 }
 
+function getTransitionEndWidth(transition: CSSTransition) {
+  const effect = transition.effect;
+
+  if (!(effect instanceof KeyframeEffect)) {
+    return null;
+  }
+
+  const keyframes = effect.getKeyframes();
+  const width = Number.parseFloat(
+    String(keyframes.at(-1)?.width ?? ""),
+  );
+
+  return Number.isFinite(width) ? width : null;
+}
+
+function getGridTemplateAtWidth(grid: HTMLElement, width: number) {
+  const measurement = grid.cloneNode(false) as HTMLElement;
+  measurement.style.gridTemplateColumns = "";
+  measurement.style.position = "fixed";
+  measurement.style.left = "-10000px";
+  measurement.style.top = "0";
+  measurement.style.visibility = "hidden";
+  measurement.style.width = `${width}px`;
+  document.body.append(measurement);
+  const templateColumns = window.getComputedStyle(
+    measurement,
+  ).gridTemplateColumns;
+  measurement.remove();
+  return templateColumns;
+}
+
+function isSingleRow(positions: ItemPositions) {
+  const tops = new Set(
+    Array.from(positions.values(), (position) =>
+      Math.round(position.top),
+    ),
+  );
+  return tops.size === 1;
+}
+
 function animateReflow(
   grid: HTMLElement,
   firstPositions: ItemPositions,
   activeAnimations: Map<HTMLElement, Animation>,
+  timing?: ReflowTiming,
 ) {
   cancelAnimations(activeAnimations);
   const lastPositions = getItemPositions(grid);
-  const duration = getReflowDuration(grid);
+  const duration = timing?.duration ?? getReflowDuration(grid);
+  const easing = timing?.easing ?? reflowEasing;
 
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     return;
@@ -105,9 +167,25 @@ function animateReflow(
         { transform: `translate3d(${offsetX}px, ${offsetY}px, 0)` },
         { transform: "translate3d(0, 0, 0)" },
       ],
-      { duration, easing: reflowEasing },
+      { duration, easing },
     );
-    animation.startTime = document.timeline.currentTime;
+    if (timing?.source.startTime != null) {
+      animation.startTime = timing.source.startTime;
+    } else if (timing) {
+      void timing.source.ready.then(
+        () => {
+          if (
+            activeAnimations.get(item) === animation &&
+            timing.source.startTime != null
+          ) {
+            animation.startTime = timing.source.startTime;
+          }
+        },
+        () => undefined,
+      );
+    } else {
+      animation.startTime = document.timeline.currentTime;
+    }
     animation.id = "gallery-grid-reflow";
     activeAnimations.set(item, animation);
 
@@ -132,28 +210,12 @@ export function useGalleryGridPageSize({
   const [columnCount, setColumnCount] = useState(fallbackGalleryColumns);
   const columnCountRef = useRef(fallbackGalleryColumns);
   const itemPositionsRef = useRef<ItemPositions>(new Map());
-  const pendingReflowRef = useRef<PendingReflow | null>(null);
   const activeAnimationsRef = useRef(new Map<HTMLElement, Animation>());
 
   useLayoutEffect(() => {
     const grid = gridRef.current;
-    const pendingReflow = pendingReflowRef.current;
 
     if (!grid) {
-      return;
-    }
-
-    if (
-      pendingReflow &&
-      pendingReflow.targetColumnCount === columnCount
-    ) {
-      animateReflow(
-        grid,
-        pendingReflow.firstPositions,
-        activeAnimationsRef.current,
-      );
-      pendingReflowRef.current = null;
-      itemPositionsRef.current = pendingReflow.firstPositions;
       return;
     }
 
@@ -168,7 +230,144 @@ export function useGalleryGridPageSize({
       return;
     }
 
+    const sidebarWrapper = element.closest(
+      '[data-slot="sidebar-wrapper"]',
+    );
     let hasMeasuredInitialLayout = false;
+    let originalGridTemplateColumns: string | null = null;
+    let lockedTransition: CSSTransition | null = null;
+    let disposed = false;
+    let pendingFrame: number | null = null;
+
+    const releaseGridTemplate = (animate = false) => {
+      if (originalGridTemplateColumns === null) {
+        return;
+      }
+
+      const firstPositions = animate
+        ? getItemPositions(element)
+        : null;
+      const timingSource = animate
+        ? getSidebarWidthTransition(element)
+        : undefined;
+      element.style.gridTemplateColumns = originalGridTemplateColumns;
+      originalGridTemplateColumns = null;
+      lockedTransition = null;
+      if (firstPositions) {
+        animateReflow(
+          element,
+          firstPositions,
+          activeAnimations,
+          timingSource ? getReflowTiming(timingSource) : undefined,
+        );
+      }
+      const nextColumnCount = getGridColumnCount(element);
+      columnCountRef.current = nextColumnCount;
+      itemPositionsRef.current = getItemPositions(element);
+      setColumnCount(nextColumnCount);
+    };
+
+    const prepareExpandedGrid = () => {
+      const sidebar = sidebarWrapper?.querySelector<HTMLElement>(
+        '[data-slot="sidebar"][data-state]',
+      );
+      const sidebarGap = sidebarWrapper?.querySelector<HTMLElement>(
+        '[data-slot="sidebar-gap"]',
+      );
+
+      if (!sidebarGap || sidebar?.dataset.state !== "expanded") {
+        return false;
+      }
+
+      const widthTransition = getSidebarWidthTransition(element);
+      const targetSidebarWidth = widthTransition
+        ? getTransitionEndWidth(widthTransition)
+        : null;
+
+      if (!widthTransition || targetSidebarWidth === null) {
+        return false;
+      }
+
+      const firstPositions = getItemPositions(element);
+
+      if (!isSingleRow(firstPositions) || firstPositions.size === 0) {
+        return true;
+      }
+
+      const gridWidth = element.getBoundingClientRect().width;
+      const sidebarWidth = sidebarGap.getBoundingClientRect().width;
+      const targetGridWidth =
+        gridWidth + sidebarWidth - targetSidebarWidth;
+      const targetTemplateColumns = getGridTemplateAtWidth(
+        element,
+        targetGridWidth,
+      );
+      const targetColumnCount = getColumnCount(targetTemplateColumns);
+
+      if (
+        targetColumnCount < firstPositions.size ||
+        targetColumnCount === columnCountRef.current
+      ) {
+        return true;
+      }
+
+      originalGridTemplateColumns ??= element.style.gridTemplateColumns;
+      element.style.gridTemplateColumns = targetTemplateColumns;
+      animateReflow(
+        element,
+        firstPositions,
+        activeAnimations,
+        getReflowTiming(widthTransition),
+      );
+      lockedTransition = widthTransition;
+      columnCountRef.current = targetColumnCount;
+      itemPositionsRef.current = getItemPositions(element);
+
+      void widthTransition.finished.then(
+        () => {
+          if (!disposed && lockedTransition === widthTransition) {
+            releaseGridTemplate();
+          }
+        },
+        () => {
+          requestAnimationFrame(() => {
+            if (
+              !disposed &&
+              lockedTransition === widthTransition &&
+              !getSidebarWidthTransition(element)
+            ) {
+              releaseGridTemplate();
+              cancelAnimations(activeAnimations);
+            }
+          });
+        },
+      );
+      return true;
+    };
+
+    const handleSidebarStateChange = () => {
+      const sidebar = sidebarWrapper?.querySelector<HTMLElement>(
+        '[data-slot="sidebar"][data-state]',
+      );
+
+      if (sidebar?.dataset.state !== "expanded") {
+        if (pendingFrame !== null) {
+          cancelAnimationFrame(pendingFrame);
+          pendingFrame = null;
+        }
+        releaseGridTemplate(true);
+        return;
+      }
+
+      if (prepareExpandedGrid() || pendingFrame !== null) {
+        return;
+      }
+
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null;
+        prepareExpandedGrid();
+      });
+    };
 
     const syncColumnCount = () => {
       const nextColumnCount = getGridColumnCount(element);
@@ -182,13 +381,15 @@ export function useGalleryGridPageSize({
       }
 
       if (columnCountRef.current !== nextColumnCount) {
-        pendingReflowRef.current = {
-          targetColumnCount: nextColumnCount,
-          firstPositions: itemPositionsRef.current,
-        };
+        animateReflow(
+          element,
+          itemPositionsRef.current,
+          activeAnimations,
+        );
         columnCountRef.current = nextColumnCount;
+        itemPositionsRef.current = getItemPositions(element);
         setColumnCount(nextColumnCount);
-      } else if (!pendingReflowRef.current) {
+      } else {
         itemPositionsRef.current = getItemPositions(element);
       }
     };
@@ -196,12 +397,28 @@ export function useGalleryGridPageSize({
     syncColumnCount();
 
     const resizeObserver = new ResizeObserver(syncColumnCount);
+    const sidebarObserver = sidebarWrapper
+      ? new MutationObserver(handleSidebarStateChange)
+      : null;
 
     resizeObserver.observe(element);
+    if (sidebarWrapper) {
+      sidebarObserver?.observe(sidebarWrapper, {
+        attributeFilter: ["data-state"],
+        subtree: true,
+      });
+    }
 
     return () => {
+      disposed = true;
       resizeObserver.disconnect();
-      pendingReflowRef.current = null;
+      sidebarObserver?.disconnect();
+      if (pendingFrame !== null) {
+        cancelAnimationFrame(pendingFrame);
+      }
+      if (originalGridTemplateColumns !== null) {
+        element.style.gridTemplateColumns = originalGridTemplateColumns;
+      }
       cancelAnimations(activeAnimations);
     };
   }, []);

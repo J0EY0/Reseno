@@ -26,6 +26,8 @@ import type { AgentChatAttachment } from "@/types/api";
 import { ArrowUp, Download, Plus } from "lucide-react";
 import { useEffect } from "react";
 
+import type { AgentRequestPhase } from "./agent-conversation-runtime";
+
 function toAttachmentData(
   file: AgentChatAttachment,
   index: number,
@@ -294,19 +296,19 @@ export function AgentPromptSubmitButton({
   attachmentUploadProgress,
   hasConfiguredModel,
   hasReferencedAttachments,
-  isResponding,
   isSessionReady,
   isSubmittingPrompt,
   onStop,
+  requestPhase,
   t,
 }: {
   attachmentUploadProgress: number | null;
   hasConfiguredModel: boolean;
   hasReferencedAttachments: boolean;
-  isResponding: boolean;
   isSessionReady: boolean;
   isSubmittingPrompt: boolean;
   onStop: () => void;
+  requestPhase: AgentRequestPhase;
   t: AppMessages;
 }) {
   const controller = usePromptInputController();
@@ -315,8 +317,9 @@ export function AgentPromptSubmitButton({
     controller.textInput.value.trim().length > 0 ||
     attachments.files.length > 0 ||
     hasReferencedAttachments;
+  const isRequestBusy = requestPhase !== "idle";
   const isDisabled =
-    !isResponding &&
+    !isRequestBusy &&
     !isSubmittingPrompt &&
     (!hasConfiguredModel || !isSessionReady || !hasPromptContent);
 
@@ -328,14 +331,14 @@ export function AgentPromptSubmitButton({
               "{progress}",
               String(attachmentUploadProgress),
             )
-          : isResponding
+          : isRequestBusy
             ? t.agentStopResponse
             : t.agentSendPrompt
       }
       status={
-        isSubmittingPrompt
+        isSubmittingPrompt || requestPhase === "preparing"
           ? "submitted"
-          : isResponding
+          : requestPhase === "responding"
             ? "streaming"
             : "ready"
       }
@@ -350,12 +353,12 @@ export function AgentPromptSubmitButton({
         >
           {attachmentUploadProgress}%
         </span>
-      ) : isResponding ? (
+      ) : requestPhase === "responding" ? (
         <span
           aria-hidden="true"
           className="size-2.5 rounded-[3px] bg-current"
         />
-      ) : isSubmittingPrompt ? null : (
+      ) : isSubmittingPrompt || requestPhase === "preparing" ? null : (
         <ArrowUp aria-hidden="true" className="size-4" />
       )}
     </PromptInputSubmit>

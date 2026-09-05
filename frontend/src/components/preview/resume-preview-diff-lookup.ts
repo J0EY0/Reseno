@@ -18,6 +18,11 @@ export function createResumeDiffLookup(
   diffs: ResumeDraftDiff[],
 ): ResumeDiffLookup {
   const basicDiffByField = new Map<string, ResumeDraftDiff>();
+  const deletedItemDiffsBySectionId = new Map<
+    string,
+    ResumeDraftDiff[]
+  >();
+  const deletedSectionDiffs: ResumeDraftDiff[] = [];
   const itemDiffById = new Map<string, ItemDiffLookup>();
   const sectionDiffById = new Map<string, SectionDiffLookup>();
 
@@ -30,6 +35,10 @@ export function createResumeDiffLookup(
 
     if (diff.itemId) {
       if (diff.kind === "deleted") {
+        const deletedItems =
+          deletedItemDiffsBySectionId.get(diff.sectionId ?? "") ?? [];
+        deletedItems.push(diff);
+        deletedItemDiffsBySectionId.set(diff.sectionId ?? "", deletedItems);
         continue;
       }
       const itemLookup = itemDiffById.get(diff.itemId) ?? {
@@ -46,6 +55,10 @@ export function createResumeDiffLookup(
     }
 
     if (diff.sectionId) {
+      if (diff.kind === "deleted") {
+        deletedSectionDiffs.push(diff);
+        continue;
+      }
       const sectionLookup = sectionDiffById.get(diff.sectionId) ?? {};
       if (
         diff.kind === "modified" &&
@@ -61,6 +74,8 @@ export function createResumeDiffLookup(
 
   return {
     basicDiffByField,
+    deletedItemDiffsBySectionId,
+    deletedSectionDiffs,
     itemDiffById,
     sectionDiffById,
   };

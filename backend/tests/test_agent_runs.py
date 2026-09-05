@@ -24,6 +24,7 @@ from app.schemas.agent import (
 )
 from app.services import agent_runs, agent_sessions, resumes
 from app.services.agent.draft import DraftTransaction
+from app.services.agent.draft.review import build_draft_review_items
 from app.services.agent.runtime import streaming
 from app.services.agent.runtime.context import (
     AgentConversationState,
@@ -36,7 +37,11 @@ from app.services.agent.runtime.loop import (
     AgentTurnResult,
 )
 from app.services.agent_runs import AgentRunConflictError, AgentRunManager
-from app.services.llm import AgentLlmConfig, LlmTimeoutError
+from app.services.llm import (
+    AgentLlmConfig,
+    LlmThinkingModeUnsupportedError,
+    LlmTimeoutError,
+)
 
 
 class _FakeConnection:
@@ -50,7 +55,7 @@ def _bypass_turn_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         agent_runs,
         "_prepare_run_request",
-        _accepted_turn,
+        lambda request, run_id: (_accepted_turn(request, run_id), None),
     )
 
 
@@ -64,6 +69,7 @@ def _accepted_turn(
         session_id=None,
         turn_id=request.message.id,
         revision=None,
+        model_snapshot=None,
         conversation_state=AgentConversationState(),
     )
 
@@ -161,9 +167,16 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
             "resume": request_resume,
             "draft_state": AgentDraftState(
                 id="draft-run-pending-base",
-                status="pending",
                 sourceMessageId="assistant-pending-draft-base",
                 resume=pending_draft_resume,
+                pendingCount=1,
+                reviewItems=[
+                    {
+                        "id": "agent-review-pending-base",
+                        "editIds": ["edit-pending-base"],
+                        "status": "pending",
+                    },
+                ],
             ),
             "messages": [
                 AgentConversationItem(
@@ -173,7 +186,13 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
                     response={
                         "draft": {
                             "baseResume": request_resume,
-                            "status": "pending",
+                            "reviewItems": [
+                                {
+                                    "id": "agent-review-pending-base",
+                                    "editIds": ["edit-pending-base"],
+                                    "status": "pending",
+                                },
+                            ],
                         },
                     },
                 ),
@@ -187,6 +206,147 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
     )
 
     assert run.response().base_resume == request_resume
+
+
+def test_model_config_is_frozen_for_one_run_and_refreshed_for_the_next(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+    first_config = AgentLlmConfig(
+        client_id="model-config-first",
+        name="First model",
+        provider="openai",
+        model="first-model",
+        base_url="https://first.example.test/v1",
+        api_key="sk-first-secret",
+        temperature=0.2,
+        top_p=0.9,
+        max_tokens=1_024,
+        timeout_seconds=30,
+        context_window_tokens=32_000,
+    )
+    second_config = AgentLlmConfig(
+        client_id="model-config-second",
+        name="Second model",
+        provider="anthropic",
+        model="second-model",
+        base_url="https://second.example.test/v1",
+        api_key="sk-second-secret",
+        temperature=None,
+        top_p=None,
+        max_tokens=2_048,
+        timeout_seconds=60,
+        context_window_tokens=128_000,
+    )
+    selected_config = first_config
+    resolved_configs: list[AgentLlmConfig] = []
+    executed_configs: list[AgentLlmConfig | None] = []
+
+    def resolve_config(*_args: object, **_kwargs: object) -> AgentLlmConfig:
+        resolved_configs.append(selected_config)
+        return selected_config
+
+    async def fake_stream(
+        request: AgentChatRequest,
+        resolved_config: AgentLlmConfig | None,
+        runtime: AgentRuntimeContext,
+    ) -> AsyncIterator[streaming.AgentRuntimeEvent]:
+        del runtime
+        executed_configs.append(resolved_config)
+        yield streaming.AgentCompleted(
+            message=AgentChatMessage(
+                id=f"assistant-{request.message.id}",
+                role="assistant",
+                text="Done",
+            ),
+            persist=False,
+        )
+
+    monkeypatch.setattr(agent_runs, "resolve_agent_llm_config", resolve_config)
+    monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
+
+    async def scenario() -> tuple[agent_runs.AgentRun, agent_runs.AgentRun]:
+        nonlocal selected_config
+        manager = AgentRunManager()
+        first_run = await manager.start(
+            AgentChatRequest(
+                message=AgentConversationItem(
+                    id="turn-first-model",
+                    role="user",
+                    text="Use the first model.",
+                ),
+            ),
+        )
+        selected_config = second_config
+        assert first_run.task is not None
+        await asyncio.wait_for(first_run.task, timeout=1)
+
+        second_run = await manager.start(
+            AgentChatRequest(
+                message=AgentConversationItem(
+                    id="turn-second-model",
+                    role="user",
+                    text="Use the second model.",
+                ),
+            ),
+        )
+        assert second_run.task is not None
+        await asyncio.wait_for(second_run.task, timeout=1)
+        return first_run, second_run
+
+    first_run, second_run = asyncio.run(scenario())
+
+    assert resolved_configs == [first_config, second_config]
+    assert executed_configs == [first_config, second_config]
+    assert first_run.turn.model_snapshot is not None
+    assert first_run.turn.model_snapshot.model == first_config.model
+    assert second_run.turn.model_snapshot is not None
+    assert second_run.turn.model_snapshot.model == second_config.model
+    assert not hasattr(first_run, "resolved_config")
+    assert not hasattr(first_run.turn, "resolved_config")
+
+
+def test_model_resolution_failure_leaves_no_turn_or_run_reservation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+    resume_id = "resumemodelresolutionretry"
+    request = AgentChatRequest(
+        resumeId=resume_id,
+        expectedRevision=_current_session_revision(resume_id),
+        message=AgentConversationItem(
+            id="turn-model-resolution-retry",
+            role="user",
+            text="Retry this turn after fixing the model configuration.",
+        ),
+        resume={"basic": {}, "sections": []},
+    )
+
+    def fail_resolution(*_args: object, **_kwargs: object) -> AgentLlmConfig:
+        raise LlmThinkingModeUnsupportedError(
+            "Thinking Off is unavailable for this model configuration.",
+        )
+
+    monkeypatch.setattr(agent_runs, "resolve_agent_llm_config", fail_resolution)
+
+    async def scenario() -> None:
+        manager = AgentRunManager()
+        with pytest.raises(LlmThinkingModeUnsupportedError):
+            await manager.start(request)
+
+        assert await manager.active_for_resume(resume_id) is None
+        assert manager._runs == {}
+        assert manager._active_by_resume == {}
+        assert manager._reserved_run_ids == set()
+
+    asyncio.run(scenario())
+
+    with closing(connect()) as conn:
+        session = agent_sessions.load_agent_session(conn, resume_id)
+    assert session.messages == []
+    assert session.executions == []
 
 
 def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
@@ -241,7 +401,13 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
                                     },
                                     "sections": [],
                                 },
-                                "status": "pending",
+                                "reviewItems": [
+                                    {
+                                        "id": "agent-review-edit-prior-summary",
+                                        "editIds": ["edit-prior-summary"],
+                                        "status": "pending",
+                                    },
+                                ],
                             },
                             "edits": [prior_edit],
                             "transactionState": "committed",
@@ -250,7 +416,6 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
                 ],
                 "draft_state": AgentDraftState(
                     id="draft-prior-stream",
-                    status="pending",
                     sourceMessageId="assistant-prior-stream-draft",
                     resume={
                         "basic": {
@@ -259,7 +424,14 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
                         },
                         "sections": [],
                     },
-                    editCount=1,
+                    pendingCount=1,
+                    reviewItems=[
+                        {
+                            "id": "agent-review-edit-prior-summary",
+                            "editIds": ["edit-prior-summary"],
+                            "status": "pending",
+                        },
+                    ],
                     edits=[stale_client_edit],
                 ),
             },
@@ -272,12 +444,14 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
             transactionState="committed",
         )
         transaction = DraftTransaction.from_request(request)
+        committed_edits = list(transaction.accumulate(next_message.edits))
         next_message = next_message.model_copy(
             update={
                 "draft": AgentCommittedDraft(
                     baseResume=transaction.base_resume,
+                    reviewItems=build_draft_review_items(committed_edits),
                 ),
-                "edits": list(transaction.accumulate(next_message.edits)),
+                "edits": committed_edits,
             },
         )
 
@@ -296,15 +470,11 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
                 ),
             )
 
-        monkeypatch.setattr(
-            streaming,
-            "resolve_agent_llm_config",
-            lambda conn, config: SimpleNamespace(
-                provider="custom",
-                provider_kind="custom",
-                api_family="openai_compatible_chat",
-                base_url="https://custom.example.test/v1",
-            ),
+        config = SimpleNamespace(
+            provider="custom",
+            provider_kind="custom",
+            api_family="openai_compatible_chat",
+            base_url="https://custom.example.test/v1",
         )
         monkeypatch.setattr(
             streaming,
@@ -316,7 +486,7 @@ def test_follow_up_stream_projects_the_draft_transaction_result_unchanged(
             event
             async for event in streaming.async_iter_agent_events(
                 request,
-                _FakeConnection(),
+                config,
             )
         ]
         frames = [streaming.serialize_agent_event(event) for event in events]
@@ -736,10 +906,10 @@ def test_turn_preparation_does_not_block_the_event_loop(
         def blocking_prepare(
             request: AgentChatRequest,
             run_id: str,
-        ) -> agent_sessions.AcceptedAgentTurn:
+        ) -> tuple[agent_sessions.AcceptedAgentTurn, None]:
             preparation_started.set()
             assert release_preparation.wait(timeout=1)
-            return _accepted_turn(request, run_id)
+            return _accepted_turn(request, run_id), None
 
         async def fake_stream(
             request: AgentChatRequest,
@@ -1000,7 +1170,30 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
             id="assistant-stop-after-message-done",
             role="assistant",
             text="The draft is ready.",
-            draft=AgentCommittedDraft(baseResume=request.resume),
+            edits=[
+                {
+                    "id": "edit-stop-after-message-done",
+                    "title": "Update summary",
+                    "target": "basic.summary",
+                    "reason": "Exercise persisted message completion.",
+                    "operation": {
+                        "type": "replace_field",
+                        "path": "basic.summary",
+                        "value": "Updated summary",
+                    },
+                    "status": "executed",
+                }
+            ],
+            draft=AgentCommittedDraft(
+                baseResume=request.resume,
+                reviewItems=[
+                    {
+                        "id": "agent-review-stop-after-message-done",
+                        "editIds": ["edit-stop-after-message-done"],
+                        "status": "pending",
+                    },
+                ],
+            ),
             transactionState="committed",
         )
         yield _runtime_event(
@@ -1050,7 +1243,13 @@ def test_stop_after_persisted_message_done_preserves_successful_terminal_state(
     assert assistant["id"] == "assistant-stop-after-message-done"
     assert assistant["response"]["draft"] == {
         "baseResume": {"basic": {"summary": "Original"}, "sections": []},
-        "status": "pending",
+        "reviewItems": [
+            {
+                "id": "agent-review-stop-after-message-done",
+                "editIds": ["edit-stop-after-message-done"],
+                "status": "pending",
+            },
+        ],
     }
     execution = session["executions"][-1]
     assert execution["runId"] == run_id
@@ -1104,11 +1303,6 @@ def test_user_message_is_persisted_before_cancelled_provider_work(
 
         monkeypatch.setattr(
             streaming,
-            "resolve_agent_llm_config",
-            lambda conn, model_config: config,
-        )
-        monkeypatch.setattr(
-            streaming,
             "async_iter_agent_tool_call_loop",
             blocked_loop,
         )
@@ -1117,12 +1311,13 @@ def test_user_message_is_persisted_before_cancelled_provider_work(
             conn,
             request,
             run_id="agent-run-user-before-cancel",
+            resolved_config=config,
         )
 
         async def consume() -> None:
             async for _event in streaming.async_iter_agent_events(
                 turn.request,
-                conn,
+                config,
             ):
                 pass
 
@@ -1528,6 +1723,7 @@ def test_successful_terminal_commit_persists_rollover_for_the_next_turn(
                 ),
             ),
             run_id="run-before-rollover",
+            resolved_config=None,
         )
         agent_sessions.persist_agent_terminal_outcome(
             conn,
@@ -1605,6 +1801,7 @@ def test_successful_terminal_commit_persists_rollover_for_the_next_turn(
                 ),
             ),
             run_id="run-after-rollover",
+            resolved_config=None,
         )
 
     assert [message.id for message in session.messages] == [
@@ -1804,6 +2001,7 @@ def test_terminal_persistence_retry_keeps_the_original_success_outcome(
                 ),
             ),
             run_id=unaffected_run_id,
+            resolved_config=None,
         )
 
     real_finish = agent_sessions.persist_agent_terminal_outcome
@@ -2042,7 +2240,7 @@ def test_provider_timeout_error_code_is_consistent_across_run_and_reload(
         raise LlmTimeoutError(timeout_detail)
 
     monkeypatch.setattr(
-        streaming,
+        agent_runs,
         "resolve_agent_llm_config",
         lambda conn, model_config: config,
     )
@@ -2104,6 +2302,12 @@ def test_provider_timeout_error_code_is_consistent_across_run_and_reload(
     assert execution.run_id == run_id
     assert execution.status == "failed"
     assert execution.error_code == "AGENT_PROVIDER_TIMEOUT"
+    assert execution.model_snapshot is not None
+    assert execution.model_snapshot.model_dump(mode="json", by_alias=True) == {
+        "configId": config.client_id,
+        "provider": config.provider,
+        "model": config.model,
+    }
 
     reloaded = client.get(f"/api/agent/resumes/{resume_id}/session")
     assert reloaded.status_code == 200
@@ -2156,7 +2360,7 @@ def test_model_turn_limit_is_failed_and_persisted_as_internal_error(
         )
 
     monkeypatch.setattr(
-        streaming,
+        agent_runs,
         "resolve_agent_llm_config",
         lambda conn, model_config: config,
     )
@@ -2255,6 +2459,7 @@ def test_provider_401_execution_state_is_persisted(
             "turnId": "agent-user-provider-401",
             "status": "failed",
             "errorCode": "AGENT_PROVIDER_AUTH_ERROR",
+            "modelSnapshot": None,
             "startedAt": payload["executions"][0]["startedAt"],
             "completedAt": payload["executions"][0]["completedAt"],
         },
@@ -2387,6 +2592,7 @@ def test_interrupted_running_execution_becomes_retryable(
             conn,
             request,
             run_id="run-interrupted-state",
+            resolved_config=None,
         )
         assert agent_sessions.fail_interrupted_agent_turn_executions(conn) == 1
         assert agent_sessions.fail_interrupted_agent_turn_executions(conn) == 0
@@ -2436,6 +2642,7 @@ def test_same_millisecond_retry_is_latest_execution(
                 ).revision,
             ),
             run_id="run-z-first",
+            resolved_config=None,
         )
         agent_sessions.persist_agent_terminal_outcome(
             conn,
@@ -2456,6 +2663,7 @@ def test_same_millisecond_retry_is_latest_execution(
                 ).revision,
             ),
             run_id="run-a-retry",
+            resolved_config=None,
         )
         session = agent_sessions.load_agent_session(
             conn,

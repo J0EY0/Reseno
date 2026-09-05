@@ -1,6 +1,8 @@
 import { Fragment, type ReactNode } from "react";
 
 import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
+import { ResumeDeletedDiffAnchor } from "@/components/preview/resume-preview-deleted-anchor";
+import { interleaveDeletedDiffs } from "@/components/preview/resume-preview-deleted-placement";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import {
   getCanonicalItemFieldDiffs,
@@ -39,6 +41,7 @@ type RenderableItemTextPart = NonNullable<
 >[number];
 
 interface SectionItemsProps {
+  deletedItemDiffs?: ResumeDraftDiff[];
   itemDiffById?: Map<string, ItemDiffLookup>;
   items: RenderableSectionItem[];
   settings: ResumeTemplateSettings;
@@ -284,6 +287,7 @@ function TimelineItem({
       data-resume-item-id={item.id}
       data-resume-diff-kind={markerDiff?.kind}
       data-resume-diff-label={getDiffLabel(markerDiff, t)}
+      data-resume-diff-path={structuralDiff?.path}
     >
       <ResumeDiffBadge diff={markerDiff} t={t} />
       {heading}
@@ -296,7 +300,7 @@ function TimelineItem({
           )}
           style={{ fontSize: `${settings.metaScale}em` }}
         >
-          {enableContactLinks && urlHref ? (
+          {enableContactLinks && urlHref && urlDiffs.length === 0 ? (
             <a
               href={urlHref}
               className="text-inherit no-underline hover:underline"
@@ -349,6 +353,7 @@ function TimelineItem({
 }
 
 function TimelineItems({
+  deletedItemDiffs,
   enableContactLinks,
   itemDiffById,
   items,
@@ -361,6 +366,8 @@ function TimelineItems({
   kind: SectionKind;
   layout: ResumeTimelineItemLayout;
 }) {
+  const deleted = interleaveDeletedDiffs(items, deletedItemDiffs ?? []);
+
   return (
     <div
       className="relative grid"
@@ -368,16 +375,26 @@ function TimelineItems({
       style={{ gap: `${settings.itemGap}em` }}
     >
       {items.map((item) => (
-        <TimelineItem
-          key={item.id}
-          item={item}
-          enableContactLinks={enableContactLinks}
-          kind={kind}
-          t={t}
-          settings={settings}
-          diff={itemDiffById?.get(item.id)}
-          layout={layout}
-        />
+        <Fragment key={item.id}>
+          {(deleted.beforeById.get(item.id) ?? []).map((diff) => (
+            <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
+          ))}
+          <TimelineItem
+            item={item}
+            enableContactLinks={enableContactLinks}
+            kind={kind}
+            t={t}
+            settings={settings}
+            diff={itemDiffById?.get(item.id)}
+            layout={layout}
+          />
+          {(deleted.afterById.get(item.id) ?? []).map((diff) => (
+            <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
+          ))}
+        </Fragment>
+      ))}
+      {deleted.unplaced.map((diff) => (
+        <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
       ))}
     </div>
   );
@@ -417,6 +434,7 @@ function SimpleListContent({
         data-resume-item-id={item.id}
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
+        data-resume-diff-path={structuralDiff?.path}
         data-resume-list-layout={layout}
         style={{ color: settings.bodyColor }}
       >
@@ -428,6 +446,7 @@ function SimpleListContent({
 }
 
 export function SectionItems({
+  deletedItemDiffs,
   enableContactLinks,
   itemDiffById,
   items,
@@ -437,6 +456,7 @@ export function SectionItems({
   t,
 }: {
   enableContactLinks: boolean;
+  deletedItemDiffs?: ResumeDraftDiff[];
   itemDiffById?: Map<string, ItemDiffLookup>;
   items?: RenderableSectionItem[];
   layout: ResumeTemplateLayout;
@@ -472,6 +492,7 @@ export function SectionItems({
       settings={settings}
       itemDiffById={itemDiffById}
       layout={layout.timelineItemLayout}
+      deletedItemDiffs={deletedItemDiffs}
     />
   );
 }

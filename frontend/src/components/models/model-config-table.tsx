@@ -29,17 +29,17 @@ import type { ModelConfig } from '@/types/resume'
 
 function ModelConfigRowActions({
   config,
-  deletingModelId,
+  deletingModelConfigId,
   disabled,
   t,
   onDelete,
   onEdit,
 }: {
   config: ModelConfig
-  deletingModelId: string | null
+  deletingModelConfigId: string | null
   disabled: boolean
   t: AppMessages
-  onDelete: (modelId: string) => void
+  onDelete: (modelConfigId: string) => void
   onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -58,7 +58,7 @@ function ModelConfigRowActions({
             aria-label={t.actions}
             title={t.actions}
           >
-            {deletingModelId === config.id ? (
+            {deletingModelConfigId === config.id ? (
               <Spinner aria-label={t.deleteModelConfig} />
             ) : (
               <EllipsisVertical />
@@ -94,8 +94,8 @@ export function ModelConfigTable({
   configs,
   rowSelection,
   onRowSelectionChange,
-  deletingModelId,
-  enteringModelId,
+  deletingModelConfigId,
+  enteringModelConfigId,
   disabled,
   onDelete,
   onEdit,
@@ -105,10 +105,10 @@ export function ModelConfigTable({
   configs: ModelConfig[]
   rowSelection: RowSelectionState
   onRowSelectionChange: OnChangeFn<RowSelectionState>
-  deletingModelId: string | null
-  enteringModelId: string | null
+  deletingModelConfigId: string | null
+  enteringModelConfigId: string | null
   disabled: boolean
-  onDelete: (modelId: string) => void
+  onDelete: (modelConfigId: string) => void
   onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void
 }) {
   const contextWindowFormatter = useMemo(
@@ -235,7 +235,7 @@ export function ModelConfigTable({
         cell: ({ row }) => (
           <ModelConfigRowActions
             config={row.original}
-            deletingModelId={deletingModelId}
+            deletingModelConfigId={deletingModelConfigId}
             disabled={disabled}
             t={t}
             onDelete={onDelete}
@@ -244,7 +244,7 @@ export function ModelConfigTable({
         ),
       },
     ],
-    [contextWindowFormatter, deletingModelId, disabled, onDelete, onEdit, t],
+    [contextWindowFormatter, deletingModelConfigId, disabled, onDelete, onEdit, t],
   )
 
   return (
@@ -255,7 +255,7 @@ export function ModelConfigTable({
       tableClassName="min-w-[760px]"
       getRowId={(config) => config.id}
       getRowClassName={(config) =>
-        config.id === enteringModelId
+        config.id === enteringModelConfigId
           ? 'animate-in fade-in duration-200 motion-reduce:animate-none'
           : undefined
       }

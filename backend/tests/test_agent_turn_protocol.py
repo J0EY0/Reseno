@@ -25,6 +25,7 @@ from app.schemas.agent import (
 from app.services import agent_sessions
 from app.services.agent.attachments import AgentAttachmentError
 from app.services.agent.draft import DraftTransaction
+from app.services.agent.draft.review import build_draft_review_items
 from app.services.agent_runs import AgentRunCapacityError, AgentRunConflictError
 from app.services.agent_sessions import (
     AcceptedAgentTurn,
@@ -37,6 +38,7 @@ from app.services.agent_sessions import (
     replace_agent_session_messages,
     update_agent_draft_decision,
 )
+from app.services.llm import LlmThinkingModeUnsupportedError
 from app.services.resumes import save_resume
 
 _run_sequence = count(1)
@@ -65,6 +67,7 @@ def _accept_turn(
         conn,
         request,
         run_id=run_id or f"run-{request.message.id}-{next(_run_sequence)}",
+        resolved_config=None,
     )
 
 
@@ -77,12 +80,14 @@ def _persist_successful_turn(
 
     if message.transaction_state == "committed" and message.edits:
         transaction = DraftTransaction.from_request(turn.request)
+        committed_edits = list(transaction.accumulate(message.edits))
         message = message.model_copy(
             update={
                 "draft": AgentCommittedDraft(
                     baseResume=transaction.base_resume,
+                    reviewItems=build_draft_review_items(committed_edits),
                 ),
-                "edits": list(transaction.accumulate(message.edits)),
+                "edits": committed_edits,
             },
         )
     persist_agent_terminal_outcome(
@@ -168,6 +173,10 @@ def _persist_committed_draft(
         ),
     )
     return prepared
+
+
+def _committed_review_item_id(message_id: str) -> str:
+    return f"agent-review-edit-{message_id}"
 
 
 def _resume_save_payload(*, headline: str) -> dict:
@@ -539,7 +548,13 @@ def test_committed_draft_survives_session_reload_with_its_base(
     response_payload = response.model_dump(mode="json", by_alias=True)
     assert response_payload["draft"] == {
         "baseResume": base_resume,
-        "status": "pending",
+        "reviewItems": [
+            {
+                "id": "agent-review-edit-headline",
+                "editIds": ["edit-headline"],
+                "status": "pending",
+            },
+        ],
     }
 
 
@@ -563,7 +578,7 @@ def test_new_committed_draft_discards_previous_pending_draft(
         session = load_agent_session(conn, resume_id)
 
     draft_statuses = {
-        message.id: message.response.draft.status
+        message.id: message.response.draft.review_items[0].status
         for message in session.messages
         if message.response is not None and message.response.draft is not None
     }
@@ -681,10 +696,21 @@ def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
                 "resume": request_resume,
                 "draft_state": AgentDraftState(
                     id="draft-initial-headline",
-                    status="pending",
                     sourceMessageId="assistant-initial-draft",
                     resume=pending_draft_resume,
-                    editCount=2,
+                    pendingCount=2,
+                    reviewItems=[
+                        {
+                            "id": "agent-review-edit-initial-headline",
+                            "editIds": ["edit-initial-headline"],
+                            "status": "pending",
+                        },
+                        {
+                            "id": "agent-review-edit-initial-summary",
+                            "editIds": ["edit-initial-summary"],
+                            "status": "pending",
+                        },
+                    ],
                     edits=[first_edit, first_summary_edit],
                 ),
             },
@@ -717,7 +743,7 @@ def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
     assert response.edits[-1].diffs[0]["before"] == "Staff Engineer"
     assert response.edits[-1].diffs[0]["after"] == "Principal Engineer"
     draft_statuses = {
-        message.id: message.response.draft.status
+        message.id: message.response.draft.review_items[0].status
         for message in session.messages
         if message.response is not None and message.response.draft is not None
     }
@@ -804,13 +830,12 @@ def test_committed_draft_persists_every_field_diff_for_one_edit(
     ]
 
 
-@pytest.mark.parametrize("decision", ["applied", "discarded"])
 def test_agent_draft_decision_updates_only_the_target_response(
     client: object,
-    decision: str,
 ) -> None:
     del client
-    resume_id = _resume_id(f"resume-durable-decision-{decision}")
+    decision = "discarded"
+    resume_id = _resume_id("resume-durable-decision-discarded")
     base_resume = {
         "schemaVersion": 2,
         "basic": {"name": "Before", "headline": "Engineer"},
@@ -860,29 +885,22 @@ def test_agent_draft_decision_updates_only_the_target_response(
             conn,
             resume_id,
             message_id=f"assistant-{decision}",
+            review_item_ids=["agent-review-edit-headline"],
             status=decision,
             revision=before.revision,
         )
-        repeated = update_agent_draft_decision(
-            conn,
-            resume_id,
-            message_id=f"assistant-{decision}",
-            status=decision,
-            revision=updated.revision,
-        )
-        opposite = "discarded" if decision == "applied" else "applied"
         with pytest.raises(agent_sessions.AgentDraftDecisionConflictError) as exc_info:
             update_agent_draft_decision(
                 conn,
                 resume_id,
                 message_id=f"assistant-{decision}",
-                status=opposite,
+                review_item_ids=["agent-review-edit-headline"],
+                status=decision,
                 revision=updated.revision,
             )
 
     response = updated.messages[-1].response
     assert updated.revision != before.revision
-    assert repeated.revision == updated.revision
     assert exc_info.value.current_revision == updated.revision
     assert exc_info.value.current_status == decision
     assert [message.id for message in updated.messages] == [
@@ -896,7 +914,7 @@ def test_agent_draft_decision_updates_only_the_target_response(
         (f"run-{decision}", "succeeded"),
     ]
     assert response is not None and response.draft is not None
-    assert response.draft.status == decision
+    assert response.draft.review_items[0].status == decision
     assert response.draft.base_resume == base_resume
 
 
@@ -945,6 +963,9 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
             conn,
             resume_id,
             message_id=assistant_id,
+            review_item_ids=[
+                "agent-review-edit-checkpoint-draft-decision",
+            ],
             status="discarded",
             revision=pending.revision,
         )
@@ -1070,6 +1091,9 @@ def test_agent_draft_decision_rejects_an_active_run(
                 conn,
                 resume_id,
                 message_id="assistant-draft-active-run",
+                review_item_ids=[
+                    _committed_review_item_id("assistant-draft-active-run"),
+                ],
                 status="discarded",
                 revision=active_session.revision,
             )
@@ -1083,7 +1107,7 @@ def test_agent_draft_decision_rejects_an_active_run(
     )
     assert unchanged.revision == active_session.revision
     assert response is not None and response.draft is not None
-    assert response.draft.status == "pending"
+    assert response.draft.review_items[0].status == "pending"
 
 
 def test_agent_draft_decision_route_returns_the_updated_session(
@@ -1130,12 +1154,16 @@ def test_agent_draft_decision_route_returns_the_updated_session(
         AgentDraftDecisionRequest(
             revision=revision,
             status="discarded",
+            reviewItemIds=["agent-review-edit-decision-route"],
         ),
     )
 
     assert response.data.session.messages[-1].response is not None
     assert response.data.session.messages[-1].response.draft is not None
-    assert response.data.session.messages[-1].response.draft.status == "discarded"
+    assert (
+        response.data.session.messages[-1].response.draft.review_items[0].status
+        == "discarded"
+    )
     assert response.data.session.revision != revision
     assert response.data.resume is None
 
@@ -1163,6 +1191,7 @@ def test_agent_draft_apply_persists_resume_and_decision_together(
         json={
             "revision": revision,
             "status": "applied",
+            "reviewItemIds": [_committed_review_item_id(message_id)],
             "resume": candidate_resume,
             "expectedVersionId": original_detail["versionId"],
         },
@@ -1171,8 +1200,8 @@ def test_agent_draft_apply_persists_resume_and_decision_together(
     assert response.status_code == 200
     assert (
         response.json()["data"]["session"]["messages"][-1]["response"]["draft"][
-            "status"
-        ]
+            "reviewItems"
+        ][0]["status"]
         == "applied"
     )
     assert (
@@ -1183,6 +1212,234 @@ def test_agent_draft_apply_persists_resume_and_decision_together(
     assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
         "Staff Engineer"
     )
+
+
+def test_agent_draft_decisions_reduce_pending_items_and_apply_all_remaining(
+    client: TestClient,
+) -> None:
+    resume_id = _resume_id("resume-partial-draft-decisions")
+    message_id = "assistant-partial-draft-decisions"
+    original_payload = _resume_save_payload(headline="Engineer")
+    candidate_resume = _resume_save_payload(headline="Staff Engineer")["resume"]
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(resume_id, original_payload)
+    with closing(connect()) as conn:
+        prepared = _accept_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-partial-draft-decisions",
+                text="Prepare five independent changes.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ).model_copy(update={"resume": original_payload["resume"]}),
+        )
+        _persist_successful_turn(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id=message_id,
+                role="assistant",
+                text="Five changes are ready.",
+                edits=[
+                    {
+                        "id": f"edit-partial-{index}",
+                        "title": f"Change {index}",
+                        "target": f"independent.target.{index}",
+                        "reason": "Review independently.",
+                    }
+                    for index in range(5)
+                ],
+                transactionState="committed",
+            ),
+        )
+        pending_session = load_agent_session(conn, resume_id)
+
+    first_item_id = "agent-review-edit-partial-0"
+    discard_response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": pending_session.revision,
+            "status": "discarded",
+            "reviewItemIds": [first_item_id],
+        },
+    )
+
+    assert discard_response.status_code == 200
+    discarded_payload = discard_response.json()["data"]
+    review_items = discarded_payload["session"]["messages"][-1]["response"]["draft"][
+        "reviewItems"
+    ]
+    assert sum(item["status"] == "pending" for item in review_items) == 4
+    assert review_items[0]["status"] == "discarded"
+
+    remaining_ids = [item["id"] for item in review_items if item["status"] == "pending"]
+    apply_response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": discarded_payload["session"]["revision"],
+            "status": "applied",
+            "reviewItemIds": remaining_ids,
+            "resume": candidate_resume,
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert apply_response.status_code == 200
+    applied_payload = apply_response.json()["data"]
+    committed_draft = applied_payload["session"]["messages"][-1]["response"]["draft"]
+    assert [item["status"] for item in committed_draft["reviewItems"]] == [
+        "discarded",
+        "applied",
+        "applied",
+        "applied",
+        "applied",
+    ]
+    assert committed_draft["baseResume"] == original_payload["resume"]
+    assert applied_payload["resume"]["resume"]["resume"] == candidate_resume
+
+
+def test_partial_draft_apply_keeps_the_original_merge_base(
+    client: TestClient,
+) -> None:
+    resume_id = _resume_id("resume-partial-apply-immutable-base")
+    message_id = "assistant-partial-apply-immutable-base"
+    original_payload = _resume_save_payload(headline="Engineer")
+    original_payload["resume"]["basic"]["summary"] = "Original summary"
+    applied_summary_with_local_headline = json.loads(
+        json.dumps(original_payload["resume"]),
+    )
+    applied_summary_with_local_headline["basic"]["summary"] = "Agent summary"
+    applied_summary_with_local_headline["basic"]["headline"] = "User-edited headline"
+
+    _ensure_active_resume(resume_id)
+    original_detail = save_resume(resume_id, original_payload)
+    with closing(connect()) as conn:
+        prepared = _accept_turn(
+            conn,
+            _request(
+                resume_id,
+                message_id="turn-partial-apply-immutable-base",
+                text="Prepare independent summary and headline changes.",
+                revision=load_agent_session(conn, resume_id).revision,
+            ).model_copy(update={"resume": original_payload["resume"]}),
+        )
+        _persist_successful_turn(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id=message_id,
+                role="assistant",
+                text="Two changes are ready.",
+                edits=[
+                    {
+                        "id": "edit-summary-change",
+                        "title": "Update summary",
+                        "target": "basic.summary",
+                        "reason": "Improve the introduction.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.summary",
+                            "value": "Agent summary",
+                        },
+                        "status": "executed",
+                    },
+                    {
+                        "id": "edit-headline-change",
+                        "title": "Update headline",
+                        "target": "basic.headline",
+                        "reason": "Clarify the target role.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.headline",
+                            "value": "Agent headline",
+                        },
+                        "status": "executed",
+                    },
+                ],
+                transactionState="committed",
+            ),
+        )
+        pending = load_agent_session(conn, resume_id)
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": pending.revision,
+            "status": "applied",
+            "reviewItemIds": ["agent-review-edit-summary-change"],
+            "resume": applied_summary_with_local_headline,
+            "expectedVersionId": original_detail["versionId"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    committed_draft = payload["session"]["messages"][-1]["response"]["draft"]
+    assert committed_draft["baseResume"] == original_payload["resume"]
+    assert [item["status"] for item in committed_draft["reviewItems"]] == [
+        "applied",
+        "pending",
+    ]
+    assert payload["resume"]["resume"]["resume"] == (
+        applied_summary_with_local_headline
+    )
+
+
+def test_agent_draft_decision_rejects_duplicate_unknown_and_resolved_items(
+    client: object,
+) -> None:
+    del client
+    resume_id = _resume_id("resume-invalid-review-items")
+    message_id = "assistant-invalid-review-items"
+    review_item_id = _committed_review_item_id(message_id)
+
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=message_id,
+        )
+        pending = load_agent_session(conn, resume_id)
+
+        for item_ids, current_status in (
+            ([review_item_id, review_item_id], "invalid"),
+            (["agent-review-unknown"], "unknown"),
+        ):
+            with pytest.raises(
+                agent_sessions.AgentDraftDecisionConflictError,
+            ) as exc_info:
+                update_agent_draft_decision(
+                    conn,
+                    resume_id,
+                    message_id=message_id,
+                    review_item_ids=item_ids,
+                    status="discarded",
+                    revision=pending.revision,
+                )
+            assert exc_info.value.current_status == current_status
+
+        discarded = update_agent_draft_decision(
+            conn,
+            resume_id,
+            message_id=message_id,
+            review_item_ids=[review_item_id],
+            status="discarded",
+            revision=pending.revision,
+        )
+        with pytest.raises(
+            agent_sessions.AgentDraftDecisionConflictError,
+        ) as exc_info:
+            update_agent_draft_decision(
+                conn,
+                resume_id,
+                message_id=message_id,
+                review_item_ids=[review_item_id],
+                status="discarded",
+                revision=discarded.revision,
+            )
+
+    assert exc_info.value.current_status == "discarded"
 
 
 def test_only_latest_committed_draft_can_be_applied(
@@ -1213,6 +1470,9 @@ def test_only_latest_committed_draft_can_be_applied(
         json={
             "revision": revision,
             "status": "applied",
+            "reviewItemIds": [
+                _committed_review_item_id("assistant-draft-b"),
+            ],
             "resume": latest_candidate,
             "expectedVersionId": original_detail["versionId"],
         },
@@ -1223,6 +1483,9 @@ def test_only_latest_committed_draft_can_be_applied(
         json={
             "revision": latest_payload["session"]["revision"],
             "status": "applied",
+            "reviewItemIds": [
+                _committed_review_item_id("assistant-draft-a"),
+            ],
             "resume": superseded_candidate,
             "expectedVersionId": latest_payload["resume"]["versionId"],
         },
@@ -1270,7 +1533,13 @@ def test_apply_boundary_rejects_a_non_latest_pending_draft(
                 ],
                 draft={
                     "baseResume": original_payload["resume"],
-                    "status": "pending",
+                    "reviewItems": [
+                        {
+                            "id": f"agent-review-edit-pending-{suffix}",
+                            "editIds": [f"edit-pending-{suffix}"],
+                            "status": "pending",
+                        },
+                    ],
                 },
                 transactionState="committed",
             ).model_dump(mode="json", by_alias=True),
@@ -1292,6 +1561,7 @@ def test_apply_boundary_rejects_a_non_latest_pending_draft(
         json={
             "revision": session.revision,
             "status": "applied",
+            "reviewItemIds": ["agent-review-edit-pending-a"],
             "resume": _resume_save_payload(headline="Superseded Engineer")["resume"],
             "expectedVersionId": original_detail["versionId"],
         },
@@ -1328,6 +1598,7 @@ def test_agent_draft_apply_rolls_back_decision_when_resume_save_fails(
         json={
             "revision": revision,
             "status": "applied",
+            "reviewItemIds": [_committed_review_item_id(message_id)],
             "resume": {"schemaVersion": 2, "basic": {}, "sections": []},
             "expectedVersionId": original_detail["versionId"],
         },
@@ -1337,7 +1608,12 @@ def test_agent_draft_apply_rolls_back_decision_when_resume_save_fails(
     persisted_session = client.get(
         f"/api/agent/resumes/{resume_id}/session",
     ).json()["data"]
-    assert persisted_session["messages"][-1]["response"]["draft"]["status"] == "pending"
+    assert (
+        persisted_session["messages"][-1]["response"]["draft"]["reviewItems"][0][
+            "status"
+        ]
+        == "pending"
+    )
     persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
     assert persisted_resume["resume"]["resume"]["basic"]["headline"] == "Engineer"
 
@@ -1370,6 +1646,7 @@ def test_agent_draft_apply_rejects_a_stale_formal_resume_version(
         json={
             "revision": revision,
             "status": "applied",
+            "reviewItemIds": [_committed_review_item_id(message_id)],
             "resume": _resume_save_payload(headline="Staff Engineer")["resume"],
             "expectedVersionId": original_detail["versionId"],
         },
@@ -1385,7 +1662,12 @@ def test_agent_draft_apply_rejects_a_stale_formal_resume_version(
     persisted_session = client.get(
         f"/api/agent/resumes/{resume_id}/session",
     ).json()["data"]
-    assert persisted_session["messages"][-1]["response"]["draft"]["status"] == "pending"
+    assert (
+        persisted_session["messages"][-1]["response"]["draft"]["reviewItems"][0][
+            "status"
+        ]
+        == "pending"
+    )
     persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
     assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
         "Senior Engineer"
@@ -1413,6 +1695,7 @@ def test_agent_draft_decision_route_reports_stale_revision(
         AgentDraftDecisionRequest(
             revision="stale-revision",
             status="discarded",
+            reviewItemIds=[_committed_review_item_id(message_id)],
         ),
     )
 
@@ -1453,6 +1736,7 @@ def test_stale_draft_decision_after_session_replace_reports_revision_conflict(
         AgentDraftDecisionRequest(
             revision=stale_revision,
             status="discarded",
+            reviewItemIds=[_committed_review_item_id(message_id)],
         ),
     )
 
@@ -1503,6 +1787,7 @@ def test_current_draft_decision_reports_unavailable_target_conflict(
         AgentDraftDecisionRequest(
             revision=current_revision,
             status="discarded",
+            reviewItemIds=[_committed_review_item_id(message_id)],
         ),
     )
 
@@ -1547,6 +1832,7 @@ def test_agent_draft_decision_route_reports_active_run(
         AgentDraftDecisionRequest(
             revision=current_revision,
             status="applied",
+            reviewItemIds=[_committed_review_item_id(message_id)],
             resume=_resume_save_payload(headline="Staff Engineer")["resume"],
             expectedVersionId="0",
         ),
@@ -1576,11 +1862,12 @@ def test_agent_draft_decision_route_preserves_the_existing_terminal_decision(
             message_id=message_id,
         )
         pending = load_agent_session(conn, resume_id)
-        applied = update_agent_draft_decision(
+        discarded = update_agent_draft_decision(
             conn,
             resume_id,
             message_id=message_id,
-            status="applied",
+            review_item_ids=[_committed_review_item_id(message_id)],
+            status="discarded",
             revision=pending.revision,
         )
 
@@ -1588,8 +1875,9 @@ def test_agent_draft_decision_route_preserves_the_existing_terminal_decision(
         resume_id,
         message_id,
         AgentDraftDecisionRequest(
-            revision=applied.revision,
+            revision=discarded.revision,
             status="discarded",
+            reviewItemIds=[_committed_review_item_id(message_id)],
         ),
     )
 
@@ -1597,8 +1885,8 @@ def test_agent_draft_decision_route_preserves_the_existing_terminal_decision(
     assert json.loads(response.body) == {
         "detail": {
             "code": "AGENT_DRAFT_DECISION_CONFLICT",
-            "revision": applied.revision,
-            "status": "applied",
+            "revision": discarded.revision,
+            "status": "discarded",
         },
     }
 
@@ -1671,6 +1959,7 @@ def test_agent_session_mutation_routes_hide_corrupt_message_details(
         AgentDraftDecisionRequest(
             revision="revision-corrupt-patch",
             status="discarded",
+            reviewItemIds=["agent-review-corrupt"],
         ),
     )
 
@@ -1842,6 +2131,7 @@ def test_finishing_missing_running_execution_is_a_persistence_failure(
         ("files", []),
         ("conversation", []),
         ("clientTurnId", "legacy-turn-id"),
+        ("settings", {"confirmationMode": "always"}),
     ],
 )
 def test_agent_chat_request_rejects_legacy_current_turn_fields(
@@ -1869,6 +2159,43 @@ def test_agent_chat_request_requires_current_message() -> None:
 
     assert exc_info.value.errors()[0]["loc"] == ("message",)
     assert exc_info.value.errors()[0]["type"] == "missing"
+
+
+def test_agent_chat_request_rejects_model_config_fields_beyond_id() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AgentChatRequest.model_validate(
+            {
+                "message": {
+                    "id": "turn-model-selection-contract",
+                    "role": "user",
+                    "text": "Use the selected model.",
+                },
+                "modelConfig": {
+                    "id": "model-config-id",
+                    "apiKey": "must-not-enter-run-state",
+                },
+            },
+        )
+
+    assert exc_info.value.errors()[0]["loc"] == ("modelConfig", "apiKey")
+    assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
+
+
+@pytest.mark.parametrize("model_config_id", ["", "   ", " padded-id "])
+def test_agent_chat_request_rejects_noncanonical_model_config_id(
+    model_config_id: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        AgentChatRequest.model_validate(
+            {
+                "message": {
+                    "id": "turn-invalid-model-config-id",
+                    "role": "user",
+                    "text": "Do not silently select the default model.",
+                },
+                "modelConfig": {"id": model_config_id},
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -2186,6 +2513,22 @@ def test_attachment_prevalidation_error_has_stable_transport_code(
 
     assert status_code == 400
     assert body == {"detail": {"code": "AGENT_ATTACHMENT_INVALID"}}
+
+
+def test_invalid_thinking_mode_has_stable_transport_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_code, body = _chat_route_response(
+        monkeypatch,
+        LlmThinkingModeUnsupportedError(
+            "Thinking Off is unavailable for this model configuration.",
+        ),
+    )
+
+    assert status_code == 400
+    assert body == {
+        "detail": {"code": "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED"},
+    }
 
 
 def test_corrupt_chat_session_has_stable_private_transport_error(

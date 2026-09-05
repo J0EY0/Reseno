@@ -21,6 +21,8 @@ export interface SectionDiffLookup {
 
 export interface ResumeDiffLookup {
   basicDiffByField: Map<string, ResumeDraftDiff>;
+  deletedItemDiffsBySectionId: Map<string, ResumeDraftDiff[]>;
+  deletedSectionDiffs: ResumeDraftDiff[];
   itemDiffById: Map<string, ItemDiffLookup>;
   sectionDiffById: Map<string, SectionDiffLookup>;
 }

@@ -42,16 +42,6 @@ const [panelSource, conversationViewSource, promptActionsSource, sendSource] =
     readFile(join(copilotRoot, "use-agent-send-controller.ts"), "utf8"),
   ]);
 
-const committedResponse = {
-  edits: [{ id: "edit-1" }],
-  transactionState: "committed",
-};
-const matchingDraft = {
-  sourceMessageId: "assistant-2",
-  status: "pending",
-  transactionState: "committed",
-};
-
 assert(
   panelState
     .mergeStreamingAgentMessage(
@@ -70,36 +60,6 @@ assert(
   finalizedHandoff.length === 1 &&
     finalizedHandoff[0].text === "last streamed frame",
   "A final message and its last streamed frame must never render twice.",
-);
-assert(
-  panelState.shouldShowAgentDraftActions({
-    draft: matchingDraft,
-    isResponding: false,
-    isSessionReady: true,
-    messageId: "assistant-2",
-    response: committedResponse,
-  }),
-  "A committed draft must be actionable on its source message.",
-);
-assert(
-  !panelState.shouldShowAgentDraftActions({
-    draft: matchingDraft,
-    isResponding: false,
-    isSessionReady: false,
-    messageId: "assistant-2",
-    response: committedResponse,
-  }),
-  "Draft actions must stay hidden until session hydration is complete.",
-);
-assert(
-  !panelState.shouldShowAgentDraftActions({
-    draft: matchingDraft,
-    isResponding: false,
-    isSessionReady: true,
-    messageId: "assistant-1",
-    response: committedResponse,
-  }),
-  "A draft must never appear actionable on another assistant message.",
 );
 assert(
   panelState.shouldRollbackOptimisticAgentMessages({
@@ -183,7 +143,7 @@ assert(
 assert(
   panelState.canSubmitAgentPrompt({
     hasConfiguredModel: true,
-    isResponding: false,
+    isRequestBusy: false,
     isSessionReady: true,
     isSubmitting: false,
   }),
@@ -192,15 +152,25 @@ assert(
 assert(
   !panelState.canSubmitAgentPrompt({
     hasConfiguredModel: true,
-    isResponding: false,
+    isRequestBusy: false,
     isSessionReady: false,
     isSubmitting: false,
   }),
   "A failed or pending bootstrap must keep the composer send gate closed.",
 );
 assert(
-  conversationViewSource.includes("shouldShowAgentDraftActions({"),
-  "The conversation view must bind draft actions to the draft source message.",
+  !panelState.canSubmitAgentPrompt({
+    hasConfiguredModel: true,
+    isRequestBusy: true,
+    isSessionReady: true,
+    isSubmitting: false,
+  }),
+  "Preparing and responding phases must both keep the composer send gate closed.",
+);
+assert(
+  panelSource.includes("<AgentDraftReviewDock") &&
+    !conversationViewSource.includes("shouldShowAgentDraftActions"),
+  "Pending draft decisions must live in the measured composer dock instead of message history.",
 );
 assert(
   !`${panelSource}\n${conversationViewSource}`.includes("edits.slice(0, 4)"),

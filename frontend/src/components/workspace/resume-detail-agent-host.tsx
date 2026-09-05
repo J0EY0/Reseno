@@ -97,10 +97,10 @@ function ResumeDetailAgentPanel({
                     t={messages}
                     resume={state.resume}
                     modelConfigs={state.agent.modelConfigs}
-                    selectedModelId={state.agent.selectedModelId}
-                    onSelectedModelChange={commands.agent.changeSelectedModel}
-                    hasAgentDraft={Boolean(state.agent.draft)}
+                    selectedModelConfigId={state.agent.selectedModelConfigId}
+                    onSelectedModelConfigChange={commands.agent.changeSelectedModelConfig}
                     agentDraftState={state.agent.draftState}
+                    agentDraftReview={state.agent.review}
                     onPreviewAgentEdits={commands.agent.previewEdits}
                     onReconcileAgentDraft={commands.agent.reconcileDraft}
                     onRollbackAgentDraft={commands.agent.rollbackDraft}

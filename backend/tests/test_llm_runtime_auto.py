@@ -22,6 +22,7 @@ def test_runtime_model_config_exposes_a_typed_thinking_control() -> None:
         "provider_default",
         "native_auto",
         "native_budget",
+        "native_off",
     )
     assert "thinking_control" in field_names
     assert "supports_thinking" not in field_names
@@ -92,7 +93,7 @@ def test_runtime_custom_config_uses_provider_default_for_manual_capability() -> 
         ),
     )
 
-    selected = resolve_agent_llm_config(conn, {"id": "runtime-auto"})
+    selected = resolve_agent_llm_config(conn, "runtime-auto")
     default = resolve_agent_llm_config(conn, None)
 
     assert selected == default
@@ -139,7 +140,7 @@ def test_runtime_manual_thinking_maps_to_verified_provider_action(
         ),
     )
 
-    config = resolve_agent_llm_config(conn, {"id": "manual-thinking"})
+    config = resolve_agent_llm_config(conn, "manual-thinking")
 
     assert config is not None
     assert config.thinking_control == expected_control
@@ -181,7 +182,7 @@ def test_runtime_anthropic_only_trusts_current_official_adaptive_capability(
         ),
     )
 
-    stale = resolve_agent_llm_config(conn, {"id": "anthropic-auto"})
+    stale = resolve_agent_llm_config(conn, "anthropic-auto")
 
     assert stale is not None
     assert stale.thinking_control == "none"
@@ -205,7 +206,7 @@ def test_runtime_anthropic_only_trusts_current_official_adaptive_capability(
         ],
     )
 
-    current = resolve_agent_llm_config(conn, {"id": "anthropic-auto"})
+    current = resolve_agent_llm_config(conn, "anthropic-auto")
 
     assert current is not None
     assert current.thinking_control == "native_auto"

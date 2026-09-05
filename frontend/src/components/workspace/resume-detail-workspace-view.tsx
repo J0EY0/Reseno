@@ -75,6 +75,7 @@ function ResumeDetailContent({
       <ResumeEditorPane
         t={messages}
         documentT={documentMessages}
+        disabled={Boolean(state.agent.review?.resolvingStatus)}
         resume={state.resume}
         setResume={commands.setResume}
         collapsedState={state.collapsedState}
@@ -95,7 +96,20 @@ function ResumeDetailContent({
             resume={state.previewResume}
             typography={state.typography}
             template={state.activeTemplate}
-            diffs={state.agent.draft?.diffs}
+            diffs={state.previewDiffs}
+            draftReview={
+              state.previewReview
+                ? {
+                    onSelectReviewItem: state.previewReview.selectItem,
+                    exitingReviewItemIds:
+                      state.previewReview.exitingReviewItemIds,
+                    reviewItemIdByOperationId:
+                      state.previewReview.reviewItemIdByOperationId,
+                    selectedReviewItemId:
+                      state.previewReview.selectedItemId ?? undefined,
+                  }
+                : undefined
+            }
             onPaginationReadyChange={commands.onPreviewReadyChange}
             toolbarTrailing={
               <ResumeDetailAgentToggle messages={messages} model={model} />

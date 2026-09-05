@@ -2,6 +2,7 @@ import json
 from contextlib import closing
 from datetime import UTC, datetime
 from functools import partial
+from sqlite3 import IntegrityError
 
 import anyio
 import pytest
@@ -68,12 +69,40 @@ def _request(
 
 
 def _assistant(message_id: str, *, draft: bool = False) -> AgentChatMessage:
+    edit_id = f"edit-{message_id}"
     return AgentChatMessage(
         id=message_id,
         role="assistant",
         text="The requested change is ready.",
+        edits=(
+            [
+                {
+                    "id": edit_id,
+                    "title": "Update summary",
+                    "target": "basic.summary",
+                    "reason": "Exercise durable draft persistence.",
+                    "operation": {
+                        "type": "replace_field",
+                        "path": "basic.summary",
+                        "value": "Updated summary",
+                    },
+                    "status": "executed",
+                }
+            ]
+            if draft
+            else []
+        ),
         draft=(
-            AgentCommittedDraft(baseResume={"basic": {}, "sections": []})
+            AgentCommittedDraft(
+                baseResume={"basic": {}, "sections": []},
+                reviewItems=[
+                    {
+                        "id": f"agent-review-{message_id}",
+                        "editIds": [edit_id],
+                        "status": "pending",
+                    },
+                ],
+            )
             if draft
             else None
         ),
@@ -130,6 +159,7 @@ def test_accept_agent_turn_returns_explicit_authoritative_state(
                 ],
             ),
             run_id="run-1",
+            resolved_config=None,
         )
 
     assert accepted.run_id == "run-1"
@@ -140,6 +170,94 @@ def test_accept_agent_turn_returns_explicit_authoritative_state(
     assert accepted.request.message.id == "turn-1"
     assert accepted.conversation_state.loaded_checkpoint is None
     assert accepted.conversation_state.active_checkpoint is None
+
+
+def test_execution_persists_only_the_resolved_model_identity(
+    agent_database,
+) -> None:
+    del agent_database
+    resume_id = "ModelSnapshotResume"
+    config = _context_config()
+
+    with closing(connect()) as conn:
+        accepted = accept_agent_turn(
+            conn,
+            _request(
+                conn,
+                resume_id=resume_id,
+                turn_id="turn-model-snapshot",
+                text="Attribute this run to the resolved model.",
+            ),
+            run_id="run-model-snapshot",
+            resolved_config=config,
+        )
+        session = load_agent_session(conn, resume_id)
+        stored_columns = conn.execute(
+            """
+            SELECT model_config_id, model_provider, model_id
+            FROM agent_turn_executions
+            WHERE run_id = 'run-model-snapshot'
+            """
+        ).fetchone()
+
+    expected = {
+        "configId": config.client_id,
+        "provider": config.provider,
+        "model": config.model,
+    }
+    assert accepted.model_snapshot is not None
+    assert accepted.model_snapshot.model_dump(mode="json", by_alias=True) == expected
+    assert session.executions[0].model_snapshot is not None
+    assert (
+        session.executions[0].model_snapshot.model_dump(
+            mode="json",
+            by_alias=True,
+        )
+        == expected
+    )
+    assert dict(stored_columns) == {
+        "model_config_id": config.client_id,
+        "model_provider": config.provider,
+        "model_id": config.model,
+    }
+    serialized = session.model_dump_json(by_alias=True)
+    assert config.api_key not in serialized
+    assert config.base_url not in serialized
+    assert config.api_key not in repr(config)
+
+
+def test_execution_rejects_a_partial_model_identity(agent_database) -> None:
+    del agent_database
+    resume_id = "PartialModelSnapshotResume"
+
+    with closing(connect()) as conn:
+        accept_agent_turn(
+            conn,
+            _request(
+                conn,
+                resume_id=resume_id,
+                turn_id="turn-partial-model-snapshot",
+                text="Reject a model identity that cannot be attributed.",
+            ),
+            run_id="run-partial-model-snapshot",
+            resolved_config=None,
+        )
+        with pytest.raises(IntegrityError):
+            conn.execute(
+                """
+                UPDATE agent_turn_executions
+                SET
+                    model_config_id = ?,
+                    model_provider = NULL,
+                    model_id = ?
+                WHERE run_id = ?
+                """,
+                (
+                    "config-with-missing-provider",
+                    "gpt-test",
+                    "run-partial-model-snapshot",
+                ),
+            )
 
 
 def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
@@ -162,6 +280,7 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
                 text="Prepare the first draft.",
             ),
             run_id="run-1",
+            resolved_config=None,
         )
         persist_agent_terminal_outcome(
             conn,
@@ -183,6 +302,7 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
                 text="Prepare a replacement draft.",
             ),
             run_id="run-2",
+            resolved_config=None,
         )
         second.conversation_state.active_checkpoint = checkpoint
         persist_agent_terminal_outcome(
@@ -203,10 +323,10 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
 
     assert session.messages[1].response is not None
     assert session.messages[1].response.draft is not None
-    assert session.messages[1].response.draft.status == "discarded"
+    assert session.messages[1].response.draft.review_items[0].status == "discarded"
     assert session.messages[-1].response is not None
     assert session.messages[-1].response.draft is not None
-    assert session.messages[-1].response.draft.status == "pending"
+    assert session.messages[-1].response.draft.review_items[0].status == "pending"
     execution_states = [
         (execution.run_id, execution.status) for execution in session.executions
     ]
@@ -236,6 +356,7 @@ def test_rollover_checkpoint_is_restored_without_hiding_visible_history(
                 text="Verified project fact. " + ("detail " * 1_000),
             ),
             run_id="run-1",
+            resolved_config=None,
         )
         persist_agent_terminal_outcome(
             conn,
@@ -257,6 +378,7 @@ def test_rollover_checkpoint_is_restored_without_hiding_visible_history(
                 text="Continue with the current resume.",
             ),
             run_id="run-2",
+            resolved_config=None,
         )
         second_prompt = anyio.run(
             partial(
@@ -293,6 +415,7 @@ def test_rollover_checkpoint_is_restored_without_hiding_visible_history(
                 text="Use the previous decisions.",
             ),
             run_id="run-3",
+            resolved_config=None,
         )
         restored_prompt = anyio.run(
             partial(
@@ -344,6 +467,7 @@ def test_terminal_outcome_cas_failure_rolls_back_assistant_and_checkpoint(
                 text="Persist this only if the run still owns the turn.",
             ),
             run_id="run-1",
+            resolved_config=None,
         )
         accepted.conversation_state.active_checkpoint = checkpoint
         conn.execute(
@@ -395,6 +519,7 @@ def test_unchanged_checkpoint_is_not_duplicated_on_terminal_message(
                 text="Create the checkpoint.",
             ),
             run_id="run-1",
+            resolved_config=None,
         )
         first.conversation_state.active_checkpoint = checkpoint
         persist_agent_terminal_outcome(
@@ -416,6 +541,7 @@ def test_unchanged_checkpoint_is_not_duplicated_on_terminal_message(
                 text="Continue without changing the checkpoint.",
             ),
             run_id="run-2",
+            resolved_config=None,
         )
         persist_agent_terminal_outcome(
             conn,
@@ -462,6 +588,7 @@ def test_non_success_terminal_outcome_uses_the_same_atomic_seam(
                 text="Finish this accepted turn.",
             ),
             run_id="run-1",
+            resolved_config=None,
         )
         assistant = _assistant(assistant_id) if assistant_id is not None else None
         persist_agent_terminal_outcome(

@@ -1,4 +1,5 @@
 import { loadMessages, locales } from "@/i18n";
+import { getAgentDraftSnapshotFromMessages } from "@/lib/agent-draft-review";
 import { createId } from "@/lib/resume";
 import type {
   AgentChatAttachment,
@@ -21,38 +22,15 @@ export interface AgentPanelMessage {
   execution?: AgentTurnExecution;
 }
 
-export function getAgentDraftSnapshot(
-  messages: AgentStoredMessage[],
-): AgentDraftSnapshot | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const response = message.response;
-    if (
-      message.role !== "assistant" ||
-      response?.transactionState !== "committed" ||
-      !response.draft ||
-      !response.edits?.length
-    ) {
-      continue;
-    }
-
-    return {
-      baseResume: response.draft.baseResume,
-      edits: response.edits,
-      sourceMessageId: message.id,
-      status: response.draft.status,
-      transactionState: "committed",
-    };
-  }
-
-  return null;
-}
+export const getAgentDraftSnapshot = getAgentDraftSnapshotFromMessages;
 
 export function getPendingAgentDraftSnapshot(
   messages: AgentStoredMessage[],
 ): AgentDraftSnapshot | null {
   const draft = getAgentDraftSnapshot(messages);
-  return draft?.status === "pending" ? draft : null;
+  return draft?.reviewItems.some((item) => item.status === "pending")
+    ? draft
+    : null;
 }
 
 export function toConversationMessage(

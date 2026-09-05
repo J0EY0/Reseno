@@ -29,6 +29,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
 
 import { ModelFormFieldLabel } from "./model-config-field-labels";
+import { ModelConfigThinkingModeField } from "./model-config-thinking-mode-field";
 import type { ModelConfigDialogController } from "./use-model-config-dialog";
 
 import "./model-config-model-fields.css";
@@ -238,6 +239,15 @@ function CapabilityFields({
               <FieldError>{errors.maxTokens}</FieldError>
             </Field>
           </FieldGroup>
+          {draft.supportsThinking ? (
+            <ModelConfigThinkingModeField
+              value={draft.thinkingMode}
+              availableModes={draft.availableThinkingModes}
+              error={errors.thinkingMode}
+              messages={messages}
+              onChange={(value) => updateField("thinkingMode", value)}
+            />
+          ) : null}
         </FieldSet>
       ) : null}
 
@@ -248,7 +258,7 @@ function CapabilityFields({
   );
 }
 
-function CloudOutputOverrideField({
+function CloudAdvancedSettingsField({
   controller,
   messages,
 }: {
@@ -256,7 +266,9 @@ function CloudOutputOverrideField({
   messages: AppMessages;
 }) {
   const { draft, errors, updateField } = controller;
-  const [open, setOpen] = useState(Boolean(draft.maxTokens));
+  const [open, setOpen] = useState(
+    Boolean(draft.maxTokens) || draft.thinkingMode === "off",
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const revealOnOpenRef = useRef(false);
   const focusInvalidOutputInput = useCallback(
@@ -302,19 +314,22 @@ function CloudOutputOverrideField({
         : "smooth",
     });
   }, []);
-  const expanded = open || Boolean(errors.maxTokens);
+  const advancedSettingsError = Boolean(
+    errors.thinkingMode || errors.maxTokens,
+  );
+  const expanded = open || advancedSettingsError;
 
   useLayoutEffect(() => {
     if (
       !expanded ||
-      (!revealOnOpenRef.current && !errors.maxTokens)
+      (!revealOnOpenRef.current && !advancedSettingsError)
     ) {
       return;
     }
 
     revealOnOpenRef.current = false;
     revealOutputField();
-  }, [errors.maxTokens, expanded, revealOutputField]);
+  }, [advancedSettingsError, expanded, revealOutputField]);
 
   if (draft.providerKind !== "cloud" || !draft.model.trim()) {
     return null;
@@ -336,7 +351,7 @@ function CloudOutputOverrideField({
           id="model-output-settings"
           type="button"
           aria-controls="model-output-settings-content"
-          aria-invalid={Boolean(errors.maxTokens)}
+          aria-invalid={advancedSettingsError}
           className="group flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 rounded-md py-2 text-left text-sm font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
           <span>{messages.advancedSettings}</span>
@@ -352,8 +367,21 @@ function CloudOutputOverrideField({
         aria-labelledby="model-output-settings"
         className="model-output-settings-content"
       >
-        <div className="model-output-settings-content-inner pt-3">
-          <Field data-invalid={Boolean(errors.maxTokens)}>
+        <FieldGroup className="model-output-settings-content-inner gap-5 pt-3">
+          {draft.supportsThinking ? (
+            <ModelConfigThinkingModeField
+              value={draft.thinkingMode}
+              availableModes={draft.availableThinkingModes}
+              error={errors.thinkingMode}
+              messages={messages}
+              onChange={(value) => updateField("thinkingMode", value)}
+            />
+          ) : null}
+          <Field
+            orientation="horizontal"
+            className="flex-wrap gap-x-3 gap-y-1.5"
+            data-invalid={Boolean(errors.maxTokens)}
+          >
             <ModelFormFieldLabel
               htmlFor="model-max-tokens"
               label={messages.maxTokens}
@@ -368,6 +396,7 @@ function CloudOutputOverrideField({
               value={draft.maxTokens}
               placeholder={messages.maxTokensAuto}
               aria-invalid={Boolean(errors.maxTokens)}
+              className="w-32 max-w-[55%] shrink-0"
               aria-describedby={
                 errors.maxTokens ? "model-max-tokens-error" : undefined
               }
@@ -384,11 +413,14 @@ function CloudOutputOverrideField({
                 updateField("maxTokens", event.target.value);
               }}
             />
-            <FieldError id="model-max-tokens-error">
+            <FieldError
+              id="model-max-tokens-error"
+              className="basis-full"
+            >
               {errors.maxTokens}
             </FieldError>
           </Field>
-        </div>
+        </FieldGroup>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -456,7 +488,7 @@ export function ModelConfigModelFields({
         <CapabilityFields controller={controller} messages={messages} />
       ) : null}
       {!modelOptionsLoading ? (
-        <CloudOutputOverrideField controller={controller} messages={messages} />
+        <CloudAdvancedSettingsField controller={controller} messages={messages} />
       ) : null}
     </>
   );

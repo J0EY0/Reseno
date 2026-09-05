@@ -33,21 +33,28 @@ export function ModelConfigPanel({
   configs: ModelConfig[]
   onChange: (configs: ModelConfig[]) => void
 }) {
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
-  const [deletingModelId, setDeletingModelId] = useState<string | null>(null)
-  const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[]>([])
+  const [pendingDeleteModelConfigId, setPendingDeleteModelConfigId] = useState<
+    string | null
+  >(null)
+  const [deletingModelConfigId, setDeletingModelConfigId] = useState<
+    string | null
+  >(null)
+  const [pendingBulkDeleteModelConfigIds, setPendingBulkDeleteModelConfigIds] =
+    useState<string[]>([])
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
-  const [enteringModelId, setEnteringModelId] = useState<string | null>(null)
+  const [enteringModelConfigId, setEnteringModelConfigId] = useState<
+    string | null
+  >(null)
   const [editDialog, setEditDialog] = useState<{
     config: ModelConfig
     returnFocus: HTMLButtonElement | null
     session: number
   } | null>(null)
   const selection = useModelConfigTableSelection(configs)
-  const isDeleting = deletingModelId !== null || isBulkDeleting
-  const configIdSet = new Set(configs.map((config) => config.id))
-  const pendingBulkModelIds = pendingBulkDeleteIds.filter((id) =>
-    configIdSet.has(id),
+  const isDeleting = deletingModelConfigId !== null || isBulkDeleting
+  const modelConfigIdSet = new Set(configs.map((config) => config.id))
+  const pendingBulkModelConfigIds = pendingBulkDeleteModelConfigIds.filter(
+    (id) => modelConfigIdSet.has(id),
   )
   const openEditDialog = useCallback(
     (config: ModelConfig, returnFocus: HTMLButtonElement | null) => {
@@ -60,24 +67,24 @@ export function ModelConfigPanel({
     [],
   )
 
-  async function confirmDeleteModel() {
-    const modelId = pendingDeleteId
+  async function confirmDeleteModelConfig() {
+    const modelConfigId = pendingDeleteModelConfigId
 
-    if (!modelId || isDeleting) {
+    if (!modelConfigId || isDeleting) {
       return
     }
 
-    setDeletingModelId(modelId)
+    setDeletingModelConfigId(modelConfigId)
 
     try {
-      await deleteModelConfig(modelId)
-      const nextConfigs = configs.filter((item) => item.id !== modelId)
+      await deleteModelConfig(modelConfigId)
+      const nextConfigs = configs.filter((item) => item.id !== modelConfigId)
       const nextTotalPages = Math.max(
         1,
         Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
       )
 
-      selection.removeIds([modelId])
+      selection.removeModelConfigIds([modelConfigId])
       if (selection.currentPage > nextTotalPages) {
         selection.changePage(nextTotalPages)
       }
@@ -90,24 +97,26 @@ export function ModelConfigPanel({
         toast.error(t.modelConfigDeleteFailed, { closeButton: true })
       }
     } finally {
-      setDeletingModelId(null)
+      setDeletingModelConfigId(null)
     }
   }
 
-  async function confirmBulkDeleteModels() {
-    const modelIds = pendingBulkModelIds
+  async function confirmBulkDeleteModelConfigs() {
+    const modelConfigIds = pendingBulkModelConfigIds
 
-    if (modelIds.length === 0 || isDeleting) {
-      setPendingBulkDeleteIds([])
+    if (modelConfigIds.length === 0 || isDeleting) {
+      setPendingBulkDeleteModelConfigIds([])
       return
     }
 
     setIsBulkDeleting(true)
 
     try {
-      const response = await deleteModelConfigs(modelIds)
-      const deletedIdSet = new Set(response.ids)
-      const nextConfigs = configs.filter((item) => !deletedIdSet.has(item.id))
+      const response = await deleteModelConfigs(modelConfigIds)
+      const deletedModelConfigIdSet = new Set(response.ids)
+      const nextConfigs = configs.filter(
+        (item) => !deletedModelConfigIdSet.has(item.id),
+      )
       const nextTotalPages = Math.max(
         1,
         Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
@@ -119,7 +128,7 @@ export function ModelConfigPanel({
       }
 
       onChange(nextConfigs)
-      setPendingBulkDeleteIds([])
+      setPendingBulkDeleteModelConfigIds([])
       toast.success(t.modelConfigsDeleted, { closeButton: true })
     } catch (error) {
       console.error('Failed to delete model configs.', error)
@@ -134,31 +143,31 @@ export function ModelConfigPanel({
   return (
     <div data-slot="model-config-panel" className="grid gap-4">
       <ConfirmActionDialog
-        open={pendingDeleteId !== null}
+        open={pendingDeleteModelConfigId !== null}
         title={t.deleteModelConfigConfirmTitle}
         description={t.deleteModelConfigConfirmDescription}
         confirmLabel={t.deleteModelConfig}
         cancelLabel={t.cancel}
-        onConfirm={() => void confirmDeleteModel()}
+        onConfirm={() => void confirmDeleteModelConfig()}
         onOpenChange={(open) => {
           if (!open) {
-            setPendingDeleteId(null)
+            setPendingDeleteModelConfigId(null)
           }
         }}
       />
 
       <ConfirmActionDialog
-        open={pendingBulkModelIds.length > 0}
+        open={pendingBulkModelConfigIds.length > 0}
         title={t.deleteModelConfigsConfirmTitle}
         description={t.deleteModelConfigsConfirmDescription}
         confirmLabel={t.bulkDelete}
         cancelLabel={t.cancel}
-        onConfirm={confirmBulkDeleteModels}
+        onConfirm={confirmBulkDeleteModelConfigs}
         isPending={isBulkDeleting}
         deferClose
         onOpenChange={(open) => {
           if (!open && !isBulkDeleting) {
-            setPendingBulkDeleteIds([])
+            setPendingBulkDeleteModelConfigIds([])
           }
         }}
       />
@@ -190,11 +199,13 @@ export function ModelConfigPanel({
             <div className="ml-auto flex items-center gap-2">
               <ModelConfigBulkDeleteAction
                 label={t.bulkDelete}
-                selectedCount={selection.selectedIds.length}
+                selectedCount={selection.selectedModelConfigIds.length}
                 disabled={isDeleting}
                 isPending={isBulkDeleting}
                 onDelete={() =>
-                  setPendingBulkDeleteIds([...selection.selectedIds])
+                  setPendingBulkDeleteModelConfigIds([
+                    ...selection.selectedModelConfigIds,
+                  ])
                 }
               />
               <ModelConfigFormPopover
@@ -203,7 +214,7 @@ export function ModelConfigPanel({
                 mode="create"
                 onSubmit={(nextConfig) => {
                   const nextConfigs = [...configs, nextConfig]
-                  setEnteringModelId(nextConfig.id)
+                  setEnteringModelConfigId(nextConfig.id)
                   selection.changePage(
                     Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
                   )
@@ -229,10 +240,10 @@ export function ModelConfigPanel({
                 configs={selection.pageConfigs}
                 rowSelection={selection.rowSelection}
                 onRowSelectionChange={selection.onRowSelectionChange}
-                deletingModelId={deletingModelId}
-                enteringModelId={enteringModelId}
+                deletingModelConfigId={deletingModelConfigId}
+                enteringModelConfigId={enteringModelConfigId}
                 disabled={isDeleting}
-                onDelete={setPendingDeleteId}
+                onDelete={setPendingDeleteModelConfigId}
                 onEdit={openEditDialog}
               />
             )}

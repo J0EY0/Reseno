@@ -902,7 +902,7 @@ assert.match(
 );
 assert.match(
   resumeDetailSaveSource,
-  /const resolveAppliedAgentDraft[\s\S]*while \(activeRequestRef\.current\)[\s\S]*resolveAgentDraftDecision[\s\S]*resolution\.committed[\s\S]*adoptPersistedSave/,
+  /const resolveAgentDraftReview[\s\S]*while \(activeRequestRef\.current\)[\s\S]*resolveAgentDraftDecision[\s\S]*resolution\.committed[\s\S]*resolution\.resolvedAsRequested[\s\S]*adoptPersistedSave/,
   "Resume detail must keep serialized saves and protect edits made during an active request.",
 );
 assert.ok(
@@ -994,17 +994,17 @@ const persistence = createWorkspacePreferencesPersistence();
 const base = {
   locale: "en",
   theme: "light",
-  agentSettings: { defaultModelId: "base" },
+  agentSettings: { defaultModelConfigId: "base" },
 };
 const first = {
   locale: "en",
   theme: "dark",
-  agentSettings: { defaultModelId: "first" },
+  agentSettings: { defaultModelConfigId: "first" },
 };
 const second = {
   locale: "zh",
   theme: "system",
-  agentSettings: { defaultModelId: "second" },
+  agentSettings: { defaultModelConfigId: "second" },
 };
 const order = [];
 let releaseFirst;
@@ -1048,7 +1048,7 @@ let staleRollbackCount = 0;
 const newest = {
   locale: "en",
   theme: "light",
-  agentSettings: { defaultModelId: "newest" },
+  agentSettings: { defaultModelConfigId: "newest" },
 };
 persistence.enqueue(
   { ...second, theme: "dark" },

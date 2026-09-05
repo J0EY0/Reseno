@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
+from app.services.thinking import ThinkingMode
+
 ApiFamily = Literal[
     "openai_responses",
     "openai_compatible_chat",
@@ -52,6 +54,13 @@ class DiscoveredModelResponse(BaseModel):
     max_output_tokens: int | None = Field(default=None, alias="maxOutputTokens")
     supports_image: bool = Field(alias="supportsImage")
     supports_thinking: bool = Field(alias="supportsThinking")
+    available_thinking_modes: list[ThinkingMode] = Field(
+        alias="availableThinkingModes",
+        description=(
+            "User-selectable reasoning modes proven by normalized provider "
+            "metadata; off is absent when explicit disabling is unverified."
+        ),
+    )
     supports_tools: bool = Field(alias="supportsTools")
     supports_streaming: bool = Field(alias="supportsStreaming")
     metadata_source: str = Field(alias="metadataSource")
@@ -111,6 +120,14 @@ class ModelConfigUpsertRequest(BaseModel):
     )
     supports_image: bool = Field(default=False, alias="supportsImage")
     supports_thinking: bool = Field(default=False, alias="supportsThinking")
+    thinking_mode: ThinkingMode = Field(
+        default="auto",
+        alias="thinkingMode",
+        description=(
+            "Reasoning preference for this model config. Off is validated "
+            "against the selected model's explicit disable capability."
+        ),
+    )
     supports_tools: bool = Field(default=True, alias="supportsTools")
     supports_streaming: bool = Field(default=True, alias="supportsStreaming")
 
@@ -164,6 +181,10 @@ class ModelConfigResponse(BaseModel):
     context_window_tokens: int = Field(alias="contextWindowTokens")
     supports_image: bool = Field(alias="supportsImage")
     supports_thinking: bool = Field(alias="supportsThinking")
+    thinking_mode: ThinkingMode = Field(alias="thinkingMode")
+    available_thinking_modes: list[ThinkingMode] = Field(
+        alias="availableThinkingModes",
+    )
     supports_tools: bool = Field(alias="supportsTools")
     supports_streaming: bool = Field(alias="supportsStreaming")
 

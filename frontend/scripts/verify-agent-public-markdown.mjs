@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import {
+  renderToReadableStream,
+  renderToStaticMarkup,
+} from "react-dom/server";
 import { createServer } from "vite";
 
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
@@ -16,6 +19,12 @@ const server = await createServer({
     alias: { "@": new URL("../src", import.meta.url).pathname },
   },
 });
+
+async function renderToSettledMarkup(element) {
+  const stream = await renderToReadableStream(element);
+  await stream.allReady;
+  return new Response(stream).text();
+}
 
 try {
   const { default: zhMessages } = await server.ssrLoadModule(
@@ -92,6 +101,62 @@ try {
     },
   ];
   const labels = getAgentDisplayFieldLabels(edits, zhMessages.fieldLabels);
+
+  const streamingText = "正在逐字展示这段中文回复";
+  const streamingMessage = {
+    id: "assistant-streaming-text",
+    role: "assistant",
+    text: streamingText,
+    response: {
+      id: "assistant-streaming-text",
+      role: "assistant",
+      text: streamingText,
+      timeline: [
+        {
+          id: "timeline-streaming-text",
+          type: "text",
+          text: streamingText,
+          toolIds: [],
+        },
+      ],
+    },
+  };
+  const streamingMarkup = await renderToSettledMarkup(
+    createElement(AgentAssistantMessageRow, {
+      hasAgentDraft: false,
+      isStreamingAssistant: true,
+      message: streamingMessage,
+      onApplyAgentDraft: () => {},
+      onDiscardAgentDraft: () => {},
+      shouldShowDraftActions: false,
+      t: zhMessages,
+    }),
+  );
+  const settledMarkup = await renderToSettledMarkup(
+    createElement(AgentAssistantMessageRow, {
+      hasAgentDraft: false,
+      isStreamingAssistant: false,
+      message: streamingMessage,
+      onApplyAgentDraft: () => {},
+      onDiscardAgentDraft: () => {},
+      shouldShowDraftActions: false,
+      t: zhMessages,
+    }),
+  );
+
+  assert(
+    [...streamingMarkup.matchAll(/data-sd-animate="true"/g)].length >= 4,
+    "Streaming Chinese text must animate newly revealed characters instead of appearing as one rigid block.",
+  );
+  assert.match(streamingMarkup, /--sd-animation:sd-fadeIn/);
+  assert.match(streamingMarkup, /--sd-duration:120ms/);
+  assert.match(streamingMarkup, /--sd-easing:ease-out/);
+  assert.match(streamingMarkup, /--sd-delay:8ms/);
+  assert.doesNotMatch(
+    settledMarkup,
+    /data-sd-animate/,
+    "Settled history must not retain streaming animation wrappers.",
+  );
 
   assert.equal(labels.get("basic.summary"), "个人简介");
   assert.equal(labels.get("company"), "企业");

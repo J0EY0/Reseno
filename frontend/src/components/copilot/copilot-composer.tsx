@@ -26,39 +26,45 @@ import {
   AgentPromptAttachmentsDisplay,
   AgentPromptSubmitButton,
 } from './copilot-attachments'
+import type { AgentRequestPhase } from './agent-conversation-runtime'
 import { CopilotModelSelector } from './copilot-model-selector'
 import type { AgentPromptActions } from './use-agent-prompt-actions'
 
 export function CopilotComposer({
   globalDropActive,
-  isResponding,
   isSessionReady,
   modelConfigs,
   onOpenModelSettings,
-  onSelectedModelChange,
+  onSelectedModelConfigChange,
   promptActions,
-  selectedModel,
-  selectedModelId,
+  requestPhase,
+  selectedModelConfig,
+  selectedModelConfigId,
   t,
 }: {
   globalDropActive: boolean
-  isResponding: boolean
   isSessionReady: boolean
   modelConfigs: ModelConfig[]
   onOpenModelSettings: () => void
-  onSelectedModelChange: (modelId: string) => void
+  onSelectedModelConfigChange: (modelConfigId: string) => void
   promptActions: AgentPromptActions
-  selectedModel: ModelConfig | null
-  selectedModelId: string
+  requestPhase: AgentRequestPhase
+  selectedModelConfig: ModelConfig | null
+  selectedModelConfigId: string
   t: AppMessages
 }) {
-  const hasConfiguredModel = Boolean(selectedModel)
+  const hasConfiguredModel = Boolean(selectedModelConfig)
+  const isRequestBusy = requestPhase !== 'idle'
   const composerReady = canSubmitAgentPrompt({
     hasConfiguredModel,
-    isResponding,
+    isRequestBusy,
     isSessionReady,
     isSubmitting: promptActions.isSubmittingPrompt,
   })
+  const attachmentsReady =
+    hasConfiguredModel &&
+    isSessionReady &&
+    !promptActions.isSubmittingPrompt
 
   return (
     <Tooltip>
@@ -71,7 +77,7 @@ export function CopilotComposer({
         >
           <PromptInput
             accept={
-              selectedModel?.supportsImage
+              selectedModelConfig?.supportsImage
                 ? IMAGE_ATTACHMENT_ACCEPT
                 : TEXT_ATTACHMENT_ACCEPT
             }
@@ -80,7 +86,7 @@ export function CopilotComposer({
               !hasConfiguredModel &&
                 '[&_[data-slot=input-group]]:cursor-not-allowed',
             )}
-            globalDrop={globalDropActive && composerReady}
+            globalDrop={globalDropActive && attachmentsReady}
             maxFiles={promptActions.promptAttachmentCapacity}
             maxFileSize={MAX_AGENT_ATTACHMENT_BYTES}
             multiple
@@ -116,18 +122,19 @@ export function CopilotComposer({
               <PromptInputTools className="min-w-0 gap-1.5">
                 <AgentPromptAttachmentButton
                   disabled={
-                    !composerReady ||
+                    !attachmentsReady ||
                     promptActions.promptAttachmentCapacity === 0
                   }
                   label={t.agentAddAttachments}
                 />
                 <CopilotModelSelector
+                  appliesToNextMessage={isRequestBusy}
                   disabled={promptActions.isSubmittingPrompt}
                   modelConfigs={modelConfigs}
                   onOpenModelSettings={onOpenModelSettings}
-                  onSelectedModelChange={onSelectedModelChange}
-                  selectedModel={selectedModel}
-                  selectedModelId={selectedModelId}
+                  onSelectedModelConfigChange={onSelectedModelConfigChange}
+                  selectedModelConfig={selectedModelConfig}
+                  selectedModelConfigId={selectedModelConfigId}
                   t={t}
                 />
               </PromptInputTools>
@@ -140,10 +147,10 @@ export function CopilotComposer({
                 hasReferencedAttachments={
                   promptActions.referencedAttachments.length > 0
                 }
-                isResponding={isResponding}
                 isSessionReady={isSessionReady}
                 isSubmittingPrompt={promptActions.isSubmittingPrompt}
                 onStop={promptActions.stopResponding}
+                requestPhase={requestPhase}
                 t={t}
               />
             </PromptInputFooter>

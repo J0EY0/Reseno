@@ -4,7 +4,7 @@ export function createDefaultAgentSettings(
   modelConfigs: ModelConfig[] = [],
 ): AgentSettings {
   return {
-    defaultModelId: modelConfigs[0]?.id ?? '',
+    defaultModelConfigId: modelConfigs[0]?.id ?? '',
     responseLanguage: 'follow',
     behaviorMode: 'balanced',
     confirmationMode: 'always',
@@ -22,14 +22,16 @@ export function normalizeAgentSettings(
   }
 
   const raw = value as Partial<AgentSettings>
-  const rawDefaultModelId =
-    typeof raw.defaultModelId === 'string' ? raw.defaultModelId : ''
-  const hasDefaultModel = modelConfigs.some(
-    (config) => config.id === rawDefaultModelId,
+  const rawDefaultModelConfigId =
+    typeof raw.defaultModelConfigId === 'string' ? raw.defaultModelConfigId : ''
+  const hasDefaultModelConfig = modelConfigs.some(
+    (config) => config.id === rawDefaultModelConfigId,
   )
 
   return {
-    defaultModelId: hasDefaultModel ? rawDefaultModelId : defaults.defaultModelId,
+    defaultModelConfigId: hasDefaultModelConfig
+      ? rawDefaultModelConfigId
+      : defaults.defaultModelConfigId,
     responseLanguage:
       raw.responseLanguage === 'zh' ||
       raw.responseLanguage === 'en' ||

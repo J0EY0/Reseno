@@ -202,6 +202,10 @@ export function AgentMessageTimeline({
   const lastTextPartId = [...visibleParts]
     .reverse()
     .find((part) => part.type === "text")?.id;
+  const activeTextPartId =
+    isStreamingAssistant && visibleParts.at(-1)?.type === "text"
+      ? visibleParts.at(-1)?.id
+      : undefined;
   const visibleToolIds = getVisibleToolIds(tools);
   const showContinuationStatus = shouldShowTimelineContinuationStatus(
     visibleParts,
@@ -210,7 +214,12 @@ export function AgentMessageTimeline({
   );
 
   if (visibleParts.length === 0) {
-    return null;
+    return isStreamingAssistant ? (
+      <AgentToolShimmerStatus
+        className="text-sm"
+        label={t.agentToolThinking}
+      />
+    ) : null;
   }
 
   return (
@@ -221,6 +230,7 @@ export function AgentMessageTimeline({
             <div key={part.id}>
               <AgentAssistantResponse
                 fieldLabels={fieldLabels}
+                isStreaming={part.id === activeTextPartId}
                 sources={part.id === lastTextPartId ? sources : undefined}
                 text={part.text ?? ""}
               />

@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     context_window_tokens INTEGER NOT NULL,
     supports_image INTEGER NOT NULL DEFAULT 0,
     supports_thinking INTEGER NOT NULL DEFAULT 0,
+    thinking_mode TEXT NOT NULL DEFAULT 'auto'
+        CHECK (thinking_mode IN ('auto', 'off')),
+    can_disable_thinking INTEGER NOT NULL DEFAULT 0
+        CHECK (can_disable_thinking IN (0, 1)),
     supports_tools INTEGER NOT NULL DEFAULT 1,
     supports_streaming INTEGER NOT NULL DEFAULT 1,
     timeout_seconds INTEGER NOT NULL DEFAULT 60,
@@ -76,7 +80,13 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     is_default INTEGER NOT NULL DEFAULT 0,
 
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (
+        can_disable_thinking = 0
+        OR (supports_thinking = 1 AND provider_kind = 'cloud')
+    ),
+    CHECK (thinking_mode = 'auto' OR can_disable_thinking = 1)
 );
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -111,6 +121,11 @@ CREATE TABLE IF NOT EXISTS agent_turn_executions (
     run_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     turn_id TEXT NOT NULL,
+    -- These values are an immutable execution identity, not a live reference
+    -- to llm_configs. Historical attribution must survive config deletion.
+    model_config_id TEXT,
+    model_provider TEXT,
+    model_id TEXT,
     status TEXT NOT NULL
         CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
     error_code TEXT
@@ -128,7 +143,22 @@ CREATE TABLE IF NOT EXISTS agent_turn_executions (
     started_at TEXT NOT NULL,
     completed_at TEXT,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    CHECK (
+        (
+            model_config_id IS NULL
+            AND model_provider IS NULL
+            AND model_id IS NULL
+        )
+        OR (
+            model_config_id IS NOT NULL
+            AND model_provider IS NOT NULL
+            AND model_id IS NOT NULL
+            AND length(model_config_id) > 0
+            AND length(model_provider) > 0
+            AND length(model_id) > 0
+        )
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_turn_executions_session_started

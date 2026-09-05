@@ -36,9 +36,13 @@ class DraftTransaction:
         """Resolve the active candidate, immutable base, and durable edits once."""
 
         draft_state = request.draft_state
+        has_pending_review = bool(
+            draft_state
+            and any(item.status == "pending" for item in draft_state.review_items)
+        )
         active_resume = (
             draft_state.resume
-            if draft_state and draft_state.status == "pending" and draft_state.resume
+            if has_pending_review and draft_state and draft_state.resume
             else request.resume
         )
         base_resume = request.resume
@@ -51,11 +55,13 @@ class DraftTransaction:
             if isinstance(stored_base, dict):
                 base_resume = stored_base
 
+        pending_edit_ids = _pending_response_edit_ids(response)
         raw_prior_edits = response.get("edits") if response else None
         if isinstance(raw_prior_edits, list):
             prior_edits = tuple(
                 AgentResumeEditSuggestion.model_validate(edit)
                 for edit in raw_prior_edits
+                if isinstance(edit, dict) and edit.get("id") in pending_edit_ids
             )
 
         return cls(
@@ -91,7 +97,9 @@ def _pending_transaction_response(
     request: AgentChatRequest,
 ) -> dict[str, Any] | None:
     draft_state = request.draft_state
-    if not draft_state or draft_state.status != "pending":
+    if not draft_state or not any(
+        item.status == "pending" for item in draft_state.review_items
+    ):
         return None
 
     source_message_id = draft_state.source_message_id
@@ -103,11 +111,30 @@ def _pending_transaction_response(
             continue
         response = message.response
         draft = response.get("draft") if response else None
-        if isinstance(draft, dict) and draft.get("status") == "pending":
+        if isinstance(draft, dict) and _pending_response_edit_ids(response):
             return response
         return None
 
     return None
+
+
+def _pending_response_edit_ids(response: dict[str, Any] | None) -> set[str]:
+    """Return edit IDs that remain unresolved in one persisted response."""
+
+    draft = response.get("draft") if response else None
+    review_items = draft.get("reviewItems") if isinstance(draft, dict) else None
+    if not isinstance(review_items, list):
+        return set()
+    pending_edit_ids: set[str] = set()
+    for item in review_items:
+        if not isinstance(item, dict) or item.get("status") != "pending":
+            continue
+        edit_ids = item.get("editIds")
+        if isinstance(edit_ids, list):
+            pending_edit_ids.update(
+                edit_id for edit_id in edit_ids if isinstance(edit_id, str)
+            )
+    return pending_edit_ids
 
 
 @dataclass(frozen=True)

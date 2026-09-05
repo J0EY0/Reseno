@@ -78,13 +78,17 @@ def test_long_run_compacts_to_reconnectable_message_snapshot(
         monkeypatch.setattr(
             agent_runs,
             "_prepare_run_request",
-            lambda request, run_id: agent_sessions.AcceptedAgentTurn(
-                request=request,
-                run_id=run_id,
-                session_id=None,
-                turn_id=request.message.id,
-                revision=None,
-                conversation_state=AgentConversationState(),
+            lambda request, run_id: (
+                agent_sessions.AcceptedAgentTurn(
+                    request=request,
+                    run_id=run_id,
+                    session_id=None,
+                    turn_id=request.message.id,
+                    revision=None,
+                    model_snapshot=None,
+                    conversation_state=AgentConversationState(),
+                ),
+                None,
             ),
         )
 

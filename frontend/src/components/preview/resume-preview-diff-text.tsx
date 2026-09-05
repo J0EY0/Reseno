@@ -11,9 +11,11 @@ const PreciseResumeDiffText = lazy(() =>
 
 function DiffTextFallback({
   className,
+  diffs,
   value,
 }: {
   className?: string;
+  diffs: ResumeDraftDiff[];
   value: string;
 }) {
   return (
@@ -22,6 +24,7 @@ function DiffTextFallback({
         "resume-diff-field resume-diff-field--whole",
         className,
       )}
+      data-resume-diff-path={diffs.map((diff) => diff.path).join(" ")}
     >
       {value}
     </span>
@@ -44,7 +47,7 @@ export function ResumeDiffText({
   return (
     <Suspense
       fallback={
-        <DiffTextFallback className={className} value={value} />
+        <DiffTextFallback className={className} diffs={diffs} value={value} />
       }
     >
       <PreciseResumeDiffText

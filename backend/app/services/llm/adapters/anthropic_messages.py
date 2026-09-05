@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
-from app.services.thinking import ThinkingControl
+from app.services.thinking import ThinkingControl, can_project_thinking_off
 
 from ..common import (
     ANTHROPIC_VERSION,
@@ -520,10 +520,29 @@ def _payload(
         and config.api_family == "anthropic_messages"
         and provider_base_url(config.base_url) == _ANTHROPIC_OFFICIAL_BASE_URL
     )
+    effective_thinking_control = (
+        config.thinking_control if official_anthropic_request else "none"
+    )
+    if config.thinking_control == "native_off":
+        if not can_project_thinking_off(
+            provider=config.provider,
+            provider_kind=config.provider_kind,
+            api_family=config.api_family,
+            base_url=config.base_url,
+            model=config.model,
+        ):
+            # Omitting Anthropic's disabled object would restore provider-managed
+            # reasoning, violating the saved preference. Stop before network I/O.
+            raise LlmRequestError(
+                "Thinking Off is unavailable for this model configuration.",
+            )
+        # The shared projection check is the authority for Off. Do not make the
+        # disabled object depend on a second endpoint predicate that could drift.
+        effective_thinking_control = "native_off"
     prompt_cache_enabled = official_anthropic_request
     max_tokens = anthropic_request_output_tokens(config)
-    thinking = _anthropic_auto_thinking(
-        (config.thinking_control if official_anthropic_request else "none"),
+    thinking = _anthropic_thinking(
+        effective_thinking_control,
         max_tokens=max_tokens,
     )
     payload: dict[str, Any] = {
@@ -549,9 +568,10 @@ def _payload(
             payload["system"] = system
 
     if thinking is not None:
-        # Product-level Auto projects the model's discovered native protocol.
-        # Sampling overrides and output_config.effort are deliberately absent;
-        # Auto leaves those provider-owned controls at their documented defaults.
+        # The discovery-selected action is already valid for this model. Keep
+        # sampling and output_config effort absent for every explicit thinking
+        # mode: current Anthropic models constrain those controls independently,
+        # and Off must mean the exact disabled mode rather than an effort proxy.
         payload["thinking"] = thinking
     else:
         if config.temperature is not None:
@@ -570,18 +590,19 @@ def _payload(
     return payload
 
 
-def _anthropic_auto_thinking(
+def _anthropic_thinking(
     control: ThinkingControl,
     *,
     max_tokens: int,
 ) -> dict[str, Any] | None:
-    """Project discovered Anthropic capability onto one official request.
+    """Project a discovered Anthropic thinking action onto one request.
 
-    The runtime passes capability, not a model name, so this Adapter never owns
-    a model-ID table. Adaptive models receive Anthropic's provider-managed Auto.
-    Older enabled-only models instead need a manual budget: the official API
-    requires at least 1,024 thinking tokens and, without interleaving, requires
-    that budget to remain strictly below the request's inclusive ``max_tokens``.
+    The runtime passes a capability-checked action, not a model name, so this
+    Adapter never owns a model-ID table. ``native_off`` uses Anthropic's exact
+    disabled request object. Adaptive models receive provider-managed Auto.
+    Older enabled-only models need a manual budget: the API requires at least
+    1,024 thinking tokens and, without interleaving, requires that budget to
+    remain strictly below the request's inclusive ``max_tokens``.
 
     The 16K ceiling is ResuMate's Auto quality policy. It prevents legacy
     thinking from consuming an arbitrarily large discovered output capability;
@@ -589,6 +610,8 @@ def _anthropic_auto_thinking(
     visible-summary budget used by history compaction.
     """
 
+    if control == "native_off":
+        return {"type": "disabled"}
     if control == "native_auto":
         return {"type": "adaptive"}
     if control != "native_budget":

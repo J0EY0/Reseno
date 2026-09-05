@@ -108,13 +108,13 @@ class AgentLlmConfig:
     provider: str
     model: str
     base_url: str
-    api_key: str
+    api_key: str = field(repr=False)
     temperature: float | None
     top_p: float | None
     max_tokens: int | None
     timeout_seconds: int
     context_window_tokens: int | None = None
-    # Discovered provider/LiteLLM capability. This is not a user request cap.
+    # Normalized discovery/metadata capability. This is not a user request cap.
     model_max_output_tokens: int | None = None
     # Effective per-request projection, recomputed as a tool loop grows. It is
     # runtime-only and must never be persisted as the user's override.

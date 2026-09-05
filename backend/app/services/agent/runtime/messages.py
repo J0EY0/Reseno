@@ -995,17 +995,32 @@ def _current_draft_state(
     if draft is None:
         return None
 
+    pending_review_items = [
+        item for item in draft.review_items if item.status == "pending"
+    ]
+    pending_edit_ids = {
+        edit_id for item in pending_review_items for edit_id in item.edit_ids
+    }
+    pending_edits = [
+        edit
+        for edit in draft.edits
+        if isinstance(edit, dict) and edit.get("id") in pending_edit_ids
+    ]
+    pending_diffs = [
+        diff
+        for diff in draft.diffs
+        if isinstance(diff, dict) and diff.get("operationId") in pending_edit_ids
+    ]
     state: dict[str, Any] = {
         "id": draft.id,
-        "status": draft.status,
         "sourceMessageId": draft.source_message_id,
-        "editCount": draft.edit_count,
+        "pendingCount": len(pending_review_items),
         "edits": [],
         "diffs": [],
     }
     collections = (
-        ("edits", _compact_response_edits(draft.edits, token_budget=None)),
-        ("diffs", _compact_draft_diffs(draft.diffs)),
+        ("edits", _compact_response_edits(pending_edits, token_budget=None)),
+        ("diffs", _compact_draft_diffs(pending_diffs)),
     )
     for key, values in collections:
         for value in values:
@@ -1033,17 +1048,49 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
     ]
 
     state: dict[str, Any] = {}
-    if isinstance(edits, list) and edits:
+    draft = response.get("draft")
+    if isinstance(draft, dict):
+        review_items = draft.get("reviewItems")
+        review_items = review_items if isinstance(review_items, list) else []
+        review_counts = {
+            status: sum(
+                1
+                for item in review_items
+                if isinstance(item, dict) and item.get("status") == status
+            )
+            for status in ("pending", "applied", "discarded")
+        }
+        pending_edit_ids: set[str] = set()
+        for item in review_items:
+            if not isinstance(item, dict) or item.get("status") != "pending":
+                continue
+            edit_ids = item.get("editIds")
+            if isinstance(edit_ids, list):
+                pending_edit_ids.update(
+                    edit_id for edit_id in edit_ids if isinstance(edit_id, str)
+                )
+        pending_edits = [
+            edit
+            for edit in (edits if isinstance(edits, list) else [])
+            if isinstance(edit, dict) and edit.get("id") in pending_edit_ids
+        ]
+        state["draftReview"] = {
+            "pendingCount": review_counts["pending"],
+            "appliedCount": review_counts["applied"],
+            "discardedCount": review_counts["discarded"],
+        }
+        if pending_edits:
+            state["pendingEditCount"] = len(pending_edits)
+            state["edits"] = _compact_response_edits(
+                pending_edits,
+                token_budget=None,
+            )
+    elif isinstance(edits, list) and edits:
         state["editCount"] = len(edits)
         state["edits"] = _compact_response_edits(edits, token_budget=None)
     transaction_state = _string_value(response.get("transactionState"))
     if transaction_state:
         state["transactionState"] = transaction_state
-    draft = response.get("draft")
-    if isinstance(draft, dict):
-        draft_status = _string_value(draft.get("status"))
-        if draft_status:
-            state["draftStatus"] = draft_status
     if isinstance(tools, list) and tools:
         state["toolCount"] = len(tools)
     if isinstance(sources, list) and sources:
@@ -1181,7 +1228,7 @@ def _context_budget(
     *,
     tool_schema_tokens: int,
 ) -> _ContextBudget | None:
-    window_tokens = _context_window_tokens(request, config)
+    window_tokens = _context_window_tokens(config)
     if window_tokens is None:
         return None
 
@@ -1276,16 +1323,7 @@ def _fit_attachment_context(
     return files
 
 
-def _context_window_tokens(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-) -> int | None:
-    settings_value = request.settings.get("contextWindowTokens")
-    if isinstance(settings_value, int) and settings_value > 0:
-        return settings_value
-    if isinstance(settings_value, str) and settings_value.isdigit():
-        return int(settings_value)
-
+def _context_window_tokens(config: AgentLlmConfig) -> int | None:
     if config.context_window_tokens and config.context_window_tokens > 0:
         return config.context_window_tokens
 

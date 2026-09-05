@@ -70,6 +70,66 @@ async def _collect(events: AsyncIterator[LlmStreamEvent]) -> list[LlmStreamEvent
     return [event async for event in events]
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("openai", "https://api.openai.com/v1"),
+        ("xai", "https://api.x.ai/v1"),
+    ],
+)
+def test_native_off_uses_the_responses_api_none_reasoning_effort(
+    provider: str,
+    base_url: str,
+) -> None:
+    params = openai_responses.responses_params(
+        replace(
+            _config(),
+            provider=provider,
+            base_url=base_url,
+            thinking_control="native_off",
+        ),
+        LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+    )
+
+    assert params["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"provider_kind": "custom"},
+        {"api_family": "openai_compatible_chat"},
+        {"base_url": "https://responses-compatible.example.test/v1"},
+    ],
+)
+def test_native_off_fails_closed_for_an_unverified_responses_target(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(
+        LlmRequestError,
+        match="Thinking Off is unavailable for this model configuration",
+    ):
+        openai_responses.responses_params(
+            replace(_config(), thinking_control="native_off", **overrides),
+            LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+        )
+
+
+@pytest.mark.parametrize(
+    "thinking_control",
+    ["none", "provider_default", "native_auto", "native_budget"],
+)
+def test_responses_auto_controls_do_not_approximate_an_off_effort(
+    thinking_control: str,
+) -> None:
+    params = openai_responses.responses_params(
+        replace(_config(), thinking_control=thinking_control),
+        LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+    )
+
+    assert "reasoning" not in params
+
+
 def test_tool_stream_exposes_calls_only_from_completed_response(monkeypatch) -> None:
     provider_stream = AsyncStream(
         [

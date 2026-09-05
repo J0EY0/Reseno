@@ -418,7 +418,13 @@ def test_pending_transaction_state_is_resolved_once_inside_draft_module() -> Non
                     response={
                         "draft": {
                             "baseResume": saved_resume,
-                            "status": "pending",
+                            "reviewItems": [
+                                {
+                                    "id": "agent-review-edit-prior-summary",
+                                    "editIds": ["edit-prior-summary"],
+                                    "status": "pending",
+                                },
+                            ],
                         },
                         "edits": [prior_edit],
                         "transactionState": "committed",
@@ -427,9 +433,16 @@ def test_pending_transaction_state_is_resolved_once_inside_draft_module() -> Non
             ],
             "draft_state": AgentDraftState(
                 id="draft-prior",
-                status="pending",
                 sourceMessageId="assistant-prior-draft",
                 resume=pending_resume,
+                pendingCount=1,
+                reviewItems=[
+                    {
+                        "id": "agent-review-edit-prior-summary",
+                        "editIds": ["edit-prior-summary"],
+                        "status": "pending",
+                    },
+                ],
                 edits=[
                     {
                         **prior_edit,

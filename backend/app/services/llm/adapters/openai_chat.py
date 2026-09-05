@@ -16,6 +16,7 @@ from ..common import (
     map_stop_reason,
     minimax_reasoning_details,
     object_dict,
+    official_deepseek_thinking,
     official_minimax_reasoning_split,
     openai_chat_function_tools,
     openai_chat_usage,
@@ -141,17 +142,12 @@ def _tool_completion_params(
         ),
         "tools": openai_chat_function_tools(tools),
     }
-    if not (
-        config.provider == "deepseek"
-        and config.provider_kind == "cloud"
-        and config.api_family == "openai_compatible_chat"
-        and config.thinking_control != "none"
-        and config.base_url.strip().rstrip("/") == "https://api.deepseek.com"
-    ):
+    if not official_deepseek_thinking(config):
         # `auto` permits either text or tools; it does not force a call. Keep it
         # for compatible runtimes such as vLLM whose protocol default is `none`.
-        # Official DeepSeek thinking rejects the field, so only that exact
-        # provider projection relies on its own default tool-selection mode.
+        # Official DeepSeek thinking rejects the field, so only a thinking-on
+        # request to that exact endpoint relies on its default tool selection.
+        # A native Off request uses ordinary non-thinking tool semantics.
         params["tool_choice"] = "auto"
     return params
 

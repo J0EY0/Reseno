@@ -6,7 +6,11 @@ from .dispatch import (
     async_stream_tool_call,
     supports_native_attachment,
 )
-from .errors import LlmRequestError, LlmTimeoutError
+from .errors import (
+    LlmRequestError,
+    LlmThinkingModeUnsupportedError,
+    LlmTimeoutError,
+)
 from .types import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -25,6 +29,7 @@ __all__ = [
     "LlmPrompt",
     "LlmRequestError",
     "LlmRequestContext",
+    "LlmThinkingModeUnsupportedError",
     "LlmTimeoutError",
     "LlmStreamEvent",
     "LlmToolCall",

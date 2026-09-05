@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
-import type {
-  ResumeDiffLookup,
-} from "@/components/preview/resume-preview-diffs";
+import { createResumeDiffLookup } from "@/components/preview/resume-preview-diff-lookup";
+import type { ResumeDiffLookup } from "@/components/preview/resume-preview-diffs";
 import { createResumePreviewStyles } from "@/components/preview/resume-preview-styles";
 import type { AppMessages } from "@/i18n";
 import { projectResumeSections } from "@/lib/resume-sections";
@@ -50,6 +49,8 @@ export interface ResumePreviewModel {
 
 const emptyDiffLookup: ResumeDiffLookup = {
   basicDiffByField: new Map(),
+  deletedItemDiffsBySectionId: new Map(),
+  deletedSectionDiffs: [],
   itemDiffById: new Map(),
   sectionDiffById: new Map(),
 };
@@ -137,34 +138,17 @@ export function useResumePreviewModel({
   t: AppMessages;
   template: ResumeTemplateDefinition;
 }): ResumePreviewModel {
-  const [resolvedDiffs, setResolvedDiffs] = useState<
-    [ResumeDraftDiff[], ResumeDiffLookup] | null
-  >(null);
-  useEffect(() => {
-    if (!diffs?.length) {
-      return;
-    }
-    let active = true;
-    void import("@/components/preview/resume-preview-diff-lookup").then(
-      ({ createResumeDiffLookup }) => {
-        if (active) {
-          setResolvedDiffs([diffs, createResumeDiffLookup(diffs)]);
-        }
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [diffs]);
-  const rawDiffLookup =
-    resolvedDiffs && resolvedDiffs[0] === diffs
-      ? resolvedDiffs[1]
-      : emptyDiffLookup;
+  // The rendered resume and its diff lookup form one presentation. Building
+  // both in the same render prevents a transient frame without review marks
+  // when the user moves between the aggregate and single-item views.
+  const diffLookup = useMemo(
+    () => (diffs?.length ? createResumeDiffLookup(diffs) : emptyDiffLookup),
+    [diffs],
+  );
   const projectedSections = useMemo(
     () => projectResumeSections(resume.sections),
     [resume.sections],
   );
-  const diffLookup = rawDiffLookup;
   const visibleSections = useMemo(
     () =>
       projectedSections.filter(

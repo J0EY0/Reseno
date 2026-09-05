@@ -499,6 +499,7 @@ def test_cleanup_cannot_delete_attachment_referenced_by_committed_history(
                 conn,
                 request,
                 run_id="run-cleanup-race",
+                resolved_config=None,
             )
         except BaseException as exc:
             prepare_errors.append(exc)
@@ -760,6 +761,7 @@ def test_accept_turn_rolls_back_when_attachment_protection_fails(
                 conn,
                 request,
                 run_id="run-attachment-rollback",
+                resolved_config=None,
             )
 
         message_count = conn.execute(
@@ -802,6 +804,7 @@ def test_stale_assistant_is_rejected_after_a_newer_turn_is_accepted(
             conn,
             request,
             run_id="run-old",
+            resolved_config=None,
         )
         agent_sessions.accept_agent_turn(
             conn,
@@ -818,6 +821,7 @@ def test_stale_assistant_is_rejected_after_a_newer_turn_is_accepted(
                 ),
             ),
             run_id="run-new",
+            resolved_config=None,
         )
 
         with pytest.raises(agent_sessions.AgentSessionTurnConflictError):
@@ -930,6 +934,7 @@ def test_user_message_and_attachment_state_are_compensated_on_db_failure(
                 conn,
                 request,
                 run_id="run-user-message-compensation",
+                resolved_config=None,
             )
         message_count = conn.execute(
             "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",

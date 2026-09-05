@@ -1615,8 +1615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         suite = load_suite(args.fixture)
         cases = _selected_cases(suite, args.case_ids)
         with closing(connect()) as conn:
-            selection = {"id": args.model_config_id} if args.model_config_id else None
-            config = resolve_agent_llm_config(conn, selection)
+            config = resolve_agent_llm_config(conn, args.model_config_id or None)
         if config is None:
             raise RuntimeError("No enabled LLM configuration was found.")
         if not config.supports_tools:

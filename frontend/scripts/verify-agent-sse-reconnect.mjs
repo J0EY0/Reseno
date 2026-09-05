@@ -98,6 +98,11 @@ async function captureError(action) {
   throw new Error("Expected Agent stream consumption to fail.");
 }
 
+function setAgentRequestPhase(runtime, updates, phase) {
+  runtime.requestPhase = phase;
+  updates.setRequestPhase(phase);
+}
+
 const messageCodec = await loadTypeScriptModule("agent-message-codec.ts");
 const agentStreamClient = await loadTypeScriptModule(
   "agent-stream-client.ts",
@@ -118,6 +123,7 @@ const agentRunStreamHook = await loadTypeScriptModule(
       isAbortError: (error) => error?.name === "AbortError",
       isApiErrorToastShown: () => false,
     },
+    "./agent-conversation-runtime": { setAgentRequestPhase },
     "./copilot-message-model": {
       getEditsPreviewKey: () => "",
       toAssistantPanelMessage: (message) => message,
@@ -198,16 +204,16 @@ const agentRunStreamHook = await loadTypeScriptModule(
     return createEventStream();
   };
   const abortController = new AbortController();
-  const respondingWrites = [];
+  const requestPhaseWrites = [];
   const streamingWrites = [];
   const runtime = {
     activeRequestAbort: abortController,
     activeRun: null,
     currentResumeId: "resume-active-after-exhaustion",
-    isResponding: true,
     onPreviewAgentEdits: () => undefined,
     onRollbackAgentDraft: () => undefined,
     previewedEditsKey: null,
+    requestPhase: "responding",
     requestFailedText: "request failed",
     requestResume: null,
     sessionReady: true,
@@ -219,8 +225,8 @@ const agentRunStreamHook = await loadTypeScriptModule(
     refreshAgentSession: () => Promise.resolve(null),
     runtimeRef: { current: runtime },
     updates: {
-      setIsResponding: (value) => respondingWrites.push(value),
       setMessages: () => undefined,
+      setRequestPhase: (value) => requestPhaseWrites.push(value),
       setSessionLoadError: () => undefined,
       setSessionReady: () => undefined,
       setStreamingMessage: (value) => streamingWrites.push(value),
@@ -254,7 +260,7 @@ const agentRunStreamHook = await loadTypeScriptModule(
     "Transport exhaustion must preserve the accepted active run so Stop can still target it.",
   );
   assert.equal(
-    respondingWrites.includes(false),
+    requestPhaseWrites.includes("idle"),
     false,
     "Transport exhaustion must keep the send gate closed while the backend run may still be active.",
   );

@@ -1,6 +1,8 @@
-import { type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
+import { ResumeDeletedDiffAnchor } from "@/components/preview/resume-preview-deleted-anchor";
+import { interleaveDeletedDiffs } from "@/components/preview/resume-preview-deleted-placement";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import type {
   ItemDiffLookup,
@@ -21,6 +23,7 @@ import type {
 } from "@/lib/resume-sections";
 import { cn } from "@/lib/utils";
 import type {
+  ResumeDraftDiff,
   ResumeTemplateLayout,
   ResumeTemplateSettings,
 } from "@/types/resume";
@@ -91,6 +94,7 @@ function AccentSectionTitle({
 }
 
 interface SectionBlockProps {
+  deletedItemDiffs?: ResumeDraftDiff[];
   diff?: SectionDiffLookup;
   enableContactLinks: boolean;
   isSidebarLayout: boolean;
@@ -104,6 +108,7 @@ interface SectionBlockProps {
 }
 
 function SectionBlock({
+  deletedItemDiffs,
   diff,
   enableContactLinks,
   isSidebarLayout,
@@ -140,6 +145,7 @@ function SectionBlock({
         data-resume-section-id={section.id}
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
+        data-resume-diff-path={structuralDiff?.path}
         data-resume-section-layout={layout.section}
         style={{ borderColor: settings.dividerColor }}
       >
@@ -173,6 +179,7 @@ function SectionBlock({
             enableContactLinks={enableContactLinks}
             items={visibleItems}
             itemDiffById={itemDiffById}
+            deletedItemDiffs={deletedItemDiffs}
           />
         </div>
       </section>
@@ -190,6 +197,7 @@ function SectionBlock({
         data-resume-section-id={section.id}
         data-resume-diff-kind={markerDiff?.kind}
         data-resume-diff-label={getDiffLabel(markerDiff, t)}
+        data-resume-diff-path={structuralDiff?.path}
         data-resume-section-layout={layout.section}
       >
         <ResumeDiffBadge diff={markerDiff} t={t} />
@@ -219,6 +227,7 @@ function SectionBlock({
             enableContactLinks={enableContactLinks}
             items={visibleItems}
             itemDiffById={itemDiffById}
+            deletedItemDiffs={deletedItemDiffs}
           />
         </div>
       </section>
@@ -235,6 +244,7 @@ function SectionBlock({
       data-resume-section-id={section.id}
       data-resume-diff-kind={markerDiff?.kind}
       data-resume-diff-label={getDiffLabel(markerDiff, t)}
+      data-resume-diff-path={structuralDiff?.path}
       data-resume-section-layout={layout.section}
     >
       <ResumeDiffBadge diff={markerDiff} t={t} />
@@ -273,6 +283,7 @@ function SectionBlock({
           enableContactLinks={enableContactLinks}
           items={visibleItems}
           itemDiffById={itemDiffById}
+          deletedItemDiffs={deletedItemDiffs}
         />
       </div>
     </section>
@@ -281,6 +292,8 @@ function SectionBlock({
 
 export function SectionsList({
   className,
+  deletedItemDiffsBySectionId,
+  deletedSectionDiffs = [],
   enableContactLinks,
   isSidebarLayout,
   itemDiffById,
@@ -291,6 +304,8 @@ export function SectionsList({
   t,
 }: {
   className?: string;
+  deletedItemDiffsBySectionId?: Map<string, ResumeDraftDiff[]>;
+  deletedSectionDiffs?: ResumeDraftDiff[];
   enableContactLinks: boolean;
   isSidebarLayout: boolean;
   itemDiffById?: Map<string, ItemDiffLookup>;
@@ -300,6 +315,11 @@ export function SectionsList({
   settings: ResumeTemplateSettings;
   t: AppMessages;
 }) {
+  const deleted = interleaveDeletedDiffs(
+    sections.map((entry) => ({ id: entry.section.id })),
+    deletedSectionDiffs,
+  );
+
   return (
     <div
       className={cn("relative grid", className)}
@@ -307,21 +327,34 @@ export function SectionsList({
       style={{ gap: `${settings.sectionGap}em` }}
     >
       {sections.map((section) => (
-        <SectionBlock
-          key={`${section.section.id}-${section.showTitle ? "title" : "continue"}-${section.items
-            .map((item) => item.id)
-            .join("-")}`}
-          section={section.section}
-          items={section.items}
-          showTitle={section.showTitle}
-          t={t}
-          settings={settings}
-          layout={layout}
-          enableContactLinks={enableContactLinks}
-          isSidebarLayout={isSidebarLayout}
-          diff={sectionDiffById?.get(section.section.id)}
-          itemDiffById={itemDiffById}
-        />
+        <Fragment key={`${section.section.id}-${section.showTitle ? "title" : "continue"}-${section.items
+          .map((item) => item.id)
+          .join("-")}`}>
+          {(deleted.beforeById.get(section.section.id) ?? []).map((diff) => (
+            <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
+          ))}
+          <SectionBlock
+            section={section.section}
+            items={section.items}
+            showTitle={section.showTitle}
+            t={t}
+            settings={settings}
+            layout={layout}
+            enableContactLinks={enableContactLinks}
+            isSidebarLayout={isSidebarLayout}
+            diff={sectionDiffById?.get(section.section.id)}
+            itemDiffById={itemDiffById}
+            deletedItemDiffs={deletedItemDiffsBySectionId?.get(
+              section.section.id,
+            )}
+          />
+          {(deleted.afterById.get(section.section.id) ?? []).map((diff) => (
+            <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
+          ))}
+        </Fragment>
+      ))}
+      {deleted.unplaced.map((diff) => (
+        <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
       ))}
     </div>
   );

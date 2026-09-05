@@ -243,29 +243,24 @@ try {
   const { AgentChangeSummary } = await server.ssrLoadModule(
     "/src/components/copilot/copilot-change-summary.tsx",
   );
-  const renderSummary = (edits, draftDiffs, tools = []) =>
+  const renderSummary = (reviewItems, tools = []) =>
     renderToStaticMarkup(
       createElement(AgentChangeSummary, {
-        draftDiffs,
-        hasAgentDraft: false,
-        onApplyAgentDraft: () => undefined,
-        onDiscardAgentDraft: () => undefined,
         response: {
           id: "assistant-1",
           role: "assistant",
           text: "Updated the resume.",
           transactionState: "committed",
-          edits,
+          edits: [multiFieldEdit],
           tools,
+          draft: {
+            baseResume: {},
+            reviewItems,
+          },
         },
-        shouldShowDraftActions: false,
         t: {
-          agentApplyDraft: "Apply",
-          agentChangeSummaryTitle: "Change summary",
-          agentDiffAfter: "After",
-          agentDiffBefore: "Before",
-          agentDiscardDraft: "Discard",
-          agentDraftSynced: "Draft synced",
+          agentDraftResolutionReceipt:
+            "Applied {applied}, discarded {discarded}",
           agentQualityDuplicateContent: "Duplicate content",
           agentQualityGeneral: "Review this suggestion",
           agentQualityInconsistentTense: "Inconsistent tense",
@@ -274,24 +269,28 @@ try {
           agentQualityTargetCoverage: "Target coverage",
           agentQualityUnsupportedClaim: "Unsupported claim",
           agentQualityWarnings: "{count} warnings",
-          agentReviewReady: "{count} changes ready",
         },
       }),
     );
-  const summaryMarkup = renderSummary([multiFieldEdit]);
-  assert.match(summaryMarkup, />Refine project</);
-  assert.match(summaryMarkup, /role="group"/);
-  assert.match(summaryMarkup, /aria-label="Project Description"/);
-  assert.match(summaryMarkup, /aria-label="Project Highlights"/);
-  assert.doesNotMatch(summaryMarkup, />Project Description</);
-  assert.doesNotMatch(summaryMarkup, />Project Highlights</);
-  assert.doesNotMatch(summaryMarkup, /aria-label="Project Period"/);
-  assert.match(summaryMarkup, /2 changes ready/);
-  assert.match(summaryMarkup, /Built an AI resume editor with real-time preview\./);
-  assert.match(summaryMarkup, /Reduced state complexity/);
-
-  const warningMarkup = renderSummary([multiFieldEdit], undefined, [
-    {
+  const pendingMarkup = renderSummary([
+    { id: "review-1", editIds: [multiFieldEdit.id], status: "pending" },
+  ]);
+  assert.equal(
+    pendingMarkup,
+    "",
+    "Pending review controls belong to the composer dock, not message history.",
+  );
+  const receiptMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "applied" },
+    { id: "review-2", editIds: ["edit-2"], status: "applied" },
+    { id: "review-3", editIds: ["edit-3"], status: "discarded" },
+  ]);
+  assert.match(receiptMarkup, /data-slot="agent-draft-resolution-receipt"/);
+  assert.match(receiptMarkup, /Applied 2, discarded 1/);
+  assert.doesNotMatch(receiptMarkup, /Apply draft|Discard draft|role="group"/);
+  const warningMarkup = renderSummary(
+    [{ id: "review-1", editIds: ["edit-1"], status: "pending" }],
+    [{
       state: "output-available",
       output: {
         qualityIssues: [
@@ -307,68 +306,79 @@ try {
           },
         ],
       },
-    },
-  ]);
+    }],
+  );
   assert.match(warningMarkup, /2 warnings/);
   assert.match(warningMarkup, /Target coverage/);
   assert.match(warningMarkup, /Unsupported claim/);
   assert.doesNotMatch(warningMarkup, /target_requirements_not_covered/);
-  assert.doesNotMatch(warningMarkup, /sections\.project/);
 
-  const richListEdit = {
-    id: "edit-skills-list",
-    title: "Group related skills",
-    target: "sections.skills.items.skills-list.content",
-    reason: "Make the skills easier to scan",
-    diffs: [{
-      id: "diff-skills-list-content",
-      operationId: "edit-skills-list",
-      path: "sections.skills.items.skills-list.content",
-      kind: "modified",
-      label: "Skills",
-      sectionId: "skills",
-      itemId: "skills-list",
-      before: "<ul><li>React</li><li>TypeScript</li></ul>",
-      after: "<ul><li>Professional skills: React, TypeScript</li><li>Language: English</li></ul>",
-    }],
+  const { AgentDraftReviewDock } = await server.ssrLoadModule(
+    "/src/components/copilot/agent-draft-review-dock.tsx",
+  );
+  const dockMessages = {
+    agentApplyRemaining: "Apply remaining",
+    agentApplyThis: "Apply this change",
+    agentApplyingDraft: "Applying change",
+    agentDiscardRemaining: "Discard remaining",
+    agentDiscardThis: "Discard this change",
+    agentDiscardingDraft: "Discarding change",
+    agentDraftReview: "Draft change review",
+    agentReviewAll: "All",
+    agentReviewNext: "Next change",
+    agentReviewOneByOne: "Review one by one",
+    agentReviewPrevious: "Previous change",
+    agentReviewRemaining: "{count} remaining",
+    agentReviewSingleMode: "Single preview",
+    agentReviewSinglePosition: "{current} of {total}",
   };
-  const richListMarkup = renderSummary([richListEdit]);
-  assert.doesNotMatch(
-    richListMarkup,
-    /&lt;\/?(?:ul|li)&gt;/,
-    "Change summaries must not expose rich-text storage tags to users.",
+  const dockActions = {
+    onApply: () => undefined,
+    onDiscard: () => undefined,
+    onNext: () => undefined,
+    onPrevious: () => undefined,
+    onSelectFirst: () => undefined,
+    onShowAll: () => undefined,
+  };
+  const allDockMarkup = renderToStaticMarkup(
+    createElement(AgentDraftReviewDock, {
+      t: dockMessages,
+      view: {
+        ...dockActions,
+        disabled: false,
+        mode: "all",
+        pendingCount: 5,
+        resolvingStatus: null,
+        selectedIndex: -1,
+      },
+    }),
   );
-  assert.match(richListMarkup, /• React/);
-  assert.match(richListMarkup, /• Professional skills: React, TypeScript/);
+  assert.match(allDockMarkup, /5 remaining/);
+  assert.match(allDockMarkup, /data-orientation="horizontal"/);
+  assert.match(allDockMarkup, /Apply remaining/);
+  assert.match(allDockMarkup, /Discard remaining/);
+  assert.match(allDockMarkup, /aria-label="Review one by one"/);
+  assert.doesNotMatch(allDockMarkup, /data-variant="(?:default|outline)"/);
 
-  const locallyMergedMarkup = renderSummary(
-    [multiFieldEdit],
-    [{ ...multiFieldEdit.diffs[0], label: "Generic local edit" }],
+  const singleDockMarkup = renderToStaticMarkup(
+    createElement(AgentDraftReviewDock, {
+      t: dockMessages,
+      view: {
+        ...dockActions,
+        disabled: false,
+        mode: "single",
+        pendingCount: 4,
+        resolvingStatus: "applied",
+        selectedIndex: 1,
+      },
+    }),
   );
-  assert.match(
-    locallyMergedMarkup,
-    /1 changes ready/,
-    "The summary count must reflect only fields that remain in the local three-way merge.",
-  );
-  assert.match(locallyMergedMarkup, /aria-label="Project Description"/);
-  assert.doesNotMatch(locallyMergedMarkup, />Project Description</);
-  assert.doesNotMatch(
-    locallyMergedMarkup,
-    /aria-label="Generic local edit"/,
-    "Local merge values must retain the canonical field label from the server observation.",
-  );
-  assert.doesNotMatch(
-    locallyMergedMarkup,
-    /aria-label="Project Highlights"/,
-    "A field already satisfied by a concurrent local edit must not remain in the draft summary.",
-  );
-
-  const sameTargetMarkup = renderSummary(sameTargetEdits);
-  assert.equal((sameTargetMarkup.match(/aria-label="Summary"/g) ?? []).length, 1);
-  assert.doesNotMatch(sameTargetMarkup, />Summary</);
-  assert.match(sameTargetMarkup, /1 changes ready/);
-  assert.match(sameTargetMarkup, />A</);
-  assert.match(sameTargetMarkup, />C</);
+  assert.match(singleDockMarkup, /2 of 4/);
+  assert.match(singleDockMarkup, /Single preview/);
+  assert.match(singleDockMarkup, /Apply this change/);
+  assert.match(singleDockMarkup, /Discard this change/);
+  assert.match(singleDockMarkup, /aria-label="Applying change"/);
+  assert.match(singleDockMarkup, /disabled=""/);
 
   const revertedEdits = [
     sameTargetEdits[0],
@@ -782,11 +792,6 @@ try {
     ],
     "Distinct canonical targets must not collide when their serialized paths match.",
   );
-  const revertedMarkup = renderSummary(revertedEdits);
-  assert.match(revertedMarkup, /0 changes ready/);
-  assert.doesNotMatch(revertedMarkup, />Summary</);
-  assert.doesNotMatch(revertedMarkup, />A</);
-  assert.doesNotMatch(revertedMarkup, />B</);
 } finally {
   await server.close();
 }

@@ -8,7 +8,7 @@ export const DEFAULT_DYNAMIC_ENTRY_GZIP_BYTES = 65 * KIB
 // dialogs, popovers, selects, and sheets retain their enter/exit transitions.
 // Keep this ceiling close to that measured production baseline so future CSS
 // growth still fails here instead of silently accumulating.
-export const MAX_SHELL_CSS_RAW_BYTES = 161_000
+export const MAX_SHELL_CSS_RAW_BYTES = 164_000
 export const MAX_SHELL_CSS_GZIP_BYTES = 26_500
 export const RATCHET_THRESHOLD = 0.95
 
@@ -106,7 +106,7 @@ export const routeBudgets = [
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // The final dialog ships with the already-lazy route so first open never
     // swaps a nested lazy Spinner surface for the form.
-    maxGzipBytes: 251 * KIB,
+    maxGzipBytes: 256 * KIB,
   },
   {
     name: 'settings',

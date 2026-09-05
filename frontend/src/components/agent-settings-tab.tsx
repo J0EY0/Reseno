@@ -80,9 +80,9 @@ export function AgentSettingsTab({
   const agentModelConfigs = modelConfigs.filter(
     (config) => config.supportsTools,
   );
-  const selectedDefaultModel =
+  const selectedDefaultModelConfig =
     agentModelConfigs.find(
-      (config) => config.id === agentSettings.defaultModelId,
+      (config) => config.id === agentSettings.defaultModelConfigId,
     ) ?? null;
 
   return (
@@ -94,12 +94,12 @@ export function AgentSettingsTab({
           description={t.defaultAgentModelHint}
         >
           <Select
-            value={selectedDefaultModel?.id}
+            value={selectedDefaultModelConfig?.id}
             disabled={agentModelConfigs.length === 0}
             onValueChange={(value) =>
               onAgentSettingsChange({
                 ...agentSettings,
-                defaultModelId: value,
+                defaultModelConfigId: value,
               })
             }
           >
@@ -108,9 +108,9 @@ export function AgentSettingsTab({
               className="ml-auto w-full sm:max-w-64"
             >
               <SelectValue placeholder={t.agentModelNotConfigured}>
-                {selectedDefaultModel ? (
+                {selectedDefaultModelConfig ? (
                   <ModelOption
-                    config={selectedDefaultModel}
+                    config={selectedDefaultModelConfig}
                     notConfiguredLabel={t.agentModelNotConfigured}
                   />
                 ) : (

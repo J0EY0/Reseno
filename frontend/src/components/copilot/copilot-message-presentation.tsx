@@ -4,7 +4,6 @@ import {
 } from "@/components/ai-elements/message";
 import type { AppMessages } from "@/i18n";
 import { getAgentDisplayFieldLabels } from "@/lib/agent-message-rendering";
-import type { ResumeDraftDiff } from "@/types/resume";
 import { lazy, memo, Suspense, useMemo } from "react";
 
 import { AgentAssistantResponse } from "./copilot-assistant-response";
@@ -38,22 +37,12 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
  * their object identity and can skip work while only the active row changes.
  */
 export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
-  draftDiffs,
-  hasAgentDraft,
   isStreamingAssistant,
   message,
-  onApplyAgentDraft,
-  onDiscardAgentDraft,
-  shouldShowDraftActions,
   t,
 }: {
-  draftDiffs?: ResumeDraftDiff[];
-  hasAgentDraft: boolean;
   isStreamingAssistant: boolean;
   message: AgentPanelMessage;
-  onApplyAgentDraft: () => void;
-  onDiscardAgentDraft: () => void;
-  shouldShowDraftActions: boolean;
   t: AppMessages;
 }) {
   const response = message.response;
@@ -84,6 +73,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
               <div>
                 <AgentAssistantResponse
                   fieldLabels={fieldLabels}
+                  isStreaming={isStreamingAssistant}
                   sources={response?.sources}
                   text={message.text}
                 />
@@ -103,12 +93,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
         {response?.edits?.length ? (
           <Suspense fallback={null}>
             <AgentChangeSummary
-              draftDiffs={draftDiffs}
-              hasAgentDraft={hasAgentDraft}
-              onApplyAgentDraft={onApplyAgentDraft}
-              onDiscardAgentDraft={onDiscardAgentDraft}
               response={response}
-              shouldShowDraftActions={shouldShowDraftActions}
               t={t}
             />
           </Suspense>

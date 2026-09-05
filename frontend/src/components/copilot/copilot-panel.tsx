@@ -1,6 +1,10 @@
 import { PromptInputProvider } from '@/components/ai-elements/prompt-input-context'
 import { useLayoutEffect, useMemo } from 'react'
 
+import {
+  AgentDraftReviewDock,
+  type AgentDraftReviewDockView,
+} from './agent-draft-review-dock'
 import { CopilotComposer } from './copilot-composer'
 import { CopilotConversationView } from './copilot-conversation-view'
 import { CopilotPanelBodyFrame } from './copilot-panel-shell'
@@ -21,10 +25,10 @@ export function CopilotPanel({
   documentLocale,
   resume,
   modelConfigs,
-  selectedModelId,
-  onSelectedModelChange,
-  hasAgentDraft,
+  selectedModelConfigId,
+  onSelectedModelConfigChange,
   agentDraftState,
+  agentDraftReview,
   onPreviewAgentEdits,
   onReconcileAgentDraft,
   onRollbackAgentDraft,
@@ -38,11 +42,11 @@ export function CopilotPanel({
     () => modelConfigs.filter((config) => config.supportsTools),
     [modelConfigs],
   )
-  const selectedModel = useMemo(
+  const selectedModelConfig = useMemo(
     () =>
-      agentModelConfigs.find((config) => config.id === selectedModelId) ??
+      agentModelConfigs.find((config) => config.id === selectedModelConfigId) ??
       null,
-    [agentModelConfigs, selectedModelId],
+    [agentModelConfigs, selectedModelConfigId],
   )
   const conversation = useAgentConversation({
     agentDraftState,
@@ -55,12 +59,13 @@ export function CopilotPanel({
     onRollbackAgentDraft,
     resume,
     resumeId,
-    selectedModel,
+    selectedModelConfig,
     t,
   })
+  const isRequestBusy = conversation.requestPhase !== 'idle'
   const promptActions = useAgentPromptActions({
-    hasConfiguredModel: Boolean(selectedModel),
-    isResponding: conversation.isResponding,
+    hasConfiguredModel: Boolean(selectedModelConfig),
+    isRequestBusy,
     isSessionReady: conversation.isSessionReady,
     resumeId,
     sessionResetVersion: conversation.sessionResetVersion,
@@ -69,7 +74,7 @@ export function CopilotPanel({
     t,
   })
   const messageActions = useAgentMessageActions({
-    isResponding: conversation.isResponding,
+    isRequestBusy,
     messages: conversation.messages,
     resumeId,
     sessionResetVersion: conversation.sessionResetVersion,
@@ -79,6 +84,32 @@ export function CopilotPanel({
   const { composerRef, conversationContextRef, conversationLayoutRef } =
     useAgentComposerLayout()
   const globalDropActive = !isPanelCollapsed
+  const reviewDockView = useMemo<AgentDraftReviewDockView | null>(() => {
+    if (!agentDraftReview) {
+      return null
+    }
+
+    return {
+      disabled:
+        agentDraftReview.disabled ||
+        isRequestBusy ||
+        !conversation.isSessionReady,
+      mode: agentDraftReview.mode,
+      onApply: () => {
+        void conversation.applyAgentDraft()
+      },
+      onDiscard: () => {
+        void conversation.discardAgentDraft()
+      },
+      onNext: agentDraftReview.selectNext,
+      onPrevious: agentDraftReview.selectPrevious,
+      onSelectFirst: agentDraftReview.selectFirst,
+      onShowAll: agentDraftReview.showAll,
+      pendingCount: agentDraftReview.pendingCount,
+      resolvingStatus: agentDraftReview.resolvingStatus,
+      selectedIndex: agentDraftReview.selectedIndex,
+    }
+  }, [agentDraftReview, conversation, isRequestBusy])
 
   useLayoutEffect(() => {
     onStatusChange(conversation.status)
@@ -88,18 +119,21 @@ export function CopilotPanel({
     <PromptInputProvider>
       <CopilotPanelBodyFrame
         composer={
-          <CopilotComposer
-            globalDropActive={globalDropActive}
-            isResponding={conversation.isResponding}
-            isSessionReady={conversation.isSessionReady}
-            modelConfigs={agentModelConfigs}
-            onOpenModelSettings={onOpenModelSettings}
-            onSelectedModelChange={onSelectedModelChange}
-            promptActions={promptActions}
-            selectedModel={selectedModel}
-            selectedModelId={selectedModelId}
-            t={t}
-          />
+          <div className="grid gap-2">
+            <AgentDraftReviewDock t={t} view={reviewDockView} />
+            <CopilotComposer
+              globalDropActive={globalDropActive}
+              isSessionReady={conversation.isSessionReady}
+              modelConfigs={agentModelConfigs}
+              onOpenModelSettings={onOpenModelSettings}
+              onSelectedModelConfigChange={onSelectedModelConfigChange}
+              promptActions={promptActions}
+              requestPhase={conversation.requestPhase}
+              selectedModelConfig={selectedModelConfig}
+              selectedModelConfigId={selectedModelConfigId}
+              t={t}
+            />
+          </div>
         }
         composerRef={composerRef}
         conversationLayoutRef={conversationLayoutRef}
@@ -108,13 +142,7 @@ export function CopilotPanel({
           key={conversation.sessionResetVersion}
           conversation={conversation}
           conversationContextRef={conversationContextRef}
-          draft={{
-            hasAgentDraft,
-            onApply: conversation.applyAgentDraft,
-            onDiscard: conversation.discardAgentDraft,
-            state: agentDraftState,
-          }}
-          hasConfiguredModel={Boolean(selectedModel)}
+          hasConfiguredModel={Boolean(selectedModelConfig)}
           messageActions={messageActions}
           onOpenModelSettings={onOpenModelSettings}
           promptActions={promptActions}

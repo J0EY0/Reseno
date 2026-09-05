@@ -25,6 +25,7 @@ import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 
 import {
   isPendingSendOwner,
+  setAgentRequestPhase,
   type AgentConversationRuntimeRef,
   type AgentConversationUpdates,
 } from './agent-conversation-runtime'
@@ -100,7 +101,7 @@ export function useAgentSendController({
   resume,
   resumeId,
   runtimeRef,
-  selectedModel,
+  selectedModelConfig,
   updates,
 }: {
   agentDraftState: AgentDraftState | null
@@ -113,7 +114,7 @@ export function useAgentSendController({
   resume: ResumeData
   resumeId?: string
   runtimeRef: AgentConversationRuntimeRef
-  selectedModel: ModelConfig | null
+  selectedModelConfig: ModelConfig | null
   updates: AgentConversationUpdates
 }) {
   const preflightAbortRef = useRef<AbortController | null>(null)
@@ -156,8 +157,7 @@ export function useAgentSendController({
         runtime.optimisticMessageOwner = null
       }
       pending?.resolve('cancelled')
-      runtime.isResponding = false
-      updates.setIsResponding(false)
+      setAgentRequestPhase(runtime, updates, 'idle')
       return true
     },
     [runtimeRef, updates],
@@ -166,6 +166,7 @@ export function useAgentSendController({
   const stopResponding = useCallback(() => {
     const runtime = runtimeRef.current
     if (cancelAgentSendPreflight()) {
+      setAgentRequestPhase(runtime, updates, 'idle')
       return
     }
     if (cancelScheduledSend(true)) {
@@ -196,7 +197,7 @@ export function useAgentSendController({
 
     if (!runtime.activeRequestAbort) {
       runtime.stopRequested = false
-      updates.setIsResponding(false)
+      setAgentRequestPhase(runtime, updates, 'idle')
     }
   }, [cancelAgentSendPreflight, cancelScheduledSend, runtimeRef, updates])
 
@@ -206,6 +207,7 @@ export function useAgentSendController({
       files: AgentChatAttachment[] = [],
       options: AgentSendOptions = {},
     ): AgentSendOperation => {
+      const modelConfigId = selectedModelConfig?.id ?? null
       let acceptanceSettled = false
       let resolveAcceptance: (accepted: boolean) => void = () => undefined
       const acceptedPromise = new Promise<boolean>((resolve) => {
@@ -228,6 +230,16 @@ export function useAgentSendController({
         }
         preflightOwner = null
       }
+      const releaseRejectedPreflight = () => {
+        const ownsPreflight = Boolean(
+          preflightOwner && preflightAbortRef.current === preflightOwner,
+        )
+        releasePreflight()
+        const runtime = runtimeRef.current
+        if (ownsPreflight && runtime.requestPhase === 'preparing') {
+          setAgentRequestPhase(runtime, updates, 'idle')
+        }
+      }
 
       const completion = (async (): Promise<AgentRunStatus> => {
         const runtime = runtimeRef.current
@@ -235,7 +247,7 @@ export function useAgentSendController({
 
         if (
           (!prompt && files.length === 0) ||
-          runtime.isResponding ||
+          runtime.requestPhase !== 'idle' ||
           isSessionMutationPending
         ) {
           return 'cancelled'
@@ -245,6 +257,9 @@ export function useAgentSendController({
         const preflightAbortController = new AbortController()
         preflightOwner = preflightAbortController
         preflightAbortRef.current = preflightAbortController
+        // Claim the request before the first asynchronous preflight step so
+        // every send path exposes feedback and rejects concurrent actions.
+        setAgentRequestPhase(runtime, updates, 'preparing')
         const preflightCompleted = await waitForAgentSendPreflight(
           Promise.resolve().then(() => onBeforeSend?.()),
           preflightAbortController.signal,
@@ -272,7 +287,7 @@ export function useAgentSendController({
         if (!runtime.sessionReady) {
           return 'failed'
         }
-        if (runtime.isResponding) {
+        if (runtimeRef.current.requestPhase !== 'preparing') {
           return 'cancelled'
         }
         if (resumeId && !runtime.sessionRevision) {
@@ -320,8 +335,6 @@ export function useAgentSendController({
         runtime.activeRequestAbort = null
         updates.setSessionLoadError(false)
         cancelScheduledSend(false)
-        updates.setIsResponding(true)
-        runtime.isResponding = true
         updates.setMessages(nextMessages)
         runtime.optimisticMessageOwner = userMessage.id
         updates.setStreamingMessage(null)
@@ -382,7 +395,9 @@ export function useAgentSendController({
                           locale: documentLocale,
                           message: currentMessage,
                           messages: resumeId ? [] : priorMessages,
-                          modelConfig: selectedModel,
+                          modelConfig: modelConfigId
+                            ? { id: modelConfigId }
+                            : null,
                           resume,
                           resumeId,
                           draftState: agentDraftState,
@@ -473,8 +488,7 @@ export function useAgentSendController({
                   runtime.activeRun = null
                   runtime.stopRequested = false
                   updates.setStreamingMessage(null)
-                  runtime.isResponding = false
-                  updates.setIsResponding(false)
+                  setAgentRequestPhase(runtime, updates, 'idle')
                 }
                 pending?.resolve(status)
               }
@@ -488,16 +502,20 @@ export function useAgentSendController({
       // handler above is the only path that can mark server acceptance.
       void completion.then(
         () => {
-          releasePreflight()
+          releaseRejectedPreflight()
           settleAcceptance(false)
         },
         () => {
-          releasePreflight()
+          releaseRejectedPreflight()
           settleAcceptance(false)
         },
       )
 
-      return { accepted: acceptedPromise, completion }
+      return {
+        accepted: acceptedPromise,
+        completion,
+        submitted: preflightOwner !== null,
+      }
     },
     [
       agentDraftState,
@@ -511,7 +529,7 @@ export function useAgentSendController({
       resume,
       resumeId,
       runtimeRef,
-      selectedModel,
+      selectedModelConfig,
       updates,
     ],
   )

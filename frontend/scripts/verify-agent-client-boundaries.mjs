@@ -49,6 +49,13 @@ async function loadTypeScriptModule(fileName) {
       if (specifier === "@/lib/api-client") {
         return apiClient;
       }
+      if (specifier === "@/lib/agent-draft-review") {
+        return {
+          projectAgentDraftReview: () => {
+            throw new Error("Draft projection is outside this transport test.");
+          },
+        };
+      }
       throw new Error(`Unexpected import: ${specifier}`);
     },
   });

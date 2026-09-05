@@ -9,6 +9,7 @@ export interface DiscoveredModel {
   maxOutputTokens: number | null
   supportsImage: boolean
   supportsThinking: boolean
+  availableThinkingModes: ModelConfig['availableThinkingModes']
   supportsTools: boolean
   supportsStreaming: boolean
   metadataSource: string
@@ -54,7 +55,7 @@ export async function discoverModels(input: {
 }
 
 export async function saveModelConfig(
-  config: Omit<ModelConfig, 'id'> & { id?: string },
+  config: Omit<ModelConfig, 'id' | 'availableThinkingModes'> & { id?: string },
   apiKey?: string,
 ) {
   return requestApi<ModelConfig>(apiRoutes.modelConfigs, {

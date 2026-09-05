@@ -13,9 +13,10 @@ import type {
 } from '@/types/api'
 import type { ResumeData } from '@/types/resume'
 
-import type {
-  AgentConversationRuntimeRef,
-  AgentConversationUpdates,
+import {
+  setAgentRequestPhase,
+  type AgentConversationRuntimeRef,
+  type AgentConversationUpdates,
 } from './agent-conversation-runtime'
 import {
   getEditsPreviewKey,
@@ -102,6 +103,12 @@ export function useAgentRunStream({
 
             runtime.requestResume = run.baseResume
             runtime.activeRun = run.status === 'active' ? run : null
+
+            if (run.status === 'active') {
+              // The run id is the acceptance boundary: from here the backend
+              // owns the turn and the selected model is frozen for this run.
+              setAgentRequestPhase(runtime, updates, 'responding')
+            }
 
             if (run.status === 'active' && runtime.stopRequested) {
               void stopAgentRun(run.id).catch((error) => {
@@ -233,7 +240,7 @@ export function useAgentRunStream({
             runtime.activeRun = null
             runtime.stopRequested = false
             updates.setStreamingMessage(null)
-            updates.setIsResponding(false)
+            setAgentRequestPhase(runtime, updates, 'idle')
           }
         }
       }

@@ -36,16 +36,21 @@ import {
   getResumeDetailRouteHandoff,
   getResumePath,
 } from "@/lib/workspace-route";
-import type { ResumeDetailResponse } from "@/types/api";
+import type {
+  AgentDraftDecisionStatus,
+  ResumeDetailResponse,
+} from "@/types/api";
 import type {
   ResumeData,
   ResumeTemplateDefinition,
   WorkspaceView,
 } from "@/types/resume";
 
-type ResolveAppliedDraft = (
+type ResolveAgentDraftReview = (
   messageId: string,
   resume: ResumeData,
+  reviewItemIds: string[],
+  status: AgentDraftDecisionStatus,
 ) => Promise<AgentDraftDecisionResolution>;
 
 interface ResumeDetailWorkspaceOptions {
@@ -83,21 +88,21 @@ export function useResumeDetailWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.payload.routeData.customTemplates ?? []);
-  const resolveAppliedDraftRef = useRef<ResolveAppliedDraft | null>(null);
-  const resolveAppliedDraft = useCallback<ResolveAppliedDraft>(
-    (messageId, resume) => {
-      const resolve = resolveAppliedDraftRef.current;
+  const resolveAgentDraftReviewRef = useRef<ResolveAgentDraftReview | null>(null);
+  const resolveAgentDraftReview = useCallback<ResolveAgentDraftReview>(
+    (messageId, resume, reviewItemIds, status) => {
+      const resolve = resolveAgentDraftReviewRef.current;
       if (!resolve) {
         throw new Error("Resume persistence is not ready.");
       }
-      return resolve(messageId, resume);
+      return resolve(messageId, resume, reviewItemIds, status);
     },
     [],
   );
   const session = useResumeDetailSession({
     initialResume: initialDetail?.payload.detail.resume ?? null,
     messages,
-    onResolveAppliedDraft: resolveAppliedDraft,
+    onResolveDraftReview: resolveAgentDraftReview,
   });
   const readIsLoading = useCallback(() => isLoading, [isLoading]);
   const preferences = useResumeDetailPreferences({
@@ -131,11 +136,11 @@ export function useResumeDetailWorkspace({
     resumeId,
   });
   useLayoutEffect(() => {
-    resolveAppliedDraftRef.current = save.resolveAppliedAgentDraft;
+    resolveAgentDraftReviewRef.current = save.resolveAgentDraftReview;
     return () => {
-      resolveAppliedDraftRef.current = null;
+      resolveAgentDraftReviewRef.current = null;
     };
-  }, [save.resolveAppliedAgentDraft]);
+  }, [save.resolveAgentDraftReview]);
 
   const handleRouteLoad = useCallback(
     ({
@@ -372,11 +377,11 @@ export function useResumeDetailWorkspace({
     },
     [requestWorkspaceNavigation],
   );
-  const changeSelectedModel = useCallback(
-    (modelId: string) =>
+  const changeSelectedModelConfig = useCallback(
+    (modelConfigId: string) =>
       preferences.changeAgentSettings({
         ...preferences.agentSettings,
-        defaultModelId: modelId,
+        defaultModelConfigId: modelConfigId,
       }),
     [preferences],
   );
@@ -392,7 +397,7 @@ export function useResumeDetailWorkspace({
     commands: {
       agent: {
         applyDraft: session.applyAgentDraft,
-        changeSelectedModel,
+        changeSelectedModelConfig,
         discardDraft: session.discardAgentDraft,
         flushUserSettings: persistence.flush,
         openModelSettings,
@@ -437,7 +442,8 @@ export function useResumeDetailWorkspace({
         isPanelCollapsed: agentLayout.isPanelCollapsed,
         modelConfigs: preferences.modelConfigs,
         panelStatus: agentLayout.panelStatus,
-        selectedModelId: preferences.agentSettings.defaultModelId,
+        review: session.review,
+        selectedModelConfigId: preferences.agentSettings.defaultModelConfigId,
       },
       collapsedState: session.collapsedState,
       document: {
@@ -455,6 +461,8 @@ export function useResumeDetailWorkspace({
         isResolving: leave.isResolving,
       },
       previewResume: session.previewResume,
+      previewDiffs: session.previewDiffs,
+      previewReview: session.previewReview,
       resolvedTheme: preferences.resolvedTheme,
       resume: session.resume,
       resumeItem: session.resumeItem,

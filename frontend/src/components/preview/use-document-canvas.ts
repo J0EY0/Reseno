@@ -3,7 +3,9 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type FocusEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
   type UIEvent,
 } from "react";
@@ -182,6 +184,28 @@ export function useDocumentCanvas() {
     setScale(scale);
   };
 
+  const onClick = (event: MouseEvent<HTMLDivElement>) => {
+    const viewport = event.currentTarget;
+    if (event.detail > 0 && (event.button === 0 || event.button === 1)) {
+      const activeElement = viewport.ownerDocument.activeElement;
+      if (
+        activeElement === viewport ||
+        !viewport.contains(activeElement)
+      ) {
+        viewport.dataset.focusOrigin = "pointer";
+        if (activeElement !== viewport) {
+          viewport.focus({ preventScroll: true });
+        }
+      }
+    }
+  };
+
+  const onBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) {
+      delete event.currentTarget.dataset.focusOrigin;
+    }
+  };
+
   const onPointer = (event: PointerEvent<HTMLDivElement>) => {
     const viewport = event.currentTarget;
     const session = panSessionRef.current;
@@ -189,10 +213,6 @@ export function useDocumentCanvas() {
     if (event.type === "pointerdown") {
       if (event.pointerType !== "mouse") {
         return;
-      }
-
-      if (event.button === 0 || event.button === 1) {
-        viewport.focus({ preventScroll: true });
       }
 
       const isOnPaper = Boolean(
@@ -239,6 +259,8 @@ export function useDocumentCanvas() {
   return {
     currentPage,
     isFitToWidth,
+    onBlur,
+    onClick,
     onKeyDown,
     onPointer,
     onScroll,

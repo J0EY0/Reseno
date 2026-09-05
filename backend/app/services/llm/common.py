@@ -17,6 +17,8 @@ from openai import (
     AsyncOpenAI,
 )
 
+from app.services.thinking import can_project_thinking_off
+
 from .errors import LlmRequestError, LlmTimeoutError
 from .tool_schema import portable_tool_schema
 from .types import (
@@ -261,7 +263,27 @@ def chat_completion_params(
 
 
 def _openai_chat_thinking_body(config: Any) -> dict[str, Any]:
-    """Project runtime Auto onto one verified OpenAI-compatible protocol."""
+    """Project the effective thinking action onto a verified chat protocol.
+
+    ``native_off`` arrives only after discovery has confirmed that the selected
+    model supports an explicit disable mode. This helper translates effective
+    runtime actions into provider wire fields; it does not infer Off from a
+    model name or treat an omitted field as disabled.
+    """
+
+    if config.thinking_control == "native_off" and not can_project_thinking_off(
+        provider=config.provider,
+        provider_kind=config.provider_kind,
+        api_family=config.api_family,
+        base_url=config.base_url,
+        model=config.model,
+    ):
+        # Off is a product guarantee, not a best-effort hint. An impossible
+        # runtime combination indicates stale/corrupt state or an Adapter drift;
+        # fail before the request instead of silently enabling model reasoning.
+        raise LlmRequestError(
+            "Thinking Off is unavailable for this model configuration.",
+        )
 
     if official_minimax_reasoning_split(config):
         # MiniMax otherwise embeds `<think>` text in visible content. Its
@@ -271,9 +293,9 @@ def _openai_chat_thinking_body(config: Any) -> dict[str, Any]:
         if str(config.model).casefold() == "minimax-m3":
             if config.thinking_control == "native_auto":
                 body["thinking"] = {"type": "adaptive"}
+            elif config.thinking_control == "native_off":
+                body["thinking"] = {"type": "disabled"}
         return body
-    if config.thinking_control != "native_auto":
-        return {}
     if (
         config.provider == "qwen"
         and config.provider_kind == "cloud"
@@ -281,9 +303,32 @@ def _openai_chat_thinking_body(config: Any) -> dict[str, Any]:
         and provider_base_url(config.base_url) == QWEN_EXPLICIT_CACHE_BASE_URL
     ):
         # DashScope exposes a boolean thinking switch outside the OpenAI schema.
-        # Do not send a budget or effort tier: the provider/model keeps ownership
-        # of its native Auto depth, including future tiers we do not know about.
-        return {"enable_thinking": True}
+        # The explicit boolean preserves the product contract in both directions:
+        # Auto enables provider-managed depth, while Off guarantees that a hybrid
+        # model skips reasoning. Neither path substitutes an effort approximation.
+        if config.thinking_control == "native_auto":
+            return {"enable_thinking": True}
+        if config.thinking_control == "native_off":
+            return {"enable_thinking": False}
+        return {}
+    if (
+        config.thinking_control == "native_off"
+        and config.provider in {"deepseek", "glm"}
+    ):
+        # These official Chat Completions endpoints share the same nested
+        # thinking switch. Discovery separately proves that the chosen model is
+        # hybrid; this exact endpoint guard prevents compatible gateways from
+        # receiving a vendor extension they may ignore or reinterpret.
+        return {"thinking": {"type": "disabled"}}
+    if config.thinking_control == "native_off":
+        # The shared target registry and this wire-shape dispatch must evolve
+        # together. Fail closed if a target is registered without a matching
+        # Chat Completions projection instead of degrading Off into omission.
+        raise LlmRequestError(
+            "Thinking Off is unavailable for this model configuration.",
+        )
+    if config.thinking_control != "native_auto":
+        return {}
     if (
         config.provider == "vllm"
         and config.provider_kind == "local"
@@ -949,13 +994,20 @@ def openai_chat_messages(
 
 
 def official_deepseek_thinking(config: Any) -> bool:
+    """Identify requests that use DeepSeek's reasoning-on continuation rules.
+
+    ``native_off`` still carries a thinking configuration on the wire, but its
+    ``disabled`` value selects the non-thinking protocol. Those requests retain
+    normal tool-choice behavior and do not replay reasoning-only turn state.
+    """
+
     return (
         config is not None
         and config.provider == "deepseek"
         and config.provider_kind == "cloud"
         and config.api_family == "openai_compatible_chat"
         and provider_base_url(config.base_url) == "https://api.deepseek.com"
-        and config.thinking_control != "none"
+        and config.thinking_control not in {"none", "native_off"}
     )
 
 

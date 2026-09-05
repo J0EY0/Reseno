@@ -18,6 +18,12 @@ import type { ResumeData } from '@/types/resume'
 
 import type { AgentPanelMessage } from './copilot-message-model'
 
+/**
+ * `preparing` covers local preflight and the request awaiting server
+ * acceptance. `responding` starts only after an active run is identified.
+ */
+export type AgentRequestPhase = 'idle' | 'preparing' | 'responding'
+
 export interface PendingAgentSend {
   optimisticMessageId: string
   resolve: (status: AgentRunStatus) => void
@@ -29,7 +35,7 @@ export interface AgentConversationRuntime {
   activeRequestAbort: AbortController | null
   activeRun: AgentRunResponse | null
   currentResumeId?: string
-  isResponding: boolean
+  requestPhase: AgentRequestPhase
   onPreviewAgentEdits: (
     edits: AgentResumeEditSuggestion[],
     baseResume: ResumeData,
@@ -55,11 +61,21 @@ export type AgentConversationRuntimeRef =
   MutableRefObject<AgentConversationRuntime>
 
 export interface AgentConversationUpdates {
-  setIsResponding: (value: boolean) => void
   setMessages: Dispatch<SetStateAction<AgentPanelMessage[]>>
+  setRequestPhase: (value: AgentRequestPhase) => void
   setSessionLoadError: (value: boolean) => void
   setSessionReady: (value: boolean) => void
   setStreamingMessage: Dispatch<SetStateAction<AgentPanelMessage | null>>
+}
+
+/** Keep the synchronous request gate and its rendered phase in lockstep. */
+export function setAgentRequestPhase(
+  runtime: AgentConversationRuntime,
+  updates: AgentConversationUpdates,
+  phase: AgentRequestPhase,
+) {
+  runtime.requestPhase = phase
+  updates.setRequestPhase(phase)
 }
 
 export function isPendingSendOwner(
@@ -76,7 +92,7 @@ export function isPendingSendOwner(
 }
 
 export function useAgentConversationRuntime({
-  isResponding,
+  requestPhase,
   onPreviewAgentEdits,
   onReconcileAgentDraft,
   onRollbackAgentDraft,
@@ -84,7 +100,7 @@ export function useAgentConversationRuntime({
   resumeId,
   t,
 }: {
-  isResponding: boolean
+  requestPhase: AgentRequestPhase
   onPreviewAgentEdits: AgentConversationRuntime['onPreviewAgentEdits']
   onReconcileAgentDraft: AgentConversationRuntime['onReconcileAgentDraft']
   onRollbackAgentDraft: AgentConversationRuntime['onRollbackAgentDraft']
@@ -96,7 +112,7 @@ export function useAgentConversationRuntime({
     activeRequestAbort: null,
     activeRun: null,
     currentResumeId: resumeId,
-    isResponding,
+    requestPhase,
     onPreviewAgentEdits,
     onReconcileAgentDraft,
     onRollbackAgentDraft,
@@ -116,14 +132,14 @@ export function useAgentConversationRuntime({
   useLayoutEffect(() => {
     const runtime = runtimeRef.current
     runtime.currentResumeId = resumeId
-    runtime.isResponding = isResponding
+    runtime.requestPhase = requestPhase
     runtime.onPreviewAgentEdits = onPreviewAgentEdits
     runtime.onReconcileAgentDraft = onReconcileAgentDraft
     runtime.onRollbackAgentDraft = onRollbackAgentDraft
     runtime.requestFailedText = t.agentRequestFailed
     runtime.transientStatusTexts = t.agentTransientModelStatusTexts
   }, [
-    isResponding,
+    requestPhase,
     onPreviewAgentEdits,
     onReconcileAgentDraft,
     onRollbackAgentDraft,

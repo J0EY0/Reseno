@@ -155,12 +155,13 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
             session_id=None,
             turn_id=request.message.id,
             revision=None,
+            model_snapshot=None,
             conversation_state=AgentConversationState(),
         ),
         resume_id=request.resume_id,
     )
 
-    asyncio.run(agent_runs.AgentRunManager()._execute(run))
+    asyncio.run(agent_runs.AgentRunManager()._execute(run, None))
 
     summaries = [
         record.getMessage().removeprefix("Agent run summary ")

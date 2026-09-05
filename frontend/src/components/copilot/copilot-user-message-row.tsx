@@ -18,7 +18,7 @@ interface AgentUserMessageRowProps {
   copied: boolean;
   editedText: string;
   isEditing: boolean;
-  isResponding: boolean;
+  isRequestBusy: boolean;
   message: AgentPanelMessage;
   onCancelEdit: () => void;
   onCopy: () => void;
@@ -37,7 +37,7 @@ export function AgentUserMessageRow({
   copied,
   editedText,
   isEditing,
-  isResponding,
+  isRequestBusy,
   message,
   onCancelEdit,
   onCopy,
@@ -50,7 +50,7 @@ export function AgentUserMessageRow({
   retryable,
   t,
 }: AgentUserMessageRowProps) {
-  const submitDisabled = isResponding || !editedText.trim();
+  const submitDisabled = isRequestBusy || !editedText.trim();
   const hasText = Boolean(message.text.trim());
   const executionStatus = message.execution?.status;
   const canRetry =
@@ -163,7 +163,7 @@ export function AgentUserMessageRow({
               variant="ghost"
               size="icon-xs"
               className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
-              disabled={isResponding}
+              disabled={isRequestBusy}
               onClick={onStartEdit}
             >
               <Pencil className="size-3" />
@@ -175,7 +175,7 @@ export function AgentUserMessageRow({
                 variant="ghost"
                 size="icon-xs"
                 className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
-                disabled={isResponding}
+                disabled={isRequestBusy}
                 onClick={onRetry}
               >
                 <RotateCcw className="size-3" />

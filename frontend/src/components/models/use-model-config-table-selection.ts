@@ -8,10 +8,10 @@ export const MODEL_CONFIG_PAGE_SIZE = 10
 
 interface ModelConfigPageSelection {
   page: number
-  ids: string[]
+  modelConfigIds: string[]
 }
 
-export function resolveSelectedModelIds(
+export function resolveSelectedModelConfigIds(
   selection: ModelConfigPageSelection,
   currentPage: number,
   pageConfigs: ModelConfig[],
@@ -21,7 +21,7 @@ export function resolveSelectedModelIds(
   }
 
   const pageIdSet = new Set(pageConfigs.map((config) => config.id))
-  return selection.ids.filter((id) => pageIdSet.has(id))
+  return selection.modelConfigIds.filter((id) => pageIdSet.has(id))
 }
 
 export function useModelConfigTableSelection(configs: ModelConfig[]) {
@@ -38,32 +38,35 @@ export function useModelConfigTableSelection(configs: ModelConfig[]) {
   )
   const [selection, setSelection] = useState<ModelConfigPageSelection>(() => ({
     page: safeCurrentPage,
-    ids: [],
+    modelConfigIds: [],
   }))
   const pageChanged = selection.page !== safeCurrentPage
 
   useEffect(() => {
     if (pageChanged) {
       // Browser Back/Forward changes the URL outside this hook's event path.
-      // The selectedIds gate below hides stale rows until stored state converges.
+      // The selectedModelConfigIds gate below hides stale rows until stored
+      // state converges.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSelection({ page: safeCurrentPage, ids: [] })
+      setSelection({ page: safeCurrentPage, modelConfigIds: [] })
     }
   }, [pageChanged, safeCurrentPage])
 
-  const selectedIds = pageChanged
+  const selectedModelConfigIds = pageChanged
     ? []
-    : resolveSelectedModelIds(selection, safeCurrentPage, pageConfigs)
+    : resolveSelectedModelConfigIds(selection, safeCurrentPage, pageConfigs)
   const rowSelection = Object.fromEntries(
-    selectedIds.map((id) => [id, true]),
+    selectedModelConfigIds.map((id) => [id, true]),
   )
 
   const onRowSelectionChange: OnChangeFn<RowSelectionState> = (updater) => {
     setSelection((current) => {
       const currentRowSelection = Object.fromEntries(
-        resolveSelectedModelIds(current, safeCurrentPage, pageConfigs).map(
-          (id) => [id, true],
-        ),
+        resolveSelectedModelConfigIds(
+          current,
+          safeCurrentPage,
+          pageConfigs,
+        ).map((id) => [id, true]),
       )
       const nextRowSelection =
         typeof updater === 'function'
@@ -72,7 +75,7 @@ export function useModelConfigTableSelection(configs: ModelConfig[]) {
 
       return {
         page: safeCurrentPage,
-        ids: pageConfigs
+        modelConfigIds: pageConfigs
           .filter((config) => nextRowSelection[config.id])
           .map((config) => config.id),
       }
@@ -80,31 +83,33 @@ export function useModelConfigTableSelection(configs: ModelConfig[]) {
   }
 
   function changePage(page: number) {
-    setSelection({ page, ids: [] })
+    setSelection({ page, modelConfigIds: [] })
     setCurrentPage(page)
   }
 
-  function removeIds(ids: string[]) {
-    const removedIdSet = new Set(ids)
+  function removeModelConfigIds(modelConfigIds: string[]) {
+    const removedModelConfigIdSet = new Set(modelConfigIds)
     setSelection((current) => ({
       ...current,
-      ids: current.ids.filter((id) => !removedIdSet.has(id)),
+      modelConfigIds: current.modelConfigIds.filter(
+        (id) => !removedModelConfigIdSet.has(id),
+      ),
     }))
   }
 
   function clearSelection() {
-    setSelection({ page: safeCurrentPage, ids: [] })
+    setSelection({ page: safeCurrentPage, modelConfigIds: [] })
   }
 
   return {
     currentPage: safeCurrentPage,
     totalPages,
     pageConfigs,
-    selectedIds,
+    selectedModelConfigIds,
     rowSelection,
     onRowSelectionChange,
     changePage,
-    removeIds,
+    removeModelConfigIds,
     clearSelection,
   }
 }

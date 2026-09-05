@@ -16,6 +16,7 @@ const [
   copilotPanelShellSource,
   toolSource,
   copilotChangeSummarySource,
+  draftReviewComparisonSource,
   pdfExportRendererSource,
   modelConfigPanelSource,
   workspaceSkeletonsSource,
@@ -63,6 +64,13 @@ const [
     readFile(
       new URL(
         "src/components/copilot/copilot-change-summary.tsx",
+        projectRoot,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "src/components/preview/resume-draft-review-comparison.tsx",
         projectRoot,
       ),
       "utf8",
@@ -381,8 +389,8 @@ for (const [state, semanticClass] of [
 }
 assert(
   copilotChangeSummarySource.includes("text-warning") &&
-    copilotChangeSummarySource.includes("bg-success/10"),
-  "Agent change summaries must use semantic warning and success colors.",
+    draftReviewComparisonSource.includes("bg-success/10"),
+  "Agent review feedback must use semantic warning and success colors.",
 );
 assert(
   pdfExportRendererSource.includes("bg-background") &&

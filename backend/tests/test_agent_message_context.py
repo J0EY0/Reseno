@@ -66,7 +66,6 @@ def _request(
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
         modelConfig=None,
-        settings={},
     )
 
 
@@ -414,8 +413,15 @@ def test_agent_context_hides_identity_from_base_and_pending_draft() -> None:
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "draft_state": AgentDraftState(
                 id="pending-without-name",
-                status="pending",
                 resume={"basic": {"name": ""}, "sections": []},
+                pendingCount=1,
+                reviewItems=[
+                    {
+                        "id": "agent-review-private-draft",
+                        "editIds": ["edit-private-draft"],
+                        "status": "pending",
+                    },
+                ],
             ),
         },
     )
@@ -1122,7 +1128,13 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
                     "transactionState": "committed",
                     "draft": {
                         "baseResume": {"basic": {}, "sections": []},
-                        "status": "discarded",
+                        "reviewItems": [
+                            {
+                                "id": "agent-review-silent-edit",
+                                "editIds": ["silent-edit"],
+                                "status": "discarded",
+                            },
+                        ],
                     },
                     "edits": [
                         {
@@ -1167,9 +1179,13 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
     ]
 
     assert contexts[0]["messageId"] == "silent-structured-response"
-    assert contexts[0]["edits"][0]["id"] == "silent-edit"
     assert contexts[0]["transactionState"] == "committed"
-    assert contexts[0]["draftStatus"] == "discarded"
+    assert contexts[0]["draftReview"] == {
+        "pendingCount": 0,
+        "appliedCount": 0,
+        "discardedCount": 1,
+    }
+    assert "edits" not in contexts[0]
     assert [source["id"] for source in contexts[0]["sourceRefs"]] == [
         f"silent-source-{index}" for index in range(1, 7)
     ]

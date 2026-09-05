@@ -1,9 +1,13 @@
 .model-output-settings-content {
-  overflow: clip;
   overflow-anchor: none;
 }
 
+.model-output-settings-content[data-state='open'] {
+  overflow: visible;
+}
+
 .model-output-settings-content[data-state='closed'] {
+  overflow: clip;
   animation: model-output-settings-exit 180ms var(--ease-move) both;
 }
 

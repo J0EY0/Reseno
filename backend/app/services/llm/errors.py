@@ -13,3 +13,7 @@ class LlmRequestError(RuntimeError):
 
 class LlmTimeoutError(LlmRequestError):
     """A provider connection or stream stopped making progress in time."""
+
+
+class LlmThinkingModeUnsupportedError(LlmRequestError):
+    """A saved Thinking Off choice cannot be projected to the selected model."""

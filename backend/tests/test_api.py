@@ -4,6 +4,7 @@ import re
 import sqlite3
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event, Lock
 
@@ -244,7 +245,7 @@ def create_agent_model_config(client: TestClient) -> dict:
         },
     )
     assert response.status_code == 200
-    return response.json()["data"]
+    return {"id": response.json()["data"]["id"]}
 
 
 def test_model_provider_manifest_includes_local_runtimes(
@@ -2788,11 +2789,10 @@ def test_user_settings_endpoint_persists_json_preferences(
     settings = {
         "theme": "system",
         "agentSettings": {
-            "defaultModelId": "llm-settings",
+            "defaultModelConfigId": "llm-settings",
             "responseLanguage": "zh",
             "behaviorMode": "strict",
             "confirmationMode": "suggestOnly",
-            "autoRunMatch": True,
         },
     }
 
@@ -2805,7 +2805,7 @@ def test_user_settings_endpoint_persists_json_preferences(
     assert response.status_code == 200
     assert response.json()["data"] == {
         "agentSettings": {
-            "defaultModelId": "llm-settings",
+            "defaultModelConfigId": "llm-settings",
             "responseLanguage": "zh",
             "behaviorMode": "strict",
             "confirmationMode": "suggestOnly",
@@ -2828,6 +2828,46 @@ def test_user_settings_endpoint_persists_json_preferences(
     )
     assert persisted_settings["locale"] == "zh"
     assert persisted_settings["theme"] == "system"
+
+
+def test_user_settings_endpoint_rejects_ambiguous_model_id_field(
+    client: TestClient,
+) -> None:
+    response = client.put(
+        "/api/workspace/user-settings?locale=zh",
+        json={
+            "settings": {
+                "agentSettings": {
+                    "defaultModelId": "llm-settings",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_settings_page_discards_unknown_persisted_agent_fields(
+    client: TestClient,
+) -> None:
+    get_settings().user_settings_path.write_text(
+        json.dumps(
+            {
+                "locale": "zh",
+                "agentSettings": {
+                    "defaultModelId": "llm-settings",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/workspace/pages/settings")
+
+    assert response.status_code == 200
+    agent_settings = response.json()["data"]["agentSettings"]
+    assert agent_settings["defaultModelConfigId"] == ""
+    assert "defaultModelId" not in agent_settings
 
 
 def test_user_settings_endpoint_rejects_workspace_resource_fields(
@@ -3622,7 +3662,7 @@ def test_google_cloud_config_uses_manifest_v1_end_to_end(
             "UPDATE llm_configs SET base_url = ? WHERE client_id = ?",
             ("https://stale.example/google", config_id),
         )
-        runtime = resolve_agent_llm_config(conn, {"id": config_id})
+        runtime = resolve_agent_llm_config(conn, config_id)
 
     assert runtime is not None
     assert runtime.base_url == "https://generativelanguage.googleapis.com/v1"
@@ -3644,7 +3684,7 @@ def test_google_cloud_config_uses_manifest_v1_end_to_end(
     assert updated_response.json()["data"]["apiKeyPreview"] == key_preview
 
     with connect() as conn:
-        updated_runtime = resolve_agent_llm_config(conn, {"id": config_id})
+        updated_runtime = resolve_agent_llm_config(conn, config_id)
     assert updated_runtime is not None
     assert updated_runtime.base_url == "https://generativelanguage.googleapis.com/v1"
     assert updated_runtime.api_key == "google-v1-secret"
@@ -3708,6 +3748,9 @@ def test_model_config_api_keeps_thinking_capability_without_obsolete_toggle(
     response_properties = schemas["ModelConfigResponse"]["properties"]
     assert "supportsThinking" in request_properties
     assert "supportsThinking" in response_properties
+    assert request_properties["thinkingMode"]["default"] == "auto"
+    assert "thinkingMode" in response_properties
+    assert "availableThinkingModes" in response_properties
     assert "thinkingEnabled" not in request_properties
     assert "thinkingEnabled" not in response_properties
 
@@ -3805,14 +3848,21 @@ def test_model_metadata_cache_is_prepared_before_config_save(
     cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
     assert cache_path.exists()
     cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert set(cache_data) == {"version", "source", "fetchedAt", "providers"}
-    assert cache_data["providers"]["openai"]["gpt-5.1"] == {
+    assert set(cache_data) == {"version", "source", "catalogs"}
+    assert cache_data["catalogs"]["litellm"]["providers"]["openai"]["gpt-5.1"] == {
         "sourceKey": "openai/gpt-5.1",
         "contextWindowTokens": 131072,
         "maxOutputTokens": 8192,
         "supportsWebSearch": True,
     }
-    assert "gpt-proxy" not in cache_data["providers"]["openai"]
+    assert (
+        "gpt-proxy"
+        not in cache_data["catalogs"]["litellm"]["providers"]["openai"]
+    )
+    assert cache_data["catalogs"]["modelsDev"] == {
+        "fetchedAt": None,
+        "providers": {},
+    }
 
     metadata = model_metadata.resolve_model_metadata("openai", "gpt-5.1")
 
@@ -3831,21 +3881,30 @@ def test_model_metadata_cache_is_reused_without_refresh(
 
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
+    fresh_time = datetime.now(UTC).isoformat(timespec="seconds")
     cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
         json.dumps(
             {
                 "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
-                "source": "litellm:model_prices_and_context_window",
-                "fetchedAt": "2026-06-27T00:00:00+00:00",
-                "providers": {
-                    "openai": {
-                        "gpt-5.1": {
-                            "sourceKey": "openai/gpt-5.1",
-                            "contextWindowTokens": 131072,
-                            "maxOutputTokens": 8192,
+                "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
+                "catalogs": {
+                    "litellm": {
+                        "fetchedAt": fresh_time,
+                        "providers": {
+                            "openai": {
+                                "gpt-5.1": {
+                                    "sourceKey": "openai/gpt-5.1",
+                                    "contextWindowTokens": 131072,
+                                    "maxOutputTokens": 8192,
+                                },
+                            },
                         },
+                    },
+                    "modelsDev": {
+                        "fetchedAt": fresh_time,
+                        "providers": {},
                     },
                 },
             },
@@ -3878,15 +3937,23 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
         json.dumps(
             {
                 "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
-                "source": "litellm:model_prices_and_context_window",
-                "fetchedAt": "2026-06-01T00:00:00+00:00",
-                "providers": {
-                    "deepseek": {
-                        "deepseek-chat": {
-                            "sourceKey": "deepseek-chat",
-                            "contextWindowTokens": 131072,
-                            "maxOutputTokens": 8192,
+                "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
+                "catalogs": {
+                    "litellm": {
+                        "fetchedAt": "2026-06-01T00:00:00+00:00",
+                        "providers": {
+                            "deepseek": {
+                                "deepseek-chat": {
+                                    "sourceKey": "deepseek-chat",
+                                    "contextWindowTokens": 131072,
+                                    "maxOutputTokens": 8192,
+                                },
+                            },
                         },
+                    },
+                    "modelsDev": {
+                        "fetchedAt": "2026-06-01T00:00:00+00:00",
+                        "providers": {},
                     },
                 },
             },
@@ -3934,14 +4001,22 @@ def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
         json.dumps(
             {
                 "version": model_metadata.MODEL_METADATA_CACHE_VERSION,
-                "source": "litellm:model_prices_and_context_window",
-                "fetchedAt": "2026-06-01T00:00:00+00:00",
-                "providers": {
-                    "deepseek": {
-                        "deepseek-v4-pro": {
-                            "sourceKey": "deepseek/deepseek-v4-pro",
-                            "contextWindowTokens": 1000000,
+                "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
+                "catalogs": {
+                    "litellm": {
+                        "fetchedAt": "2026-06-01T00:00:00+00:00",
+                        "providers": {
+                            "deepseek": {
+                                "deepseek-v4-pro": {
+                                    "sourceKey": "deepseek/deepseek-v4-pro",
+                                    "contextWindowTokens": 1000000,
+                                },
+                            },
                         },
+                    },
+                    "modelsDev": {
+                        "fetchedAt": "2026-06-01T00:00:00+00:00",
+                        "providers": {},
                     },
                 },
             },
@@ -4082,7 +4157,6 @@ def test_agent_chat_guides_when_model_is_missing(client: TestClient) -> None:
                 summary="Frontend engineer with React project experience.",
             ),
             "modelConfig": None,
-            "settings": {},
         },
     )
 
@@ -4118,7 +4192,6 @@ def test_agent_chat_persists_and_loads_session(client: TestClient) -> None:
             "locale": "zh",
             "resume": created_resume["resume"],
             "modelConfig": None,
-            "settings": {},
         },
     )
     session_response = client.get(f"/api/agent/resumes/{resume_id}/session")
@@ -4485,7 +4558,6 @@ def test_provider_failure_keeps_user_message_without_assistant(
             "locale": "en",
             "resume": {"basic": {}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -4582,10 +4654,9 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         messages=conversation[:-1],
         locale="zh",
         resume={"basic": {"name": "王小明"}, "sections": []},
-        draftState={
-            "id": "draft-current",
-            "status": "pending",
-            "sourceMessageId": "agent-assistant-draft",
+            draftState={
+                "id": "draft-current",
+                "sourceMessageId": "agent-assistant-draft",
             "resume": {
                 "basic": {"name": "王小明", "summary": "草稿简介"},
                 "sections": [
@@ -4603,7 +4674,14 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                     },
                 ],
             },
-            "editCount": 1,
+                "pendingCount": 1,
+                "reviewItems": [
+                    {
+                        "id": "agent-review-edit-project-1",
+                        "editIds": ["edit-project-1"],
+                        "status": "pending",
+                    },
+                ],
             "edits": [
                 {
                     "id": "edit-project-1",
@@ -4629,7 +4707,6 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
             ],
         },
         modelConfig=None,
-        settings={},
     )
 
     messages = build_agent_messages(request, config)
@@ -4639,7 +4716,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
     assert workspace["responseLanguage"] == "Chinese"
     assert "responseLanguage" in messages[0]["content"]
     assert context["currentDraft"]["id"] == "draft-current"
-    assert context["currentDraft"]["status"] == "pending"
+    assert context["currentDraft"]["pendingCount"] == 1
     assert context["currentDraft"]["diffs"][0]["path"] == "sections.project"
     assert workspace["resume"]["sections"][0]["id"] == "project"
     assistant_state = next(
@@ -4697,7 +4774,6 @@ def test_agent_message_builder_treats_historical_assistant_prose_as_data() -> No
         locale="zh",
         resume={"basic": {"name": "测试用户"}, "sections": []},
         modelConfig=None,
-        settings={},
     )
 
     messages = build_agent_messages(request, config)
@@ -4775,7 +4851,6 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
             "sections": [],
         },
         modelConfig=None,
-        settings={},
     )
 
     with pytest.raises(LlmRequestError, match="context window"):
@@ -4838,7 +4913,6 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
             "sections": [],
         },
         modelConfig=None,
-        settings={},
         resume_id=session_id,
         expected_revision=session_revision,
     )
@@ -4968,11 +5042,18 @@ def test_agent_edit_execute_uses_pending_draft_resume() -> None:
         },
         locale="zh",
         resume=base_resume,
-        draftState={
-            "id": "draft-current",
-            "status": "pending",
-            "resume": draft_resume,
-        },
+            draftState={
+                "id": "draft-current",
+                "resume": draft_resume,
+                "pendingCount": 1,
+                "reviewItems": [
+                    {
+                        "id": "agent-review-edit-project-1",
+                        "editIds": ["edit-project-1"],
+                        "status": "pending",
+                    },
+                ],
+            },
     )
     environment = ResumeToolEnvironment.open(request)
 
@@ -5103,7 +5184,6 @@ def test_agent_chat_uses_natural_completion_after_edit(
                 summary="Frontend engineer with React project experience.",
             ),
             "modelConfig": model_config,
-            "settings": {},
             "resumeId": session_id,
             "expectedRevision": session_revision,
         },
@@ -5206,7 +5286,6 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
             "locale": "zh",
             "resume": resume,
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -5308,7 +5387,6 @@ def test_agent_chat_executes_explicit_project_insert_directly(
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -5466,7 +5544,6 @@ def test_agent_chat_retries_noncanonical_insert_with_canonical_operation(
             "locale": "zh",
             "resume": minimal_resume_document(name="姓名"),
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6014,7 +6091,6 @@ def test_agent_chat_plain_message_does_not_return_tools(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6049,7 +6125,6 @@ def test_agent_chat_plain_natural_stop_skips_second_completion(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -6096,7 +6171,6 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6149,7 +6223,6 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6188,7 +6261,6 @@ def test_agent_chat_material_gap_asks_followup_questions(
             "locale": "zh",
             "resume": {"basic": {}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6272,7 +6344,6 @@ def test_agent_chat_reports_invalid_model_edit_operation(
                 ],
             },
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6312,7 +6383,6 @@ def test_agent_model_error_does_not_return_llm_tool(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6441,7 +6511,6 @@ def test_agent_chat_uses_provided_jd_url(
             "locale": "zh",
             "resume": resume,
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6530,7 +6599,6 @@ def test_agent_chat_defers_sibling_edit_until_failed_read_is_observed(
                 summary="关注工程质量。",
             ),
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6587,7 +6655,6 @@ def test_agent_chat_lets_model_diagnose_jd_gap_from_workspace(
                 ],
             },
             "modelConfig": model_config,
-            "settings": {},
         },
     )
 
@@ -6645,7 +6712,6 @@ def test_agent_chat_streams_tool_and_source_metadata(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -6726,7 +6792,6 @@ def test_agent_chat_streams_model_narration_during_edit_loop(
                 summary="有前端项目经验。",
             ),
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -6819,7 +6884,6 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
                 "sections": [],
             },
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -6920,7 +6984,6 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
                 "sections": [],
             },
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -7027,7 +7090,6 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
                 summary="有前端项目经验。",
             ),
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:
@@ -7090,7 +7152,6 @@ def test_agent_chat_streams_plain_model_tokens(
             "locale": "zh",
             "resume": {"basic": {"name": "王小明"}, "sections": []},
             "modelConfig": model_config,
-            "settings": {},
             "stream": True,
         },
     ) as response:

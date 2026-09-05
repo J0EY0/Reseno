@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import type { ModelConfig } from '@/types/resume'
 import { Check } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
+import { toast } from 'sonner'
 
 function getModelProvider(config: ModelConfig) {
   return {
@@ -54,20 +55,22 @@ function getModelSecondaryName(config: ModelConfig) {
 }
 
 export function CopilotModelSelector({
+  appliesToNextMessage,
   disabled,
   modelConfigs,
   onOpenModelSettings,
-  onSelectedModelChange,
-  selectedModel,
-  selectedModelId,
+  onSelectedModelConfigChange,
+  selectedModelConfig,
+  selectedModelConfigId,
   t,
 }: {
+  appliesToNextMessage: boolean
   disabled: boolean
   modelConfigs: ModelConfig[]
   onOpenModelSettings: () => void
-  onSelectedModelChange: (modelId: string) => void
-  selectedModel: ModelConfig | null
-  selectedModelId: string
+  onSelectedModelConfigChange: (modelConfigId: string) => void
+  selectedModelConfig: ModelConfig | null
+  selectedModelConfigId: string
   t: AppMessages
 }) {
   const [open, setOpen] = useState(false)
@@ -89,40 +92,65 @@ export function CopilotModelSelector({
     return Array.from(grouped.entries())
   }, [modelConfigs])
   const handleModelSelect = useCallback(
-    (modelId: string) => {
-      onSelectedModelChange(modelId)
+    (modelConfigId: string) => {
+      const changed = modelConfigId !== selectedModelConfigId
+      onSelectedModelConfigChange(modelConfigId)
       setOpen(false)
+
+      // The selector controls the next accepted user turn. The active run owns
+      // an immutable backend snapshot and continues with its original model.
+      if (changed && appliesToNextMessage) {
+        toast.info(t.agentModelChangedNextTurn, { closeButton: true })
+      }
     },
-    [onSelectedModelChange],
+    [
+      appliesToNextMessage,
+      onSelectedModelConfigChange,
+      selectedModelConfigId,
+      t.agentModelChangedNextTurn,
+    ],
   )
+
+  const selectedModelConfigDisplayName = selectedModelConfig
+    ? getModelDisplayName(selectedModelConfig)
+    : ''
+  const selectedModelConfigTriggerName = selectedModelConfig
+    ? getModelTriggerName(selectedModelConfig)
+    : ''
+  const triggerAriaLabel = selectedModelConfig
+    ? appliesToNextMessage
+      ? t.agentModelNextTurnAria.replace(
+          '{model}',
+          selectedModelConfigDisplayName,
+        )
+      : selectedModelConfigDisplayName
+    : t.agentModelConfigureHover
 
   return (
     <ModelSelector open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger asChild>
         <PromptInputButton
-          aria-label={
-            selectedModel
-              ? getModelDisplayName(selectedModel)
-              : t.agentModelConfigureHover
-          }
+          aria-label={triggerAriaLabel}
           className="h-8 w-fit min-w-0 max-w-none justify-start text-foreground transition-colors duration-200"
           disabled={disabled}
           size="sm"
-          title={selectedModel ? undefined : t.agentModelConfigureHover}
+          title={selectedModelConfig ? undefined : t.agentModelConfigureHover}
         >
-          {selectedModel ? (
-            <ModelSelectorLogo provider={getModelProvider(selectedModel).id} />
+          {selectedModelConfig ? (
+            <ModelSelectorLogo
+              provider={getModelProvider(selectedModelConfig).id}
+            />
           ) : (
             <span aria-hidden="true" className="size-4 shrink-0" />
           )}
           <ModelSelectorName
             className={cn(
               'flex-none overflow-visible text-clip whitespace-nowrap text-[12px] font-medium',
-              !selectedModel && 'text-muted-foreground',
+              !selectedModelConfig && 'text-muted-foreground',
             )}
           >
-            {selectedModel
-              ? getModelTriggerName(selectedModel)
+            {selectedModelConfig
+              ? selectedModelConfigTriggerName
               : t.agentModelNotConfigured}
           </ModelSelectorName>
         </PromptInputButton>
@@ -171,7 +199,7 @@ export function CopilotModelSelector({
                       </span>
                     ) : null}
                   </div>
-                  {selectedModelId === config.id ? (
+                  {selectedModelConfigId === config.id ? (
                     <Check className="ml-auto size-4" />
                   ) : (
                     <div className="ml-auto size-4" />

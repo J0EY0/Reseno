@@ -23,6 +23,7 @@ from app.services.model_providers import (
     get_model_provider,
     resolve_model_provider_base_url,
 )
+from app.services.thinking import ThinkingMode, available_thinking_modes
 
 MODEL_CONFIG_ID_ALPHABET = (
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -70,6 +71,10 @@ def _row_to_response(row: Row) -> ModelConfigResponse:
         contextWindowTokens=row["context_window_tokens"],
         supportsImage=bool(row["supports_image"]),
         supportsThinking=bool(row["supports_thinking"]),
+        thinkingMode=row["thinking_mode"],
+        availableThinkingModes=list(
+            available_thinking_modes(bool(row["can_disable_thinking"])),
+        ),
         supportsTools=bool(row["supports_tools"]),
         supportsStreaming=bool(row["supports_streaming"]),
     )
@@ -96,6 +101,8 @@ def _list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
             context_window_tokens,
             supports_image,
             supports_thinking,
+            thinking_mode,
+            can_disable_thinking,
             supports_tools,
             supports_streaming
         FROM llm_configs
@@ -203,6 +210,13 @@ def _build_upsert_values(
         provider_kind=provider_kind,
         metadata=metadata,
     )
+    can_disable_thinking = (
+        provider_kind == "cloud" and "off" in metadata.available_thinking_modes
+    )
+    thinking_mode = _validated_thinking_mode(
+        _raw_value(item, "thinkingMode"),
+        can_disable_thinking=can_disable_thinking,
+    )
     supports_tools = _supports_tools_value(
         item=item,
         provider_kind=provider_kind,
@@ -245,6 +259,8 @@ def _build_upsert_values(
         metadata.context_window_tokens,
         int(supports_image),
         int(supports_thinking),
+        thinking_mode,
+        int(can_disable_thinking),
         int(supports_tools),
         int(supports_streaming),
         0,
@@ -333,8 +349,9 @@ def _validated_cloud_model_metadata(
 
         # The config row stores the selected model snapshot, not a second copy
         # of the model capability catalog. If provider discovery data is no
-        # longer present, consult the already-local LiteLLM cache so an update
-        # cannot bypass a known output ceiling. This performs no network I/O.
+        # longer present, consult the already-local supplemental metadata cache
+        # so an update cannot bypass a known output ceiling. Token ceilings in
+        # that cache still come from LiteLLM; this performs no network I/O.
         litellm_metadata = resolve_model_metadata(provider, model)
         return DiscoveredModel(
             id=model,
@@ -348,6 +365,9 @@ def _validated_cloud_model_metadata(
             supports_image=bool(existing["supports_image"]),
             thinking_control=(
                 "provider_default" if bool(existing["supports_thinking"]) else "none"
+            ),
+            available_thinking_modes=available_thinking_modes(
+                bool(existing["can_disable_thinking"]),
             ),
             supports_tools=bool(existing["supports_tools"]),
             supports_streaming=bool(existing["supports_streaming"]),
@@ -417,6 +437,28 @@ def _supports_streaming_value(
         return bool(value) if value is not None else metadata.supports_streaming
 
     return metadata.supports_streaming
+
+
+def _validated_thinking_mode(
+    value: Any,
+    *,
+    can_disable_thinking: bool,
+) -> ThinkingMode:
+    """Validate one user preference against the selected model capability.
+
+    Missing values select ``auto`` so newly created configurations have the
+    safe, provider-managed behavior. ``off`` is never downgraded silently: a
+    model switch that removes explicit disable support must be normalized by
+    the caller or rejected here before any database write occurs.
+    """
+
+    if value is None or value == "auto":
+        return "auto"
+    if value == "off":
+        if not can_disable_thinking:
+            raise ValueError("MODEL_CONFIG_THINKING_MODE_UNSUPPORTED")
+        return "off"
+    raise ValueError("MODEL_CONFIG_THINKING_MODE_INVALID")
 
 
 def _raw_value(item: dict[str, Any], camel_key: str) -> Any:
@@ -511,6 +553,8 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         context_window_tokens,
         supports_image,
         supports_thinking,
+        thinking_mode,
+        can_disable_thinking,
         supports_tools,
         supports_streaming,
         is_default,
@@ -536,6 +580,8 @@ def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
         and existing["context_window_tokens"] == context_window_tokens
         and int(existing["supports_image"]) == int(supports_image)
         and int(existing["supports_thinking"]) == int(supports_thinking)
+        and existing["thinking_mode"] == thinking_mode
+        and int(existing["can_disable_thinking"]) == int(can_disable_thinking)
         and int(existing["supports_tools"]) == int(supports_tools)
         and int(existing["supports_streaming"]) == int(supports_streaming)
         and int(existing["is_default"]) == int(is_default)
@@ -563,6 +609,8 @@ def _select_llm_config(conn: Connection, client_id: str) -> Row | None:
             context_window_tokens,
             supports_image,
             supports_thinking,
+            thinking_mode,
+            can_disable_thinking,
             supports_tools,
             supports_streaming,
             enabled,
@@ -640,11 +688,13 @@ def upsert_llm_config_dict(
             context_window_tokens,
             supports_image,
             supports_thinking,
+            thinking_mode,
+            can_disable_thinking,
             supports_tools,
             supports_streaming,
             is_default
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(client_id) DO UPDATE SET
             name = excluded.name,
             provider = excluded.provider,
@@ -678,6 +728,8 @@ def upsert_llm_config_dict(
             context_window_tokens = excluded.context_window_tokens,
             supports_image = excluded.supports_image,
             supports_thinking = excluded.supports_thinking,
+            thinking_mode = excluded.thinking_mode,
+            can_disable_thinking = excluded.can_disable_thinking,
             supports_tools = excluded.supports_tools,
             supports_streaming = excluded.supports_streaming,
             enabled = 1,

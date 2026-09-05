@@ -267,7 +267,7 @@ assert.doesNotMatch(
   /data-\[state=on\]:(?:bg|text)-primary/,
   "Settings option groups must not resemble primary actions or navigation tabs.",
 );
-assert.match(agentSettings, /defaultModelId: value/);
+assert.match(agentSettings, /defaultModelConfigId: value/);
 assert.match(agentSettings, /responseLanguage: value/);
 assert.match(agentSettings, /behaviorMode: value/);
 assert.match(agentSettings, /confirmationMode: value/);

@@ -240,6 +240,8 @@ export interface ResumeTemplateDefinition {
   isBuiltIn: boolean
 }
 
+export type ThinkingMode = 'auto' | 'off'
+
 export interface ModelConfig {
   id: string
   provider: string
@@ -261,12 +263,14 @@ export interface ModelConfig {
   contextWindowTokens: number
   supportsImage: boolean
   supportsThinking: boolean
+  thinkingMode: ThinkingMode
+  availableThinkingModes: ThinkingMode[]
   supportsTools: boolean
   supportsStreaming: boolean
 }
 
 export interface AgentSettings {
-  defaultModelId: string
+  defaultModelConfigId: string
   responseLanguage: AgentResponseLanguage
   behaviorMode: AgentBehaviorMode
   confirmationMode: AgentConfirmationMode

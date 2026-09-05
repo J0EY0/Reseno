@@ -270,7 +270,7 @@ export function useWorkspacePreferencesRoute({
 
       setModelConfigs(nextModelConfigs);
       if (
-        normalizedSettings.defaultModelId !== agentSettings.defaultModelId
+        normalizedSettings.defaultModelConfigId !== agentSettings.defaultModelConfigId
       ) {
         setAgentSettings(normalizedSettings);
         persistSnapshot(

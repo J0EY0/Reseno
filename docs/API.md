@@ -486,6 +486,10 @@ type AgentDraftState = {
   diffs: ResumeDraftDiff[]
 }
 
+type AgentModelConfigSelection = {
+  id: string // ModelConfig.id，不是 Provider 的原生模型 ID
+}
+
 type AgentChatRequest = {
   resumeId?: string // 当前简历 ID；Agent 会话按 resumeId 存储和检索
   expectedRevision?: string // 传 resumeId 时必填，取自 GET session 的 revision
@@ -494,8 +498,7 @@ type AgentChatRequest = {
   locale: "zh" | "en"
   resume: ResumeData
   draftState?: AgentDraftState | null // 仅用于继续处理当前会话的待确认草稿
-  modelConfig: ModelConfig | null
-  settings: AgentSettings
+  modelConfig?: AgentModelConfigSelection | null
   stream?: boolean // 不改变传输；POST /chat 始终返回 SSE
 }
 ```
@@ -1010,7 +1013,7 @@ type ModelConfigDeleteResponse = {
 
 ```ts
 type AgentSettings = {
-  defaultModelId: string
+  defaultModelConfigId: string
   responseLanguage: "follow" | "zh" | "en"
   behaviorMode: "balanced" | "strict" | "aggressive"
   confirmationMode: "always" | "suggestOnly"

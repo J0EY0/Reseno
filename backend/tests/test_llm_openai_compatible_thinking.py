@@ -95,6 +95,17 @@ def test_official_qwen_native_auto_enables_thinking_without_an_effort_tier() -> 
     assert "reasoning_effort" not in params
 
 
+def test_official_qwen_native_off_explicitly_disables_thinking() -> None:
+    params = chat_completion_params(
+        _config(thinking_control="native_off"),
+        _prompt(),
+        stream=True,
+    )
+
+    assert params["extra_body"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in params
+
+
 def test_official_qwen_thinking_keeps_explicit_prompt_cache_boundaries() -> None:
     params = chat_completion_params(
         _config(model="qwen3.7-plus"),
@@ -138,6 +149,77 @@ def test_qwen_thinking_control_is_omitted_without_the_verified_native_target(
 
     assert "extra_body" not in params
     assert "reasoning_effort" not in params
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"provider_kind": "custom"},
+        {"api_family": "openai_responses"},
+        {"base_url": "https://qwen-compatible.example.test/v1"},
+    ],
+)
+def test_qwen_native_off_fails_closed_for_an_unverified_compatible_target(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(
+        LlmRequestError,
+        match="Thinking Off is unavailable for this model configuration",
+    ):
+        chat_completion_params(
+            _config(thinking_control="native_off", **overrides),
+            _prompt(),
+            stream=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("deepseek", "https://api.deepseek.com"),
+        ("glm", "https://open.bigmodel.cn/api/paas/v4"),
+    ],
+)
+def test_official_compatible_native_off_uses_the_disabled_thinking_object(
+    provider: str,
+    base_url: str,
+) -> None:
+    params = chat_completion_params(
+        _config(
+            provider=provider,
+            base_url=base_url,
+            thinking_control="native_off",
+        ),
+        _prompt(),
+        stream=True,
+    )
+
+    assert params["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in params
+
+
+@pytest.mark.parametrize("provider", ["deepseek", "glm", "moonshot"])
+def test_compatible_native_off_fails_closed_for_an_unverified_target(
+    provider: str,
+) -> None:
+    base_url = (
+        "https://api.moonshot.ai/v1"
+        if provider == "moonshot"
+        else "https://compatible.example.test/v1"
+    )
+    with pytest.raises(
+        LlmRequestError,
+        match="Thinking Off is unavailable for this model configuration",
+    ):
+        chat_completion_params(
+            _config(
+                provider=provider,
+                base_url=base_url,
+                thinking_control="native_off",
+            ),
+            _prompt(),
+            stream=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -219,6 +301,10 @@ def test_official_deepseek_provider_default_also_omits_rejected_tool_choice() ->
     "overrides",
     [
         {"thinking_control": "none"},
+        {
+            "thinking_control": "native_off",
+            "base_url": "https://api.deepseek.com",
+        },
         {"provider_kind": "custom"},
         {"base_url": "https://deepseek-compatible.example.test/v1"},
     ],
@@ -330,6 +416,10 @@ def test_official_deepseek_tool_turn_never_sends_null_assistant_content() -> Non
     "overrides",
     [
         {"thinking_control": "none"},
+        {
+            "thinking_control": "native_off",
+            "base_url": "https://api.deepseek.com",
+        },
         {"provider_kind": "custom"},
         {"base_url": "https://deepseek-compatible.example.test/v1"},
     ],
@@ -454,6 +544,7 @@ def test_official_minimax_always_requests_reasoning_split(
     [
         ("none", None),
         ("native_auto", {"type": "adaptive"}),
+        ("native_off", {"type": "disabled"}),
         ("provider_default", None),
     ],
 )

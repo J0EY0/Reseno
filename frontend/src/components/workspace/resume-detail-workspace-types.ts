@@ -4,6 +4,7 @@ import type {
 } from "react";
 
 import type { AgentPanelStatus } from "@/components/copilot/copilot-panel-types";
+import type { AgentDraftReviewController } from "@/hooks/use-resume-agent-draft";
 import type {
   AgentDraftState,
   AgentDraftSnapshot,
@@ -15,6 +16,7 @@ import type {
 import type {
   ModelConfig,
   ResumeData,
+  ResumeDraftDiff,
   ResumeTemplateDefinition,
   ResumeTemplateId,
   ResumeTemplateSettings,
@@ -55,7 +57,8 @@ export interface ResumeDetailAgentViewState {
   isPanelCollapsed: boolean;
   modelConfigs: ModelConfig[];
   panelStatus: AgentPanelStatus | null;
-  selectedModelId: string;
+  review: AgentDraftReviewController | null;
+  selectedModelConfigId: string;
 }
 
 export interface ResumeDetailWorkspaceState {
@@ -71,6 +74,8 @@ export interface ResumeDetailWorkspaceState {
   isLoading: boolean;
   leave: ResumeDetailLeaveViewState;
   previewResume: ResumeData;
+  previewDiffs?: ResumeDraftDiff[];
+  previewReview: AgentDraftReviewController | null;
   resolvedTheme: "light" | "dark";
   resume: ResumeData;
   resumeItem: ResumeWorkspaceItem | null;
@@ -85,7 +90,7 @@ export interface ResumeDetailWorkspaceState {
 
 export interface ResumeDetailAgentCommands {
   applyDraft: () => Promise<AgentSessionResponse | null>;
-  changeSelectedModel: (modelId: string) => void;
+  changeSelectedModelConfig: (modelConfigId: string) => void;
   discardDraft: () => Promise<AgentSessionResponse | null>;
   flushUserSettings: () => Promise<void>;
   openModelSettings: () => void;

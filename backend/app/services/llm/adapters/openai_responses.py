@@ -7,6 +7,8 @@ from typing import Any
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 
+from app.services.thinking import can_project_thinking_off
+
 from ..common import (
     DEFAULT_OPENAI_BASE_URL,
     async_openai_client,
@@ -301,20 +303,37 @@ def responses_params(
     if config.request_max_output_tokens:
         params["max_output_tokens"] = config.request_max_output_tokens
 
-    # ResuMate's reasoning policy is Auto: omit ``reasoning.effort`` and let
-    # the selected model apply its documented default. A persisted capability
-    # badge cannot safely choose among provider-specific effort vocabularies.
     expected_reasoning_base_url = _ENCRYPTED_REASONING_BASE_URLS.get(config.provider)
-    # The encrypted item is continuation state for stateless Responses calls,
-    # not a user-facing thinking control. Request it only from the two official
-    # endpoints that define this wire field, regardless of capability metadata.
-    include: list[str] = []
-    if (
+    official_reasoning_request = (
         expected_reasoning_base_url is not None
         and config.provider_kind == "cloud"
         and config.api_family == "openai_responses"
         and config.base_url.strip().rstrip("/") == expected_reasoning_base_url
-    ):
+    )
+    # Model discovery is the authority for whether ``none`` is an accepted
+    # reasoning effort. ``native_off`` therefore maps to the protocol's exact
+    # disable value on the official OpenAI or xAI Responses endpoint; every
+    # other control omits the field so Auto uses the provider-managed default.
+    # Off is never approximated with low/minimal, which can still reason.
+    if config.thinking_control == "native_off":
+        if not can_project_thinking_off(
+            provider=config.provider,
+            provider_kind=config.provider_kind,
+            api_family=config.api_family,
+            base_url=config.base_url,
+            model=config.model,
+        ):
+            # Never turn an explicit Off preference into parameter omission:
+            # omission delegates to the provider and may still enable reasoning.
+            raise LlmRequestError(
+                "Thinking Off is unavailable for this model configuration.",
+            )
+        params["reasoning"] = {"effort": "none"}
+    # The encrypted item is continuation state for stateless Responses calls,
+    # not a user-facing thinking control. Request it only from the two official
+    # endpoints that define this wire field, regardless of capability metadata.
+    include: list[str] = []
+    if official_reasoning_request:
         include.append("reasoning.encrypted_content")
     if config.use_native_web_search:
         include.append("web_search_call.action.sources")

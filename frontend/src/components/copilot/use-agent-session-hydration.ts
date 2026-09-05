@@ -7,9 +7,10 @@ import {
 import { connectAgentRun } from '@/lib/agent-stream-client'
 import { isAbortError } from '@/lib/api-client'
 
-import type {
-  AgentConversationRuntimeRef,
-  AgentConversationUpdates,
+import {
+  setAgentRequestPhase,
+  type AgentConversationRuntimeRef,
+  type AgentConversationUpdates,
 } from './agent-conversation-runtime'
 import { hydrateAgentSession } from './copilot-message-model'
 import type { ConsumeAgentRunStream } from './use-agent-run-stream'
@@ -58,7 +59,7 @@ export function useAgentSessionHydration({
 
     updates.setMessages([])
     updates.setStreamingMessage(null)
-    updates.setIsResponding(false)
+    setAgentRequestPhase(runtime, updates, 'idle')
     updates.setSessionLoadError(false)
     updates.setSessionReady(false)
     runtime.sessionRevision = null
@@ -121,8 +122,7 @@ export function useAgentSessionHydration({
 
         runtime.requestResume = run.baseResume
         runtime.activeRun = run
-        runtime.isResponding = true
-        updates.setIsResponding(true)
+        setAgentRequestPhase(runtime, updates, 'responding')
         await consumeRunStream(
           (options) => connectAgentRun(run, options),
           abortController,

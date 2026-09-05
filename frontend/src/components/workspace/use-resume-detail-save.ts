@@ -16,6 +16,7 @@ import {
   saveResumeApi,
 } from "@/lib/workspace-api";
 import type {
+  AgentDraftDecisionStatus,
   ApiRequestOptions,
   ResumeDetailResponse,
   ResumeSaveMode,
@@ -268,10 +269,12 @@ export function useResumeDetailSave({
     [adoptPersistedSave, getSnapshot, resumeId],
   );
 
-  const resolveAppliedAgentDraft = useCallback(
+  const resolveAgentDraftReview = useCallback(
     async (
       messageId: string,
-      candidateResume: ResumeData,
+      currentResume: ResumeData,
+      reviewItemIds: string[],
+      status: AgentDraftDecisionStatus,
     ): Promise<AgentDraftDecisionResolution> => {
       const owner = ownerLifecycleRef.current;
       const requireCurrentOwner = () => {
@@ -298,28 +301,47 @@ export function useResumeDetailSave({
       }
 
       requireCurrentOwner();
+      const hasLocalChanges = hasUnsavedChanges();
       const resolutionPromise = (async () => {
-        setSaveState("saving");
+        if (status === "applied") {
+          setSaveState("saving");
+        }
         try {
           const resolution = await resolveAgentDraftDecision(
             resumeId,
             messageId,
-            { status: "applied", resume: candidateResume },
+            status === "applied"
+              ? {
+                  currentResume,
+                  currentVersionId: activeVersionIdRef.current,
+                  rebaseOnLatest: !hasLocalChanges,
+                  reviewItemIds,
+                  status,
+                }
+              : { reviewItemIds, status },
           );
-          if (resolution.status === "applied" && resolution.resume) {
+          const canAdoptFormalResume =
+            !hasLocalChanges ||
+            (status === "applied" &&
+              resolution.committed &&
+              resolution.resolvedAsRequested);
+          const adoptedResume = canAdoptFormalResume
+            ? resolution.resume
+            : null;
+          if (adoptedResume) {
             adoptPersistedSave(
-              resolution.resume,
-              resolution.committed
-                ? { ...resolution.resume.resume, resume: candidateResume }
-                : resolution.resume.resume,
+              adoptedResume,
+              adoptedResume.resume,
               "autosave",
             );
-          } else {
+          } else if (status === "applied") {
             setSaveState("idle");
           }
-          return resolution;
+          return { ...resolution, resume: adoptedResume };
         } catch (error) {
-          setSaveState("idle");
+          if (status === "applied") {
+            setSaveState("idle");
+          }
           throw error;
         }
       })();
@@ -341,7 +363,7 @@ export function useResumeDetailSave({
         }
       }
     },
-    [adoptPersistedSave, resumeId],
+    [adoptPersistedSave, hasUnsavedChanges, resumeId],
   );
 
   const discard = useCallback(async () => {
@@ -559,7 +581,7 @@ export function useResumeDetailSave({
       !skipCheckpointPromotionRef.current,
     save,
     saveState,
-    resolveAppliedAgentDraft,
+    resolveAgentDraftReview,
     selectVersion,
     versions,
   };

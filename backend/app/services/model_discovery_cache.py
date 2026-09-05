@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from app.config import get_settings
+from app.services.model_metadata import MODEL_METADATA_CACHE_TTL_SECONDS
 from app.services.model_providers import DiscoveredModel
-from app.services.thinking import ThinkingControl
+from app.services.thinking import ThinkingControl, available_thinking_modes
 
 MODEL_DISCOVERY_CACHE_NAME = "model-discovery-cache"
-MODEL_DISCOVERY_CACHE_VERSION = 4
+MODEL_DISCOVERY_CACHE_VERSION = 5
 
 
 def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | None:
@@ -26,7 +27,14 @@ def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | Non
     if not isinstance(raw_models, list):
         return None
 
-    models = [_model_from_cache_item(item) for item in raw_models]
+    allow_thinking_off = _cache_is_fresh(entry)
+    models = [
+        _model_from_cache_item(
+            item,
+            allow_thinking_off=allow_thinking_off,
+        )
+        for item in raw_models
+    ]
     filtered = [model for model in models if model is not None]
     return filtered or None
 
@@ -115,13 +123,18 @@ def _model_to_cache_item(model: DiscoveredModel) -> dict[str, Any]:
         "maxOutputTokens": model.max_output_tokens,
         "supportsImage": model.supports_image,
         "thinkingControl": model.thinking_control,
+        "availableThinkingModes": list(model.available_thinking_modes),
         "supportsTools": model.supports_tools,
         "supportsStreaming": model.supports_streaming,
         "metadataSource": model.metadata_source,
     }
 
 
-def _model_from_cache_item(item: object) -> DiscoveredModel | None:
+def _model_from_cache_item(
+    item: object,
+    *,
+    allow_thinking_off: bool,
+) -> DiscoveredModel | None:
     if not isinstance(item, dict):
         return None
 
@@ -151,6 +164,10 @@ def _model_from_cache_item(item: object) -> DiscoveredModel | None:
         supports_image=bool(item.get("supportsImage")),
         thinking_control=_thinking_control(item.get("thinkingControl")),
         metadata_source=metadata_source,
+        available_thinking_modes=available_thinking_modes(
+            allow_thinking_off
+            and _cache_allows_thinking_off(item.get("availableThinkingModes")),
+        ),
         supports_tools=_optional_bool(item.get("supportsTools"), default=True),
         supports_streaming=_optional_bool(item.get("supportsStreaming"), default=True),
     )
@@ -164,3 +181,25 @@ def _thinking_control(value: object) -> ThinkingControl:
     if value in {"provider_default", "native_auto", "native_budget"}:
         return cast(ThinkingControl, value)
     return "none"
+
+
+def _cache_allows_thinking_off(value: object) -> bool:
+    """Read only the canonical Off member from a versioned cache record."""
+
+    return isinstance(value, list) and "off" in value
+
+
+def _cache_is_fresh(entry: dict[str, Any]) -> bool:
+    """Return whether cached Off evidence is still within its trust window."""
+
+    fetched_at = entry.get("fetchedAt")
+    if not isinstance(fetched_at, str):
+        return False
+    try:
+        fetched = datetime.fromisoformat(fetched_at)
+    except ValueError:
+        return False
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    age_seconds = (datetime.now(UTC) - fetched).total_seconds()
+    return 0 <= age_seconds < MODEL_METADATA_CACHE_TTL_SECONDS

@@ -60,6 +60,10 @@ function loadMessageModel(source) {
         return { createId: () => "generated-id" };
       }
 
+      if (specifier === "@/lib/agent-draft-review") {
+        return { getAgentDraftSnapshotFromMessages: () => null };
+      }
+
       return {};
     },
   });
@@ -215,6 +219,35 @@ assert.deepEqual(
     zhExceeded: "输出上限超过该模型允许的最大值",
   },
   "Backend output-limit validation errors must be localized in both catalogs.",
+);
+assert.deepEqual(
+  {
+    enInvalid: enMessages.apiMessages.MODEL_CONFIG_THINKING_MODE_INVALID,
+    enUnsupported:
+      enMessages.apiMessages.MODEL_CONFIG_THINKING_MODE_UNSUPPORTED,
+    zhInvalid: zhMessages.apiMessages.MODEL_CONFIG_THINKING_MODE_INVALID,
+    zhUnsupported:
+      zhMessages.apiMessages.MODEL_CONFIG_THINKING_MODE_UNSUPPORTED,
+  },
+  {
+    enInvalid: "Select a valid thinking mode.",
+    enUnsupported:
+      "This model cannot turn reasoning off. Select Auto instead.",
+    zhInvalid: "请选择有效的推理模式",
+    zhUnsupported: "该模型无法关闭推理，请改用自动模式",
+  },
+  "Backend thinking-mode validation errors must be localized in both catalogs.",
+);
+assert.deepEqual(
+  {
+    en: enMessages.maxTokensAuto,
+    zh: zhMessages.maxTokensAuto,
+  },
+  {
+    en: "Auto",
+    zh: "自动",
+  },
+  "The cloud max_tokens placeholder must stay concise in both locales.",
 );
 const enTransient = enMessages.agentTransientModelStatusTexts[0];
 const zhTransient = zhMessages.agentTransientModelStatusTexts[0];

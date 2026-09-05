@@ -7,7 +7,6 @@ import type {
   DocumentLocale,
   DeletedResumeTemplateDefinition,
   DeletedResumeWorkspaceItem,
-  ModelConfig,
   ResumeData,
   ResumeDraftDiff,
   ResumeTemplateDefinition,
@@ -198,7 +197,10 @@ export interface AgentChatUserMessage {
   createdAt?: string;
 }
 
-export type AgentDraftStatus = "pending" | "applied" | "discarded";
+export type AgentDraftDecisionStatus = "applied" | "discarded";
+export type AgentDraftReviewItemStatus =
+  | "pending"
+  | AgentDraftDecisionStatus;
 export type AgentTransactionState =
   | "none"
   | "provisional"
@@ -220,20 +222,26 @@ export type AgentTurnErrorCode =
 
 export interface AgentDraftState {
   id: string;
-  status: AgentDraftStatus;
   sourceMessageId?: string;
   createdAt?: string;
   updatedAt?: string;
   resume: ResumeData;
-  editCount: number;
+  pendingCount: number;
+  reviewItems: AgentDraftReviewItem[];
   edits: AgentResumeEditSuggestion[];
   diffs: ResumeDraftDiff[];
   transactionState?: AgentTransactionState;
 }
 
+export interface AgentDraftReviewItem {
+  id: string;
+  editIds: string[];
+  status: AgentDraftReviewItemStatus;
+}
+
 export interface AgentCommittedDraft {
   baseResume: ResumeData;
-  status: AgentDraftStatus;
+  reviewItems: AgentDraftReviewItem[];
 }
 
 export interface AgentDraftSnapshot extends AgentCommittedDraft {
@@ -250,8 +258,12 @@ export interface AgentChatRequest {
   locale: DocumentLocale;
   resume: ResumeData;
   draftState?: AgentDraftState | null;
-  modelConfig: ModelConfig | null;
+  modelConfig: AgentModelSelection | null;
   stream?: true;
+}
+
+export interface AgentModelSelection {
+  id: string;
 }
 
 export interface AgentSource {
@@ -339,11 +351,18 @@ export interface AgentStoredMessage extends AgentConversationMessage {
   response?: AgentChatMessage;
 }
 
+export interface AgentModelSnapshot {
+  configId: string;
+  provider: string;
+  model: string;
+}
+
 export interface AgentTurnExecution {
   runId: string;
   turnId: string;
   status: AgentTurnExecutionStatus;
   errorCode: AgentTurnErrorCode | null;
+  modelSnapshot: AgentModelSnapshot | null;
   startedAt: string;
   completedAt: string | null;
 }
@@ -365,12 +384,14 @@ export type AgentDraftDecisionRequest =
   | {
       revision: string;
       status: "applied";
+      reviewItemIds: string[];
       resume: ResumeData;
       expectedVersionId: string;
     }
   | {
       revision: string;
       status: "discarded";
+      reviewItemIds: string[];
     };
 
 export interface AgentDraftDecisionResponse {

@@ -67,7 +67,7 @@ export function ModelConfigDialog({
   return (
     <DialogContent
       closeLabel={messages.close}
-      className="h-[min(34rem,calc(100dvh-2rem))] overflow-hidden p-0 sm:max-w-xl"
+      className="h-[min(34rem,calc(100dvh-2rem))] overflow-hidden p-0 sm:max-w-xl [&>[data-slot=dialog-close]]:inline-flex [&>[data-slot=dialog-close]]:size-8 [&>[data-slot=dialog-close]]:items-center [&>[data-slot=dialog-close]]:justify-center"
       onOpenAutoFocus={(event) => {
         if (mode === "edit") {
           event.preventDefault();
@@ -95,7 +95,7 @@ export function ModelConfigDialog({
         className="flex h-full min-h-0 flex-col"
         onSubmit={(event) => void handleSubmit(event)}
       >
-        <DialogHeader className="shrink-0 px-6 pt-6">
+        <DialogHeader className="shrink-0 px-6 pt-6 pb-4">
           <DialogTitle
             ref={initialFocusRef}
             tabIndex={mode === "edit" ? -1 : undefined}
@@ -109,7 +109,7 @@ export function ModelConfigDialog({
 
         <FieldGroup
           aria-busy={controller.modelOptionsLoading}
-          className="min-h-0 flex-1 gap-5 overflow-y-auto overscroll-contain px-6 py-6"
+          className="min-h-0 flex-1 gap-5 overflow-y-auto overscroll-contain px-6 py-2"
         >
           {controller.modelOptionsLoading ? (
             <span className="sr-only" role="status">
@@ -128,7 +128,7 @@ export function ModelConfigDialog({
           />
         </FieldGroup>
 
-        <DialogFooter className="shrink-0 px-6 pb-6">
+        <DialogFooter className="shrink-0 px-6 pt-4 pb-4">
           <DialogClose asChild>
             <Button type="button" variant="outline">
               {messages.cancel}

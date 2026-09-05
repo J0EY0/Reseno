@@ -34,10 +34,12 @@ function HighlightsFallback({
   const className = cn(
     hasDiffs && "resume-diff-field resume-diff-field--whole",
   );
+  const diffPath = diffs.map((diff) => diff.path).join(" ");
   if (visibleHighlights.length === 1) {
     return (
       <div
         className={className}
+        data-resume-diff-path={hasDiffs ? diffPath : undefined}
         dangerouslySetInnerHTML={{
           __html: sanitizeRichTextHtml(visibleHighlights[0]),
         }}
@@ -45,7 +47,10 @@ function HighlightsFallback({
     );
   }
   return (
-    <ul className={className}>
+    <ul
+      className={className}
+      data-resume-diff-path={hasDiffs ? diffPath : undefined}
+    >
       {visibleHighlights.map((value, index) => (
         <li
           dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(value) }}
@@ -83,6 +88,9 @@ export function RichListDiff({
       className={cn(
         hasDiffs && "resume-diff-field resume-diff-field--whole",
       )}
+      data-resume-diff-path={
+        hasDiffs ? diffs.map((diff) => diff.path).join(" ") : undefined
+      }
       dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(html) }}
     />
   );

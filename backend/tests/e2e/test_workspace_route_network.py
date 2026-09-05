@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from socket import AF_INET, SOCK_STREAM, socket
 from typing import Any, TextIO
@@ -36,6 +37,12 @@ from playwright.sync_api import (
     sync_playwright,
 )
 from playwright.sync_api import Error as PlaywrightError
+
+from app.services.model_metadata import (
+    MODEL_METADATA_CACHE_NAME,
+    MODEL_METADATA_CACHE_SOURCE,
+    MODEL_METADATA_CACHE_VERSION,
+)
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",
@@ -120,6 +127,26 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
 
     with tempfile.TemporaryDirectory(prefix="resumate-route-e2e-") as data_dir:
         data_path = Path(data_dir)
+        model_metadata_path = data_path / MODEL_METADATA_CACHE_NAME
+        model_metadata_path.parent.mkdir(parents=True)
+        model_metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": MODEL_METADATA_CACHE_VERSION,
+                    "source": MODEL_METADATA_CACHE_SOURCE,
+                    "catalogs": {
+                        source: {
+                            "fetchedAt": datetime.now(UTC).isoformat(
+                                timespec="seconds"
+                            ),
+                            "providers": {},
+                        }
+                        for source in ("litellm", "modelsDev")
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         backend_env = {
             **os.environ,
             "APP_DATA_DIR": str(data_path),
@@ -491,6 +518,7 @@ def _seed_pending_agent_draft(
     page: Page,
     frontend_url: str,
     *,
+    headline: str | None = None,
     message_id: str,
     summary: str,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
@@ -504,6 +532,51 @@ def _seed_pending_agent_draft(
     base_resume = detail["resume"]["resume"]
     candidate_resume = json.loads(json.dumps(base_resume))
     candidate_resume["basic"]["summary"] = summary
+    edits = [
+        {
+            "id": f"edit-{message_id}",
+            "title": "改写个人总结",
+            "target": "basic.summary",
+            "reason": "验证待确认草稿只能由当前页面确认。",
+            "operation": {
+                "type": "replace_field",
+                "path": "basic.summary",
+                "value": summary,
+            },
+            "status": "executed",
+        }
+    ]
+    review_items = [
+        {
+            "id": f"agent-review-edit-{message_id}",
+            "editIds": [f"edit-{message_id}"],
+            "status": "pending",
+        }
+    ]
+    if headline is not None:
+        headline_edit_id = f"edit-{message_id}-headline"
+        candidate_resume["basic"]["headline"] = headline
+        edits.append(
+            {
+                "id": headline_edit_id,
+                "title": "改写职业标题",
+                "target": "basic.headline",
+                "reason": "验证逐项审阅与独立决策。",
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.headline",
+                    "value": headline,
+                },
+                "status": "executed",
+            }
+        )
+        review_items.append(
+            {
+                "id": f"agent-review-{headline_edit_id}",
+                "editIds": [headline_edit_id],
+                "status": "pending",
+            }
+        )
     session = page.request.get(
         f"{frontend_url}/api/agent/resumes/{resume_id}/session"
     ).json()["data"]
@@ -522,23 +595,10 @@ def _seed_pending_agent_draft(
                         "id": message_id,
                         "role": "assistant",
                         "text": "草稿等待确认。",
-                        "edits": [
-                            {
-                                "id": f"edit-{message_id}",
-                                "title": "改写个人总结",
-                                "target": "basic.summary",
-                                "reason": "验证待确认草稿只能由当前页面确认。",
-                                "operation": {
-                                    "type": "replace_field",
-                                    "path": "basic.summary",
-                                    "value": summary,
-                                },
-                                "status": "executed",
-                            }
-                        ],
+                        "edits": edits,
                         "draft": {
                             "baseResume": base_resume,
-                            "status": "pending",
+                            "reviewItems": review_items,
                         },
                         "transactionState": "committed",
                     },
@@ -692,7 +752,7 @@ def _seed_long_agent_history(
     return resume_id
 
 
-def test_agent_history_fades_without_masking_native_scrollbar(
+def test_agent_history_stays_clear_without_masking_native_scrollbar(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
@@ -709,30 +769,32 @@ def test_agent_history_fades_without_masking_native_scrollbar(
 
         scroll_owner = page.locator(".agent-thread-scroll")
         scroll_owner.wait_for(state="visible")
-        fade = page.locator('[data-slot="agent-thread-fade"]')
+        composer_shield = page.locator('[data-slot="agent-thread-composer-shield"]')
         composer = page.locator('[data-slot="agent-composer"]')
 
-        assert fade.count() == 1
+        assert composer_shield.count() == 1
         assert composer.count() == 1
         metrics = page.locator(".agent-thread-layout").evaluate(
             """
             layout => {
               const scrollOwner = layout.querySelector('.agent-thread-scroll');
-              const fade = layout.querySelector('[data-slot="agent-thread-fade"]');
+              const composerShield = layout.querySelector(
+                '[data-slot="agent-thread-composer-shield"]',
+              );
               const composer = layout.querySelector('[data-slot="agent-composer"]');
               const safeArea = layout.querySelector('.agent-thread-safe-area');
               if (!(scrollOwner instanceof HTMLElement) ||
-                  !(fade instanceof HTMLElement) ||
+                  !(composerShield instanceof HTMLElement) ||
                   !(composer instanceof HTMLElement) ||
                   !(safeArea instanceof HTMLElement)) {
                 throw new Error('Missing Agent thread layout surfaces.');
               }
 
               const scrollStyle = getComputedStyle(scrollOwner);
-              const fadeStyle = getComputedStyle(fade);
+              const shieldStyle = getComputedStyle(composerShield);
               const layoutStyle = getComputedStyle(layout);
               const scrollRect = scrollOwner.getBoundingClientRect();
-              const fadeRect = fade.getBoundingClientRect();
+              const shieldRect = composerShield.getBoundingClientRect();
               const composerRect = composer.getBoundingClientRect();
               const safeAreaRect = safeArea.getBoundingClientRect();
               const safeAreaStyle = getComputedStyle(safeArea);
@@ -753,16 +815,17 @@ def test_agent_history_fades_without_masking_native_scrollbar(
               );
 
               return {
-                backgroundImage: fadeStyle.backgroundImage,
-                backgroundSize: fadeStyle.backgroundSize,
+                backgroundImage: shieldStyle.backgroundImage,
+                backgroundSize: shieldStyle.backgroundSize,
                 composerHeight: composerRect.height,
                 contentRight,
-                fadeBottom: fadeRect.bottom,
-                fadeIsOutsideScrollOwner:
-                  fade.parentElement === layout && !scrollOwner.contains(fade),
-                fadePointerEvents: fadeStyle.pointerEvents,
-                fadeRightClearance: scrollRect.right - fadeRect.right,
-                fadeRight: fadeRect.right,
+                shieldBottom: shieldRect.bottom,
+                shieldIsOutsideScrollOwner:
+                  composerShield.parentElement === layout &&
+                  !scrollOwner.contains(composerShield),
+                shieldPointerEvents: shieldStyle.pointerEvents,
+                shieldRightClearance: scrollRect.right - shieldRect.right,
+                shieldRight: shieldRect.right,
                 isScrollable: scrollOwner.scrollHeight > scrollOwner.clientHeight,
                 maskImage: scrollStyle.maskImage,
                 midpoint,
@@ -783,14 +846,14 @@ def test_agent_history_fades_without_masking_native_scrollbar(
         assert metrics["overflowY"] == "auto"
         assert metrics["maskImage"] == "none"
         assert metrics["webkitMaskImage"] == "none"
-        assert metrics["fadeIsOutsideScrollOwner"] is True
-        assert metrics["fadePointerEvents"] == "none"
-        assert "linear-gradient" in metrics["backgroundImage"]
-        assert metrics["backgroundSize"].endswith(f"100% {metrics['midpoint']}px")
+        assert metrics["shieldIsOutsideScrollOwner"] is True
+        assert metrics["shieldPointerEvents"] == "none"
+        assert metrics["backgroundImage"].count("linear-gradient") == 1
+        assert metrics["backgroundSize"] == f"100% {metrics['midpoint']}px"
         assert "stable" in metrics["scrollbarGutter"]
-        assert metrics["fadeRightClearance"] > 0
-        assert abs(metrics["fadeRight"] - metrics["contentRight"]) <= 1
-        assert abs(metrics["fadeBottom"] - metrics["scrollBottom"]) <= 1
+        assert metrics["shieldRightClearance"] > 0
+        assert abs(metrics["shieldRight"] - metrics["contentRight"]) <= 1
+        assert abs(metrics["shieldBottom"] - metrics["scrollBottom"]) <= 1
         assert abs(metrics["midpoint"] - metrics["composerHeight"] / 2) <= 1
         assert (
             abs(
@@ -1039,13 +1102,14 @@ def test_agent_sources_render_once_after_the_response(
         )
         trigger_box = trigger.bounding_box()
         assert trigger_box is not None
-        assert abs(
-            (claim_tail_box["y"] + claim_tail_box["height"] / 2)
-            - (trigger_box["y"] + trigger_box["height"] / 2)
-        ) <= 4
-        tail_gap = trigger_box["x"] - (
-            claim_tail_box["x"] + claim_tail_box["width"]
+        assert (
+            abs(
+                (claim_tail_box["y"] + claim_tail_box["height"] / 2)
+                - (trigger_box["y"] + trigger_box["height"] / 2)
+            )
+            <= 4
         )
+        tail_gap = trigger_box["x"] - (claim_tail_box["x"] + claim_tail_box["width"])
         assert 0 <= tail_gap <= 16
 
         trigger.hover()
@@ -1101,9 +1165,7 @@ def test_agent_sources_render_once_after_the_response(
             (card_box["y"] + card_box["height"] + trigger_box["y"]) / 2,
         )
         page.wait_for_timeout(60)
-        gap_state = (
-            card.get_attribute("data-state") if card.count() else "unmounted"
-        )
+        gap_state = card.get_attribute("data-state") if card.count() else "unmounted"
         page.mouse.move(
             card_box["x"] + card_box["width"] / 2,
             card_box["y"] + card_box["height"] / 2,
@@ -1154,10 +1216,13 @@ def test_agent_sources_render_once_after_the_response(
         assert card.get_by_text("AI Frontend Engineer", exact=True).count() == 1
         expect(card.get_by_text("1/5", exact=True)).to_be_visible()
         assert page.get_by_text("Duplicate Source", exact=True).count() == 0
-        assert card.get_by_text(
-            "Requirements include React and TypeScript.",
-            exact=True,
-        ).count() == 0
+        assert (
+            card.get_by_text(
+                "Requirements include React and TypeScript.",
+                exact=True,
+            ).count()
+            == 0
+        )
         card.get_by_role("button", name="Next", exact=True).click()
         expect(card.get_by_text("Frontend role guide", exact=True)).to_be_visible()
         expect(card.get_by_text("2/5", exact=True)).to_be_visible()
@@ -1199,7 +1264,7 @@ def test_pending_agent_draft_page_load_stays_preview_only(
             f"{frontend_url}/resume/{resume_id}",
             wait_until="networkidle",
         )
-        page.get_by_role("button", name="应用草稿", exact=True).wait_for(
+        page.get_by_role("button", name="应用剩余全部", exact=True).wait_for(
             state="visible"
         )
         assert page.get_by_text(pending_summary, exact=True).count() > 0
@@ -1220,8 +1285,169 @@ def test_pending_agent_draft_page_load_stays_preview_only(
 
         assert detail_after["versionId"] == detail_before["versionId"]
         assert detail_after["resume"]["resume"] == formal_resume
-        assert assistant_response["draft"]["status"] == "pending"
+        assert assistant_response["draft"]["reviewItems"][0]["status"] == ("pending")
     finally:
+        context.close()
+
+
+def test_agent_draft_review_supports_single_item_decisions_and_motion(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 870},
+    )
+    page = context.new_page()
+    held_decision_routes: list[Route] = []
+
+    try:
+        message_id = "assistant-two-item-review"
+        pending_summary = "逐项审阅保留的个人总结。"
+        pending_headline = "逐项审阅后放弃的职业标题"
+        resume_id, detail_before, _ = _seed_pending_agent_draft(
+            page,
+            frontend_url,
+            headline=pending_headline,
+            message_id=message_id,
+            summary=pending_summary,
+        )
+        summary_review_id = f"agent-review-edit-{message_id}"
+        headline_review_id = f"agent-review-edit-{message_id}-headline"
+        decision_path = (
+            f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft"
+        )
+        decision_pattern = f"**{decision_path}"
+
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        expect(page.get_by_text("2 项待确认", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+        assert page.get_by_text(pending_headline, exact=True).count() > 0
+
+        summary_target = page.locator(
+            f'[data-resume-review-item-id="{summary_review_id}"]'
+        ).first
+        headline_target = page.locator(
+            f'[data-resume-review-item-id="{headline_review_id}"]'
+        ).first
+        summary_target.wait_for(state="visible")
+        headline_target.wait_for(state="visible")
+        assert (
+            summary_target.evaluate(
+                "element => getComputedStyle(element).animationName"
+            )
+            == "resume-diff-review-enter"
+        )
+
+        page.wait_for_timeout(250)
+        repeated_enter_animations = summary_target.evaluate(
+            """
+            async target => {
+              let starts = 0;
+              const onAnimationStart = event => {
+                if (event.target === target &&
+                    event.animationName === 'resume-diff-review-enter') {
+                  starts += 1;
+                }
+              };
+              target.addEventListener('animationstart', onAnimationStart);
+              await new Promise(resolve => window.setTimeout(resolve, 1_000));
+              target.removeEventListener('animationstart', onAnimationStart);
+              return starts;
+            }
+            """
+        )
+        assert repeated_enter_animations == 0
+
+        page.get_by_role("button", name="逐项查看", exact=True).click()
+        expect(headline_target).to_have_attribute(
+            "data-resume-review-state",
+            "exiting",
+        )
+        assert (
+            headline_target.evaluate(
+                "element => getComputedStyle(element).animationName"
+            )
+            == "resume-diff-review-exit"
+        )
+        expect(page.get_by_text("第 1/2 项", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+        assert page.get_by_text(pending_headline, exact=True).count() == 0
+
+        summary_target = page.locator(
+            f'[data-resume-review-item-id="{summary_review_id}"]'
+        ).first
+        summary_target.hover()
+        expect(page.get_by_text("修改前", exact=True)).to_be_visible()
+        expect(page.get_by_text("修改后", exact=True)).to_be_visible()
+
+        page.get_by_role("button", name="下一项修改", exact=True).click()
+        expect(page.get_by_text("第 2/2 项", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_headline, exact=True).count() > 0
+        assert page.get_by_text(pending_summary, exact=True).count() == 0
+
+        def hold_decision(route: Route) -> None:
+            held_decision_routes.append(route)
+
+        page.route(decision_pattern, hold_decision, times=1)
+        page.get_by_role("button", name="放弃此项", exact=True).click()
+        page.locator(".resume-editor-panel").wait_for(state="visible")
+        expect(page.locator(".resume-editor-panel")).to_have_attribute("inert", "")
+        page.wait_for_timeout(100)
+        assert held_decision_routes
+        headline_target = page.locator(
+            f'[data-resume-review-item-id="{headline_review_id}"]'
+        ).first
+        expect(headline_target).to_have_attribute(
+            "data-resume-review-state",
+            "exiting",
+        )
+
+        pending_decision_routes = held_decision_routes.copy()
+        held_decision_routes.clear()
+        for route in pending_decision_routes:
+            route.continue_()
+        expect(page.get_by_text("第 1/1 项", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+        assert page.get_by_text(pending_headline, exact=True).count() == 0
+
+        page.get_by_role("button", name="应用此项", exact=True).click()
+        exiting_dock = page.locator(
+            '[data-slot="agent-draft-review-dock"][data-presence="exiting"]'
+        )
+        exiting_dock.wait_for(state="visible")
+        assert (
+            exiting_dock.evaluate("element => getComputedStyle(element).animationName")
+            == "agent-draft-review-dock-exit"
+        )
+        expect(page.get_by_text("已应用 1 项，已放弃 1 项", exact=True)).to_be_visible()
+
+        detail_after = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        assert detail_after["resume"]["resume"]["basic"]["summary"] == (pending_summary)
+        assert (
+            detail_after["resume"]["resume"]["basic"]["headline"]
+            == (detail_before["resume"]["resume"]["basic"]["headline"])
+        )
+        session_after = page.request.get(
+            f"{frontend_url}/api/agent/resumes/{resume_id}/session"
+        ).json()["data"]
+        statuses = {
+            item["id"]: item["status"]
+            for item in session_after["messages"][-1]["response"]["draft"][
+                "reviewItems"
+            ]
+        }
+        assert statuses == {
+            summary_review_id: "applied",
+            headline_review_id: "discarded",
+        }
+    finally:
+        for route in held_decision_routes:
+            route.continue_()
         context.close()
 
 
@@ -1265,8 +1491,8 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
             "我可以帮你润色经历、调整简历结构。", exact=True
         )
         assert empty_prompt.count() == 0
-        assert page.get_by_role("button", name="应用草稿", exact=True).count() == 0
-        assert page.get_by_role("button", name="撤回草稿", exact=True).count() == 0
+        assert page.get_by_role("button", name="应用剩余全部", exact=True).count() == 0
+        assert page.get_by_role("button", name="放弃剩余全部", exact=True).count() == 0
 
         page.unroute(active_run_pattern, hold_active_run)
         for route in held_active_run_routes:
@@ -1277,10 +1503,10 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
                 pass
         held_active_run_routes.clear()
         loading.wait_for(state="hidden")
-        page.get_by_role("button", name="应用草稿", exact=True).wait_for(
+        page.get_by_role("button", name="应用剩余全部", exact=True).wait_for(
             state="visible"
         )
-        assert page.get_by_role("button", name="撤回草稿", exact=True).count() == 1
+        assert page.get_by_role("button", name="放弃剩余全部", exact=True).count() == 1
         assert page.get_by_text(pending_summary, exact=True).count() > 0
     finally:
         for route in held_active_run_routes:
@@ -1290,7 +1516,7 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
 
 @pytest.mark.parametrize(
     ("decision_button_name", "decision_id"),
-    [("应用草稿", "apply"), ("撤回草稿", "discard")],
+    [("应用剩余全部", "apply"), ("放弃剩余全部", "discard")],
 )
 def test_agent_draft_decision_revision_is_used_by_next_prompt(
     browser: Browser,
@@ -1394,6 +1620,7 @@ def test_agent_draft_decision_blocks_a_concurrent_prompt(
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
         browser,
+        locale="zh-CN",
         viewport={"width": 1672, "height": 870},
     )
     page = context.new_page()
@@ -1451,7 +1678,7 @@ def test_agent_draft_decision_blocks_a_concurrent_prompt(
         prompt.fill("这条消息必须等草稿决策完成。")
         discard_button = page.get_by_role(
             "button",
-            name="撤回草稿",
+            name="放弃剩余全部",
             exact=True,
         )
         discard_button.click()
@@ -1465,9 +1692,10 @@ def test_agent_draft_decision_blocks_a_concurrent_prompt(
         assert prompt.is_disabled()
 
         page.unroute(decision_pattern, hold_decision)
-        for route in held_decision_routes:
-            route.continue_()
+        pending_decision_routes = held_decision_routes.copy()
         held_decision_routes.clear()
+        for route in pending_decision_routes:
+            route.continue_()
         discard_button.wait_for(state="hidden")
         expect(prompt).to_be_enabled()
     finally:
@@ -1498,6 +1726,7 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
             message_id=message_id,
             summary="A queued apply must stop when its route owner unmounts.",
         )
+        review_item_id = f"agent-review-edit-{message_id}"
 
         writes: list[ApiRequest] = []
 
@@ -1573,21 +1802,27 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
         )
         page.evaluate(
             """
-            ({ candidateResume, messageId }) => {
+            ({ candidateResume, messageId, reviewItemId }) => {
               const harness = window.__queuedApplyHarness;
               if (!harness?.controller) {
                 throw new Error('The save lifecycle harness is unavailable.');
               }
               const save = harness.controller.save('autosave');
-              const decision = harness.controller.resolveAppliedAgentDraft(
+              const decision = harness.controller.resolveAgentDraftReview(
                 messageId,
                 candidateResume,
+                [reviewItemId],
+                'applied',
               );
               window.__queuedApplyPromises = [save, decision];
               window.setTimeout(() => harness.root.unmount(), 50);
             }
             """,
-            {"candidateResume": candidate_resume, "messageId": message_id},
+            {
+                "candidateResume": candidate_resume,
+                "messageId": message_id,
+                "reviewItemId": review_item_id,
+            },
         )
         page.wait_for_timeout(1_800)
 
@@ -1599,8 +1834,11 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
         session_after = page.request.get(
             f"{frontend_url}/api/agent/resumes/{resume_id}/session"
         ).json()["data"]
-        assert session_after["messages"][-1]["response"]["draft"]["status"] == (
-            "pending"
+        assert (
+            session_after["messages"][-1]["response"]["draft"]["reviewItems"][0][
+                "status"
+            ]
+            == "pending"
         )
     finally:
         context.close()
@@ -1811,6 +2049,7 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
     page = context.new_page()
     run_id = "agent-toggle-status-run"
     held_event_routes: list[Route] = []
+    session_pattern = f"**/api/agent/resumes/{resume_id}/session"
     run_pattern = f"**/api/agent/resumes/{resume_id}/run"
     events_pattern = f"**/api/agent/runs/{run_id}/events*"
 
@@ -1819,6 +2058,23 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
             f"{frontend_url}/api/resumes/{resume_id}"
         ).json()["data"]
         base_resume = resume_detail["resume"]["resume"]
+
+        def fulfill_session_with_user_message(route: Route) -> None:
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["messages"] = [
+                {
+                    "id": "user-agent-toggle-status",
+                    "role": "user",
+                    "text": "检查这份简历。",
+                    "createdAt": "2026-08-10T00:00:00.000Z",
+                }
+            ]
+            route.fulfill(
+                response=response,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
 
         def fulfill_active_run(route: Route) -> None:
             route.fulfill(
@@ -1844,6 +2100,7 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
         def hold_events(route: Route) -> None:
             held_event_routes.append(route)
 
+        page.route(session_pattern, fulfill_session_with_user_message)
         page.route(run_pattern, fulfill_active_run)
         page.route(events_pattern, hold_events)
         page.goto(
@@ -1854,6 +2111,45 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
         trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
         trigger.evaluate("button => button.click()")
         expect(trigger).to_have_attribute("data-agent-status", "responding")
+
+        pending_status = page.locator("#resume-detail-agent-panel").get_by_role(
+            "status", name="正在分析请求", exact=True
+        )
+        expect(pending_status).to_be_visible()
+        shimmer_start = pending_status.evaluate(
+            """
+            element => {
+              const shimmer = element.querySelector('span');
+              if (!shimmer) {
+                return null;
+              }
+              const style = getComputedStyle(shimmer);
+              return {
+                animationName: style.animationName,
+                backgroundImage: style.backgroundImage,
+                backgroundPosition: style.backgroundPosition,
+              };
+            }
+            """
+        )
+        page.wait_for_timeout(80)
+        shimmer_end_position = pending_status.evaluate(
+            """
+            element => {
+              const shimmer = element.querySelector('span');
+              return shimmer
+                ? getComputedStyle(shimmer).backgroundPosition
+                : null;
+            }
+            """
+        )
+        assert shimmer_start is not None
+        assert shimmer_start["animationName"] == "text-shimmer", shimmer_start
+        assert shimmer_start["backgroundImage"] != "none", shimmer_start
+        assert shimmer_end_position != shimmer_start["backgroundPosition"], {
+            "start": shimmer_start,
+            "endPosition": shimmer_end_position,
+        }
 
         trigger.click()
         expect(trigger).to_have_attribute("aria-expanded", "false")
@@ -1884,9 +2180,7 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
 
         page.set_viewport_size({"width": 1200, "height": 900})
         expect(trigger).to_be_hidden()
-        compact_indicator = page.locator(
-            '[data-slot="agent-compact-status-indicator"]'
-        )
+        compact_indicator = page.locator('[data-slot="agent-compact-status-indicator"]')
         compact_indicator_state = compact_indicator.evaluate(
             """
             element => {
@@ -1920,6 +2214,765 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
         expect(trigger).to_have_attribute("data-agent-status", "ready")
         expect(indicator).to_have_css("opacity", "0")
         assert live_status.count() == 0
+    finally:
+        for route in held_event_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_agent_streaming_text_uses_character_reveal_animation(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    model_config_id = "llm-agent-stream-animation"
+    model_nickname = "Agent stream animation"
+    run_id = "agent-stream-animation"
+    streaming_text = (
+        "正在逐字展示这段中文回复，确保单次收到较长内容时仍然平滑，"
+        "而且不会把最后几个字延迟太久。"
+    )
+    stream_finished = False
+    held_event_routes: list[Route] = []
+    session_pattern = f"**/api/agent/resumes/{resume_id}/session"
+    events_pattern = f"**/api/agent/runs/{run_id}/events*"
+
+    def fulfill_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": model_config_id,
+                "provider": "openai",
+                "nickname": model_nickname,
+                "model": "stream-animation-model",
+                "supportsTools": True,
+            }
+        ]
+        payload["data"]["agentSettings"]["defaultModelConfigId"] = model_config_id
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def fulfill_session(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        if stream_finished:
+            payload["data"]["messages"] = [
+                {
+                    "id": "user-stream-animation",
+                    "role": "user",
+                    "text": "请展示一段流式回复。",
+                    "createdAt": "2026-08-10T00:00:00.000Z",
+                },
+                {
+                    "id": "assistant-stream-animation",
+                    "role": "assistant",
+                    "text": streaming_text,
+                    "createdAt": "2026-08-10T00:00:01.000Z",
+                    "response": {
+                        "id": "assistant-stream-animation",
+                        "role": "assistant",
+                        "text": streaming_text,
+                        "timeline": [
+                            {
+                                "id": "timeline-stream-animation",
+                                "type": "text",
+                                "text": streaming_text,
+                                "toolIds": [],
+                            }
+                        ],
+                    },
+                },
+            ]
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def fulfill_chat(route: Route) -> None:
+        message_start = (
+            "id: 1\n"
+            "event: message_start\n"
+            "data: "
+            + json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "assistant-stream-animation",
+                        "role": "assistant",
+                        "text": "",
+                    },
+                },
+                separators=(",", ":"),
+            )
+            + "\n\n"
+        )
+        text_delta = (
+            "id: 2\n"
+            "event: text_delta\n"
+            "data: "
+            + json.dumps(
+                {
+                    "type": "text_delta",
+                    "delta": streaming_text,
+                    "timelinePartId": "timeline-stream-animation",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\n"
+        )
+        route.fulfill(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-Agent-Run-Id": run_id,
+            },
+            body=message_start + text_delta,
+        )
+
+    def hold_events(route: Route) -> None:
+        held_event_routes.append(route)
+
+    page.route("**/api/workspace/pages/resume-editor", fulfill_workspace)
+    page.route(session_pattern, fulfill_session)
+    page.route("**/api/agent/chat", fulfill_chat)
+    page.route(events_pattern, hold_events)
+
+    try:
+        page.emulate_media(reduced_motion="no-preference")
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
+        if trigger.get_attribute("aria-expanded") == "false":
+            trigger.evaluate("button => button.click()")
+
+        prompt = page.get_by_role(
+            "textbox",
+            name="你想了解什么？",
+            exact=True,
+        )
+        prompt.fill("请展示一段流式回复。")
+        page.evaluate(
+            """
+            targetText => {
+              window.__agentStreamingFrames = [];
+              window.__captureAgentStreamingFrames = true;
+              const capture = () => {
+                const panel = document.querySelector(
+                  '#resume-detail-agent-panel'
+                );
+                const response = [...(panel?.querySelectorAll('p') ?? [])]
+                  .find(element => element.textContent?.includes(targetText));
+                window.__agentStreamingFrames.push({
+                  animatedCount: panel?.querySelectorAll(
+                    '[data-sd-animate="true"]'
+                  ).length ?? 0,
+                  hasVisibleFullText: Boolean(
+                    response &&
+                    getComputedStyle(response).visibility !== 'hidden'
+                  ),
+                });
+                if (window.__captureAgentStreamingFrames) {
+                  requestAnimationFrame(capture);
+                }
+              };
+              requestAnimationFrame(capture);
+            }
+            """,
+            streaming_text,
+        )
+        prompt.press("Enter")
+
+        panel = page.locator("#resume-detail-agent-panel")
+        animated_characters = panel.locator('[data-sd-animate="true"]')
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '#resume-detail-agent-panel [data-sd-animate="true"]'
+            ).length >= 4
+            """,
+        )
+        expect(panel).to_contain_text(streaming_text)
+        presentation_frames = page.evaluate(
+            """
+            () => {
+              window.__captureAgentStreamingFrames = false;
+              return window.__agentStreamingFrames;
+            }
+            """
+        )
+        assert any(frame["hasVisibleFullText"] for frame in presentation_frames)
+        assert not any(
+            frame["hasVisibleFullText"] and frame["animatedCount"] == 0
+            for frame in presentation_frames
+        ), presentation_frames
+        animation_state = animated_characters.evaluate_all(
+            """
+            nodes => [nodes[0], nodes[1], nodes[2], nodes.at(-1)].map(node => {
+              const style = getComputedStyle(node);
+              const toMilliseconds = value => value.endsWith('ms')
+                ? Number.parseFloat(value)
+                : Number.parseFloat(value) * 1000;
+              return {
+                animationName: style.animationName,
+                delayMs: toMilliseconds(style.animationDelay),
+                durationMs: toMilliseconds(style.animationDuration),
+              };
+            })
+            """
+        )
+        assert all(state["animationName"] != "none" for state in animation_state)
+        assert all(state["durationMs"] > 0 for state in animation_state)
+        reveal_delays = [state["delayMs"] for state in animation_state]
+        assert reveal_delays == sorted(reveal_delays)
+        assert reveal_delays[0] < reveal_delays[1] < reveal_delays[2]
+        assert reveal_delays[-1] <= 240
+
+        page.emulate_media(reduced_motion="reduce")
+        reduced_motion_names = animated_characters.evaluate_all(
+            """
+            nodes => [...new Set(
+              nodes.map(node => getComputedStyle(node).animationName)
+            )]
+            """
+        )
+        assert reduced_motion_names == ["none"]
+
+        deadline = time.monotonic() + 3
+        while not held_event_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert held_event_routes
+        terminal_event = (
+            "id: 3\n"
+            "event: message_done\n"
+            "data: "
+            + json.dumps(
+                {
+                    "type": "message_done",
+                    "message": {
+                        "id": "assistant-stream-animation",
+                        "role": "assistant",
+                        "text": streaming_text,
+                        "timeline": [
+                            {
+                                "id": "timeline-stream-animation",
+                                "type": "text",
+                                "text": streaming_text,
+                                "toolIds": [],
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\n"
+            + "id: 4\nevent: run_done\ndata: "
+            + '{"status":"completed","executionState":"succeeded",'
+            + '"errorCode":null}\n\n'
+        )
+        stream_finished = True
+        page.unroute(events_pattern, hold_events)
+        for route in held_event_routes:
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=terminal_event,
+            )
+        held_event_routes.clear()
+        expect(trigger).to_have_attribute("data-agent-status", "ready")
+        expect(animated_characters).to_have_count(0)
+        expect(panel).to_contain_text(streaming_text)
+    finally:
+        for route in held_event_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
+@pytest.mark.parametrize("action", ["send", "retry"])
+def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    action: str,
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    current_model_config_id = f"llm-feedback-current-{action}"
+    next_model_config_id = f"llm-feedback-next-{action}"
+    current_model_nickname = f"Feedback current {action}"
+    next_model_nickname = f"Feedback next {action}"
+    user_message_id = f"user-feedback-{action}"
+    run_id = f"agent-feedback-{action}"
+    held_settings_routes: list[Route] = []
+    held_chat_routes: list[Route] = []
+    held_event_routes: list[Route] = []
+    settings_pattern = "**/api/workspace/user-settings*"
+    chat_pattern = "**/api/agent/chat"
+    events_pattern = f"**/api/agent/runs/{run_id}/events*"
+
+    def fulfill_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": model_config_id,
+                "provider": "openai",
+                "nickname": nickname,
+                "model": model_id,
+                "supportsTools": True,
+            }
+            for model_config_id, nickname, model_id in (
+                (
+                    current_model_config_id,
+                    current_model_nickname,
+                    "feedback-current-model",
+                ),
+                (
+                    next_model_config_id,
+                    next_model_nickname,
+                    "feedback-next-model",
+                ),
+            )
+        ]
+        payload["data"]["agentSettings"]["defaultModelConfigId"] = (
+            current_model_config_id
+        )
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def fulfill_retryable_session(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["messages"] = [
+            {
+                "id": user_message_id,
+                "role": "user",
+                "text": "请重新检查并生成修改草稿。",
+                "createdAt": "2026-08-10T00:00:00.000Z",
+            }
+        ]
+        payload["data"]["executions"] = [
+            {
+                "runId": "failed-feedback-run",
+                "turnId": user_message_id,
+                "status": "failed",
+                "errorCode": "AGENT_PROVIDER_ERROR",
+                "modelSnapshot": None,
+                "startedAt": "2026-08-10T00:00:00.000Z",
+                "completedAt": "2026-08-10T00:00:01.000Z",
+            }
+        ]
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def hold_settings(route: Route) -> None:
+        if route.request.method != "PUT":
+            route.continue_()
+            return
+        held_settings_routes.append(route)
+
+    def hold_chat(route: Route) -> None:
+        held_chat_routes.append(route)
+
+    def hold_events(route: Route) -> None:
+        held_event_routes.append(route)
+
+    page.route("**/api/workspace/pages/resume-editor", fulfill_workspace)
+    page.route(settings_pattern, hold_settings)
+    page.route(chat_pattern, hold_chat)
+    page.route(events_pattern, hold_events)
+    if action == "retry":
+        page.route(
+            f"**/api/agent/resumes/{resume_id}/session",
+            fulfill_retryable_session,
+        )
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
+        trigger.evaluate("button => button.click()")
+
+        model_trigger = page.locator(
+            '[data-slot="agent-composer"] [data-slot="dialog-trigger"]'
+        )
+        attachment_trigger = page.get_by_role(
+            "button",
+            name="添加附件",
+            exact=True,
+        )
+        model_trigger.click()
+        page.locator('[data-slot="command-item"]').filter(
+            has_text=next_model_nickname
+        ).click()
+
+        deadline = time.monotonic() + 3
+        while not held_settings_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(held_settings_routes) == 1
+
+        if action == "send":
+            prompt = page.get_by_role(
+                "textbox",
+                name="你想了解什么？",
+                exact=True,
+            )
+            prompt.fill("请检查并生成修改草稿。")
+            prompt.press("Enter")
+        else:
+            retry = page.get_by_role("button", name="重试", exact=True)
+            expect(retry).to_have_count(1)
+            retry.click(force=True)
+
+        pending_status = page.locator("#resume-detail-agent-panel").get_by_role(
+            "status",
+            name="正在分析请求",
+            exact=True,
+        )
+        expect(pending_status).to_be_visible(timeout=750)
+        assert held_chat_routes == []
+        if action == "send":
+            expect(prompt).to_have_value("")
+        expect(attachment_trigger).to_be_enabled()
+        expect(model_trigger).to_be_enabled()
+        if action == "send":
+            model_trigger.click()
+            page.locator('[data-slot="command-item"]').filter(
+                has_text=current_model_nickname
+            ).click()
+            expect(model_trigger).to_have_attribute(
+                "aria-label",
+                f"下一条消息将使用 {current_model_nickname}",
+            )
+
+        page.unroute(settings_pattern, hold_settings)
+        held_settings_routes.pop().fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+        )
+
+        deadline = time.monotonic() + 3
+        while not held_chat_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(held_chat_routes) == 1
+        if action == "send":
+            request_payload = held_chat_routes[0].request.post_data_json
+            assert request_payload["message"]["text"] == ("请检查并生成修改草稿。")
+            assert request_payload["modelConfig"] == {
+                "id": next_model_config_id,
+            }
+        expect(pending_status).to_be_visible()
+
+        edit_tool = {
+            "id": "call-edit-feedback",
+            "type": "tool-edit_execute",
+            "title": "edit_execute",
+            "state": "input-streaming",
+            "input": {},
+        }
+        tool_start_event = (
+            "id: 1\n"
+            "event: tool_start\n"
+            "data: "
+            + json.dumps(
+                {
+                    "timelinePartId": "timeline-edit-feedback",
+                    "tool": edit_tool,
+                },
+                separators=(",", ":"),
+            )
+            + "\n\n"
+        )
+        held_chat_routes.pop().fulfill(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-Agent-Run-Id": run_id,
+            },
+            body=tool_start_event,
+        )
+
+        edit_status = page.locator("#resume-detail-agent-panel").get_by_role(
+            "status",
+            name="正在生成可预览草稿",
+            exact=True,
+        )
+        expect(edit_status).to_be_visible(timeout=750)
+
+        deadline = time.monotonic() + 3
+        while not held_event_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert held_event_routes
+        terminal_event = (
+            "id: 2\nevent: run_done\ndata: "
+            '{"status":"completed","executionState":"succeeded",'
+            '"errorCode":null}\n\n'
+        )
+        page.unroute(events_pattern, hold_events)
+        for route in held_event_routes:
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=terminal_event,
+            )
+        held_event_routes.clear()
+        expect(trigger).to_have_attribute("data-agent-status", "ready")
+    finally:
+        for route in held_settings_routes:
+            try:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+                )
+            except PlaywrightError:
+                pass
+        for route in held_chat_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        for route in held_event_routes:
+            try:
+                route.abort()
+            except PlaywrightError:
+                pass
+        context.close()
+
+
+def test_agent_model_switch_during_active_run_applies_to_next_message(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    current_model_config_id = "llm-active-run-current-model"
+    next_model_config_id = "llm-active-run-next-model"
+    current_model_config_nickname = "Active run current model"
+    next_model_config_nickname = "Active run next model"
+    run_id = "agent-model-switch-active-run"
+    held_event_routes: list[Route] = []
+    captured_chat_requests: list[Request] = []
+
+    try:
+        resume_detail = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        base_resume = resume_detail["resume"]["resume"]
+        workspace_pattern = "**/api/workspace/pages/resume-editor"
+        settings_pattern = "**/api/workspace/user-settings*"
+        run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+        events_pattern = f"**/api/agent/runs/{run_id}/events*"
+        chat_pattern = "**/api/agent/chat"
+        terminal_event = (
+            "id: 1\nevent: run_done\ndata: "
+            '{"status":"completed","executionState":"succeeded",'
+            '"errorCode":null}\n\n'
+        )
+
+        def fulfill_workspace(route: Route) -> None:
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["modelConfigs"] = [
+                {
+                    "id": model_config_id,
+                    "provider": "openai",
+                    "nickname": nickname,
+                    "model": model_id,
+                    "supportsTools": True,
+                }
+                for model_config_id, nickname, model_id in (
+                    (
+                        current_model_config_id,
+                        current_model_config_nickname,
+                        "test-current-model",
+                    ),
+                    (
+                        next_model_config_id,
+                        next_model_config_nickname,
+                        "test-next-model",
+                    ),
+                )
+            ]
+            payload["data"]["agentSettings"]["defaultModelConfigId"] = (
+                current_model_config_id
+            )
+            route.fulfill(
+                response=response,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        def fulfill_settings_update(route: Route) -> None:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+            )
+
+        def fulfill_active_run(route: Route) -> None:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "code": 0,
+                        "message": "OK",
+                        "data": {
+                            "id": run_id,
+                            "resumeId": resume_id,
+                            "baseResume": base_resume,
+                            "status": "active",
+                            "executionState": "running",
+                            "errorCode": None,
+                            "lastEventId": 0,
+                        },
+                    }
+                ),
+            )
+
+        def hold_events(route: Route) -> None:
+            held_event_routes.append(route)
+
+        def fulfill_chat(route: Route) -> None:
+            captured_chat_requests.append(route.request)
+            route.fulfill(
+                status=200,
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "X-Agent-Run-Id": "agent-model-switch-next-run",
+                },
+                body=terminal_event,
+            )
+
+        page.route(workspace_pattern, fulfill_workspace)
+        page.route(settings_pattern, fulfill_settings_update)
+        page.route(run_pattern, fulfill_active_run)
+        page.route(events_pattern, hold_events)
+        page.route(chat_pattern, fulfill_chat)
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+
+        panel_trigger = page.locator(
+            '.resume-workspace [data-slot="agent-panel-toggle"]'
+        )
+        panel_trigger.evaluate("button => button.click()")
+        expect(panel_trigger).to_have_attribute("data-agent-status", "responding")
+
+        prompt = page.get_by_role(
+            "textbox",
+            name="你想了解什么？",
+            exact=True,
+        )
+        expect(prompt).to_be_disabled()
+        model_trigger = page.locator(
+            '[data-slot="agent-composer"] [data-slot="dialog-trigger"]'
+        )
+        expect(model_trigger).to_be_enabled()
+        expect(model_trigger).to_have_attribute(
+            "aria-label",
+            f"下一条消息将使用 {current_model_config_nickname}",
+        )
+
+        model_trigger.click()
+        next_model_config_option = page.locator('[data-slot="command-item"]').filter(
+            has_text=next_model_config_nickname
+        )
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path == "/api/workspace/user-settings"
+            )
+        ) as settings_update_info:
+            next_model_config_option.click()
+
+        assert settings_update_info.value.ok
+        expect(model_trigger).to_be_enabled()
+        expect(model_trigger).to_have_attribute(
+            "aria-label",
+            f"下一条消息将使用 {next_model_config_nickname}",
+        )
+        expect(model_trigger).not_to_contain_text("下一条")
+        expect(model_trigger).to_contain_text("TEST-NEXT-MODEL")
+        expect(
+            page.get_by_text(
+                "模型已切换。当前回复继续使用原模型，新模型从下一条消息生效。",
+                exact=True,
+            )
+        ).to_be_visible()
+        assert captured_chat_requests == []
+
+        page.unroute(events_pattern, hold_events)
+        for route in held_event_routes:
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=terminal_event,
+            )
+        held_event_routes.clear()
+        expect(panel_trigger).to_have_attribute("data-agent-status", "ready")
+        expect(prompt).to_be_enabled()
+
+        prompt.fill("请用新模型检查这份简历。")
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and urlparse(response.url).path == "/api/agent/chat"
+            )
+        ) as chat_response_info:
+            with page.expect_request(
+                lambda request: (
+                    request.method == "POST"
+                    and urlparse(request.url).path == "/api/agent/chat"
+                )
+            ) as chat_request_info:
+                prompt.press("Enter")
+
+        request_payload = json.loads(chat_request_info.value.post_data or "{}")
+        assert request_payload["modelConfig"] == {"id": next_model_config_id}
+        assert chat_response_info.value.ok
+        assert len(captured_chat_requests) == 1
     finally:
         for route in held_event_routes:
             try:
@@ -1973,6 +3026,95 @@ def test_document_canvas_defaults_to_and_remembers_manual_zoom(
         page.reload(wait_until="networkidle")
         expect(actual_size).to_have_text(fitted_scale)
         expect(fit_to_width).to_have_attribute("aria-pressed", "false")
+    finally:
+        context.close()
+
+
+def test_resume_workspace_focus_does_not_draw_full_frame(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        skip_link = page.get_by_role("link", name="跳到主要内容", exact=True)
+        page.keyboard.press("Tab")
+        assert skip_link.evaluate("element => document.activeElement === element")
+        assert skip_link.evaluate("element => element.matches(':focus-visible')")
+        expect(skip_link).not_to_have_css("box-shadow", "none")
+
+        page.keyboard.press("Enter")
+        main_content = page.locator("#main-content")
+        assert main_content.evaluate("element => document.activeElement === element")
+        expect(main_content).to_have_css("outline-style", "none")
+
+        page.locator(f'a[href="/resume/{resume_id}"]').click()
+        page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+
+        viewport = page.locator('[data-slot="document-canvas-viewport"]')
+        viewport.wait_for(state="visible")
+        assert main_content.evaluate("element => document.activeElement === element")
+
+        page.keyboard.press("F1")
+        assert main_content.evaluate("element => element.matches(':focus-visible')")
+        expect(main_content).to_have_css("outline-style", "none")
+
+        back_button = page.get_by_role("button", name="返回简历列表", exact=True)
+        page.keyboard.press("Tab")
+        assert back_button.evaluate("element => document.activeElement === element")
+        assert back_button.evaluate("element => element.matches(':focus-visible')")
+        expect(back_button).not_to_have_css("box-shadow", "none")
+
+        viewport.click(position={"x": 8, "y": 8})
+
+        assert viewport.evaluate("element => document.activeElement === element")
+        expect(viewport).to_have_attribute("data-focus-origin", "pointer")
+        expect(viewport).to_have_css("box-shadow", "none")
+
+        actual_size = page.get_by_role(
+            "button",
+            name="实际大小",
+            exact=True,
+        )
+        actual_size.click()
+        expect(viewport).not_to_have_attribute("data-focus-origin", "pointer")
+
+        page.keyboard.press("Tab")
+        viewport.focus()
+        assert viewport.evaluate("element => document.activeElement === element")
+        assert viewport.evaluate("element => element.matches(':focus-visible')")
+        expect(viewport).not_to_have_css("box-shadow", "none")
+
+        page.locator("[data-document-canvas-paper]").click(position={"x": 8, "y": 8})
+        expect(viewport).to_have_attribute("data-focus-origin", "pointer")
+        expect(viewport).to_have_css("box-shadow", "none")
+
+        actual_size.click()
+        viewport_box = viewport.bounding_box()
+        assert viewport_box is not None
+        scroll_top = viewport.evaluate("element => element.scrollTop")
+        page.mouse.move(viewport_box["x"] + 8, viewport_box["y"] + 160)
+        page.mouse.down()
+        page.mouse.move(
+            viewport_box["x"] + 8,
+            viewport_box["y"] + 80,
+            steps=4,
+        )
+        page.mouse.up()
+        assert viewport.evaluate("element => element.scrollTop") > scroll_top
+        assert viewport.evaluate("element => document.activeElement === element")
+        assert not viewport.evaluate("element => element.matches(':focus-visible')")
+
+        current_scale = actual_size.inner_text()
+        page.keyboard.press("Control+=")
+        expect(actual_size).not_to_have_text(current_scale)
     finally:
         context.close()
 
@@ -2126,9 +3268,7 @@ def test_document_canvas_safely_centers_small_documents(
 
     try:
         document_path = (
-            f"resume/{resume_id}"
-            if document_type == "resume"
-            else "template/minimal"
+            f"resume/{resume_id}" if document_type == "resume" else "template/minimal"
         )
         page.goto(
             f"{frontend_url}/{document_path}",
@@ -2244,9 +3384,7 @@ def test_resume_agent_uses_canvas_toggle_and_compact_actions_menu(
         assert 30 <= trigger_box["height"] <= 34
         assert 30 <= controls_box["height"] <= 34
         assert trigger_box["width"] > trigger_box["height"]
-        controls_gap = trigger_box["x"] - (
-            controls_box["x"] + controls_box["width"]
-        )
+        controls_gap = trigger_box["x"] - (controls_box["x"] + controls_box["width"])
         assert 4 <= controls_gap <= 16
         assert abs(trigger_box["y"] - controls_box["y"]) <= 1
 
@@ -3629,9 +4767,7 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
         page.evaluate("document.fonts.ready")
         page.get_by_role(
             "button",
-            name=re.compile(
-                r"^(Basic Info: Toggle section|基本信息: 展开或收起模块)$"
-            ),
+            name=re.compile(r"^(Basic Info: Toggle section|基本信息: 展开或收起模块)$"),
         ).click()
         page.locator('input[name="name"]').fill("Duplicate Regression Source")
 
@@ -3683,9 +4819,9 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
             name=re.compile(r"^(View copy|查看副本)$"),
         )
         open_copy_action.wait_for(state="visible")
-        success_toast = page.locator(
-            '[data-sonner-toast][data-type="success"]'
-        ).filter(has_text=copy_created_label)
+        success_toast = page.locator('[data-sonner-toast][data-type="success"]').filter(
+            has_text=copy_created_label
+        )
         toast_description = success_toast.locator("[data-description]")
         assert toast_description.inner_text() == duplicate_title
         assert (
@@ -4017,9 +5153,7 @@ def test_resume_card_preloads_detail_module_and_reports_local_pending(
     requests: list[tuple[str, str]] = []
     page.on(
         "request",
-        lambda request: requests.append(
-            (request.method, urlparse(request.url).path)
-        ),
+        lambda request: requests.append((request.method, urlparse(request.url).path)),
     )
 
     try:
@@ -4030,9 +5164,9 @@ def test_resume_card_preloads_detail_module_and_reports_local_pending(
         resume_link.focus()
         page.wait_for_timeout(300)
 
-        assert any(
-            "resume-detail-workspace-page" in path for _, path in requests
-        ), requests
+        assert any("resume-detail-workspace-page" in path for _, path in requests), (
+            requests
+        )
         assert not any(
             path == "/api/workspace/pages/resume-editor"
             or path == f"/api/resumes/{resume_id}"
@@ -4156,9 +5290,7 @@ def test_created_resume_is_not_published_before_detail_is_ready(
                 f"{frontend_url}/api/resumes/{created_resume_id}/trash"
             )
             if trash_response.ok:
-                page.request.delete(
-                    f"{frontend_url}/api/resumes/{created_resume_id}"
-                )
+                page.request.delete(f"{frontend_url}/api/resumes/{created_resume_id}")
         context.close()
 
 
@@ -4324,9 +5456,7 @@ def test_template_selection_keeps_default_actions_visible_but_disabled(
         assert initial_box is not None
 
         page.get_by_role("button", name="选择", exact=True).click()
-        expect(
-            page.get_by_role("button", name="取消选择", exact=True)
-        ).to_be_visible()
+        expect(page.get_by_role("button", name="取消选择", exact=True)).to_be_visible()
         expect(action).to_be_visible()
         expect(action).to_be_disabled()
         expect(default_badge).to_be_visible()
@@ -4420,9 +5550,7 @@ def test_template_gallery_default_actions_do_not_animate_during_theme_changes(
         assert result["sameNode"], result
         assert len(result["frames"]) >= 5, result
         assert all(frame["connected"] for frame in result["frames"]), result
-        assert not any(
-            frame["transitions"] for frame in result["frames"]
-        ), result
+        assert not any(frame["transitions"] for frame in result["frames"]), result
         for key in ("x", "y", "width", "height"):
             values = [frame[key] for frame in result["frames"]]
             assert max(values) - min(values) <= 1, (key, result)
@@ -4502,20 +5630,27 @@ def test_lateral_navigation_reports_pending_and_preserves_workspace_shell(
             '.workspace-route-stage[data-workspace-view="models"]'
         )
         route_stage.wait_for(state="attached")
-        assert route_stage.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "workspace-route-enter"
-        assert route_stage.evaluate(
-            "element => getComputedStyle(element).animationDuration"
-        ) == "0.18s"
+        assert (
+            route_stage.evaluate("element => getComputedStyle(element).animationName")
+            == "workspace-route-enter"
+        )
+        assert (
+            route_stage.evaluate(
+                "element => getComputedStyle(element).animationDuration"
+            )
+            == "0.18s"
+        )
         page.locator('[data-slot="empty-description"]').wait_for(state="visible")
 
-        assert page.evaluate(
-            """
+        assert (
+            page.evaluate(
+                """
             () => window.__workspaceSidebarBeforeNavigation ===
               document.querySelector('[data-slot="sidebar-container"]')
             """
-        ) is True
+            )
+            is True
+        )
     finally:
         context.close()
 
@@ -4560,9 +5695,7 @@ def test_models_route_uses_table_skeleton_and_preserves_dialog_exit(
         assert skeleton.locator('[data-slot="table-row"]').count() >= 3
         skeleton_content_height = skeleton.locator(
             '[data-slot="model-config-content-skeleton"]'
-        ).evaluate(
-            "element => element.getBoundingClientRect().height"
-        )
+        ).evaluate("element => element.getBoundingClientRect().height")
         skeleton_table_height = skeleton.locator(
             '[data-slot="data-table-skeleton"]'
         ).evaluate("element => element.getBoundingClientRect().height")
@@ -4586,35 +5719,40 @@ def test_models_route_uses_table_skeleton_and_preserves_dialog_exit(
         assert abs(empty_surface_height - 476) <= 1
         assert abs(skeleton_surface_height - empty_surface_height) <= 1
         trigger = page.locator('[data-slot="dialog-trigger"]').first
-        trigger.evaluate(
-            "element => { window.__modelDialogTrigger = element; }"
-        )
+        trigger.evaluate("element => { window.__modelDialogTrigger = element; }")
         trigger.click()
 
         dialog = page.locator('[data-slot="dialog-content"]')
         expect(dialog).to_have_attribute("data-state", "open")
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-content-enter"
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationDuration"
-        ) == "0.21s"
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-content-enter"
+        )
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationDuration")
+            == "0.21s"
+        )
         page.keyboard.press("Escape")
         expect(dialog).to_have_attribute("data-state", "closed")
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-content-exit"
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationDuration"
-        ) == "0.15s"
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-content-exit"
+        )
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationDuration")
+            == "0.15s"
+        )
         dialog.wait_for(state="detached")
 
-        assert page.evaluate(
-            """
+        assert (
+            page.evaluate(
+                """
             () => window.__modelDialogTrigger ===
               document.querySelector('[data-slot="dialog-trigger"]')
             """
-        ) is True
+            )
+            is True
+        )
         assert trigger.evaluate("element => document.activeElement === element") is True
     finally:
         context.close()
@@ -4700,9 +5838,9 @@ def test_first_model_creation_keeps_the_compact_panel_height(
         page.goto(f"{frontend_url}/models", wait_until="networkidle")
         panel = page.locator('[data-slot="model-config-panel"]')
         panel.wait_for(state="visible")
-        model_surface_height = panel.locator(
-            ':scope > [data-slot="card"]'
-        ).evaluate("element => element.getBoundingClientRect().height")
+        model_surface_height = panel.locator(':scope > [data-slot="card"]').evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
 
         trash_page = context.new_page()
 
@@ -4788,9 +5926,11 @@ def test_first_model_creation_keeps_the_compact_panel_height(
         assert empty_frames, frames
         assert row_frames, frames
         for key in ("card", "content", "panel"):
-            assert max(frame[key] for frame in frames) - min(
-                frame[key] for frame in frames
-            ) <= 1, frames
+            assert (
+                max(frame[key] for frame in frames)
+                - min(frame[key] for frame in frames)
+                <= 1
+            ), frames
         assert max(abs(frame["rowTranslateY"]) for frame in row_frames) <= 0.1, frames
     finally:
         context.close()
@@ -4843,9 +5983,7 @@ def test_model_row_actions_menu_keeps_edit_and_delete_dialogs_stable(
 
     try:
         page.goto(f"{frontend_url}/models", wait_until="networkidle")
-        row = page.locator(
-            '[data-slot="table-body"] [data-slot="table-row"]'
-        ).first
+        row = page.locator('[data-slot="table-body"] [data-slot="table-row"]').first
         row.wait_for(state="visible")
         table_surface = page.locator('[data-slot="data-table"]')
         table_head = page.locator('[data-slot="table-head"]').first
@@ -4858,9 +5996,7 @@ def test_model_row_actions_menu_keeps_edit_and_delete_dialogs_stable(
         context_value = row_cells.nth(3).locator(":scope > div > span")
         capability_header = table_heads.nth(4).locator(":scope > span")
         capability_group = row_cells.nth(4).locator(":scope > div")
-        provider_icon_box = (
-            row_cells.nth(1).locator(":scope > div > span").first
-        )
+        provider_icon_box = row_cells.nth(1).locator(":scope > div > span").first
         table_geometry = page.evaluate(
             """
             ([surface, head, row, cell]) => {
@@ -4967,12 +6103,8 @@ def test_model_row_actions_menu_keeps_edit_and_delete_dialogs_stable(
         assert open_trigger_background != closed_trigger_background
         menu = page.get_by_role("menu")
         expect(menu).to_be_visible()
-        expect(
-            menu.get_by_role("menuitem", name="修改", exact=True)
-        ).to_be_visible()
-        expect(
-            menu.get_by_role("menuitem", name="删除", exact=True)
-        ).to_be_visible()
+        expect(menu.get_by_role("menuitem", name="修改", exact=True)).to_be_visible()
+        expect(menu.get_by_role("menuitem", name="删除", exact=True)).to_be_visible()
         assert menu.locator("svg").count() == 0
 
         menu.get_by_role("menuitem", name="修改", exact=True).click()
@@ -4993,9 +6125,10 @@ def test_model_row_actions_menu_keeps_edit_and_delete_dialogs_stable(
 
         page.keyboard.press("Escape")
         edit_dialog.wait_for(state="detached")
-        assert actions_trigger.evaluate(
-            "element => document.activeElement === element"
-        ) is True
+        assert (
+            actions_trigger.evaluate("element => document.activeElement === element")
+            is True
+        )
 
         actions_trigger.click()
         page.get_by_role("menuitem", name="删除", exact=True).click()
@@ -5080,19 +6213,21 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
         bulk_delete = bulk_actions.locator("button")
         new_model = page.get_by_role("button", name="新建模型", exact=True)
         confirm_dialog = page.locator('[data-slot="alert-dialog-content"]')
-        select_all = page.locator('[data-slot="table-header"]').get_by_role(
-            "checkbox"
+        select_all = page.locator('[data-slot="table-header"]').get_by_role("checkbox")
+        first_selection = (
+            page.locator('[data-slot="table-row"]')
+            .filter(
+                has=page.get_by_text("Selectable model 0 (gpt-selection-0)", exact=True)
+            )
+            .get_by_role("checkbox")
         )
-        first_selection = page.locator('[data-slot="table-row"]').filter(
-            has=page.get_by_text(
-                "Selectable model 0 (gpt-selection-0)", exact=True
+        second_selection = (
+            page.locator('[data-slot="table-row"]')
+            .filter(
+                has=page.get_by_text("Selectable model 1 (gpt-selection-1)", exact=True)
             )
-        ).get_by_role("checkbox")
-        second_selection = page.locator('[data-slot="table-row"]').filter(
-            has=page.get_by_text(
-                "Selectable model 1 (gpt-selection-1)", exact=True
-            )
-        ).get_by_role("checkbox")
+            .get_by_role("checkbox")
+        )
 
         def record_selection_motion(selection: Locator) -> dict[str, Any]:
             return page.evaluate(
@@ -5175,9 +6310,9 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
             assert opacities[-1] == pytest.approx(final_opacity, abs=0.02), motion
             translations = [frame["translateX"] for frame in frames]
             assert max(translations) - min(translations) >= 3.5, motion
-            assert any(
-                0.25 < translation < 3.75 for translation in translations
-            ), motion
+            assert any(0.25 < translation < 3.75 for translation in translations), (
+                motion
+            )
             for key in (
                 "actionWidth",
                 "actionHeight",
@@ -5189,13 +6324,10 @@ def test_model_table_selection_and_bulk_delete_are_page_scoped(
                 values = [frame[key] for frame in frames]
                 assert max(values) - min(values) <= 1, (key, motion)
             assert all(
-                frame["buttonOpacity"] == pytest.approx(1, abs=0.01)
-                for frame in frames
+                frame["buttonOpacity"] == pytest.approx(1, abs=0.01) for frame in frames
             ), motion
             assert all(not frame["buttonDisabled"] for frame in frames), motion
-            assert all(
-                frame["buttonAnimationCount"] == 0 for frame in frames
-            ), motion
+            assert all(frame["buttonAnimationCount"] == 0 for frame in frames), motion
 
         expect(bulk_actions).to_have_attribute("data-state", "closed")
         expect(bulk_actions).to_have_attribute("aria-hidden", "true")
@@ -5438,9 +6570,7 @@ def test_models_configured_layout_grows_with_content_then_paginates(
         content = page.locator('[data-slot="model-config-content"]')
         panel.wait_for(state="visible")
         content.wait_for(state="visible")
-        table_rows = content.locator(
-            '[data-slot="table-body"] [data-slot="table-row"]'
-        )
+        table_rows = content.locator('[data-slot="table-body"] [data-slot="table-row"]')
         expect(table_rows).to_have_count(min(model_count, 10))
         assert page.locator('[data-slot="model-config-table-scroll-area"]').count() == 0
 
@@ -5560,15 +6690,121 @@ def test_model_discovery_ignores_stale_provider_refresh(
         context.close()
 
 
-def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
+def test_model_thinking_mode_tracks_discovered_capability_and_model_switches(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
         browser,
+        locale="en-US",
+        viewport={"width": 1280, "height": 620},
+    )
+    page = context.new_page()
+
+    def fulfill_model_discovery(route: Route) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "models": [
+                            {
+                                "id": "gpt-thinking-off",
+                                "label": "GPT Thinking Off",
+                                "contextWindowTokens": 128000,
+                                "maxOutputTokens": 32768,
+                                "supportsImage": True,
+                                "supportsThinking": True,
+                                "availableThinkingModes": ["auto", "off"],
+                                "supportsTools": True,
+                                "supportsStreaming": True,
+                                "metadataSource": "test",
+                            },
+                            {
+                                "id": "gpt-thinking-managed",
+                                "label": "GPT Thinking Managed",
+                                "contextWindowTokens": 128000,
+                                "maxOutputTokens": 32768,
+                                "supportsImage": True,
+                                "supportsThinking": True,
+                                "availableThinkingModes": ["auto"],
+                                "supportsTools": True,
+                                "supportsStreaming": True,
+                                "metadataSource": "test",
+                            },
+                        ],
+                        "source": "cache",
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/model-providers/discover-models", fulfill_model_discovery)
+
+    try:
+        page.goto(f"{frontend_url}/models", wait_until="networkidle")
+        page.locator('[data-slot="dialog-trigger"]').first.click()
+
+        dialog = page.locator('[data-slot="dialog-content"]')
+        model_trigger = page.locator("#model-select")
+        model_trigger.click()
+        page.get_by_role("option").filter(has_text="GPT Thinking Off").click()
+
+        advanced_trigger = page.locator("#model-output-settings")
+        advanced_trigger.click()
+        expect(advanced_trigger).to_have_attribute("aria-expanded", "true")
+        thinking_mode = page.get_by_role("switch", name="Thinking mode")
+        expect(thinking_mode).to_have_attribute("data-checked", "")
+        expect(thinking_mode).to_be_enabled()
+        thinking_mode.click()
+        expect(thinking_mode).to_have_attribute("data-unchecked", "")
+
+        dialog_before_switch = dialog.bounding_box()
+        assert dialog_before_switch is not None
+        model_trigger.click()
+        page.get_by_role("option").filter(has_text="GPT Thinking Managed").click()
+
+        expect(thinking_mode).to_have_attribute("data-checked", "")
+        expect(thinking_mode).to_be_disabled()
+
+        model_trigger.click()
+        page.get_by_role("option").filter(has_text="GPT Thinking Off").click()
+        expect(thinking_mode).to_have_attribute("data-checked", "")
+        expect(thinking_mode).to_be_enabled()
+
+        dialog_after_switch = dialog.bounding_box()
+        assert dialog_after_switch is not None
+        for key in ("x", "y", "width", "height"):
+            assert abs(dialog_after_switch[key] - dialog_before_switch[key]) <= 1, (
+                dialog_before_switch,
+                dialog_after_switch,
+            )
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    "viewport",
+    [
+        {"width": 1280, "height": 520},
+        {"width": 390, "height": 520},
+    ],
+    ids=["desktop-short", "mobile-short"],
+)
+def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    viewport: dict[str, int],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
         locale="zh-CN",
-        viewport={"width": 1280, "height": 520},
+        viewport=viewport,
     )
     page = context.new_page()
 
@@ -5589,6 +6825,7 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
                                 "maxOutputTokens": 32768,
                                 "supportsImage": True,
                                 "supportsThinking": True,
+                                "availableThinkingModes": ["auto", "off"],
                                 "supportsTools": True,
                                 "supportsStreaming": True,
                                 "metadataSource": "test",
@@ -5608,9 +6845,7 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
 
         dialog = page.locator('[data-slot="dialog-content"]')
         advanced_trigger = page.locator("#model-output-settings")
-        scroll_viewport = dialog.locator(
-            'form > [data-slot="field-group"]'
-        )
+        scroll_viewport = dialog.locator('form > [data-slot="field-group"]')
         advanced_trigger.wait_for(state="visible")
         expect(advanced_trigger).to_have_attribute("aria-expanded", "false")
         page.wait_for_timeout(240)
@@ -5708,11 +6943,56 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
 
         dialog_after = dialog.bounding_box()
         scroll_box = scroll_viewport.bounding_box()
-        input_box = page.locator("#model-max-tokens").bounding_box()
+        max_tokens_field_box = page.locator(
+            '[data-slot="field"]:has(#model-max-tokens)'
+        ).bounding_box()
+        max_tokens_label_box = page.locator(
+            'label[for="model-max-tokens"]'
+        ).bounding_box()
+        dialog_title_box = dialog.locator('[data-slot="dialog-title"]').bounding_box()
+        top_close_button = dialog.locator(':scope > button[data-slot="dialog-close"]')
+        top_close_button_box = top_close_button.bounding_box()
+        top_close_icon_box = top_close_button.locator("svg").bounding_box()
+        cancel_button_box = dialog.locator(
+            '[data-slot="dialog-footer"] button[type="button"]'
+        ).bounding_box()
+        submit_button_box = dialog.locator(
+            '[data-slot="dialog-footer"] button[type="submit"]'
+        ).bounding_box()
+        max_tokens_input = page.locator("#model-max-tokens")
+        input_box = max_tokens_input.bounding_box()
+        advanced_content_box = advanced_content.bounding_box()
+        expect(max_tokens_input).to_have_attribute("placeholder", "自动")
+        max_tokens_input.focus()
+        expect(max_tokens_input).to_be_focused()
+        focused_input_rendering = advanced_content.evaluate(
+            """
+            (content) => {
+              const input = content.querySelector('#model-max-tokens');
+              const contentStyle = getComputedStyle(content);
+              const inputStyle = input instanceof HTMLElement
+                ? getComputedStyle(input)
+                : null;
+              return {
+                overflowX: contentStyle.overflowX,
+                overflowY: contentStyle.overflowY,
+                inputBoxShadow: inputStyle?.boxShadow ?? 'none',
+              };
+            }
+            """
+        )
         scroll_after = scroll_viewport.evaluate("element => element.scrollTop")
         assert dialog_after is not None
         assert scroll_box is not None
+        assert max_tokens_field_box is not None
+        assert max_tokens_label_box is not None
+        assert dialog_title_box is not None
+        assert top_close_button_box is not None
+        assert top_close_icon_box is not None
+        assert cancel_button_box is not None
+        assert submit_button_box is not None
         assert input_box is not None
+        assert advanced_content_box is not None
         for key in ("x", "y", "width", "height"):
             assert abs(dialog_after[key] - dialog_before[key]) <= 1, (
                 dialog_before,
@@ -5723,6 +7003,116 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
         assert input_box["y"] + input_box["height"] <= (
             scroll_box["y"] + scroll_box["height"] + 1
         )
+        assert (
+            abs(
+                input_box["x"]
+                + input_box["width"]
+                - max_tokens_field_box["x"]
+                - max_tokens_field_box["width"]
+            )
+            <= 1
+        )
+        assert abs(input_box["width"] - 128) <= 1
+        assert (
+            abs(
+                input_box["y"]
+                + input_box["height"] / 2
+                - max_tokens_label_box["y"]
+                - max_tokens_label_box["height"] / 2
+            )
+            <= 1
+        )
+        assert (
+            max_tokens_label_box["x"] + max_tokens_label_box["width"] + 11
+            <= (input_box["x"])
+        )
+        assert (
+            abs(
+                input_box["x"]
+                + input_box["width"]
+                - advanced_content_box["x"]
+                - advanced_content_box["width"]
+            )
+            <= 1
+        )
+        assert focused_input_rendering["inputBoxShadow"] != "none"
+        assert focused_input_rendering["overflowX"] == "visible", (
+            focused_input_rendering
+        )
+        assert focused_input_rendering["overflowY"] == "visible", (
+            focused_input_rendering
+        )
+        assert top_close_button_box["width"] >= 32
+        assert top_close_button_box["height"] >= 32
+        assert (
+            abs(
+                top_close_button_box["x"]
+                + top_close_button_box["width"] / 2
+                - top_close_icon_box["x"]
+                - top_close_icon_box["width"] / 2
+            )
+            <= 1
+        )
+        assert (
+            abs(
+                top_close_button_box["y"]
+                + top_close_button_box["height"] / 2
+                - top_close_icon_box["y"]
+                - top_close_icon_box["height"] / 2
+            )
+            <= 1
+        )
+        assert (
+            abs(
+                dialog_title_box["y"]
+                + dialog_title_box["height"] / 2
+                - top_close_button_box["y"]
+                - top_close_button_box["height"] / 2
+            )
+            <= 1
+        )
+        title_left_inset = dialog_title_box["x"] - dialog_after["x"]
+        close_icon_right_inset = (
+            dialog_after["x"]
+            + dialog_after["width"]
+            - top_close_icon_box["x"]
+            - top_close_icon_box["width"]
+        )
+        assert abs(title_left_inset - close_icon_right_inset) <= 1
+        minimum_fixed_region_gap = 16
+        assert (
+            dialog_title_box["y"]
+            + dialog_title_box["height"]
+            + minimum_fixed_region_gap
+            <= scroll_box["y"] + 1
+        ), {
+            "message": "Scrollable fields reached into the dialog title region.",
+            "title": dialog_title_box,
+            "scroll": scroll_box,
+        }
+        scroll_bottom = scroll_box["y"] + scroll_box["height"]
+        for name, button_box in (
+            ("cancel", cancel_button_box),
+            ("submit", submit_button_box),
+        ):
+            assert scroll_bottom + minimum_fixed_region_gap <= button_box["y"] + 1, {
+                "message": "Scrollable fields reached into the dialog action region.",
+                "scroll": scroll_box,
+                name: button_box,
+            }
+        dialog_inner_bottom = dialog.evaluate(
+            """
+            element => {
+              const rect = element.getBoundingClientRect();
+              return rect.top + element.clientTop + element.clientHeight;
+            }
+            """
+        )
+        actions_bottom = max(
+            button_box["y"] + button_box["height"]
+            for button_box in (cancel_button_box, submit_button_box)
+        )
+        assert abs(dialog_inner_bottom - actions_bottom - 16) <= 1
         assert page.evaluate("window.__modelOutputRevealBehaviors") == [
             {"behavior": "smooth", "method": "scrollTo"}
         ]
@@ -5804,9 +7194,17 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
         )
         advanced_trigger.click()
         expect(advanced_trigger).to_have_attribute("aria-expanded", "false")
-        assert advanced_content.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "model-output-settings-exit"
+        expect(advanced_content).to_have_attribute("data-state", "closed")
+        assert (
+            advanced_content.evaluate("element => getComputedStyle(element).overflow")
+            == "clip"
+        )
+        assert (
+            advanced_content.evaluate(
+                "element => getComputedStyle(element).animationName"
+            )
+            == "model-output-settings-exit"
+        )
         page.wait_for_function("() => window.__modelOutputCollapseFramesDone === true")
         collapse_frames = page.evaluate("window.__modelOutputCollapseFrames")
         assert collapse_frames
@@ -5877,9 +7275,12 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
         advanced_trigger.click()
         expect(advanced_trigger).to_have_attribute("aria-expanded", "true")
         advanced_content.wait_for(state="visible")
-        assert advanced_content.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "none"
+        assert (
+            advanced_content.evaluate(
+                "element => getComputedStyle(element).animationName"
+            )
+            == "none"
+        )
         page.wait_for_function(
             """
             () => {
@@ -6216,9 +7617,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
             bool(frame["hasResumeDetail"]) or bool(frame["hasResumeGallery"])
             for frame in routed_gallery_frames
         )
-        assert not any(
-            bool(frame["hasAppFallback"]) for frame in routed_gallery_frames
-        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_gallery_frames)
         assert not any(
             bool(frame["hasRouteSkeleton"]) for frame in routed_gallery_frames
         )
@@ -6913,13 +8312,10 @@ def test_template_navigation_keeps_cached_views_mounted(
         assert len(routed_detail_frames) >= 2
         _assert_visible_once_mounted(routed_detail_frames, "hasTemplateDetail")
         assert all(
-            bool(frame["hasTemplateGallery"])
-            or bool(frame["hasTemplateDetail"])
+            bool(frame["hasTemplateGallery"]) or bool(frame["hasTemplateDetail"])
             for frame in routed_detail_frames
         )
-        assert not any(
-            bool(frame["hasAppFallback"]) for frame in routed_detail_frames
-        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_detail_frames)
         assert not any(
             bool(frame["hasRouteSkeleton"]) for frame in routed_detail_frames
         )
@@ -6945,13 +8341,10 @@ def test_template_navigation_keeps_cached_views_mounted(
             "hasTemplateGallery",
         )
         assert all(
-            bool(frame["hasTemplateDetail"])
-            or bool(frame["hasTemplateGallery"])
+            bool(frame["hasTemplateDetail"]) or bool(frame["hasTemplateGallery"])
             for frame in routed_gallery_frames
         )
-        assert not any(
-            bool(frame["hasAppFallback"]) for frame in routed_gallery_frames
-        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_gallery_frames)
         assert not any(
             bool(frame["hasRouteSkeleton"]) for frame in routed_gallery_frames
         )
@@ -7125,12 +8518,8 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
             bool(frame["hasResumeGallery"]) or bool(frame[frame_key])
             for frame in routed_frames
         ]
-        app_fallback_states = [
-            bool(frame["hasAppFallback"]) for frame in routed_frames
-        ]
-        skeleton_states = [
-            bool(frame["hasRouteSkeleton"]) for frame in routed_frames
-        ]
+        app_fallback_states = [bool(frame["hasAppFallback"]) for frame in routed_frames]
+        skeleton_states = [bool(frame["hasRouteSkeleton"]) for frame in routed_frames]
         sidebar_states = [bool(frame["hasSidebar"]) for frame in routed_frames]
 
         assert all(handoff_states), _boolean_runs(handoff_states)
@@ -7203,9 +8592,7 @@ def test_lateral_history_uses_latest_view_snapshot_without_blank_frame(
             bool(frame["hasResumeGallery"]) or bool(frame["hasSettingsContent"])
             for frame in routed_forward_frames
         )
-        assert not any(
-            bool(frame["hasAppFallback"]) for frame in routed_forward_frames
-        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in routed_forward_frames)
         assert not any(
             bool(frame["hasRouteSkeleton"]) for frame in routed_forward_frames
         )
@@ -7449,27 +8836,33 @@ def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
         overlay = page.locator('[data-slot="alert-dialog-overlay"]')
         dialog.wait_for(state="visible")
         expect(dialog).to_have_attribute("data-state", "open")
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-content-enter"
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationDuration"
-        ) == "0.21s"
-        assert overlay.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-overlay-enter"
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-content-enter"
+        )
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationDuration")
+            == "0.21s"
+        )
+        assert (
+            overlay.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-overlay-enter"
+        )
 
         page.get_by_role("button", name="取消", exact=True).click()
         expect(dialog).to_have_attribute("data-state", "closed")
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-content-exit"
-        assert dialog.evaluate(
-            "element => getComputedStyle(element).animationDuration"
-        ) == "0.15s"
-        assert overlay.evaluate(
-            "element => getComputedStyle(element).animationName"
-        ) == "dialog-overlay-exit"
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-content-exit"
+        )
+        assert (
+            dialog.evaluate("element => getComputedStyle(element).animationDuration")
+            == "0.15s"
+        )
+        assert (
+            overlay.evaluate("element => getComputedStyle(element).animationName")
+            == "dialog-overlay-exit"
+        )
         dialog.wait_for(state="detached")
     finally:
         context.close()
@@ -7702,9 +9095,7 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
 
         last_skeleton = skeleton_frames[-1]
         first_editor = next(
-            frame
-            for frame in editor_frames
-            if frame["time"] >= last_skeleton["time"]
+            frame for frame in editor_frames if frame["time"] >= last_skeleton["time"]
         )
         assert first_editor["innerHeight"] == pytest.approx(
             last_skeleton["innerHeight"],
@@ -7723,20 +9114,20 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
             for frame in frames
             if frame["state"] == "open" and frame["contentHeight"] > 1
         ]
-        assert len(
-            {round(float(frame["contentHeight"]), 1) for frame in opening_frames}
-        ) >= 4, opening_frames
+        assert (
+            len({round(float(frame["contentHeight"]), 1) for frame in opening_frames})
+            >= 4
+        ), opening_frames
         assert any(
-            frame["animationName"] == "collapsible-down"
-            for frame in opening_frames
+            frame["animationName"] == "collapsible-down" for frame in opening_frames
         ), opening_frames
         assert any(
             frame["innerAnimationName"] == "collapsible-inner-in"
             for frame in opening_frames
         ), opening_frames
-        assert any(
-            0 < float(frame["innerOpacity"]) < 1 for frame in opening_frames
-        ), opening_frames
+        assert any(0 < float(frame["innerOpacity"]) < 1 for frame in opening_frames), (
+            opening_frames
+        )
 
         if item_count == 3:
             page.evaluate(
@@ -7763,14 +9154,18 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
                 for frame in closing_frames
                 if frame["state"] == "closed" and frame["contentHeight"] > 1
             ]
-            assert len(
-                {
-                    round(float(frame["contentHeight"]), 1)
-                    for frame in closing_visible_frames
-                }
-            ) >= 4, closing_frames
-            assert closing_visible_frames[0]["contentHeight"] > (
-                closing_visible_frames[-1]["contentHeight"]
+            assert (
+                len(
+                    {
+                        round(float(frame["contentHeight"]), 1)
+                        for frame in closing_visible_frames
+                    }
+                )
+                >= 4
+            ), closing_frames
+            assert (
+                closing_visible_frames[0]["contentHeight"]
+                > (closing_visible_frames[-1]["contentHeight"])
             ), closing_visible_frames
             assert any(
                 frame["animationName"] == "collapsible-up"
@@ -7938,9 +9333,7 @@ def test_detail_push_resets_document_scroll_and_focuses_main_content(
         expect(main_content).to_be_focused()
         page.wait_for_timeout(200)
 
-        assert page.evaluate(
-            "document.scrollingElement?.scrollTop ?? 0"
-        ) == 0
+        assert page.evaluate("document.scrollingElement?.scrollTop ?? 0") == 0
         expect(main_content).to_be_focused()
     finally:
         context.close()
@@ -7973,11 +9366,9 @@ def test_save_status_announces_unsaved_saving_and_saved_states(
         resume_id = str(create_response.json()["data"]["resume"]["id"])
 
         def hold_checkpoint_save(route: Route) -> None:
-            if (
-                route.request.method == "PUT"
-                and parse_qs(urlparse(route.request.url).query).get("saveMode")
-                == ["checkpoint"]
-            ):
+            if route.request.method == "PUT" and parse_qs(
+                urlparse(route.request.url).query
+            ).get("saveMode") == ["checkpoint"]:
                 held_saves.append(route)
                 return
 
@@ -7992,9 +9383,7 @@ def test_save_status_announces_unsaved_saving_and_saved_states(
         ).click()
         page.locator('input[name="name"]').fill("Accessible Save State")
 
-        announcement = page.locator(
-            '[data-slot="save-status-announcement"]'
-        )
+        announcement = page.locator('[data-slot="save-status-announcement"]')
         expect(announcement).to_have_attribute("role", "status")
         expect(announcement).to_have_attribute("aria-live", "polite")
         expect(announcement).to_have_attribute("aria-atomic", "true")
@@ -8392,6 +9781,500 @@ def test_template_gallery_reflow_finishes_with_sidebar_motion(
 
 @pytest.mark.browser_smoke
 @pytest.mark.parametrize(
+    ("gallery_path", "search_name", "search_query"),
+    [
+        ("/resume", None, None),
+        ("/templates", "template-search", "Minimal"),
+    ],
+)
+def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    search_name: str | None,
+    search_query: str | None,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 1100},
+    )
+    page = context.new_page()
+
+    def capture_motion() -> dict[str, Any]:
+        return page.locator('[data-slot="sidebar-trigger"]').evaluate(
+            """
+            async trigger => {
+              const grid = document.querySelector('[data-slot="gallery-grid"]');
+              const sidebarGap = document.querySelector(
+                '[data-slot="sidebar-gap"]'
+              );
+              const item = grid.querySelector(
+                ':scope > [data-gallery-item-id]'
+              );
+              const frames = [];
+              let sawSidebarMotion = false;
+
+              const captureFrame = () => {
+                const currentItem = grid.querySelector(
+                  ':scope > [data-gallery-item-id]'
+                );
+                const itemRect = currentItem.getBoundingClientRect();
+                const itemRects = [...grid.querySelectorAll(
+                  ':scope > [data-gallery-item-id]'
+                )].map(element => element.getBoundingClientRect());
+
+                frames.push({
+                  itemId: currentItem.dataset.galleryItemId,
+                  sameNode: currentItem === item,
+                  x: itemRect.x,
+                  y: itemRect.y,
+                  width: itemRect.width,
+                  height: itemRect.height,
+                  rowCount: new Set(
+                    itemRects.map(rect => Math.round(rect.top))
+                  ).size,
+                  columns: getComputedStyle(grid).gridTemplateColumns
+                    .split(' ')
+                    .filter(Boolean).length,
+                });
+              };
+
+              captureFrame();
+              trigger.click();
+
+              for (let index = 0; index < 60; index += 1) {
+                await new Promise(requestAnimationFrame);
+                await new Promise(resolve => setTimeout(resolve, 0));
+                captureFrame();
+
+                const hasSidebarMotion = sidebarGap
+                  .getAnimations()
+                  .some(animation => animation.transitionProperty === 'width');
+                sawSidebarMotion ||= hasSidebarMotion;
+
+                if (sawSidebarMotion && !hasSidebarMotion) {
+                  break;
+                }
+              }
+
+              return { frames, sawSidebarMotion };
+            }
+            """
+        )
+
+    def assert_stable_motion(result: dict[str, Any]) -> None:
+        frames = result["frames"]
+        assert result["sawSidebarMotion"], result
+        assert len(frames) >= 2, result
+        assert {frame["rowCount"] for frame in frames} == {1}, result
+        assert all(frame["sameNode"] for frame in frames), result
+        assert len({frame["itemId"] for frame in frames}) == 1, result
+        assert len({frame["columns"] for frame in frames}) == 2, result
+
+        for key in ("y", "width", "height"):
+            values = [frame[key] for frame in frames]
+            assert max(values) - min(values) <= 1, {key: values}
+
+        x_values = [frame["x"] for frame in frames]
+        assert abs(x_values[-1] - x_values[0]) > 100, x_values
+        direction = 1 if x_values[-1] > x_values[0] else -1
+        progress = [
+            direction * (right - left)
+            for left, right in zip(x_values, x_values[1:], strict=False)
+        ]
+        assert min(progress) >= -0.5, {"x": x_values, "progress": progress}
+
+    try:
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        if search_name and search_query:
+            page.locator(f'input[name="{search_name}"]').fill(search_query)
+
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '[data-slot="gallery-grid"] > [data-gallery-item-id]'
+            ).length === 1
+            """
+        )
+
+        assert_stable_motion(capture_motion())
+        assert_stable_motion(capture_motion())
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("gallery_path", "search_name", "search_query", "seed_resume_count"),
+    [
+        ("/templates", None, None, 0),
+        ("/resume", "resume-search", "Expand motion", 6),
+    ],
+)
+def test_gallery_expand_motion_stays_in_phase_with_sidebar(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    search_name: str | None,
+    search_query: str | None,
+    seed_resume_count: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1992, "height": 1100},
+    )
+    page = context.new_page()
+    seeded_resume_ids: list[str] = []
+
+    try:
+        for index in range(seed_resume_count):
+            create_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={
+                    "documentLocale": "zh",
+                    "title": f"Expand motion {index + 1}",
+                },
+            )
+            assert create_response.ok
+            seeded_resume_ids.append(create_response.json()["data"]["resume"]["id"])
+
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        if search_name and search_query:
+            page.locator(f'input[name="{search_name}"]').fill(search_query)
+        page.wait_for_function(
+            """
+            () => document.querySelectorAll(
+              '[data-slot="gallery-grid"] > [data-gallery-item-id]'
+            ).length === 6
+            """
+        )
+        page.set_viewport_size({"width": 700, "height": 1100})
+        expect(page.locator('[data-slot="sidebar"][data-state]')).to_have_count(0)
+        page.set_viewport_size({"width": 1992, "height": 1100})
+        expect(page.locator('[data-slot="sidebar"][data-state]')).to_have_count(1)
+        trigger = page.locator('[data-slot="sidebar-trigger"]')
+        trigger.click()
+        page.wait_for_timeout(400)
+        collapsed_column_count = page.locator('[data-slot="gallery-grid"]').evaluate(
+            """
+            grid => getComputedStyle(grid).gridTemplateColumns
+              .split(' ')
+              .filter(Boolean).length
+            """
+        )
+
+        motion = trigger.evaluate(
+            """
+            async trigger => {
+              const grid = document.querySelector('[data-slot="gallery-grid"]');
+              const sidebarGap = document.querySelector(
+                '[data-slot="sidebar-gap"]'
+              );
+              const frames = [];
+              const initialItems = [...grid.querySelectorAll(
+                ':scope > [data-gallery-item-id]'
+              )];
+              const initialX = initialItems.map(
+                item => item.getBoundingClientRect().x
+              );
+              const initialSidebarWidth = sidebarGap.getBoundingClientRect().width;
+              let sawSidebarMotion = false;
+              let timeline = null;
+
+              trigger.click();
+              for (let index = 0; index < 60; index += 1) {
+                await new Promise(requestAnimationFrame);
+                await new Promise(resolve => setTimeout(resolve, 0));
+                const items = [...grid.querySelectorAll(
+                  ':scope > [data-gallery-item-id]'
+                )];
+                const sidebarAnimation = sidebarGap
+                  .getAnimations()
+                  .find(animation => animation.transitionProperty === 'width');
+                const reflowAnimation = items[0]
+                  .getAnimations()
+                  .find(animation => animation.id === 'gallery-grid-reflow');
+                const rects = items.map(item => item.getBoundingClientRect());
+                const hasSidebarMotion = Boolean(sidebarAnimation);
+                sawSidebarMotion ||= hasSidebarMotion;
+                if (
+                  !timeline
+                  && sidebarAnimation?.startTime != null
+                  && reflowAnimation?.startTime != null
+                ) {
+                  timeline = {
+                    sidebarStartTime: sidebarAnimation.startTime,
+                    reflowStartTime: reflowAnimation.startTime,
+                    sidebarDuration:
+                      sidebarAnimation.effect.getTiming().duration,
+                    reflowDuration: reflowAnimation.effect.getTiming().duration,
+                    sidebarEasing: sidebarAnimation.effect.getTiming().easing,
+                    reflowEasing: reflowAnimation.effect.getTiming().easing,
+                  };
+                }
+                frames.push({
+                  reflowActive: Boolean(reflowAnimation),
+                  sidebarActive: hasSidebarMotion,
+                  sidebarWidth: sidebarGap.getBoundingClientRect().width,
+                  columns: getComputedStyle(grid).gridTemplateColumns
+                    .split(' ')
+                    .filter(Boolean).length,
+                  rowCount: new Set(
+                    rects.map(rect => Math.round(rect.top))
+                  ).size,
+                  sameNodes: items.every(
+                    (item, itemIndex) => item === initialItems[itemIndex]
+                  ),
+                  x: rects.map(rect => rect.x),
+                  y: rects.map(rect => rect.y),
+                  width: rects.map(rect => rect.width),
+                  height: rects.map(rect => rect.height),
+                });
+
+                if (sawSidebarMotion && !hasSidebarMotion) {
+                  break;
+                }
+              }
+
+              return {
+                frames,
+                initialX,
+                initialSidebarWidth,
+                sawSidebarMotion,
+                timeline,
+              };
+            }
+            """
+        )
+        frames = motion["frames"]
+        assert motion["sawSidebarMotion"], motion
+        assert not frames[-1]["sidebarActive"], frames
+        assert not frames[-1]["reflowActive"], frames
+        assert {frame["rowCount"] for frame in frames} == {1}, frames
+        assert all(frame["sameNodes"] for frame in frames), frames
+        assert collapsed_column_count == 7
+        assert {frame["columns"] for frame in frames} == {6}, frames
+        assert motion["timeline"] is not None, motion
+        timeline = motion["timeline"]
+        assert abs(timeline["sidebarStartTime"] - timeline["reflowStartTime"]) <= 1, (
+            timeline
+        )
+        assert timeline["sidebarDuration"] == timeline["reflowDuration"], timeline
+        assert timeline["sidebarEasing"] == timeline["reflowEasing"], timeline
+
+        sidebar_start = motion["initialSidebarWidth"]
+        sidebar_end = frames[-1]["sidebarWidth"]
+        assert sidebar_end - sidebar_start > 100, motion
+
+        for item_index in range(6):
+            for key in ("y", "width", "height"):
+                values = [frame[key][item_index] for frame in frames]
+                assert max(values) - min(values) <= 1, {
+                    "itemIndex": item_index,
+                    key: values,
+                }
+
+            x_values = [
+                motion["initialX"][item_index],
+                *[frame["x"][item_index] for frame in frames],
+            ]
+            assert abs(x_values[-1] - x_values[0]) > 100, x_values
+            direction = 1 if x_values[-1] > x_values[0] else -1
+            progress = [
+                direction * (right - left)
+                for left, right in zip(x_values, x_values[1:], strict=False)
+            ]
+            assert min(progress) >= -0.5, {
+                "itemIndex": item_index,
+                "x": x_values,
+                "progress": progress,
+            }
+
+            card_distance = x_values[-1] - x_values[0]
+            sidebar_distance = sidebar_end - sidebar_start
+            phase_delta = [
+                abs(
+                    (frame["x"][item_index] - x_values[0]) / card_distance
+                    - (frame["sidebarWidth"] - sidebar_start) / sidebar_distance
+                )
+                for frame in frames
+            ]
+            assert max(phase_delta) <= 0.05, {
+                "itemIndex": item_index,
+                "phaseDelta": phase_delta,
+                "x": x_values,
+                "sidebar": [
+                    sidebar_start,
+                    *[frame["sidebarWidth"] for frame in frames],
+                ],
+            }
+
+        trigger.click()
+        page.wait_for_timeout(400)
+        trigger.click()
+        page.wait_for_timeout(80)
+        reversed_motion = trigger.evaluate(
+            """
+            async trigger => {
+              const grid = document.querySelector('[data-slot="gallery-grid"]');
+              const sidebarGap = document.querySelector(
+                '[data-slot="sidebar-gap"]'
+              );
+              const item = grid.querySelector(
+                ':scope > [data-gallery-item-id]'
+              );
+              const initialX = item.getBoundingClientRect().x;
+              const initialSidebarWidth = sidebarGap.getBoundingClientRect().width;
+              const frames = [];
+              let sawSidebarMotion = false;
+              let timeline = null;
+
+              trigger.click();
+              for (let index = 0; index < 60; index += 1) {
+                await new Promise(requestAnimationFrame);
+                const currentItem = grid.querySelector(
+                  ':scope > [data-gallery-item-id]'
+                );
+                const sidebarAnimation = sidebarGap
+                  .getAnimations()
+                  .find(animation => animation.transitionProperty === 'width');
+                const reflowAnimation = currentItem
+                  .getAnimations()
+                  .find(animation => animation.id === 'gallery-grid-reflow');
+                const hasSidebarMotion = Boolean(sidebarAnimation);
+                sawSidebarMotion ||= hasSidebarMotion;
+                if (
+                  !timeline
+                  && sidebarAnimation?.startTime != null
+                  && reflowAnimation?.startTime != null
+                ) {
+                  timeline = {
+                    sidebarStartTime: sidebarAnimation.startTime,
+                    reflowStartTime: reflowAnimation.startTime,
+                    sidebarDuration:
+                      sidebarAnimation.effect.getTiming().duration,
+                    reflowDuration: reflowAnimation.effect.getTiming().duration,
+                    sidebarEasing: sidebarAnimation.effect.getTiming().easing,
+                    reflowEasing: reflowAnimation.effect.getTiming().easing,
+                  };
+                }
+                frames.push({
+                  x: currentItem.getBoundingClientRect().x,
+                  sidebarWidth: sidebarGap.getBoundingClientRect().width,
+                  columns: getComputedStyle(grid).gridTemplateColumns
+                    .split(' ')
+                    .filter(Boolean).length,
+                  sameNode: currentItem === item,
+                  sidebarActive: hasSidebarMotion,
+                  reflowActive: Boolean(reflowAnimation),
+                });
+
+                if (sawSidebarMotion && !hasSidebarMotion) {
+                  break;
+                }
+              }
+
+              return {
+                frames,
+                initialX,
+                initialSidebarWidth,
+                sawSidebarMotion,
+                timeline,
+              };
+            }
+            """
+        )
+        reversed_frames = reversed_motion["frames"]
+        assert reversed_motion["sawSidebarMotion"], reversed_motion
+        assert reversed_motion["timeline"] is not None, reversed_motion
+        assert not reversed_frames[-1]["sidebarActive"], reversed_frames
+        assert not reversed_frames[-1]["reflowActive"], reversed_frames
+        assert all(frame["sameNode"] for frame in reversed_frames)
+        assert {frame["columns"] for frame in reversed_frames} == {7}
+        reversed_timeline = reversed_motion["timeline"]
+        assert (
+            abs(
+                reversed_timeline["sidebarStartTime"]
+                - reversed_timeline["reflowStartTime"]
+            )
+            <= 1
+        ), reversed_timeline
+        assert (
+            reversed_timeline["sidebarDuration"] == reversed_timeline["reflowDuration"]
+        ), reversed_timeline
+        assert (
+            reversed_timeline["sidebarEasing"] == reversed_timeline["reflowEasing"]
+        ), reversed_timeline
+
+        reversed_x = [
+            reversed_motion["initialX"],
+            *[frame["x"] for frame in reversed_frames],
+        ]
+        reversed_sidebar = [
+            reversed_motion["initialSidebarWidth"],
+            *[frame["sidebarWidth"] for frame in reversed_frames],
+        ]
+        assert reversed_x[0] - reversed_x[-1] > 10, reversed_x
+        assert reversed_sidebar[0] - reversed_sidebar[-1] > 10, reversed_sidebar
+        assert (
+            max(
+                right - left
+                for left, right in zip(reversed_x, reversed_x[1:], strict=False)
+            )
+            <= 0.5
+        ), reversed_x
+        reversed_card_distance = reversed_x[-1] - reversed_x[0]
+        reversed_sidebar_distance = reversed_sidebar[-1] - reversed_sidebar[0]
+        reversed_phase_delta = [
+            abs(
+                (frame["x"] - reversed_x[0]) / reversed_card_distance
+                - (frame["sidebarWidth"] - reversed_sidebar[0])
+                / reversed_sidebar_distance
+            )
+            for frame in reversed_frames
+        ]
+        assert max(reversed_phase_delta) <= 0.05, reversed_phase_delta
+
+        trigger.click()
+        page.wait_for_function(
+            """
+            () => document.getAnimations().some(
+              animation => animation.id === 'gallery-grid-reflow'
+            )
+            """
+        )
+        page.emulate_media(reduced_motion="reduce")
+        page.wait_for_timeout(50)
+        reduced_motion_state = page.locator('[data-slot="gallery-grid"]').evaluate(
+            """
+            grid => ({
+              inlineTemplate: grid.style.gridTemplateColumns,
+              activeReflows: document.getAnimations().filter(
+                animation => animation.id === 'gallery-grid-reflow'
+              ).length,
+            })
+            """
+        )
+        assert reduced_motion_state == {
+            "inlineTemplate": "",
+            "activeReflows": 0,
+        }
+    finally:
+        for resume_id in seeded_resume_ids:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
     ("gallery_path", "search_name"),
     [
         ("/resume", "resume-search"),
@@ -8510,9 +10393,7 @@ def test_gallery_pagination_keeps_active_page_clear_of_previous_action(
         inactive_page_link = pagination.get_by_role("link", name="2", exact=True)
         previous_label = previous_link.locator("span")
         next_url = urlparse(next_link.get_attribute("href") or "")
-        inactive_page_url = urlparse(
-            inactive_page_link.get_attribute("href") or ""
-        )
+        inactive_page_url = urlparse(inactive_page_link.get_attribute("href") or "")
 
         assert previous_link.get_attribute("href") is None
         assert previous_link.get_attribute("tabindex") == "-1"
@@ -10058,9 +11939,7 @@ def test_template_editor_matches_workspace_boundaries_and_page_scroll(
         )
         assert short_editor["alignSelf"] == "stretch"
 
-        editor_surface.evaluate(
-            "element => { element.style.minHeight = '1500px'; }"
-        )
+        editor_surface.evaluate("element => { element.style.minHeight = '1500px'; }")
         tall_editor = divider_geometry()
         assert tall_editor["overflowY"] == "visible"
         assert tall_editor["editorHeight"] > tall_editor["viewportHeight"]
@@ -10111,8 +11990,7 @@ def test_template_editor_matches_workspace_boundaries_and_page_scroll(
         assert narrow_geometry["paddingLeft"] == "0px"
         assert narrow_geometry["paddingRight"] == "0px"
         assert (
-            narrow_geometry["documentScrollWidth"]
-            <= narrow_geometry["viewportWidth"]
+            narrow_geometry["documentScrollWidth"] <= narrow_geometry["viewportWidth"]
         )
     finally:
         context.close()
@@ -10166,9 +12044,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
 
-        expect(
-            page.get_by_text("自定义模板 · 可编辑", exact=True)
-        ).to_have_count(0)
+        expect(page.get_by_text("自定义模板 · 可编辑", exact=True)).to_have_count(0)
         expect(page.get_by_text("模板信息", exact=True)).to_have_count(0)
 
         metadata_trigger = page.get_by_role(
@@ -10233,12 +12109,12 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             exact=True,
         ).wait_for(state="hidden")
         expect(metadata_trigger).to_be_focused()
-        expect(
-            page.locator('[data-slot="template-editor-title"]')
-        ).to_have_text(original_title)
-        expect(
-            page.locator('[data-slot="template-description"]')
-        ).to_have_text(original_description)
+        expect(page.locator('[data-slot="template-editor-title"]')).to_have_text(
+            original_title
+        )
+        expect(page.locator('[data-slot="template-description"]')).to_have_text(
+            original_description
+        )
 
         template_name = "产品岗位模板"
         template_description = "适合产品岗位与跨职能项目经历"
@@ -10266,9 +12142,9 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             "dialog-overlay-exit",
         }.issubset(dialog_animation_names)
 
-        expect(
-            page.locator('[data-slot="template-editor-title"]')
-        ).to_have_text(template_name)
+        expect(page.locator('[data-slot="template-editor-title"]')).to_have_text(
+            template_name
+        )
         description_note = page.locator('[data-slot="template-description"]')
         expect(description_note).to_be_visible()
         expect(description_note).to_have_text(template_description)
@@ -10298,9 +12174,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             "**/api/workspace/default-template",
             delay_default_template_response,
         )
-        set_default_button = page.locator(
-            '[data-slot="template-default-button"]'
-        )
+        set_default_button = page.locator('[data-slot="template-default-button"]')
         expect(set_default_button).to_have_attribute(
             "aria-label",
             "设为默认模板",
@@ -10334,8 +12208,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         with page.expect_response(
             lambda response: (
                 response.request.method == "PUT"
-                and urlparse(response.url).path
-                == "/api/workspace/default-template"
+                and urlparse(response.url).path == "/api/workspace/default-template"
             )
         ):
             set_default_button.click()
@@ -10344,15 +12217,11 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             "默认模板",
         )
         page.wait_for_timeout(700)
-        default_button_frames = page.evaluate(
-            "window.__defaultTemplateButtonFrames"
-        )
+        default_button_frames = page.evaluate("window.__defaultTemplateButtonFrames")
         assert len(default_button_frames) >= 20
         assert any(frame["isBusy"] for frame in default_button_frames)
         assert not any(frame["hasSpinner"] for frame in default_button_frames)
-        assert any(
-            frame["label"] == "默认模板" for frame in default_button_frames
-        )
+        assert any(frame["label"] == "默认模板" for frame in default_button_frames)
         for key in ("x", "y", "width", "height"):
             values = [frame[key] for frame in default_button_frames]
             assert max(values) - min(values) <= 1, {
@@ -10371,9 +12240,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             "内容密度",
             "分割线样式",
         ):
-            expect(
-                page.get_by_role("combobox", name=label, exact=True)
-            ).to_be_visible()
+            expect(page.get_by_role("combobox", name=label, exact=True)).to_be_visible()
 
         basic_info_select = page.get_by_role(
             "combobox",
@@ -11292,9 +13159,9 @@ def test_recycle_bin_keeps_baseline_then_paginates_six_table_rows(
                 '[data-slot="table-body"] > [data-slot="table-row"]'
             )
         ).to_have_count(1)
-        second_page_height = page.locator(
-            '[data-slot="recycle-bin-panel"]'
-        ).evaluate("element => element.getBoundingClientRect().height")
+        second_page_height = page.locator('[data-slot="recycle-bin-panel"]').evaluate(
+            "element => element.getBoundingClientRect().height"
+        )
         assert second_page_height == pytest.approx(surface_heights[0], abs=1)
     finally:
         for resume_id in resume_ids:
@@ -11386,9 +13253,9 @@ def test_recycle_bin_thumbnail_renders_full_resume_content(
         """
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
         page.evaluate("document.fonts.ready")
-        active_thumbnail_page = page.locator(
-            "a", has_text=title
-        ).locator("article.resume-page").first
+        active_thumbnail_page = (
+            page.locator("a", has_text=title).locator("article.resume-page").first
+        )
         active_thumbnail_page.wait_for(state="visible")
         active_geometry = active_thumbnail_page.evaluate(geometry_script)
         assert active_geometry["sectionCount"] == 4, active_geometry
@@ -11463,9 +13330,7 @@ def test_recycle_bin_row_menu_fits_localized_actions(
         assert trash_response.ok
 
         page.goto(f"{frontend_url}/trash", wait_until="networkidle")
-        page.get_by_role(
-            "button", name=f"{actions_label}: {title}", exact=True
-        ).click()
+        page.get_by_role("button", name=f"{actions_label}: {title}", exact=True).click()
         menu = page.locator('[data-slot="dropdown-menu-content"]')
         expect(menu).to_be_visible()
         assert menu.get_by_role("menuitem").all_inner_texts() == menu_labels
@@ -11526,9 +13391,7 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
                 page.get_by_role("button", name=f"操作: {title}", exact=True)
             ).to_have_count(1)
 
-        page.get_by_role(
-            "button", name=f"操作: {titles[0]}", exact=True
-        ).click()
+        page.get_by_role("button", name=f"操作: {titles[0]}", exact=True).click()
         expect(page.get_by_role("menuitem", name="预览", exact=True)).to_be_visible()
         expect(page.get_by_role("menuitem", name="恢复", exact=True)).to_be_visible()
         delete_menu_item = page.get_by_role("menuitem", name="删除", exact=True)
@@ -11539,17 +13402,11 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
             "预览",
             "恢复",
         ]
-        assert menu_groups.nth(1).get_by_role("menuitem").all_inner_texts() == [
-            "删除"
-        ]
+        assert menu_groups.nth(1).get_by_role("menuitem").all_inner_texts() == ["删除"]
         page.keyboard.press("Escape")
 
-        first_selection = page.get_by_role(
-            "checkbox", name=f"选择: {titles[0]}"
-        )
-        second_selection = page.get_by_role(
-            "checkbox", name=f"选择: {titles[1]}"
-        )
+        first_selection = page.get_by_role("checkbox", name=f"选择: {titles[0]}")
+        second_selection = page.get_by_role("checkbox", name=f"选择: {titles[1]}")
         first_selection.check()
         expect(bulk_actions).to_have_attribute("data-state", "closed")
         expect(bulk_actions).to_have_attribute("aria-hidden", "true")
@@ -11602,10 +13459,7 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
         assert mobile_overflow["documentScrollWidth"] == pytest.approx(
             mobile_overflow["documentClientWidth"], abs=1
         )
-        assert (
-            mobile_overflow["tableScrollWidth"]
-            > mobile_overflow["tableClientWidth"]
-        )
+        assert mobile_overflow["tableScrollWidth"] > mobile_overflow["tableClientWidth"]
     finally:
         for resume_id in resume_ids:
             context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
@@ -11692,14 +13546,10 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
         page.on("request", record_preview_write)
 
         def preview_item(title: str, expected_text: str | None = None) -> Locator:
-            trigger = page.get_by_role(
-                "button", name=f"操作: {title}", exact=True
-            )
+            trigger = page.get_by_role("button", name=f"操作: {title}", exact=True)
             trigger.click()
             page.get_by_role("menuitem", name="预览", exact=True).click()
-            dialog = page.get_by_role(
-                "dialog", name=f"预览: {title}", exact=True
-            )
+            dialog = page.get_by_role("dialog", name=f"预览: {title}", exact=True)
             expect(dialog).to_be_visible()
             initial_focus = dialog.locator('[data-slot="dialog-title"]')
             expect(initial_focus).to_have_attribute("tabindex", "-1")
@@ -11812,9 +13662,7 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
                 expect(
                     dialog.get_by_text(expected_text, exact=True).last
                 ).to_be_visible()
-            close_button = dialog.get_by_role(
-                "button", name="关闭", exact=True
-            )
+            close_button = dialog.get_by_role("button", name="关闭", exact=True)
             close_button.click()
             expect(dialog).to_be_hidden()
             expect(trigger).to_be_focused()
@@ -11827,9 +13675,7 @@ def test_recycle_bin_preview_is_read_only_for_resume_and_template(
 
         assert preview_writes == []
         expect(
-            page.get_by_role(
-                "button", name=f"操作: {template_title}", exact=True
-            )
+            page.get_by_role("button", name=f"操作: {template_title}", exact=True)
         ).to_have_count(1)
         deleted_route_data = context.request.get(
             f"{frontend_url}/api/workspace/pages/trash"
@@ -11897,14 +13743,10 @@ def test_recycle_bin_count_badges_contrast_with_their_tab_surfaces(
 
         assert_count_badge_contrast()
 
-        inactive_tab = page.locator(
-            '[data-slot="tabs-trigger"][data-state="inactive"]'
-        )
+        inactive_tab = page.locator('[data-slot="tabs-trigger"][data-state="inactive"]')
         inactive_tab_id = inactive_tab.get_attribute("id")
         assert inactive_tab_id
-        target_tab = page.locator(
-            f'[data-slot="tabs-trigger"][id="{inactive_tab_id}"]'
-        )
+        target_tab = page.locator(f'[data-slot="tabs-trigger"][id="{inactive_tab_id}"]')
         target_tab.click()
         expect(target_tab).to_have_attribute("data-state", "active")
         assert_count_badge_contrast()
@@ -12011,9 +13853,7 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
         assert_header_fits_single_row()
 
         detail_header = page.locator("#main-content > header")
-        format_trigger = detail_header.locator(
-            '[data-slot="popover-trigger"]'
-        ).first
+        format_trigger = detail_header.locator('[data-slot="popover-trigger"]').first
         save_group = detail_header.locator('[data-slot="save-status-group"]')
         save_trigger = save_group.locator(
             ':scope > button:not([data-slot="popover-trigger"])'

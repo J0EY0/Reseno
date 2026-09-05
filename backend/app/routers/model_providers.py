@@ -78,6 +78,9 @@ def discover_models(
                         maxOutputTokens=model.max_output_tokens,
                         supportsImage=model.supports_image,
                         supportsThinking=model.thinking_control != "none",
+                        availableThinkingModes=list(
+                            model.available_thinking_modes,
+                        ),
                         supportsTools=model.supports_tools,
                         supportsStreaming=model.supports_streaming,
                         metadataSource=model.metadata_source,
@@ -125,6 +128,7 @@ def discover_models(
                     maxOutputTokens=model.max_output_tokens,
                     supportsImage=model.supports_image,
                     supportsThinking=model.thinking_control != "none",
+                    availableThinkingModes=list(model.available_thinking_modes),
                     supportsTools=model.supports_tools,
                     supportsStreaming=model.supports_streaming,
                     metadataSource=model.metadata_source,

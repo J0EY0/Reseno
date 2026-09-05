@@ -10,14 +10,14 @@ import type { AgentPanelMessage } from './copilot-message-model'
 import type { SendAgentPrompt } from './copilot-panel-types'
 
 export function useAgentMessageActions({
-  isResponding,
+  isRequestBusy,
   messages,
   resumeId,
   sessionResetVersion,
   sendPrompt,
   t,
 }: {
-  isResponding: boolean
+  isRequestBusy: boolean
   messages: AgentPanelMessage[]
   resumeId?: string
   sessionResetVersion: number
@@ -106,7 +106,7 @@ export function useAgentMessageActions({
 
   const startEditingUserMessage = useCallback(
     (message: AgentPanelMessage) => {
-      if (isResponding) {
+      if (isRequestBusy) {
         return
       }
 
@@ -116,7 +116,7 @@ export function useAgentMessageActions({
         text: message.text,
       })
     },
-    [actionScope, isResponding],
+    [actionScope, isRequestBusy],
   )
 
   const cancelEditingUserMessage = useCallback(() => {
@@ -147,7 +147,7 @@ export function useAgentMessageActions({
       }
 
       const messageIndex = messages.findIndex((item) => item.id === message.id)
-      if (messageIndex < 0 || isResponding) {
+      if (messageIndex < 0 || isRequestBusy) {
         return
       }
 
@@ -165,7 +165,7 @@ export function useAgentMessageActions({
     [
       cancelEditingUserMessage,
       editingMessageText,
-      isResponding,
+      isRequestBusy,
       messages,
       sendPrompt,
       t.agentEditEmpty,
@@ -175,7 +175,7 @@ export function useAgentMessageActions({
   const retryUserMessage = useCallback(
     async (message: AgentPanelMessage) => {
       const messageIndex = messages.findIndex((item) => item.id === message.id)
-      if (messageIndex < 0 || isResponding) {
+      if (messageIndex < 0 || isRequestBusy) {
         return
       }
 
@@ -188,7 +188,7 @@ export function useAgentMessageActions({
         },
       ).completion
     },
-    [isResponding, messages, sendPrompt],
+    [isRequestBusy, messages, sendPrompt],
   )
 
   return {

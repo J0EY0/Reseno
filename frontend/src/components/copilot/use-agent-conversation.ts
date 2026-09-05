@@ -9,6 +9,7 @@ import type { DocumentLocale, ModelConfig, ResumeData } from '@/types/resume'
 import {
   useAgentConversationRuntime,
   type AgentConversationUpdates,
+  type AgentRequestPhase,
 } from './agent-conversation-runtime'
 import {
   hydrateAgentSession,
@@ -34,7 +35,7 @@ export function useAgentConversation({
   onRollbackAgentDraft,
   resume,
   resumeId,
-  selectedModel,
+  selectedModelConfig,
   t,
 }: {
   agentDraftState: AgentDraftState | null
@@ -47,13 +48,14 @@ export function useAgentConversation({
   onRollbackAgentDraft: CopilotPanelProps['onRollbackAgentDraft']
   resume: ResumeData
   resumeId?: string
-  selectedModel: ModelConfig | null
+  selectedModelConfig: ModelConfig | null
   t: AppMessages
 }): AgentConversationController {
   const [messages, setMessages] = useState<AgentPanelMessage[]>([])
   const [streamingMessage, setStreamingMessage] =
     useState<AgentPanelMessage | null>(null)
-  const [isResponding, setIsResponding] = useState(false)
+  const [requestPhase, setRequestPhase] =
+    useState<AgentRequestPhase>('idle')
   const [isSessionReady, setSessionReady] = useState(false)
   const [isSessionMutationPending, setIsSessionMutationPending] =
     useState(false)
@@ -62,8 +64,8 @@ export function useAgentConversation({
   const sessionMutationPendingRef = useRef(false)
   const updates = useMemo<AgentConversationUpdates>(
     () => ({
-      setIsResponding,
       setMessages,
+      setRequestPhase,
       setSessionLoadError,
       setSessionReady,
       setStreamingMessage,
@@ -71,7 +73,7 @@ export function useAgentConversation({
     [],
   )
   const runtimeRef = useAgentConversationRuntime({
-    isResponding,
+    requestPhase,
     onPreviewAgentEdits,
     onReconcileAgentDraft,
     onRollbackAgentDraft,
@@ -174,7 +176,7 @@ export function useAgentConversation({
       resume,
       resumeId,
       runtimeRef,
-      selectedModel,
+      selectedModelConfig,
       updates,
     })
 
@@ -195,20 +197,21 @@ export function useAgentConversation({
     setSessionLoadAttempt((attempt) => attempt + 1)
   }, [])
   const isConversationReady = isSessionReady && !isSessionMutationPending
+  const isRequestBusy = requestPhase !== 'idle'
   const status: AgentPanelStatus = sessionLoadError
     ? 'error'
-    : !isConversationReady
+    : !isSessionReady
       ? 'loading'
-      : isResponding
+      : isRequestBusy
         ? 'responding'
         : 'ready'
 
   return {
     applyAgentDraft,
     discardAgentDraft,
-    isResponding,
     isSessionReady: isConversationReady,
     messages,
+    requestPhase,
     retrySession,
     sendPrompt,
     sessionLoadError,

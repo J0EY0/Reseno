@@ -6,9 +6,7 @@ import {
 } from '@/components/ai-elements/conversation'
 import { Button } from '@/components/ui/button'
 import type { AppMessages } from '@/i18n'
-import { shouldShowAgentDraftActions } from '@/lib/agent-panel-state'
 import { cn } from '@/lib/utils'
-import type { AgentDraftState } from '@/types/api'
 import { RotateCcw } from 'lucide-react'
 import { startTransition, useEffect, useState } from 'react'
 import type { RefObject } from 'react'
@@ -100,7 +98,6 @@ function AgentSessionLoadError({
 export function CopilotConversationView({
   conversation,
   conversationContextRef,
-  draft,
   hasConfiguredModel,
   messageActions,
   onOpenModelSettings,
@@ -109,12 +106,6 @@ export function CopilotConversationView({
 }: {
   conversation: AgentConversationController
   conversationContextRef: RefObject<StickToBottomContext | null>
-  draft: {
-    hasAgentDraft: boolean
-    state: AgentDraftState | null
-    onApply: AgentConversationController['applyAgentDraft']
-    onDiscard: AgentConversationController['discardAgentDraft']
-  }
   hasConfiguredModel: boolean
   messageActions: AgentMessageActions
   onOpenModelSettings: () => void
@@ -122,21 +113,23 @@ export function CopilotConversationView({
   t: AppMessages
 }) {
   const {
-    isResponding,
     isSessionReady,
     messages,
+    requestPhase,
     sessionLoadError,
     streamingMessage,
     visibleMessages,
   } = conversation
+  const isRequestBusy = requestPhase !== 'idle'
+  const isResponding = requestPhase === 'responding'
   const latestUserMessageId = messages.findLast(
     (candidate) => candidate.role === 'user',
   )?.id
   // Session history and active-run recovery form one hydration boundary. Do
   // not expose an empty conversation or draft decisions from a partial read.
   const isSessionLoading = !isSessionReady && !sessionLoadError
-  const showConversationPlaceholder =
-    isSessionLoading || visibleMessages.length === 0
+  const showEmptyState = visibleMessages.length === 0 && !isRequestBusy
+  const showConversationPlaceholder = isSessionLoading || showEmptyState
   const { hasOlderMessages, startIndex } = useProgressiveAgentHistory({
     isSessionLoading,
     visibleMessageCount: visibleMessages.length,
@@ -145,7 +138,7 @@ export function CopilotConversationView({
 
   return (
     <Conversation
-      aria-busy={hasOlderMessages || isSessionLoading}
+      aria-busy={hasOlderMessages || isSessionLoading || isRequestBusy}
       className="min-h-0 min-w-0 flex-1 overflow-x-hidden"
       contextRef={conversationContextRef}
       initial="instant"
@@ -159,7 +152,7 @@ export function CopilotConversationView({
         )}
         scrollClassName="agent-thread-scroll"
       >
-        {isSessionLoading ? null : visibleMessages.length === 0 ? (
+        {isSessionLoading ? null : showEmptyState ? (
           <ConversationEmptyState className="px-6 py-10">
             {sessionLoadError ? (
               <AgentSessionLoadError
@@ -206,7 +199,7 @@ export function CopilotConversationView({
                         : message.text
                     }
                     isEditing={isEditing}
-                    isResponding={isResponding}
+                    isRequestBusy={isRequestBusy}
                     key={message.id}
                     message={message}
                     onCancelEdit={messageActions.cancelEditingUserMessage}
@@ -235,38 +228,19 @@ export function CopilotConversationView({
                 )
               }
 
-              const showDraftActions =
-                draft.hasAgentDraft &&
-                shouldShowAgentDraftActions({
-                  draft: draft.state,
-                  isResponding,
-                  isSessionReady,
-                  messageId: message.id,
-                  response: message.response,
-                })
-
               return (
                 <AgentAssistantMessageRow
-                  draftDiffs={
-                    draft.state?.sourceMessageId === message.id
-                      ? draft.state.diffs
-                      : undefined
-                  }
-                  hasAgentDraft={draft.hasAgentDraft}
                   isStreamingAssistant={
                     isResponding && streamingMessage?.id === message.id
                   }
                   key={message.id}
                   message={message}
-                  onApplyAgentDraft={draft.onApply}
-                  onDiscardAgentDraft={draft.onDiscard}
-                  shouldShowDraftActions={showDraftActions}
                   t={t}
                 />
               )
             })}
 
-            {isResponding && !streamingMessage ? (
+            {isRequestBusy && !streamingMessage ? (
               <AgentPendingMessage label={t.agentToolThinking} />
             ) : null}
           </div>

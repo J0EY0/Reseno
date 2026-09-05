@@ -19,6 +19,7 @@ def stub_model_metadata_fetch(monkeypatch) -> Iterator[None]:
 
     model_metadata._CATALOG_CACHE = None
     monkeypatch.setattr(model_metadata, "_fetch_catalog", lambda: {})
+    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", lambda: {})
 
     yield
 

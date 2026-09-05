@@ -12,7 +12,7 @@ from app.schemas.resumes import (
 )
 
 AgentDraftDecisionStatus = Literal["applied", "discarded"]
-AgentDraftStatus = Literal["pending", "applied", "discarded"]
+AgentDraftReviewItemStatus = Literal["pending", "applied", "discarded"]
 AgentTransactionState = Literal["none", "provisional", "committed", "rolled_back"]
 AgentRunStatus = Literal["active", "completed", "cancelled", "failed"]
 AgentTurnExecutionStatus = Literal["running", "succeeded", "failed", "cancelled"]
@@ -59,29 +59,96 @@ class AgentConversationItem(BaseModel):
     response: dict[str, Any] | None = None
 
 
+class AgentDraftReviewItem(BaseModel):
+    """One independently resolvable group of ordered resume edits."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    edit_ids: list[str] = Field(alias="editIds", min_length=1)
+    status: AgentDraftReviewItemStatus = "pending"
+
+    @model_validator(mode="after")
+    def require_canonical_ids(self) -> "AgentDraftReviewItem":
+        if self.id != self.id.strip() or any(
+            not edit_id.strip() or edit_id != edit_id.strip()
+            for edit_id in self.edit_ids
+        ):
+            raise PydanticCustomError(
+                "agent_draft_review_item_id_invalid",
+                "Review item and edit ids must be canonical non-empty strings.",
+            )
+        if len(self.edit_ids) != len(set(self.edit_ids)):
+            raise PydanticCustomError(
+                "agent_draft_review_item_edit_ids_duplicate",
+                "A review item cannot contain duplicate edit ids.",
+            )
+        return self
+
+
+def _validate_review_item_collection(
+    review_items: list[AgentDraftReviewItem],
+) -> None:
+    item_ids = [item.id for item in review_items]
+    edit_ids = [edit_id for item in review_items for edit_id in item.edit_ids]
+    if len(item_ids) != len(set(item_ids)) or len(edit_ids) != len(set(edit_ids)):
+        raise PydanticCustomError(
+            "agent_draft_review_items_overlap",
+            "Review item ids must be unique and each edit must belong to one item.",
+        )
+
+
 class AgentDraftState(BaseModel):
     """Current frontend draft state carried into the agent loop."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     id: str
-    status: AgentDraftStatus = "pending"
     source_message_id: str | None = Field(default=None, alias="sourceMessageId")
     created_at: str | None = Field(default=None, alias="createdAt")
     updated_at: str | None = Field(default=None, alias="updatedAt")
     resume: dict[str, Any] = Field(default_factory=dict)
-    edit_count: int = Field(default=0, alias="editCount")
+    pending_count: int = Field(alias="pendingCount", ge=1)
+    review_items: list[AgentDraftReviewItem] = Field(
+        alias="reviewItems",
+        min_length=1,
+    )
     edits: list[dict[str, Any]] = Field(default_factory=list)
     diffs: list[dict[str, Any]] = Field(default_factory=list)
+    transaction_state: AgentTransactionState | None = Field(
+        default=None,
+        alias="transactionState",
+    )
+
+    @model_validator(mode="after")
+    def require_consistent_pending_items(self) -> "AgentDraftState":
+        _validate_review_item_collection(self.review_items)
+        pending_count = sum(
+            item.status == "pending" for item in self.review_items
+        )
+        if pending_count != self.pending_count:
+            raise PydanticCustomError(
+                "agent_draft_pending_count_invalid",
+                "pendingCount must match the unresolved review item count.",
+            )
+        return self
 
 
 class AgentCommittedDraft(BaseModel):
     """Durable review state bound to one committed assistant response."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     base_resume: dict[str, Any] = Field(alias="baseResume")
-    status: AgentDraftStatus = "pending"
+    review_items: list[AgentDraftReviewItem] = Field(
+        alias="reviewItems",
+        min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def require_distinct_review_items(self) -> "AgentCommittedDraft":
+        _validate_review_item_collection(self.review_items)
+        return self
 
 
 class AgentConversationCheckpoint(BaseModel):
@@ -96,6 +163,26 @@ class AgentConversationCheckpoint(BaseModel):
 
     through_message_id: str = Field(alias="throughMessageId", min_length=1)
     summary: dict[str, Any] = Field(min_length=1)
+
+
+class AgentModelSelection(BaseModel):
+    """ID-only model-config reference accepted from the Agent client."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_canonical_id(self) -> "AgentModelSelection":
+        """Reject blank or padded ids instead of resolving them as defaults."""
+
+        if not self.id.strip() or self.id != self.id.strip():
+            raise PydanticCustomError(
+                "agent_model_config_id_invalid",
+                "modelConfig.id must be non-empty and contain no surrounding "
+                "whitespace.",
+            )
+        return self
 
 
 class AgentChatRequest(BaseModel):
@@ -118,8 +205,10 @@ class AgentChatRequest(BaseModel):
     locale: AgentLocale = "zh"
     resume: dict[str, Any] = Field(default_factory=dict)
     draft_state: AgentDraftState | None = Field(default=None, alias="draftState")
-    model_config_data: dict[str, Any] | None = Field(default=None, alias="modelConfig")
-    settings: dict[str, Any] = Field(default_factory=dict)
+    model_selection: AgentModelSelection | None = Field(
+        default=None,
+        alias="modelConfig",
+    )
     execution_profile: AgentExecutionProfile | None = Field(
         default=None,
         exclude=True,
@@ -179,6 +268,16 @@ class AgentChatRequest(BaseModel):
             )
 
         return self
+
+
+class AgentModelSnapshot(BaseModel):
+    """Non-secret model identity captured when an Agent run is accepted."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
+
+    config_id: str = Field(alias="configId", min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
 
 
 class AgentRunResponse(BaseModel):
@@ -271,6 +370,40 @@ class AgentChatMessage(BaseModel):
         alias="transactionState",
     )
 
+    @model_validator(mode="after")
+    def require_draft_reviews_cover_edits(self) -> "AgentChatMessage":
+        if self.draft is None:
+            return self
+
+        edit_ids = [edit.id for edit in self.edits]
+        edit_positions = {edit_id: index for index, edit_id in enumerate(edit_ids)}
+        review_edit_ids = [
+            edit_id
+            for item in self.draft.review_items
+            for edit_id in item.edit_ids
+        ]
+        if (
+            len(edit_positions) != len(edit_ids)
+            or set(review_edit_ids) != set(edit_ids)
+        ):
+            raise PydanticCustomError(
+                "agent_draft_review_edit_coverage_invalid",
+                "Draft review items must cover every message edit exactly once.",
+            )
+
+        item_positions = [
+            [edit_positions[edit_id] for edit_id in item.edit_ids]
+            for item in self.draft.review_items
+        ]
+        if any(positions != sorted(positions) for positions in item_positions) or [
+            positions[0] for positions in item_positions
+        ] != sorted(positions[0] for positions in item_positions):
+            raise PydanticCustomError(
+                "agent_draft_review_edit_order_invalid",
+                "Draft review items must preserve message edit order.",
+            )
+        return self
+
 
 class AgentChatResponse(BaseModel):
     """Response body for agent chat requests."""
@@ -300,6 +433,7 @@ class AgentTurnExecution(BaseModel):
     turn_id: str = Field(alias="turnId")
     status: AgentTurnExecutionStatus
     error_code: AgentTurnErrorCode | None = Field(default=None, alias="errorCode")
+    model_snapshot: AgentModelSnapshot | None = Field(alias="modelSnapshot")
     started_at: str = Field(alias="startedAt")
     completed_at: str | None = Field(default=None, alias="completedAt")
 
@@ -328,6 +462,7 @@ class AgentDraftDecisionRequest(BaseModel):
 
     revision: str = Field(min_length=1)
     status: AgentDraftDecisionStatus
+    review_item_ids: list[str] = Field(alias="reviewItemIds", min_length=1)
     resume: dict[str, Any] | None = None
     expected_version_id: str | None = Field(
         default=None,

@@ -1,0 +1,94 @@
+import { PopoverTitle } from "@/components/ui/popover";
+import type { AppMessages } from "@/i18n";
+import { formatAgentDiffValue } from "@/lib/agent-diff-value";
+import type { ResumeDraftDiff } from "@/types/resume";
+
+function localizedKind(diff: ResumeDraftDiff, t: AppMessages) {
+  switch (diff.kind) {
+    case "added":
+      return t.agentDiffAdded;
+    case "deleted":
+      return t.agentDiffDeleted;
+    case "moved":
+      return t.agentDiffMoved;
+    case "modified":
+      return t.agentDiffModified;
+  }
+}
+
+function comparisonRows(diff: ResumeDraftDiff, t: AppMessages) {
+  const formatPosition = (value: unknown) =>
+    typeof value === "number"
+      ? String(value + 1)
+      : formatAgentDiffValue(value);
+
+  switch (diff.kind) {
+    case "added":
+      return [
+        {
+          label: t.agentDiffAddedContent,
+          value: formatAgentDiffValue(diff.after),
+        },
+      ];
+    case "deleted":
+      return [
+        {
+          label: t.agentDiffDeletedContent,
+          value: formatAgentDiffValue(diff.before),
+        },
+      ];
+    case "moved":
+      return [
+        { label: t.agentDiffPreviousPosition, value: formatPosition(diff.before) },
+        { label: t.agentDiffNewPosition, value: formatPosition(diff.after) },
+      ];
+    case "modified":
+      return [
+        { label: t.agentDiffBefore, value: formatAgentDiffValue(diff.before) },
+        { label: t.agentDiffAfter, value: formatAgentDiffValue(diff.after) },
+      ];
+  }
+}
+
+export function ResumeDraftReviewComparison({
+  diff,
+  t,
+}: {
+  diff: ResumeDraftDiff;
+  t: AppMessages;
+}) {
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <PopoverTitle className="min-w-0 break-words text-sm leading-5">
+          {diff.label}
+        </PopoverTitle>
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          {localizedKind(diff, t)}
+        </span>
+      </div>
+      <dl className="mt-3 grid gap-2">
+        {comparisonRows(diff, t).map((row, index) => (
+          <div
+            className="grid grid-cols-[4.25rem_minmax(0,1fr)] items-start gap-2"
+            key={`${row.label}-${index}`}
+          >
+            <dt className="pt-1 text-[10px] font-medium text-muted-foreground">
+              {row.label}
+            </dt>
+            <dd
+              className={
+                index > 0 || diff.kind === "added"
+                  ? "max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-success/10 px-2.5 py-1.5 text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  : "max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/55 px-2.5 py-1.5 text-xs leading-5 text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              }
+              tabIndex={0}
+            >
+              {row.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </>
+  );
+}

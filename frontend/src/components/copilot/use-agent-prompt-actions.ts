@@ -16,7 +16,7 @@ import type { SendAgentPrompt } from './copilot-panel-types'
 
 export function useAgentPromptActions({
   hasConfiguredModel,
-  isResponding,
+  isRequestBusy,
   isSessionReady,
   resumeId,
   sessionResetVersion,
@@ -25,7 +25,7 @@ export function useAgentPromptActions({
   t,
 }: {
   hasConfiguredModel: boolean
-  isResponding: boolean
+  isRequestBusy: boolean
   isSessionReady: boolean
   resumeId?: string
   sessionResetVersion: number
@@ -98,7 +98,7 @@ export function useAgentPromptActions({
       if (
         isSubmittingPrompt ||
         promptSubmissionRef.current ||
-        isResponding
+        isRequestBusy
       ) {
         throw new Error('An Agent prompt submission is already in progress.')
       }
@@ -143,8 +143,8 @@ export function useAgentPromptActions({
       const uploadAbortController = new AbortController()
       activeUploadAbortRef.current?.abort()
       activeUploadAbortRef.current = uploadAbortController
-      let requestAccepted = false
-      let requestStarted = false
+      let sendStarted = false
+      let requestSubmitted = false
 
       try {
         if (resumeId) {
@@ -214,41 +214,50 @@ export function useAgentPromptActions({
         if (activeUploadAbortRef.current === uploadAbortController) {
           activeUploadAbortRef.current = null
         }
-        requestStarted = true
+        sendStarted = true
         const sendOperation = sendPrompt(message.text, [
           ...activeReferencedAttachments,
           ...uploadedFiles,
         ])
-        requestAccepted = await sendOperation.accepted
-        if (!requestAccepted) {
+        requestSubmitted = sendOperation.submitted
+        if (!requestSubmitted) {
           await sendOperation.completion
-          throw new Error('The Agent request was not accepted by the server.')
+          throw new Error('The Agent request was not submitted.')
         }
 
-        const acceptedReferenceIds = new Set(
+        const submittedReferenceIds = new Set(
           activeReferencedAttachments.map((attachment) => attachment.id),
         )
         const remainingReferencedAttachments =
           referencedAttachmentsRef.current.filter(
-            (attachment) => !acceptedReferenceIds.has(attachment.id),
+            (attachment) => !submittedReferenceIds.has(attachment.id),
           )
         referencedAttachmentsRef.current = remainingReferencedAttachments
         setReferencedAttachments(remainingReferencedAttachments)
 
-        // PromptInput clears as soon as the uploaded snapshot is accepted. The
-        // run continues independently and cleans up only unprotected uploads.
-        void sendOperation.completion
-          .then(async (status) => {
+        void (async () => {
+          const requestAccepted = await sendOperation.accepted
+          if (!requestAccepted) {
+            await sendOperation.completion
+            throw new Error(
+              'The Agent request was not accepted by the server.',
+            )
+          }
+
+          const status = await sendOperation.completion
+          if (
+            status !== 'completed' &&
+            resumeId &&
+            uploadedFiles.length > 0
+          ) {
+            await deletePendingUploads(resumeId, uploadedFiles)
+          }
+        })()
+          .catch(async (error) => {
             if (
-              status !== 'completed' &&
               resumeId &&
               uploadedFiles.length > 0
             ) {
-              await deletePendingUploads(resumeId, uploadedFiles)
-            }
-          })
-          .catch(async (error) => {
-            if (resumeId && uploadedFiles.length > 0) {
               await deletePendingUploads(resumeId, uploadedFiles)
             }
             console.error(
@@ -266,14 +275,14 @@ export function useAgentPromptActions({
 
         if (!isAbortError(error)) {
           console.error(
-            requestStarted
+            sendStarted
               ? 'Failed to start the Agent request.'
               : 'Failed to upload agent attachment.',
             error,
           )
         }
         if (
-          !requestStarted &&
+          !sendStarted &&
           !isAbortError(error) &&
           !isApiErrorToastShown(error)
         ) {
@@ -288,14 +297,14 @@ export function useAgentPromptActions({
         if (activeUploadAbortRef.current === uploadAbortController) {
           activeUploadAbortRef.current = null
         }
-        if (!requestAccepted) {
+        if (!requestSubmitted) {
           promptSubmissionRef.current = false
         }
       }
     },
     [
       hasConfiguredModel,
-      isResponding,
+      isRequestBusy,
       isSubmittingPrompt,
       isSessionReady,
       resumeId,

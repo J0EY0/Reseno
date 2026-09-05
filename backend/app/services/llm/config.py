@@ -1,32 +1,27 @@
 from __future__ import annotations
 
 from sqlite3 import Connection
-from typing import Any
 
 from app.services.llm_secrets import decrypt_api_key
 from app.services.model_discovery_cache import get_cached_provider_model
 from app.services.model_metadata import resolve_model_metadata
 from app.services.model_providers import resolve_model_provider_base_url
-from app.services.thinking import ThinkingControl
+from app.services.thinking import ThinkingControl, can_project_thinking_off
 
 from .common import DEFAULT_OPENAI_BASE_URL, REQUEST_TIMEOUT_SECONDS
+from .errors import LlmThinkingModeUnsupportedError
 from .types import AgentLlmConfig
 
 
 def resolve_agent_llm_config(
     conn: Connection,
-    model_config_data: dict[str, Any] | None,
+    selected_model_config_id: str | None,
 ) -> AgentLlmConfig | None:
     """Load the selected enabled model config and decrypt its API key."""
 
-    client_id = ""
-    if model_config_data:
-        raw_client_id = model_config_data.get("id") or model_config_data.get(
-            "client_id",
-        )
-        client_id = str(raw_client_id or "").strip()
+    model_config_id = (selected_model_config_id or "").strip()
 
-    if client_id:
+    if model_config_id:
         row = conn.execute(
             """
             SELECT
@@ -45,12 +40,14 @@ def resolve_agent_llm_config(
                 timeout_seconds,
                 supports_image,
                 supports_thinking,
+                thinking_mode,
+                can_disable_thinking,
                 supports_tools,
                 supports_streaming
             FROM llm_configs
             WHERE client_id = ? AND enabled = 1
             """,
-            (client_id,),
+            (model_config_id,),
         ).fetchone()
     else:
         row = conn.execute(
@@ -71,6 +68,8 @@ def resolve_agent_llm_config(
                 timeout_seconds,
                 supports_image,
                 supports_thinking,
+                thinking_mode,
+                can_disable_thinking,
                 supports_tools,
                 supports_streaming
             FROM llm_configs
@@ -85,6 +84,11 @@ def resolve_agent_llm_config(
 
     encrypted_api_key = row["encrypted_api_key"]
     api_key = decrypt_api_key(encrypted_api_key) if encrypted_api_key else ""
+    resolved_base_url = resolve_model_provider_base_url(
+        row["provider"],
+        row["provider_kind"],
+        row["base_url"] or DEFAULT_OPENAI_BASE_URL,
+    )
 
     discovered = get_cached_provider_model(row["provider"], row["model"])
     model_max_output_tokens = (
@@ -92,13 +96,30 @@ def resolve_agent_llm_config(
     )
     metadata = resolve_model_metadata(row["provider"], row["model"])
     if model_max_output_tokens is None:
-        # Provider discovery is freshest and already normalized; LiteLLM is a
-        # capability fallback for configs loaded before (or without) discovery.
+        # Provider discovery is freshest and already normalized; the local
+        # supplemental metadata cache is a limit fallback for configs loaded
+        # before (or without) discovery.
         model_max_output_tokens = (
             metadata.max_output_tokens if metadata is not None else None
         )
     thinking_control: ThinkingControl = "none"
-    if row["provider_kind"] == "cloud":
+    if row["thinking_mode"] == "off":
+        # Persistence accepts Off only when discovery proved both a model-level
+        # disable capability and a matching Adapter wire projection. Resolve it
+        # to one explicit runtime action; never treat an omitted reasoning
+        # parameter, a low effort, or a missing cache entry as equivalent.
+        if not bool(row["can_disable_thinking"]) or not can_project_thinking_off(
+            provider=row["provider"],
+            provider_kind=row["provider_kind"],
+            api_family=row["api_family"],
+            base_url=resolved_base_url,
+            model=row["model"],
+        ):
+            raise LlmThinkingModeUnsupportedError(
+                "Thinking Off is unavailable for this model configuration.",
+            )
+        thinking_control = "native_off"
+    elif row["provider_kind"] == "cloud":
         # A cloud config's persisted boolean is presentation data and may have
         # been written by an older heuristic. Runtime behavior trusts only the
         # current, versioned discovery snapshot.
@@ -121,11 +142,7 @@ def resolve_agent_llm_config(
         provider_kind=row["provider_kind"],
         api_family=row["api_family"],
         model=row["model"],
-        base_url=resolve_model_provider_base_url(
-            row["provider"],
-            row["provider_kind"],
-            row["base_url"] or DEFAULT_OPENAI_BASE_URL,
-        ),
+        base_url=resolved_base_url,
         api_key=api_key,
         temperature=(
             float(row["temperature"]) if row["temperature"] is not None else None
@@ -145,9 +162,7 @@ def resolve_agent_llm_config(
             api_family=str(row["api_family"]),
             model=str(row["model"]),
             model_supports_web_search=(
-                metadata.supports_web_search is True
-                if metadata is not None
-                else False
+                metadata.supports_web_search is True if metadata is not None else False
             ),
         ),
     )

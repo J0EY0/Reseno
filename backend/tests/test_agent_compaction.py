@@ -610,13 +610,20 @@ def test_current_draft_state_obeys_one_total_budget_without_repeating_resume() -
         resume={"basic": {}, "sections": []},
         draftState={
             "id": "draft-budget",
-            "status": "pending",
             "sourceMessageId": "assistant-draft",
             "resume": {
                 "basic": {"summary": "current resume content " * 1_000},
                 "sections": [],
             },
-            "editCount": 20,
+            "pendingCount": 20,
+            "reviewItems": [
+                {
+                    "id": f"review-{index}",
+                    "editIds": [f"edit-{index}"],
+                    "status": "pending",
+                }
+                for index in range(20)
+            ],
             "edits": [
                 {
                     "id": f"edit-{index}",

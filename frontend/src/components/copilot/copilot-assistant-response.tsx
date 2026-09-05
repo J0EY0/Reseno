@@ -100,10 +100,12 @@ function getWebSources(sources: AgentSource[] | undefined) {
  */
 export function AgentAssistantResponse({
   fieldLabels,
+  isStreaming = false,
   sources,
   text,
 }: {
   fieldLabels?: ReadonlyMap<string, string>;
+  isStreaming?: boolean;
   sources: AgentSource[] | undefined;
   text: string;
 }) {
@@ -123,6 +125,7 @@ export function AgentAssistantResponse({
     [fieldLabels, text],
   );
   const hasWebSources = webSources.length > 0;
+  const shouldUseRichResponse = isStreaming || !isPlainAgentText(text);
 
   if (!text.trim()) {
     return null;
@@ -130,15 +133,16 @@ export function AgentAssistantResponse({
 
   return (
     <div>
-      {isPlainAgentText(text) ? (
-        <AgentPlainResponse inlineTail={hasWebSources} text={text} />
-      ) : (
+      {shouldUseRichResponse ? (
         <AgentRichResponse
           text={text}
           components={markdownComponents}
           fallbackText={fallbackText}
           inlineTail={hasWebSources}
+          isStreaming={isStreaming}
         />
+      ) : (
+        <AgentPlainResponse inlineTail={hasWebSources} text={text} />
       )}
       {hasWebSources ? (
         <>

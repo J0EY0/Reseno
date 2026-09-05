@@ -46,7 +46,7 @@ def _write_provider_cache_in_process(
     write_cached_provider_models(provider_id, models)
 
 
-def test_cache_rejects_pre_v4_boolean_thinking_snapshot(
+def test_cache_rejects_pre_v5_snapshot_without_thinking_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

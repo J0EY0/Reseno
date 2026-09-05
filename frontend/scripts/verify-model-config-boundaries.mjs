@@ -19,6 +19,8 @@ const [
   draft,
   providerFields,
   modelFields,
+  thinkingModeField,
+  modelFocus,
   modelConfigLibrary,
   modelConfigApi,
   resumeTypes,
@@ -38,6 +40,8 @@ const [
     readText("src/components/models/model-config-draft.ts"),
     readText("src/components/models/model-config-provider-fields.tsx"),
     readText("src/components/models/model-config-model-fields.tsx"),
+    readText("src/components/models/model-config-thinking-mode-field.tsx"),
+    readText("src/components/models/model-config-focus.ts"),
     readText("src/lib/model-config.ts"),
     readText("src/lib/model-config-api.ts"),
     readText("src/types/resume.ts"),
@@ -124,7 +128,7 @@ assert.match(
 );
 assert.match(
   modelConfigTable,
-  /getRowClassName=\{\(config\) =>[\s\S]*?config\.id === enteringModelId[\s\S]*?animate-in[\s\S]*?fade-in/,
+  /getRowClassName=\{\(config\) =>[\s\S]*?config\.id === enteringModelConfigId[\s\S]*?animate-in[\s\S]*?fade-in/,
   "Only the newly created model row must receive the entry animation class.",
 );
 assert.doesNotMatch(
@@ -204,12 +208,12 @@ assert.match(
 );
 assert.match(
   modelConfigSelection,
-  /const pageChanged = selection\.page !== safeCurrentPage[\s\S]*?useEffect\(\(\) => \{[\s\S]*?setSelection\(\{ page: safeCurrentPage, ids: \[\] \}\)[\s\S]*?\}, \[pageChanged, safeCurrentPage\]\)[\s\S]*?const selectedIds = pageChanged\s*\? \[\]/,
+  /const pageChanged = selection\.page !== safeCurrentPage[\s\S]*?useEffect\(\(\) => \{[\s\S]*?setSelection\(\{ page: safeCurrentPage, modelConfigIds: \[\] \}\)[\s\S]*?\}, \[pageChanged, safeCurrentPage\]\)[\s\S]*?const selectedModelConfigIds = pageChanged\s*\? \[\]/,
   "URL POP navigation must clear the previous page selection before it can flash or reappear when returning to that page.",
 );
 assert.match(
   modelConfigSelection,
-  /function changePage\(page: number\) \{\s*setSelection\(\{ page, ids: \[\] \}\)\s*setCurrentPage\(page\)/,
+  /function changePage\(page: number\) \{\s*setSelection\(\{ page, modelConfigIds: \[\] \}\)\s*setCurrentPage\(page\)/,
   "Explicit pagination must clear row selection before updating the URL.",
 );
 assert.match(
@@ -234,7 +238,7 @@ assert.doesNotMatch(
 );
 assert.match(
   modelConfigPanel,
-  /const pendingBulkModelIds = pendingBulkDeleteIds\.filter[\s\S]*?modelIds\.length === 0[\s\S]*?const response = await deleteModelConfigs\(modelIds\)[\s\S]*?selection\.clearSelection\(\)[\s\S]*?setPendingBulkDeleteIds\(\[\]\)[\s\S]*?open=\{pendingBulkModelIds\.length > 0\}[\s\S]*?title=\{t\.deleteModelConfigsConfirmTitle\}[\s\S]*?onConfirm=\{confirmBulkDeleteModels\}[\s\S]*?deferClose/,
+  /const pendingBulkModelConfigIds = pendingBulkDeleteModelConfigIds\.filter[\s\S]*?modelConfigIds\.length === 0[\s\S]*?const response = await deleteModelConfigs\(modelConfigIds\)[\s\S]*?selection\.clearSelection\(\)[\s\S]*?setPendingBulkDeleteModelConfigIds\(\[\]\)[\s\S]*?open=\{pendingBulkModelConfigIds\.length > 0\}[\s\S]*?title=\{t\.deleteModelConfigsConfirmTitle\}[\s\S]*?onConfirm=\{confirmBulkDeleteModelConfigs\}[\s\S]*?deferClose/,
   "A selected batch must issue one atomic helper call, clear selection after success, and use one deferred-close confirmation.",
 );
 assert.match(
@@ -387,8 +391,13 @@ assert.match(
 );
 assert.match(
   modelDialog,
-  /className="h-\[min\(34rem,calc\(100dvh-2rem\)\)\] overflow-hidden p-0 sm:max-w-xl"[\s\S]*?className="flex h-full min-h-0 flex-col"[\s\S]*?className="min-h-0 flex-1 gap-5 overflow-y-auto/,
+  /className="h-\[min\(34rem,calc\(100dvh-2rem\)\)\] overflow-hidden p-0 sm:max-w-xl[^"]*"[\s\S]*?className="flex h-full min-h-0 flex-col"[\s\S]*?className="min-h-0 flex-1 gap-5 overflow-y-auto/,
   "The model dialog frame must stay fixed while only its form body scrolls.",
+);
+assert.match(
+  modelDialog,
+  /\[&>\[data-slot=dialog-close\]\]:inline-flex[\s\S]*?\[&>\[data-slot=dialog-close\]\]:size-8[\s\S]*?\[&>\[data-slot=dialog-close\]\]:items-center[\s\S]*?\[&>\[data-slot=dialog-close\]\]:justify-center/,
+  "The model dialog close control must keep a compact touch target aligned with the title.",
 );
 
 assert.match(
@@ -455,8 +464,13 @@ assert.match(
 );
 assert.match(
   modelFields,
-  /<Collapsible open=\{expanded\} onOpenChange=\{handleOpenChange\}>[\s\S]*?<CollapsibleContent[\s\S]*?className="model-output-settings-content"[\s\S]*?className="model-output-settings-content-inner pt-3"/,
+  /<Collapsible open=\{expanded\} onOpenChange=\{handleOpenChange\}>[\s\S]*?<CollapsibleContent[\s\S]*?className="model-output-settings-content"[\s\S]*?className="model-output-settings-content-inner gap-5 pt-3"/,
   "Cloud advanced settings must reveal as one complete field instead of clipping through its controls.",
+);
+assert.match(
+  modelFields,
+  /function CloudAdvancedSettingsField[\s\S]*?<Field\s+orientation="horizontal"\s+className="flex-wrap gap-x-3 gap-y-1\.5"[\s\S]*?htmlFor="model-max-tokens"[\s\S]*?<Input[\s\S]*?id="model-max-tokens"[\s\S]*?className="w-32 max-w-\[55%\] shrink-0"[\s\S]*?<FieldError[\s\S]*?className="basis-full"/,
+  "Cloud max_tokens must use a compact right-aligned input while its error keeps a full row.",
 );
 assert.match(
   modelFields,
@@ -468,6 +482,31 @@ assert.doesNotMatch(
   /name="model-temperature"|name="model-top-p"/,
   "Removed temperature and topP controls must not return.",
 );
+assert.match(
+  thinkingModeField,
+  /import \{ Switch \} from "@\/components\/ui\/switch";[\s\S]*<Switch/,
+  "Thinking mode must use the installed shadcn Switch.",
+);
+assert.match(
+  thinkingModeField,
+  /checked=\{canDisableThinking \? value === "auto" : true\}[\s\S]*onCheckedChange=\{\(checked\) => \{[\s\S]*onChange\(checked \? "auto" : "off"\)/,
+  "The checked Switch state must map to Auto and the unchecked state to Off.",
+);
+assert.match(
+  thinkingModeField,
+  /const canDisableThinking = availableModes\.includes\("off"\)[\s\S]*disabled=\{!canDisableThinking\}/,
+  "The thinking mode control must disable user choice unless discovery explicitly includes Off.",
+);
+assert.doesNotMatch(
+  thinkingModeField,
+  /FieldDescription|thinkingMode(?:Auto|Off|Managed|OffHint|ManagedHint)|ToggleGroup/,
+  "The Switch row must not retain the removed mode buttons or explanatory copy.",
+);
+assert.match(
+  modelFocus,
+  /\["thinkingMode", \["model-thinking-mode", "model-output-settings"\]\]/,
+  "Cloud thinking-mode validation must focus the revealed control with the Advanced Settings trigger as fallback.",
+);
 assert.doesNotMatch(
   `${modelConfigLibrary}\n${resumeTypes}`,
   /\bLegacyModelConfig\b/,
@@ -475,23 +514,28 @@ assert.doesNotMatch(
 );
 assert.match(
   resumeTypes,
-  /interface ModelConfig[\s\S]*supportsThinking:\s*boolean/,
-  "Saved model configs must preserve the self-hosted reasoning capability declaration.",
+  /type ThinkingMode = 'auto' \| 'off'[\s\S]*interface ModelConfig[\s\S]*supportsThinking:\s*boolean[\s\S]*thinkingMode:\s*ThinkingMode[\s\S]*availableThinkingModes:\s*ThinkingMode\[\]/,
+  "Saved model configs must distinguish the thinking capability, user preference, and currently available modes.",
 );
 assert.match(
   modelConfigApi,
-  /interface DiscoveredModel[\s\S]*supportsThinking:\s*boolean/,
-  "Discovered models must preserve provider reasoning capability metadata.",
+  /interface DiscoveredModel[\s\S]*supportsThinking:\s*boolean[\s\S]*availableThinkingModes:\s*ModelConfig\['availableThinkingModes'\]/,
+  "Discovered models must preserve provider-authoritative thinking mode metadata.",
+);
+assert.match(
+  modelConfigApi,
+  /Omit<ModelConfig, 'id' \| 'availableThinkingModes'>/,
+  "Model saves must submit the user preference without echoing server-derived mode capabilities.",
 );
 assert.match(
   agentSettingsTab,
-  /const agentModelConfigs = modelConfigs\.filter\(\s*\(config\) => config\.supportsTools,?\s*\)[\s\S]*?agentModelConfigs\.find\(\s*\(config\) => config\.id === agentSettings\.defaultModelId,?\s*\)[\s\S]*?disabled=\{agentModelConfigs\.length === 0\}[\s\S]*?agentModelConfigs\.map\(\(config\) =>/,
+  /const agentModelConfigs = modelConfigs\.filter\(\s*\(config\) => config\.supportsTools,?\s*\)[\s\S]*?agentModelConfigs\.find\(\s*\(config\) => config\.id === agentSettings\.defaultModelConfigId,?\s*\)[\s\S]*?disabled=\{agentModelConfigs\.length === 0\}[\s\S]*?agentModelConfigs\.map\(\(config\) =>/,
   "Agent settings must list only tool-capable models and treat an unsupported saved selection as unconfigured.",
 );
 assert.doesNotMatch(
   `${resumeTypes}\n${modelConfigLibrary}\n${draft}\n${controller}\n${modelFields}`,
   /\bthinkingEnabled\b/,
-  "The frontend model contract and settings flow must not restore a Thinking toggle.",
+  "The frontend must not collapse capability-aware thinking modes back into a misleading boolean toggle.",
 );
 
 const server = await createServer({
@@ -534,12 +578,15 @@ const server = await createServer({
 });
 
 try {
-  const { resolveSelectedModelIds } = await server.ssrLoadModule(
+  const { resolveSelectedModelConfigIds } = await server.ssrLoadModule(
     "/src/components/models/use-model-config-table-selection.ts",
   );
   assert.deepEqual(
-    resolveSelectedModelIds(
-      { page: 2, ids: ["model-a", "removed-model", "model-b"] },
+    resolveSelectedModelConfigIds(
+      {
+        page: 2,
+        modelConfigIds: ["model-a", "removed-model", "model-b"],
+      },
       2,
       [{ id: "model-b" }, { id: "model-a" }],
     ),
@@ -547,8 +594,8 @@ try {
     "Selection must retain stable IDs in selection order while pruning rows removed or moved off the current page.",
   );
   assert.deepEqual(
-    resolveSelectedModelIds(
-      { page: 1, ids: ["model-a", "model-b"] },
+    resolveSelectedModelConfigIds(
+      { page: 1, modelConfigIds: ["model-a", "model-b"] },
       2,
       [{ id: "model-a" }, { id: "model-b" }],
     ),
@@ -588,6 +635,23 @@ try {
       errors: { maxTokens: "Enter an integer greater than 0." },
     },
     "Backend output-format validation must use the same field-level invalid result.",
+  );
+  const backendUnsupportedThinkingError = Object.assign(
+    new Error("This model cannot turn reasoning off. Select Auto instead."),
+    { apiCode: "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED" },
+  );
+  assert.deepEqual(
+    classifyModelConfigSaveFailure(backendUnsupportedThinkingError, {
+      validationRequired: "Required",
+    }),
+    {
+      status: "invalid",
+      errors: {
+        thinkingMode:
+          "This model cannot turn reasoning off. Select Auto instead.",
+      },
+    },
+    "A stale Off capability must surface as a thinking-mode field error instead of a generic discovery failure.",
   );
   assert.deepEqual(
     classifyModelConfigSaveFailure(new Error("Save failed"), {
@@ -716,6 +780,8 @@ try {
     contextWindowTokens: 128000,
     supportsImage: true,
     supportsThinking: true,
+    thinkingMode: "auto",
+    availableThinkingModes: ["auto", "off"],
     supportsTools: true,
     supportsStreaming: true,
   };
@@ -729,7 +795,7 @@ try {
     "/src/components/agent-settings-tab.tsx",
   );
   const { Tabs } = await server.ssrLoadModule("/src/components/ui/tabs.tsx");
-  const unsupportedSelectedModel = {
+  const unsupportedSelectedModelConfig = {
     ...canonicalModelConfig,
     id: "model-without-tools",
     nickname: "No-tools model",
@@ -741,12 +807,12 @@ try {
       { value: "agent" },
       React.createElement(AgentSettingsTab, {
         agentSettings: {
-          defaultModelId: unsupportedSelectedModel.id,
+          defaultModelConfigId: unsupportedSelectedModelConfig.id,
           responseLanguage: "follow",
           behaviorMode: "balanced",
           confirmationMode: "always",
         },
-        modelConfigs: [unsupportedSelectedModel, canonicalModelConfig],
+        modelConfigs: [unsupportedSelectedModelConfig, canonicalModelConfig],
         onAgentSettingsChange() {},
         t: messages,
       }),
@@ -780,6 +846,7 @@ try {
     maxOutputTokens: 65536,
     supportsImage: true,
     supportsThinking: true,
+    availableThinkingModes: ["auto", "off"],
     supportsTools: true,
     supportsStreaming: true,
     metadataSource: "provider",
@@ -827,6 +894,29 @@ try {
     null,
     "A saved request override must never masquerade as the model capability ceiling before discovery completes.",
   );
+  assert.deepEqual(
+    discoveredFromConfig(canonicalModelConfig)[0]?.availableThinkingModes,
+    ["auto", "off"],
+    "A saved config must seed its last validated thinking capabilities until discovery refreshes them.",
+  );
+  const unsupportedOffDraft = applyDiscoveredModel(
+    { ...autoOutputDraft, thinkingMode: "off" },
+    { ...discoveredCloudModel, availableThinkingModes: ["auto"] },
+  );
+  assert.equal(
+    unsupportedOffDraft.thinkingMode,
+    "auto",
+    "Switching to a model without explicit Off support must immediately restore Auto.",
+  );
+  const supportedOffDraft = applyDiscoveredModel(
+    { ...autoOutputDraft, thinkingMode: "off" },
+    discoveredCloudModel,
+  );
+  assert.equal(
+    supportedOffDraft.thinkingMode,
+    "off",
+    "Refreshing or switching to another Off-capable model must preserve the explicit preference.",
+  );
   const savedModelConfig = createSavedModelConfig(
     {
       ...createModelConfigDraft("en"),
@@ -837,6 +927,8 @@ try {
       maxTokens: "8192",
       contextWindowTokens: "128000",
       supportsThinking: true,
+      thinkingMode: "off",
+      availableThinkingModes: ["auto", "off"],
     },
     cloudProvider,
   );
@@ -844,6 +936,16 @@ try {
     savedModelConfig.supportsThinking,
     true,
     "Saved model configs must preserve the declared reasoning capability.",
+  );
+  assert.equal(
+    savedModelConfig.thinkingMode,
+    "off",
+    "Saved model configs must submit the selected thinking mode.",
+  );
+  assert.equal(
+    Object.hasOwn(savedModelConfig, "availableThinkingModes"),
+    false,
+    "Saved model configs must not submit server-derived thinking capabilities.",
   );
   assert.equal(
     savedModelConfig.maxTokens,
@@ -916,6 +1018,7 @@ try {
     errors = {},
     discoveredModels = [discoveredCloudModel],
     modelOptionsLoading = false,
+    thinkingMode = "auto",
   ) =>
     renderToStaticMarkup(
       React.createElement(ModelConfigModelFields, {
@@ -932,6 +1035,10 @@ try {
             maxTokens,
             contextWindowTokens: "128000",
             supportsThinking: true,
+            thinkingMode,
+            availableThinkingModes:
+              discoveredModels.find((model) => model.id === "gpt-test")
+                ?.availableThinkingModes ?? ["auto"],
           },
           errors,
           modelOptionsLoading,
@@ -949,8 +1056,9 @@ try {
           refreshModels: "Refresh",
           fetchModels: "Fetch",
           advancedSettings: "Advanced Settings",
+          thinkingMode: "Thinking mode",
           maxTokens: "max_tokens",
-          maxTokensAuto: "Auto (recommended)",
+          maxTokensAuto: "Auto",
         },
       }),
     );
@@ -974,7 +1082,51 @@ try {
   assert.doesNotMatch(
     cloudFieldsMarkup,
     /model-thinking-enabled|Enable Thinking/,
-    "Cloud model settings must not expose a Thinking toggle.",
+    "Cloud model settings must not expose the removed boolean Thinking toggle.",
+  );
+  assert.match(
+    cloudFieldsMarkup,
+    /for="model-thinking-mode"[\s\S]*Thinking mode[\s\S]*role="switch"[\s\S]*aria-checked="true"/,
+    "An Off-capable model must expose an accessible Switch that defaults to Auto.",
+  );
+  const managedThinkingMarkup = renderCloudFields(
+    "8192",
+    {},
+    [{ ...discoveredCloudModel, availableThinkingModes: ["auto"] }],
+  );
+  assert.match(
+    managedThinkingMarkup,
+    /role="switch"[\s\S]*aria-checked="true"[\s\S]*disabled=""/,
+    "A model without explicit Off support must keep the Switch on Auto and disabled.",
+  );
+  const offCloudFieldsMarkup = renderCloudFields(
+    "",
+    {},
+    [discoveredCloudModel],
+    false,
+    "off",
+  );
+  assert.match(
+    offCloudFieldsMarkup,
+    /id="model-output-settings"[\s\S]*role="switch"[^>]*aria-checked="false"[\s\S]*<input id="model-thinking-mode"[\s\S]*id="model-max-tokens"/,
+    "A persisted Off preference must reopen advanced settings so its active override is visible.",
+  );
+  const thinkingErrorMarkup = renderCloudFields(
+    "",
+    { thinkingMode: "This model cannot turn reasoning off." },
+    [discoveredCloudModel],
+    false,
+    "off",
+  );
+  assert.match(
+    thinkingErrorMarkup,
+    /id="model-output-settings"[^>]*aria-invalid="true"[\s\S]*This model cannot turn reasoning off\./,
+    "A backend thinking-mode error must reopen and invalidate Advanced Settings instead of remaining hidden.",
+  );
+  assert.match(
+    thinkingErrorMarkup,
+    /role="switch"[^>]*aria-invalid="true"[^>]*aria-describedby="model-thinking-mode-error"[\s\S]*<input id="model-thinking-mode"/,
+    "The Thinking Switch must expose its visible validation error to assistive technology.",
   );
   assert.doesNotMatch(
     cloudFieldsMarkup,
@@ -988,7 +1140,7 @@ try {
   );
   assert.match(
     cloudFieldsMarkup,
-    /<input[^>]*type="text"[^>]*data-slot="input"[^>]*id="model-max-tokens"[^>]*inputMode="numeric"[^>]*placeholder="Auto \(recommended\)"/,
+    /<input[^>]*type="text"[^>]*data-slot="input"[^>]*id="model-max-tokens"[^>]*inputMode="numeric"[^>]*placeholder="Auto"/,
     "The max_tokens override must use the native shadcn Input without browser number steppers.",
   );
   assert.doesNotMatch(

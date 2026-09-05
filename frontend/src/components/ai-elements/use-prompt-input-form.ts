@@ -35,7 +35,7 @@ export function selectActivePromptSubmissionFiles<T extends { id: string }>(
   return capturedFiles.filter((file) => currentIds.has(file.id));
 }
 
-/** Clear accepted text only when the user has not started the next prompt. */
+/** Clear submitted text only when the user has not started the next prompt. */
 export function shouldClearPromptSubmissionText(
   capturedText: string,
   currentText: string,

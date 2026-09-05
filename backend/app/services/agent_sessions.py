@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from sqlite3 import Connection
+from sqlite3 import Connection, Row
 from typing import Any, Literal, NoReturn
 from uuid import uuid4
 
@@ -15,6 +15,7 @@ from app.schemas.agent import (
     AgentConversationCheckpoint,
     AgentConversationItem,
     AgentDraftDecisionStatus,
+    AgentModelSnapshot,
     AgentSessionResponse,
     AgentStoredMessage,
     AgentTurnErrorCode,
@@ -34,7 +35,7 @@ from app.services.agent.attachments import (
 )
 from app.services.agent.resume_owner import require_active_resume
 from app.services.agent.runtime.context import AgentConversationState
-from app.services.llm.config import resolve_agent_llm_config
+from app.services.llm import AgentLlmConfig
 from app.services.llm.dispatch import supports_native_attachment
 from app.services.resumes import (
     ResumeSaveTransaction,
@@ -71,6 +72,7 @@ class AcceptedAgentTurn:
     session_id: str | None
     turn_id: str
     revision: str | None
+    model_snapshot: AgentModelSnapshot | None
     conversation_state: AgentConversationState
 
 
@@ -175,6 +177,38 @@ class AgentDraftUnavailableConflictError(RuntimeError):
         self.current_revision = current_revision
 
 
+def _agent_model_snapshot(
+    config: AgentLlmConfig | None,
+) -> AgentModelSnapshot | None:
+    """Project a secret-bearing runtime config onto its durable identity fields.
+
+    API keys, endpoint URLs, and sampling values are not copied into the
+    execution record. It stores only enough information to attribute a response
+    after its source model configuration is edited or deleted.
+    """
+
+    if config is None:
+        return None
+    return AgentModelSnapshot(
+        configId=config.client_id,
+        provider=config.provider,
+        model=config.model,
+    )
+
+
+def _stored_agent_model_snapshot(row: Row) -> AgentModelSnapshot | None:
+    """Decode the all-null or all-populated execution snapshot invariant."""
+
+    config_id = row["model_config_id"]
+    if config_id is None:
+        return None
+    return AgentModelSnapshot(
+        configId=config_id,
+        provider=row["model_provider"],
+        model=row["model_id"],
+    )
+
+
 def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse:
     """Load the Agent conversation attached to one resume."""
 
@@ -214,7 +248,16 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
     # rapid retries deterministic when two executions share the same timestamp.
     execution_rows = conn.execute(
         """
-        SELECT run_id, turn_id, status, error_code, started_at, completed_at
+        SELECT
+            run_id,
+            turn_id,
+            model_config_id,
+            model_provider,
+            model_id,
+            status,
+            error_code,
+            started_at,
+            completed_at
         FROM agent_turn_executions
         WHERE session_id = ?
         ORDER BY started_at ASC, rowid ASC
@@ -227,6 +270,7 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
             turnId=row["turn_id"],
             status=row["status"],
             errorCode=row["error_code"],
+            modelSnapshot=_stored_agent_model_snapshot(row),
             startedAt=row["started_at"],
             completedAt=row["completed_at"],
         )
@@ -246,6 +290,7 @@ def accept_agent_turn(
     request: AgentChatRequest,
     *,
     run_id: str,
+    resolved_config: AgentLlmConfig | None,
 ) -> AcceptedAgentTurn:
     """Accept one user turn and replace client history with authoritative history.
 
@@ -257,6 +302,7 @@ def accept_agent_turn(
 
     assert request.message.id is not None
     turn_id = request.message.id
+    model_snapshot = _agent_model_snapshot(resolved_config)
     if not request.resume_id:
         return AcceptedAgentTurn(
             request=request,
@@ -264,6 +310,7 @@ def accept_agent_turn(
             session_id=None,
             turn_id=turn_id,
             revision=None,
+            model_snapshot=model_snapshot,
             conversation_state=AgentConversationState(),
         )
 
@@ -275,6 +322,7 @@ def accept_agent_turn(
             session_id=None,
             turn_id=turn_id,
             revision=None,
+            model_snapshot=model_snapshot,
             conversation_state=AgentConversationState(),
         )
 
@@ -282,10 +330,9 @@ def accept_agent_turn(
     user_message = _current_user_message(request, now)
 
     _prevalidate_current_turn_attachments(
-        conn,
-        request,
         resume_id,
         user_message.files,
+        resolved_config,
     )
 
     receipt: AgentAttachmentSentReceipt | None = None
@@ -329,6 +376,7 @@ def accept_agent_turn(
                 session_id=resume_id,
                 turn_id=user_message.id,
                 started_at=now,
+                model_snapshot=model_snapshot,
             )
             authoritative_revision = _session_revision(conn, resume_id)
             # `message` is the singular current turn. Provider history must be
@@ -356,6 +404,7 @@ def accept_agent_turn(
         session_id=resume_id,
         turn_id=user_message.id,
         revision=authoritative_revision,
+        model_snapshot=model_snapshot,
         conversation_state=AgentConversationState(
             loaded_checkpoint=conversation_checkpoint,
             active_checkpoint=conversation_checkpoint,
@@ -489,16 +538,22 @@ def _discard_older_pending_drafts(
             message_id=message_id,
         )
         response = persisted.response
-        if (
-            response is None
-            or response.draft is None
-            or response.draft.status != "pending"
-        ):
+        if response is None or response.draft is None:
+            continue
+        review_items = response.draft.review_items
+        if not any(item.status == "pending" for item in review_items):
             continue
         updated_response = response.model_copy(
             update={
                 "draft": response.draft.model_copy(
-                    update={"status": "discarded"},
+                    update={
+                        "review_items": [
+                            item.model_copy(update={"status": "discarded"})
+                            if item.status == "pending"
+                            else item
+                            for item in review_items
+                        ],
+                    },
                 ),
             },
         )
@@ -523,11 +578,11 @@ def _discard_older_pending_drafts(
             )
 
 
-def _latest_committed_draft_message_id(
+def _latest_pending_draft_message_id(
     conn: Connection,
     resume_id: str,
 ) -> str | None:
-    """Return the newest assistant response that owns durable draft state."""
+    """Return the newest assistant response with unresolved review items."""
 
     rows = conn.execute(
         """
@@ -545,7 +600,11 @@ def _latest_committed_draft_message_id(
             session_id=resume_id,
             message_id=message_id,
         )
-        if response is not None and response.draft is not None:
+        if (
+            response is not None
+            and response.draft is not None
+            and any(item.status == "pending" for item in response.draft.review_items)
+        ):
             return message_id
     return None
 
@@ -555,10 +614,11 @@ def _update_agent_draft_decision(
     resume_id: str,
     *,
     message_id: str,
+    review_item_ids: list[str],
     status: AgentDraftDecisionStatus,
     revision: str,
-) -> bool:
-    """Resolve one committed draft inside a caller-owned transaction."""
+) -> None:
+    """Resolve selected items while preserving the draft's immutable merge base."""
 
     require_active_resume(conn, resume_id)
     current_revision = _session_revision(conn, resume_id)
@@ -588,12 +648,10 @@ def _update_agent_draft_decision(
     if response is None or response.draft is None:
         raise AgentDraftUnavailableConflictError(current_revision)
     if (
-        response.draft.status == "pending"
-        and _latest_committed_draft_message_id(conn, resume_id) != message_id
+        any(item.status == "pending" for item in response.draft.review_items)
+        and _latest_pending_draft_message_id(conn, resume_id) != message_id
     ):
         raise AgentDraftUnavailableConflictError(current_revision)
-    if response.draft.status == status:
-        return False
 
     running_execution = conn.execute(
         """
@@ -611,16 +669,39 @@ def _update_agent_draft_decision(
             str(running_execution["run_id"]),
         )
 
-    if response.draft.status != "pending":
+    if len(review_item_ids) != len(set(review_item_ids)):
         raise AgentDraftDecisionConflictError(
             current_revision,
-            response.draft.status,
+            "invalid",
         )
 
-    updated_response = response.model_copy(
+    review_items_by_id = {item.id: item for item in response.draft.review_items}
+    if any(item_id not in review_items_by_id for item_id in review_item_ids):
+        raise AgentDraftDecisionConflictError(current_revision, "unknown")
+
+    current_statuses = {
+        review_items_by_id[item_id].status for item_id in review_item_ids
+    }
+    if current_statuses != {"pending"}:
+        current_status = (
+            next(iter(current_statuses)) if len(current_statuses) == 1 else "mixed"
+        )
+        raise AgentDraftDecisionConflictError(current_revision, current_status)
+
+    selected_ids = set(review_item_ids)
+    updated_draft = response.draft.model_copy(
         update={
-            "draft": response.draft.model_copy(update={"status": status}),
+            "review_items": [
+                item.model_copy(update={"status": status})
+                if item.id in selected_ids
+                else item
+                for item in response.draft.review_items
+            ],
         },
+    )
+
+    updated_response = response.model_copy(
+        update={"draft": updated_draft},
     )
     cursor = conn.execute(
         """
@@ -641,7 +722,6 @@ def _update_agent_draft_decision(
         raise AgentSessionPersistenceError(
             "The committed Agent draft response could not be updated.",
         )
-    return True
 
 
 def update_agent_draft_decision(
@@ -649,6 +729,7 @@ def update_agent_draft_decision(
     resume_id: str,
     *,
     message_id: str,
+    review_item_ids: list[str],
     status: AgentDraftDecisionStatus,
     revision: str,
 ) -> AgentSessionResponse:
@@ -659,6 +740,7 @@ def update_agent_draft_decision(
             conn,
             resume_id,
             message_id=message_id,
+            review_item_ids=review_item_ids,
             status=status,
             revision=revision,
         )
@@ -671,6 +753,7 @@ def apply_agent_draft_decision(
     resume_id: str,
     *,
     message_id: str,
+    review_item_ids: list[str],
     resume: dict[str, Any],
     revision: str,
     expected_version_id: str,
@@ -688,20 +771,20 @@ def apply_agent_draft_decision(
             if expected_version_id != current_version_id:
                 raise AgentResumeVersionConflictError(current_version_id)
 
-            changed = _update_agent_draft_decision(
+            _update_agent_draft_decision(
                 conn,
                 resume_id,
                 message_id=message_id,
+                review_item_ids=review_item_ids,
                 status="applied",
                 revision=revision,
             )
-            if changed:
-                save_result = save_resume_document_in_transaction(
-                    conn,
-                    resume_id,
-                    resume,
-                    save_mode="autosave",
-                )
+            save_result = save_resume_document_in_transaction(
+                conn,
+                resume_id,
+                resume,
+                save_mode="autosave",
+            )
             resume_detail = (
                 save_result.detail
                 if save_result is not None
@@ -827,24 +910,21 @@ def replace_agent_session_messages(
 
 
 def _prevalidate_current_turn_attachments(
-    conn: Connection,
-    request: AgentChatRequest,
     resume_id: str,
     files: list[dict[str, Any]],
+    resolved_config: AgentLlmConfig | None,
 ) -> None:
     """Prove the whole attachment batch is provider-consumable before commit."""
 
     if not files:
         return
 
-    config = resolve_agent_llm_config(conn, request.model_config_data)
-
     def can_consume_native(attachment: StoredAgentAttachment) -> bool:
-        if config is None:
+        if resolved_config is None:
             return False
         if attachment.kind == "image":
-            return config.supports_image
-        return supports_native_attachment(config, attachment.media_type)
+            return resolved_config.supports_image
+        return supports_native_attachment(resolved_config, attachment.media_type)
 
     prevalidate_agent_attachments(
         resume_id,
@@ -1337,8 +1417,9 @@ def _insert_agent_turn_execution(
     session_id: str,
     turn_id: str,
     started_at: str,
+    model_snapshot: AgentModelSnapshot | None,
 ) -> None:
-    """Create the running state inside the accepted-user-turn transaction."""
+    """Create one running attempt with its immutable, non-secret model identity."""
 
     conn.execute(
         """
@@ -1346,15 +1427,27 @@ def _insert_agent_turn_execution(
             run_id,
             session_id,
             turn_id,
+            model_config_id,
+            model_provider,
+            model_id,
             status,
             error_code,
             started_at,
             completed_at,
             updated_at
         )
-        VALUES (?, ?, ?, 'running', NULL, ?, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'running', NULL, ?, NULL, ?)
         """,
-        (run_id, session_id, turn_id, started_at, started_at),
+        (
+            run_id,
+            session_id,
+            turn_id,
+            model_snapshot.config_id if model_snapshot is not None else None,
+            model_snapshot.provider if model_snapshot is not None else None,
+            model_snapshot.model if model_snapshot is not None else None,
+            started_at,
+            started_at,
+        ),
     )
 
 

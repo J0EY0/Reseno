@@ -3,7 +3,9 @@ import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_MODEL_API_FAMILY,
   createDefaultModelConfig,
+  normalizeAvailableThinkingModes,
   normalizeMaxTokens,
+  resolveThinkingMode,
 } from "@/lib/model-config";
 import type { DiscoveredModel } from "@/lib/model-config-api";
 import type { ModelProviderMeta } from "@/lib/model-providers";
@@ -70,6 +72,7 @@ export function discoveredFromConfig(config?: ModelConfig): DiscoveredModel[] {
       maxOutputTokens: null,
       supportsImage: config.supportsImage,
       supportsThinking: config.supportsThinking,
+      availableThinkingModes: config.availableThinkingModes,
       supportsTools: config.supportsTools,
       supportsStreaming: config.supportsStreaming,
       metadataSource: "saved",
@@ -102,6 +105,8 @@ export function createModelConfigDraft(
     ),
     supportsImage: source.supportsImage,
     supportsThinking: source.supportsThinking,
+    thinkingMode: source.thinkingMode,
+    availableThinkingModes: source.availableThinkingModes,
     supportsTools: source.supportsTools,
     supportsStreaming: source.supportsStreaming,
   };
@@ -224,8 +229,15 @@ export function validateModelConfigDraft(
 export function applyDiscoveredModel(
   draft: ModelConfigDraft,
   model: DiscoveredModel,
-) {
+): ModelConfigDraft {
   const modelChanged = draft.model !== model.id;
+  const availableThinkingModes = normalizeAvailableThinkingModes(
+    model.availableThinkingModes,
+  );
+  const thinkingMode = resolveThinkingMode(
+    draft.thinkingMode,
+    availableThinkingModes,
+  );
 
   return {
     ...draft,
@@ -237,6 +249,11 @@ export function applyDiscoveredModel(
     maxTokens: modelChanged ? "" : draft.maxTokens,
     supportsImage: model.supportsImage,
     supportsThinking: model.supportsThinking,
+    // Discovery is authoritative for model capabilities. Preserve an explicit
+    // Off preference only when the newly selected model also supports it;
+    // otherwise return to provider-managed Auto before the form can be saved.
+    thinkingMode,
+    availableThinkingModes,
     supportsTools: model.supportsTools,
     supportsStreaming: model.supportsStreaming,
   };
@@ -245,7 +262,7 @@ export function applyDiscoveredModel(
 export function changeDraftProvider(
   draft: ModelConfigDraft,
   provider: ModelProviderMeta,
-) {
+): ModelConfigDraft {
   return {
     ...draft,
     provider: provider.id,
@@ -261,6 +278,8 @@ export function changeDraftProvider(
     contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
     supportsImage: false,
     supportsThinking: false,
+    thinkingMode: "auto",
+    availableThinkingModes: ["auto"],
     supportsTools: provider.supportsTools,
     supportsStreaming: provider.supportsStreaming,
   };
@@ -293,9 +312,15 @@ export function createSavedModelConfig(
     contextWindowTokens: Number(draft.contextWindowTokens),
     supportsImage: draft.supportsImage,
     supportsThinking: draft.supportsThinking,
+    thinkingMode: resolveThinkingMode(
+      draft.thinkingMode,
+      draft.availableThinkingModes,
+    ),
     supportsTools: draft.supportsTools,
     supportsStreaming: draft.supportsStreaming,
-  } satisfies Omit<ModelConfig, "id"> & { id?: string };
+  } satisfies Omit<ModelConfig, "id" | "availableThinkingModes"> & {
+    id?: string;
+  };
 }
 
 export { isValidHttpUrl };

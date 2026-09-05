@@ -1,8 +1,33 @@
 import type { Locale } from '@/i18n'
-import type { ModelConfig } from '@/types/resume'
+import type { ModelConfig, ThinkingMode } from '@/types/resume'
 
 export const DEFAULT_MODEL_API_FAMILY = 'openai_compatible_chat'
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
+
+/**
+ * Normalize provider capability metadata into the only two product-level modes.
+ * Auto is always present because it delegates behavior to the provider; Off is
+ * retained only when discovery explicitly guarantees a true no-reasoning mode.
+ */
+export function normalizeAvailableThinkingModes(
+  value: unknown,
+): ThinkingMode[] {
+  return Array.isArray(value) && value.includes('off')
+    ? ['auto', 'off']
+    : ['auto']
+}
+
+/**
+ * Resolve the persisted preference against the current model capability. This
+ * keeps a stale Off preference from reaching the save API after the user moves
+ * to a model that cannot guarantee disabled reasoning.
+ */
+export function resolveThinkingMode(
+  value: unknown,
+  availableModes: readonly ThinkingMode[],
+): ThinkingMode {
+  return value === 'off' && availableModes.includes('off') ? 'off' : 'auto'
+}
 
 export function clampTemperature(value: number) {
   const safe = Number.isFinite(value) ? value : 0
@@ -46,6 +71,8 @@ export function createDefaultModelConfig(
     contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
     supportsImage: false,
     supportsThinking: false,
+    thinkingMode: 'auto',
+    availableThinkingModes: ['auto'],
     supportsTools: true,
     supportsStreaming: true,
     ...overrides,
@@ -72,6 +99,9 @@ export function normalizeModelConfig(
     typeof raw.topP === 'number' && Number.isFinite(raw.topP)
       ? raw.topP
       : null
+  const availableThinkingModes = normalizeAvailableThinkingModes(
+    raw.availableThinkingModes,
+  )
 
   return createDefaultModelConfig(locale, {
     id: typeof raw.id === 'string' ? raw.id : '',
@@ -111,6 +141,11 @@ export function normalizeModelConfig(
       normalizeMaxTokens(raw.contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
     supportsImage: Boolean(raw.supportsImage),
     supportsThinking: Boolean(raw.supportsThinking),
+    thinkingMode: resolveThinkingMode(
+      raw.thinkingMode,
+      availableThinkingModes,
+    ),
+    availableThinkingModes,
     supportsTools: raw.supportsTools !== false,
     supportsStreaming: raw.supportsStreaming !== false,
   })

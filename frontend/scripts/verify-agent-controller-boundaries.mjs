@@ -137,6 +137,7 @@ const sendController = sources.get("use-agent-send-controller.ts");
 const promptActions = sources.get("use-agent-prompt-actions.ts");
 const conversationView = sources.get("copilot-conversation-view.tsx");
 const composer = sources.get("copilot-composer.tsx");
+const modelSelector = sources.get("copilot-model-selector.tsx");
 
 assert.match(panel, /export function CopilotPanel/);
 assert.match(panel, /useAgentConversation\(/);
@@ -151,7 +152,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /agentModelConfigs\.find\(\(config\) => config\.id === selectedModelId\) \?\?\s*null/,
+  /agentModelConfigs\.find\(\(config\) => config\.id === selectedModelConfigId\) \?\?\s*null/,
   "An Agent selection without tool support must resolve to the unconfigured state.",
 );
 assert.doesNotMatch(
@@ -183,9 +184,45 @@ assert.doesNotMatch(
 );
 assert.match(promptActions, /for \(const file of preparedFiles\)/);
 assert.match(promptActions, /deletePendingUploads/);
-assert.match(conversationView, /shouldShowAgentDraftActions\(/);
+assert.doesNotMatch(conversationView, /shouldShowAgentDraftActions\(/);
 assert.match(conversationView, /<AgentAssistantMessageRow/);
+assert.match(panel, /<AgentDraftReviewDock/);
 assert.match(composer, /<CopilotModelSelector/);
 assert.match(composer, /<AgentPromptSubmitButton/);
+assert.match(
+  sendController,
+  /const modelConfigId = selectedModelConfig\?\.id \?\? null[\s\S]*modelConfig:\s*modelConfigId\s*\?\s*\{\s*id:\s*modelConfigId\s*\}\s*:\s*null/,
+  "Agent requests must snapshot only the selected model config id before preparing.",
+);
+assert.match(
+  composer,
+  /const isRequestBusy = requestPhase !== ['"]idle['"]/,
+  "Preparing and responding requests must share the next-message selection boundary.",
+);
+assert.match(
+  composer,
+  /<CopilotModelSelector\s*appliesToNextMessage=\{isRequestBusy\}\s*disabled=\{promptActions\.isSubmittingPrompt\}/,
+  "Model selection must stay available after the current request snapshot is submitted.",
+);
+assert.match(
+  composer,
+  /const attachmentsReady\s*=\s*hasConfiguredModel\s*&&\s*isSessionReady\s*&&\s*!promptActions\.isSubmittingPrompt[\s\S]*<AgentPromptAttachmentButton\s*disabled=\{\s*!attachmentsReady\s*\|\|/,
+  "Attachment staging must stay available after the current request snapshot is submitted.",
+);
+assert.match(
+  modelSelector,
+  /changed && appliesToNextMessage[\s\S]{0,120}toast\.info\(t\.agentModelChangedNextTurn/,
+  "Changing models while a request is busy must explain that the new model applies to the next user turn.",
+);
+assert.match(
+  modelSelector,
+  /selectedModelConfig\s*\?\s*selectedModelConfigTriggerName\s*:\s*t\.agentModelNotConfigured/,
+  "The selector trigger must visibly represent only the selected model.",
+);
+assert.doesNotMatch(
+  modelSelector,
+  /agentModelNextTurnShort|nextTurnPrefix/,
+  "The selector trigger must not replace its model-selection label with next-turn status text.",
+);
 
 console.log("Agent controller/view module boundaries and budgets verified.");

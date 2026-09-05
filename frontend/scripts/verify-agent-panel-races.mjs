@@ -235,6 +235,18 @@ assert(
   ownershipDeclaration,
   "The Agent panel must define a single ownership check for provisional messages.",
 );
+assert(
+  runtimeSource.includes(
+    "export type AgentRequestPhase = 'idle' | 'preparing' | 'responding'",
+  ) &&
+    runtimeSource.includes(
+      "setRequestPhase: (value: AgentRequestPhase) => void",
+    ) &&
+    /export function setAgentRequestPhase\([\s\S]{0,300}runtime\.requestPhase = phase\s*updates\.setRequestPhase\(phase\)/.test(
+      runtimeSource,
+    ),
+  "The Agent request phase must keep its synchronous gate and React state in lockstep.",
+);
 
 const ownershipSource = ownershipDeclaration.getText(sourceFile);
 const compiledOwnership = ts.transpileModule(
@@ -334,11 +346,11 @@ assert(
 );
 assert(
   promptBehavior.shouldClearPromptSubmissionText("captured", "captured"),
-  "An accepted submission may clear the exact text snapshot it sent.",
+  "A submitted prompt may clear the exact text snapshot it sent.",
 );
 assert(
   !promptBehavior.shouldClearPromptSubmissionText("captured", "new text"),
-  "An accepted submission must preserve text typed after the snapshot.",
+  "A submitted prompt must preserve text typed after the snapshot.",
 );
 
 assert(
@@ -422,6 +434,18 @@ assert(
   "Preference preflight ownership must be registered before awaits and rechecked until debounce owns cancellation.",
 );
 assert(
+  /setAgentRequestPhase\(runtime, updates, ['"]preparing['"]\)[\s\S]{0,240}await waitForAgentSendPreflight\(/.test(
+    sendSource,
+  ) &&
+    /runtime\.requestPhase === ['"]preparing['"][\s\S]{0,120}setAgentRequestPhase\(runtime, updates, ['"]idle['"]\)/.test(
+      sendSource,
+    ) &&
+    /onRun:\s*\(run\)[\s\S]{0,500}setAgentRequestPhase\(runtime, updates, ['"]responding['"]\)/.test(
+      runStreamSource,
+    ),
+  "A request must enter preparing before preflight, enter responding only after run acceptance, and release rejected preflight ownership back to idle.",
+);
+assert(
   sendControllerSource.includes("throwOnFailure: true") &&
     runStreamSource.includes("if (throwOnFailure)") &&
     runStreamSource.includes("throw error"),
@@ -436,8 +460,13 @@ assert(
   "A resume-scoped Agent request must never fall back to an undefined revision.",
 );
 assert(
-  promptActionsSource.includes("await sendOperation.accepted"),
-  "The composer must remain populated until the server accepts the run.",
+  /requestSubmitted\s*=\s*sendOperation\.submitted[\s\S]{0,160}if \(!requestSubmitted\)/.test(
+    promptActionsSource,
+  ) &&
+    /void \(async \(\) => \{[\s\S]{0,120}await sendOperation\.accepted/.test(
+      promptActionsSource,
+    ),
+  "The composer must clear after local submission while server acceptance continues in the background.",
 );
 assert(
   promptFormSource.includes("selectActivePromptSubmissionFiles("),
@@ -445,7 +474,7 @@ assert(
 );
 assert(
   promptFormSource.includes("shouldClearPromptSubmissionText("),
-  "Prompt submission must clear only the text snapshot that was accepted.",
+  "Prompt submission must clear only the text snapshot that was submitted.",
 );
 assert(
   /const mountedRef = useRef\(false\)/.test(promptFormSource) &&
@@ -484,10 +513,10 @@ assert(
   "A cancelled run with a durable message_done must keep its visible partial assistant message locally.",
 );
 assert(
-  /finally \{[\s\S]*runtime\.activeRequestAbort === abortController[\s\S]*updates\.setStreamingMessage\(null\)[\s\S]*updates\.setIsResponding\(false\)/.test(
+  /finally \{[\s\S]*runtime\.activeRequestAbort === abortController[\s\S]*updates\.setStreamingMessage\(null\)[\s\S]*setAgentRequestPhase\(runtime, updates, ['"]idle['"]\)/.test(
     runStreamSource,
   ),
-  "Every observed terminal run must clear its owned streaming and responding state.",
+  "Every observed terminal run must clear its owned streaming state and request phase.",
 );
 assert(
   conversationViewSource.includes("AgentSessionLoadError"),
@@ -597,6 +626,18 @@ assert(
     conversationViewSource.includes("renderedMessages.map((message)") &&
     panelSource.includes("key={conversation.sessionResetVersion}"),
   "Hydrated Agent history must render its newest messages first and progressively prepend older rows without trimming controller state.",
+);
+assert(
+  /export type AgentPanelStatus\s*=\s*['"]loading['"]\s*\|\s*['"]ready['"]\s*\|\s*['"]responding['"]\s*\|\s*['"]error['"]/.test(
+    panelTypesSource,
+  ) &&
+    conversationSource.includes(
+      "const isRequestBusy = requestPhase !== 'idle'",
+    ) &&
+    /:\s*isRequestBusy\s*\?\s*['"]responding['"]\s*:\s*['"]ready['"]/.test(
+      conversationSource,
+    ),
+  "Preparing and responding must remain internal phases that both map to the external responding panel status.",
 );
 assert(
   panelTypesSource.includes("export type AgentPanelStatus") &&
@@ -729,6 +770,7 @@ assert(
     onReconcileAgentDraft: (draft) => reconciledDrafts.push(draft),
     optimisticMessageOwner: null,
     previewedEditsKey: null,
+    requestPhase: "idle",
     sessionReady: true,
     sessionReadyPromise: null,
     sessionRevision: "existing-revision",
@@ -742,7 +784,16 @@ assert(
         role: "assistant",
         text: "saved",
         response: {
-          draft: { baseResume: {}, status: "pending" },
+          draft: {
+            baseResume: {},
+            reviewItems: [
+              {
+                id: "review-authoritative",
+                editIds: ["edit-authoritative"],
+                status: "pending",
+              },
+            ],
+          },
           edits: [
             {
               id: "edit-authoritative",
@@ -768,6 +819,21 @@ assert(
           Promise.resolve({ agentTransientModelStatusTexts: [] }),
         locales: ["en"],
       },
+      "@/lib/agent-draft-review": {
+        getAgentDraftSnapshotFromMessages: (messages) => {
+          const sourceMessage = [...messages]
+            .reverse()
+            .find((message) => message.response?.draft);
+          return sourceMessage
+            ? {
+                ...sourceMessage.response.draft,
+                edits: sourceMessage.response.edits ?? [],
+                sourceMessageId: sourceMessage.id,
+                transactionState: sourceMessage.response.transactionState,
+              }
+            : null;
+        },
+      },
       "@/lib/resume": { createId: () => "generated-message" },
     },
   );
@@ -791,6 +857,12 @@ assert(
       "@/lib/api-client": {
         isAbortError: () => false,
       },
+      "./agent-conversation-runtime": {
+        setAgentRequestPhase: (currentRuntime, currentUpdates, phase) => {
+          currentRuntime.requestPhase = phase;
+          currentUpdates.setRequestPhase(phase);
+        },
+      },
       "./copilot-message-model": messageModel,
     },
     {
@@ -807,8 +879,8 @@ assert(
     retryAttempt: 0,
     runtimeRef: { current: runtime },
     updates: {
-      setIsResponding: () => undefined,
       setMessages: (value) => messageWrites.push(value),
+      setRequestPhase: () => undefined,
       setSessionLoadError: (value) => loadErrorWrites.push(value),
       setSessionReady: () => undefined,
       setStreamingMessage: () => undefined,

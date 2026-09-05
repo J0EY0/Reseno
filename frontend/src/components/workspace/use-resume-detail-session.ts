@@ -12,6 +12,7 @@ import type { AppMessages } from "@/i18n";
 import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { createEmptyResume } from "@/lib/resume";
 import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
+import type { AgentDraftDecisionStatus } from "@/types/api";
 import type {
   ResumeData,
   ResumeTemplateId,
@@ -38,9 +39,11 @@ function createCollapsedState(resume: ResumeData, openId?: string) {
 interface ResumeDetailSessionOptions {
   initialResume: ResumeWorkspaceItem | null;
   messages: AppMessages;
-  onResolveAppliedDraft: (
+  onResolveDraftReview: (
     messageId: string,
     resume: ResumeData,
+    reviewItemIds: string[],
+    status: AgentDraftDecisionStatus,
   ) => Promise<AgentDraftDecisionResolution>;
 }
 
@@ -48,7 +51,7 @@ interface ResumeDetailSessionOptions {
 export function useResumeDetailSession({
   initialResume,
   messages,
-  onResolveAppliedDraft,
+  onResolveDraftReview,
 }: ResumeDetailSessionOptions) {
   const emptyResume = useMemo(() => createEmptyResume(), []);
   const [resumeItem, setResumeItem] =
@@ -78,7 +81,7 @@ export function useResumeDetailSession({
   const agent = useResumeAgentDraft({
     messages,
     onApplyResume: applyAgentDraftResume,
-    onResolveAppliedDraft,
+    onResolveDraftReview,
     resume,
     resumeId: resumeItem?.id,
   });
@@ -170,8 +173,26 @@ export function useResumeDetailSession({
     [],
   );
 
-  const effectiveResume = agentDraft?.resume ?? resume;
-  const previewResume = useDeferredValue(effectiveResume);
+  const previewPresentation = useMemo(() => {
+    if (agent.review) {
+      return {
+        ...agent.review.projection,
+        review: agent.review,
+      };
+    }
+    return {
+      diffs: agentDraft?.diffs,
+      review: null,
+      resume: agentDraft?.resume ?? resume,
+    };
+  }, [agent.review, agentDraft?.diffs, agentDraft?.resume, resume]);
+  const deferredPreviewPresentation = useDeferredValue(previewPresentation);
+  // Review selection, projected resume, diff marks, and DOM metadata must switch
+  // atomically. Ordinary editor typing can still use the deferred preview path.
+  const renderedPreviewPresentation =
+    previewPresentation.review || deferredPreviewPresentation.review
+      ? previewPresentation
+      : deferredPreviewPresentation;
   const liveResume = resumeItem
     ? {
         ...resumeItem,
@@ -192,7 +213,9 @@ export function useResumeDetailSession({
     jobBrief,
     liveFingerprint,
     liveResume,
-    previewResume,
+    previewDiffs: renderedPreviewPresentation.diffs,
+    previewResume: renderedPreviewPresentation.resume,
+    previewReview: renderedPreviewPresentation.review,
     resume,
     resumeItem,
     setCollapsedState,

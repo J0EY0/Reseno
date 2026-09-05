@@ -9,9 +9,15 @@ from app.schemas.model_configs import ApiFamily, ProviderKind
 from app.services.model_metadata import (
     ModelMetadata,
     ensure_provider_model_metadata,
+    explicit_thinking_off_capability,
     resolve_model_metadata,
 )
-from app.services.thinking import ThinkingControl
+from app.services.thinking import (
+    ThinkingControl,
+    ThinkingMode,
+    available_thinking_modes,
+    can_project_thinking_off,
+)
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
 DISCOVERY_TIMEOUT_SECONDS = 12
@@ -51,6 +57,10 @@ class DiscoveredModel:
     supports_image: bool
     thinking_control: ThinkingControl
     metadata_source: str
+    # Modes are a capability contract, not a rendering hint. ``off`` is
+    # included only when metadata proves disable support and this provider's
+    # active Adapter implements the corresponding wire protocol.
+    available_thinking_modes: tuple[ThinkingMode, ...] = ("auto",)
     supports_tools: bool = True
     supports_streaming: bool = True
 
@@ -481,6 +491,20 @@ def _normalize_discovered_model(
         provider_context = DEFAULT_CONTEXT_WINDOW_TOKENS
         metadata_source = "fallback"
 
+    thinking_control = _thinking_control(
+        provider_id,
+        model_id,
+        raw,
+        litellm_metadata,
+    )
+    can_disable_thinking = _can_disable_thinking(
+        provider_id=provider_id,
+        model_id=model_id,
+        raw=raw,
+        metadata=litellm_metadata,
+        thinking_control=thinking_control,
+    )
+
     return DiscoveredModel(
         id=model_id,
         label=model_id,
@@ -492,13 +516,9 @@ def _normalize_discovered_model(
             raw,
             litellm_metadata,
         ),
-        thinking_control=_thinking_control(
-            provider_id,
-            model_id,
-            raw,
-            litellm_metadata,
-        ),
+        thinking_control=thinking_control,
         metadata_source=metadata_source,
+        available_thinking_modes=available_thinking_modes(can_disable_thinking),
         supports_tools=_supports_tools(provider_id, model_id, raw, litellm_metadata),
         supports_streaming=_supports_streaming(
             provider_id,
@@ -648,6 +668,41 @@ def _thinking_control(
     # official cloud providers either think by model/default or are projected
     # by their Adapter without a generic explicit toggle.
     return "native_auto" if provider_id == "qwen" else "provider_default"
+
+
+def _can_disable_thinking(
+    *,
+    provider_id: str,
+    model_id: str,
+    raw: dict[str, Any],
+    metadata: ModelMetadata | None,
+    thinking_control: ThinkingControl,
+) -> bool:
+    """Return whether Off is both model-supported and wire-representable.
+
+    ``thinking_control`` must first prove that this is a reasoning-capable
+    model. Current provider metadata then has precedence over cached catalog
+    metadata when it explicitly states whether Off exists. The final provider
+    gate guarantees every advertised mode has an Adapter implementation.
+    """
+
+    provider = get_model_provider(provider_id)
+    if thinking_control == "none" or provider is None:
+        return False
+    if not can_project_thinking_off(
+        provider=provider.id,
+        provider_kind=provider.kind,
+        api_family=provider.api_family or "",
+        base_url=provider.default_base_url,
+        model=model_id,
+    ):
+        return False
+
+    provider_capability = explicit_thinking_off_capability(raw)
+    if provider_capability is not None:
+        return provider_capability
+
+    return metadata is not None and metadata.can_disable_thinking is True
 
 
 def _nested_bool(value: object, *path: str) -> bool | None:

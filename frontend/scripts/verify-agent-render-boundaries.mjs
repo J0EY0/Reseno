@@ -94,19 +94,26 @@ assert(
   "The optional response module must retain the existing rich rendering plugins.",
 );
 assert(
-  /lazy\(\(\)\s*=>[\s\S]*?import\("@\/components\/ai-elements\/message-response"\)/.test(
+  /const richMessageResponsePromise\s*=\s*import\([\s\S]*?"@\/components\/ai-elements\/message-response"[\s\S]*?lazy\(\(\)\s*=>\s*richMessageResponsePromise\)/.test(
     responseContent,
-  ),
-  "Rich Agent responses must use a statically analyzable dynamic import.",
+  ) && responseContent.includes('isStreaming ? "invisible" : undefined'),
+  "The Agent panel must preload its optional rich renderer without exposing a plain-text streaming fallback.",
 );
 assert(
-  /isPlainAgentText\(text\)[\s\S]{0,180}AgentPlainResponse/.test(
-    assistantResponse,
-  ) &&
+  appStyles.includes('@import "streamdown/styles.css";') &&
+    appStyles.includes(
+      "animation-delay: min(var(--sd-delay, 0ms), 240ms);",
+    ),
+  "Streamdown animation styles must load with a bounded reveal delay.",
+);
+assert(
+  assistantResponse.includes("isStreaming") &&
+    /isStreaming\s*\|\|\s*!isPlainAgentText\(text\)/.test(assistantResponse) &&
+    /AgentPlainResponse/.test(assistantResponse) &&
     /AgentRichResponse[\s\S]{0,120}text=\{text\}/.test(
       assistantResponse,
     ),
-  "Plain responses must stay lightweight while Markdown uses the optional renderer.",
+  "Settled plain responses must stay lightweight while active streaming text uses the optional animated renderer.",
 );
 assert(
   assistantResponse.includes(
@@ -172,15 +179,12 @@ assert(
 );
 assert(
   /export function AgentChangeSummary/.test(changeSummary) &&
-    changeSummary.includes("getAgentEditDiffFields") &&
     changeSummary.includes("getAgentQualityWarnings") &&
-    changeSummary.includes("draftDiffs?.map") &&
-    changeSummary.includes("visibleDiffs ?? responseDiffs") &&
-    presentation.includes("draftDiffs={draftDiffs}") &&
-    conversationView.includes(
-      "draft.state?.sourceMessageId === message.id",
-    ),
-  "Change-summary decoding and quality warnings must stay behind the summary seam.",
+    changeSummary.includes('data-slot="agent-draft-resolution-receipt"') &&
+    changeSummary.includes('item.status === "pending"') &&
+    !changeSummary.includes("onApplyAgentDraft") &&
+    !conversationView.includes("shouldShowAgentDraftActions"),
+  "Message history must keep only resolved receipts and compact quality warnings behind its summary seam.",
 );
 assert(
   /export function AgentUserMessageRow/.test(userMessageRow) &&

@@ -3,45 +3,85 @@ import {
   isApiErrorCode,
   requestApi,
 } from "@/lib/api-client";
+import { projectAgentDraftReview } from "@/lib/agent-draft-review";
 import type {
+  AgentChatMessage,
+  AgentCommittedDraft,
+  AgentDraftDecisionStatus,
   AgentDraftDecisionRequest,
   AgentDraftDecisionResponse,
-  AgentDraftStatus,
   AgentRunResponse,
   AgentSessionReplaceRequest,
   AgentSessionResponse,
   ResumeDetailResponse,
 } from "@/types/api";
+import type { ResumeData } from "@/types/resume";
 
 type AgentDraftDecision =
-  | Omit<
-      Extract<AgentDraftDecisionRequest, { status: "applied" }>,
-      "expectedVersionId" | "revision"
-    >
-  | Omit<
-      Extract<AgentDraftDecisionRequest, { status: "discarded" }>,
-      "revision"
-    >;
+  | {
+      currentResume: ResumeData;
+      currentVersionId: string | null;
+      rebaseOnLatest: boolean;
+      reviewItemIds: string[];
+      status: "applied";
+    }
+  | {
+      reviewItemIds: string[];
+      status: "discarded";
+    };
 
 export interface AgentDraftDecisionResolution {
   committed: boolean;
+  draft: AgentCommittedDraft | null;
   resume: ResumeDetailResponse | null;
+  resolvedAsRequested: boolean;
   session: AgentSessionResponse;
-  status: AgentDraftStatus | null;
 }
 
 function agentDraftDecisionRoute(resumeId: string, messageId: string) {
   return `/api/agent/resumes/${encodeURIComponent(resumeId)}/session/messages/${encodeURIComponent(messageId)}/draft`;
 }
 
-function getAgentDraftStatus(
+function getAgentDraftResponse(
   session: AgentSessionResponse,
   messageId: string,
-): AgentDraftStatus | null {
-  return (
-    session.messages.find((message) => message.id === messageId)?.response
-      ?.draft?.status ?? null
+): AgentChatMessage | null {
+  return session.messages.find((message) => message.id === messageId)?.response ?? null;
+}
+
+function getAgentCommittedDraft(
+  session: AgentSessionResponse,
+  messageId: string,
+): AgentCommittedDraft | null {
+  return getAgentDraftResponse(session, messageId)?.draft ?? null;
+}
+
+function getRequestedReviewItemState(
+  draft: AgentCommittedDraft | null,
+  reviewItemIds: string[],
+  decisionStatus: AgentDraftDecisionStatus,
+) {
+  if (!draft) {
+    return "unavailable" as const;
+  }
+
+  const requestedIds = new Set(reviewItemIds);
+  const requestedItems = draft.reviewItems.filter((item) =>
+    requestedIds.has(item.id),
   );
+  if (
+    requestedIds.size !== reviewItemIds.length ||
+    requestedItems.length !== reviewItemIds.length
+  ) {
+    return "unavailable" as const;
+  }
+  if (requestedItems.every((item) => item.status === "pending")) {
+    return "pending" as const;
+  }
+  if (requestedItems.every((item) => item.status === decisionStatus)) {
+    return "resolved" as const;
+  }
+  return "changed" as const;
 }
 
 export function loadActiveAgentRun(
@@ -108,18 +148,25 @@ function loadFormalResume(resumeId: string) {
 function createAgentDraftDecisionRequest(
   decision: AgentDraftDecision,
   revision: string,
-  formalResume: ResumeDetailResponse | null,
+  formalResume: ResumeDetailResponse,
+  candidateResume?: ResumeData,
 ): AgentDraftDecisionRequest {
   if (decision.status === "discarded") {
-    return { ...decision, revision };
+    return {
+      revision,
+      reviewItemIds: decision.reviewItemIds,
+      status: "discarded",
+    };
   }
-  if (!formalResume) {
-    throw new Error("The formal resume version is unavailable.");
+  if (!candidateResume) {
+    throw new Error("The Agent draft candidate is unavailable.");
   }
   return {
-    ...decision,
     expectedVersionId: formalResume.versionId,
     revision,
+    reviewItemIds: decision.reviewItemIds,
+    resume: candidateResume,
+    status: "applied",
   };
 }
 
@@ -128,33 +175,61 @@ export async function resolveAgentDraftDecision(
   messageId: string,
   decision: AgentDraftDecision,
 ): Promise<AgentDraftDecisionResolution> {
-  const [initialSession, formalResume] = await Promise.all([
+  let [session, formalResume] = await Promise.all([
     loadAgentSession(resumeId),
-    decision.status === "applied"
-      ? loadFormalResume(resumeId)
-      : Promise.resolve(null),
+    loadFormalResume(resumeId),
   ]);
-  let session = initialSession;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const currentStatus = getAgentDraftStatus(session, messageId);
-    if (currentStatus !== "pending") {
+    const response = getAgentDraftResponse(session, messageId);
+    const currentDraft = response?.draft ?? null;
+    const requestedState = getRequestedReviewItemState(
+      currentDraft,
+      decision.reviewItemIds,
+      decision.status,
+    );
+    if (requestedState !== "pending") {
       return {
         committed: false,
-        resume:
-          currentStatus === "applied"
-            ? await loadFormalResume(resumeId)
-            : null,
+        draft: currentDraft,
+        resume: formalResume,
+        resolvedAsRequested: requestedState === "resolved",
         session,
-        status: currentStatus,
       };
     }
 
     try {
+      let candidateResume: ResumeData | undefined;
+      if (decision.status === "applied") {
+        if (!response?.edits || !currentDraft) {
+          throw new Error("The committed Agent draft is unavailable.");
+        }
+        const formalVersionChanged =
+          decision.currentVersionId !== formalResume.versionId;
+        if (formalVersionChanged && !decision.rebaseOnLatest) {
+          throw new Error(
+            "The formal resume changed while local edits were still pending.",
+          );
+        }
+        const projection = projectAgentDraftReview({
+          baseResume: currentDraft.baseResume,
+          currentResume: decision.rebaseOnLatest
+            ? formalResume.resume.resume
+            : decision.currentResume,
+          edits: response.edits,
+          reviewItemIds: decision.reviewItemIds,
+          reviewItems: currentDraft.reviewItems,
+        });
+        if (projection.errors.length > 0) {
+          throw new Error("The selected Agent draft no longer applies cleanly.");
+        }
+        candidateResume = projection.resume;
+      }
       const request = createAgentDraftDecisionRequest(
         decision,
         session.revision,
         formalResume,
+        candidateResume,
       );
       const updated = await updateAgentDraftDecision(
         resumeId,
@@ -162,10 +237,11 @@ export async function resolveAgentDraftDecision(
         request,
       );
       return {
-        committed: decision.status === "applied",
-        resume: updated.resume,
+        committed: true,
+        draft: getAgentCommittedDraft(updated.session, messageId),
+        resume: updated.resume ?? formalResume,
+        resolvedAsRequested: true,
         session: updated.session,
-        status: getAgentDraftStatus(updated.session, messageId),
       };
     } catch (error) {
       const isRevisionConflict = isApiErrorCode(
@@ -176,24 +252,34 @@ export async function resolveAgentDraftDecision(
         error,
         "AGENT_DRAFT_DECISION_CONFLICT",
       );
-      if (!isRevisionConflict && !isDecisionConflict) {
+      const isResumeConflict = isApiErrorCode(
+        error,
+        "RESUME_VERSION_CONFLICT",
+      );
+      if (!isRevisionConflict && !isDecisionConflict && !isResumeConflict) {
         throw error;
       }
 
-      session = await loadAgentSession(resumeId);
-      const authoritativeStatus = getAgentDraftStatus(session, messageId);
-      if (authoritativeStatus !== "pending") {
+      [session, formalResume] = await Promise.all([
+        loadAgentSession(resumeId),
+        loadFormalResume(resumeId),
+      ]);
+      const authoritativeDraft = getAgentCommittedDraft(session, messageId);
+      const authoritativeState = getRequestedReviewItemState(
+        authoritativeDraft,
+        decision.reviewItemIds,
+        decision.status,
+      );
+      if (authoritativeState !== "pending") {
         return {
           committed: false,
-          resume:
-            authoritativeStatus === "applied"
-              ? await loadFormalResume(resumeId)
-              : null,
+          draft: authoritativeDraft,
+          resume: formalResume,
+          resolvedAsRequested: authoritativeState === "resolved",
           session,
-          status: authoritativeStatus,
         };
       }
-      if (!isRevisionConflict || attempt > 0) {
+      if (isDecisionConflict || attempt > 0) {
         throw error;
       }
     }
@@ -201,8 +287,9 @@ export async function resolveAgentDraftDecision(
 
   return {
     committed: false,
-    resume: null,
+    draft: getAgentCommittedDraft(session, messageId),
+    resume: formalResume,
+    resolvedAsRequested: false,
     session,
-    status: getAgentDraftStatus(session, messageId),
   };
 }

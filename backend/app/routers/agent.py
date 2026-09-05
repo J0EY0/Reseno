@@ -59,6 +59,7 @@ from app.services.agent_sessions import (
     replace_agent_session_messages,
     update_agent_draft_decision,
 )
+from app.services.llm import LlmThinkingModeUnsupportedError
 from app.services.user_preferences import load_agent_settings
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -267,7 +268,7 @@ def patch_agent_resume_draft(
     message_id: str,
     request: AgentDraftDecisionRequest,
 ) -> ApiResponse[AgentDraftDecisionResponse] | JSONResponse:
-    """Durably apply or discard one committed Agent draft."""
+    """Durably resolve selected review items from one committed draft."""
 
     if not is_valid_resume_id(resume_id) or not message_id.strip():
         raise HTTPException(
@@ -287,6 +288,7 @@ def patch_agent_resume_draft(
                     conn,
                     resume_id,
                     message_id=message_id,
+                    review_item_ids=request.review_item_ids,
                     resume=request.resume,
                     revision=request.revision,
                     expected_version_id=request.expected_version_id,
@@ -296,6 +298,7 @@ def patch_agent_resume_draft(
                     conn,
                     resume_id,
                     message_id=message_id,
+                    review_item_ids=request.review_item_ids,
                     status=request.status,
                     revision=request.revision,
                 )
@@ -389,6 +392,11 @@ async def post_agent_chat(
         return _agent_transport_error(
             status.HTTP_400_BAD_REQUEST,
             "AGENT_ATTACHMENT_INVALID",
+        )
+    except LlmThinkingModeUnsupportedError:
+        return _agent_transport_error(
+            status.HTTP_400_BAD_REQUEST,
+            "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED",
         )
     except AgentSessionDataError:
         return _agent_session_data_error()
