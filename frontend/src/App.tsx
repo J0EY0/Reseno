@@ -24,9 +24,9 @@ import {
   loadLocalePreferenceApi,
   saveLocalePreferenceApi,
 } from "@/lib/preference-api";
-import { createWorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import { useAuthGate } from "@/hooks/use-auth-gate";
 import { Spinner } from "@/components/ui/spinner";
+import { WorkspaceEntrySkeleton } from "@/components/workspace/workspace-entry-skeleton";
 import {
   loadModelsWorkspacePage,
   loadResumeDetailWorkspacePage,
@@ -36,6 +36,7 @@ import {
   loadTemplateGalleryWorkspacePage,
   loadTrashWorkspacePage,
   loadWorkspaceLateralLayout,
+  loadWorkspacePreferencesProvider,
 } from "@/components/workspace/workspace-route-loaders";
 import { clearDynamicImportReloadGuard } from "@/lib/dynamic-import-recovery";
 import { createRouteLoader } from "@/lib/route-loader";
@@ -52,6 +53,10 @@ const loadSetupPage = createRouteLoader(
   () => import("@/components/auth/setup-page"),
   "SetupPage",
 );
+const loadOAuthCallbackPage = createRouteLoader(
+  () => import("@/components/auth/oauth-callback-page"),
+  "OAuthCallbackPage",
+);
 const loadPdfExportRenderer = createRouteLoader(
   () => import("@/components/pdf-export-renderer"),
   "PdfExportRenderer",
@@ -59,8 +64,10 @@ const loadPdfExportRenderer = createRouteLoader(
 const AuthStatusErrorPage = lazy(loadAuthStatusErrorPage);
 const LoginPage = lazy(loadLoginPage);
 const SetupPage = lazy(loadSetupPage);
+const OAuthCallbackPage = lazy(loadOAuthCallbackPage);
 const ResumeGalleryWorkspacePage = lazy(loadResumeGalleryWorkspacePage);
 const WorkspaceLateralLayout = lazy(loadWorkspaceLateralLayout);
+const WorkspacePreferencesProvider = lazy(loadWorkspacePreferencesProvider);
 const ResumeDetailWorkspacePage = lazy(loadResumeDetailWorkspacePage);
 const ModelsWorkspacePage = lazy(loadModelsWorkspacePage);
 const SettingsWorkspacePage = lazy(loadSettingsWorkspacePage);
@@ -68,6 +75,17 @@ const TemplateGalleryWorkspacePage = lazy(loadTemplateGalleryWorkspacePage);
 const TemplateDetailWorkspacePage = lazy(loadTemplateDetailWorkspacePage);
 const TrashWorkspacePage = lazy(loadTrashWorkspacePage);
 const PdfExportRenderer = lazy(loadPdfExportRenderer);
+
+async function prepareAuthDestination(
+  destination: "resume" | "settings",
+  options: { signal: AbortSignal },
+) {
+  const { prepareWorkspaceEntry } = await import(
+    "@/components/workspace/workspace-route-preparation"
+  );
+  options.signal.throwIfAborted();
+  return prepareWorkspaceEntry(destination, options);
+}
 
 const appRouteFallback = (
   <div className="grid h-svh place-items-center">
@@ -83,12 +101,56 @@ function DynamicImportRecoveryReset() {
   return null;
 }
 
-function AppRouteSuspense({ children }: { children: ReactNode }) {
+function AppRouteSuspense({
+  children,
+  fallback = appRouteFallback,
+}: {
+  children: ReactNode;
+  fallback?: ReactNode;
+}) {
   return (
-    <Suspense fallback={appRouteFallback}>
+    <Suspense fallback={fallback}>
       {children}
       <DynamicImportRecoveryReset />
     </Suspense>
+  );
+}
+
+function OAuthCallbackRoute({
+  isLoading,
+  locale,
+  messages,
+  onComplete,
+}: {
+  isLoading: boolean;
+  locale: Locale;
+  messages: AppMessages;
+  onComplete: (
+    destination: "resume" | "settings",
+    signal: AbortSignal,
+  ) => Promise<void>;
+}) {
+  const { hash } = useLocation();
+  const intent = new URLSearchParams(hash.slice(1)).get("intent");
+  const pending = (
+    <WorkspaceEntrySkeleton
+      destination={intent === "bind" ? "settings" : "resume"}
+      label={messages.workspaceLoading}
+    />
+  );
+
+  if (isLoading) {
+    return pending;
+  }
+
+  return (
+    <AppRouteSuspense fallback={pending}>
+      <DocumentMetadata locale={locale} messages={messages} />
+      <OAuthCallbackPage
+        t={messages}
+        onComplete={onComplete}
+      />
+    </AppRouteSuspense>
   );
 }
 
@@ -128,30 +190,66 @@ function DocumentMetadata({
   return null;
 }
 
+function AuthEntryRoutes({
+  phase,
+  locale,
+  messages,
+  loginPage,
+  setupPage,
+  pdfPage,
+}: {
+  phase: "setup" | "login";
+  locale: Locale;
+  messages: AppMessages;
+  loginPage: ReactNode;
+  setupPage: ReactNode;
+  pdfPage: ReactNode;
+}) {
+  useEffect(() => {
+    if (phase !== "login") {
+      return;
+    }
+
+    void loadOAuthCallbackPage().catch((error: unknown) => {
+      console.error("Failed to preload the OAuth callback route.", error);
+    });
+  }, [phase]);
+
+  return (
+    <>
+      <DocumentMetadata locale={locale} messages={messages} />
+      <Routes>
+        {phase === "setup" ? (
+          <Route path="/setup" element={setupPage} />
+        ) : (
+          <>
+            <Route path="/pdf-export" element={pdfPage} />
+            <Route path="/login" element={loginPage} />
+          </>
+        )}
+        <Route path="*" element={<Navigate to={`/${phase}`} replace />} />
+      </Routes>
+    </>
+  );
+}
+
 function App() {
   const { pathname } = useLocation();
   const [initialLocale] = useState(() =>
     (loadAuthSession() && loadLocalePreferenceApi()) || getSystemLocale(),
   );
-  const [preferencesPersistence] = useState(() =>
-    createWorkspacePreferencesPersistence(),
-  );
   const hasEnteredAuthenticatedAppRef = useRef(false);
-  const {
-    canPersistLocale,
-    changeLocale,
-    isMessagesReady,
-    locale,
-    messages,
-  } = useLocaleMessages(initialLocale);
-  const { authGate, login, logout, retry, setup } = useAuthGate({
+  const { canPersistLocale, changeLocale, isMessagesReady, locale, messages } =
+    useLocaleMessages(initialLocale);
+  const { acceptSession, authGate, login, logout, retry, setup } = useAuthGate({
     loginFallbackError: messages.loginInvalidCredentials,
     onAuthenticated: () => {
-      changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
+      return changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
     },
     onLoggedOut: () => {
       changeLocale(getSystemLocale());
     },
+    prepareDestination: prepareAuthDestination,
     requestFallbackError: messages.apiMessages.REQUEST_FAILED,
   });
 
@@ -172,7 +270,7 @@ function App() {
   }, [authGate.phase]);
 
   useEffect(() => {
-    if (isMessagesReady) {
+    if (isMessagesReady && authGate.phase !== "app") {
       return;
     }
 
@@ -181,7 +279,9 @@ function App() {
     }
 
     const routeRequest =
-      pathname === "/pdf-export"
+      pathname === "/auth/callback"
+        ? loadOAuthCallbackPage
+        : pathname === "/pdf-export"
         ? loadPdfExportRenderer
         : authGate.phase === "setup"
           ? loadSetupPage
@@ -203,9 +303,14 @@ function App() {
                       ? loadResumeDetailWorkspacePage
                       : loadResumeGalleryWorkspacePage;
 
-    // Start the route request in the same commit as the locale request so a
-    // saved non-default language never creates a locale-to-route waterfall.
-    void routeRequest().catch((error: unknown) => {
+    const preferencesRequest =
+      authGate.phase === "app" &&
+      pathname !== "/auth/callback" && pathname !== "/pdf-export"
+        ? loadWorkspacePreferencesProvider()
+        : undefined;
+
+    // Load the destination alongside its shared layout and language catalog.
+    void Promise.all([routeRequest(), preferencesRequest]).catch((error: unknown) => {
       console.error("Failed to preload the current application route.", error);
     });
   }, [authGate.phase, isMessagesReady, pathname]);
@@ -231,83 +336,42 @@ function App() {
 
   const renderResumeGalleryWorkspace = () => (
     <AppRouteSuspense>
-      <ResumeGalleryWorkspacePage
-        locale={locale}
-        messages={messages}
-        persistence={preferencesPersistence}
-      />
+      <ResumeGalleryWorkspacePage />
     </AppRouteSuspense>
   );
   const renderWorkspaceLateralLayout = () => (
     <AppRouteSuspense>
-      <WorkspaceLateralLayout
-        locale={locale}
-        messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
-        persistence={preferencesPersistence}
-      />
+      <WorkspaceLateralLayout onLogout={logout} />
     </AppRouteSuspense>
   );
   const renderResumeDetailWorkspace = () => (
     <AppRouteSuspense>
-      <ResumeDetailWorkspacePage
-        locale={locale}
-        messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
-        persistence={preferencesPersistence}
-      />
+      <ResumeDetailWorkspacePage onLogout={logout} />
     </AppRouteSuspense>
   );
   const renderModelsWorkspace = () => (
     <AppRouteSuspense>
-      <ModelsWorkspacePage
-        locale={locale}
-        messages={messages}
-        onLocaleChange={changeLocale}
-        persistence={preferencesPersistence}
-      />
+      <ModelsWorkspacePage />
     </AppRouteSuspense>
   );
   const renderSettingsWorkspace = () => (
     <AppRouteSuspense>
-      <SettingsWorkspacePage
-        locale={locale}
-        messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
-        persistence={preferencesPersistence}
-      />
+      <SettingsWorkspacePage onLogout={logout} />
     </AppRouteSuspense>
   );
   const renderTemplateGalleryWorkspace = () => (
     <AppRouteSuspense>
-      <TemplateGalleryWorkspacePage
-        locale={locale}
-        messages={messages}
-        persistence={preferencesPersistence}
-      />
+      <TemplateGalleryWorkspacePage />
     </AppRouteSuspense>
   );
   const renderTemplateDetailWorkspace = () => (
     <AppRouteSuspense>
-      <TemplateDetailWorkspacePage
-        locale={locale}
-        messages={messages}
-        onLocaleChange={changeLocale}
-        onLogout={logout}
-        persistence={preferencesPersistence}
-      />
+      <TemplateDetailWorkspacePage onLogout={logout} />
     </AppRouteSuspense>
   );
   const renderTrashWorkspace = () => (
     <AppRouteSuspense>
-      <TrashWorkspacePage
-        locale={locale}
-        messages={messages}
-        persistence={preferencesPersistence}
-      />
+      <TrashWorkspacePage />
     </AppRouteSuspense>
   );
   const renderPdfExport = () => (
@@ -315,6 +379,17 @@ function App() {
       <PdfExportRenderer />
     </AppRouteSuspense>
   );
+
+  if (pathname === "/auth/callback") {
+    return (
+      <OAuthCallbackRoute
+        isLoading={!isMessagesReady || authGate.phase === "loading"}
+        locale={locale}
+        messages={messages}
+        onComplete={acceptSession}
+      />
+    );
+  }
 
   if (!isMessagesReady || authGate.phase === "loading") {
     return appRouteFallback;
@@ -331,28 +406,16 @@ function App() {
     );
   }
 
-  if (authGate.phase === "setup") {
+  if (authGate.phase === "setup" || authGate.phase === "login") {
     return (
-      <>
-        <DocumentMetadata locale={locale} messages={messages} />
-        <Routes>
-          <Route path="/setup" element={renderSetupPage()} />
-          <Route path="*" element={<Navigate to="/setup" replace />} />
-        </Routes>
-      </>
-    );
-  }
-
-  if (authGate.phase === "login") {
-    return (
-      <>
-        <DocumentMetadata locale={locale} messages={messages} />
-        <Routes>
-          <Route path="/pdf-export" element={renderPdfExport()} />
-          <Route path="/login" element={renderLoginPage()} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-      </>
+      <AuthEntryRoutes
+        phase={authGate.phase}
+        locale={locale}
+        messages={messages}
+        loginPage={renderLoginPage()}
+        setupPage={renderSetupPage()}
+        pdfPage={renderPdfExport()}
+      />
     );
   }
 
@@ -361,15 +424,27 @@ function App() {
       <DocumentMetadata locale={locale} messages={messages} />
       <Routes>
         <Route path="/pdf-export" element={renderPdfExport()} />
-        <Route element={renderWorkspaceLateralLayout()}>
-          <Route path="/resume" element={renderResumeGalleryWorkspace()} />
-          <Route path="/models" element={renderModelsWorkspace()} />
-          <Route path="/settings" element={renderSettingsWorkspace()} />
-          <Route path="/templates" element={renderTemplateGalleryWorkspace()} />
-          <Route path="/trash" element={renderTrashWorkspace()} />
+        <Route
+          element={
+            <AppRouteSuspense>
+              <WorkspacePreferencesProvider
+                locale={locale}
+                messages={messages}
+                onLocaleChange={changeLocale}
+              />
+            </AppRouteSuspense>
+          }
+        >
+          <Route element={renderWorkspaceLateralLayout()}>
+            <Route path="/resume" element={renderResumeGalleryWorkspace()} />
+            <Route path="/models" element={renderModelsWorkspace()} />
+            <Route path="/settings" element={renderSettingsWorkspace()} />
+            <Route path="/templates" element={renderTemplateGalleryWorkspace()} />
+            <Route path="/trash" element={renderTrashWorkspace()} />
+          </Route>
+          <Route path="/resume/:id" element={renderResumeDetailWorkspace()} />
+          <Route path="/template/:id" element={renderTemplateDetailWorkspace()} />
         </Route>
-        <Route path="/resume/:id" element={renderResumeDetailWorkspace()} />
-        <Route path="/template/:id" element={renderTemplateDetailWorkspace()} />
         <Route path="/login" element={<Navigate to="/resume" replace />} />
         <Route path="/setup" element={<Navigate to="/resume" replace />} />
         <Route path="*" element={<Navigate to="/resume" replace />} />

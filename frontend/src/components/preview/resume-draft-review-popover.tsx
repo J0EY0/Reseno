@@ -24,8 +24,11 @@ import { ResumeDraftReviewComparison } from "./resume-draft-review-comparison";
 import {
   getResumeDraftReviewPaths,
   getResumeDraftReviewTargetElement,
-  isVisibleResumeDraftReviewTarget,
 } from "./resume-draft-review-dom";
+import {
+  useResumeDraftReviewDecoration,
+  type ResumeDraftReviewTarget as ReviewTarget,
+} from "./use-resume-draft-review-decoration";
 
 export interface ResumeDraftReviewPresentation {
   exitingReviewItemIds?: readonly string[];
@@ -34,18 +37,8 @@ export interface ResumeDraftReviewPresentation {
   selectedReviewItemId?: string;
 }
 
-interface ReviewTarget {
-  diff: ResumeDraftDiff;
-  element: HTMLElement;
-  reviewItemId?: string;
-}
-
 const EMPTY_REVIEW_ITEM_MAP: Readonly<Record<string, string>> = {};
 const EMPTY_REVIEW_ITEM_IDS: readonly string[] = [];
-
-function prefersReducedMotion() {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
 
 export function useResumeDraftReviewInteraction({
   diffs,
@@ -118,7 +111,6 @@ export function useResumeDraftReviewInteraction({
     [currentHoveredDiff, currentHoveredReviewItemId, hoveredTarget],
   );
   const pinnedTargetRef = useRef(effectivePinnedTarget);
-  const lastRevealedItemIdRef = useRef<string | null>(null);
   const activeTarget = effectivePinnedTarget ?? effectiveHoveredTarget;
   const virtualAnchorRef = useMemo(
     () => (activeTarget ? { current: activeTarget.element } : null),
@@ -191,149 +183,17 @@ export function useResumeDraftReviewInteraction({
     pinnedTarget,
   ]);
 
-  useEffect(() => {
-    const root = previewRef.current;
-    if (!root) {
-      return;
-    }
-    const exitingIds = new Set(exitingReviewItemIds);
-
-    const decorate = () => {
-      for (const element of root.querySelectorAll<HTMLElement>(
-        "[data-resume-diff-path]",
-      )) {
-        if (element.closest("[inert]")) {
-          continue;
-        }
-        const target = resolveTarget(element);
-        if (!target) {
-          continue;
-        }
-
-        element.classList.add("resume-diff-review-target");
-        element.dataset.resumeReviewDecorated = "true";
-        if (target.reviewItemId) {
-          element.dataset.resumeReviewItemId = target.reviewItemId;
-        }
-        if (target.reviewItemId === selectedReviewItemId) {
-          element.dataset.resumeReviewSelected = "true";
-        } else {
-          delete element.dataset.resumeReviewSelected;
-        }
-        if (target.reviewItemId && exitingIds.has(target.reviewItemId)) {
-          element.dataset.resumeReviewState = "exiting";
-        } else {
-          delete element.dataset.resumeReviewState;
-        }
-
-        const ancestorTarget = element.parentElement?.closest<HTMLElement>(
-          "[data-resume-diff-path]",
-        );
-        if (!ancestorTarget && isVisibleResumeDraftReviewTarget(element)) {
-          element.tabIndex = 0;
-          element.setAttribute("role", "button");
-          element.setAttribute(
-            "aria-label",
-            t.agentDiffInspect.replace("{label}", target.diff.label),
-          );
-          element.setAttribute("aria-controls", reviewPopoverId);
-          element.setAttribute("aria-expanded", "false");
-          element.setAttribute("aria-haspopup", "dialog");
-          element.dataset.resumeReviewTabStop = "true";
-        }
-      }
-
-      const selectedItemId = selectedReviewItemId;
-      if (!selectedItemId) {
-        lastRevealedItemIdRef.current = null;
-      } else if (lastRevealedItemIdRef.current !== selectedItemId) {
-        const selectedElement = [
-          ...root.querySelectorAll<HTMLElement>(
-            '[data-resume-review-item-id]',
-          ),
-        ].find(
-          (element) =>
-            element.dataset.resumeReviewItemId === selectedItemId &&
-            isVisibleResumeDraftReviewTarget(element),
-        );
-        if (selectedElement) {
-          selectedElement.scrollIntoView({
-            behavior: prefersReducedMotion() ? "auto" : "smooth",
-            block: "center",
-            inline: "nearest",
-          });
-          lastRevealedItemIdRef.current = selectedItemId;
-        }
-      }
-
-      const pinned = pinnedTargetRef.current;
-      if (pinned && !pinned.element.isConnected) {
-        const replacement = [
-          ...root.querySelectorAll<HTMLElement>("[data-resume-diff-path]"),
-        ].find(
-          (element) =>
-            getResumeDraftReviewPaths(element).includes(pinned.diff.path) &&
-            isVisibleResumeDraftReviewTarget(element),
-        );
-        const replacementTarget = resolveTarget(replacement ?? null);
-        if (replacementTarget) {
-          setPinnedTarget(replacementTarget);
-        }
-      }
-    };
-
-    decorate();
-    const observer = new MutationObserver(decorate);
-    observer.observe(root, { childList: true, subtree: true });
-
-    return () => {
-      observer.disconnect();
-      for (const element of root.querySelectorAll<HTMLElement>(
-        '[data-resume-review-decorated="true"]',
-      )) {
-        element.classList.remove("resume-diff-review-target");
-        delete element.dataset.resumeReviewDecorated;
-        delete element.dataset.resumeReviewItemId;
-        delete element.dataset.resumeReviewSelected;
-        delete element.dataset.resumeReviewState;
-        if (element.dataset.resumeReviewTabStop === "true") {
-          element.removeAttribute("aria-label");
-          element.removeAttribute("aria-controls");
-          element.removeAttribute("aria-describedby");
-          element.removeAttribute("aria-expanded");
-          element.removeAttribute("aria-haspopup");
-          element.removeAttribute("role");
-          element.removeAttribute("tabindex");
-          delete element.dataset.resumeReviewTabStop;
-        }
-      }
-    };
-  }, [
+  useResumeDraftReviewDecoration({
+    activeElement: activeTarget?.element ?? null,
+    exitingReviewItemIds,
+    inspectLabel: t.agentDiffInspect,
+    onPinnedTargetReplace: setPinnedTarget,
+    pinnedTargetRef,
     previewRef,
     resolveTarget,
-    exitingReviewItemIds,
     reviewPopoverId,
     selectedReviewItemId,
-    t.agentDiffInspect,
-  ]);
-
-  useEffect(() => {
-    const root = previewRef.current;
-    if (!root) {
-      return;
-    }
-    for (const element of root.querySelectorAll<HTMLElement>(
-      '[data-resume-review-tab-stop="true"]',
-    )) {
-      const expanded = activeTarget?.element === element;
-      element.setAttribute("aria-expanded", String(expanded));
-      if (expanded) {
-        element.setAttribute("aria-describedby", reviewPopoverId);
-      } else {
-        element.removeAttribute("aria-describedby");
-      }
-    }
-  }, [activeTarget?.element, previewRef, reviewPopoverId]);
+  });
 
   const onPointerOver = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {

@@ -8,7 +8,7 @@ const [
   themeSource,
   persistenceSource,
   providerSource,
-  resumeDetailPreferencesSource,
+  resumeDetailWorkspaceSource,
   templateDetailWorkspaceSource,
 ] = await Promise.all([
   readFile(new URL("index.html", projectRoot), "utf8"),
@@ -18,12 +18,12 @@ const [
     "utf8",
   ),
   readFile(
-    new URL("src/components/workspace/workspace-theme.tsx", projectRoot),
+    new URL("src/components/workspace/workspace-preferences.tsx", projectRoot),
     "utf8",
   ),
   readFile(
     new URL(
-      "src/components/workspace/use-resume-detail-preferences.ts",
+      "src/components/workspace/use-resume-detail-workspace.ts",
       projectRoot,
     ),
     "utf8",
@@ -129,15 +129,15 @@ assert(
 );
 assert(
   providerSource.includes("loadWorkspaceThemePreference"),
-  "WorkspaceThemeProvider must initialize from the same theme cache as HTML.",
+  "The shared WorkspacePreferencesProvider must initialize from the same theme cache as HTML.",
 );
 for (const detailSource of [
-  resumeDetailPreferencesSource,
+  resumeDetailWorkspaceSource,
   templateDetailWorkspaceSource,
 ]) {
   assert(
-    detailSource.includes("loadWorkspaceThemePreference"),
-    "Direct detail routes must initialize from the same first-paint theme cache.",
+    !/loadWorkspaceThemePreference|applyWorkspaceTheme|prefers-color-scheme/.test(detailSource),
+    "Detail routes must consume the shared theme without a second bootstrap or system-theme listener.",
   );
 }
 

@@ -201,7 +201,7 @@ def _create_render_context(
             "expiresAt": token_expires_at,
         }
         context.add_init_script(
-            "window.sessionStorage.setItem("
+            "window.localStorage.setItem("
             "'resumate-auth-session', "
             f"{json.dumps(json.dumps(auth_session))}"
             ");",

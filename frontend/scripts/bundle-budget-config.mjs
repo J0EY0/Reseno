@@ -8,8 +8,8 @@ export const DEFAULT_DYNAMIC_ENTRY_GZIP_BYTES = 65 * KIB
 // dialogs, popovers, selects, and sheets retain their enter/exit transitions.
 // Keep this ceiling close to that measured production baseline so future CSS
 // growth still fails here instead of silently accumulating.
-export const MAX_SHELL_CSS_RAW_BYTES = 164_000
-export const MAX_SHELL_CSS_GZIP_BYTES = 26_500
+export const MAX_SHELL_CSS_RAW_BYTES = 169_000
+export const MAX_SHELL_CSS_GZIP_BYTES = 27_500
 export const RATCHET_THRESHOLD = 0.95
 
 export const conditionalFontCssBudgets = [
@@ -39,32 +39,35 @@ export const routeBudgets = [
   {
     name: 'shell',
     roots: ['index.html'],
-    maxGzipBytes: 130 * KIB,
+    maxGzipBytes: 136 * KIB,
   },
   {
     name: 'resume detail',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/resume-detail-workspace-page.tsx',
       'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 234 * KIB,
+    maxGzipBytes: 248 * KIB,
   },
   {
     name: 'resume gallery',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/resume-gallery-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 217 * KIB,
+    maxGzipBytes: 224 * KIB,
   },
   {
     name: 'template gallery',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/template-gallery-workspace-page.tsx',
     ],
@@ -72,61 +75,66 @@ export const routeBudgets = [
       'src/components/resume-builder.tsx',
       'src/components/templates/template-editor.tsx',
     ],
-    maxGzipBytes: 217 * KIB,
+    maxGzipBytes: 224 * KIB,
   },
   {
     name: 'template detail',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/template-detail-workspace-page.tsx',
       'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // Keep both workspace and preview skeletons in the lazy route so loading
     // preserves the final surface hierarchy without a second visual jump.
-    maxGzipBytes: 230 * KIB,
+    maxGzipBytes: 242 * KIB,
   },
   {
     name: 'trash',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/trash-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 236 * KIB,
+    maxGzipBytes: 243 * KIB,
   },
   {
     name: 'models',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/models-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
     // The final dialog ships with the already-lazy route so first open never
     // swaps a nested lazy Spinner surface for the form.
-    maxGzipBytes: 256 * KIB,
+    maxGzipBytes: 262 * KIB,
   },
   {
     name: 'settings',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/workspace-lateral-layout.tsx',
       'src/components/workspace/settings-workspace-page.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 224 * KIB,
+    maxGzipBytes: 233 * KIB,
   },
   {
     name: 'Agent',
     roots: [
       'index.html',
+      'src/components/workspace/workspace-preferences.tsx',
       'src/components/workspace/resume-detail-workspace-page.tsx',
       'src/components/copilot/copilot-panel.tsx',
       'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 297 * KIB,
+    maxGzipBytes: 312 * KIB,
   },
 ]

@@ -275,7 +275,7 @@ def _authenticated_context(
     session_json = json.dumps(session)
     context.add_init_script(
         script=(
-            "window.sessionStorage.setItem("
+            "window.localStorage.setItem("
             "'resumate-auth-session', "
             f"{json.dumps(session_json)});"
         )
@@ -342,7 +342,9 @@ def _install_workspace_frame_recorder(page: Page) -> None:
               const resumeGallery = visibleElement(
                 'input[name="resume-search"]',
               );
+              const login = visibleElement('#username');
               const appFallback = visibleElement(
+                '#root .h-svh > svg[role="status"][aria-label="Loading"], ' +
                 '#root .min-h-svh > svg[role="status"][aria-label="Loading"]',
               );
               const routeSkeleton = visibleElement(
@@ -385,7 +387,14 @@ def _install_workspace_frame_recorder(page: Page) -> None:
                 time: now,
                 path: window.location.pathname,
                 hasResumeGallery: Boolean(resumeGallery),
+                hasLogin: Boolean(login),
+                hasAuthCard: Boolean(visibleElement(
+                  '#root > main > [data-slot="card"]'
+                )),
                 hasAppFallback: Boolean(appFallback),
+                hasEntrySkeleton: Boolean(visibleElement(
+                  '[data-slot="workspace-entry-skeleton"]'
+                )),
                 hasRouteSkeleton: Boolean(routeSkeleton),
                 hasSidebar: Boolean(sidebar),
                 hasResumeDetail: Boolean(resumeDetail),
@@ -478,7 +487,11 @@ def _assert_visible_once_mounted(
         ),
         (
             "/settings",
-            [AUTH_SETUP_STATUS_REQUEST, ("GET", "/api/workspace/pages/settings")],
+            [
+                AUTH_SETUP_STATUS_REQUEST,
+                ("GET", "/api/workspace/pages/settings"),
+                ("GET", "/api/auth/oauth/identities"),
+            ],
         ),
     ],
 )
@@ -1300,8 +1313,45 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
         locale="zh-CN",
         viewport={"width": 1672, "height": 870},
     )
+    context.add_init_script(script="localStorage.setItem('resumate-theme', 'dark');")
     page = context.new_page()
     held_decision_routes: list[Route] = []
+
+    def serve_dark_resume_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["theme"] = "dark"
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route(
+        "**/api/workspace/pages/resume-editor",
+        serve_dark_resume_workspace,
+    )
+    page.add_init_script(
+        script="""
+        window.__agentReviewInitialEnterCounts = {};
+        document.addEventListener('animationstart', event => {
+          if (
+            !(event.target instanceof HTMLElement) ||
+            event.animationName !== 'resume-diff-review-enter' ||
+            event.target.parentElement?.closest(
+              '[data-resume-review-item-id]',
+            )
+          ) {
+            return;
+          }
+          const reviewItemId = event.target.dataset.resumeReviewItemId;
+          if (reviewItemId) {
+            window.__agentReviewInitialEnterCounts[reviewItemId] =
+              (window.__agentReviewInitialEnterCounts[reviewItemId] ?? 0) + 1;
+          }
+        }, true);
+        """
+    )
 
     try:
         message_id = "assistant-two-item-review"
@@ -1334,14 +1384,18 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
         ).first
         summary_target.wait_for(state="visible")
         headline_target.wait_for(state="visible")
+        page.wait_for_timeout(250)
+        initial_enter_counts = page.evaluate(
+            "() => window.__agentReviewInitialEnterCounts"
+        )
+        assert initial_enter_counts[summary_review_id] == 1
+        assert initial_enter_counts[headline_review_id] == 1
         assert (
             summary_target.evaluate(
                 "element => getComputedStyle(element).animationName"
             )
-            == "resume-diff-review-enter"
+            == "none"
         )
-
-        page.wait_for_timeout(250)
         repeated_enter_animations = summary_target.evaluate(
             """
             async target => {
@@ -1360,7 +1414,193 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
             """
         )
         assert repeated_enter_animations == 0
+        review_visual_signature = """
+            element => {
+              const style = getComputedStyle(element);
+              return {
+                backgroundColor: style.backgroundColor,
+                boxShadow: style.boxShadow,
+                outlineColor: style.outlineColor,
+                outlineStyle: style.outlineStyle,
+                outlineWidth: style.outlineWidth,
+              };
+            }
+        """
+        all_mode_visual_style = summary_target.evaluate(review_visual_signature)
 
+        def install_review_transition_probe(
+            retained_review_item_id: str,
+            *watched_review_item_ids: str,
+        ) -> None:
+            page.evaluate(
+                """
+                ({ retainedReviewItemId, watchedReviewItemIds }) => {
+                  const isTopLevelTarget = element =>
+                    !element.parentElement?.closest(
+                      '[data-resume-review-item-id]',
+                    );
+                  const findTopLevelTarget = reviewItemId =>
+                    [...document.querySelectorAll(
+                      `[data-resume-review-item-id="${CSS.escape(reviewItemId)}"]`,
+                    )].find(isTopLevelTarget) ?? null;
+                  const readHighlight = element => {
+                    const style = getComputedStyle(element);
+                    return {
+                      backgroundColor: style.backgroundColor,
+                      boxShadow: style.boxShadow,
+                    };
+                  };
+                  const retainedTarget = findTopLevelTarget(
+                    retainedReviewItemId,
+                  );
+                  if (!retainedTarget) {
+                    throw new Error('Retained review target was not found.');
+                  }
+                  const baseline = readHighlight(retainedTarget);
+                  const viewport = retainedTarget.closest(
+                    '[data-slot="document-canvas-viewport"]',
+                  );
+                  const initialScrollTop = viewport?.scrollTop ?? 0;
+                  const startedAt = performance.now();
+                  const frames = [];
+                  const scrollPositions = [];
+                  const motionFrames = Object.fromEntries(
+                    watchedReviewItemIds.map(reviewItemId => [reviewItemId, []]),
+                  );
+                  const animationStarts = Object.fromEntries(
+                    watchedReviewItemIds.map(reviewItemId => [
+                      reviewItemId,
+                      { enter: 0, exit: 0 },
+                    ]),
+                  );
+                  const onAnimationStart = event => {
+                    if (
+                      !(event.target instanceof HTMLElement) ||
+                      !isTopLevelTarget(event.target)
+                    ) {
+                      return;
+                    }
+                    const counts = animationStarts[
+                      event.target.dataset.resumeReviewItemId
+                    ];
+                    if (!counts) {
+                      return;
+                    }
+                    if (event.animationName === 'resume-diff-review-enter') {
+                      counts.enter += 1;
+                    }
+                    if (event.animationName === 'resume-diff-review-exit') {
+                      counts.exit += 1;
+                    }
+                  };
+                  document.addEventListener(
+                    'animationstart',
+                    onAnimationStart,
+                    true,
+                  );
+                  let frameId = 0;
+                  const sample = () => {
+                    scrollPositions.push(viewport?.scrollTop ?? 0);
+                    frames.push(
+                      retainedTarget.isConnected
+                        ? readHighlight(retainedTarget)
+                        : null,
+                    );
+                    const elapsed = performance.now() - startedAt;
+                    for (const reviewItemId of watchedReviewItemIds) {
+                      const target = findTopLevelTarget(reviewItemId);
+                      if (!target) {
+                        motionFrames[reviewItemId].push(null);
+                        continue;
+                      }
+                      const style = getComputedStyle(target);
+                      const targetRect = target.getBoundingClientRect();
+                      const viewportRect = viewport?.getBoundingClientRect();
+                      motionFrames[reviewItemId].push({
+                        elapsed,
+                        opacity: Number.parseFloat(style.opacity),
+                        transform: style.transform,
+                        withinViewport:
+                          !viewportRect ||
+                          (targetRect.top >= viewportRect.top &&
+                            targetRect.bottom <= viewportRect.bottom),
+                      });
+                    }
+                    frameId = requestAnimationFrame(sample);
+                  };
+                  frameId = requestAnimationFrame(sample);
+                  window.__agentReviewTransitionProbe = {
+                    finish() {
+                      cancelAnimationFrame(frameId);
+                      document.removeEventListener(
+                        'animationstart',
+                        onAnimationStart,
+                        true,
+                      );
+                      return {
+                        animationStarts,
+                        motion: Object.fromEntries(
+                          Object.entries(motionFrames).map(
+                            ([reviewItemId, samples]) => {
+                              const visibleSamples = samples.filter(Boolean);
+                              return [
+                                reviewItemId,
+                                {
+                                  distinctOpacities: new Set(
+                                    visibleSamples.map(sample =>
+                                      sample.opacity.toFixed(2),
+                                    ),
+                                  ).size,
+                                  firstSeenMs:
+                                    visibleSamples[0]?.elapsed ?? null,
+                                  firstSeenWithinViewport:
+                                    visibleSamples[0]?.withinViewport ?? false,
+                                  minimumOpacity:
+                                    visibleSamples.length > 0
+                                      ? Math.min(
+                                          ...visibleSamples.map(
+                                            sample => sample.opacity,
+                                          ),
+                                        )
+                                      : null,
+                                },
+                              ];
+                            },
+                          ),
+                        ),
+                        sameNode:
+                          findTopLevelTarget(retainedReviewItemId) ===
+                          retainedTarget,
+                        sampledFrames: frames.length,
+                        scrollDistance: Math.max(
+                          ...scrollPositions.map(position =>
+                            Math.abs(position - initialScrollTop),
+                          ),
+                        ),
+                        stableHighlight: frames.every(
+                          frame =>
+                            frame?.backgroundColor === baseline.backgroundColor &&
+                            frame.boxShadow === baseline.boxShadow,
+                        ),
+                      };
+                    },
+                  };
+                }
+                """,
+                {
+                    "retainedReviewItemId": retained_review_item_id,
+                    "watchedReviewItemIds": list(watched_review_item_ids),
+                },
+            )
+
+        def finish_review_transition_probe() -> dict[str, Any]:
+            return page.evaluate("() => window.__agentReviewTransitionProbe.finish()")
+
+        install_review_transition_probe(
+            summary_review_id,
+            summary_review_id,
+            headline_review_id,
+        )
         page.get_by_role("button", name="逐项查看", exact=True).click()
         expect(headline_target).to_have_attribute(
             "data-resume-review-state",
@@ -1375,18 +1615,194 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
         expect(page.get_by_text("第 1/2 项", exact=True)).to_be_visible()
         assert page.get_by_text(pending_summary, exact=True).count() > 0
         assert page.get_by_text(pending_headline, exact=True).count() == 0
+        page.wait_for_timeout(250)
+        all_to_single_probe = finish_review_transition_probe()
+        assert all_to_single_probe["sameNode"] is True
+        assert all_to_single_probe["sampledFrames"] > 0
+        assert all_to_single_probe["stableHighlight"] is True
+        assert all_to_single_probe["animationStarts"][summary_review_id] == {
+            "enter": 0,
+            "exit": 0,
+        }
+        assert all_to_single_probe["animationStarts"][headline_review_id] == {
+            "enter": 0,
+            "exit": 1,
+        }
 
         summary_target = page.locator(
             f'[data-resume-review-item-id="{summary_review_id}"]'
         ).first
+        assert summary_target.evaluate(review_visual_signature) == all_mode_visual_style
         summary_target.hover()
         expect(page.get_by_text("修改前", exact=True)).to_be_visible()
         expect(page.get_by_text("修改后", exact=True)).to_be_visible()
+        comparison_colors = page.locator('[data-slot="popover-content"]').evaluate(
+            """
+            (popover) => {
+              const rows = ['修改前', '修改后'].map(label => {
+                const term = [...popover.querySelectorAll('dt')].find(
+                  element => element.textContent?.trim() === label,
+                );
+                const value = term?.nextElementSibling;
+                if (!(term instanceof HTMLElement) ||
+                    !(value instanceof HTMLElement)) {
+                  throw new Error(`Missing comparison row: ${label}`);
+                }
+                const valueStyle = getComputedStyle(value);
+                return {
+                  backgroundColor: valueStyle.backgroundColor,
+                  borderColor: valueStyle.borderColor,
+                  borderStyle: valueStyle.borderTopStyle,
+                  borderWidth: valueStyle.borderTopWidth,
+                  label,
+                  textColor: valueStyle.color,
+                };
+              });
+              return {
+                isDark: document.documentElement.classList.contains('dark'),
+                rows,
+              };
+            }
+            """
+        )
+        assert comparison_colors["isDark"] is True
+        assert (
+            comparison_colors["rows"][0]["textColor"]
+            == comparison_colors["rows"][1]["textColor"]
+        )
+        assert (
+            comparison_colors["rows"][0]["backgroundColor"]
+            == comparison_colors["rows"][1]["backgroundColor"]
+        )
+        assert (
+            comparison_colors["rows"][0]["borderColor"]
+            != comparison_colors["rows"][1]["borderColor"]
+        )
+        assert all(
+            row["borderStyle"] == "solid" and row["borderWidth"] != "0px"
+            for row in comparison_colors["rows"]
+        ), comparison_colors
+        assert (
+            comparison_colors["rows"][0]["borderWidth"]
+            == comparison_colors["rows"][1]["borderWidth"]
+        )
+        assert summary_target.evaluate(review_visual_signature) == all_mode_visual_style
 
+        review_all_button = page.get_by_role("button", name="全部", exact=True)
+        install_review_transition_probe(
+            summary_review_id,
+            summary_review_id,
+            headline_review_id,
+        )
+        review_all_button.click()
+        expect(page.get_by_text("2 项待确认", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+        assert page.get_by_text(pending_headline, exact=True).count() > 0
+        page.wait_for_timeout(350)
+        single_to_all_probe = finish_review_transition_probe()
+        assert single_to_all_probe["sameNode"] is True
+        assert single_to_all_probe["sampledFrames"] > 0
+        assert single_to_all_probe["stableHighlight"] is True
+        assert single_to_all_probe["animationStarts"][summary_review_id] == {
+            "enter": 0,
+            "exit": 0,
+        }
+        assert single_to_all_probe["animationStarts"][headline_review_id] == {
+            "enter": 1,
+            "exit": 0,
+        }
+        assert single_to_all_probe["motion"][headline_review_id]["minimumOpacity"] < 0.5
+        assert (
+            single_to_all_probe["motion"][headline_review_id]["distinctOpacities"] >= 3
+        )
+
+        page.get_by_role("button", name="逐项查看", exact=True).click()
+        expect(page.get_by_text("第 1/2 项", exact=True)).to_be_visible()
+        assert page.get_by_text(pending_summary, exact=True).count() > 0
+        assert page.get_by_text(pending_headline, exact=True).count() == 0
+        page.wait_for_timeout(250)
+        review_all_button = page.get_by_role("button", name="全部", exact=True)
+        page.locator('[data-slot="document-canvas-viewport"]').evaluate(
+            "viewport => { viewport.scrollTop = viewport.scrollHeight; }"
+        )
+        install_review_transition_probe(
+            summary_review_id,
+            summary_review_id,
+            headline_review_id,
+        )
+        review_all_button.evaluate(
+            """
+            button => {
+              const baselineOpacity = Number.parseFloat(
+                getComputedStyle(button).opacity,
+              );
+              let minimumOpacity = baselineOpacity;
+              let opacityTransitionStarts = 0;
+              let sawDisabled = button.disabled;
+              const onTransitionStart = event => {
+                if (event.target === button && event.propertyName === 'opacity') {
+                  opacityTransitionStarts += 1;
+                }
+              };
+              button.addEventListener('transitionstart', onTransitionStart);
+              let frameId = 0;
+              const sample = () => {
+                minimumOpacity = Math.min(
+                  minimumOpacity,
+                  Number.parseFloat(getComputedStyle(button).opacity),
+                );
+                sawDisabled ||= button.disabled;
+                frameId = requestAnimationFrame(sample);
+              };
+              frameId = requestAnimationFrame(sample);
+              window.__agentReviewAllButtonProbe = {
+                finish(currentButton) {
+                  cancelAnimationFrame(frameId);
+                  button.removeEventListener('transitionstart', onTransitionStart);
+                  return {
+                    baselineOpacity,
+                    minimumOpacity,
+                    opacityTransitionStarts,
+                    sameButton: currentButton === button,
+                    sawDisabled,
+                  };
+                },
+              };
+            }
+            """
+        )
         page.get_by_role("button", name="下一项修改", exact=True).click()
         expect(page.get_by_text("第 2/2 项", exact=True)).to_be_visible()
         assert page.get_by_text(pending_headline, exact=True).count() > 0
         assert page.get_by_text(pending_summary, exact=True).count() == 0
+        page.wait_for_timeout(350)
+        review_all_button_probe = review_all_button.evaluate(
+            """
+            button => window.__agentReviewAllButtonProbe.finish(button)
+            """
+        )
+        assert review_all_button_probe["sameButton"] is True
+        assert review_all_button_probe["sawDisabled"] is False
+        assert review_all_button_probe["baselineOpacity"] == pytest.approx(1)
+        assert review_all_button_probe["minimumOpacity"] == pytest.approx(1)
+        assert review_all_button_probe["opacityTransitionStarts"] == 0
+        single_item_probe = finish_review_transition_probe()
+        assert single_item_probe["animationStarts"][summary_review_id] == {
+            "enter": 0,
+            "exit": 0,
+        }
+        assert single_item_probe["animationStarts"][headline_review_id] == {
+            "enter": 1,
+            "exit": 0,
+        }
+        assert single_item_probe["motion"][headline_review_id]["firstSeenMs"] < 120
+        assert single_item_probe["motion"][headline_review_id]["minimumOpacity"] < 0.5
+        assert single_item_probe["motion"][headline_review_id]["distinctOpacities"] >= 3
+        assert (
+            single_item_probe["motion"][headline_review_id]["firstSeenWithinViewport"]
+            is True
+        )
+        assert single_item_probe["scrollDistance"] > 2
 
         def hold_decision(route: Route) -> None:
             held_decision_routes.append(route)
@@ -2155,23 +2571,7 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
         expect(trigger).to_have_attribute("aria-expanded", "false")
         page.wait_for_timeout(320)
         expect(trigger).to_be_visible()
-        indicator = trigger.locator('[data-slot="agent-status-indicator"]')
-        indicator_state = indicator.evaluate(
-            """
-            element => {
-              const rect = element.getBoundingClientRect();
-              const style = getComputedStyle(element);
-              return {
-                height: rect.height,
-                opacity: Number.parseFloat(style.opacity),
-                width: rect.width,
-              };
-            }
-            """
-        )
-        assert indicator_state["height"] > 0, indicator_state
-        assert indicator_state["width"] > 0, indicator_state
-        assert indicator_state["opacity"] > 0.35, indicator_state
+        expect(trigger.locator('[data-slot="agent-status-indicator"]')).to_have_count(0)
         expect(trigger).to_have_attribute("aria-label", "展开 AI 助手")
         live_status = page.locator(".resume-workspace").get_by_role("status")
         expect(live_status).to_have_text("正在生成建议…")
@@ -2212,7 +2612,6 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
             )
         held_event_routes.clear()
         expect(trigger).to_have_attribute("data-agent-status", "ready")
-        expect(indicator).to_have_css("opacity", "0")
         assert live_status.count() == 0
     finally:
         for route in held_event_routes:
@@ -4238,6 +4637,218 @@ def test_resume_agent_uses_canvas_toggle_and_compact_actions_menu(
         context.close()
 
 
+def test_resume_agent_toggle_keeps_dark_surface_opaque_during_panel_motion(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    context.add_init_script(script="localStorage.setItem('resumate-theme', 'dark');")
+    page = context.new_page()
+
+    def serve_dark_resume_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["theme"] = "dark"
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route(
+        "**/api/workspace/pages/resume-editor",
+        serve_dark_resume_workspace,
+    )
+
+    try:
+        page.goto(
+            f"{frontend_url}/resume/{resume_id}",
+            wait_until="networkidle",
+        )
+        assert page.locator("html").evaluate(
+            """
+            element => ({
+              colorScheme: element.style.colorScheme,
+              dark: element.classList.contains('dark'),
+            })
+            """
+        ) == {"colorScheme": "dark", "dark": True}
+
+        workspace = page.locator(".resume-workspace")
+        trigger = workspace.locator('[data-slot="agent-panel-toggle"]')
+        controls = workspace.locator('[data-slot="document-canvas-controls"]')
+        trigger.wait_for(state="visible")
+        controls.wait_for(state="visible")
+
+        samples = page.evaluate(
+            """
+            async ([trigger, controls]) => {
+              const readColor = (element, property) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1;
+                canvas.height = 1;
+                const context = canvas.getContext('2d', {
+                  willReadFrequently: true,
+                });
+                context.clearRect(0, 0, 1, 1);
+                context.fillStyle = getComputedStyle(element)[property];
+                context.fillRect(0, 0, 1, 1);
+                const [red, green, blue, alpha] = context
+                  .getImageData(0, 0, 1, 1)
+                  .data;
+                return {
+                  red: red / 255,
+                  green: green / 255,
+                  blue: blue / 255,
+                  alpha: alpha / 255,
+                };
+              };
+              const composite = (foreground, background) => ({
+                red:
+                  foreground.red * foreground.alpha +
+                  background.red * (1 - foreground.alpha),
+                green:
+                  foreground.green * foreground.alpha +
+                  background.green * (1 - foreground.alpha),
+                blue:
+                  foreground.blue * foreground.alpha +
+                  background.blue * (1 - foreground.alpha),
+                alpha: 1,
+              });
+              const luminance = color => {
+                const linear = channel =>
+                  channel <= 0.04045
+                    ? channel / 12.92
+                    : ((channel + 0.055) / 1.055) ** 2.4;
+                return (
+                  0.2126 * linear(color.red) +
+                  0.7152 * linear(color.green) +
+                  0.0722 * linear(color.blue)
+                );
+              };
+              const contrast = (first, second) => {
+                const firstLuminance = luminance(first);
+                const secondLuminance = luminance(second);
+                return (
+                  (Math.max(firstLuminance, secondLuminance) + 0.05) /
+                  (Math.min(firstLuminance, secondLuminance) + 0.05)
+                );
+              };
+              const white = {
+                red: 1,
+                green: 1,
+                blue: 1,
+                alpha: 1,
+              };
+              const readSurface = () => {
+                const workspace = trigger.closest('.resume-workspace');
+                const background = readColor(trigger, 'backgroundColor');
+                const effectiveBackground = composite(background, white);
+                const foreground = readColor(
+                  trigger.querySelector('svg'),
+                  'color',
+                );
+                const effectiveForeground = composite(
+                  foreground,
+                  effectiveBackground,
+                );
+                return {
+                  controlsAlpha: readColor(
+                    controls,
+                    'backgroundColor',
+                  ).alpha,
+                  toggleAlpha: background.alpha,
+                  toggleBackground: getComputedStyle(trigger).backgroundColor,
+                  contrastOnWhite: contrast(
+                    effectiveForeground,
+                    effectiveBackground,
+                  ),
+                  expanded: trigger.getAttribute('aria-expanded'),
+                  panelColumnWidth: workspace
+                    ? Number.parseFloat(
+                        getComputedStyle(workspace)
+                          .gridTemplateColumns
+                          .split(/\\s+/)[2],
+                      )
+                    : null,
+                };
+              };
+              const frames = [];
+              const startedAt = performance.now();
+              const sample = now => {
+                frames.push({
+                  elapsed: now - startedAt,
+                  ...readSurface(),
+                });
+              };
+
+              window.__readAgentToggleSurface = readSurface;
+              sample(startedAt);
+              trigger.click();
+              await new Promise(resolve => {
+                const tick = now => {
+                  sample(now);
+                  if (now - startedAt >= 320) {
+                    resolve();
+                    return;
+                  }
+                  requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+              });
+              return frames;
+            }
+            """,
+            [trigger.element_handle(), controls.element_handle()],
+        )
+
+        assert len(samples) >= 5, samples
+        assert samples[0]["expanded"] == "false", samples
+        assert samples[-1]["expanded"] == "true", samples
+        assert (
+            len(
+                {
+                    round(sample["panelColumnWidth"])
+                    for sample in samples
+                    if sample["expanded"] == "true"
+                    and sample["panelColumnWidth"] is not None
+                    and 1 < sample["panelColumnWidth"] < 359
+                }
+            )
+            >= 3
+        ), samples
+        assert all(sample["controlsAlpha"] >= 0.9 for sample in samples), samples
+        assert all(
+            sample["toggleAlpha"] >= sample["controlsAlpha"] - 0.05
+            for sample in samples
+        ), samples
+        assert all(sample["contrastOnWhite"] >= 3 for sample in samples), samples
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+
+        trigger.hover()
+        page.wait_for_timeout(200)
+        hover_surface = page.evaluate(
+            """
+            () => {
+              const result = window.__readAgentToggleSurface();
+              delete window.__readAgentToggleSurface;
+              return result;
+            }
+            """
+        )
+        assert hover_surface["toggleAlpha"] >= hover_surface["controlsAlpha"] - 0.05, (
+            hover_surface
+        )
+        assert hover_surface["contrastOnWhite"] >= 3, hover_surface
+    finally:
+        context.close()
+
+
 def test_builtin_templates_render_optional_avatars_without_layout_regressions(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -4551,7 +5162,9 @@ def test_format_popover_focuses_template_without_opening_defaults_tooltip(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
 
     try:
@@ -4580,7 +5193,9 @@ def test_format_reset_restores_current_template_defaults_and_persists(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     resume_id: str | None = None
 
@@ -5049,7 +5664,9 @@ def test_workspace_load_error_can_retry_same_route(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1280, "height": 800}
+    )
     page = context.new_page()
     request_count = 0
 
@@ -5095,7 +5712,9 @@ def test_resume_navigation_stays_on_gallery_when_target_preparation_fails(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1280, "height": 800}
+    )
     page = context.new_page()
 
     try:
@@ -5122,7 +5741,9 @@ def test_template_navigation_stays_on_gallery_when_target_preparation_fails(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1280, "height": 800}
+    )
     page = context.new_page()
 
     try:
@@ -5554,6 +6175,383 @@ def test_template_gallery_default_actions_do_not_animate_during_theme_changes(
         for key in ("x", "y", "width", "height"):
             values = [frame[key] for frame in result["frames"]]
             assert max(values) - min(values) <= 1, (key, result)
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize("initial_theme", ["light", "dark"])
+def test_resume_agent_composer_actions_do_not_animate_during_theme_changes(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    initial_theme: str,
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    model_config_id = "llm-agent-theme-transition"
+    model_nickname = "Agent theme transition"
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        color_scheme="light",
+        viewport={"width": 1440, "height": 900},
+    )
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context.add_init_script(
+        script=(
+            "window.localStorage.setItem('resumate-auth-session', "
+            f"{json.dumps(json.dumps(session))});"
+        )
+    )
+    context.add_init_script(
+        script=f"localStorage.setItem('resumate-theme', {json.dumps(initial_theme)});"
+    )
+    page = context.new_page()
+
+    def fulfill_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["theme"] = initial_theme
+        payload["data"]["modelConfigs"] = [
+            {
+                "id": model_config_id,
+                "provider": "deepseek",
+                "nickname": model_nickname,
+                "model": "deepseek-v4-pro",
+                "supportsTools": True,
+            }
+        ]
+        payload["data"]["agentSettings"]["defaultModelConfigId"] = model_config_id
+        route.fulfill(
+            response=response,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route("**/api/workspace/pages/resume-editor", fulfill_workspace)
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        agent_toggle = page.locator(
+            '.resume-workspace [data-slot="agent-panel-toggle"]'
+        )
+        live_body = page.locator(
+            '#resume-detail-agent-panel [data-slot="agent-panel-live-body"]'
+        )
+        composer = live_body.locator('[data-slot="agent-composer"]')
+        theme_toggle = page.get_by_role(
+            "button",
+            name="切换日间 / 夜间模式",
+            exact=True,
+        )
+        expect(agent_toggle).to_be_visible()
+        agent_toggle.click()
+        expect(live_body).to_have_attribute("aria-hidden", "false")
+        expect(composer).to_be_visible()
+        attachment_button = composer.get_by_role(
+            "button",
+            name="添加附件",
+            exact=True,
+        )
+        model_button = composer.get_by_role(
+            "button",
+            name=model_nickname,
+            exact=True,
+        )
+        expect(attachment_button).to_be_visible()
+        expect(model_button).to_be_visible()
+        expect(theme_toggle).to_be_visible()
+
+        result = page.evaluate(
+            """
+            async ([attachmentButton, modelButton, toggle]) => {
+              const buttons = [attachmentButton, modelButton];
+              const initialDark = document.documentElement.classList.contains('dark');
+              const frames = [];
+              const startedAt = performance.now();
+              toggle.click();
+              await new Promise(resolve => {
+                const sample = now => {
+                  const themeColor = getComputedStyle(document.body).color;
+                  frames.push({
+                    dark: document.documentElement.classList.contains('dark'),
+                    themeColor,
+                    buttons: buttons.map(button => ({
+                      color: getComputedStyle(button).color,
+                      connected: button.isConnected,
+                      transitions: button.getAnimations().flatMap(animation =>
+                        animation instanceof CSSTransition
+                          ? [animation.transitionProperty]
+                          : []
+                      ),
+                    })),
+                  });
+                  if (now - startedAt >= 320) {
+                    resolve();
+                    return;
+                  }
+                  requestAnimationFrame(sample);
+                };
+                requestAnimationFrame(sample);
+              });
+              return {
+                buttonCount: buttons.length,
+                declaredTransitions: buttons.map(
+                  button => getComputedStyle(button).transitionProperty
+                ),
+                finalDark: document.documentElement.classList.contains('dark'),
+                frames,
+                initialDark,
+              };
+            }
+            """,
+            [
+                attachment_button.element_handle(),
+                model_button.element_handle(),
+                theme_toggle.element_handle(),
+            ],
+        )
+
+        assert result["finalDark"] is not result["initialDark"], result
+        assert result["buttonCount"] == 2, result
+        assert len(result["frames"]) >= 5, result
+        assert all(
+            frame["dark"] == result["finalDark"] for frame in result["frames"]
+        ), result
+        assert all(
+            button["connected"]
+            for frame in result["frames"]
+            for button in frame["buttons"]
+        ), result
+        assert all(
+            button["color"] == frame["themeColor"]
+            for frame in result["frames"]
+            for button in frame["buttons"]
+        ), result
+        assert not any(
+            button["transitions"]
+            for frame in result["frames"]
+            for button in frame["buttons"]
+        ), result
+        assert all(
+            transition != "none" for transition in result["declaredTransitions"]
+        ), result
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_workspace_theme_changes_do_not_animate_visible_palette_properties(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        color_scheme="light",
+        viewport={"width": 1440, "height": 900},
+    )
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context.add_init_script(
+        script=(
+            "window.localStorage.setItem('resumate-auth-session', "
+            f"{json.dumps(json.dumps(session))});"
+        )
+    )
+    page = context.new_page()
+    routes = [
+        "/resume",
+        "/templates",
+        "/models",
+        "/trash",
+        f"/resume/{resume_id}",
+        "/template/minimal",
+    ]
+
+    try:
+        failures: dict[str, list[dict[str, str]]] = {}
+        for route_path in routes:
+            page.goto(f"{frontend_url}{route_path}", wait_until="networkidle")
+            theme_toggle = page.get_by_role(
+                "button",
+                name="切换日间 / 夜间模式",
+                exact=True,
+            )
+            assert theme_toggle.count() == 1, route_path
+            expect(theme_toggle).to_be_visible()
+            page.evaluate(
+                """
+                () => new Promise(resolve => {
+                  requestAnimationFrame(() => requestAnimationFrame(resolve));
+                })
+                """
+            )
+
+            transitions = page.evaluate(
+                """
+                async toggle => {
+                  const paletteProperties = new Set([
+                    'background-color',
+                    'border-block-end-color',
+                    'border-block-start-color',
+                    'border-bottom-color',
+                    'border-inline-end-color',
+                    'border-inline-start-color',
+                    'border-left-color',
+                    'border-right-color',
+                    'border-top-color',
+                    'box-shadow',
+                    'caret-color',
+                    'color',
+                    'fill',
+                    'outline-color',
+                    'stroke',
+                    'text-decoration-color',
+                  ]);
+                  const events = [];
+                  const seen = new Set();
+                  const describe = element => {
+                    const label =
+                      element.getAttribute('aria-label') ||
+                      element.getAttribute('data-slot') ||
+                      element.textContent?.trim().replace(/\\s+/g, ' ').slice(0, 80) ||
+                      element.tagName.toLowerCase();
+                    return `${element.tagName.toLowerCase()}:${label}`;
+                  };
+                  const onTransitionRun = event => {
+                    if (
+                      !(event.target instanceof HTMLElement) ||
+                      !paletteProperties.has(event.propertyName)
+                    ) {
+                      return;
+                    }
+                    const rect = event.target.getBoundingClientRect();
+                    const style = getComputedStyle(event.target);
+                    if (
+                      rect.width === 0 ||
+                      rect.height === 0 ||
+                      style.display === 'none' ||
+                      style.visibility === 'hidden'
+                    ) {
+                      return;
+                    }
+                    const key = `${describe(event.target)}:${event.propertyName}`;
+                    if (!seen.has(key)) {
+                      seen.add(key);
+                      events.push({
+                        element: describe(event.target),
+                        property: event.propertyName,
+                      });
+                    }
+                  };
+                  document.addEventListener('transitionrun', onTransitionRun, true);
+                  toggle.click();
+                  await new Promise(resolve => setTimeout(resolve, 320));
+                  document.removeEventListener(
+                    'transitionrun',
+                    onTransitionRun,
+                    true,
+                  );
+                  return events;
+                }
+                """,
+                theme_toggle.element_handle(),
+            )
+            if transitions:
+                failures[route_path] = transitions
+
+        assert failures == {}
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_settings_theme_options_switch_palette_without_lagging_controls(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        color_scheme="light",
+        viewport={"width": 1440, "height": 900},
+    )
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context.add_init_script(
+        script=(
+            "window.localStorage.setItem('resumate-auth-session', "
+            f"{json.dumps(json.dumps(session))});"
+        )
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/settings", wait_until="networkidle")
+        theme_group = page.get_by_role("group", name="主题", exact=True)
+        expect(theme_group).to_be_visible()
+        initial_dark = page.locator("html").evaluate(
+            "element => element.classList.contains('dark')"
+        )
+        target_label = "日间" if initial_dark else "夜间"
+        target = theme_group.get_by_label(target_label, exact=True)
+        expect(target).to_be_visible()
+
+        result = page.evaluate(
+            """
+            async ([group, target]) => {
+              const buttons = [...group.querySelectorAll('button')];
+              const initialDark = document.documentElement.classList.contains('dark');
+              const frames = [];
+              const startedAt = performance.now();
+              target.click();
+              await new Promise(resolve => {
+                const sample = now => {
+                  frames.push({
+                    dark: document.documentElement.classList.contains('dark'),
+                    transitions: buttons.flatMap(button =>
+                      button.getAnimations().flatMap(animation =>
+                        animation instanceof CSSTransition
+                          ? [animation.transitionProperty]
+                          : []
+                      )
+                    ),
+                  });
+                  if (now - startedAt >= 220) {
+                    resolve();
+                    return;
+                  }
+                  requestAnimationFrame(sample);
+                };
+                requestAnimationFrame(sample);
+              });
+              return {
+                declaredTransitions: buttons.map(
+                  button => getComputedStyle(button).transitionProperty
+                ),
+                finalDark: document.documentElement.classList.contains('dark'),
+                frames,
+                initialDark,
+                state: target.getAttribute('data-state'),
+              };
+            }
+            """,
+            [theme_group.element_handle(), target.element_handle()],
+        )
+
+        assert result["finalDark"] is not result["initialDark"], result
+        assert result["state"] == "on", result
+        assert len(result["frames"]) >= 5, result
+        assert all(
+            frame["dark"] == result["finalDark"] for frame in result["frames"]
+        ), result
+        assert not any(frame["transitions"] for frame in result["frames"]), result
+        assert all(
+            transition != "none" for transition in result["declaredTransitions"]
+        ), result
     finally:
         context.close()
 
@@ -7448,33 +8446,142 @@ def test_delayed_resume_create_cannot_hijack_newer_workspace_route(
         context.close()
 
 
+@pytest.mark.parametrize(
+    ("retry_delay_ms", "dismiss_error", "reduced_motion"),
+    [
+        pytest.param(0, False, "no-preference", id="immediate"),
+        pytest.param(80, False, "no-preference", id="during-exit"),
+        pytest.param(0, True, "no-preference", id="dismissed"),
+        pytest.param(80, False, "reduce", id="reduced-motion"),
+    ],
+)
 def test_resume_detail_retry_owns_a_single_error_notification(
     browser: Browser,
     workspace_servers: tuple[str, str],
+    retry_delay_ms: int,
+    dismiss_error: bool,
+    reduced_motion: str,
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        reduced_motion=reduced_motion,
+        viewport={"width": 1280, "height": 800},
+    )
     page = context.new_page()
+    held_load_routes: list[Route] = []
+    failed_responses: list[tuple[str, int]] = []
+    page.on(
+        "response",
+        lambda response: failed_responses.append(
+            (urlparse(response.url).path, response.status)
+        )
+        if response.status == 503
+        else None,
+    )
+
+    def fail_pending_load(delay_ms: int = 0) -> None:
+        deadline = time.monotonic() + 3
+        while len(held_load_routes) < 2 and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert Counter(
+            urlparse(route.request.url).path for route in held_load_routes
+        ) == Counter(
+            [f"/api/resumes/{resume_id}", "/api/workspace/pages/resume-editor"]
+        )
+        pending_routes = held_load_routes.copy()
+        held_load_routes.clear()
+        if delay_ms:
+            page.wait_for_timeout(delay_ms)
+        for route in pending_routes:
+            route.fulfill(status=503, json={"detail": {"code": "REQUEST_FAILED"}})
 
     try:
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
-        page.route("**/api/workspace/pages/resume-editor", lambda route: route.abort())
-        page.route(f"**/api/resumes/{resume_id}*", lambda route: route.abort())
+        page.route(
+            "**/api/workspace/pages/resume-editor",
+            lambda route: held_load_routes.append(route),
+        )
+        page.route(
+            f"**/api/resumes/{resume_id}*",
+            lambda route: held_load_routes.append(route),
+        )
 
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="domcontentloaded")
+        page.locator('section[aria-relevant="additions text"]').wait_for(
+            state="attached"
+        )
+        fail_pending_load()
         retry_button = page.get_by_role("button", name="重试", exact=True)
         retry_button.wait_for(state="visible")
         error_toasts = page.locator(
             '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
         )
         error_toasts.first.wait_for(state="visible")
+        expect(error_toasts).to_have_count(1)
 
+        if dismiss_error:
+            error_toasts.locator("[data-close-button]").click()
+        retry_started_at = page.evaluate("performance.now()")
         retry_button.click()
-        page.wait_for_timeout(500)
+        fail_pending_load(retry_delay_ms)
 
         assert page.url == f"{frontend_url}/resume/{resume_id}"
-        assert retry_button.is_visible()
-        assert error_toasts.count() == 1
+        expect(retry_button).to_be_visible()
+        toast_frames = page.evaluate(
+            """
+            async retryStartedAt => {
+              const frames = [];
+              const startedAt = performance.now();
+              let previousToasts = null;
+              while (performance.now() - startedAt < 500) {
+                const toasts = [...document.querySelectorAll(
+                  '[data-sonner-toast][data-type="error"]'
+                )].map(toast => ({
+                  removed: toast.dataset.removed === 'true',
+                  text: toast.textContent,
+                }));
+                const serialized = JSON.stringify(toasts);
+                if (serialized !== previousToasts) {
+                  frames.push({
+                    elapsedMs: performance.now() - retryStartedAt,
+                    toasts,
+                  });
+                  previousToasts = serialized;
+                }
+                await new Promise(requestAnimationFrame);
+              }
+              frames.push({
+                elapsedMs: performance.now() - retryStartedAt,
+                toasts: JSON.parse(previousToasts),
+              });
+              return frames;
+            }
+            """,
+            retry_started_at,
+        )
+        assert Counter(failed_responses) == Counter(
+            {
+                (f"/api/resumes/{resume_id}", 503): 2,
+                ("/api/workspace/pages/resume-editor", 503): 2,
+            }
+        )
+        assert all(
+            sum(not toast["removed"] for toast in frame["toasts"]) == 1
+            for frame in toast_frames
+        ), toast_frames
+        expect(error_toasts).to_have_count(1)
+
+        page.unroute("**/api/workspace/pages/resume-editor")
+        page.unroute(f"**/api/resumes/{resume_id}*")
+        retry_button.click()
+        expect(page.locator(".resume-editor-panel")).to_be_visible()
+        expect(page.locator(".resume-preview-card article.resume-page")).to_be_visible()
+        expect(page.get_by_role("button", name="保存状态", exact=True)).to_be_enabled()
+        expect(retry_button).to_have_count(0)
+        expect(error_toasts).to_have_count(0)
+        expect(page.locator('[data-slot="workspace-preview-skeleton"]')).to_have_count(0)
     finally:
         context.close()
 
@@ -7484,7 +8591,9 @@ def test_agent_hydration_failure_stays_local_without_error_notification(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     agent_requests: list[ApiRequest] = []
 
@@ -7636,7 +8745,9 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
     edit_before_checkpoint: bool,
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     resume_id: str | None = None
     preparation_requests = 0
@@ -7674,7 +8785,9 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
             },
         )
         assert create_response.ok
-        resume_id = create_response.json()["data"]["resume"]["id"]
+        initial_detail = create_response.json()["data"]
+        resume_id = initial_detail["resume"]["id"]
+        checkpoint_saved_at = initial_detail["savedAt"]
         # Keep the original and new checkpoint labels distinct to make the
         # version-list assertion deterministic at second precision.
         page.wait_for_timeout(1_100)
@@ -7766,15 +8879,18 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
         page.wait_for_timeout(250)
         assert page.url == f"{frontend_url}/resume"
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
+        page.wait_for_function("window.__resumePreparationCheckpointSent === true")
+        expected_checkpoint_responses = int(edit_before_checkpoint)
         deadline = time.monotonic() + 8
         while (
-            preparation_requests < 1 or checkpoint_responses < 1
+            preparation_requests < 1
+            or checkpoint_responses < expected_checkpoint_responses
         ) and time.monotonic() < deadline:
             page.wait_for_timeout(50)
         page.wait_for_timeout(150)
 
         assert preparation_requests == 1
-        assert checkpoint_responses == 1
+        assert checkpoint_responses == expected_checkpoint_responses
         assert checkpoint_saved_at is not None
         assert page.evaluate("window.__resumePreparationCheckpointSent") is True
         page.wait_for_function("window.__resumePreparationReleased === true")
@@ -7800,10 +8916,20 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
         page.get_by_text(checkpoint_label, exact=False).first.wait_for(state="visible")
         persisted_response = page.request.get(f"{frontend_url}/api/resumes/{resume_id}")
         assert persisted_response.ok
+        persisted_detail = persisted_response.json()["data"]
         if edit_before_checkpoint:
             assert (
-                persisted_response.json()["data"]["resume"]["resume"]["basic"]["name"]
+                persisted_detail["resume"]["resume"]["basic"]["name"]
                 == "Saved After Preparation Returned"
+            )
+            assert persisted_detail["savedAt"] != initial_detail["savedAt"]
+            assert persisted_detail["versionId"] != initial_detail["versionId"]
+        else:
+            assert persisted_detail["savedAt"] == initial_detail["savedAt"]
+            assert persisted_detail["versionId"] == initial_detail["versionId"]
+            assert (
+                persisted_detail["resume"]["resume"]
+                == initial_detail["resume"]["resume"]
             )
     finally:
         if resume_id:
@@ -7829,6 +8955,16 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
     page = context.new_page()
     resume_id: str | None = None
     held_version_routes: list[Route] = []
+    resume_save_requests: list[Request] = []
+
+    def record_resume_save(request: Request) -> None:
+        if (
+            request.method == "PUT"
+            and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+        ):
+            resume_save_requests.append(request)
+
+    page.on("request", record_resume_save)
 
     try:
         create_response = page.request.post(
@@ -7984,6 +9120,19 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
         expect(version_popover).to_be_visible()
         expect(historical_version).to_be_visible()
         assert historical_version.evaluate("element => element.matches(':hover')")
+        expect(page.locator('[data-slot="save-status-announcement"]')).to_contain_text(
+            "已保存"
+        )
+        page.wait_for_timeout(5_500)
+        assert resume_save_requests == []
+        current_detail = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        assert (
+            current_detail["versionId"]
+            == checkpoint_response.json()["data"]["versionId"]
+        )
+        assert current_detail["resume"]["resume"]["basic"]["name"] == second_name
     finally:
         for route in held_version_routes:
             try:
@@ -8487,7 +9636,9 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
     frame_key: str,
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     _install_workspace_frame_recorder(page)
 
@@ -8624,7 +9775,9 @@ def test_resume_autosave_persists_edit_made_during_active_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_payloads: list[dict[str, object]] = []
     save_urls: list[str] = []
@@ -10520,7 +11673,9 @@ def test_autosave_max_wait_retries_with_backoff_without_toast_storm(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_urls: list[str] = []
     active_saves = 0
@@ -12420,7 +13575,9 @@ def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -12465,7 +13622,9 @@ def test_latest_navigation_waits_for_active_checkpoint_promotion(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     resume_id: str | None = None
 
@@ -12544,7 +13703,9 @@ def test_checkpoint_failure_after_autosave_does_not_block_leaving_resume(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -12611,7 +13772,9 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_urls: list[str] = []
 
@@ -12701,7 +13864,9 @@ def test_discard_waits_for_active_save_and_restores_persisted_resume(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, resume_id = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     save_count = 0
 
@@ -12937,7 +14102,9 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     resume_id: str | None = None
 
@@ -12972,8 +14139,8 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
         page.get_by_role("button", name="保存状态", exact=True).hover()
         page.get_by_text("有未保存更改", exact=True).wait_for(state="detached")
 
-        page.locator('a[href="/templates"]').first.click()
-        page.wait_for_url(f"{frontend_url}/templates")
+        page.get_by_role("button", name="返回简历列表", exact=True).click()
+        page.wait_for_url(f"{frontend_url}/resume")
         page.wait_for_load_state("networkidle")
 
         def delay_back_loader(route: Route) -> None:
@@ -13354,7 +14521,7 @@ def test_recycle_bin_row_menu_fits_localized_actions(
         context.close()
 
 
-def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
+def test_recycle_bin_bulk_actions_appear_after_selection(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
@@ -13408,17 +14575,21 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
         first_selection = page.get_by_role("checkbox", name=f"选择: {titles[0]}")
         second_selection = page.get_by_role("checkbox", name=f"选择: {titles[1]}")
         first_selection.check()
-        expect(bulk_actions).to_have_attribute("data-state", "closed")
-        expect(bulk_actions).to_have_attribute("aria-hidden", "true")
-
-        second_selection.check()
         expect(bulk_actions).to_have_attribute("data-state", "open")
         expect(bulk_actions).to_have_attribute("aria-hidden", "false")
         bulk_restore = page.get_by_role("button", name="批量恢复", exact=True)
         expect(bulk_restore).to_be_visible()
-        expect(bulk_restore).to_have_attribute("data-size", "default")
         bulk_delete = page.get_by_role("button", name="批量删除", exact=True)
         expect(bulk_delete).to_be_visible()
+        bulk_delete.click()
+        expect(page.get_by_text("确认彻底删除这份简历？", exact=True)).to_be_visible()
+        page.get_by_role("button", name="取消", exact=True).click()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+
+        second_selection.check()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "false")
+        expect(bulk_restore).to_have_attribute("data-size", "default")
         expect(bulk_delete).to_have_attribute("data-variant", "destructive")
         expect(bulk_delete).to_have_attribute("data-size", "default")
         bulk_delete.click()
@@ -13427,6 +14598,10 @@ def test_recycle_bin_bulk_actions_appear_only_after_multiple_selection(
         expect(bulk_actions).to_have_attribute("data-state", "open")
 
         second_selection.uncheck()
+        expect(bulk_actions).to_have_attribute("data-state", "open")
+        expect(bulk_actions).to_have_attribute("aria-hidden", "false")
+
+        first_selection.uncheck()
         expect(bulk_actions).to_have_attribute("data-state", "closed")
         expect(bulk_actions).to_have_attribute("aria-hidden", "true")
 
@@ -13956,5 +15131,2154 @@ def test_theme_bootstrap_matches_saved_preference_before_react_mounts(
         assert bootstrap_state["rootChildCount"] == 0
         assert bootstrap_state["hasDarkClass"] is expects_dark
         assert bootstrap_state["colorScheme"] == ("dark" if expects_dark else "light")
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_login_input_group_autofill_respects_component_surface(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    theme: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(locale="en-US")
+    context.add_init_script(
+        script=f"localStorage.setItem('resumate-theme', {json.dumps(theme)});"
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        controls = [page.locator("#username"), page.locator("#password")]
+        cdp = context.new_cdp_session(page)
+        cdp.send("DOM.enable")
+        cdp.send("CSS.enable")
+        document_node_id = cdp.send("DOM.getDocument")["root"]["nodeId"]
+
+        for selector, control in zip(("#username", "#password"), controls, strict=True):
+            node_id = cdp.send(
+                "DOM.querySelector",
+                {"nodeId": document_node_id, "selector": selector},
+            )["nodeId"]
+            assert node_id
+            cdp.send(
+                "CSS.forcePseudoState",
+                {"nodeId": node_id, "forcedPseudoClasses": ["autofill"]},
+            )
+            assert control.evaluate("element => element.matches(':-webkit-autofill')")
+
+        def read_autofill_styles() -> list[dict[str, str]]:
+            return page.locator("#username, #password").evaluate_all(
+                """
+                elements => elements.map(element => {
+                  const styles = getComputedStyle(element)
+                  return {
+                    backgroundClip: styles.backgroundClip,
+                    caretColor: styles.caretColor,
+                    textFillColor: styles.webkitTextFillColor,
+                  }
+                })
+                """
+            )
+
+        expected_text_color = page.locator("body").evaluate(
+            "element => getComputedStyle(element).color"
+        )
+        assert (
+            read_autofill_styles()
+            == [
+                {
+                    "backgroundClip": "text",
+                    "caretColor": expected_text_color,
+                    "textFillColor": expected_text_color,
+                }
+            ]
+            * 2
+        )
+
+        page.emulate_media(forced_colors="active")
+        canvas_text = page.locator("body").evaluate(
+            "element => getComputedStyle(element).color"
+        )
+        assert (
+            read_autofill_styles()
+            == [
+                {
+                    "backgroundClip": "border-box",
+                    "caretColor": canvas_text,
+                    "textFillColor": canvas_text,
+                },
+            ]
+            * 2
+        )
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("error_code", ["OAUTH_NOT_CONFIGURED", "OAUTH_NOT_BOUND"])
+@pytest.mark.parametrize(
+    ("locale", "button_label", "toast_message"),
+    [
+        (
+            "en-US",
+            "Continue with GitHub",
+            "GitHub is not connected. Sign in with your password, "
+            "then connect it in settings.",
+        ),
+        (
+            "zh-CN",
+            "使用 GitHub 继续",
+            "未绑定 GitHub 账号，请先使用密码登录后在设置中绑定。",
+        ),
+    ],
+)
+def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    error_code: str,
+    locale: str,
+    button_label: str,
+    toast_message: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(viewport={"width": 375, "height": 812}, locale=locale)
+    page = context.new_page()
+    api_requests: list[ApiRequest] = []
+    page.on(
+        "request",
+        lambda request: (
+            api_requests.append(api_request)
+            if (api_request := _api_request(request)) is not None
+            else None
+        ),
+    )
+    page.route(
+        "**/api/auth/oauth/github/login",
+        lambda route: route.fulfill(
+            status=503 if error_code == "OAUTH_NOT_CONFIGURED" else 403,
+            json={"code": 40000, "message": error_code, "data": None},
+        ),
+    )
+
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        github_button = page.get_by_role("button", name=button_label, exact=True)
+        password_button = page.locator('form button[type="submit"]')
+        expect(github_button).to_be_enabled()
+        expect(page.locator('[data-slot="field-separator"]')).to_be_visible()
+        page.locator("#username").fill(" e2e-owner ")
+        page.locator("#password").fill("E2ePassword2026")
+        github_button.click()
+        info_toast = page.locator('[data-sonner-toast][data-type="info"]')
+        expect(info_toast.get_by_text(toast_message, exact=True)).to_be_visible()
+        expect(info_toast).to_have_css("opacity", "1")
+        expect(page.locator('[data-slot="field-error"]')).to_have_count(0)
+        expect(github_button).to_be_enabled()
+        expect(password_button).to_be_enabled()
+        expect(page.locator("#username")).to_have_value(" e2e-owner ")
+        expect(page.locator("#password")).to_have_value("E2ePassword2026")
+        assert page.url == f"{frontend_url}/login"
+        assert len(context.pages) == 1
+        assert api_requests.count(("POST", "/api/auth/oauth/github/login")) == 1
+        assert ("GET", "/api/auth/oauth/providers") not in api_requests
+        assert ("POST", "/api/auth/login") not in api_requests
+        assert page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        page.screenshot(
+            path=f"/tmp/resumate-oauth-unbound-{locale}-{error_code}.png",
+            full_page=True,
+        )
+    finally:
+        context.close()
+
+
+def test_login_session_is_shared_with_another_open_tab(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(locale="en-US")
+    login_page = context.new_page()
+    other_page = context.new_page()
+
+    try:
+        for page in (login_page, other_page):
+            page.goto(f"{frontend_url}/login", wait_until="networkidle")
+            expect(page.locator("#username")).to_be_visible()
+
+        login_page.locator("#username").fill("e2e-owner")
+        login_page.locator("#password").fill("E2ePassword2026")
+        login_page.get_by_role("button", name="Sign In", exact=True).click()
+        login_page.wait_for_url(f"{frontend_url}/resume")
+        expect(login_page.locator('input[name="resume-search"]')).to_be_visible()
+
+        other_page.wait_for_url(f"{frontend_url}/resume", timeout=5_000)
+        expect(other_page.locator('input[name="resume-search"]')).to_be_visible()
+        other_page.reload(wait_until="networkidle")
+        other_page.wait_for_url(f"{frontend_url}/resume", timeout=5_000)
+        expect(other_page.locator('input[name="resume-search"]')).to_be_visible()
+
+        other_page.get_by_role("button", name="Log Out", exact=True).click()
+        for page in (other_page, login_page):
+            page.wait_for_url(f"{frontend_url}/login", timeout=5_000)
+            expect(page.locator("#username")).to_be_visible()
+        login_page.reload(wait_until="networkidle")
+        expect(login_page.locator("#username")).to_be_visible()
+    finally:
+        context.close()
+
+
+def test_login_session_refresh_is_shared_between_tabs(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(locale="en-US")
+    login_page = context.new_page()
+    other_page = context.new_page()
+    refresh_requests: list[Request] = []
+    refresh_routes: list[Route] = []
+
+    def hold_refresh(route: Route) -> None:
+        refresh_requests.append(route.request)
+        refresh_routes.append(route)
+
+    context.route("**/api/auth/refresh", hold_refresh)
+
+    try:
+        login_page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        login_page.locator("#username").fill("e2e-owner")
+        login_page.locator("#password").fill("E2ePassword2026")
+        login_page.get_by_role("button", name="Sign In", exact=True).click()
+        login_page.wait_for_url(f"{frontend_url}/resume")
+        expect(login_page.locator('input[name="resume-search"]')).to_be_visible()
+        other_page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+        expect(other_page.locator('input[name="resume-search"]')).to_be_visible()
+        previous_token = login_page.evaluate(
+            "async () => (await import('/src/lib/auth-session.ts')).getAccessToken()"
+        )
+
+        for page in (login_page, other_page):
+            page.evaluate(
+                """
+                async () => {
+                  const { refreshAuthSession } = await import('/src/lib/auth.ts')
+                  window.__refreshResult = null
+                  void refreshAuthSession().then(
+                    result => { window.__refreshResult = result },
+                    error => { window.__refreshResult = { error: error.message } },
+                  )
+                }
+                """
+            )
+        other_page.wait_for_function(
+            """
+            async () => (await navigator.locks.query()).pending.some(
+              lock => lock.name === 'resumate-auth-refresh'
+            )
+            """
+        )
+        assert len(refresh_routes) == 1
+        refresh_routes.pop().continue_()
+
+        current_tokens: list[str] = []
+        for page in (login_page, other_page):
+            page.wait_for_function("window.__refreshResult !== null")
+            assert page.evaluate("window.__refreshResult") is True
+            current_tokens.append(
+                page.evaluate(
+                    "async () => (await import('/src/lib/auth-session.ts'))"
+                    ".getAccessToken()"
+                )
+            )
+            with page.expect_response("**/api/resumes") as response:
+                page.evaluate(
+                    """
+                    async () => {
+                      const { apiRoutes, requestApi } = await import(
+                        '/src/lib/api-client.ts'
+                      )
+                      await requestApi(apiRoutes.resumes, { cacheTtlMs: 0 })
+                    }
+                    """
+                )
+            assert response.value.status == 200
+            assert page.url == f"{frontend_url}/resume"
+            expect(page.locator('input[name="resume-search"]')).to_be_visible()
+        assert len(set(current_tokens)) == 1
+        assert current_tokens[0] != previous_token
+        assert len(refresh_requests) == 1
+        assert refresh_requests[0].method == "POST"
+    finally:
+        context.close()
+
+
+def test_password_login_preserves_button_content_and_keeps_success_handoff_locked(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(
+        viewport={"width": 375, "height": 812}, locale="en-US"
+    )
+    page = context.new_page()
+    login_requests: list[Request] = []
+    pending_routes: list[Route] = []
+
+    def submit_login(route: Route) -> None:
+        login_requests.append(route.request)
+        if len(login_requests) == 1:
+            pending_routes.append(route)
+            return
+        route.continue_()
+
+    page.route("**/api/auth/login", submit_login)
+
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        github_button = page.get_by_role(
+            "button", name="Continue with GitHub", exact=True
+        )
+        password_button = page.locator('form button[type="submit"]')
+        loading_buttons = page.locator("form button.auth-loading-button")
+        expect(loading_buttons).to_have_count(2)
+        loading_borders = loading_buttons.locator(".auth-loading-border")
+        expect(loading_borders).to_have_count(2)
+        password_border = password_button.locator(".auth-loading-border")
+        github_border = github_button.locator(".auth-loading-border")
+        expect(password_border).to_have_attribute("aria-hidden", "true")
+        expect(github_border).to_have_attribute("aria-hidden", "true")
+        input_borders = page.locator('form [data-slot="input-group"]')
+        expect(input_borders).to_have_count(2)
+        password_spinner = password_button.locator(
+            '[data-slot="auth-pending-indicator"]'
+        )
+        github_spinner = github_button.locator('[data-slot="auth-pending-indicator"]')
+        pending_announcement = page.locator(
+            'form > [data-slot="field-group"] > [data-slot="auth-pending-announcement"]'
+        )
+        page.locator("#username").fill("e2e-owner")
+        page.locator("#password").fill("E2ePassword2026")
+        initial_bounds = password_button.bounding_box()
+        assert initial_bounds is not None
+        initial_size = (initial_bounds["width"], initial_bounds["height"])
+
+        page.clock.install()
+        page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
+        password_button.click()
+
+        expect(password_button).to_be_disabled()
+        expect(password_button).to_have_js_property("disabled", True)
+        expect(github_button).to_be_disabled()
+        expect(github_button).to_have_js_property("disabled", True)
+        expect(password_button).to_have_attribute("aria-disabled", "true")
+        expect(github_button).to_have_attribute("aria-disabled", "true")
+        expect(password_button).to_have_attribute("aria-busy", "true")
+        expect(github_button).not_to_have_attribute("aria-busy", "true")
+        expect(password_button).to_have_text("Sign In")
+        expect(password_spinner).to_have_count(0)
+        expect(github_spinner).to_have_count(0)
+        expect(pending_announcement).to_have_attribute("aria-live", "polite")
+        assert pending_announcement.text_content()
+
+        page.clock.run_for(150)
+        expect(password_spinner).to_have_count(0)
+        assert pending_announcement.text_content()
+        page.clock.run_for(100)
+        expect(password_spinner).to_have_count(0)
+        expect(github_spinner).to_have_count(0)
+        assert pending_announcement.text_content()
+        expect(password_button).to_have_text("Sign In")
+        pending_bounds = password_button.bounding_box()
+        assert pending_bounds is not None
+        assert (pending_bounds["width"], pending_bounds["height"]) == initial_size
+        page.clock.resume()
+        expect(password_button).to_have_css("opacity", "1")
+        expect(github_button).to_have_css("opacity", "0.5")
+        expect(password_border).to_have_css("opacity", "1")
+        expect(github_border).to_have_css("opacity", "0")
+        border_style = password_border.evaluate(
+            """
+            element => {
+              const style = getComputedStyle(element, '::after')
+              return {
+                animation: style.animationName,
+                iterations: style.animationIterationCount,
+                playState: style.animationPlayState,
+                path: style.offsetPath,
+                distance: style.offsetDistance,
+              }
+            }
+            """
+        )
+        assert border_style["animation"] == "auth-loading-border", border_style
+        assert border_style["iterations"] == "infinite", border_style
+        assert border_style["playState"] == "running", border_style
+        assert border_style["path"] == "border-box", border_style
+        assert (
+            github_border.evaluate(
+                "element => getComputedStyle(element, '::after').animationPlayState"
+            )
+            == "paused"
+        )
+        assert input_borders.evaluate_all(
+            """
+            elements => elements.map(element => {
+              const style = getComputedStyle(element, '::after')
+              return [style.animationName, style.content, style.backgroundImage]
+            })
+            """
+        ) == [["none", "none", "none"], ["none", "none", "none"]]
+        page.wait_for_function(
+            """
+            previous => getComputedStyle(document.querySelector(
+              'form button[type="submit"] .auth-loading-border'
+            ), '::after').offsetDistance !== previous
+            """,
+            arg=border_style["distance"],
+        )
+        page.emulate_media(reduced_motion="reduce")
+        expect(password_border).to_have_css("opacity", "1")
+        expect(password_border).not_to_have_css("background-color", "rgba(0, 0, 0, 0)")
+        assert loading_borders.evaluate_all(
+            """
+            elements => elements.map(element => {
+              const style = getComputedStyle(element, '::after')
+              return [style.animationName, style.display]
+            })
+            """
+        ) == [["none", "none"], ["none", "none"]]
+        page.emulate_media(reduced_motion="no-preference")
+
+        pending_routes.pop().fulfill(
+            status=503, json={"detail": {"code": "REQUEST_FAILED"}}
+        )
+        page.clock.resume()
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        expect(password_button).to_be_enabled()
+        expect(password_button).to_have_js_property("disabled", False)
+        expect(github_button).to_be_enabled()
+        expect(github_button).to_have_js_property("disabled", False)
+        expect(password_button).not_to_have_attribute("aria-busy", "true")
+        expect(password_spinner).to_have_count(0)
+        expect(github_spinner).to_have_count(0)
+        expect(pending_announcement).to_have_text("")
+        expect(password_border).to_have_css("opacity", "0")
+        expect(github_border).to_have_css("opacity", "0")
+        assert loading_borders.evaluate_all(
+            "elements => elements.map(element => "
+            "getComputedStyle(element, '::after').animationPlayState)"
+        ) == ["paused", "paused"]
+        paused_positions = loading_borders.evaluate_all(
+            "elements => elements.map(element => "
+            "getComputedStyle(element, '::after').offsetDistance)"
+        )
+        page.wait_for_timeout(80)
+        assert (
+            loading_borders.evaluate_all(
+                "elements => elements.map(element => "
+                "getComputedStyle(element, '::after').offsetDistance)"
+            )
+            == paused_positions
+        )
+        expect(password_button).to_have_text("Sign In")
+        expect(page.locator("#username")).to_have_value("e2e-owner")
+        expect(page.locator("#password")).to_have_value("E2ePassword2026")
+
+        page.evaluate(
+            """
+            () => {
+              const password = document.querySelector('form button[type="submit"]')
+              const github = document.querySelector(
+                '[aria-label="Continue with GitHub"]'
+              )
+              const states = []
+              const record = () => {
+                states.push({
+                  github: github?.disabled,
+                  password: password?.disabled,
+                })
+                window.name = JSON.stringify(states)
+              }
+              record()
+              new MutationObserver(() => queueMicrotask(record)).observe(
+                document.body,
+                {
+                  attributes: true,
+                  subtree: true,
+                  attributeFilter: ['disabled'],
+                },
+              )
+            }
+            """
+        )
+        password_button.click()
+        page.wait_for_url(f"{frontend_url}/resume")
+        handoff_states = json.loads(page.evaluate("window.name"))
+        for key in ("password", "github"):
+            first_locked = next(
+                index for index, state in enumerate(handoff_states) if state[key]
+            )
+            assert all(state[key] for state in handoff_states[first_locked:]), (
+                handoff_states
+            )
+        assert len(login_requests) == 2
+    finally:
+        context.close()
+
+
+def test_oauth_login_retries_authorization_and_locks_password_submission(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(
+        viewport={"width": 375, "height": 812}, locale="en-US"
+    )
+    page = context.new_page()
+    api_requests: list[ApiRequest] = []
+    start_requests: list[Request] = []
+    pending_routes: list[Route] = []
+    page.on(
+        "request",
+        lambda request: (
+            api_requests.append(api_request)
+            if (api_request := _api_request(request)) is not None
+            else None
+        ),
+    )
+
+    def start_login(route: Route) -> None:
+        start_requests.append(route.request)
+        if len(start_requests) == 1:
+            pending_routes.append(route)
+            return
+        route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"authorizationUrl": f"{frontend_url}/oauth-provider-check"},
+            },
+        )
+
+    page.route("**/api/auth/oauth/github/login", start_login)
+    page.route(
+        "**/oauth-provider-check",
+        lambda route: route.fulfill(content_type="text/html", body="Provider redirect"),
+    )
+
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        provider_group = page.get_by_role(
+            "group", name="Third-party sign-in", exact=True
+        )
+        github_button = provider_group.get_by_role("button")
+        password_button = page.locator('form button[type="submit"]')
+        loading_buttons = page.locator("form button.auth-loading-button")
+        expect(loading_buttons).to_have_count(2)
+        loading_borders = loading_buttons.locator(".auth-loading-border")
+        expect(loading_borders).to_have_count(2)
+        password_border = password_button.locator(".auth-loading-border")
+        github_border = github_button.locator(".auth-loading-border")
+        expect(password_border).to_have_attribute("aria-hidden", "true")
+        expect(github_border).to_have_attribute("aria-hidden", "true")
+        input_borders = page.locator('form [data-slot="input-group"]')
+        expect(input_borders).to_have_count(2)
+        expect(github_button).to_be_enabled()
+        expect(github_button).to_have_js_property("disabled", False)
+        expect(github_button).to_have_accessible_name("Continue with GitHub")
+        assert github_button.inner_text() == ""
+        github_icon = github_button.locator('[data-icon="inline-start"]')
+        github_icon_markup = github_icon.evaluate("icon => icon.outerHTML")
+        expect(password_button).to_have_text("Sign In")
+        expect(page.locator('[data-slot="field-separator"]')).to_be_visible()
+        expect(page.get_by_role("button", name=re.compile("Google"))).to_have_count(0)
+        assert ("GET", "/api/auth/oauth/providers") not in api_requests
+        assert page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        page.screenshot(path="/tmp/resumate-oauth-login-mobile.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.screenshot(path="/tmp/resumate-oauth-login-desktop.png", full_page=True)
+        page.set_viewport_size({"width": 375, "height": 812})
+        page.locator("#username").fill("e2e-owner")
+        page.locator("#password").fill("E2ePassword2026")
+        initial_bounds = github_button.bounding_box()
+        assert initial_bounds is not None
+        initial_size = (initial_bounds["width"], initial_bounds["height"])
+        initial_icon_bounds = github_icon.bounding_box()
+        assert initial_icon_bounds is not None
+
+        page.clock.install()
+        page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
+        github_button.click()
+        expect(github_button).to_be_disabled()
+        expect(github_button).to_have_js_property("disabled", True)
+        expect(password_button).to_be_disabled()
+        expect(password_button).to_have_js_property("disabled", True)
+        expect(github_button).to_have_attribute("aria-disabled", "true")
+        expect(password_button).to_have_attribute("aria-disabled", "true")
+        expect(github_button).to_have_attribute("aria-busy", "true")
+        expect(password_button).not_to_have_attribute("aria-busy", "true")
+        expect(github_button).to_have_accessible_name("Continue with GitHub")
+        assert github_button.inner_text() == ""
+        expect(github_icon).to_be_visible()
+        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
+        github_spinner = github_button.locator('[data-slot="auth-pending-indicator"]')
+        password_spinner = password_button.locator(
+            '[data-slot="auth-pending-indicator"]'
+        )
+        pending_announcement = provider_group.locator(
+            '[data-slot="auth-pending-announcement"]'
+        )
+        expect(github_spinner).to_have_count(0)
+        expect(password_spinner).to_have_count(0)
+        expect(pending_announcement).to_have_attribute("aria-live", "polite")
+        assert pending_announcement.text_content()
+        expect(password_button).to_have_text("Sign In")
+        page.clock.run_for(150)
+        expect(github_icon).to_be_visible()
+        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
+        expect(github_spinner).to_have_count(0)
+        assert pending_announcement.text_content()
+        page.clock.run_for(100)
+        expect(github_icon).to_be_visible()
+        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
+        expect(github_spinner).to_have_count(0)
+        expect(password_spinner).to_have_count(0)
+        assert pending_announcement.text_content()
+        expect(github_button).to_have_accessible_name("Continue with GitHub")
+        assert github_button.inner_text() == ""
+        expect(github_button).to_have_css("opacity", "1")
+        expect(password_button).to_have_css("opacity", "0.5")
+        expect(github_border).to_have_css("opacity", "1")
+        expect(password_border).to_have_css("opacity", "0")
+        assert loading_borders.evaluate_all(
+            "elements => elements.map(element => "
+            "getComputedStyle(element, '::after').animationPlayState)"
+        ) == ["paused", "running"]
+        assert input_borders.evaluate_all(
+            """
+            elements => elements.map(element => {
+              const style = getComputedStyle(element, '::after')
+              return [style.animationName, style.content, style.backgroundImage]
+            })
+            """
+        ) == [["none", "none", "none"], ["none", "none", "none"]]
+        pending_icon_bounds = github_icon.bounding_box()
+        assert pending_icon_bounds is not None
+        assert pending_icon_bounds == initial_icon_bounds
+        pending_button_bounds = github_button.bounding_box()
+        assert pending_button_bounds is not None
+        assert (
+            pending_button_bounds["width"],
+            pending_button_bounds["height"],
+        ) == initial_size
+        pending_bounds = github_button.bounding_box()
+        assert pending_bounds is not None
+        page.mouse.click(
+            pending_bounds["x"] + pending_bounds["width"] / 2,
+            pending_bounds["y"] + pending_bounds["height"] / 2,
+        )
+        page.locator("#password").press("Enter")
+        assert len(start_requests) == 1
+        assert ("POST", "/api/auth/login") not in api_requests
+        pending_routes.pop().fulfill(
+            status=503, json={"detail": {"code": "REQUEST_FAILED"}}
+        )
+        page.clock.resume()
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        expect(github_button).to_be_enabled()
+        expect(github_button).to_have_js_property("disabled", False)
+        expect(password_button).to_be_enabled()
+        expect(password_button).to_have_js_property("disabled", False)
+        expect(github_button).not_to_have_attribute("aria-busy", "true")
+        expect(page.locator("#username")).to_have_value("e2e-owner")
+        expect(page.locator("#password")).to_have_value("E2ePassword2026")
+        expect(github_spinner).to_have_count(0)
+        expect(password_spinner).to_have_count(0)
+        expect(pending_announcement).to_have_text("")
+        expect(password_border).to_have_css("opacity", "0")
+        expect(github_border).to_have_css("opacity", "0")
+        assert loading_borders.evaluate_all(
+            "elements => elements.map(element => "
+            "getComputedStyle(element, '::after').animationPlayState)"
+        ) == ["paused", "paused"]
+        paused_positions = loading_borders.evaluate_all(
+            "elements => elements.map(element => "
+            "getComputedStyle(element, '::after').offsetDistance)"
+        )
+        page.wait_for_timeout(80)
+        assert (
+            loading_borders.evaluate_all(
+                "elements => elements.map(element => "
+                "getComputedStyle(element, '::after').offsetDistance)"
+            )
+            == paused_positions
+        )
+        assert page.url == f"{frontend_url}/login"
+        page.evaluate(
+            """
+            () => {
+              const github = document.querySelector(
+                '[aria-label="Continue with GitHub"]'
+              )
+              const password = document.querySelector('form button[type="submit"]')
+              const elements = [...document.querySelectorAll(
+                '#username, #password, [data-slot="auth-particle-background"], ' +
+                '#root > main > [data-slot="card"]'
+              )]
+              const states = []
+              const record = label => {
+                states.push({
+                  label,
+                  github: github?.disabled,
+                  password: password?.disabled,
+                  retained: elements.every(element => element.isConnected),
+                  formVisible: Boolean(
+                    document.querySelector('#username')?.checkVisibility()
+                  ),
+                })
+                window.name = JSON.stringify(states)
+              }
+              record('initial')
+              new MutationObserver(() => queueMicrotask(() => record('mutation')))
+                .observe(document.body, {
+                  attributes: true,
+                  subtree: true,
+                  attributeFilter: ['disabled'],
+                })
+              addEventListener('beforeunload', () => record('beforeunload'))
+              addEventListener('pagehide', () => record('pagehide'))
+            }
+            """
+        )
+        github_button.click()
+        page.wait_for_url(f"{frontend_url}/oauth-provider-check")
+        handoff_states = json.loads(page.evaluate("window.name"))
+        assert any(state["label"] == "beforeunload" for state in handoff_states)
+        assert all(
+            state["retained"] and state["formVisible"] for state in handoff_states
+        ), handoff_states
+        for key in ("github", "password"):
+            first_locked = next(
+                index for index, state in enumerate(handoff_states) if state[key]
+            )
+            assert all(state[key] for state in handoff_states[first_locked:]), (
+                handoff_states
+            )
+        assert len(start_requests) == 2
+        assert all(request.method == "POST" for request in start_requests)
+        assert all("authorization" not in request.headers for request in start_requests)
+        assert ("GET", "/api/auth/oauth/providers") not in api_requests
+        assert len(context.pages) == 1
+    finally:
+        context.close()
+
+
+def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser, viewport={"width": 375, "height": 812}, locale="en-US"
+    )
+    page = context.new_page()
+    binding_requests: list[Request] = []
+    identity_label = "a-very-long-connected-owner-account-label@example.com"
+    page.route(
+        "**/api/auth/oauth/identities",
+        lambda route: route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "identities": [
+                        {
+                            "provider": "github",
+                            "label": identity_label,
+                            "createdAt": "2026-09-05T00:00:00Z",
+                        }
+                    ],
+                    "providers": [
+                        {"provider": "github", "configured": True},
+                    ],
+                },
+            },
+        ),
+    )
+
+    def change_binding(route: Route) -> None:
+        binding_requests.append(route.request)
+        if len(binding_requests) == 1:
+            route.fulfill(status=503, json={"detail": {"code": "REQUEST_FAILED"}})
+            return
+        route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"deleted": True}
+                if route.request.method == "DELETE"
+                else {
+                    "authorizationUrl": f"{frontend_url}/oauth-binding-check",
+                },
+            },
+        )
+
+    page.route("**/api/auth/oauth/github/binding", change_binding)
+    page.route("**/api/auth/oauth/github/bind", change_binding)
+    page.route(
+        "**/oauth-binding-check",
+        lambda route: route.fulfill(content_type="text/html", body="Binding redirect"),
+    )
+
+    try:
+        page.goto(f"{frontend_url}/settings", wait_until="networkidle")
+        disconnect_button = page.get_by_role(
+            "button", name="Disconnect GitHub", exact=True
+        )
+        expect(disconnect_button).to_be_enabled()
+        expect(page.get_by_text("Google", exact=True)).to_have_count(0)
+        expect(page.get_by_text(identity_label, exact=True)).to_be_visible()
+        assert page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        assert page.get_by_role("group", name="GitHub", exact=True).evaluate(
+            """
+            row => {
+              const bounds = row.getBoundingClientRect();
+              return [...row.querySelectorAll('button, p, [title]')].every(
+                element => {
+                  const rect = element.getBoundingClientRect();
+                  return rect.left >= bounds.left && rect.right <= bounds.right;
+                },
+              );
+            }
+            """
+        ), "Connected account details and controls must fit inside their settings row."
+        disconnect_button.scroll_into_view_if_needed()
+        page.screenshot(path="/tmp/resumate-oauth-settings-mobile.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.screenshot(path="/tmp/resumate-oauth-settings-desktop.png", full_page=True)
+        page.set_viewport_size({"width": 375, "height": 812})
+
+        disconnect_button.click()
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        expect(disconnect_button).to_be_enabled()
+        expect(page.get_by_text(identity_label, exact=True)).to_be_visible()
+        disconnect_button.click()
+        connect_button = page.get_by_role("button", name="Connect GitHub", exact=True)
+        expect(connect_button).to_be_enabled()
+        expect(page.get_by_text(identity_label, exact=True)).to_have_count(0)
+        page.locator(
+            '[data-sonner-toast][data-type="success"] [data-close-button]'
+        ).click()
+        connect_button.click()
+        page.wait_for_url(f"{frontend_url}/oauth-binding-check")
+        assert [request.method for request in binding_requests] == [
+            "DELETE",
+            "DELETE",
+            "POST",
+        ]
+        assert all(
+            request.headers.get("authorization", "").startswith("Bearer ")
+            for request in binding_requests
+        )
+        assert len(context.pages) == 1
+    finally:
+        context.close()
+
+
+def _expect_oauth_callback_skeleton(page: Page, destination: str) -> None:
+    expect(
+        page.locator('#root form, #root > main > [data-slot="card"]')
+    ).to_have_count(0)
+    expect(
+        page.locator('#root svg[role="status"][aria-label="Loading"]')
+    ).to_have_count(0)
+    entry = page.locator('[data-slot="workspace-entry-skeleton"]')
+    expect(entry).to_be_visible()
+    expect(entry).to_have_attribute("data-destination", destination)
+    expect(entry).to_have_attribute("role", "status")
+    expect(entry).to_have_attribute("aria-busy", "true")
+    expect(entry.locator(".sr-only")).not_to_have_text("")
+    route_slot = (
+        "settings-panel-skeleton"
+        if destination == "settings"
+        else "gallery-route-skeleton"
+    )
+    expect(entry.locator(f'[data-slot="{route_slot}"]')).to_be_visible()
+    expect(page.locator('[data-slot="sidebar-container"]')).to_have_count(0)
+
+
+@pytest.mark.parametrize("entry", ["password", "github"])
+def test_login_entries_mount_complete_gallery_with_workspace_shell(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    entry: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context = browser.new_context(
+        locale="en-US", viewport={"width": 1280, "height": 800}
+    )
+    page = context.new_page()
+    module_routes: list[Route] = []
+    data_routes: list[Route] = []
+    destination_module = (
+        "**/src/components/workspace/resume-gallery-workspace-page.tsx*"
+    )
+    _install_workspace_frame_recorder(page)
+    page.route(destination_module, lambda route: module_routes.append(route))
+    page.route(
+        "**/api/workspace/pages/resumes*", lambda route: data_routes.append(route)
+    )
+
+    try:
+        if entry == "password":
+            page.goto(f"{frontend_url}/login", wait_until="domcontentloaded")
+            page.locator("#username").fill("e2e-owner")
+            page.locator("#password").fill("E2ePassword2026")
+            _start_workspace_frame_recording(page)
+            page.locator('form button[type="submit"]').click()
+        else:
+            page.route(
+                "**/api/auth/oauth/complete",
+                lambda route: route.fulfill(
+                    json={
+                        "code": 0,
+                        "message": "OK",
+                        "data": {
+                            "provider": "github",
+                            "intent": "login",
+                            "auth": {
+                                "username": session["username"],
+                                "accessToken": session["accessToken"],
+                                "expiresAt": session["expiresAt"],
+                                "tokenType": "bearer",
+                            },
+                        },
+                    },
+                ),
+            )
+            page.goto(
+                f"{frontend_url}/auth/callback#code=gallery-entry&intent=login",
+                wait_until="domcontentloaded",
+            )
+            _start_workspace_frame_recording(page)
+
+        deadline = time.monotonic() + 5
+        while not module_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(module_routes) == 1
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve));
+            })
+            """
+        )
+        module_routes.pop().continue_()
+
+        deadline = time.monotonic() + 5
+        while not data_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(data_routes) == 1
+        page.evaluate(
+            """
+            async () => {
+              for (let frame = 0; frame < 6; frame += 1) {
+                await new Promise(requestAnimationFrame);
+              }
+            }
+            """
+        )
+        data_routes.pop().continue_()
+
+        page.wait_for_url(f"{frontend_url}/resume")
+        expect(page.locator('input[name="resume-search"]')).to_be_visible()
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve));
+            })
+            """
+        )
+        frames = _stop_workspace_frame_recording(page)
+        resume_frames = [frame for frame in frames if frame["path"] == "/resume"]
+        timeline: list[dict[str, object]] = []
+        for frame in frames:
+            state = {
+                key: frame[key]
+                for key in (
+                    "path",
+                    "hasResumeGallery",
+                    "hasLogin",
+                    "hasAuthCard",
+                    "hasEntrySkeleton",
+                    "hasRouteSkeleton",
+                    "hasAppFallback",
+                    "hasSidebar",
+                )
+            }
+            if not timeline or state != timeline[-1]:
+                timeline.append(state)
+        diagnostics = json.dumps(
+            {
+                "entry": entry,
+                "timeline": timeline,
+                "resumeFrames": len(resume_frames),
+                "skeletonFrames": sum(
+                    bool(frame["hasRouteSkeleton"]) for frame in resume_frames
+                ),
+            }
+        )
+        assert resume_frames, diagnostics
+        assert not any(frame["hasAppFallback"] for frame in frames), diagnostics
+        if entry == "github":
+            assert all(
+                not frame["hasLogin"] and not frame["hasAuthCard"] for frame in frames
+            ), diagnostics
+            assert not any(
+                frame["hasRouteSkeleton"] and not frame["hasEntrySkeleton"]
+                for frame in frames
+            ), diagnostics
+        first_workspace_frame = next(
+            index for index, frame in enumerate(frames) if frame["hasSidebar"]
+        )
+        assert all(
+            frame["path"] == "/resume"
+            and frame["hasSidebar"]
+            and frame["hasResumeGallery"]
+            and not frame["hasRouteSkeleton"]
+            and not frame["hasEntrySkeleton"]
+            and not frame["hasLogin"]
+            for frame in frames[first_workspace_frame:]
+        ), diagnostics
+        page.screenshot(path=f"/tmp/resumate-login-entry-{entry}.png")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("entry", ["github", "setup"])
+def test_authenticated_entry_retries_gallery_without_repeating_authentication(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    entry: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    auth_payload = {
+        "username": session["username"],
+        "accessToken": session["accessToken"],
+        "expiresAt": session["expiresAt"],
+        "tokenType": "bearer",
+    }
+    context = browser.new_context(locale="en-US")
+    page = context.new_page()
+    auth_requests: list[Request] = []
+    data_requests: list[Request] = []
+    fail_data = True
+
+    def authenticate(route: Route) -> None:
+        if route.request.method == "GET":
+            data = {"setupRequired": not auth_requests}
+        else:
+            auth_requests.append(route.request)
+            data = (
+                {"provider": "github", "intent": "login", "auth": auth_payload}
+                if entry == "github"
+                else auth_payload
+            )
+        route.fulfill(json={"code": 0, "message": "OK", "data": data})
+
+    def load_gallery(route: Route) -> None:
+        data_requests.append(route.request)
+        if fail_data:
+            route.fulfill(status=503, json={"detail": {"code": "REQUEST_FAILED"}})
+        else:
+            route.continue_()
+
+    page.route(
+        "**/api/auth/oauth/complete" if entry == "github" else "**/api/auth/setup",
+        authenticate,
+    )
+    page.route("**/api/workspace/pages/resumes*", load_gallery)
+
+    try:
+        if entry == "github":
+            page.goto(
+                f"{frontend_url}/auth/callback#code=gallery-retry&intent=login",
+                wait_until="domcontentloaded",
+            )
+        else:
+            page.goto(f"{frontend_url}/setup", wait_until="domcontentloaded")
+            page.locator("#setup-username").fill("e2e-owner")
+            page.locator("#setup-password").fill("E2ePassword2026")
+            page.locator("#setup-confirm-password").fill("E2ePassword2026")
+            page.get_by_role("button", name="Create and Continue", exact=True).click()
+
+        page.wait_for_url(f"{frontend_url}/resume")
+        retry_button = page.get_by_role("button", name="Retry", exact=True)
+        expect(retry_button).to_be_visible()
+        expect(page.locator('[data-slot="sidebar-container"]')).to_be_visible()
+        expect(page.locator('[data-slot="workspace-entry-skeleton"]')).to_have_count(0)
+        expect(page.locator("#username, #setup-username")).to_have_count(0)
+        assert len(auth_requests) == 1
+        assert auth_requests[0].method == "POST"
+        assert len(data_requests) >= 2
+
+        previous_data_requests = len(data_requests)
+        fail_data = False
+        retry_button.click()
+        expect(page.locator('input[name="resume-search"]')).to_be_visible()
+        expect(retry_button).to_have_count(0)
+        assert page.url == f"{frontend_url}/resume"
+        assert len(data_requests) == previous_data_requests + 1
+        assert len(auth_requests) == 1
+    finally:
+        context.close()
+
+
+def test_password_login_recovers_when_session_is_lost_during_gallery_preparation(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(locale="en-US")
+    page = context.new_page()
+    data_routes: list[Route] = []
+    page.route(
+        "**/api/workspace/pages/resumes*", lambda route: data_routes.append(route)
+    )
+
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="domcontentloaded")
+        page.locator("#username").fill("e2e-owner")
+        page.locator("#password").fill("E2ePassword2026")
+        password_button = page.locator('form button[type="submit"]')
+        github_button = page.get_by_role(
+            "button", name="Continue with GitHub", exact=True
+        )
+        with page.expect_request("**/api/workspace/pages/resumes*"):
+            password_button.click()
+        deadline = time.monotonic() + 3
+        while not data_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(data_routes) == 1
+        expect(password_button).to_be_disabled()
+        expect(github_button).to_be_disabled()
+        page.evaluate("localStorage.removeItem('resumate-auth-session')")
+        data_routes.pop().continue_()
+
+        expect(password_button).to_be_enabled()
+        expect(password_button).not_to_have_attribute("aria-busy", "true")
+        expect(github_button).to_be_enabled()
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        assert page.url == f"{frontend_url}/login"
+        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+        expect(page.locator('[data-slot="sidebar-container"]')).to_have_count(0)
+
+        page.unroute("**/api/workspace/pages/resumes*")
+        password_button.click()
+        page.wait_for_url(f"{frontend_url}/resume")
+        expect(page.locator('input[name="resume-search"]')).to_be_visible()
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("intent", ["login", "bind"])
+def test_oauth_callback_completes_once_and_preserves_authenticated_workspace(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    intent: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context = (
+        _authenticated_context(browser, locale="en-US")
+        if intent == "bind"
+        else browser.new_context(locale="en-US")
+    )
+    page = context.new_page()
+    completion_requests: list[Request] = []
+    completion_routes: list[Route] = []
+    destination_routes: list[Route] = []
+    code = f"browser-oauth-{intent}"
+    hint = "login" if intent == "bind" else "bind"
+    destination = "settings" if intent == "bind" else "resume"
+    destination_module = (
+        "**/src/components/workspace/settings-workspace-page.tsx*"
+        if intent == "bind"
+        else "**/src/components/workspace/resume-gallery-workspace-page.tsx*"
+    )
+
+    def complete_authorization(route: Route) -> None:
+        completion_requests.append(route.request)
+        completion_routes.append(route)
+
+    page.route("**/api/auth/oauth/complete", complete_authorization)
+    page.route(destination_module, lambda route: destination_routes.append(route))
+
+    try:
+        page.goto(f"{frontend_url}/auth/callback#code={code}&intent={hint}")
+        entry_skeleton = page.locator('[data-slot="workspace-entry-skeleton"]')
+        _expect_oauth_callback_skeleton(
+            page, "settings" if hint == "bind" else "resume"
+        )
+        page.wait_for_function("window.location.hash === ''")
+        assert len(completion_routes) == 1
+        with page.expect_request(destination_module):
+            completion_routes.pop().fulfill(
+                json={
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "provider": "github",
+                        "intent": intent,
+                        "auth": None
+                        if intent == "bind"
+                        else {
+                            "username": session["username"],
+                            "accessToken": session["accessToken"],
+                            "expiresAt": session["expiresAt"],
+                            "tokenType": "bearer",
+                        },
+                    },
+                },
+            )
+        _expect_oauth_callback_skeleton(page, destination)
+        assert page.url == f"{frontend_url}/auth/callback"
+        assert len(destination_routes) == 1
+        destination_routes.pop().continue_()
+        page.wait_for_url(f"{frontend_url}/{destination}")
+        page.wait_for_load_state("networkidle")
+        assert len(completion_requests) == 1
+        assert completion_requests[0].method == "POST"
+        assert completion_requests[0].post_data_json == {"code": code}
+        assert code not in completion_requests[0].headers.get("referer", "")
+        assert page.evaluate("window.location.hash") == ""
+        stored_session = page.evaluate(
+            "JSON.parse(localStorage.getItem('resumate-auth-session'))"
+        )
+        assert stored_session["accessToken"] == session["accessToken"]
+        assert stored_session["expiresAt"] == session["expiresAt"]
+        expect(page.locator('[data-slot="sidebar-inset"]')).to_be_visible()
+        expect(entry_skeleton).to_have_count(0)
+        if intent == "bind":
+            assert stored_session["authenticatedAt"] == session["authenticatedAt"]
+        else:
+            assert (
+                page.evaluate("sessionStorage.getItem('resumate-auth-session')") is None
+            )
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("reduced_motion", ["no-preference", "reduce"])
+@pytest.mark.parametrize("intent", ["login", "bind"])
+@pytest.mark.parametrize(
+    "startup_resource",
+    ["**/api/auth/setup", "**/src/components/auth/oauth-callback-page.tsx*"],
+)
+def test_oauth_callback_keeps_authentication_waiting_until_workspace_mounts(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    startup_resource: str,
+    intent: str,
+    reduced_motion: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context = (
+        _authenticated_context(browser, locale="en-US", reduced_motion=reduced_motion)
+        if intent == "bind"
+        else browser.new_context(locale="en-US", reduced_motion=reduced_motion)
+    )
+    page = context.new_page()
+    journey_frames: list[dict[str, object]] = []
+    startup_routes: list[Route] = []
+    completion_requests: list[Request] = []
+    completion_routes: list[Route] = []
+    destination_routes: list[Route] = []
+    data_routes: list[Route] = []
+    backend_callback_requests: list[Request] = []
+    destination = "settings" if intent == "bind" else "resume"
+    destination_module = (
+        "**/src/components/workspace/settings-workspace-page.tsx*"
+        if intent == "bind"
+        else "**/src/components/workspace/resume-gallery-workspace-page.tsx*"
+    )
+    destination_data = (
+        "**/api/workspace/pages/settings*"
+        if intent == "bind"
+        else "**/api/workspace/pages/resumes*"
+    )
+    route_skeleton_slot = (
+        "settings-panel-skeleton" if intent == "bind" else "gallery-route-skeleton"
+    )
+    destination_selector = (
+        '[data-slot="sidebar-inset"] [data-slot="tabs-trigger"][data-state="active"]'
+        if intent == "bind"
+        else 'input[name="resume-search"]'
+    )
+    initial_selector = destination_selector if intent == "bind" else "#username"
+    code = f"browser-oauth-{intent}-visual-continuity"
+    provider_url = "https://github-provider.test/authorize"
+    backend_callback_url = (
+        f"{frontend_url}/api/auth/oauth/github/callback?code=provider-code"
+    )
+    frontend_callback_url = f"{frontend_url}/auth/callback#code={code}&intent={intent}"
+    frame_prefix = "__RESUMATE_OAUTH_FRAME__"
+
+    def record_journey_frame(message: object) -> None:
+        text = getattr(message, "text", "")
+        if isinstance(text, str) and text.startswith(frame_prefix):
+            journey_frames.append(json.loads(text.removeprefix(frame_prefix)))
+
+    def redirect_from_backend_callback(route: Route) -> None:
+        backend_callback_requests.append(route.request)
+        route.fulfill(
+            status=303,
+            headers={
+                "Cache-Control": "no-store",
+                "Location": frontend_callback_url,
+            },
+        )
+
+    def complete_authorization(route: Route) -> None:
+        completion_requests.append(route.request)
+        completion_routes.append(route)
+
+    page.on("console", record_journey_frame)
+    page.add_init_script(
+        f"""
+        (() => {{
+          const prefix = {json.dumps(frame_prefix)};
+          const visibleElement = element => {{
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          }};
+          const visible = selector => {{
+            const element = document.querySelector(selector);
+            return Boolean(element && visibleElement(element));
+          }};
+          const capture = () => {{
+            const entry = document.querySelector(
+              '[data-slot="workspace-entry-skeleton"]'
+            );
+            console.debug(prefix + JSON.stringify({{
+              time: Date.now(),
+              url: location.href,
+              initial: visible({json.dumps(initial_selector)}),
+              login: visible('#username'),
+              form: visible('#root form'),
+              sidebar: visible('[data-slot="sidebar-container"]'),
+              authCard: visible('#root > main > [data-slot="card"]'),
+              provider: visible('#provider-document'),
+              oldStatus: [...document.querySelectorAll('#root p')].some(element =>
+                element.textContent?.includes('Verifying your account. Please wait.')
+                && visibleElement(element)
+              ),
+              spinner: visible('#root svg[role="status"][aria-label="Loading"]'),
+              entry: Boolean(entry && visibleElement(entry)),
+              destination: entry?.getAttribute('data-destination') ?? null,
+              routeSkeleton: visible('[data-slot="{route_skeleton_slot}"]'),
+              workspace: visible({json.dumps(destination_selector)}),
+            }}));
+            requestAnimationFrame(capture);
+          }};
+          requestAnimationFrame(capture);
+        }})();
+        """
+    )
+    page.route(
+        f"**/api/auth/oauth/github/{intent}",
+        lambda route: route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"authorizationUrl": provider_url},
+            }
+        ),
+    )
+    if intent == "bind":
+        page.route(
+            "**/api/auth/oauth/identities",
+            lambda route: route.fulfill(
+                json={
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "identities": [],
+                        "providers": [{"provider": "github", "configured": True}],
+                    },
+                }
+            ),
+        )
+    page.route(
+        provider_url,
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body=(
+                '<main id="provider-document">'
+                "<h1>GitHub authorization</h1>"
+                f"<a href={json.dumps(backend_callback_url)}>Authorize</a>"
+                "</main>"
+            ),
+        ),
+    )
+    page.route("**/api/auth/oauth/github/callback?*", redirect_from_backend_callback)
+    page.route("**/api/auth/oauth/complete", complete_authorization)
+
+    try:
+        initial_route = "settings" if intent == "bind" else "login"
+        page.goto(f"{frontend_url}/{initial_route}", wait_until="networkidle")
+        expect(page.locator(initial_selector)).to_be_visible()
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+        button_name = "Connect GitHub" if intent == "bind" else "Continue with GitHub"
+        page.get_by_role("button", name=button_name, exact=True).click()
+        page.wait_for_url(provider_url)
+        expect(page.locator("#provider-document")).to_be_visible()
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+
+        page.route(startup_resource, lambda route: startup_routes.append(route))
+        page.route(destination_module, lambda route: destination_routes.append(route))
+        page.route(destination_data, lambda route: data_routes.append(route))
+        with page.expect_request(startup_resource):
+            page.get_by_role("link", name="Authorize", exact=True).click()
+        entry_skeleton = page.locator('[data-slot="workspace-entry-skeleton"]')
+        _expect_oauth_callback_skeleton(page, destination)
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+        expect(
+            page.get_by_text("Verifying your account. Please wait.", exact=True)
+        ).to_have_count(0)
+        expect(
+            page.locator('#root svg[role="status"][aria-label="Loading"]')
+        ).to_have_count(0)
+        assert len(startup_routes) == 1
+        startup_routes.pop().continue_()
+        page.wait_for_function("window.location.hash === ''")
+        assert len(backend_callback_requests) == 1
+        assert backend_callback_requests[0].method == "GET"
+        assert page.url == f"{frontend_url}/auth/callback"
+        deadline = time.monotonic() + 3
+        while not completion_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(completion_routes) == 1
+        _expect_oauth_callback_skeleton(page, destination)
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+
+        with page.expect_request(destination_module):
+            completion_routes.pop().fulfill(
+                json={
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "provider": "github",
+                        "intent": intent,
+                        "auth": None
+                        if intent == "bind"
+                        else {
+                            "username": session["username"],
+                            "accessToken": session["accessToken"],
+                            "expiresAt": session["expiresAt"],
+                            "tokenType": "bearer",
+                        },
+                    },
+                }
+            )
+        assert page.url == f"{frontend_url}/auth/callback"
+        _expect_oauth_callback_skeleton(page, destination)
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+        assert len(destination_routes) == 1
+        destination_routes.pop().continue_()
+        deadline = time.monotonic() + 3
+        while not data_routes and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(data_routes) == 1
+        assert page.url == f"{frontend_url}/auth/callback"
+        _expect_oauth_callback_skeleton(page, destination)
+        page.screenshot(path=f"/tmp/resumate-oauth-callback-{intent}-pending.png")
+        page.evaluate(
+            """
+            () => new Promise(resolve => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+            })
+            """
+        )
+        data_routes.pop().continue_()
+        page.wait_for_url(f"{frontend_url}/{destination}")
+        expect(page.locator(destination_selector)).to_be_visible()
+        expect(entry_skeleton).to_have_count(0)
+        page.screenshot(path=f"/tmp/resumate-oauth-callback-{intent}-complete.png")
+        page.wait_for_timeout(50)
+        assert len(completion_requests) == 1
+        assert completion_requests[0].post_data_json == {"code": code}
+
+        journey_frames.sort(key=lambda frame: float(frame["time"]))
+        first_initial_frame = next(
+            index for index, frame in enumerate(journey_frames) if frame["initial"]
+        )
+        first_provider_frame = next(
+            index for index, frame in enumerate(journey_frames) if frame["provider"]
+        )
+        first_callback_frame = next(
+            index
+            for index, frame in enumerate(journey_frames)
+            if urlparse(str(frame["url"])).path == "/auth/callback"
+        )
+        first_workspace_frame = next(
+            index
+            for index, frame in enumerate(journey_frames)
+            if index > first_callback_frame and frame["workspace"]
+        )
+        journey_timeline: list[dict[str, object]] = []
+        for frame in journey_frames:
+            state = {key: value for key, value in frame.items() if key != "time"}
+            if not journey_timeline or state != journey_timeline[-1]:
+                journey_timeline.append(state)
+        assert (
+            first_initial_frame
+            < first_provider_frame
+            < first_callback_frame
+            < first_workspace_frame
+        ), journey_timeline
+        journey_handoff_frames = journey_frames[first_provider_frame:]
+        assert not any(
+            frame["login"]
+            or frame["authCard"]
+            or frame["oldStatus"]
+            or frame["spinner"]
+            for frame in journey_handoff_frames
+        ), json.dumps(journey_timeline)
+        assert not any(
+            urlparse(str(frame["url"])).path == "/login"
+            for frame in journey_handoff_frames
+        ), journey_timeline
+        callback_frames = [
+            frame
+            for frame in journey_frames[first_callback_frame:]
+            if urlparse(str(frame["url"])).path == "/auth/callback"
+        ]
+        assert callback_frames
+        assert all(
+            not frame["login"] and not frame["authCard"] and not frame["form"]
+            for frame in callback_frames
+        ), json.dumps(journey_timeline)
+        first_entry_frame = next(
+            index
+            for index, frame in enumerate(journey_frames)
+            if index >= first_callback_frame and frame["entry"]
+        )
+        assert all(
+            frame["entry"] or frame["workspace"]
+            for frame in journey_frames[first_entry_frame:]
+        ), json.dumps(journey_timeline)
+        assert all(
+            not frame["routeSkeleton"] or frame["entry"]
+            for frame in journey_frames[first_entry_frame:]
+        ), json.dumps(journey_timeline)
+        first_sidebar_frame = next(
+            index
+            for index, frame in enumerate(journey_frames)
+            if index >= first_callback_frame and frame["sidebar"]
+        )
+        assert all(
+            frame["workspace"] and frame["sidebar"]
+            and not frame["entry"] and not frame["routeSkeleton"]
+            for frame in journey_frames[first_sidebar_frame:]
+        ), json.dumps(journey_timeline)
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("fragment", "expected_exchanges"),
+    [
+        ("error=OAUTH_CANCELLED", 0),
+        ("error=OAUTH_INVALID_STATE", 0),
+        ("code=expired&intent=login", 1),
+    ],
+)
+def test_oauth_callback_errors_clear_fragment_and_return_to_login(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    fragment: str,
+    expected_exchanges: int,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(
+        viewport={"width": 375, "height": 812}, locale="en-US"
+    )
+    page = context.new_page()
+    completion_requests: list[Request] = []
+
+    def reject_authorization(route: Route) -> None:
+        completion_requests.append(route.request)
+        route.fulfill(
+            status=400,
+            json={"code": 40000, "message": "OAUTH_INVALID_STATE", "data": None},
+        )
+
+    page.route("**/api/auth/oauth/complete", reject_authorization)
+
+    try:
+        page.goto(f"{frontend_url}/auth/callback#{fragment}", wait_until="networkidle")
+        expect(
+            page.get_by_role("button", name="Back to sign-in", exact=True)
+        ).to_be_visible()
+        assert page.url == f"{frontend_url}/auth/callback"
+        assert len(completion_requests) == expected_exchanges
+        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+        assert page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        page.get_by_role("button", name="Back to sign-in", exact=True).click()
+        page.wait_for_url(f"{frontend_url}/login")
+        expect(page.get_by_role("button", name="Sign In", exact=True)).to_be_enabled()
+    finally:
+        context.close()
+
+
+def test_oauth_github_setup_retries_and_posts_manifest_in_same_tab(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    session = _BROWSER_AUTH_SESSION
+    assert session is not None
+    context = browser.new_context(
+        viewport={"width": 375, "height": 812}, locale="en-US"
+    )
+    context.add_init_script(
+        f"""
+        if (window.location.origin === {json.dumps(frontend_url)}) {{
+          localStorage.setItem(
+            'resumate-auth-session', {json.dumps(json.dumps(session))}
+          );
+        }}
+        """
+    )
+    context.add_cookies(
+        [{"name": "oauth-test-session", "value": "browser-proof", "url": frontend_url}]
+    )
+    context.add_init_script(
+        """
+        (() => {
+          const originalFetch = window.fetch;
+          window.__oauthSetupFetch = [];
+          window.fetch = function(input, init) {
+            if (String(input).endsWith('/api/auth/oauth/github/setup')) {
+              window.__oauthSetupFetch.push({ credentials: init?.credentials });
+            }
+            return originalFetch.call(this, input, init);
+          };
+        })();
+        """
+    )
+    page = context.new_page()
+    setup_requests: list[Request] = []
+    registration_requests: list[Request] = []
+    registration_url = "https://github.com/settings/apps/new?state=browser-setup-state"
+    manifest = {
+        "name": "ResuMate Browser Regression",
+        "url": frontend_url,
+        "redirect_url": f"{frontend_url}/api/auth/oauth/github/setup/callback",
+        "callback_urls": [f"{frontend_url}/api/auth/oauth/github/callback"],
+        "public": False,
+        "default_permissions": {},
+        "default_events": [],
+    }
+    page.route(
+        "**/api/auth/oauth/identities",
+        lambda route: route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "identities": [],
+                    "providers": [{"provider": "github", "configured": False}],
+                },
+            },
+        ),
+    )
+
+    def start_setup(route: Route) -> None:
+        setup_requests.append(route.request)
+        if len(setup_requests) == 1:
+            route.fulfill(status=503, json={"detail": {"code": "REQUEST_FAILED"}})
+            return
+        route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"registrationUrl": registration_url, "manifest": manifest},
+            },
+        )
+
+    def register_manifest(route: Route) -> None:
+        registration_requests.append(route.request)
+        route.fulfill(content_type="text/html", body="GitHub app creation confirmation")
+
+    page.route("**/api/auth/oauth/github/setup", start_setup)
+    page.route("https://github.com/settings/apps/new?*", register_manifest)
+
+    try:
+        page.goto(f"{frontend_url}/settings", wait_until="networkidle")
+        setup_button = page.get_by_role(
+            "button", name="Set up and connect GitHub", exact=True
+        )
+        expect(setup_button).to_be_enabled()
+        expect(page.get_by_text("Google", exact=True)).to_have_count(0)
+        expect(page.get_by_role("textbox")).to_have_count(0)
+        assert page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        setup_button.scroll_into_view_if_needed()
+        page.screenshot(path="/tmp/resumate-oauth-setup-mobile.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.screenshot(path="/tmp/resumate-oauth-setup-desktop.png", full_page=True)
+        page.set_viewport_size({"width": 375, "height": 812})
+
+        setup_button.click()
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        expect(setup_button).to_be_enabled()
+        assert page.url == f"{frontend_url}/settings"
+        assert page.evaluate("window.__oauthSetupFetch") == [{"credentials": "include"}]
+        setup_button.click()
+        page.wait_for_url(registration_url)
+        assert len(setup_requests) == 2
+        assert all(request.method == "POST" for request in setup_requests)
+        assert all(
+            request.post_data_json == {"publicBaseUrl": frontend_url}
+            for request in setup_requests
+        )
+        for request in setup_requests:
+            assert request.header_value("authorization") == (
+                f"Bearer {session['accessToken']}"
+            )
+            assert request.header_value("origin") == frontend_url
+            assert "oauth-test-session=browser-proof" in (
+                request.header_value("cookie") or ""
+            )
+        assert len(registration_requests) == 1
+        registration = registration_requests[0]
+        assert registration.method == "POST"
+        assert registration.is_navigation_request()
+        assert registration.header_value("origin") == frontend_url
+        assert registration.header_value("authorization") is None
+        assert registration.header_value("cookie") is None
+        assert registration.header_value("content-type") == (
+            "application/x-www-form-urlencoded"
+        )
+        assert parse_qs(urlparse(registration.url).query) == {
+            "state": ["browser-setup-state"]
+        }
+        form_fields = parse_qs(registration.post_data or "")
+        assert set(form_fields) == {"manifest"}
+        assert json.loads(form_fields["manifest"][0]) == manifest
+        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+        assert len(context.pages) == 1
+    finally:
+        context.close()
+
+
+@pytest.fixture
+def workspace_preferences_page(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> Iterator[tuple[Page, dict[str, Any]]]:
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        color_scheme="light",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    preferences: dict[str, Any] = {
+        "settings": {
+            "theme": "light",
+            "agentSettings": {
+                "defaultModelConfigId": "llm-shared-preferences",
+                "responseLanguage": "en",
+                "behaviorMode": "strict",
+                "confirmationMode": "suggestOnly",
+            },
+        },
+        "writes": [],
+        "localeWrites": [],
+    }
+
+    def load_workspace(route: Route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["theme"] = preferences["settings"]["theme"]
+        if "agentSettings" in payload["data"]:
+            payload["data"]["agentSettings"] = preferences["settings"]["agentSettings"]
+            payload["data"]["modelConfigs"] = [
+                {
+                    "id": "llm-shared-preferences",
+                    "provider": "openai",
+                    "nickname": "Shared preferences model",
+                    "model": "preferences-model",
+                    "supportsTools": True,
+                }
+            ]
+        route.fulfill(response=response, json=payload)
+
+    def save_preferences(route: Route) -> None:
+        assert route.request.method == "PUT"
+        settings = route.request.post_data_json["settings"]
+        locale = parse_qs(urlparse(route.request.url).query)["locale"][0]
+        preferences["writes"].append(settings)
+        preferences["localeWrites"].append(locale)
+        preferences["settings"].update(settings)
+        route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"locale": locale, **preferences["settings"]},
+            }
+        )
+
+    page.route("**/api/workspace/pages/*", load_workspace)
+    page.route("**/api/workspace/user-settings*", save_preferences)
+    try:
+        yield page, preferences
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_gallery_theme_preserves_saved_agent_settings(
+    workspace_preferences_page: tuple[Page, dict[str, Any]],
+    workspace_servers: tuple[str, str],
+) -> None:
+    page, preferences = workspace_preferences_page
+    frontend_url, _ = workspace_servers
+    original_agent_settings = dict(preferences["settings"]["agentSettings"])
+    page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_role("button", name="切换日间 / 夜间模式", exact=True).click()
+
+    assert preferences["settings"]["theme"] == "dark"
+    assert preferences["settings"]["agentSettings"] == original_agent_settings
+    page.locator('a[href="/settings"]').click()
+    page.wait_for_url(f"{frontend_url}/settings")
+    page.get_by_role("tab", name="AI 助手", exact=True).click()
+    expect(page.get_by_label("严格", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_label("仅给建议", exact=True)).to_have_attribute(
+        "data-state", "on"
+    )
+    expect(page.get_by_role("combobox", name="默认模型", exact=True)).to_contain_text(
+        "Shared preferences model"
+    )
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_follow_route_changes_and_history(
+    workspace_preferences_page: tuple[Page, dict[str, Any]],
+    workspace_servers: tuple[str, str],
+) -> None:
+    page, preferences = workspace_preferences_page
+    frontend_url, resume_id = workspace_servers
+    page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_label("增强", exact=True).click()
+    page.get_by_role("tab", name="通用设置", exact=True).click()
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_label("夜间", exact=True).click()
+    page.evaluate("window.__preferencesDocument = document")
+
+    for route_path, back_label in (
+        ("/resume", None),
+        (f"/resume/{resume_id}", "返回简历列表"),
+        ("/templates", None),
+        ("/template/minimal", "返回模板列表"),
+        ("/settings", None),
+    ):
+        page.locator(f'a[href="{route_path}"]').click()
+        page.wait_for_url(f"{frontend_url}{route_path}")
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("html")).to_have_class(re.compile(r"\bdark\b"))
+        assert preferences["settings"]["agentSettings"]["behaviorMode"] == (
+            "aggressive"
+        )
+        if back_label:
+            gallery_path = (
+                "/resume" if route_path.startswith("/resume/") else "/templates"
+            )
+            page.go_back()
+            page.wait_for_url(f"{frontend_url}{gallery_path}")
+            page.wait_for_load_state("networkidle")
+            expect(page.locator("html")).to_have_class(re.compile(r"\bdark\b"))
+            page.go_forward()
+            page.wait_for_url(f"{frontend_url}{route_path}")
+            page.wait_for_load_state("networkidle")
+            expect(page.locator("html")).to_have_class(re.compile(r"\bdark\b"))
+            page.get_by_role("button", name=back_label, exact=True).click()
+            page.wait_for_url(f"{frontend_url}{gallery_path}")
+            page.wait_for_load_state("networkidle")
+
+    expect(page.get_by_label("夜间", exact=True)).to_have_attribute("data-state", "on")
+    page.get_by_role("tab", name="AI 助手", exact=True).click()
+    expect(page.get_by_label("增强", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_label("仅给建议", exact=True)).to_have_attribute(
+        "data-state", "on"
+    )
+    assert page.evaluate("window.__preferencesDocument === document")
+    assert len(preferences["writes"]) == 2
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_queue_keeps_latest_change_before_navigation(
+    workspace_preferences_page: tuple[Page, dict[str, Any]],
+    workspace_servers: tuple[str, str],
+) -> None:
+    page, preferences = workspace_preferences_page
+    frontend_url, _ = workspace_servers
+    held_routes: list[Route] = []
+    page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    page.route(
+        "**/api/workspace/user-settings*", lambda route: held_routes.append(route)
+    )
+
+    page.get_by_label("增强", exact=True).click()
+    deadline = time.monotonic() + 3
+    while not held_routes and time.monotonic() < deadline:
+        page.wait_for_timeout(20)
+    assert len(held_routes) == 1
+
+    page.get_by_label("平衡", exact=True).click()
+    page.get_by_label("始终确认", exact=True).click()
+    expect(page.get_by_label("平衡", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_label("始终确认", exact=True)).to_have_attribute(
+        "data-state", "on"
+    )
+    assert len(held_routes) == 1
+
+    page.locator('a[href="/templates"]').click()
+    page.wait_for_timeout(100)
+    assert urlparse(page.url).path == "/settings"
+    for expected_count in range(1, 4):
+        deadline = time.monotonic() + 3
+        while len(held_routes) < expected_count and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(held_routes) == expected_count
+        held_routes[expected_count - 1].fallback()
+
+    page.wait_for_url(f"{frontend_url}/templates")
+    page.wait_for_load_state("networkidle")
+    assert preferences["settings"]["theme"] == "light"
+    assert preferences["settings"]["agentSettings"]["behaviorMode"] == "balanced"
+    assert preferences["settings"]["agentSettings"]["confirmationMode"] == "always"
+    page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    expect(page.get_by_label("平衡", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_label("始终确认", exact=True)).to_have_attribute(
+        "data-state", "on"
+    )
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_latest_failure_rolls_back_every_route(
+    workspace_preferences_page: tuple[Page, dict[str, Any]],
+    workspace_servers: tuple[str, str],
+) -> None:
+    page, preferences = workspace_preferences_page
+    frontend_url, _ = workspace_servers
+    page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_label("增强", exact=True).click()
+    page.get_by_role("tab", name="通用设置", exact=True).click()
+
+    page.route(
+        "**/api/workspace/user-settings*",
+        lambda route: route.fulfill(
+            status=503,
+            json={"code": 50000, "message": "REQUEST_FAILED", "data": None},
+        ),
+    )
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_label("夜间", exact=True).click()
+    expect(page.locator("html")).not_to_have_class(re.compile(r"\bdark\b"))
+    expect(page.get_by_label("日间", exact=True)).to_have_attribute("data-state", "on")
+
+    for route_path in ("/resume", "/templates", "/settings"):
+        page.locator(f'a[href="{route_path}"]').click()
+        page.wait_for_url(f"{frontend_url}{route_path}")
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("html")).not_to_have_class(re.compile(r"\bdark\b"))
+    expect(page.get_by_label("日间", exact=True)).to_have_attribute("data-state", "on")
+    page.get_by_role("tab", name="AI 助手", exact=True).click()
+    with page.expect_response("**/api/workspace/user-settings*"):
+        page.get_by_label("平衡", exact=True).click()
+    expect(page.get_by_label("增强", exact=True)).to_have_attribute("data-state", "on")
+    assert preferences["settings"]["theme"] == "light"
+    assert preferences["settings"]["agentSettings"]["behaviorMode"] == "aggressive"
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
+    workspace_preferences_page: tuple[Page, dict[str, Any]],
+    workspace_servers: tuple[str, str],
+) -> None:
+    page, preferences = workspace_preferences_page
+    frontend_url, _ = workspace_servers
+    page.goto(f"{frontend_url}/resume", wait_until="networkidle")
+
+    page.get_by_role("combobox", name="语言", exact=True).click()
+    with page.expect_response("**/api/workspace/user-settings*", timeout=5000):
+        page.get_by_role("option", name="EN", exact=True).click()
+    expect(page.get_by_role("combobox", name="Language", exact=True)).to_have_text("EN")
+    assert preferences["localeWrites"] == ["en"]
+    assert page.evaluate("localStorage.getItem('resumate-locale')") == "en"
+
+    page.locator('a[href="/settings"]').click()
+    page.wait_for_url(f"{frontend_url}/settings")
+    language = page.get_by_role("combobox", name="Language", exact=True)
+    expect(language).to_have_text("EN")
+    language.click()
+    with page.expect_response("**/api/workspace/user-settings*", timeout=5000):
+        page.get_by_role("option", name="中文", exact=True).click()
+    expect(page.get_by_role("tab", name="通用设置", exact=True)).to_be_visible()
+    assert preferences["localeWrites"] == ["en", "zh"]
+    assert page.evaluate("localStorage.getItem('resumate-locale')") == "zh"
+
+    page.locator('a[href="/templates"]').click()
+    page.wait_for_url(f"{frontend_url}/templates")
+    page.wait_for_load_state("networkidle")
+    language = page.get_by_role("combobox", name="语言", exact=True)
+    expect(language).to_have_text("中文")
+    failed_writes: list[Request] = []
+
+    def fail_locale_save(route: Route) -> None:
+        failed_writes.append(route.request)
+        route.fulfill(
+            status=503,
+            json={"code": 50000, "message": "REQUEST_FAILED", "data": None},
+        )
+
+    page.route("**/api/workspace/user-settings*", fail_locale_save)
+    language.click()
+    with page.expect_response("**/api/workspace/user-settings*", timeout=5000):
+        page.get_by_role("option", name="EN", exact=True).click()
+    expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text("中文")
+    page.wait_for_function("localStorage.getItem('resumate-locale') === 'zh'")
+    assert len(failed_writes) == 1
+    assert preferences["localeWrites"] == ["en", "zh"]
+    page.locator('a[href="/settings"]').click()
+    page.wait_for_url(f"{frontend_url}/settings")
+    expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text("中文")
+    assert preferences["settings"]["agentSettings"]["behaviorMode"] == "strict"
+
+
+@pytest.mark.browser_smoke
+def test_workspace_preferences_use_restored_locale_after_password_login(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = browser.new_context(
+        locale="en-US", viewport={"width": 1440, "height": 900}
+    )
+    context.add_init_script("localStorage.setItem('resumate-locale', 'zh')")
+    page = context.new_page()
+    held_catalogs: list[Route] = []
+    settings_requests: list[Request] = []
+    page.route(
+        "**/src/i18n/locales/zh.json*",
+        lambda route: held_catalogs.append(route),
+        times=1,
+    )
+
+    def save_preferences(route: Route) -> None:
+        settings_requests.append(route.request)
+        settings = route.request.post_data_json["settings"]
+        locale = parse_qs(urlparse(route.request.url).query)["locale"][0]
+        route.fulfill(
+            json={"code": 0, "message": "OK", "data": {"locale": locale, **settings}}
+        )
+
+    page.route("**/api/workspace/user-settings*", save_preferences)
+    try:
+        page.goto(f"{frontend_url}/login", wait_until="networkidle")
+        page.locator("#username").fill("e2e-owner")
+        page.locator("#password").fill("E2ePassword2026")
+        page.locator('form button[type="submit"]').click()
+        deadline = time.monotonic() + 3
+        while not held_catalogs and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(held_catalogs) == 1
+        assert page.url == f"{frontend_url}/login"
+        expect(page.locator('form button[type="submit"]')).to_be_disabled()
+        held_catalogs.pop().continue_()
+        page.wait_for_url(f"{frontend_url}/resume")
+        expect(page.get_by_role("combobox", name="语言", exact=True)).to_be_visible()
+
+        with page.expect_response("**/api/workspace/user-settings*"):
+            page.get_by_role("button", name="切换日间 / 夜间模式", exact=True).click()
+        assert len(settings_requests) == 1
+        assert parse_qs(urlparse(settings_requests[0].url).query)["locale"] == ["zh"]
+        expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text(
+            "中文"
+        )
+        assert page.evaluate("localStorage.getItem('resumate-locale')") == "zh"
     finally:
         context.close()

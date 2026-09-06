@@ -311,10 +311,10 @@ def _openai_chat_thinking_body(config: Any) -> dict[str, Any]:
         if config.thinking_control == "native_off":
             return {"enable_thinking": False}
         return {}
-    if (
-        config.thinking_control == "native_off"
-        and config.provider in {"deepseek", "glm"}
-    ):
+    if config.thinking_control == "native_off" and config.provider in {
+        "deepseek",
+        "glm",
+    }:
         # These official Chat Completions endpoints share the same nested
         # thinking switch. Discovery separately proves that the chosen model is
         # hybrid; this exact endpoint guard prevents compatible gateways from

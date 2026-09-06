@@ -3,22 +3,13 @@ import { WorkspaceRouteSkeleton } from "@/components/workspace-skeletons";
 import { useTrashWorkspace } from "@/components/workspace/use-trash-workspace";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function TrashWorkspacePage({
-  locale,
-  messages,
-  persistence,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
-}) {
+export function TrashWorkspacePage() {
+  const { locale, messages } = useWorkspacePreferences();
   const trash = useTrashWorkspace({
     locale,
     messages,
-    persistence,
   });
   useRememberWorkspaceLateralRouteData(
     "trash",

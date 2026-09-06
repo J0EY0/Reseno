@@ -3,26 +3,13 @@ import { ModelConfigPanelSkeleton } from "@/components/workspace-skeletons";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function ModelsWorkspacePage({
-  locale,
-  messages,
-  onLocaleChange,
-  persistence,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
-  persistence: WorkspacePreferencesPersistence;
-}) {
+export function ModelsWorkspacePage() {
+  const { locale, messages } = useWorkspacePreferences();
   const preferences = useWorkspacePreferencesRoute({
     kind: "models",
     locale,
-    messages,
-    onLocaleChange,
-    persistence,
   });
   useRememberWorkspaceLateralRouteData(
     "models",

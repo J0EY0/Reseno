@@ -1,5 +1,6 @@
 import { apiRoutes, requestApi } from "@/lib/api-client";
 import {
+  AUTH_REFRESH_LOCK_NAME,
   clearAuthSession,
   getAccessToken,
   loadAuthSession,
@@ -66,18 +67,27 @@ export async function setupAuthOwner(payload: AuthSetupPayload) {
 export async function refreshAuthSession() {
   const previousToken = getAccessToken()
   if (!previousToken) {
-    clearAuthSession()
     return false
   }
 
-  const result = await requestApi<AuthTokenPayload>(apiRoutes.authRefresh, {
-    body: {},
-    method: 'POST',
-  })
+  return navigator.locks.request(AUTH_REFRESH_LOCK_NAME, async () => {
+    if (getAccessToken() !== previousToken) {
+      return loadAuthSession()
+    }
 
-  recordInvalidatedToken(previousToken)
-  saveAuthSession(result.username, result.accessToken, result.expiresAt)
-  return true
+    const result = await requestApi<AuthTokenPayload>(apiRoutes.authRefresh, {
+      body: {},
+      method: 'POST',
+    })
+
+    if (getAccessToken() !== previousToken) {
+      return loadAuthSession()
+    }
+
+    recordInvalidatedToken(previousToken)
+    saveAuthSession(result.username, result.accessToken, result.expiresAt)
+    return true
+  })
 }
 
 export async function updateAuthPassword(payload: AuthPasswordUpdatePayload) {

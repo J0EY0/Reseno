@@ -1,4 +1,10 @@
 import { createRouteLoader } from "@/lib/route-loader";
+import type { WorkspaceView } from "@/types/resume";
+
+export const loadWorkspacePreferencesProvider = createRouteLoader(
+  () => import("@/components/workspace/workspace-preferences"),
+  "WorkspacePreferencesProvider",
+);
 
 export const loadWorkspaceLateralLayout = createRouteLoader(
   () => import("@/components/workspace/workspace-lateral-layout"),
@@ -39,3 +45,26 @@ export const loadTemplateDetailWorkspacePage = createRouteLoader(
   () => import("@/components/workspace/template-detail-workspace-page"),
   "TemplateDetailWorkspacePage",
 );
+
+function loadWorkspaceRoute(view: WorkspaceView) {
+  switch (view) {
+    case "models":
+      return loadModelsWorkspacePage();
+    case "settings":
+      return loadSettingsWorkspacePage();
+    case "templates":
+      return loadTemplateGalleryWorkspacePage();
+    case "trash":
+      return loadTrashWorkspacePage();
+    case "resume":
+      return loadResumeGalleryWorkspacePage();
+  }
+}
+
+export function preloadWorkspaceRoute(view: WorkspaceView) {
+  return Promise.all([
+    loadWorkspacePreferencesProvider(),
+    loadWorkspaceLateralLayout(),
+    loadWorkspaceRoute(view),
+  ]);
+}

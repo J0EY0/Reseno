@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, closing
 from typing import cast
@@ -8,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException
 
-from app.config import get_settings
+from app.config import JWT_SECRET_ENV_NAME, get_settings
 from app.db.connection import connect
 from app.db.schema import ensure_database_schema
 from app.exceptions import (
@@ -17,9 +20,11 @@ from app.exceptions import (
     validation_exception_handler,
 )
 from app.middleware.auth import jwt_auth_middleware
+from app.middleware.oauth_session import OAuthSessionMiddleware
 from app.routers import (
     agent,
     auth,
+    auth_oauth,
     exports,
     health,
     imports,
@@ -34,6 +39,7 @@ from app.routers import (
 from app.services.agent_runs import AgentRunManager
 from app.services.agent_sessions import fail_interrupted_agent_turn_executions
 from app.services.auth_accounts import ensure_auth_database
+from app.services.auth_oauth import OAUTH_SESSION_TTL_SECONDS
 from app.services.model_metadata import ensure_model_metadata_cache
 from app.services.pdf import cleanup_expired_exports
 
@@ -78,6 +84,18 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unhandled_exception_handler)
     app.middleware("http")(jwt_auth_middleware)
     app.add_middleware(
+        OAuthSessionMiddleware,
+        secret_key=hmac.digest(
+            os.environ[JWT_SECRET_ENV_NAME].encode(),
+            b"resumate-oauth-session",
+            hashlib.sha256,
+        ).hex(),
+        session_cookie="resumate-oauth",
+        max_age=OAUTH_SESSION_TTL_SECONDS,
+        path="/api/auth/oauth",
+        same_site="lax",
+    )
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_credentials=True,
@@ -87,6 +105,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(auth_oauth.router)
     app.include_router(workspace.router)
     app.include_router(resumes.router)
     app.include_router(templates.router)

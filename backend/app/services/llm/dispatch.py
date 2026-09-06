@@ -256,6 +256,7 @@ def _portable_validation_tools(
         )
     return projected
 
+
 async def async_stream_chat(
     config: AgentLlmConfig,
     prompt: LlmPrompt,

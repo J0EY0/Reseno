@@ -10,17 +10,17 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
-import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { getTemplateCatalog } from "@/lib/templates";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import {
+  dismissWorkspaceLoadError,
+  showWorkspaceLoadError,
+} from "@/lib/workspace-load-error";
 import { importResumesIntoWorkspace } from "@/components/workspace/resume-gallery-import";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import {
-  normalizeWorkspaceTheme,
-  useWorkspaceTheme,
-} from "@/components/workspace/workspace-theme-context";
-import {
+  fetchWorkspacePageData,
   prepareCreatedResumeDetailRoute,
   prepareResumeDetailRoute,
   preloadResumeDetailRoute,
@@ -32,7 +32,6 @@ import {
 } from "@/components/workspace/use-workspace-navigation-transaction";
 import {
   createResumeApi,
-  fetchWorkspaceRouteData,
   moveResumeToTrashApi,
 } from "@/lib/workspace-api";
 import {
@@ -55,15 +54,13 @@ const initialDefaultTemplateIds: DefaultTemplateIds = {
 export function useResumeGalleryWorkspace({
   locale,
   messages,
-  persistence,
 }: {
   locale: Locale;
   messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
   const preparedRouteData = useWorkspaceLateralRouteData("resume");
-  const { hydrateTheme, theme } = useWorkspaceTheme();
+  const { persistence, theme } = useWorkspacePreferences();
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -105,15 +102,10 @@ export function useResumeGalleryWorkspace({
       requestIdRef.current = requestId;
       setIsLoading(true);
       setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      dismissWorkspaceLoadError();
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
-
-        const source = await fetchWorkspaceRouteData("resume-gallery", {
+        const source = await fetchWorkspacePageData("resume-gallery", persistence, {
           notifyOnError: false,
           signal,
         });
@@ -121,21 +113,9 @@ export function useResumeGalleryWorkspace({
           return;
         }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
-
-        hydrateTheme(nextTheme);
         setResumes(source.data.resumes);
         setDefaultTemplateIds(source.data.defaultTemplateIds);
         setCustomTemplates(source.data.customTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings:
-            persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
-        });
         setHasLoaded(true);
       } catch (error) {
         if (
@@ -148,9 +128,8 @@ export function useResumeGalleryWorkspace({
 
         console.error("Failed to load the resume gallery route.", error);
         if (!isApiErrorToastShown(error)) {
-          toast.error(
+          showWorkspaceLoadError(
             getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
           );
         }
         setHasLoaded(false);
@@ -164,22 +143,11 @@ export function useResumeGalleryWorkspace({
         }
       }
     },
-    [hydrateTheme, persistence],
+    [persistence],
   );
 
   useEffect(() => {
     if (preparedRouteData && retryKey === 0) {
-      const persistedPreferences = persistence.getSnapshot();
-      const nextTheme = preparedRouteData.theme
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : persistedPreferences?.theme ?? "light";
-      hydrateTheme(nextTheme);
-      persistence.hydrate({
-        locale: initialLocaleRef.current,
-        theme: nextTheme,
-        agentSettings:
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
-      });
       return;
     }
 
@@ -194,7 +162,7 @@ export function useResumeGalleryWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
+  }, [loadRouteData, preparedRouteData, retryKey]);
 
   const buildResumeDetailHandoff = useCallback(
     (

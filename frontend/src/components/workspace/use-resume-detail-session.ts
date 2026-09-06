@@ -73,6 +73,19 @@ export function useResumeDetailSession({
     useState<ResumeTemplateSettingsOverrides | null>(
       initialResume?.templateSettings ?? null,
     );
+  const liveResume = useMemo<ResumeWorkspaceItem | null>(
+    () => resumeItem
+      ? {
+          ...resumeItem,
+          jobBrief,
+          resume,
+          template,
+          templateSettings,
+          typography,
+        }
+      : null,
+    [jobBrief, resume, resumeItem, template, templateSettings, typography],
+  );
 
   const applyAgentDraftResume = useCallback((nextResume: ResumeData) => {
     setResume(nextResume);
@@ -86,37 +99,13 @@ export function useResumeDetailSession({
     resumeId: resumeItem?.id,
   });
   const { agentDraft, resetAgentDraft } = agent;
-  const latestRef = useRef({
-    agentDraft,
-    jobBrief,
-    resume,
-    resumeItem,
-    template,
-    templateSettings,
-    typography,
-  });
+  const latestRef = useRef(liveResume);
 
   // A stable getter is required after save/discard awaits. Layout sync keeps
   // it current before another browser event or direct route response can run.
   useLayoutEffect(() => {
-    latestRef.current = {
-      agentDraft,
-      jobBrief,
-      resume,
-      resumeItem,
-      template,
-      templateSettings,
-      typography,
-    };
-  }, [
-    agentDraft,
-    jobBrief,
-    resume,
-    resumeItem,
-    template,
-    templateSettings,
-    typography,
-  ]);
+    latestRef.current = liveResume;
+  }, [liveResume]);
 
   const hydrate = useCallback(
     (item: ResumeWorkspaceItem) => {
@@ -135,19 +124,11 @@ export function useResumeDetailSession({
   const getSnapshot = useCallback(
     (updatedAt: string): ResumeWorkspaceItem | null => {
       const latest = latestRef.current;
-      if (!latest.resumeItem) {
+      if (!latest) {
         return null;
       }
 
-      return {
-        ...latest.resumeItem,
-        jobBrief: latest.jobBrief,
-        resume: latest.resume,
-        template: latest.template,
-        templateSettings: latest.templateSettings,
-        typography: latest.typography,
-        updatedAt,
-      };
+      return { ...latest, updatedAt };
     },
     [],
   );
@@ -193,16 +174,6 @@ export function useResumeDetailSession({
     previewPresentation.review || deferredPreviewPresentation.review
       ? previewPresentation
       : deferredPreviewPresentation;
-  const liveResume = resumeItem
-    ? {
-        ...resumeItem,
-        jobBrief,
-        resume,
-        template,
-        templateSettings,
-        typography,
-      }
-    : null;
   const liveFingerprint = createResumeFingerprint(liveResume);
   return {
     ...agent,

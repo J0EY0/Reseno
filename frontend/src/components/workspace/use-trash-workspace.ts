@@ -10,20 +10,19 @@ import {
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
-import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
 import { getTemplateCatalog } from "@/lib/templates";
-import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import {
-  normalizeWorkspaceTheme,
-  useWorkspaceTheme,
-} from "@/components/workspace/workspace-theme-context";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+  dismissWorkspaceLoadError,
+  showWorkspaceLoadError,
+} from "@/lib/workspace-load-error";
+import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
+import { fetchWorkspacePageData } from "@/components/workspace/workspace-route-preparation";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import {
   deleteResumeForeverApi,
   deleteTemplateForeverApi,
-  fetchWorkspaceRouteData,
   restoreResumeApi,
   restoreTemplateApi,
 } from "@/lib/workspace-api";
@@ -42,14 +41,12 @@ const initialDefaultTemplateIds: DefaultTemplateIds = {
 export function useTrashWorkspace({
   locale,
   messages,
-  persistence,
 }: {
   locale: Locale;
   messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const preparedRouteData = useWorkspaceLateralRouteData("trash");
-  const { hydrateTheme, theme } = useWorkspaceTheme();
+  const { persistence, theme } = useWorkspacePreferences();
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
@@ -96,15 +93,10 @@ export function useTrashWorkspace({
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
       setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      dismissWorkspaceLoadError();
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
-
-        const source = await fetchWorkspaceRouteData("trash", {
+        const source = await fetchWorkspacePageData("trash", persistence, {
           notifyOnError: false,
           signal,
         });
@@ -112,23 +104,10 @@ export function useTrashWorkspace({
           return;
         }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
-        const persistedAgentSettings =
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
-
-        hydrateTheme(nextTheme);
         setCustomTemplates(source.data.customTemplates);
         setDefaultTemplateIds(source.data.defaultTemplateIds);
         setDeletedResumes(source.data.deletedResumes);
         setDeletedTemplates(source.data.deletedTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings: persistedAgentSettings,
-        });
         setHasLoaded(true);
       } catch (error) {
         if (
@@ -141,31 +120,19 @@ export function useTrashWorkspace({
 
         console.error("Failed to load the trash workspace route.", error);
         if (!isApiErrorToastShown(error)) {
-          toast.error(
+          showWorkspaceLoadError(
             getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
           );
         }
         setHasLoaded(false);
         setHasLoadError(true);
       }
     },
-    [hydrateTheme, persistence],
+    [persistence],
   );
 
   useEffect(() => {
     if (preparedRouteData && retryKey === 0) {
-      const persistedPreferences = persistence.getSnapshot();
-      const nextTheme = preparedRouteData.theme
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : persistedPreferences?.theme ?? "light";
-      hydrateTheme(nextTheme);
-      persistence.hydrate({
-        locale: initialLocaleRef.current,
-        theme: nextTheme,
-        agentSettings:
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
-      });
       return;
     }
 
@@ -180,7 +147,7 @@ export function useTrashWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
+  }, [loadRouteData, preparedRouteData, retryKey]);
 
   const restoreResumes = useCallback(
     async (resumeIds: string[]) => {

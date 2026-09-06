@@ -1,6 +1,7 @@
 import { PopoverTitle } from "@/components/ui/popover";
 import type { AppMessages } from "@/i18n";
 import { formatAgentDiffValue } from "@/lib/agent-diff-value";
+import { cn } from "@/lib/utils";
 import type { ResumeDraftDiff } from "@/types/resume";
 
 function localizedKind(diff: ResumeDraftDiff, t: AppMessages) {
@@ -77,11 +78,12 @@ export function ResumeDraftReviewComparison({
               {row.label}
             </dt>
             <dd
-              className={
+              className={cn(
+                "max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border bg-card px-2.5 py-1.5 text-xs leading-5 text-card-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                 index > 0 || diff.kind === "added"
-                  ? "max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-success/10 px-2.5 py-1.5 text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                  : "max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/55 px-2.5 py-1.5 text-xs leading-5 text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              }
+                  ? "border-success/40"
+                  : "border-border",
+              )}
               tabIndex={0}
             >
               {row.value}

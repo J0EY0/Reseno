@@ -82,6 +82,10 @@
   --duration-move: 240ms;
   --ease-move: cubic-bezier(0.2, 0, 0, 1);
   --surface-shadow-card: 0 1px 2px rgb(9 9 11 / 0.06);
+  --auth-particle-base: #142030;
+  --auth-particle-center: #2a3b50;
+  --auth-particle-edge: #0e1622;
+  --auth-particle-dots: #5b7592;
 
   --sidebar: #ffffff;
   --sidebar-foreground: #18181b;
@@ -116,6 +120,10 @@
   --input: oklch(1 0 0 / 15%);
   --ring: #52525b;
   --surface-shadow-card: 0 1px 2px rgb(0 0 0 / 0.28);
+  --auth-particle-base: #101a29;
+  --auth-particle-center: #23344b;
+  --auth-particle-edge: #0a111d;
+  --auth-particle-dots: #4f6c8c;
 
   --sidebar: #09090b;
   --sidebar-foreground: #fafafa;
@@ -144,6 +152,22 @@
     @apply min-w-[360px] bg-background font-sans text-foreground antialiased;
   }
 
+  input[data-slot='input-group-control']:is(:autofill, :-webkit-autofill) {
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: var(--foreground);
+    caret-color: var(--foreground);
+  }
+
+  @media (forced-colors: active) {
+    input[data-slot='input-group-control']:is(:autofill, :-webkit-autofill) {
+      -webkit-background-clip: border-box;
+      background-clip: border-box;
+      -webkit-text-fill-color: CanvasText;
+      caret-color: CanvasText;
+    }
+  }
+
   button,
   a,
   summary,
@@ -156,6 +180,67 @@
 
 #root {
   min-height: 100svh;
+}
+
+.auth-loading-button {
+  position: relative;
+}
+
+.auth-loading-border {
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  transition: opacity 220ms ease-out;
+}
+
+.auth-loading-border::after {
+  content: "";
+  position: absolute;
+  width: 72px;
+  height: 36px;
+  background: radial-gradient(
+    ellipse at 70% 50%,
+    color-mix(in oklab, currentColor 65%, transparent),
+    color-mix(in oklab, currentColor 35%, transparent) 20%,
+    color-mix(in oklab, currentColor 10%, transparent) 45%,
+    transparent 72%
+  );
+  offset-path: border-box;
+  offset-anchor: 70% 50%;
+  animation: auth-loading-border 3s linear infinite paused;
+}
+
+.auth-loading-button[aria-busy="true"]:disabled {
+  opacity: 1;
+}
+
+.auth-loading-button[aria-busy="true"] .auth-loading-border {
+  opacity: 1;
+}
+
+.auth-loading-button[aria-busy="true"] .auth-loading-border::after {
+  animation-play-state: running;
+}
+
+@keyframes auth-loading-border {
+  to {
+    offset-distance: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-loading-button[aria-busy="true"] .auth-loading-border {
+    background: color-mix(in oklab, currentColor 35%, transparent);
+  }
+
+  .auth-loading-border::after {
+    display: none;
+  }
 }
 
 .app-shell {
@@ -639,28 +724,24 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 .resume-diff-review-target [class~="resume-diff-field"],
 .resume-diff-review-target [class~="resume-diff-inline"] {
   cursor: pointer;
-  animation: resume-diff-review-enter 200ms ease-out both;
   outline: none;
 }
 
-.resume-diff-review-target:hover,
-.resume-diff-review-target:focus-visible,
-.resume-diff-review-target[data-resume-review-selected="true"] {
-  box-shadow:
-    inset 0 0 0 1px rgba(37, 99, 235, 0.34),
-    0 0 0 2px rgba(59, 130, 246, 0.1);
+.resume-diff-review-target[data-resume-review-tab-stop="true"][data-resume-review-state="entering"] {
+  animation: resume-diff-review-enter var(--duration-enter) var(--ease-move) both;
 }
 
 .resume-diff-review-target:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px rgba(37, 99, 235, 0.34),
+    0 0 0 2px rgba(59, 130, 246, 0.1);
   outline: 2px solid rgba(37, 99, 235, 0.7);
   outline-offset: 2px;
 }
 
-.resume-diff-review-target[data-resume-review-state="exiting"],
-.resume-diff-review-target[data-resume-review-state="exiting"] [class~="resume-diff-field"],
-.resume-diff-review-target[data-resume-review-state="exiting"] [class~="resume-diff-inline"] {
+.resume-diff-review-target[data-resume-review-tab-stop="true"][data-resume-review-state="exiting"] {
   pointer-events: none;
-  animation: resume-diff-review-exit 180ms ease-out both;
+  animation: resume-diff-review-exit 180ms ease-in both;
 }
 
 .resume-diff--deleted {
@@ -687,6 +768,8 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     border-color: transparent;
     background-color: transparent;
     box-shadow: none;
+    opacity: 0;
+    transform: translateY(3px);
   }
 }
 
@@ -695,6 +778,8 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     border-color: transparent;
     background-color: transparent;
     box-shadow: none;
+    opacity: 0;
+    transform: translateY(3px);
   }
 }
 

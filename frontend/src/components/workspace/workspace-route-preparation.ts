@@ -6,19 +6,17 @@ import {
   fetchWorkspaceRouteData,
 } from "@/lib/workspace-api";
 import type {
+  LoadableWorkspaceRouteDataKind,
   PreparedResumeDetailRouteData,
+  WorkspaceRouteDataResult,
   WorkspaceTemplateRouteData,
 } from "@/lib/workspace-route-data";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import {
-  loadModelsWorkspacePage,
   loadResumeDetailWorkspacePage,
-  loadResumeGalleryWorkspacePage,
-  loadSettingsWorkspacePage,
+  loadWorkspacePreferencesProvider,
   loadTemplateDetailWorkspacePage,
-  loadTemplateGalleryWorkspacePage,
-  loadTrashWorkspacePage,
-  loadWorkspaceLateralLayout,
+  preloadWorkspaceRoute,
 } from "@/components/workspace/workspace-route-loaders";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { PreparedWorkspaceRoute } from "@/lib/workspace-route-memory";
@@ -32,26 +30,35 @@ interface RoutePreparationOptions {
   signal: AbortSignal;
 }
 
-function loadWorkspaceRoute(view: WorkspaceView) {
-  switch (view) {
-    case "models":
-      return loadModelsWorkspacePage();
-    case "settings":
-      return loadSettingsWorkspacePage();
-    case "templates":
-      return loadTemplateGalleryWorkspacePage();
-    case "trash":
-      return loadTrashWorkspacePage();
-    case "resume":
-      return loadResumeGalleryWorkspacePage();
-  }
+export async function prepareWorkspaceEntry(
+  view: "resume" | "settings",
+  options: RoutePreparationOptions,
+): Promise<PreparedWorkspaceRoute<"resume" | "settings">> {
+  const [, source] = await Promise.all([
+    preloadWorkspaceRoute(view),
+    fetchWorkspaceRouteData(view === "resume" ? "resume-gallery" : "settings", {
+      notifyOnError: false,
+      signal: options.signal,
+    }),
+  ]);
+  options.signal.throwIfAborted();
+  return source.kind === "resume-gallery"
+    ? { view: "resume", data: source.data }
+    : { view: "settings", data: source.data };
 }
 
-export function preloadWorkspaceRoute(view: WorkspaceView) {
-  return Promise.all([
-    loadWorkspaceLateralLayout(),
-    loadWorkspaceRoute(view),
-  ]);
+export async function fetchWorkspacePageData<
+  Kind extends LoadableWorkspaceRouteDataKind,
+>(
+  kind: Kind,
+  persistence: WorkspacePreferencesPersistence,
+  options: { signal: AbortSignal; notifyOnError?: boolean },
+): Promise<WorkspaceRouteDataResult<Kind>> {
+  const acceptPreferences = await persistence.prepareRead(options.signal);
+  options.signal.throwIfAborted();
+  const source = await fetchWorkspaceRouteData(kind, options);
+  acceptPreferences(source.data);
+  return source;
 }
 
 async function loadWorkspaceRouteData(
@@ -63,35 +70,35 @@ async function loadWorkspaceRouteData(
 
   switch (view) {
     case "resume": {
-      const source = await fetchWorkspaceRouteData("resume-gallery", {
+      const source = await fetchWorkspacePageData("resume-gallery", persistence, {
         notifyOnError: false,
         signal: options.signal,
       });
       return { data: source.data, view };
     }
     case "templates": {
-      const source = await fetchWorkspaceRouteData("template-gallery", {
+      const source = await fetchWorkspacePageData("template-gallery", persistence, {
         notifyOnError: false,
         signal: options.signal,
       });
       return { data: source.data, view };
     }
     case "trash": {
-      const source = await fetchWorkspaceRouteData("trash", {
+      const source = await fetchWorkspacePageData("trash", persistence, {
         notifyOnError: false,
         signal: options.signal,
       });
       return { data: source.data, view };
     }
     case "models": {
-      const source = await fetchWorkspaceRouteData("models", {
+      const source = await fetchWorkspacePageData("models", persistence, {
         notifyOnError: false,
         signal: options.signal,
       });
       return { data: source.data, view };
     }
     case "settings": {
-      const source = await fetchWorkspaceRouteData("settings", {
+      const source = await fetchWorkspacePageData("settings", persistence, {
         notifyOnError: false,
         signal: options.signal,
       });
@@ -115,6 +122,7 @@ export async function prepareWorkspaceRoute<View extends WorkspaceView>(
 
 export function preloadResumeDetailRoute() {
   return Promise.all([
+    loadWorkspacePreferencesProvider(),
     loadResumeDetailWorkspacePage(),
     loadDocumentCanvas(),
   ]);
@@ -125,7 +133,7 @@ async function loadResumeEditorRouteData(
   options: RoutePreparationOptions,
 ) {
   await persistence.flush();
-  const source = await fetchWorkspaceRouteData("resume-detail", {
+  const source = await fetchWorkspacePageData("resume-detail", persistence, {
     notifyOnError: false,
     signal: options.signal,
   });
@@ -139,7 +147,7 @@ export async function loadResumeDetailRouteData(
 ): Promise<PreparedResumeDetailRouteData> {
   await persistence.flush();
 
-  const routeDataRequest = fetchWorkspaceRouteData("resume-detail", {
+  const routeDataRequest = fetchWorkspacePageData("resume-detail", persistence, {
     notifyOnError: false,
     signal: options.signal,
   });
@@ -202,6 +210,7 @@ export async function prepareCreatedResumeDetailRoute(
 
 export function preloadTemplateDetailRoute() {
   return Promise.all([
+    loadWorkspacePreferencesProvider(),
     loadTemplateDetailWorkspacePage(),
     loadDocumentCanvas(),
   ]);
@@ -213,7 +222,7 @@ export async function loadTemplateDetailRouteData(
   options: RoutePreparationOptions,
 ): Promise<WorkspaceTemplateRouteData> {
   await persistence.flush();
-  const source = await fetchWorkspaceRouteData("template-detail", {
+  const source = await fetchWorkspacePageData("template-detail", persistence, {
     notifyOnError: false,
     signal: options.signal,
   });

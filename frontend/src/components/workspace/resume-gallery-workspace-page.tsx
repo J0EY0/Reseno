@@ -1,24 +1,15 @@
 import { ResumeGallery } from "@/components/resume-gallery";
-import { GalleryRouteSkeleton } from "@/components/workspace-skeletons";
+import { GalleryRouteSkeleton } from "@/components/gallery-skeletons";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { useResumeGalleryWorkspace } from "@/components/workspace/use-resume-gallery-workspace";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function ResumeGalleryWorkspacePage({
-  locale,
-  messages,
-  persistence,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
-}) {
+export function ResumeGalleryWorkspacePage() {
+  const { locale, messages } = useWorkspacePreferences();
   const gallery = useResumeGalleryWorkspace({
     locale,
     messages,
-    persistence,
   });
   useRememberWorkspaceLateralRouteData(
     "resume",

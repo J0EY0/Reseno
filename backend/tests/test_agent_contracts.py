@@ -222,15 +222,17 @@ def test_web_tools_expose_focused_search_and_public_fetch() -> None:
     assert "aggregators" in search["description"]
     assert "already read" in search["description"]
     assert "never pass a reference URL to web_fetch" in search["description"]
-    assert "do not by themselves prove authority, recency, or page type" in (
-        search["description"]
+    assert (
+        "do not by themselves prove authority, recency, or page type"
+        in (search["description"])
     )
     assert set(fetch_parameters["properties"]) == {"url"}
     assert fetch_parameters["required"] == ["url"]
     assert "material page detail" in fetch["description"]
     assert "citable reference" in fetch["description"]
-    assert "do not by themselves prove authority, recency, or page type" in (
-        fetch["description"]
+    assert (
+        "do not by themselves prove authority, recency, or page type"
+        in (fetch["description"])
     )
     assert "public HTTP(S) URL" in fetch_parameters["properties"]["url"]["description"]
 
@@ -264,8 +266,7 @@ def test_edit_execute_explains_field_semantics_and_normalization_at_its_seam() -
 
     assert (
         "Keep normalization to requested fields or clearly misplaced values needed to "
-        "complete that request"
-        in tool_description
+        "complete that request" in tool_description
     )
     assert "avoid adjacent cleanup" in tool_description
     assert "First normalize" not in tool_description
@@ -277,22 +278,23 @@ def test_edit_execute_explains_field_semantics_and_normalization_at_its_seam() -
     assert "role is the candidate's role" in patch_description
     assert "techStack contains individual technologies only" in patch_description
     assert "Move misplaced existing content" in patch_description
-    assert "clear it with an empty string" in patch["properties"]["role"][
-        "description"
-    ]
+    assert "clear it with an empty string" in patch["properties"]["role"]["description"]
     assert "move that value" in patch["properties"]["location"]["description"]
-    assert "Brief context or scope only" in patch["properties"]["description"][
-        "description"
-    ]
-    assert "Move non-technology contribution facts" in patch["properties"][
-        "techStack"
-    ]["description"]
-    assert "Recover contribution facts" in patch["properties"]["highlights"][
-        "description"
-    ]
-    assert "ownership or impact is unknown" in patch["properties"]["highlights"][
-        "description"
-    ]
+    assert (
+        "Brief context or scope only"
+        in patch["properties"]["description"]["description"]
+    )
+    assert (
+        "Move non-technology contribution facts"
+        in patch["properties"]["techStack"]["description"]
+    )
+    assert (
+        "Recover contribution facts" in patch["properties"]["highlights"]["description"]
+    )
+    assert (
+        "ownership or impact is unknown"
+        in patch["properties"]["highlights"]["description"]
+    )
 
 
 def test_simple_list_content_contract_preserves_canonical_rich_text() -> None:

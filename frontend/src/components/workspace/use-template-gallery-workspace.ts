@@ -12,16 +12,17 @@ import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
-import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import { importTemplatePayload } from "@/lib/import-api";
 import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
+import {
+  dismissWorkspaceLoadError,
+  showWorkspaceLoadError,
+} from "@/lib/workspace-load-error";
 import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import {
-  normalizeWorkspaceTheme,
-  useWorkspaceTheme,
-} from "@/components/workspace/workspace-theme-context";
-import {
+  fetchWorkspacePageData,
   prepareTemplateDetailRoute,
   preloadTemplateDetailRoute,
   WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
@@ -35,11 +36,9 @@ import {
   getTemplateById,
   getTemplateCatalog,
 } from "@/lib/templates";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
 import {
   createTemplateApi,
-  fetchWorkspaceRouteData,
   moveTemplateToTrashApi,
   saveDefaultTemplateApi,
 } from "@/lib/workspace-api";
@@ -62,15 +61,13 @@ const initialDefaultTemplateIds: DefaultTemplateIds = {
 export function useTemplateGalleryWorkspace({
   locale,
   messages,
-  persistence,
 }: {
   locale: Locale;
   messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
   const preparedRouteData = useWorkspaceLateralRouteData("templates");
-  const { hydrateTheme, theme } = useWorkspaceTheme();
+  const { persistence, theme } = useWorkspacePreferences();
   const initialLocaleRef = useRef(locale);
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -120,15 +117,10 @@ export function useTemplateGalleryWorkspace({
       requestIdRef.current = requestId;
       setIsLoading(true);
       setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      dismissWorkspaceLoadError();
 
       try {
-        await persistence.flush();
-        if (signal.aborted || requestIdRef.current !== requestId) {
-          return;
-        }
-
-        const source = await fetchWorkspaceRouteData("template-gallery", {
+        const source = await fetchWorkspacePageData("template-gallery", persistence, {
           notifyOnError: false,
           signal,
         });
@@ -136,21 +128,8 @@ export function useTemplateGalleryWorkspace({
           return;
         }
 
-        const persistedPreferences = persistence.getSnapshot();
-        const nextTheme = source.data.theme
-          ? normalizeWorkspaceTheme(source.data.theme)
-          : persistedPreferences?.theme ?? "light";
-        const persistedAgentSettings =
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings();
-
-        hydrateTheme(nextTheme);
         setDefaultTemplateIds(source.data.defaultTemplateIds);
         setCustomTemplates(source.data.customTemplates);
-        persistence.hydrate({
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-          agentSettings: persistedAgentSettings,
-        });
         setHasLoaded(true);
       } catch (error) {
         if (
@@ -163,9 +142,8 @@ export function useTemplateGalleryWorkspace({
 
         console.error("Failed to load the template gallery route.", error);
         if (!isApiErrorToastShown(error)) {
-          toast.error(
+          showWorkspaceLoadError(
             getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
           );
         }
         setHasLoaded(false);
@@ -179,22 +157,11 @@ export function useTemplateGalleryWorkspace({
         }
       }
     },
-    [hydrateTheme, persistence],
+    [persistence],
   );
 
   useEffect(() => {
     if (preparedRouteData && retryKey === 0) {
-      const persistedPreferences = persistence.getSnapshot();
-      const nextTheme = preparedRouteData.theme
-        ? normalizeWorkspaceTheme(preparedRouteData.theme)
-        : persistedPreferences?.theme ?? "light";
-      hydrateTheme(nextTheme);
-      persistence.hydrate({
-        locale: initialLocaleRef.current,
-        theme: nextTheme,
-        agentSettings:
-          persistedPreferences?.agentSettings ?? createDefaultAgentSettings(),
-      });
       return;
     }
 
@@ -209,7 +176,7 @@ export function useTemplateGalleryWorkspace({
       window.clearTimeout(loadTimer);
       controller.abort();
     };
-  }, [hydrateTheme, loadRouteData, persistence, preparedRouteData, retryKey]);
+  }, [loadRouteData, preparedRouteData, retryKey]);
 
   const preloadTemplateDetail = useCallback(() => {
     void preloadTemplateDetailRoute().catch((error) => {

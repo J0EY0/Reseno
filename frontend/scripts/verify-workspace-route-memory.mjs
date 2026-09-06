@@ -26,6 +26,7 @@ const {
   clearWorkspaceLateralRouteMemory,
   createWorkspaceLateralRouteHandoff,
   deleteWorkspaceLateralRouteHandoff,
+  getWorkspaceLateralRouteHandoff,
   rememberWorkspaceLateralRoute,
   resolveWorkspaceLateralRoute,
 } = module.exports;
@@ -53,6 +54,18 @@ const settings = {
 
 rememberWorkspaceLateralRoute(resume);
 const settingsState = createWorkspaceLateralRouteHandoff(settings);
+assert.equal(getWorkspaceLateralRouteHandoff(settingsState), settings);
+assert.equal(
+  getWorkspaceLateralRouteHandoff(settingsState),
+  settings,
+  "Repeated initial renders must read an active handoff without consuming it.",
+);
+assert.equal(
+  getWorkspaceLateralRouteHandoff({ ...settingsState, view: "resume" }),
+  null,
+  "A token must not supply preferences for a mismatched destination.",
+);
+assert.equal(getWorkspaceLateralRouteHandoff(null), null);
 assert.equal(
   Object.prototype.hasOwnProperty.call(settingsState, "data"),
   false,
@@ -79,6 +92,11 @@ assert.equal(
 
 const deadToken = resolveWorkspaceLateralRoute(settingsState, "settings");
 assert.equal(deadToken.data, settings.data);
+assert.equal(
+  getWorkspaceLateralRouteHandoff(settingsState),
+  null,
+  "A consumed token must not recover stale entry preferences from committed page memory.",
+);
 assert.equal(
   deadToken.shouldScrubHistory,
   true,

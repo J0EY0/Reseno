@@ -20,6 +20,7 @@ const [
   pdfExportRendererSource,
   modelConfigPanelSource,
   workspaceSkeletonsSource,
+  gallerySkeletonsSource,
   documentPreviewCardSource,
   settingsWorkspacePageSource,
   settingsPanelSkeletonSource,
@@ -85,6 +86,10 @@ const [
     ),
     readFile(
       new URL("src/components/workspace-skeletons.tsx", projectRoot),
+      "utf8",
+    ),
+    readFile(
+      new URL("src/components/gallery-skeletons.tsx", projectRoot),
       "utf8",
     ),
     readFile(
@@ -313,7 +318,7 @@ assert(
 for (const [name, source] of [
   ["resume gallery card", resumeGalleryCardSource],
   ["template gallery card", templateGalleryCardSource],
-  ["gallery card skeleton", workspaceSkeletonsSource],
+  ["gallery card skeleton", gallerySkeletonsSource],
 ]) {
   assert(
     source.includes("rounded-(--radius-card)") &&
@@ -339,9 +344,9 @@ for (const [name, source] of [
   );
 }
 assert(
-  workspaceSkeletonsSource.includes(
+  gallerySkeletonsSource.includes(
     "h-full gap-0 rounded-(--radius-card)",
-  ) && workspaceSkeletonsSource.includes("bg-card py-0"),
+  ) && gallerySkeletonsSource.includes("bg-card py-0"),
   "Gallery card skeletons must not inherit Card spacing around their content.",
 );
 
@@ -389,7 +394,9 @@ for (const [state, semanticClass] of [
 }
 assert(
   copilotChangeSummarySource.includes("text-warning") &&
-    draftReviewComparisonSource.includes("bg-success/10"),
+    draftReviewComparisonSource.includes("bg-card") &&
+    draftReviewComparisonSource.includes("text-card-foreground") &&
+    draftReviewComparisonSource.includes("border-success/40"),
   "Agent review feedback must use semantic warning and success colors.",
 );
 assert(

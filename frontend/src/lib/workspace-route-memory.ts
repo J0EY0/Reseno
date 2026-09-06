@@ -143,6 +143,34 @@ export function createWorkspaceLateralRouteHandoff<
   } as WorkspaceLateralRouteHandoffState<View>;
 }
 
+export function getWorkspaceLateralRouteHandoff(
+  state: unknown,
+): PreparedWorkspaceRoute | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+
+  const candidate = state as {
+    kind?: unknown;
+    token?: unknown;
+    view?: unknown;
+  };
+  if (
+    candidate.kind !== "workspace-lateral-handoff" ||
+    typeof candidate.token !== "string" ||
+    Object.prototype.hasOwnProperty.call(candidate, "data")
+  ) {
+    return null;
+  }
+
+  const prepared = routeDataByToken.get(candidate.token);
+  return prepared &&
+    prepared.view === candidate.view &&
+    hasWorkspaceLateralRouteData(prepared.view, prepared.data)
+    ? prepared
+    : null;
+}
+
 export function resolveWorkspaceLateralRoute<
   View extends WorkspaceView,
 >(state: unknown, view: View): WorkspaceLateralRouteResolution<View> {
@@ -155,10 +183,8 @@ export function resolveWorkspaceLateralRoute<
   }
 
   const candidate = state as {
-    data?: unknown;
     kind?: unknown;
     token?: unknown;
-    view?: unknown;
   };
   if (candidate.kind !== "workspace-lateral-handoff") {
     return {
@@ -169,13 +195,8 @@ export function resolveWorkspaceLateralRoute<
   }
 
   const token = typeof candidate.token === "string" ? candidate.token : null;
-  const prepared = token ? routeDataByToken.get(token) : null;
-  if (
-    candidate.view === view &&
-    !Object.prototype.hasOwnProperty.call(candidate, "data") &&
-    prepared?.view === view &&
-    hasWorkspaceLateralRouteData(view, prepared.data)
-  ) {
+  const prepared = getWorkspaceLateralRouteHandoff(state);
+  if (prepared?.view === view) {
     rememberWorkspaceLateralRoute(prepared);
     return {
       data: prepared.data as WorkspaceLateralRouteDataMap[View],

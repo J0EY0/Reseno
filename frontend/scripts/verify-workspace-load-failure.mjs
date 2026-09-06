@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+import * as ts from "typescript";
 
 const frontendRoot = new URL("../", import.meta.url);
 
@@ -13,6 +15,7 @@ const [
   resumeDetailLoaderSource,
   resumeDetailViewSource,
   workspaceRouteErrorSource,
+  workspaceLoadErrorSource,
   workspaceRoutePreparationSource,
   templateDetailRouteSource,
   modelConfigPanelSource,
@@ -28,6 +31,7 @@ const [
     readText("src/components/workspace/use-resume-detail-loader.ts"),
     readText("src/components/workspace/resume-detail-workspace-view.tsx"),
     readText("src/components/workspace/workspace-route-error.tsx"),
+    readText("src/lib/workspace-load-error.ts"),
     readText("src/components/workspace/workspace-route-preparation.ts"),
     readText("src/components/workspace/use-template-detail-workspace.ts"),
     readText("src/components/model-config-panel.tsx"),
@@ -77,12 +81,12 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /fetchWorkspaceRouteData\("template-detail",\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal/,
+  /fetchWorkspacePageData\("template-detail",\s*persistence,\s*\{[\s\S]{0,100}notifyOnError:\s*false,[\s\S]{0,60}signal/,
   "Template detail must defer Toast handling to its route loader.",
 );
 assert.match(
   templateDetailRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*apiMessages[\s\S]*REQUEST_FAILED[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*apiMessages[\s\S]*REQUEST_FAILED[\s\S]*setHasLoadError\(true\)/,
   "Template detail must ignore cancelled and stale reads before one canonical failure Toast.",
 );
 assert.match(
@@ -97,7 +101,7 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /fetchWorkspaceRouteData\("resume-detail",[\s\S]{0,120}notifyOnError:\s*false/,
+  /fetchWorkspacePageData\("resume-detail",\s*persistence,[\s\S]{0,120}notifyOnError:\s*false/,
   "Workspace route data must defer Toast handling to the route loader.",
 );
 assert.match(
@@ -127,19 +131,67 @@ assert.match(
 );
 assert.match(
   loaderCatchSource,
-  /requestIdRef\.current !== requestId[\s\S]*toast\.error/,
+  /requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\(/,
   "Stale route requests must be ignored before any Toast is shown.",
 );
 assert.match(
   loaderCatchSource,
-  /id:\s*"workspace-load-error"/,
-  "Route initialization failures must reuse one stable Toast id.",
+  /if \(!isApiErrorToastShown\(error\)\) \{\s*showWorkspaceLoadError\(/,
+  "Route initialization must show its own error only when the API client has not already shown it.",
 );
 assert.match(
   loaderSource,
-  /toast\.dismiss\("workspace-load-error"\)/,
+  /dismissWorkspaceLoadError\(\)/,
   "Retrying a workspace load must dismiss the stale error Toast.",
 );
+
+const toastEvents = [];
+const visibleToasts = new Map([["unrelated", "Saved successfully"]]);
+let nextToastId = 0;
+const loadErrorModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(workspaceLoadErrorSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, {
+  module: loadErrorModule,
+  exports: loadErrorModule.exports,
+  require(specifier) {
+    assert.equal(specifier, "sonner");
+    return { toast: {
+      error(message, options) {
+        assert.deepEqual({ ...options }, { closeButton: true }, "Each failure must let Sonner allocate a fresh Toast ID.");
+        const id = nextToastId++;
+        visibleToasts.set(id, message);
+        toastEvents.push(`show:${id}`);
+        return id;
+      },
+      dismiss(id) {
+        assert.notEqual(id, undefined, "Dismissing a route error must never dismiss every Toast.");
+        visibleToasts.delete(id);
+        toastEvents.push(`dismiss:${id}`);
+      },
+    } };
+  },
+});
+const { dismissWorkspaceLoadError, showWorkspaceLoadError } = loadErrorModule.exports;
+dismissWorkspaceLoadError();
+dismissWorkspaceLoadError();
+assert.deepEqual(toastEvents, [], "Dismissing an absent route error must be a no-op.");
+for (let attempt = 0; attempt < 3; attempt += 1) {
+  showWorkspaceLoadError("Request failed");
+  dismissWorkspaceLoadError();
+  dismissWorkspaceLoadError();
+}
+assert.deepEqual(toastEvents, ["show:0", "dismiss:0", "show:1", "dismiss:1", "show:2", "dismiss:2"],
+  "Immediate repeated failures must receive new IDs, and each error may be dismissed only once.");
+showWorkspaceLoadError("First route failed");
+showWorkspaceLoadError("Second route failed");
+assert.deepEqual(toastEvents.slice(-3), ["show:3", "dismiss:3", "show:4"],
+  "Replacing a route error must dismiss only the previous error before showing the next one.");
+assert.deepEqual([...visibleToasts], [["unrelated", "Saved successfully"], [4, "Second route failed"]]);
+dismissWorkspaceLoadError();
+dismissWorkspaceLoadError();
+assert.deepEqual([...visibleToasts], [["unrelated", "Saved successfully"]],
+  "Repeated route cleanup must preserve unrelated Toasts.");
 assert.match(
   loaderCatchSource,
   /setHasLoadError\(true\)/,

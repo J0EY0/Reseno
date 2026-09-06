@@ -3,28 +3,13 @@ import { SettingsPanelSkeleton } from "@/components/settings-panel-skeleton";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function SettingsWorkspacePage({
-  locale,
-  messages,
-  onLocaleChange,
-  onLogout,
-  persistence,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
-  onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
-}) {
+export function SettingsWorkspacePage({ onLogout }: { onLogout: () => void }) {
+  const { locale, messages } = useWorkspacePreferences();
   const preferences = useWorkspacePreferencesRoute({
     kind: "settings",
     locale,
-    messages,
-    onLocaleChange,
-    persistence,
   });
   useRememberWorkspaceLateralRouteData(
     "settings",
@@ -40,7 +25,7 @@ export function SettingsWorkspacePage({
     );
   }
 
-  if (!preferences.hasLoaded) {
+  if (!preferences.hasLoaded || !preferences.agentSettings) {
     return <SettingsPanelSkeleton />;
   }
 

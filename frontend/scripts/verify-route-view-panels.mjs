@@ -361,7 +361,7 @@ assert.equal(
 );
 assert.match(recycleTable, /aria-hidden="true"/);
 assert.match(recycleTable, /pointer-events-none/);
-assert.match(recycleTable, /const canBulkAction = selectedCount >= 2/);
+assert.match(recycleTable, /const canBulkAction = selectedCount > 0/);
 assert.match(recycleTable, /data-slot="trash-bulk-actions"/);
 assert.match(recycleTable, /aria-hidden=\{!canBulkAction\}/);
 assert.match(recycleTable, /inert=\{!canBulkAction\}/);

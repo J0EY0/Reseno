@@ -241,9 +241,7 @@ def _relax_model_insert_shapes(schema: dict[str, Any]) -> None:
                 section_properties = section_branch.get("properties", {})
                 kind = section_properties.get("kind", {}).get("const")
                 section_branch["required"] = (
-                    ["id", "kind", "items"]
-                    if kind == "simple_list"
-                    else ["id", "kind"]
+                    ["id", "kind", "items"] if kind == "simple_list" else ["id", "kind"]
                 )
                 items_schema = section_properties.get("items", {})
                 item_schema = items_schema.get("items")

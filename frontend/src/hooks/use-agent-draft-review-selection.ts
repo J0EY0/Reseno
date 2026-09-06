@@ -98,7 +98,11 @@ export function useAgentDraftReviewSelection({
           : [];
       const next = { mode: "single", reviewItemId } as const;
 
-      if (exitingIds.length === 0 || prefersReducedMotion()) {
+      if (
+        current.mode === "single" ||
+        exitingIds.length === 0 ||
+        prefersReducedMotion()
+      ) {
         commitSelection(next);
         return;
       }

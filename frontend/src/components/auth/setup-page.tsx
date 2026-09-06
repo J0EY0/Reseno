@@ -77,10 +77,7 @@ export function SetupPage({
   }
 
   return (
-    <AuthPageShell
-      title={t.setupTitle}
-      formTitle={t.setupFormTitle}
-    >
+    <AuthPageShell formTitle={t.setupFormTitle}>
       <form className="grid gap-5" onSubmit={handleSubmit} noValidate>
         <Field data-invalid={Boolean(formErrors.username)} className="gap-2">
           <FieldLabel htmlFor="setup-username">

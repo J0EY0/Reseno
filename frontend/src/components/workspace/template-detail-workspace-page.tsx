@@ -8,28 +8,20 @@ import {
 
 import { TemplateDetailWorkspaceView } from "@/components/workspace/template-detail-workspace-view";
 import { useTemplateDetailWorkspace } from "@/components/workspace/use-template-detail-workspace";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
 interface TemplateDetailRouteOwnerProps {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
   routeState: unknown;
   templateId: string;
 }
 
 function TemplateDetailRouteOwner({
-  locale,
-  messages,
-  onLocaleChange,
   onLogout,
-  persistence,
   routeState,
   templateId,
 }: TemplateDetailRouteOwnerProps) {
+  const { locale, messages, changeLocale: onLocaleChange } = useWorkspacePreferences();
   const location = useLocation();
   const navigate = useNavigate();
   const navigationType = useNavigationType();
@@ -64,9 +56,7 @@ function TemplateDetailRouteOwner({
   const controller = useTemplateDetailWorkspace({
     locale,
     messages,
-    onLocaleChange,
     onLogout,
-    persistence,
     routeState: initialRouteState,
     templateId,
   });
@@ -83,17 +73,9 @@ function TemplateDetailRouteOwner({
 
 /** Binds the route parameter and one-time handoff to the template workspace. */
 export function TemplateDetailWorkspacePage({
-  locale,
-  messages,
-  onLocaleChange,
   onLogout,
-  persistence,
 }: {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const location = useLocation();
   const { id = "" } = useParams<{ id: string }>();
@@ -101,11 +83,7 @@ export function TemplateDetailWorkspacePage({
   return (
     <TemplateDetailRouteOwner
       key={id}
-      locale={locale}
-      messages={messages}
-      onLocaleChange={onLocaleChange}
       onLogout={onLogout}
-      persistence={persistence}
       routeState={location.state}
       templateId={id}
     />

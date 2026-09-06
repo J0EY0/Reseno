@@ -29,6 +29,38 @@ CREATE TABLE IF NOT EXISTS auth_owner (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
+OAUTH_SCHEMAS = (
+    """
+    CREATE TABLE IF NOT EXISTS auth_identities (
+        provider TEXT PRIMARY KEY CHECK (provider = 'github'),
+        subject TEXT NOT NULL,
+        label TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_oauth_codes (
+        code_hash TEXT PRIMARY KEY,
+        browser_hash TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        label TEXT NOT NULL,
+        intent TEXT NOT NULL CHECK (intent IN ('login', 'bind')),
+        owner_revision TEXT NOT NULL,
+        identity_revision TEXT,
+        expires_at INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_github_app (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        client_id TEXT NOT NULL,
+        client_secret TEXT NOT NULL,
+        public_base_url TEXT NOT NULL
+    )
+    """,
+)
 _initialized_auth_db_paths: set[Path] = set()
 _auth_db_init_lock = Lock()
 
@@ -76,6 +108,8 @@ def ensure_auth_database() -> None:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(AUTH_SCHEMA)
+                for schema in OAUTH_SCHEMAS:
+                    conn.execute(schema)
                 conn.commit()
             except Exception:
                 if conn.in_transaction:
@@ -86,7 +120,7 @@ def ensure_auth_database() -> None:
         _initialized_auth_db_paths.add(auth_db_path)
 
 
-def _connect() -> Connection:
+def connect_auth_database() -> Connection:
     ensure_auth_database()
     conn = sqlite3.connect(
         get_auth_db_path(),
@@ -145,7 +179,7 @@ def _account_from_row(row: Row) -> OwnerAccount:
 def is_setup_required() -> bool:
     """Return whether this instance still needs its owner account."""
 
-    with closing(_connect()) as conn:
+    with closing(connect_auth_database()) as conn:
         return _owner_row(conn) is None
 
 
@@ -155,7 +189,7 @@ def create_owner(username: str, password: str) -> OwnerAccount:
     password_hash = _hash_password(password)
     auth_revision = _new_auth_revision()
 
-    with closing(_connect()) as conn:
+    with closing(connect_auth_database()) as conn:
         try:
             conn.execute("BEGIN IMMEDIATE")
             if _owner_row(conn) is not None:
@@ -185,7 +219,7 @@ def create_owner(username: str, password: str) -> OwnerAccount:
 def authenticate_owner(username: str, password: str) -> OwnerAccount | None:
     """Validate submitted credentials against the stored owner account."""
 
-    with closing(_connect()) as conn:
+    with closing(connect_auth_database()) as conn:
         row = _owner_row(conn)
 
     if row is None:
@@ -202,7 +236,7 @@ def authenticate_owner(username: str, password: str) -> OwnerAccount | None:
 def owner_identity_matches(username: str, auth_revision: str) -> bool:
     """Return whether token identity matches the current owner revision."""
 
-    with closing(_connect()) as conn:
+    with closing(connect_auth_database()) as conn:
         row = _owner_row(conn)
 
     return (
@@ -219,7 +253,7 @@ def update_owner_password(
 ) -> OwnerAccount | None:
     """Replace the password and revision in one authentication transaction."""
 
-    with closing(_connect()) as conn:
+    with closing(connect_auth_database()) as conn:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = _owner_row(conn)

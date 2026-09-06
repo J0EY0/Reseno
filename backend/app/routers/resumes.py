@@ -116,9 +116,7 @@ def post_resume_duplicate(
 ) -> ApiResponse[ResumeDetailResponse]:
     """Create an independent copy of one active resume."""
 
-    return ok_response(
-        ResumeDetailResponse.model_validate(duplicate_resume(resume_id))
-    )
+    return ok_response(ResumeDetailResponse.model_validate(duplicate_resume(resume_id)))
 
 
 @router.post("/{resume_id}/trash", response_model=ApiResponse[dict[str, Any]])

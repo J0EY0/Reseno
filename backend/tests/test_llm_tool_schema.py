@@ -257,9 +257,7 @@ def test_agent_operation_projection_keeps_branch_specific_input_guidance() -> No
     assert operation["required"] == ["type"]
     for branch in OPERATION_SCHEMA["oneOf"]:
         operation_type = branch["properties"]["type"]["const"]
-        inputs = ", ".join(
-            field for field in branch["required"] if field != "type"
-        )
+        inputs = ", ".join(field for field in branch["required"] if field != "type")
         assert f"{operation_type}({inputs})" in description
 
 
@@ -273,12 +271,10 @@ def test_agent_operation_projection_keeps_resume_field_writing_guidance() -> Non
     operation = schema["properties"]["edits"]["items"]["properties"]["operation"]
     patch = operation["properties"]["patch"]["properties"]
 
-    assert "Move non-technology contribution facts" in patch["techStack"][
-        "description"
-    ]
-    assert "do not collapse unrelated contributions" in patch["description"][
-        "description"
-    ]
+    assert "Move non-technology contribution facts" in patch["techStack"]["description"]
+    assert (
+        "do not collapse unrelated contributions" in patch["description"]["description"]
+    )
     assert "Recover contribution facts" in patch["highlights"]["description"]
 
 

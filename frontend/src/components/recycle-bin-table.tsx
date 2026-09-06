@@ -124,7 +124,7 @@ export function TrashBulkActions({
   isRestoring: boolean;
   disabled: boolean;
 }) {
-  const canBulkAction = selectedCount >= 2;
+  const canBulkAction = selectedCount > 0;
 
   return (
     <div className="ml-auto flex min-w-0">

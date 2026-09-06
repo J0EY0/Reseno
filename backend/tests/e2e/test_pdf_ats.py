@@ -45,9 +45,7 @@ TEMPLATE_IDS = (
     "academic",
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-PDFJS_TEXT_EXTRACTOR = (
-    REPOSITORY_ROOT / "frontend" / "scripts" / "extract-pdf-text.mjs"
-)
+PDFJS_TEXT_EXTRACTOR = REPOSITORY_ROOT / "frontend" / "scripts" / "extract-pdf-text.mjs"
 ATS_MARKERS = (
     "HEADER_SENTINEL",
     "EXPERIENCE_1_SENTINEL",
@@ -160,9 +158,7 @@ def _create_probe_resume(
                 {
                     "id": "ats-project-1",
                     "name": (
-                        "多语言简历平台"
-                        if is_zh
-                        else "Multilingual Resume Platform"
+                        "多语言简历平台" if is_zh else "Multilingual Resume Platform"
                     ),
                     "role": "技术负责人" if is_zh else "Technical Lead",
                     "techStack": ["TypeScript", "Python", "PostgreSQL"],
@@ -447,6 +443,57 @@ def test_all_builtin_templates_export_ats_readable_pdf(
         assert "https://example.com/projects/resume-platform" in uris
         assert "https://example.com/publications/resume-parsing" in uris
         assert "https://example.com/awards/engineering" in uris
+    finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_resume_image_export_uses_authenticated_renderer(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser)
+    resume_id: str | None = None
+    try:
+        create_response = context.request.post(
+            f"{frontend_url}/api/resumes",
+            data={
+                "documentLocale": "en",
+                "title": "Authenticated image export",
+                "template": "minimal",
+            },
+        )
+        assert create_response.ok
+        created = create_response.json()["data"]
+        resume_id = str(created["resume"]["id"])
+        export_response = context.request.post(
+            f"{frontend_url}/api/exports/resume-images",
+            data={
+                "fileNameSeed": "authenticated-resume",
+                "resumeId": resume_id,
+                "savedAt": created["savedAt"],
+                "versionId": created["versionId"],
+            },
+        )
+        assert export_response.ok, export_response.text()
+        exported = export_response.json()["data"]
+        assert exported["pageCount"] == 1
+        assert exported["isArchive"] is False
+        download_response = context.request.get(
+            f"{frontend_url}{exported['downloadUrl']}"
+        )
+        assert download_response.ok
+        assert download_response.headers["content-type"] == "image/png"
+        png = download_response.body()
+        assert png.startswith(b"\x89PNG\r\n\x1a\n")
+        assert int.from_bytes(png[16:20], "big") >= 794
+        assert int.from_bytes(png[20:24], "big") >= 1123
     finally:
         if resume_id:
             trash_response = context.request.post(

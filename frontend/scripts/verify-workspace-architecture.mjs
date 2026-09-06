@@ -289,6 +289,7 @@ try {
       "src/components/settings-panel.tsx",
       "src/components/recycle-bin-panel.tsx",
       "src/components/workspace-skeletons.tsx",
+      "src/components/gallery-skeletons.tsx",
       "src/components/workspace/resume-detail-workspace-view.tsx",
       "src/components/workspace/template-detail-workspace-view.tsx",
       "src/components/preview/resume-preview-content.tsx",

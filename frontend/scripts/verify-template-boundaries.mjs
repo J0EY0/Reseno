@@ -235,7 +235,7 @@ assert(
   "Template selection mode must remain available even when only built-in templates are visible.",
 );
 assert(
-  /await persistence\.flush\(\)[\s\S]{0,1000}fetchWorkspaceRouteData\(\s*"template-gallery"/.test(
+  /fetchWorkspacePageData\(\s*"template-gallery",\s*persistence,/.test(
     galleryRoute,
   ) &&
     /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/.test(
@@ -332,7 +332,7 @@ assert(
   "TemplateEditor must keep its identity across template-detail navigation.",
 );
 assert(
-  /loadTemplateDetailRouteData[\s\S]{0,500}await persistence\.flush\(\)[\s\S]{0,300}fetchWorkspaceRouteData\("template-detail"/.test(
+  /loadTemplateDetailRouteData[\s\S]{0,800}fetchWorkspacePageData\("template-detail",\s*persistence,/.test(
     routePreparation,
   ) &&
     /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/.test(

@@ -28,20 +28,19 @@ import {
 } from "@/components/ui/sidebar";
 import {
   prepareWorkspaceRoute,
-  preloadWorkspaceRoute,
   WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
 } from "@/components/workspace/workspace-route-preparation";
-import { useWorkspaceTheme } from "@/components/workspace/workspace-theme-context";
+import { preloadWorkspaceRoute } from "@/components/workspace/workspace-route-loaders";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { AppMessages, Locale } from "@/i18n";
+import type { AppMessages } from "@/i18n";
 import { isAbortError } from "@/lib/api-client";
 import {
   createWorkspaceLateralRouteHandoff,
   deleteWorkspaceLateralRouteHandoff,
 } from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { WorkspaceView } from "@/types/resume";
 
 const WorkspaceMobileActionsMenu = lazy(() =>
@@ -70,23 +69,23 @@ function getWorkspacePageTitle(view: WorkspaceView, messages: AppMessages) {
 export function WorkspaceShell({
   activeView,
   children,
-  locale,
-  messages,
-  onLocaleChange,
   onLogout,
-  persistence,
 }: {
   activeView: WorkspaceView;
   children: ReactNode;
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const navigate = useNavigate();
   const { beginNavigation } = useWorkspaceNavigationTransaction();
-  const { changeTheme, resolvedTheme, theme } = useWorkspaceTheme();
+  const {
+    changeTheme,
+    changeLocale: onLocaleChange,
+    locale,
+    messages,
+    persistence,
+    resolvedTheme,
+    theme,
+  } = useWorkspacePreferences();
   const isMobile = useMediaQuery(MOBILE_HEADER_MEDIA_QUERY);
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null);
   const pageTitle = getWorkspacePageTitle(activeView, messages);

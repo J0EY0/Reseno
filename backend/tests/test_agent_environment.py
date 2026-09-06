@@ -175,9 +175,7 @@ def test_attachment_read_is_disclosed_only_for_historical_text_material() -> Non
 def test_read_historical_attachment_becomes_implicit_edit_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    material = (
-        "I used Kafka and improved throughput by 45%.\n" + "context " * 4_000
-    )
+    material = "I used Kafka and improved throughput by 45%.\n" + "context " * 4_000
     monkeypatch.setattr(
         "app.services.agent.adapters.attachments.attachment_text",
         lambda _session_id, _file: material,
@@ -241,9 +239,7 @@ def test_read_historical_attachment_becomes_implicit_edit_evidence(
         assert len(read_effect.invocation.output["excerpt"]) <= 16_000
         assert read_effect.invocation.output["nextOffset"] == 16_000
         assert edit_effect.invocation.state == "output-available"
-        assert f"attachment:{attachment_id}" in (
-            edit_effect.edits[-1].evidence_refs
-        )
+        assert f"attachment:{attachment_id}" in (edit_effect.edits[-1].evidence_refs)
         assert blocking_calls == ["<lambda>"]
 
     asyncio.run(scenario())
@@ -275,9 +271,7 @@ def test_attachment_read_cannot_escape_the_request_history_allowlist(
                 arguments={
                     "attachmentId": "22222222222242228222222222222222",
                 },
-                raw_arguments=(
-                    '{"attachmentId":"22222222222242228222222222222222"}'
-                ),
+                raw_arguments=('{"attachmentId":"22222222222242228222222222222222"}'),
             ),
             AgentRuntimeContext(),
         )
@@ -362,9 +356,7 @@ def test_search_snippets_are_candidates_not_environment_sources(monkeypatch) -> 
                     passages=(
                         agent_web.WebPassage(
                             section="Responsibilities",
-                            text=(
-                                "Build accessible React and TypeScript interfaces."
-                            ),
+                            text=("Build accessible React and TypeScript interfaces."),
                         ),
                     ),
                 ),

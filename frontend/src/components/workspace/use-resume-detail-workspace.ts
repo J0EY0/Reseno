@@ -15,7 +15,8 @@ import { useResumeDetailCommands } from "@/components/workspace/use-resume-detai
 import { useResumeDetailExport } from "@/components/workspace/use-resume-detail-export";
 import { useResumeDetailLeave } from "@/components/workspace/use-resume-detail-leave";
 import { useResumeDetailLoader } from "@/components/workspace/use-resume-detail-loader";
-import { useResumeDetailPreferences } from "@/components/workspace/use-resume-detail-preferences";
+import { useResumeDetailModels } from "@/components/workspace/use-resume-detail-models";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
@@ -29,7 +30,6 @@ import type { AppMessages, Locale } from "@/i18n";
 import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { isAbortError } from "@/lib/api-client";
 import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
 import {
   createResumeDetailRouteHandoff,
@@ -56,9 +56,7 @@ type ResolveAgentDraftReview = (
 interface ResumeDetailWorkspaceOptions {
   locale: Locale;
   messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
   resumeId: string;
   routeState: unknown;
 }
@@ -71,20 +69,18 @@ function areSettingsEqual(left: unknown, right: unknown) {
 export function useResumeDetailWorkspace({
   locale,
   messages,
-  onLocaleChange,
   onLogout,
-  persistence,
   resumeId,
   routeState,
 }: ResumeDetailWorkspaceOptions) {
   const navigate = useNavigate();
+  const preferences = useWorkspacePreferences();
+  const { persistence } = preferences;
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialDetail = useMemo(
     () => getResumeDetailRouteHandoff(routeState, resumeId),
     [resumeId, routeState],
   );
-  const [isLoading, setIsLoading] = useState(!initialDetail);
-  const [hasRouteLoadError, setHasRouteLoadError] = useState(false);
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.payload.routeData.customTemplates ?? []);
@@ -104,14 +100,9 @@ export function useResumeDetailWorkspace({
     messages,
     onResolveDraftReview: resolveAgentDraftReview,
   });
-  const readIsLoading = useCallback(() => isLoading, [isLoading]);
-  const preferences = useResumeDetailPreferences({
+  const models = useResumeDetailModels({
     initialRouteData: initialDetail?.payload.routeData,
-    isLoading: readIsLoading,
     locale,
-    messages,
-    onLocaleChange,
-    persistence,
   });
   const initialCheckpoint = useMemo(
     () =>
@@ -123,11 +114,19 @@ export function useResumeDetailWorkspace({
         : undefined,
     [initialDetail],
   );
+  const loader = useResumeDetailLoader({
+    initialPreparedData: initialDetail?.payload ?? null,
+    locale,
+    onLoad: handleRouteLoad,
+    persistence,
+    resumeId,
+  });
+  const { isLoading } = loader;
   const save = useResumeDetailSave({
     getSnapshot: session.getSnapshot,
     initialCheckpoint,
     initialResume: initialDetail?.payload.detail.resume ?? null,
-    isLoading: isLoading || hasRouteLoadError,
+    isLoading: isLoading || loader.hasLoadError,
     liveFingerprint: session.liveFingerprint,
     liveResume: session.liveResume,
     messages,
@@ -142,42 +141,29 @@ export function useResumeDetailWorkspace({
     };
   }, [save.resolveAgentDraftReview]);
 
-  const handleRouteLoad = useCallback(
-    ({
-      detail,
-      routeData,
-      versions,
-    }: PreparedResumeDetailRouteData) => {
-      const nextTemplateCatalog = getTemplateCatalog(
-        messages,
-        routeData.customTemplates,
-      );
-      const nextDefaultTemplateId =
-        routeData.defaultTemplateIds[detail.resume.documentLocale];
+  function handleRouteLoad({
+    detail,
+    routeData,
+    versions,
+  }: PreparedResumeDetailRouteData) {
+    const nextTemplateCatalog = getTemplateCatalog(
+      messages,
+      routeData.customTemplates,
+    );
+    const nextDefaultTemplateId =
+      routeData.defaultTemplateIds[detail.resume.documentLocale];
 
-      setCustomTemplates(routeData.customTemplates);
-      preferences.hydrateRoutePreferences(routeData);
-      if (
-        !nextTemplateCatalog.some((item) => item.id === session.template)
-      ) {
-        session.setTemplate(nextDefaultTemplateId);
-      }
+    setCustomTemplates(routeData.customTemplates);
+    models.hydrateModels(routeData);
+    if (
+      !nextTemplateCatalog.some((item) => item.id === session.template)
+    ) {
+      session.setTemplate(nextDefaultTemplateId);
+    }
 
-      session.hydrate(detail.resume);
-      save.hydratePersistedResume(detail, versions);
-    },
-    [messages, preferences, save, session],
-  );
-  const loader = useResumeDetailLoader({
-    hasHandoff: Boolean(initialDetail),
-    initialPreparedData: initialDetail?.payload ?? null,
-    locale,
-    onLoad: handleRouteLoad,
-    onLoadErrorChange: setHasRouteLoadError,
-    onLoadingChange: setIsLoading,
-    persistence,
-    resumeId,
-  });
+    session.hydrate(detail.resume);
+    save.hydratePersistedResume(detail, versions);
+  }
   const saveResume = save.save;
 
   useEffect(() => {
@@ -378,11 +364,15 @@ export function useResumeDetailWorkspace({
     [requestWorkspaceNavigation],
   );
   const changeSelectedModelConfig = useCallback(
-    (modelConfigId: string) =>
+    (modelConfigId: string) => {
+      if (!preferences.agentSettings) {
+        return;
+      }
       preferences.changeAgentSettings({
         ...preferences.agentSettings,
         defaultModelConfigId: modelConfigId,
-      }),
+      });
+    },
     [preferences],
   );
   const selectVersion = useCallback(
@@ -440,10 +430,10 @@ export function useResumeDetailWorkspace({
         draft: session.agentDraft,
         draftState: session.agentDraftState,
         isPanelCollapsed: agentLayout.isPanelCollapsed,
-        modelConfigs: preferences.modelConfigs,
+        modelConfigs: models.modelConfigs,
         panelStatus: agentLayout.panelStatus,
         review: session.review,
-        selectedModelConfigId: preferences.agentSettings.defaultModelConfigId,
+        selectedModelConfigId: preferences.agentSettings?.defaultModelConfigId ?? "",
       },
       collapsedState: session.collapsedState,
       document: {

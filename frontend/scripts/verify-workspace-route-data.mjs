@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import * as ts from "typescript";
@@ -131,7 +132,7 @@ if (!/Promise<WorkspaceRouteDataResult<Kind>>/.test(workspaceApiSource)) {
 
 for (const [kind, ownerSource] of routeOwnerSources) {
   const expectedCall = new RegExp(
-    `fetchWorkspaceRouteData\\(\\s*${kind === "models" || kind === "settings" ? "kind" : `"${kind}"`}`,
+    `fetchWorkspacePageData\\(\\s*${kind === "models" || kind === "settings" ? "kind" : `"${kind}"`}`,
   );
 
   if (!expectedCall.test(ownerSource)) {
@@ -151,4 +152,90 @@ if (
   throw new Error("Request cancellation must bypass API error conversion and Toasts.");
 }
 
-console.log("Workspace route data endpoints verified.");
+const preparationSource = await readFile(
+  new URL("src/components/workspace/workspace-route-preparation.ts", frontendRoot),
+  "utf8",
+);
+const preparationModule = { exports: {} };
+let entryDependencies;
+vm.runInNewContext(ts.transpileModule(preparationSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, {
+  module: preparationModule,
+  exports: preparationModule.exports,
+  require(specifier) {
+    const imports = {
+      "@/lib/api-client": {},
+      "@/lib/template-presets": {},
+      "@/lib/workspace-api": {
+        fetchWorkspaceRouteData: (...args) => entryDependencies.fetch(...args),
+      },
+      "@/components/preview/document-canvas-loader": {},
+      "@/components/workspace/workspace-route-loaders": {
+        preloadWorkspaceRoute: (...args) => entryDependencies.preload(...args),
+      },
+    };
+    assert.ok(Object.hasOwn(imports, specifier), `Unexpected entry dependency: ${specifier}`);
+    return imports[specifier];
+  },
+});
+const { prepareWorkspaceEntry } = preparationModule.exports;
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((accept, fail) => { resolve = accept; reject = fail; });
+  return { promise, reject, resolve };
+}
+
+for (const [view, routeKind] of [["resume", "resume-gallery"], ["settings", "settings"]]) {
+  const controller = new AbortController();
+  const routeModule = deferred();
+  const routeData = deferred();
+  const events = [];
+  const data = { theme: "dark", payload: view };
+  let prepared = false;
+  entryDependencies = {
+    preload(actualView) { assert.equal(actualView, view); events.push("module"); return routeModule.promise; },
+    fetch(actualKind, options) {
+      assert.equal(actualKind, routeKind);
+      assert.equal(options.signal, controller.signal);
+      assert.equal(options.notifyOnError, false);
+      events.push("data");
+      return routeData.promise;
+    },
+  };
+  const entering = prepareWorkspaceEntry(view, { signal: controller.signal }).then((result) => {
+    prepared = true;
+    return result;
+  });
+  assert.deepEqual(events, ["module", "data"], "Entry modules and page data must begin loading together.");
+  routeData.resolve({ kind: routeKind, data });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prepared, false, "Page data alone must not publish an unready route entry.");
+  routeModule.resolve();
+  const result = await entering;
+  assert.equal(result.view, view);
+  assert.equal(result.data, data);
+  assert.deepEqual(Object.keys(result).sort(), ["data", "view"], "Entry preparation must leave history-token allocation to the final auth commit.");
+}
+
+for (const failure of ["cancelled", "failed"]) {
+  const controller = new AbortController();
+  const routeData = deferred();
+  const error = new Error("Page preparation failed");
+  entryDependencies = {
+    preload: async () => {},
+    fetch: () => routeData.promise,
+  };
+  const entering = prepareWorkspaceEntry("resume", { signal: controller.signal });
+  if (failure === "cancelled") {
+    controller.abort();
+    routeData.resolve({ kind: "resume-gallery", data: {} });
+    await assert.rejects(entering, { name: "AbortError" });
+  } else {
+    routeData.reject(error);
+    await assert.rejects(entering, (reason) => reason === error);
+  }
+}
+
+console.log("Workspace route endpoints and prepared authentication entry verified.");

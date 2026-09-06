@@ -74,7 +74,8 @@ type AuthSetupRequest = {
 ### POST `/api/auth/login`
 
 用途：由后端校验用户名和密码。前端只接收成功或失败结果，不读取后端明文凭据。
-登录成功后返回 8 小时有效的 Bearer JWT。
+登录成功后返回 36 小时有效的 Bearer JWT。前端将会话保存到同源共享的
+localStorage，登录和退出会同步到其他已打开的标签页。
 
 请求：
 
@@ -98,9 +99,9 @@ type AuthLoginResponse = {
 
 ### POST `/api/auth/refresh`
 
-用途：使用当前有效 JWT 刷新登录状态。前端每 4 小时调用一次。刷新成功后，
-后端会把刷新前的 token 哈希写入 4 小时内存失效缓存；后续任何请求继续携带
-旧 token 都会被中间件拦截。
+用途：使用当前有效 JWT 刷新登录状态。前端每 4 小时检查续签，并通过同源共享锁
+协调多个标签页对同一 token 的并发刷新。刷新成功后，后端会将旧 token 哈希
+保留在内存失效缓存中直到其原定过期时间；后续携带旧 token 的请求会被中间件拦截。
 
 请求头：
 
@@ -160,7 +161,9 @@ type AuthPasswordUpdateResponse = {
 }
 ```
 
-前端收到 `code = 40001` 后清理本地 session 并跳转登录页。
+前端收到 `code = 40001` 后，会等待正在进行的续签完成；只有失败请求携带的
+token 仍对应当前会话时，才清理共享 session 并跳转登录页。旧 token 的迟到响应
+不会清除已经建立的新会话。
 
 ## Workspace 页面查询与资源边界
 

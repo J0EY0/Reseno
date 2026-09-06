@@ -10,7 +10,7 @@ import jwt
 
 from app.config import JWT_SECRET_ENV_NAME, get_settings
 
-ACCESS_TOKEN_TTL_SECONDS = 8 * 60 * 60
+ACCESS_TOKEN_TTL_SECONDS = 36 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "resumate"
 JWT_AUDIENCE = "resumate-api"

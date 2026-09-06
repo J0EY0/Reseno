@@ -12,6 +12,10 @@ from app.services.auth_tokens import AuthTokenError, decode_access_token
 PUBLIC_API_PATHS = {
     "/api/auth/login",
     "/api/auth/setup",
+    "/api/auth/oauth/complete",
+    "/api/auth/oauth/github/login",
+    "/api/auth/oauth/github/callback",
+    "/api/auth/oauth/github/setup/callback",
 }
 LOGIN_URL = "/login"
 

@@ -1,7 +1,7 @@
 import type { AgentSettings, ModelConfig } from '@/types/resume'
 
 export function createDefaultAgentSettings(
-  modelConfigs: ModelConfig[] = [],
+  modelConfigs: readonly Pick<ModelConfig, "id">[] = [],
 ): AgentSettings {
   return {
     defaultModelConfigId: modelConfigs[0]?.id ?? '',
@@ -13,7 +13,7 @@ export function createDefaultAgentSettings(
 
 export function normalizeAgentSettings(
   value: unknown,
-  modelConfigs: ModelConfig[] = [],
+  modelConfigs: readonly Pick<ModelConfig, "id">[] = [],
 ): AgentSettings {
   const defaults = createDefaultAgentSettings(modelConfigs)
 

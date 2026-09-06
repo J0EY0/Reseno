@@ -977,9 +977,7 @@ async def run_suite(
                     "byName": dict(sorted(tool_name_counts.items())),
                 },
                 "failureReasons": [
-                    failure
-                    for run in runs
-                    for failure in run["failureReasons"]
+                    failure for run in runs for failure in run["failureReasons"]
                 ],
                 "observed": runs[-1]["observed"],
                 "runs": runs,

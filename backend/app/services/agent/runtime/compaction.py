@@ -135,8 +135,7 @@ async def prepare_agent_prompt(
             if handoff_tokens > limits.target_tokens:
                 checkpoint_token_budget = max(
                     1,
-                    checkpoint_token_budget
-                    - (handoff_tokens - limits.target_tokens),
+                    checkpoint_token_budget - (handoff_tokens - limits.target_tokens),
                 )
                 handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
                     request,

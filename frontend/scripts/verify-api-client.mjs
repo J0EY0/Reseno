@@ -15,6 +15,8 @@ assert.match(apiClientSource, /await import\(["']axios["']\)/);
 const testState = {
   clearedAuthCount: 0,
   invalidatedTokens: new Set(),
+  lockRequests: [],
+  refreshPending: null,
   redirects: [],
   token: "token-a",
   toasts: [],
@@ -29,6 +31,19 @@ globalThis.window = {
     },
   },
 };
+const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: {
+    locks: {
+      async request(name, options, callback) {
+        testState.lockRequests.push({ name, options });
+        await testState.refreshPending;
+        return callback();
+      },
+    },
+  },
+});
 
 const replies = [];
 const requests = [];
@@ -166,7 +181,11 @@ const virtualModules = {
   `,
   "@/lib/auth-session": `
     const state = globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
-    export function clearAuthSession() { state.clearedAuthCount += 1; }
+    export const AUTH_REFRESH_LOCK_NAME = "resumate-auth-refresh";
+    export function clearAuthSession() {
+      state.clearedAuthCount += 1;
+      state.token = null;
+    }
     export function getAccessToken() { return state.token; }
     export function isTokenLocallyInvalidated(token) {
       return state.invalidatedTokens.has(token);
@@ -223,6 +242,8 @@ function reset(api) {
   requests.length = 0;
   testState.clearedAuthCount = 0;
   testState.invalidatedTokens.clear();
+  testState.lockRequests.length = 0;
+  testState.refreshPending = null;
   testState.redirects.length = 0;
   testState.token = "token-a";
   testState.toasts.length = 0;
@@ -308,6 +329,91 @@ try {
       expected.status === 401 ? ["/login"] : [],
     );
   }
+
+  const unauthorizedPayload = {
+    code: 40001,
+    data: null,
+    message: "UNAUTHORIZED_REQUEST",
+  };
+  const unauthorizedRequests = [
+    { run: () => api.requestApi("/api/protected"), status: 401 },
+    { run: () => api.requestApi("/api/protected"), status: 200 },
+    { run: () => api.uploadApi("/api/upload", new FormData()), status: 401 },
+    { run: () => api.uploadApi("/api/upload", new FormData()), status: 200 },
+    { run: () => api.fetchApiResource("/api/events"), status: 401 },
+    { run: () => api.fetchApiResource("/api/events"), status: 200 },
+  ];
+
+  for (const { run, status } of unauthorizedRequests) {
+    reset(api);
+    const lateFailure = enqueueDeferred();
+    const pendingFailure = run();
+    await waitForRequestCount(1);
+    testState.token = "token-b";
+    lateFailure.resolveJson(unauthorizedPayload, status);
+    await assert.rejects(pendingFailure, /localized:UNAUTHORIZED_REQUEST/);
+    assert.equal(testState.token, "token-b");
+    assert.equal(testState.clearedAuthCount, 0);
+    assert.deepEqual(testState.redirects, []);
+    assert.equal(requests.length, 1);
+
+    reset(api);
+    enqueueJson(unauthorizedPayload, status);
+    await assert.rejects(run(), /localized:UNAUTHORIZED_REQUEST/);
+    assert.equal(testState.clearedAuthCount, 1);
+    assert.deepEqual(testState.redirects, ["/login"]);
+
+    reset(api);
+    let finishRefresh;
+    testState.refreshPending = new Promise((resolve) => {
+      finishRefresh = resolve;
+    });
+    const refreshWindowFailure = enqueueDeferred();
+    const waitingFailure = run();
+    await waitForRequestCount(1);
+    refreshWindowFailure.resolveJson(unauthorizedPayload, status);
+    for (let attempt = 0; attempt < 20 && !testState.lockRequests.length; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(testState.lockRequests, [
+      { name: "resumate-auth-refresh", options: { mode: "shared" } },
+    ]);
+    assert.equal(testState.clearedAuthCount, 0);
+    testState.token = "token-b";
+    finishRefresh();
+    await assert.rejects(waitingFailure, /localized:UNAUTHORIZED_REQUEST/);
+    assert.equal(testState.token, "token-b");
+    assert.deepEqual(testState.redirects, []);
+  }
+
+  for (const run of [
+    () => api.requestApi("/api/auth/login", { auth: false, method: "POST" }),
+    () => api.uploadApi("/api/upload", new FormData(), { auth: false }),
+  ]) {
+    reset(api);
+    testState.token = null;
+    const anonymousFailure = enqueueDeferred();
+    const pendingFailure = run();
+    await waitForRequestCount(1);
+    assert.equal(requests[0].headers.get("Authorization"), null);
+    testState.token = "token-b";
+    anonymousFailure.resolveJson(unauthorizedPayload, 401);
+    await assert.rejects(pendingFailure, /localized:UNAUTHORIZED_REQUEST/);
+    assert.equal(testState.token, "token-b");
+    assert.equal(testState.clearedAuthCount, 0);
+    assert.deepEqual(testState.redirects, []);
+    assert.deepEqual(testState.lockRequests, []);
+  }
+
+  reset(api);
+  testState.refreshPending = new Promise(() => {});
+  enqueueJson(unauthorizedPayload, 401);
+  await assert.rejects(
+    api.requestApi(api.apiRoutes.authRefresh, { method: "POST", body: {} }),
+    /localized:UNAUTHORIZED_REQUEST/,
+  );
+  assert.equal(testState.clearedAuthCount, 1);
+  assert.deepEqual(testState.lockRequests, []);
 
   reset(api);
   enqueueJson(
@@ -549,5 +655,10 @@ try {
   globalThis.fetch = originalFetch;
   delete globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
   delete globalThis.window;
+  if (originalNavigator) {
+    Object.defineProperty(globalThis, "navigator", originalNavigator);
+  } else {
+    delete globalThis.navigator;
+  }
   await server.close();
 }

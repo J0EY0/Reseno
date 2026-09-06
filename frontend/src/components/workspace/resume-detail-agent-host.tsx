@@ -156,10 +156,10 @@ export function ResumeDetailAgentToggle({
             aria-label={tooltip}
             aria-expanded={!isCollapsed}
             className={cn(
-              "agent-panel-toggle relative hidden w-10 rounded-md bg-background/95 shadow-lg xl:inline-flex",
-              !isCollapsed && "bg-accent text-accent-foreground",
+              "hidden w-10 rounded-md bg-background/95 shadow-lg dark:bg-background/95 dark:hover:bg-accent xl:inline-flex",
+              !isCollapsed &&
+                "bg-accent text-accent-foreground dark:bg-accent",
             )}
-            data-agent-draft={Boolean(state.agent.draft)}
             data-agent-status={panelStatus ?? "idle"}
             data-slot="agent-panel-toggle"
             onFocus={preloadCopilotPanelModule}
@@ -175,11 +175,6 @@ export function ResumeDetailAgentToggle({
                 "transition-transform duration-200",
                 !isCollapsed && "rotate-180",
               )}
-            />
-            <span
-              aria-hidden="true"
-              className="agent-panel-toggle-status"
-              data-slot="agent-status-indicator"
             />
           </Button>
         </TooltipTrigger>

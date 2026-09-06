@@ -1,4 +1,5 @@
-const AUTH_SESSION_KEY = 'resumate-auth-session'
+export const AUTH_SESSION_KEY = 'resumate-auth-session'
+export const AUTH_REFRESH_LOCK_NAME = 'resumate-auth-refresh'
 const INVALIDATED_TOKEN_CACHE_KEY = 'resumate-invalidated-jwts'
 const INVALIDATED_TOKEN_TTL_MS = 4 * 60 * 60 * 1000
 
@@ -70,7 +71,7 @@ export function getAuthSession(): AuthSession | null {
   }
 
   try {
-    const raw = window.sessionStorage.getItem(AUTH_SESSION_KEY)
+    const raw = window.localStorage.getItem(AUTH_SESSION_KEY)
     const parsed = raw ? (JSON.parse(raw) as Partial<AuthSession>) : null
 
     if (
@@ -108,7 +109,7 @@ export function saveAuthSession(
     return
   }
 
-  window.sessionStorage.setItem(
+  window.localStorage.setItem(
     AUTH_SESSION_KEY,
     JSON.stringify({
       username: username.trim(),
@@ -124,7 +125,7 @@ export function clearAuthSession() {
     return
   }
 
-  window.sessionStorage.removeItem(AUTH_SESSION_KEY)
+  window.localStorage.removeItem(AUTH_SESSION_KEY)
 }
 
 export function loadAuthSession() {

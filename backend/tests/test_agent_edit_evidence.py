@@ -418,9 +418,7 @@ def test_changed_number_with_unit_still_requires_evidence() -> None:
 
 def test_identity_matching_ignores_only_latin_cjk_boundary_spacing() -> None:
     resume = _resume()
-    resume["sections"][0]["items"][0]["name"] = (
-        "ResuMate AI Agent简历制作网站"
-    )
+    resume["sections"][0]["items"][0]["name"] = "ResuMate AI Agent简历制作网站"
 
     _, spacing_issues = ground_edit_evidence(
         resume,

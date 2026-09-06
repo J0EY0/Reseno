@@ -645,9 +645,11 @@ assert(
     conversationSource.includes("status,") &&
     /onStatusChange\(conversation\.status\)/.test(panelSource) &&
     agentHostSource.includes('data-agent-status={panelStatus ?? "idle"}') &&
-    agentHostSource.includes('className="agent-panel-toggle-status"') &&
+    agentHostSource.includes('className="sr-only" role="status"') &&
+    !agentHostSource.includes("agent-panel-toggle-status") &&
+    !agentHostSource.includes('data-slot="agent-status-indicator"') &&
     agentLayoutSource.includes("reportedStatus && reportedStatus.resumeId === resumeId"),
-  "A retained conversation must report its low-frequency status to the collapsed Agent toggle without leaking across resumes.",
+  "A retained conversation must report its low-frequency status accessibly without rendering a desktop status dot or leaking across resumes.",
 );
 assert(
   /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\*,\s*\*::before,\s*\*::after\s*\{[^}]*transition:\s*none\s*!important/.test(
@@ -672,7 +674,7 @@ assert(
     agentHostSource.includes('data-slot="agent-panel-toggle"') &&
     agentHostSource.includes("aria-controls={RESUME_DETAIL_AGENT_PANEL_ID}") &&
     agentHostSource.includes("id={RESUME_DETAIL_AGENT_PANEL_ID}") &&
-    agentHostSource.includes('"agent-panel-toggle relative hidden') &&
+    agentHostSource.includes('"hidden w-10 rounded-md') &&
     agentHostSource.includes("xl:inline-flex") &&
     agentHostSource.includes("aria-expanded={") &&
     !agentHostSource.includes("aria-haspopup") &&

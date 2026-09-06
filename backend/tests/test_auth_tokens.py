@@ -7,6 +7,38 @@ from fastapi.testclient import TestClient
 from app.services import auth_tokens
 
 
+def test_access_tokens_and_refresh_have_a_36_hour_lifetime(client: TestClient) -> None:
+    token, claims = auth_tokens.create_access_token("admin", "revision")
+    assert claims.expires_at - claims.issued_at == 36 * 60 * 60
+    refreshed, refreshed_claims = auth_tokens.refresh_access_token(token)
+    assert refreshed_claims.expires_at - refreshed_claims.issued_at == 36 * 60 * 60
+    assert auth_tokens.decode_access_token(refreshed).subject == "admin"
+    with pytest.raises(auth_tokens.AuthTokenError, match="revoked"):
+        auth_tokens.decode_access_token(token)
+
+
+def test_access_token_expires_at_the_36_hour_boundary(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    token, claims = auth_tokens.create_access_token("admin", "revision")
+
+    class Clock(datetime):
+        current = claims.expires_at - 1
+
+        @classmethod
+        def now(cls, tz=UTC):
+            return datetime.fromtimestamp(cls.current, tz)
+
+    monkeypatch.setattr(jwt.api_jwt, "datetime", Clock)
+    assert auth_tokens.decode_access_token(token).expires_at == claims.expires_at
+    Clock.current = claims.expires_at
+    with pytest.raises(auth_tokens.AuthTokenError):
+        auth_tokens.decode_access_token(token)
+
+
 def _encode_test_token(payload: dict[str, object]) -> str:
     return jwt.encode(
         payload,

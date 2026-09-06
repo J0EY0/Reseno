@@ -150,8 +150,8 @@ assert.match(
 );
 assert.match(
   appSource,
-  /if \(isMessagesReady\) \{[\s\S]*?const routeRequest =[\s\S]*?void routeRequest\(\)\.catch/,
-  "A non-default catalog and its current lazy route must preload in parallel.",
+  /if \(isMessagesReady && authGate\.phase !== "app"\) \{[\s\S]*?const routeRequest =[\s\S]*?const preferencesRequest =[\s\S]*?loadWorkspacePreferencesProvider\(\)[\s\S]*?void Promise\.all\(\[routeRequest\(\), preferencesRequest\]\)\.catch/,
+  "A non-default catalog, current lazy route, and shared preferences provider must preload in parallel.",
 );
 
 assert.doesNotMatch(

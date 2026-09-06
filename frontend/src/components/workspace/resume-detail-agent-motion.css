@@ -30,41 +30,9 @@
   .app-shell--document .agent-panel-card {
     width: 100%;
   }
-
-  .agent-panel-toggle-status {
-    position: absolute;
-    right: 6px;
-    bottom: 6px;
-    width: 4px;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--ring);
-    opacity: 0;
-  }
-
-  .agent-panel-toggle[aria-expanded='false'][data-agent-status='loading']
-    .agent-panel-toggle-status,
-  .agent-panel-toggle[aria-expanded='false'][data-agent-status='responding']
-    .agent-panel-toggle-status {
-    width: 6px;
-    height: 2px;
-    opacity: 0.82;
-    animation: agent-panel-toggle-status-pulse 1.4s ease-in-out infinite;
-  }
-
-  .agent-panel-toggle[aria-expanded='false'][data-agent-draft='true']
-    .agent-panel-toggle-status {
-    opacity: 1;
-  }
-
-  .agent-panel-toggle[aria-expanded='false'][data-agent-status='error']
-    .agent-panel-toggle-status {
-    background: var(--destructive);
-    opacity: 1;
-  }
 }
 
-@keyframes agent-panel-toggle-status-pulse {
+@keyframes agent-compact-status-pulse {
   50% {
     opacity: 0.46;
     transform: scaleX(0.7);
@@ -89,7 +57,7 @@
   width: 7px;
   height: 3px;
   opacity: 1;
-  animation: agent-panel-toggle-status-pulse 1.4s ease-in-out infinite;
+  animation: agent-compact-status-pulse 1.4s ease-in-out infinite;
 }
 
 [data-agent-draft='true'] .agent-compact-status-indicator,

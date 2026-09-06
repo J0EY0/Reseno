@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 
 import { PasswordSettingsDialog } from "@/components/password-settings-dialog";
+import { OAuthIdentitySettings } from "@/components/auth/oauth-identity-settings";
 import {
   OptionToggleGroup,
   SettingsRow,
@@ -112,6 +113,8 @@ export function SiteSettingsTab({
             />
           </div>
         </SettingsRow>
+        <Separator className="mx-5 w-auto sm:mx-6" />
+        <OAuthIdentitySettings t={t} />
       </SettingsSection>
     </TabsContent>
   );

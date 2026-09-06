@@ -650,9 +650,7 @@ def _valid_web_search_item(item: dict[str, Any]) -> bool:
 
 
 def _response_output(response: object) -> tuple[str, list[LlmWebSource]]:
-    sources_by_id = {
-        source.id: source for source in _web_search_call_sources(response)
-    }
+    sources_by_id = {source.id: source for source in _web_search_call_sources(response)}
     text, annotation_sources = _response_text_annotations(response)
     for source in annotation_sources:
         sources_by_id[source.id] = source

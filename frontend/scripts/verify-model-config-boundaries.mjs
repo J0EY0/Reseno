@@ -268,7 +268,7 @@ assert.match(
 );
 const modelConfigSkeletonSource = workspaceSkeletons.slice(
   workspaceSkeletons.indexOf("export function ModelConfigPanelSkeleton"),
-  workspaceSkeletons.indexOf("function GalleryCardSkeleton"),
+  workspaceSkeletons.indexOf("export function WorkspaceRouteSkeleton"),
 );
 assert.match(
   modelConfigSkeletonSource,

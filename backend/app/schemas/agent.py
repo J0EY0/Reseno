@@ -123,9 +123,7 @@ class AgentDraftState(BaseModel):
     @model_validator(mode="after")
     def require_consistent_pending_items(self) -> "AgentDraftState":
         _validate_review_item_collection(self.review_items)
-        pending_count = sum(
-            item.status == "pending" for item in self.review_items
-        )
+        pending_count = sum(item.status == "pending" for item in self.review_items)
         if pending_count != self.pending_count:
             raise PydanticCustomError(
                 "agent_draft_pending_count_invalid",
@@ -378,13 +376,10 @@ class AgentChatMessage(BaseModel):
         edit_ids = [edit.id for edit in self.edits]
         edit_positions = {edit_id: index for index, edit_id in enumerate(edit_ids)}
         review_edit_ids = [
-            edit_id
-            for item in self.draft.review_items
-            for edit_id in item.edit_ids
+            edit_id for item in self.draft.review_items for edit_id in item.edit_ids
         ]
-        if (
-            len(edit_positions) != len(edit_ids)
-            or set(review_edit_ids) != set(edit_ids)
+        if len(edit_positions) != len(edit_ids) or set(review_edit_ids) != set(
+            edit_ids
         ):
             raise PydanticCustomError(
                 "agent_draft_review_edit_coverage_invalid",

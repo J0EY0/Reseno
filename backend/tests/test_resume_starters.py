@@ -229,8 +229,7 @@ def test_workspace_default_template_selects_its_starter(client: TestClient) -> N
     created = response.json()["data"]["resume"]
     assert created["template"] == "executive"
     assert [
-        (section["kind"], section["title"])
-        for section in created["resume"]["sections"]
+        (section["kind"], section["title"]) for section in created["resume"]["sections"]
     ] == EXPECTED_SECTIONS[("executive", "en")]
 
 

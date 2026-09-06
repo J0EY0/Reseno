@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
 
 const frontendRoot = new URL("../", import.meta.url);
 const readText = (path) => readFile(new URL(path, frontendRoot), "utf8");
@@ -14,7 +12,7 @@ const [
   resumeDetailRouteSource,
   resumeDetailViewSource,
   resumeDetailLoaderSource,
-  resumeDetailPreferencesSource,
+  resumeDetailModelsSource,
   resumeDetailSaveSource,
   resumeDetailLeaveSource,
   modelsPageSource,
@@ -29,11 +27,10 @@ const [
   trashRouteSource,
   lateralLayoutSource,
   shellSource,
-  workspaceThemeSource,
+  preferencesProviderSource,
   sidebarSource,
   preferencesRouteSource,
   lateralRouteDataSource,
-  persistenceSource,
   preparedNavigationSource,
   navigationTransactionSource,
   workspaceRoutePreparationSource,
@@ -52,7 +49,7 @@ const [
   readText("src/components/workspace/use-resume-detail-workspace.ts"),
   readText("src/components/workspace/resume-detail-workspace-view.tsx"),
   readText("src/components/workspace/use-resume-detail-loader.ts"),
-  readText("src/components/workspace/use-resume-detail-preferences.ts"),
+  readText("src/components/workspace/use-resume-detail-models.ts"),
   readText("src/components/workspace/use-resume-detail-save.ts"),
   readText("src/components/workspace/use-resume-detail-leave.ts"),
   readText("src/components/workspace/models-workspace-page.tsx"),
@@ -67,11 +64,10 @@ const [
   readText("src/components/workspace/use-trash-workspace.ts"),
   readText("src/components/workspace/workspace-lateral-layout.tsx"),
   readText("src/components/workspace/workspace-shell.tsx"),
-  readText("src/components/workspace/workspace-theme.tsx"),
+  readText("src/components/workspace/workspace-preferences.tsx"),
   readText("src/components/app-sidebar.tsx"),
   readText("src/components/workspace/use-workspace-preferences-route.ts"),
   readText("src/components/workspace/use-workspace-lateral-route-data.ts"),
-  readText("src/lib/workspace-preferences-persistence.ts"),
   readText(
     "src/components/workspace/use-prepared-workspace-navigation.ts",
   ),
@@ -94,6 +90,22 @@ const templateDetailInitialRouteSource = await readText(
   "src/components/workspace/template-detail-initial-route.ts",
 );
 
+for (const loadOwner of [
+  resumeDetailLoaderSource,
+  resumeGalleryRouteSource,
+  templateDetailRouteSource,
+  templateGalleryRouteSource,
+  trashRouteSource,
+  preferencesRouteSource,
+]) {
+  assert.match(loadOwner, /from "@\/lib\/workspace-load-error"/,
+    "Every route loader must share ownership of its replaceable load error.");
+  assert.match(loadOwner, /dismissWorkspaceLoadError\(\)/,
+    "Starting a new route request must dismiss the previous load error.");
+  assert.doesNotMatch(loadOwner, /["']workspace-load-error["']/,
+    "A retried route must not reuse the ID of a Toast that is still leaving.");
+}
+
 for (const routeEntry of [
   "resume-gallery-workspace-page",
   "resume-detail-workspace-page",
@@ -102,6 +114,7 @@ for (const routeEntry of [
   "template-gallery-workspace-page",
   "template-detail-workspace-page",
   "trash-workspace-page",
+  "workspace-preferences",
 ]) {
   assert.match(
     workspaceRouteLoadersSource,
@@ -123,6 +136,7 @@ for (const routeLoader of [
   "loadTemplateDetailWorkspacePage",
   "loadTrashWorkspacePage",
   "loadWorkspaceLateralLayout",
+  "loadWorkspacePreferencesProvider",
 ]) {
   assert.match(
     appSource,
@@ -178,34 +192,34 @@ assert.doesNotMatch(
   "Independent workspace pages must not statically depend on the retired ResumeBuilder.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
   /case "resume":\s*return loadResumeGalleryWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the independent resume gallery route entry.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
   /case "models":\s*return loadModelsWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the models route entry.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
   /case "settings":\s*return loadSettingsWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the settings route entry.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
   /case "templates":\s*return loadTemplateGalleryWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the template gallery route entry.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
+  workspaceRouteLoadersSource,
   /case "trash":\s*return loadTrashWorkspacePage\(\)/,
   "Prepared workspace navigation must preload the trash route entry.",
 );
 assert.match(
-  workspaceRoutePreparationSource,
-  /return Promise\.all\(\[\s*loadWorkspaceLateralLayout\(\),\s*loadWorkspaceRoute\(view\),\s*\]\)/,
-  "Prepared lateral navigation must preload the persistent layout with its child route.",
+  workspaceRouteLoadersSource,
+  /return Promise\.all\(\[\s*loadWorkspacePreferencesProvider\(\),\s*loadWorkspaceLateralLayout\(\),\s*loadWorkspaceRoute\(view\),\s*\]\)/,
+  "Prepared lateral navigation must preload the shared preferences provider, persistent layout, and child route together.",
 );
 assert.match(
   workspaceRoutePreparationSource,
@@ -214,8 +228,13 @@ assert.match(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /await persistence\.flush\(\)[\s\S]{0,2200}fetchWorkspaceRouteData\("settings",\s*\{\s*notifyOnError:\s*false,\s*signal:\s*options\.signal/,
-  "Prepared route reads must wait for queued preference writes and suppress duplicate error Toasts.",
+  /fetchWorkspacePageData[\s\S]{0,500}await persistence\.prepareRead\(options\.signal\)[\s\S]{0,180}options\.signal\.throwIfAborted\(\)[\s\S]{0,180}await fetchWorkspaceRouteData\(kind, options\)[\s\S]{0,120}acceptPreferences\(source\.data\)[\s\S]{0,80}return source/,
+  "Fresh route reads must await the preference queue, respect cancellation, and accept preferences before exposing page data.",
+);
+assert.match(
+  workspaceRoutePreparationSource,
+  /fetchWorkspacePageData\("settings", persistence,\s*\{\s*notifyOnError:\s*false,\s*signal:\s*options\.signal/,
+  "Prepared route reads must suppress duplicate error Toasts and forward the navigation signal.",
 );
 assert.match(
   workspaceRoutePreparationSource,
@@ -290,8 +309,13 @@ assert.match(shellSource, /<AppSidebar[\s\S]*<SidebarInset/);
 assert.match(shellSource, /<AppToaster theme=\{theme\}/);
 assert.match(
   lateralLayoutSource,
-  /<WorkspaceThemeProvider[\s\S]*?<WorkspaceShell[\s\S]*?<Outlet \/>/,
-  "The lateral layout must keep theme, Sidebar, and Header mounted around the changing route outlet.",
+  /<WorkspaceShell[\s\S]*?<Outlet \/>/,
+  "The lateral layout must keep Sidebar and Header mounted around the changing route outlet.",
+);
+assert.match(
+  appSource,
+  /<WorkspacePreferencesProvider[\s\S]*?<Route element=\{renderWorkspaceLateralLayout\(\)\}>[\s\S]*?<Route path="\/resume\/:id"[\s\S]*?<Route path="\/template\/:id"[\s\S]*?<\/Route>/,
+  "One preferences provider must span both persistent lateral routes and document detail routes.",
 );
 assert.doesNotMatch(
   resumeGalleryPageSource +
@@ -323,10 +347,26 @@ assert.doesNotMatch(
   "Sidebar navigation must stay visually stable instead of showing a loading icon.",
 );
 assert.match(
-  workspaceThemeSource,
-  /WorkspaceThemeProvider[\s\S]*?prefers-color-scheme: dark[\s\S]*?persistence\.enqueue/,
-  "The persistent lateral layout must own one theme surface and serialized persistence path.",
+  preferencesProviderSource,
+  /WorkspacePreferencesProvider[\s\S]*?createWorkspacePreferencesPersistence[\s\S]*?prefers-color-scheme: dark[\s\S]*?persistence\.change/,
+  "The common workspace parent must own one theme surface and preference transaction coordinator.",
 );
+for (const routePreferencesSource of [
+  resumeGalleryRouteSource,
+  templateGalleryRouteSource,
+  trashRouteSource,
+  preferencesRouteSource,
+  resumeDetailModelsSource,
+  resumeDetailRouteSource,
+  templateDetailRouteSource,
+  lateralLayoutSource,
+]) {
+  assert.doesNotMatch(
+    routePreferencesSource,
+    /hydrateTheme|hydrateRoutePreferences|persistence\.(?:hydrate|enqueue)|WorkspaceThemeProvider|prefers-color-scheme|saveUserSettingsApi/,
+    "Route mounts and history snapshots must not hydrate preferences, save them independently, or own another theme listener.",
+  );
+}
 assert.doesNotMatch(
   shellSource,
   /import\("@\/components\/resume-builder"\)/,
@@ -465,7 +505,6 @@ for (const detailRouteSource of [
 for (const routeSource of [
   resumeGalleryRouteSource,
   templateGalleryRouteSource,
-  preferencesRouteSource,
 ]) {
   assert.match(
     routeSource,
@@ -484,6 +523,21 @@ for (const routeSource of [
   );
 }
 assert.match(
+  preferencesRouteSource,
+  /hasPreparedData\] = useState\([\s\S]{0,100}Boolean\(preparedRouteData\) && agentSettings !== null,[\s\S]{0,100}hasLoaded, setHasLoaded\] = useState\(hasPreparedData\)[\s\S]{0,180}isLoading, setIsLoading\] = useState\(!hasPreparedData\)/,
+  "Prepared preference routes must render immediately only when both page data and shared Agent preferences are ready.",
+);
+assert.match(
+  preferencesRouteSource,
+  /if \(hasPreparedData && retryKey === 0\) \{\s*return;[\s\S]{0,100}new AbortController\(\)/,
+  "A complete preference handoff must skip transport without rehydrating its cached preferences.",
+);
+assert.doesNotMatch(
+  preferencesRouteSource,
+  /isPreparedCalibration|routeMutationEpochRef|markRouteMutation/,
+  "Preference routes must not retain obsolete background calibration.",
+);
+assert.match(
   trashRouteSource,
   /hasLoaded, setHasLoaded\] = useState\(Boolean\(preparedRouteData\)\)/,
   "The prepared trash route must render its first-frame content without a loading reset.",
@@ -495,12 +549,12 @@ assert.match(
 );
 assert.match(
   preferencesRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*kind/,
+  /fetchWorkspacePageData\(\s*kind,\s*persistence,/,
   "A route must wait for queued settings writes before reading server state.",
 );
 assert.match(
   preferencesRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale preference requests must exit before the retry state and Toast.",
 );
 assert.match(
@@ -515,12 +569,12 @@ assert.match(
 );
 assert.match(
   preferencesRouteSource,
-  /persistence\.enqueue\([\s\S]*onRollback\(persisted\)[\s\S]*onError\(error\)/,
-  "Preference mutations must use the shared serialized rollback coordinator.",
+  /useWorkspacePreferences\(\)[\s\S]*reconcileModels/,
+  "Preference routes must consume shared preferences and reconcile model catalog changes through the coordinator.",
 );
 assert.match(
   templateGalleryRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"template-gallery"/,
+  /fetchWorkspacePageData\(\s*"template-gallery",\s*persistence,/,
   "The template gallery must flush queued preferences before reading route data.",
 );
 assert.match(
@@ -582,7 +636,7 @@ assert.doesNotMatch(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /loadTemplateDetailRouteData[\s\S]{0,500}await persistence\.flush\(\)[\s\S]{0,300}fetchWorkspaceRouteData\("template-detail", \{[\s\S]{0,120}signal: options\.signal/,
+  /loadTemplateDetailRouteData[\s\S]{0,800}fetchWorkspacePageData\("template-detail", persistence, \{[\s\S]{0,120}signal: options\.signal/,
   "Direct template loads and click preparation must share one fresh target-validating read.",
 );
 assert.match(
@@ -592,7 +646,7 @@ assert.match(
 );
 assert.match(
   templateDetailRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale template detail requests must exit before retry state and Toast.",
 );
 assert.match(
@@ -651,7 +705,7 @@ assert.match(
 );
 assert.match(
   resumeGalleryRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"resume-gallery"/,
+  /fetchWorkspacePageData\(\s*"resume-gallery",\s*persistence,/,
   "The resume gallery must flush queued preferences before reading route data.",
 );
 assert.ok(
@@ -668,7 +722,7 @@ assert.match(
 );
 assert.match(
   resumeGalleryRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale resume gallery requests must exit before retry state and Toast.",
 );
 const openResumeSource = resumeGalleryRouteSource.slice(
@@ -805,7 +859,7 @@ assert.ok(
 );
 assert.match(
   workspaceRoutePreparationSource,
-  /loadResumeDetailRouteData[\s\S]{0,600}fetchWorkspaceRouteData\("resume-detail"[\s\S]{0,300}fetchResumeApi\(resumeId[\s\S]{0,300}fetchResumeVersionsApi\(resumeId[\s\S]{0,500}Promise\.all/,
+  /loadResumeDetailRouteData[\s\S]{0,600}fetchWorkspacePageData\("resume-detail"[\s\S]{0,300}fetchResumeApi\(resumeId[\s\S]{0,300}fetchResumeVersionsApi\(resumeId[\s\S]{0,500}Promise\.all/,
   "Resume preparation and direct loads must share one parallel abortable read transaction.",
 );
 assert.match(
@@ -819,9 +873,9 @@ assert.match(
   "A complete resume handoff must be consumed without starting the direct-URL loader.",
 );
 assert.match(
-  resumeDetailPreferencesSource,
-  /initialRouteData\?: ResumeEditorRouteData[\s\S]{0,900}normalizeModelConfigs\(initialRouteData, locale\)[\s\S]{0,900}initialRouteData\?\.agentSettings/,
-  "Prepared model and Agent preferences must initialize synchronously for the first detail frame.",
+  resumeDetailModelsSource,
+  /normalizeModelConfigs\(initialRouteData, locale\)/,
+  "Resume detail must initialize its own prepared model catalog synchronously.",
 );
 const duplicateNavigationSource = resumeDetailRouteSource.slice(
   resumeDetailRouteSource.indexOf("const navigateToResume"),
@@ -862,13 +916,20 @@ assert.match(
   "Resume logout must share dirty-state resolution without allowing an older navigation to commit.",
 );
 assert.ok(
-  /isLoading:\s*isLoading \|\| hasRouteLoadError/.test(
+  /const \{ isLoading \} = loader[\s\S]*isLoading:\s*isLoading \|\| loader\.hasLoadError/.test(
     resumeDetailRouteSource,
-  ) &&
-    /onLoadErrorChange:\s*setHasRouteLoadError/.test(
-      resumeDetailRouteSource,
-    ),
-  "A route calibration failure must pause autosave as well as the explicit save shortcut.",
+  ),
+  "The loader's loading and error states must pause autosave as well as the explicit save shortcut.",
+);
+assert.doesNotMatch(
+  resumeDetailRouteSource + resumeDetailLoaderSource,
+  /hasHandoff|onLoadErrorChange|onLoadingChange|hasRouteLoadError|setHasRouteLoadError/,
+  "The detail loader must be the single owner of route progress and errors, without mirrored callback state.",
+);
+assert.doesNotMatch(
+  resumeDetailRouteSource,
+  /\[isLoading, setIsLoading\]|\[hasLoaded, setHasLoaded\]|\[hasLoadError, setHasLoadError\]/,
+  "The composing workspace must consume route state from its loader.",
 );
 assert.doesNotMatch(
   resumeDetailRouteSource + resumeDetailSaveSource,
@@ -929,12 +990,12 @@ assert.match(
 );
 assert.match(
   templateGalleryRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale template requests must exit before retry state and Toast.",
 );
 assert.match(
   trashRouteSource,
-  /await persistence\.flush\(\)[\s\S]{0,900}fetchWorkspaceRouteData\(\s*"trash"/,
+  /fetchWorkspacePageData\(\s*"trash",\s*persistence,/,
   "Trash must flush queued preferences before reading route data.",
 );
 assert.match(
@@ -944,7 +1005,7 @@ assert.match(
 );
 assert.match(
   trashRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*id:\s*"workspace-load-error"[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale trash requests must exit before retry state and Toast.",
 );
 assert.match(
@@ -968,131 +1029,4 @@ assert.match(
   "Trash must keep permanent template deletion serialized.",
 );
 
-const compiledPersistence = ts.transpileModule(persistenceSource, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
-const persistenceModule = { exports: {} };
-const cachedThemes = [];
-vm.runInNewContext(compiledPersistence, {
-  exports: persistenceModule.exports,
-  module: persistenceModule,
-  require(specifier) {
-    assert.equal(specifier, "@/lib/workspace-theme");
-    return {
-      saveWorkspaceThemePreference(theme) {
-        cachedThemes.push(theme);
-      },
-    };
-  },
-});
-
-const { createWorkspacePreferencesPersistence } = persistenceModule.exports;
-const persistence = createWorkspacePreferencesPersistence();
-const base = {
-  locale: "en",
-  theme: "light",
-  agentSettings: { defaultModelConfigId: "base" },
-};
-const first = {
-  locale: "en",
-  theme: "dark",
-  agentSettings: { defaultModelConfigId: "first" },
-};
-const second = {
-  locale: "zh",
-  theme: "system",
-  agentSettings: { defaultModelConfigId: "second" },
-};
-const order = [];
-let releaseFirst;
-const firstGate = new Promise((resolve) => {
-  releaseFirst = resolve;
-});
-
-persistence.hydrate(base);
-assert.deepEqual(cachedThemes, ["light"]);
-persistence.enqueue(
-  first,
-  async () => {
-    order.push("first:start");
-    await firstGate;
-    order.push("first:end");
-  },
-  { onError: () => assert.fail("first save failed"), onRollback: () => {} },
-);
-persistence.enqueue(
-  second,
-  async () => {
-    order.push("second");
-  },
-  { onError: () => assert.fail("second save failed"), onRollback: () => {} },
-);
-
-await new Promise((resolve) => setTimeout(resolve, 0));
-assert.deepEqual(order, ["first:start"], "Preference writes must be serialized.");
-assert.deepEqual(
-  cachedThemes,
-  ["light"],
-  "The first-paint cache must not commit an in-flight preference.",
-);
-releaseFirst();
-await persistence.flush();
-assert.deepEqual(order, ["first:start", "first:end", "second"]);
-assert.deepEqual(persistence.getSnapshot(), second);
-assert.deepEqual(cachedThemes, ["light", "dark", "system"]);
-
-let staleRollbackCount = 0;
-const newest = {
-  locale: "en",
-  theme: "light",
-  agentSettings: { defaultModelConfigId: "newest" },
-};
-persistence.enqueue(
-  { ...second, theme: "dark" },
-  async () => {
-    throw new Error("stale expected failure");
-  },
-  { onError: () => {}, onRollback: () => staleRollbackCount++ },
-);
-persistence.enqueue(newest, async () => {}, {
-  onError: () => assert.fail("newest save failed"),
-  onRollback: () => assert.fail("newest save rolled back"),
-});
-await persistence.flush();
-assert.equal(staleRollbackCount, 0, "An older failure must not revert newer UI.");
-assert.deepEqual(persistence.getSnapshot(), newest);
-assert.deepEqual(
-  cachedThemes,
-  ["light", "dark", "system", "light"],
-  "Only committed preference writes may update the first-paint cache.",
-);
-
-let rollbackSnapshot = null;
-persistence.enqueue(
-  { ...newest, theme: "dark" },
-  async () => {
-    throw new Error("expected failure");
-  },
-  {
-    onError: () => {},
-    onRollback: (snapshot) => {
-      rollbackSnapshot = snapshot;
-    },
-  },
-);
-await persistence.flush();
-assert.deepEqual(
-  rollbackSnapshot,
-  newest,
-  "The latest failed mutation must roll back to the last committed snapshot.",
-);
-assert.deepEqual(
-  cachedThemes,
-  ["light", "dark", "system", "light"],
-  "A failed latest mutation must leave the committed first-paint theme intact.",
-);
-
-console.log("Workspace route ownership and preference persistence verified.");
+console.log("Workspace route ownership verified.");

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -48,3 +50,46 @@ class AuthPasswordUpdateResponse(BaseModel):
 
     username: str
     updated: bool = True
+
+
+class OAuthProviderConfiguration(BaseModel):
+    provider: Literal["github"]
+    configured: bool
+
+
+class OAuthIdentityResponse(BaseModel):
+    provider: Literal["github"]
+    label: str
+    created_at: str = Field(alias="createdAt")
+
+
+class OAuthIdentitiesResponse(BaseModel):
+    identities: list[OAuthIdentityResponse]
+    providers: list[OAuthProviderConfiguration]
+
+
+class OAuthStartResponse(BaseModel):
+    authorization_url: str = Field(alias="authorizationUrl")
+
+
+class OAuthCompleteRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=128)
+
+
+class OAuthCompleteResponse(BaseModel):
+    provider: Literal["github"]
+    intent: Literal["login", "bind"]
+    auth: AuthLoginResponse | None
+
+
+class OAuthDeleteResponse(BaseModel):
+    deleted: bool = True
+
+
+class OAuthSetupRequest(BaseModel):
+    public_base_url: str = Field(alias="publicBaseUrl", min_length=1, max_length=2048)
+
+
+class OAuthSetupResponse(BaseModel):
+    registration_url: str = Field(alias="registrationUrl")
+    manifest: dict[str, object]

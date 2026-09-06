@@ -1598,14 +1598,10 @@ def test_duplicate_resume_copies_content_without_history_or_agent_context(
     first_response = client.post(f"/api/resumes/{source_id}/duplicate")
     assert first_response.status_code == 200
     first = first_response.json()["data"]
-    second_response = client.post(
-        f"/api/resumes/{first['resume']['id']}/duplicate"
-    )
+    second_response = client.post(f"/api/resumes/{first['resume']['id']}/duplicate")
     assert second_response.status_code == 200
     second = second_response.json()["data"]
-    third_response = client.post(
-        f"/api/resumes/{second['resume']['id']}/duplicate"
-    )
+    third_response = client.post(f"/api/resumes/{second['resume']['id']}/duplicate")
 
     assert third_response.status_code == 200
     third = third_response.json()["data"]
@@ -1893,19 +1889,19 @@ def test_duplicate_resume_keeps_prefix_related_copy_families_separate(
         "/api/resumes",
         json={"documentLocale": "en", "title": "Backend Engineer"},
     ).json()["data"]["resume"]
-    longer_copy = client.post(
-        f"/api/resumes/{longer_source['id']}/duplicate"
-    ).json()["data"]["resume"]
+    longer_copy = client.post(f"/api/resumes/{longer_source['id']}/duplicate").json()[
+        "data"
+    ]["resume"]
     shorter_source = client.post(
         "/api/resumes",
         json={"documentLocale": "en", "title": "Backend"},
     ).json()["data"]["resume"]
-    shorter_copy = client.post(
-        f"/api/resumes/{shorter_source['id']}/duplicate"
-    ).json()["data"]["resume"]
-    shorter_copy_1 = client.post(
-        f"/api/resumes/{shorter_copy['id']}/duplicate"
-    ).json()["data"]["resume"]
+    shorter_copy = client.post(f"/api/resumes/{shorter_source['id']}/duplicate").json()[
+        "data"
+    ]["resume"]
+    shorter_copy_1 = client.post(f"/api/resumes/{shorter_copy['id']}/duplicate").json()[
+        "data"
+    ]["resume"]
     shorter_copy_2 = client.post(
         f"/api/resumes/{shorter_copy_1['id']}/duplicate"
     ).json()["data"]["resume"]
@@ -1989,10 +1985,17 @@ def test_protected_api_requires_jwt(unauthenticated_client: TestClient) -> None:
     assert response.json()["data"]["loginUrl"] == "/login"
 
 
-def test_public_api_paths_only_include_login() -> None:
+def test_public_api_paths_only_include_authentication_entry_points() -> None:
     from app.middleware.auth import PUBLIC_API_PATHS
 
-    assert PUBLIC_API_PATHS == {"/api/auth/login", "/api/auth/setup"}
+    assert PUBLIC_API_PATHS == {
+        "/api/auth/login",
+        "/api/auth/setup",
+        "/api/auth/oauth/complete",
+        "/api/auth/oauth/github/login",
+        "/api/auth/oauth/github/callback",
+        "/api/auth/oauth/github/setup/callback",
+    }
 
 
 def test_auth_setup_creates_hashed_owner_and_signs_in(
@@ -3855,10 +3858,7 @@ def test_model_metadata_cache_is_prepared_before_config_save(
         "maxOutputTokens": 8192,
         "supportsWebSearch": True,
     }
-    assert (
-        "gpt-proxy"
-        not in cache_data["catalogs"]["litellm"]["providers"]["openai"]
-    )
+    assert "gpt-proxy" not in cache_data["catalogs"]["litellm"]["providers"]["openai"]
     assert cache_data["catalogs"]["modelsDev"] == {
         "fetchedAt": None,
         "providers": {},
@@ -4654,9 +4654,9 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         messages=conversation[:-1],
         locale="zh",
         resume={"basic": {"name": "王小明"}, "sections": []},
-            draftState={
-                "id": "draft-current",
-                "sourceMessageId": "agent-assistant-draft",
+        draftState={
+            "id": "draft-current",
+            "sourceMessageId": "agent-assistant-draft",
             "resume": {
                 "basic": {"name": "王小明", "summary": "草稿简介"},
                 "sections": [
@@ -4674,14 +4674,14 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                     },
                 ],
             },
-                "pendingCount": 1,
-                "reviewItems": [
-                    {
-                        "id": "agent-review-edit-project-1",
-                        "editIds": ["edit-project-1"],
-                        "status": "pending",
-                    },
-                ],
+            "pendingCount": 1,
+            "reviewItems": [
+                {
+                    "id": "agent-review-edit-project-1",
+                    "editIds": ["edit-project-1"],
+                    "status": "pending",
+                },
+            ],
             "edits": [
                 {
                     "id": "edit-project-1",
@@ -5042,18 +5042,18 @@ def test_agent_edit_execute_uses_pending_draft_resume() -> None:
         },
         locale="zh",
         resume=base_resume,
-            draftState={
-                "id": "draft-current",
-                "resume": draft_resume,
-                "pendingCount": 1,
-                "reviewItems": [
-                    {
-                        "id": "agent-review-edit-project-1",
-                        "editIds": ["edit-project-1"],
-                        "status": "pending",
-                    },
-                ],
-            },
+        draftState={
+            "id": "draft-current",
+            "resume": draft_resume,
+            "pendingCount": 1,
+            "reviewItems": [
+                {
+                    "id": "agent-review-edit-project-1",
+                    "editIds": ["edit-project-1"],
+                    "status": "pending",
+                },
+            ],
+        },
     )
     environment = ResumeToolEnvironment.open(request)
 
@@ -7804,8 +7804,7 @@ def test_export_pdf_rejects_client_document_locale(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert any(
-        error["loc"][-1] == "documentLocale"
-        and error["type"] == "extra_forbidden"
+        error["loc"][-1] == "documentLocale" and error["type"] == "extra_forbidden"
         for error in response.json()["data"]["errors"]
     )
 

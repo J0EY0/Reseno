@@ -380,6 +380,8 @@ def test_stream_native_search_emits_activity_and_continues_pause(
     )
     assert terminal.sources == [source]
     assert terminal.content == "Prioritize React delivery experience."
-    assert [
-        block["type"] for block in terminal.provider_state["content_blocks"]
-    ] == ["server_tool_use", "web_search_tool_result", "text"]
+    assert [block["type"] for block in terminal.provider_state["content_blocks"]] == [
+        "server_tool_use",
+        "web_search_tool_result",
+        "text",
+    ]

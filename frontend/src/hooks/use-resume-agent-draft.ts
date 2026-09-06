@@ -54,35 +54,20 @@ export interface AgentDraftReviewController {
   showAll: () => void;
 }
 
-function getAgentDraftErrorReason(
-  error: AgentDraftApplyError,
-  messages: AppMessages,
-) {
-  switch (error.reason) {
-    case "missing_operation":
-      return messages.agentDraftErrorMissingOperation;
-    case "invalid_operation":
-      return messages.agentDraftErrorInvalidOperation;
-    case "target_not_found":
-      return messages.agentDraftErrorTargetNotFound;
-    case "duplicate_target":
-      return messages.agentDraftErrorDuplicateTarget;
-    case "no_change":
-      return messages.agentDraftErrorNoChange;
-    case "conflict":
-      return messages.agentDraftErrorConflict;
-  }
-}
-
 function formatAgentDraftErrors(
   errors: AgentDraftApplyError[],
   messages: AppMessages,
 ) {
+  const reasons: Record<AgentDraftApplyError["reason"], string> = {
+    missing_operation: messages.agentDraftErrorMissingOperation,
+    invalid_operation: messages.agentDraftErrorInvalidOperation,
+    target_not_found: messages.agentDraftErrorTargetNotFound,
+    duplicate_target: messages.agentDraftErrorDuplicateTarget,
+    no_change: messages.agentDraftErrorNoChange,
+    conflict: messages.agentDraftErrorConflict,
+  };
   return errors
-    .map(
-      (error) =>
-        `${error.title}: ${getAgentDraftErrorReason(error, messages)}`,
-    )
+    .map((error) => `${error.title}: ${reasons[error.reason]}`)
     .join(" · ");
 }
 
@@ -358,7 +343,6 @@ export function useResumeAgentDraft({
   reviewSelectionControllerRef.current = reviewSelection;
   const {
     exitingReviewItemIds,
-    isTransitioning,
     mode: reviewMode,
     selectFirst,
     selectItem,
@@ -554,7 +538,7 @@ export function useResumeAgentDraft({
 
     return {
       applyScope: applyAgentDraft,
-      disabled: resolvingStatus !== null || isTransitioning,
+      disabled: resolvingStatus !== null,
       discardScope: discardAgentDraft,
       exitingReviewItemIds,
       mode: reviewMode,
@@ -579,7 +563,6 @@ export function useResumeAgentDraft({
     applyAgentDraft,
     discardAgentDraft,
     exitingReviewItemIds,
-    isTransitioning,
     pendingItems,
     resolvingStatus,
     resume,

@@ -8,28 +8,20 @@ import {
 
 import { ResumeDetailWorkspaceView } from "@/components/workspace/resume-detail-workspace-view";
 import { useResumeDetailWorkspace } from "@/components/workspace/use-resume-detail-workspace";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
 interface ResumeDetailRouteOwnerProps {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
   resumeId: string;
   routeState: unknown;
 }
 
 function ResumeDetailRouteOwner({
-  locale,
-  messages,
-  onLocaleChange,
   onLogout,
-  persistence,
   resumeId,
   routeState,
 }: ResumeDetailRouteOwnerProps) {
+  const { locale, messages, changeLocale: onLocaleChange } = useWorkspacePreferences();
   const location = useLocation();
   const navigate = useNavigate();
   const navigationType = useNavigationType();
@@ -66,9 +58,7 @@ function ResumeDetailRouteOwner({
   const workspace = useResumeDetailWorkspace({
     locale,
     messages,
-    onLocaleChange,
     onLogout,
-    persistence,
     resumeId,
     routeState: initialRouteState,
   });
@@ -86,17 +76,9 @@ function ResumeDetailRouteOwner({
 
 /** Remounts transaction refs when React Router reuses the detail element. */
 export function ResumeDetailWorkspacePage({
-  locale,
-  messages,
-  onLocaleChange,
   onLogout,
-  persistence,
 }: {
-  locale: Locale;
-  messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
 }) {
   const location = useLocation();
   const { id = "" } = useParams<{ id: string }>();
@@ -104,11 +86,7 @@ export function ResumeDetailWorkspacePage({
   return (
     <ResumeDetailRouteOwner
       key={id}
-      locale={locale}
-      messages={messages}
-      onLocaleChange={onLocaleChange}
       onLogout={onLogout}
-      persistence={persistence}
       resumeId={id}
       routeState={location.state}
     />

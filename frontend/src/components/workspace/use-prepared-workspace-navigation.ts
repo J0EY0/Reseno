@@ -4,9 +4,9 @@ import { toast } from "sonner";
 
 import {
   prepareWorkspaceRoute,
-  preloadWorkspaceRoute,
   WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
 } from "@/components/workspace/workspace-route-preparation";
+import { preloadWorkspaceRoute } from "@/components/workspace/workspace-route-loaders";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { isAbortError } from "@/lib/api-client";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";

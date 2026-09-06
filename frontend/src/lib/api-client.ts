@@ -2,10 +2,13 @@ import { toast } from "sonner";
 
 import type { ApiRequestOptions, ApiResponse } from "@/types/api";
 import {
-  clearAuthSession,
-  getAccessToken,
-  isTokenLocallyInvalidated,
-} from "@/lib/auth-session";
+  APP_CODE_UNAUTHORIZED,
+  AUTH_REFRESH_ROUTE,
+  getAuthHeaders,
+  handleUnauthorizedResponse,
+  redirectToLogin,
+} from "@/lib/api-auth";
+import { getAccessToken } from "@/lib/auth-session";
 import { resolveApiMessage } from "@/lib/api-message";
 
 interface ApiCacheEntry {
@@ -16,7 +19,6 @@ interface ApiCacheEntry {
 // GET responses are cached briefly and invalidated by every mutation. This
 // keeps route changes and PDF render reloads fast without serving stale writes.
 const getRequestCache = new Map<string, ApiCacheEntry>();
-const APP_CODE_UNAUTHORIZED = 40001;
 const API_ERROR_NOTIFIED = Symbol("apiErrorNotified");
 
 type ResuMateApiError = Error & {
@@ -30,7 +32,7 @@ const DEFAULT_ACCEPT_HEADER = "application/json, text/plain, */*";
 export const apiRoutes = {
   authSetup: "/api/auth/setup",
   authLogin: "/api/auth/login",
-  authRefresh: "/api/auth/refresh",
+  authRefresh: AUTH_REFRESH_ROUTE,
   authPassword: "/api/auth/password",
   workspaceDefaultTemplate: "/api/workspace/default-template",
   workspaceUserSettings: "/api/workspace/user-settings",
@@ -231,10 +233,6 @@ function createPayloadApiError(
   status?: number,
   notifyOnError = true,
 ) {
-  if (payload.code === APP_CODE_UNAUTHORIZED) {
-    redirectToLogin();
-  }
-
   return createApiError(
     payload.message,
     {
@@ -256,46 +254,13 @@ export function unwrapApiResponse<T>(
   }
 
   if (payload.code !== 0) {
+    if (payload.code === APP_CODE_UNAUTHORIZED) {
+      redirectToLogin(clearApiCache);
+    }
     throw createPayloadApiError(payload, undefined, notifyOnError);
   }
 
   return payload.data;
-}
-
-function redirectToLogin() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  clearAuthSession();
-  clearApiCache();
-
-  if (window.location.pathname !== "/login") {
-    window.location.assign("/login");
-  }
-}
-
-function getAuthHeaders(
-  options: Pick<ApiRequestOptions, "auth"> = {},
-  baseHeaders?: HeadersInit,
-  notifyOnError = true,
-) {
-  const headers = new Headers(baseHeaders);
-  const shouldAuthenticate = options.auth !== false;
-
-  if (!shouldAuthenticate) {
-    return headers;
-  }
-
-  const token = getAccessToken();
-  if (!token || isTokenLocallyInvalidated(token)) {
-    redirectToLogin();
-    throw createApiError("AUTHENTICATION_REQUIRED", {}, notifyOnError);
-  }
-
-  headers.set("Authorization", `Bearer ${token}`);
-
-  return headers;
 }
 
 function getPayloadDetailCode(payload: unknown) {
@@ -379,9 +344,12 @@ async function fetchApiEnvelope(
     baseHeaders.set("Content-Type", "application/json");
   }
 
-  let headers: Headers;
+  let headers: Headers | null;
   try {
-    headers = getAuthHeaders(options, baseHeaders, false);
+    headers = getAuthHeaders(options, baseHeaders, clearApiCache);
+    if (!headers) {
+      throw createApiError("AUTHENTICATION_REQUIRED", {}, false);
+    }
   } catch (error) {
     // The former Axios response interceptor converted an unnotified request
     // interceptor rejection into the canonical request failure.
@@ -395,6 +363,7 @@ async function fetchApiEnvelope(
   try {
     response = await fetch(resolveApiUrl(route, options), {
       body: createJsonRequestBody(options.body),
+      credentials: options.credentials,
       headers,
       method,
       signal: options.signal,
@@ -416,6 +385,8 @@ async function fetchApiEnvelope(
     throw createApiError("REQUEST_FAILED", {}, false);
   }
 
+  await handleUnauthorizedResponse(payload, headers, route, clearApiCache);
+
   if (!response.ok) {
     throw createHttpResponseError(payload, response.status, false);
   }
@@ -426,7 +397,11 @@ async function fetchApiEnvelope(
   return unwrapApiResponse<unknown>(payload, { notifyOnError: false });
 }
 
-async function rejectApiEnvelopeResource(response: Response) {
+async function rejectApiEnvelopeResource(
+  response: Response,
+  headers: Headers,
+  route: string,
+) {
   const contentType = response.headers.get("Content-Type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
     return;
@@ -437,10 +412,15 @@ async function rejectApiEnvelopeResource(response: Response) {
     return;
   }
 
+  await handleUnauthorizedResponse(payload, headers, route, clearApiCache);
   throw createPayloadApiError(payload, response.status);
 }
 
-async function createApiResourceResponseError(response: Response) {
+async function createApiResourceResponseError(
+  response: Response,
+  headers: Headers,
+  route: string,
+) {
   let payload: unknown;
 
   try {
@@ -449,6 +429,7 @@ async function createApiResourceResponseError(response: Response) {
     return createApiError("REQUEST_FAILED", { status: response.status });
   }
 
+  await handleUnauthorizedResponse(payload, headers, route, clearApiCache);
   return createHttpResponseError(payload, response.status, true);
 }
 
@@ -517,7 +498,11 @@ export async function uploadApi<T>(
   const headers = getAuthHeaders(
     options,
     { Accept: DEFAULT_ACCEPT_HEADER },
+    clearApiCache,
   );
+  if (!headers) {
+    throw createApiError("AUTHENTICATION_REQUIRED");
+  }
   // XMLHttpRequest upload progress and timeout behavior are not available
   // through fetch. Keep Axios behind this feature-only boundary so imports and
   // Agent attachments retain their existing transport semantics.
@@ -540,6 +525,7 @@ export async function uploadApi<T>(
     }
 
     if (axios.isAxiosError(error)) {
+      await handleUnauthorizedResponse(error.response?.data, headers, route, clearApiCache);
       throw createHttpResponseError(
         error.response?.data,
         error.response?.status ?? 0,
@@ -551,6 +537,7 @@ export async function uploadApi<T>(
   }
 
   if (isApiResponse<unknown>(response.data) && response.data.code !== 0) {
+    await handleUnauthorizedResponse(response.data, headers, route, clearApiCache);
     throw createPayloadApiError(response.data, response.status);
   }
 
@@ -569,12 +556,17 @@ export function resolveApiResourceUrl(url: string) {
 
 export async function fetchApiResource(url: string, init: RequestInit = {}) {
   let response: Response;
+  let headers: Headers | null;
 
   try {
+    headers = getAuthHeaders({}, init.headers, clearApiCache);
+    if (!headers) {
+      throw createApiError("AUTHENTICATION_REQUIRED");
+    }
     response = await fetch(resolveApiResourceUrl(url), {
       ...init,
       cache: init.cache ?? "no-store",
-      headers: getAuthHeaders({}, init.headers),
+      headers,
     });
   } catch (error) {
     if (isAbortError(error)) {
@@ -589,10 +581,10 @@ export async function fetchApiResource(url: string, init: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    throw await createApiResourceResponseError(response);
+    throw await createApiResourceResponseError(response, headers, url);
   }
 
-  await rejectApiEnvelopeResource(response);
+  await rejectApiEnvelopeResource(response, headers, url);
 
   return response;
 }

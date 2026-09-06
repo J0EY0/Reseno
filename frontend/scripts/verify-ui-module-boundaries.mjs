@@ -6,7 +6,7 @@ import ts from "typescript";
 const srcRoot = new URL("../src/", import.meta.url);
 const readSource = (path) => readFile(new URL(path, srcRoot), "utf8");
 
-async function loadPureTsModule(path) {
+async function loadPureTsModule(path, globals = {}) {
   const source = await readSource(path);
   const compiled = ts.transpileModule(source, {
     compilerOptions: {
@@ -15,7 +15,7 @@ async function loadPureTsModule(path) {
     },
   }).outputText;
   const module = { exports: {} };
-  vm.runInNewContext(compiled, { exports: module.exports, module });
+  vm.runInNewContext(compiled, { exports: module.exports, module, ...globals });
   return module.exports;
 }
 
@@ -39,7 +39,7 @@ const [
   templateGalleryCard,
   templateGalleryGrid,
   templateGalleryController,
-  workspaceSkeletons,
+  gallerySkeletons,
   codeBlock,
   codeBlockHighlighter,
   sourceBudgets,
@@ -63,7 +63,7 @@ const [
   readSource("components/templates/template-gallery-card.tsx"),
   readSource("components/templates/template-gallery-grid.tsx"),
   readSource("components/templates/use-template-gallery-controller.ts"),
-  readSource("components/workspace-skeletons.tsx"),
+  readSource("components/gallery-skeletons.tsx"),
   readSource("components/ai-elements/code-block.tsx"),
   readSource("components/ai-elements/code-block-highlighter.ts"),
   readFile(new URL("verify-source-budgets.mjs", import.meta.url), "utf8"),
@@ -77,17 +77,26 @@ assert(
   "Sidebar context, layout, and menu responsibilities must remain one-way.",
 );
 assert(
-  /function getInitialSidebarOpen\(defaultOpen:\s*boolean\)/.test(sidebarCore) &&
-    /typeof document === ["']undefined["']/.test(sidebarCore) &&
-    (sidebarCore.match(/document\.cookie/g) ?? []).length === 2 &&
-    (sidebarCore.match(/return defaultOpen/g) ?? []).length === 2 &&
-    /cookieValue === ["']true["']/.test(sidebarCore) &&
-    /cookieValue === ["']false["']/.test(sidebarCore) &&
+  sidebarCore.includes('from "@/components/ui/sidebar-state"') &&
     /React\.useState\(\(\)\s*=>\s*getInitialSidebarOpen\(defaultOpen\)\s*\)/.test(
       sidebarCore,
     ),
   "SidebarProvider must synchronously restore its persisted cookie and retain defaultOpen as the fallback.",
 );
+for (const [cookie, defaultOpen, expected] of [
+  [undefined, true, true],
+  [undefined, false, false],
+  ["", true, true],
+  ["sidebar_state=invalid", false, false],
+  ["other=value; sidebar_state=true", false, true],
+  ["sidebar_state=false; other=value", true, false],
+]) {
+  const { getInitialSidebarOpen } = await loadPureTsModule(
+    "components/ui/sidebar-state.ts",
+    cookie === undefined ? {} : { document: { cookie } },
+  );
+  assert.equal(getInitialSidebarOpen(defaultOpen), expected);
+}
 assert(
   appSidebar.includes('from "@/components/ui/sidebar-layout"') &&
     appSidebar.includes('from "@/components/ui/sidebar-menu"') &&
@@ -200,7 +209,7 @@ for (const [createAction, name] of [
   );
 }
 assert(
-  [resumeGallery, templateGallery, workspaceSkeletons].every((source) =>
+  [resumeGallery, templateGallery, gallerySkeletons].every((source) =>
     /grid-cols-\[repeat\(auto-fill,minmax\(208px,228px\)\)\][^"\n]*justify-center/.test(
       source,
     ),

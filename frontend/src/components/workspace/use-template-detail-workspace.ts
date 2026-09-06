@@ -15,7 +15,6 @@ import { resolveInitialTemplateDetail } from "@/components/workspace/template-de
 import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
-import { createDefaultAgentSettings } from "@/lib/agent-settings";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   createTemplatePreviewResumes,
@@ -28,15 +27,14 @@ import {
   getTemplateCatalog,
 } from "@/lib/templates";
 import { createTemplateFingerprint } from "@/lib/workspace-change-tracking";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
-  loadWorkspaceThemePreference,
-  normalizeWorkspaceTheme,
-} from "@/lib/workspace-theme";
+  dismissWorkspaceLoadError,
+  showWorkspaceLoadError,
+} from "@/lib/workspace-load-error";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import {
   createTemplateApi,
   saveDefaultTemplateApi,
-  saveUserSettingsApi,
 } from "@/lib/workspace-api";
 import {
   createTemplateDetailRouteHandoff,
@@ -47,7 +45,6 @@ import type {
   DocumentLocale,
   ResumeTemplateDefinition,
   ResumeTemplateImageElement,
-  ThemeMode,
   WorkspaceView,
 } from "@/types/resume";
 import { useTemplateDetailLeave } from "@/components/workspace/use-template-detail-leave";
@@ -58,9 +55,7 @@ import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-wo
 interface TemplateDetailWorkspaceOptions {
   locale: Locale;
   messages: AppMessages;
-  onLocaleChange: (locale: Locale) => void;
   onLogout: () => void;
-  persistence: WorkspacePreferencesPersistence;
   routeState: unknown;
   templateId: string;
 }
@@ -74,20 +69,18 @@ const initialDefaultTemplateIds: DefaultTemplateIds = {
 export function useTemplateDetailWorkspace({
   locale,
   messages,
-  onLocaleChange,
   onLogout,
-  persistence,
   routeState,
   templateId,
 }: TemplateDetailWorkspaceOptions) {
   const navigate = useNavigate();
+  const { changeTheme, persistence, resolvedTheme, theme } = useWorkspacePreferences();
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialLocaleRef = useRef(locale);
   const initialDetail = useMemo(
     () => resolveInitialTemplateDetail(messages, routeState, templateId),
     [messages, routeState, templateId],
   );
-  const initialPreferences = persistence.getSnapshot();
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
   const setDefaultInFlightRef = useRef(false);
@@ -102,14 +95,6 @@ export function useTemplateDetailWorkspace({
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
-  const [theme, setTheme] = useState<ThemeMode>(() =>
-    initialDetail?.data.theme
-      ? normalizeWorkspaceTheme(initialDetail.data.theme)
-      : initialPreferences?.theme ?? loadWorkspaceThemePreference(),
-  );
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
-    document.documentElement.classList.contains("dark") ? "dark" : "light",
-  );
   const [defaultTemplateIds, setDefaultTemplateIds] =
     useState<DefaultTemplateIds>(
       () =>
@@ -118,8 +103,6 @@ export function useTemplateDetailWorkspace({
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
   >(initialDetail?.data.customTemplates ?? []);
-  const themeRef = useRef(theme);
-  themeRef.current = theme;
 
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
@@ -190,37 +173,13 @@ export function useTemplateDetailWorkspace({
     template,
   });
 
-  useEffect(() => {
-    const root = document.documentElement;
-    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-
-    function applyTheme() {
-      const nextTheme =
-        theme === "system"
-          ? mediaQuery?.matches
-            ? "dark"
-            : "light"
-          : theme;
-      root.classList.toggle("dark", nextTheme === "dark");
-      root.style.colorScheme = nextTheme;
-      setResolvedTheme(nextTheme);
-    }
-
-    applyTheme();
-    if (theme !== "system" || !mediaQuery) {
-      return;
-    }
-    mediaQuery.addEventListener("change", applyTheme);
-    return () => mediaQuery.removeEventListener("change", applyTheme);
-  }, [theme]);
-
   const loadRouteData = useCallback(
     async (signal: AbortSignal) => {
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
       setIsLoading(true);
       setHasLoadError(false);
-      toast.dismiss("workspace-load-error");
+      dismissWorkspaceLoadError();
       void loadDocumentCanvas();
 
       try {
@@ -241,22 +200,9 @@ export function useTemplateDetailWorkspace({
           throw new Error("Template target is unavailable.");
         }
 
-        const nextTheme = routeData.theme
-          ? normalizeWorkspaceTheme(routeData.theme)
-          : themeRef.current;
-        const agentSettings =
-          persistence.getSnapshot()?.agentSettings ??
-          createDefaultAgentSettings();
-
-        setTheme(nextTheme);
         setDefaultTemplateIds(routeData.defaultTemplateIds);
         setCustomTemplates(routeData.customTemplates);
         hydratePersistedTemplate(targetTemplate);
-        persistence.hydrate({
-          agentSettings,
-          locale: initialLocaleRef.current,
-          theme: nextTheme,
-        });
         setHasLoaded(true);
       } catch (error) {
         if (isAbortError(error) || requestIdRef.current !== requestId) {
@@ -264,10 +210,9 @@ export function useTemplateDetailWorkspace({
         }
         console.error("Failed to load the template detail route.", error);
         if (!isApiErrorToastShown(error)) {
-          toast.error(
+          showWorkspaceLoadError(
             getMessagesSync(initialLocaleRef.current).apiMessages
               .REQUEST_FAILED,
-            { closeButton: true, id: "workspace-load-error" },
           );
         }
         setHasLoadError(true);
@@ -287,15 +232,6 @@ export function useTemplateDetailWorkspace({
 
   useEffect(() => {
     if (initialDetail && retryKey === 0) {
-      persistence.hydrate({
-        agentSettings:
-          persistence.getSnapshot()?.agentSettings ??
-          createDefaultAgentSettings(),
-        locale: initialLocaleRef.current,
-        theme: initialDetail.data.theme
-          ? normalizeWorkspaceTheme(initialDetail.data.theme)
-          : themeRef.current,
-      });
       setHasLoaded(true);
       setHasLoadError(false);
       setIsLoading(false);
@@ -314,51 +250,6 @@ export function useTemplateDetailWorkspace({
       controller.abort();
     };
   }, [initialDetail, loadRouteData, persistence, retryKey]);
-
-  const changeTheme = useCallback(
-    (nextTheme: ThemeMode) => {
-      setTheme(nextTheme);
-      if (!hasLoaded || isLoading) {
-        return;
-      }
-
-      const snapshot = {
-        agentSettings:
-          persistence.getSnapshot()?.agentSettings ??
-          createDefaultAgentSettings(),
-        locale,
-        theme: nextTheme,
-      };
-      persistence.enqueue(
-        snapshot,
-        () =>
-          saveUserSettingsApi(snapshot.locale, {
-            agentSettings: snapshot.agentSettings,
-            theme: snapshot.theme,
-          }),
-        {
-          onError(error) {
-            console.error("Failed to save user settings.", error);
-            if (!isApiErrorToastShown(error)) {
-              toast.error(messages.loadError, { closeButton: true });
-            }
-          },
-          onRollback(persisted) {
-            onLocaleChange(persisted.locale);
-            setTheme(persisted.theme);
-          },
-        },
-      );
-    },
-    [
-      hasLoaded,
-      isLoading,
-      locale,
-      messages.loadError,
-      onLocaleChange,
-      persistence,
-    ],
-  );
 
   const createCustomTemplate = useCallback(async () => {
     if (

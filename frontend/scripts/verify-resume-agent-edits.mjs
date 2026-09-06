@@ -405,14 +405,14 @@ assert(
   /current\.mode === "all"[\s\S]*?filter\(\(item\) => item\.id !== reviewItemId\)[\s\S]*?: current\.reviewItemId[\s\S]*?\[current\.reviewItemId\]/.test(
     reviewSelectionSource,
   ) &&
-    /exitingIds\.length === 0 \|\| prefersReducedMotion\(\)[\s\S]*?commitSelection\(next\)/.test(
+    /current\.mode === "single" \|\|[\s\S]*?exitingIds\.length === 0 \|\|[\s\S]*?prefersReducedMotion\(\)[\s\S]*?commitSelection\(next\)/.test(
       reviewSelectionSource,
     ) &&
     /window\.setTimeout\([\s\S]*?REVIEW_SELECTION_EXIT_MS/.test(
       reviewSelectionSource,
     ) &&
     /prefers-reduced-motion: reduce/.test(reviewSelectionSource),
-  "All-to-single and single-to-single navigation must animate disappearing regions and switch immediately for reduced motion.",
+  "All-to-single navigation must animate disappearing regions while single-item navigation and reduced motion switch immediately.",
 );
 assert(
   /agentDraftState:\s*agentDraft[,\n]/.test(draftHookSource) &&
@@ -1643,15 +1643,15 @@ for (const operation of [
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -1729,15 +1729,15 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -1811,15 +1811,15 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -1915,15 +1915,15 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -2019,15 +2019,15 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -2110,15 +2110,15 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},
@@ -2219,15 +2219,15 @@ for (const {
   globalThis.window = {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return key === "resumate-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
     },
     sessionStorage: {
-      getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+      getItem() {
+        return null;
       },
       removeItem() {},
       setItem() {},

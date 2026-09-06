@@ -27,6 +27,7 @@ export interface ApiRequestOptions {
   auth?: boolean;
   body?: unknown;
   cacheTtlMs?: number;
+  credentials?: RequestCredentials;
   notifyOnError?: boolean;
   searchParams?: Record<string, string | number | boolean | null | undefined>;
   signal?: AbortSignal;

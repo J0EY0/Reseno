@@ -1,4 +1,5 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useEffectEvent, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import {
   clearAuthSession,
@@ -12,6 +13,11 @@ import {
   isApiErrorCode,
   isApiErrorToastShown,
 } from "@/lib/api-client";
+import { AUTH_SESSION_KEY } from "@/lib/auth-session";
+import {
+  createWorkspaceLateralRouteHandoff,
+  type PreparedWorkspaceRoute,
+} from "@/lib/workspace-route-memory";
 
 type AuthGateState =
   | { phase: "loading" }
@@ -24,15 +30,45 @@ export function useAuthGate({
   loginFallbackError,
   onAuthenticated,
   onLoggedOut,
+  prepareDestination,
   requestFallbackError,
 }: {
   loginFallbackError: string;
-  onAuthenticated: () => void;
+  onAuthenticated: () => void | Promise<unknown>;
   onLoggedOut: () => void;
+  prepareDestination: (
+    destination: "resume" | "settings",
+    options: { signal: AbortSignal },
+  ) => Promise<PreparedWorkspaceRoute<"resume" | "settings">>;
   requestFallbackError: string;
 }) {
+  const navigate = useNavigate();
   const [authGate, setAuthGate] = useState<AuthGateState>({ phase: "loading" });
   const [authCheckAttempt, setAuthCheckAttempt] = useState(0);
+  const synchronizeAuthSession = useEffectEvent(() => {
+    const hasSession = loadAuthSession();
+    if (hasSession && authGate.phase === "login") {
+      onAuthenticated();
+      setAuthGate({ phase: "app" });
+    } else if (!hasSession && authGate.phase === "app") {
+      onLoggedOut();
+      setAuthGate({ phase: "login" });
+    }
+  });
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (
+        event.storageArea === window.localStorage &&
+        (event.key === AUTH_SESSION_KEY || event.key === null)
+      ) {
+        synchronizeAuthSession();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,11 +106,13 @@ export function useAuthGate({
     }
 
     const refreshInterval = window.setInterval(() => {
-      void refreshAuthSession().catch((error) => {
-        console.error("Failed to refresh auth session.", error);
-        clearAuthSession();
-        setAuthGate({ phase: "login" });
-      });
+      void refreshAuthSession().then(
+        () => synchronizeAuthSession(),
+        (error) => {
+          console.error("Failed to refresh auth session.", error);
+          synchronizeAuthSession();
+        },
+      );
     }, 4 * 60 * 60 * 1000);
 
     return () => {
@@ -86,10 +124,7 @@ export function useAuthGate({
     try {
       await loginWithCredentials(credentials.username, credentials.password);
 
-      startTransition(() => {
-        onAuthenticated();
-        setAuthGate({ phase: "app" });
-      });
+      await acceptSession();
 
       return { ok: true as const };
     } catch (error) {
@@ -109,10 +144,7 @@ export function useAuthGate({
     try {
       await setupAuthOwner(credentials);
 
-      startTransition(() => {
-        onAuthenticated();
-        setAuthGate({ phase: "app" });
-      });
+      await acceptSession();
 
       return { ok: true as const };
     } catch (error) {
@@ -141,7 +173,35 @@ export function useAuthGate({
     setAuthCheckAttempt((current) => current + 1);
   }
 
+  async function acceptSession(
+    destination: "resume" | "settings" = "resume",
+    signal = new AbortController().signal,
+  ) {
+    const [prepared] = await Promise.all([
+      prepareDestination(destination, { signal }).catch((error: unknown) => {
+        signal.throwIfAborted();
+        console.error("Failed to prepare the authenticated workspace.", error);
+        return null;
+      }),
+      onAuthenticated(),
+    ]);
+    signal.throwIfAborted();
+    if (!loadAuthSession()) {
+      setAuthGate({ phase: "login" });
+      throw new Error(requestFallbackError);
+    }
+
+    startTransition(() => {
+      setAuthGate({ phase: "app" });
+      navigate(`/${destination}`, {
+        replace: true,
+        state: prepared ? createWorkspaceLateralRouteHandoff(prepared) : null,
+      });
+    });
+  }
+
   return {
+    acceptSession,
     authGate,
     login,
     logout,

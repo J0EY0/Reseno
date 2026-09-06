@@ -5,35 +5,17 @@ import { PanelLeftIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  getInitialSidebarOpen,
+  SIDEBAR_COOKIE_NAME,
+  SIDEBAR_WIDTH,
+  SIDEBAR_WIDTH_ICON,
+} from "@/components/ui/sidebar-state"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH = "16rem"
-const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
-
-function getInitialSidebarOpen(defaultOpen: boolean) {
-  if (typeof document === "undefined") {
-    return defaultOpen
-  }
-
-  const cookiePrefix = `${SIDEBAR_COOKIE_NAME}=`
-  const sidebarCookie = document.cookie
-    .split(";")
-    .map((cookie) => cookie.trim())
-    .find((cookie) => cookie.startsWith(cookiePrefix))
-  const cookieValue = sidebarCookie?.slice(cookiePrefix.length)
-
-  if (cookieValue === "true") {
-    return true
-  }
-  if (cookieValue === "false") {
-    return false
-  }
-  return defaultOpen
-}
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"

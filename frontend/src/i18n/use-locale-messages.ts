@@ -33,7 +33,7 @@ export function useLocaleMessages(initialLocale: Locale) {
     },
   }))
   const requestLocale = useCallback(
-    (nextLocale: Locale, isInitialRequest = false) => {
+    async (nextLocale: Locale, isInitialRequest = false) => {
       requestIdRef.current += 1
       const requestId = requestIdRef.current
 
@@ -44,13 +44,13 @@ export function useLocaleMessages(initialLocale: Locale) {
             ? current
             : { ...current, canPersistLocale: true },
         )
-        return
+        return true
       }
 
-      void loadMessages(nextLocale)
+      return loadMessages(nextLocale)
         .then((nextMessages) => {
           if (requestId !== requestIdRef.current) {
-            return
+            return false
           }
 
           activeLocaleRef.current = nextLocale
@@ -59,10 +59,11 @@ export function useLocaleMessages(initialLocale: Locale) {
             isMessagesReady: true,
             snapshot: { locale: nextLocale, messages: nextMessages },
           })
+          return true
         })
         .catch((error: unknown) => {
           if (requestId !== requestIdRef.current) {
-            return
+            return false
           }
 
           console.error(`Failed to load messages for locale "${nextLocale}".`, error)
@@ -79,6 +80,7 @@ export function useLocaleMessages(initialLocale: Locale) {
               },
             })
           }
+          return false
         })
     },
     [],

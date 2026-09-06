@@ -1,24 +1,15 @@
 import { TemplateGallery } from "@/components/templates/template-gallery";
-import { GalleryRouteSkeleton } from "@/components/workspace-skeletons";
+import { GalleryRouteSkeleton } from "@/components/gallery-skeletons";
 import { useTemplateGalleryWorkspace } from "@/components/workspace/use-template-gallery-workspace";
 import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use-workspace-lateral-route-data";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
-import type { AppMessages, Locale } from "@/i18n";
-import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
+import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function TemplateGalleryWorkspacePage({
-  locale,
-  messages,
-  persistence,
-}: {
-  locale: Locale;
-  messages: AppMessages;
-  persistence: WorkspacePreferencesPersistence;
-}) {
+export function TemplateGalleryWorkspacePage() {
+  const { locale, messages } = useWorkspacePreferences();
   const gallery = useTemplateGalleryWorkspace({
     locale,
     messages,
-    persistence,
   });
   useRememberWorkspaceLateralRouteData(
     "templates",

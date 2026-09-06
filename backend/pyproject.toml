@@ -8,9 +8,12 @@ version = "0.1.0"
 description = "FastAPI backend for ResuMate"
 requires-python = ">=3.12"
 dependencies = [
+    "authlib>=1.8.0",
     "cryptography>=48.0.0",
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
+    "httpx2>=2.12.0",
+    "itsdangerous>=2.2.0",
     "jsonschema>=4.25.0",
     "openai>=2.38.0",
     "playwright>=1.59.0",
@@ -25,6 +28,7 @@ dev = [
     "mypy>=1.13.0",
     "pytest>=8.3.0",
     "ruff>=0.8.0",
+    "types-authlib>=1.7.2.20260901",
 ]
 
 [tool.setuptools.package-data]
@@ -45,6 +49,7 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+untyped_calls_exclude = ["authlib"]
 
 [tool.pytest.ini_options]
 markers = [

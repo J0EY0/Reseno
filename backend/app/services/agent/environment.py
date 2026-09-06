@@ -261,9 +261,7 @@ class ResumeToolEnvironment:
         tool_calls: list[LlmToolCall],
     ) -> tuple[list[int], list[int]]:
         specs = [agent_tool_spec(tool_call.name) for tool_call in tool_calls]
-        enabled_specs = [
-            spec if spec in self._tool_specs else None for spec in specs
-        ]
+        enabled_specs = [spec if spec in self._tool_specs else None for spec in specs]
         read_indexes = [
             index
             for index, spec in enumerate(enabled_specs)

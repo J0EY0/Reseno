@@ -107,30 +107,38 @@ export function useResumeDetailSave({
     };
   }, [resumeId]);
 
+  const adoptPersistedBaseline = useCallback(
+    (detail: ResumeDetailResponse, saveMode: ResumeSaveMode) => {
+      const fingerprint = createResumeFingerprint(detail.resume);
+      persistedResumeRef.current = detail.resume;
+      persistedFingerprintRef.current = fingerprint;
+      lastSaveModeRef.current = saveMode;
+      skipCheckpointPromotionRef.current = false;
+      lastSavedAtRef.current = detail.savedAt;
+      activeVersionIdRef.current = detail.versionId;
+      setPersistedResume(detail.resume);
+      setLastSavedAt(detail.savedAt);
+      setActiveVersionId(detail.versionId);
+      setSaveState("saved");
+      return fingerprint;
+    },
+    [],
+  );
+
   const adoptPersistedSave = useCallback(
     (
       saved: ResumeDetailResponse,
       submitted: ResumeWorkspaceItem,
       saveMode: ResumeSaveMode,
     ) => {
-      const savedFingerprint = createResumeFingerprint(saved.resume);
-      persistedResumeRef.current = saved.resume;
-      setPersistedResume(saved.resume);
-      persistedFingerprintRef.current = savedFingerprint;
+      const savedFingerprint = adoptPersistedBaseline(saved, saveMode);
       recentlySavedFingerprintsRef.current = new Set([
         createResumeFingerprint(submitted),
         savedFingerprint,
       ]);
-      lastSaveModeRef.current = saveMode;
-      skipCheckpointPromotionRef.current = false;
-      lastSavedAtRef.current = saved.savedAt;
-      activeVersionIdRef.current = saved.versionId;
       onAdoptSavedResume(saved.resume, submitted);
-      setLastSavedAt(saved.savedAt);
-      setActiveVersionId(saved.versionId);
-      setSaveState("saved");
     },
-    [onAdoptSavedResume],
+    [adoptPersistedBaseline, onAdoptSavedResume],
   );
 
   const hasUnsavedChanges = useCallback(
@@ -150,24 +158,16 @@ export function useResumeDetailSave({
       nextVersions: WorkspaceVersionSummary[],
     ) => {
       autosaveGenerationRef.current += 1;
-      persistedResumeRef.current = detail.resume;
-      setPersistedResume(detail.resume);
-      persistedFingerprintRef.current = createResumeFingerprint(detail.resume);
-      lastSavedAtRef.current = detail.savedAt;
-      activeVersionIdRef.current = detail.versionId;
-      lastSaveModeRef.current = nextVersions.some(
+      const saveMode = nextVersions.some(
         (version) => version.versionId === detail.versionId,
       )
         ? "checkpoint"
         : "autosave";
-      skipCheckpointPromotionRef.current = false;
-      setLastSavedAt(detail.savedAt);
-      setActiveVersionId(detail.versionId);
+      adoptPersistedBaseline(detail, saveMode);
       setVersions(nextVersions);
       setHasVersionLoadError(false);
-      setSaveState("saved");
     },
-    [],
+    [adoptPersistedBaseline],
   );
 
   const save = useCallback(
@@ -406,18 +406,9 @@ export function useResumeDetailSave({
       },
       "checkpoint",
     );
-    persistedResumeRef.current = restored.resume;
-    setPersistedResume(restored.resume);
-    persistedFingerprintRef.current = createResumeFingerprint(restored.resume);
-    lastSaveModeRef.current = "checkpoint";
-    skipCheckpointPromotionRef.current = false;
-    lastSavedAtRef.current = restored.savedAt;
-    activeVersionIdRef.current = restored.versionId;
+    adoptPersistedBaseline(restored, "checkpoint");
     onHydrateResume(restored.resume);
-    setLastSavedAt(restored.savedAt);
-    setActiveVersionId(restored.versionId);
-    setSaveState("saved");
-  }, [onHydrateResume]);
+  }, [adoptPersistedBaseline, onHydrateResume]);
 
   const selectVersion = useCallback(
     async (versionId: string) => {

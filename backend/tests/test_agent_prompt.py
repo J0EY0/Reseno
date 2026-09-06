@@ -23,10 +23,7 @@ def test_agent_prompt_keeps_only_model_visible_protocol_names() -> None:
 
 
 def test_agent_prompt_delegates_source_rendering_to_the_response_ui() -> None:
-    assert (
-        "The response UI appends collected public sources once"
-        in AGENT_PROMPT
-    )
+    assert "The response UI appends collected public sources once" in AGENT_PROMPT
     assert "manual sources section" in AGENT_PROMPT
 
 
@@ -98,10 +95,7 @@ def test_agent_prompt_uses_current_target_research_without_a_workflow() -> None:
     assert "Fetch candidates before use" in AGENT_PROMPT
     assert "preferred page is unreadable" in AGENT_PROMPT
     assert "instead of repeating equivalent searches" in AGENT_PROMPT
-    assert (
-        "For edit requests, continue to `edit_execute`"
-        in AGENT_PROMPT
-    )
+    assert "For edit requests, continue to `edit_execute`" in AGENT_PROMPT
     assert "advice/diagnosis stays text-only" in AGENT_PROMPT
     assert (
         "Match claims to source authority/recency; continue to `edit_execute`"
@@ -124,8 +118,7 @@ def test_agent_prompt_does_not_infer_results_from_features() -> None:
     assert "never convert them into ownership, implementation" in AGENT_PROMPT
     assert "unlisted behavior" in AGENT_PROMPT
     assert (
-        "Move technology from a known product-name field to `techStack`"
-        in AGENT_PROMPT
+        "Move technology from a known product-name field to `techStack`" in AGENT_PROMPT
     )
 
 
@@ -175,9 +168,7 @@ def test_agent_prompt_treats_the_personal_summary_as_optional_space() -> None:
 def test_agent_prompt_uses_star_as_grounded_employment_writing_judgment() -> None:
     assert "apply that inventory as invisible STAR/CAR" in AGENT_PROMPT
     assert "foreground concrete action and method" in AGENT_PROMPT
-    assert "include supported results, deliverables, quality changes" in (
-        AGENT_PROMPT
-    )
+    assert "include supported results, deliverables, quality changes" in (AGENT_PROMPT)
     assert "Without outcome evidence, stop at action and method" in AGENT_PROMPT
     assert "never invent impact" in AGENT_PROMPT
     assert "Keep grounded contributions distinct" in AGENT_PROMPT

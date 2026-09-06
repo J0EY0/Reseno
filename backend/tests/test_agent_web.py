@@ -1624,9 +1624,7 @@ def test_web_search_observation_distributes_reference_passage_budget(
                     url=url,
                     title=f"Frontend Role {index}",
                     excerpt=f"Frontend role {index} responsibilities and requirements.",
-                    source_kind=(
-                        "fetched_page" if index < 2 else "search_snippet"
-                    ),
+                    source_kind=("fetched_page" if index < 2 else "search_snippet"),
                     passages=(
                         tuple(
                             agent_web.WebPassage(
