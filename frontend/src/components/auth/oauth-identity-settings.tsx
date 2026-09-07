@@ -1,94 +1,45 @@
 import GithubIcon from "@lobehub/icons/es/Github/components/Mono";
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
 
+import type { useOAuthIdentitySettings } from "@/components/auth/use-oauth-identity-settings";
 import { SettingsRow } from "@/components/settings-controls";
 import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/ui/field";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
-import {
-  getOAuthIdentities,
-  requestOAuthAuthorization,
-  startGitHubSetup,
-  unbindOAuth,
-} from "@/lib/auth-oauth";
+import { cn } from "@/lib/utils";
 
-export function OAuthIdentitySettings({ t }: { t: AppMessages }) {
-  const [data, setData] = useState<
-    Awaited<ReturnType<typeof getOAuthIdentities>> | null
-  >(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [loadAttempt, setLoadAttempt] = useState(0);
-  const [isPending, setIsPending] = useState(false);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const identity = data?.identities.find((item) => item.provider === "github");
-  const configured = data?.providers.some(
-    (item) => item.provider === "github" && item.configured,
-  );
-
-  useEffect(() => {
-    let active = true;
-
-    getOAuthIdentities().then(
-      (result) => {
-        if (active) {
-          setData(result);
-        }
-      },
-      () => {
-        if (active) {
-          setLoadFailed(true);
-        }
-      },
-    );
-
-    return () => {
-      active = false;
-    };
-  }, [loadAttempt]);
-
-  async function changeBinding() {
-    setRequestError(null);
-    setIsPending(true);
-
-    try {
-      if (identity) {
-        await unbindOAuth("github");
-        setData((current) => current ? { ...current, identities: [] } : current);
-        toast.success(t.oauthUnbound);
-      } else if (configured) {
-        window.location.assign(
-          await requestOAuthAuthorization("github", "bind"),
-        );
-      } else {
-        await startGitHubSetup();
-      }
-    } catch (error) {
-      setRequestError(
-        error instanceof Error ? error.message : t.oauthBindingFailed,
-      );
-    } finally {
-      setIsPending(false);
-    }
-  }
+export function OAuthIdentitySettings({
+  t,
+  controller,
+}: {
+  t: AppMessages;
+  controller: ReturnType<typeof useOAuthIdentitySettings>;
+}) {
+  const {
+    data,
+    identity,
+    configured,
+    loadFailed,
+    isPending,
+    unbindError,
+    retryLoad,
+    changeBinding,
+  } = controller;
 
   if (loadFailed) {
     return (
-      <div className="flex flex-col items-start gap-3 px-5 py-4 sm:px-6">
-        <FieldError>{t.oauthSettingsLoadFailed}</FieldError>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => {
-            setLoadFailed(false);
-            setLoadAttempt((current) => current + 1);
-          }}
-        >
-          {t.retry}
-        </Button>
-      </div>
+      <SettingsRow icon={<GithubIcon />} label="GitHub">
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={retryLoad}
+          >
+            {t.retry}
+          </Button>
+        </div>
+      </SettingsRow>
     );
   }
 
@@ -109,40 +60,60 @@ export function OAuthIdentitySettings({ t }: { t: AppMessages }) {
     <>
       <SettingsRow icon={<GithubIcon />} label="GitHub" description={description}>
         <div
-          className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end"
+          className="flex min-w-0 items-center justify-end gap-3"
           aria-busy={!data || isPending}
         >
           {!data ? (
             <Skeleton className="h-9 w-24 motion-reduce:animate-none" />
           ) : (
             <>
-              {identity ? (
+              <span
+                role="status"
+                className="inline-flex min-w-0 max-w-full items-center gap-2 text-sm text-muted-foreground"
+              >
+                {isPending && identity ? (
+                  <Spinner
+                    aria-hidden="true"
+                    className="shrink-0 motion-reduce:animate-none"
+                  />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "size-2 shrink-0 rounded-full",
+                      identity ? "bg-success" : "bg-destructive",
+                    )}
+                  />
+                )}
+                {identity ? (
+                  <span className="sr-only">
+                    {isPending ? t.oauthUpdating : t.oauthConnected}: {" "}
+                  </span>
+                ) : null}
                 <span
-                  className="min-w-0 flex-1 truncate text-sm text-muted-foreground"
-                  title={identity.label}
+                  className="truncate"
+                  title={identity?.label}
                 >
-                  {identity.label}
+                  {identity?.label ?? t.oauthNotConnected}
                 </span>
-              ) : null}
+              </span>
               <Button
                 type="button"
                 variant="outline"
-                className="w-full sm:w-auto"
+                className="shrink-0"
                 disabled={isPending}
+                aria-busy={isPending}
                 aria-label={identity ? `${actionLabel} GitHub` : actionLabel}
                 onClick={() => void changeBinding()}
               >
-                {isPending ? (
-                  <Spinner data-icon="inline-start" aria-label={t.oauthUpdating} />
-                ) : null}
-                {isPending ? t.oauthUpdating : actionLabel}
+                {actionLabel}
               </Button>
             </>
           )}
         </div>
       </SettingsRow>
-      {requestError ? (
-        <FieldError className="px-5 pb-4 sm:px-6">{requestError}</FieldError>
+      {unbindError ? (
+        <FieldError className="px-5 pb-4 sm:px-6">{unbindError}</FieldError>
       ) : null}
     </>
   );

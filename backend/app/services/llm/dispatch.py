@@ -66,32 +66,6 @@ async def async_complete_chat(
     )
 
 
-async def async_complete_tool_call(
-    config: AgentLlmConfig,
-    prompt: LlmPrompt,
-    tools: list[dict[str, Any]],
-    *,
-    request_context: LlmRequestContext | None = None,
-    on_provider_attempt: Callable[[], None] | None = None,
-) -> LlmAssistantMessage:
-    """Return the validated terminal message from the neutral tool stream."""
-
-    terminal_message: LlmAssistantMessage | None = None
-    async for event in async_stream_tool_call(
-        config,
-        prompt,
-        tools,
-        request_context=request_context,
-        on_provider_attempt=on_provider_attempt,
-    ):
-        if event.type == "done":
-            terminal_message = event.message
-
-    if terminal_message is None:
-        raise LlmRequestError("Model provider stream ended before completion.")
-    return terminal_message
-
-
 async def async_stream_tool_call(
     config: AgentLlmConfig,
     prompt: LlmPrompt,
@@ -112,7 +86,7 @@ async def async_stream_tool_call(
             tools,
             request_context=request_context,
         )
-        validated = _validated_tool_message(config, message, tools)
+        validated = _validated_tool_message(message, tools)
         yield LlmStreamEvent(type="text_delta", delta=validated.content)
         yield LlmStreamEvent(type="done", message=validated)
         return
@@ -143,7 +117,7 @@ async def async_stream_tool_call(
             terminal_seen = True
             yield LlmStreamEvent(
                 type="done",
-                message=_validated_tool_message(config, event.message, tools),
+                message=_validated_tool_message(event.message, tools),
             )
 
         if not terminal_seen:
@@ -213,7 +187,6 @@ async def _complete_provider_tool_call(
 
 
 def _validated_tool_message(
-    _config: AgentLlmConfig,
     message: LlmAssistantMessage,
     tools: list[dict[str, Any]],
 ) -> LlmAssistantMessage:
@@ -229,7 +202,6 @@ def _validated_tool_message(
         reasoning=message.reasoning,
         usage=message.usage,
         stop_reason=message.stop_reason,
-        response_id=message.response_id,
         provider_state=message.provider_state,
         sources=list(message.sources),
     )

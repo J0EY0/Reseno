@@ -1,8 +1,8 @@
 import type { AgentTimelinePart, AgentToolInvocation } from "@/types/api";
 
-export type AgentToolDisplayPhase = "running" | "complete" | "error";
+type AgentToolDisplayPhase = "running" | "complete" | "error";
 
-export type AgentToolDisplayCategory =
+type AgentToolDisplayCategory =
   | "fetch-job-reference"
   | "search-job-reference"
   | "read-material"
@@ -25,7 +25,7 @@ const AGENT_TOOL_DISPLAY_METADATA = {
   edit_execute: { category: "generate-draft" },
 } as const satisfies Record<string, AgentToolDisplayMetadata>;
 
-export type AgentToolName = keyof typeof AGENT_TOOL_DISPLAY_METADATA;
+type AgentToolName = keyof typeof AGENT_TOOL_DISPLAY_METADATA;
 
 export const REGISTERED_AGENT_TOOL_NAMES = Object.freeze(
   Object.keys(AGENT_TOOL_DISPLAY_METADATA) as AgentToolName[],
@@ -62,7 +62,7 @@ const AGENT_TOOL_LABEL_KEYS = {
   Record<AgentToolDisplayPhase, string>
 >;
 
-export type AgentToolLabelKey =
+type AgentToolLabelKey =
   (typeof AGENT_TOOL_LABEL_KEYS)[AgentToolDisplayCategory][AgentToolDisplayPhase];
 
 export function isToolRunning(state: AgentToolInvocation["state"]) {
@@ -158,10 +158,6 @@ export function getAgentToolLabelKey(
   phase: AgentToolDisplayPhase,
 ): AgentToolLabelKey {
   return AGENT_TOOL_LABEL_KEYS[getAgentToolDisplayCategory(tool)][phase];
-}
-
-export function isAgentEditExecutionTool(tool: AgentToolInvocation) {
-  return getAgentToolName(tool) === "edit_execute";
 }
 
 function toolDisplayKey(tool: AgentToolInvocation) {

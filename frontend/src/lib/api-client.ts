@@ -243,7 +243,7 @@ function createPayloadApiError(
   );
 }
 
-export function unwrapApiResponse<T>(
+function unwrapApiResponse<T>(
   payload: unknown,
   options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
@@ -280,7 +280,7 @@ function getPayloadDetailCode(payload: unknown) {
 
 function createHttpResponseError(
   payload: unknown,
-  status: number,
+  status: number | undefined,
   notifyOnError: boolean,
 ) {
   if (isApiResponse<unknown>(payload)) {
@@ -296,9 +296,7 @@ function createHttpResponseError(
     );
   }
 
-  // Axios did not expose the status for generic failures through the public
-  // helpers. Keep that observable contract while changing only the transport.
-  return createApiError("REQUEST_FAILED", {}, notifyOnError);
+  return createApiError("REQUEST_FAILED", { status }, notifyOnError);
 }
 
 async function readJsonPayload(response: Response) {
@@ -310,8 +308,6 @@ async function readJsonPayload(response: Response) {
   try {
     return JSON.parse(body) as unknown;
   } catch {
-    // Axios uses silent JSON parsing. The envelope validator below converts a
-    // malformed successful payload into INVALID_API_RESPONSE.
     return body;
   }
 }
@@ -344,19 +340,9 @@ async function fetchApiEnvelope(
     baseHeaders.set("Content-Type", "application/json");
   }
 
-  let headers: Headers | null;
-  try {
-    headers = getAuthHeaders(options, baseHeaders, clearApiCache);
-    if (!headers) {
-      throw createApiError("AUTHENTICATION_REQUIRED", {}, false);
-    }
-  } catch (error) {
-    // The former Axios response interceptor converted an unnotified request
-    // interceptor rejection into the canonical request failure.
-    if (isAbortError(error) || isApiErrorNotified(error)) {
-      throw error;
-    }
-    throw createApiError("REQUEST_FAILED");
+  const headers = getAuthHeaders(options, baseHeaders, clearApiCache);
+  if (!headers) {
+    throw createApiError("AUTHENTICATION_REQUIRED", {}, false);
   }
 
   let response: Response;
@@ -503,9 +489,7 @@ export async function uploadApi<T>(
   if (!headers) {
     throw createApiError("AUTHENTICATION_REQUIRED");
   }
-  // XMLHttpRequest upload progress and timeout behavior are not available
-  // through fetch. Keep Axios behind this feature-only boundary so imports and
-  // Agent attachments retain their existing transport semantics.
+  // Uploads use Axios for upload progress and request timeouts.
   const { default: axios } = await import("axios");
   let response;
 
@@ -528,7 +512,7 @@ export async function uploadApi<T>(
       await handleUnauthorizedResponse(error.response?.data, headers, route, clearApiCache);
       throw createHttpResponseError(
         error.response?.data,
-        error.response?.status ?? 0,
+        error.response?.status,
         true,
       );
     }
@@ -546,7 +530,7 @@ export async function uploadApi<T>(
   return unwrapApiResponse<T>(response.data);
 }
 
-export function resolveApiResourceUrl(url: string) {
+function resolveApiResourceUrl(url: string) {
   if (/^https?:\/\//i.test(url)) {
     return url;
   }

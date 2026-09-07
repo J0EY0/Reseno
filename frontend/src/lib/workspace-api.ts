@@ -156,10 +156,12 @@ export function fetchResumeVersionApi(
 
 export function createTemplateApi(
   template: ResumeTemplateDefinition | TemplateArtifactItem,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
   return requestApi<TemplateDetailResponse>(apiRoutes.templates, {
     body: { template: createTemplateSavePayload(template) },
     method: "POST",
+    ...options,
   });
 }
 
@@ -188,9 +190,13 @@ function createTemplateSavePayload(
   };
 }
 
-export function moveTemplateToTrashApi(templateId: string) {
+export function moveTemplateToTrashApi(
+  templateId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
+) {
   return requestApi<TemplateTrashResponse>(apiRoutes.templateTrash(templateId), {
     method: "POST",
+    ...options,
   });
 }
 

@@ -75,14 +75,6 @@ export interface ResumeDetailResponse {
   versionId: string;
 }
 
-export interface ResumeListResponse {
-  resumes: ResumeWorkspaceItem[];
-}
-
-export interface DeletedResumeListResponse {
-  resumes: DeletedResumeWorkspaceItem[];
-}
-
 export interface ResumeTrashResponse {
   resume: DeletedResumeWorkspaceItem;
 }
@@ -122,7 +114,7 @@ export interface ImportTemplatesResponse {
   templates: TemplateArtifactItem[];
 }
 
-export type CustomTemplateArtifactRef = `custom:${number}`;
+type CustomTemplateArtifactRef = `custom:${number}`;
 
 export interface ResumeArtifactItem {
   title: string;
@@ -134,7 +126,7 @@ export interface ResumeArtifactItem {
   templateSettings: Partial<ResumeTemplateSettings> | null;
 }
 
-export interface EmbeddedTemplateArtifact {
+interface EmbeddedTemplateArtifact {
   ref: CustomTemplateArtifactRef;
   definition: TemplateArtifactItem;
 }
@@ -199,7 +191,7 @@ export interface AgentChatUserMessage {
 }
 
 export type AgentDraftDecisionStatus = "applied" | "discarded";
-export type AgentDraftReviewItemStatus =
+type AgentDraftReviewItemStatus =
   | "pending"
   | AgentDraftDecisionStatus;
 export type AgentTransactionState =
@@ -263,7 +255,7 @@ export interface AgentChatRequest {
   stream?: true;
 }
 
-export interface AgentModelSelection {
+interface AgentModelSelection {
   id: string;
 }
 
@@ -300,7 +292,7 @@ export interface AgentResumeEditSuggestion {
   target: string;
   reason: string;
   replacement?: string;
-  operation?: ResumeEditOperation;
+  operation: ResumeEditOperation;
   evidenceRefs?: string[];
   status?: "planned" | "executed" | "rejected";
   diffs?: ResumeDraftDiff[];
@@ -352,7 +344,7 @@ export interface AgentStoredMessage extends AgentConversationMessage {
   response?: AgentChatMessage;
 }
 
-export interface AgentModelSnapshot {
+interface AgentModelSnapshot {
   configId: string;
   provider: string;
   model: string;
@@ -399,45 +391,3 @@ export interface AgentDraftDecisionResponse {
   session: AgentSessionResponse;
   resume: ResumeDetailResponse | null;
 }
-
-export type AgentChatStreamEvent =
-  | {
-      type: "message_start";
-      message: Partial<Pick<AgentChatMessage, "id" | "role" | "tone" | "text">>;
-    }
-  | {
-      type: "text_delta";
-      delta: string;
-      timelinePartId: string;
-    }
-  | {
-      type: "message_delta";
-      message: Partial<Omit<AgentChatMessage, "id" | "role">>;
-    }
-  | {
-      type: "tool_start" | "tool_delta" | "tool_done";
-      tool: AgentToolInvocation;
-      timelinePartId: string;
-    }
-  | {
-      type: "edits";
-      message: Partial<
-        Pick<AgentChatMessage, "edits" | "transactionState">
-      >;
-    }
-  | {
-      type: "message_done";
-      message: AgentChatMessage;
-    }
-  | {
-      type: "run_done";
-      runId: string;
-      status: AgentRunStatus;
-      executionState: AgentTurnExecutionStatus;
-      errorCode: AgentTurnErrorCode | null;
-    }
-  | {
-      type: "error";
-      message?: string;
-      error?: string;
-    };

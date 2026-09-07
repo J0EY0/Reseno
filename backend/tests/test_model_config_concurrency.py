@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from threading import Barrier, Event
 
 import pytest
@@ -7,6 +8,25 @@ from fastapi.testclient import TestClient
 from app.db.connection import connect
 from app.services import model_configs
 from app.services.llm_secrets import decrypt_api_key
+from app.services.model_discovery_cache import write_cached_provider_models
+from app.services.model_providers import DiscoveredModel
+
+
+def _cache_cloud_model() -> None:
+    write_cached_provider_models(
+        "openai",
+        [
+            DiscoveredModel(
+                id="gpt-test",
+                label="gpt-test",
+                context_window_tokens=32_768,
+                max_output_tokens=4_096,
+                supports_image=False,
+                thinking_control="none",
+                metadata_source="test",
+            ),
+        ],
+    )
 
 
 @pytest.mark.parametrize(
@@ -50,7 +70,7 @@ def test_switching_credential_scope_without_api_key_does_not_reuse_old_secret(
 
     assert switched.status_code == 200
     assert switched.json()["data"]["apiKeyPreview"] == ""
-    with connect() as conn:
+    with closing(connect()) as conn:
         row = conn.execute(
             "SELECT encrypted_api_key FROM llm_configs WHERE client_id = ?",
             (config_id,),
@@ -60,14 +80,19 @@ def test_switching_credential_scope_without_api_key_does_not_reuse_old_secret(
     assert row["encrypted_api_key"] is None
 
 
+@pytest.mark.parametrize("provider_kind", ["custom", "cloud"])
 def test_nickname_update_cannot_restore_a_concurrently_replaced_api_key(
     client: TestClient,
     monkeypatch,
+    provider_kind: str,
 ) -> None:
+    _cache_cloud_model()
     initial_payload = {
         "provider": "openai",
-        "providerKind": "custom",
-        "apiFamily": "openai_compatible_chat",
+        "providerKind": provider_kind,
+        "apiFamily": (
+            "openai_responses" if provider_kind == "cloud" else "openai_compatible_chat"
+        ),
         "nickname": "Original",
         "apiKey": "old-secret",
         "model": "gpt-test",
@@ -84,8 +109,8 @@ def test_nickname_update_cannot_restore_a_concurrently_replaced_api_key(
 
     def synchronize_after_read(item, existing):
         values = original_build_values(item, existing)
-        both_requests_read_old_key.wait()
-        if not item.get("apiKey"):
+        both_requests_read_old_key.wait(timeout=5)
+        if not item.api_key:
             assert key_update_committed.wait(timeout=5)
         return values
 
@@ -131,7 +156,7 @@ def test_nickname_update_cannot_restore_a_concurrently_replaced_api_key(
 
     assert key_response.status_code == 200
     assert rename_response.status_code == 200
-    with connect() as conn:
+    with closing(connect()) as conn:
         row = conn.execute(
             "SELECT name, encrypted_api_key FROM llm_configs WHERE client_id = ?",
             (config_id,),
@@ -142,14 +167,19 @@ def test_nickname_update_cannot_restore_a_concurrently_replaced_api_key(
     assert decrypt_api_key(row["encrypted_api_key"]) == "new-secret"
 
 
+@pytest.mark.parametrize("provider_kind", ["custom", "cloud"])
 def test_exact_noop_returns_concurrently_replaced_api_key_preview(
     client: TestClient,
     monkeypatch,
+    provider_kind: str,
 ) -> None:
+    _cache_cloud_model()
     initial_payload = {
         "provider": "openai",
-        "providerKind": "custom",
-        "apiFamily": "openai_compatible_chat",
+        "providerKind": provider_kind,
+        "apiFamily": (
+            "openai_responses" if provider_kind == "cloud" else "openai_compatible_chat"
+        ),
         "nickname": "Original",
         "apiKey": "old-secret",
         "model": "gpt-test",
@@ -167,8 +197,8 @@ def test_exact_noop_returns_concurrently_replaced_api_key_preview(
 
     def synchronize_after_read(item, existing):
         values = original_build_values(item, existing)
-        both_requests_read_old_key.wait()
-        if not item.get("apiKey"):
+        both_requests_read_old_key.wait(timeout=5)
+        if not item.api_key:
             assert key_update_committed.wait(timeout=5)
         return values
 

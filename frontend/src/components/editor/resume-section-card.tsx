@@ -42,7 +42,7 @@ const ResumeSectionDeleteDialog = lazy(() =>
   })),
 )
 
-export type ResumeSectionCardProps = {
+type ResumeSectionCardProps = {
   t: AppMessages
   documentT: AppMessages | null
   section: ResumeSection

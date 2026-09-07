@@ -62,9 +62,13 @@ interface SmartOnePageAdapter {
   measurePageCount: () => Promise<number>;
 }
 
-export type SmartOnePageResult =
+type SmartOnePageResult =
   | { status: "already-one-page" }
-  | { status: "applied"; previous: SmartOnePageStyleSnapshot }
+  | {
+      status: "applied";
+      previous: SmartOnePageStyleSnapshot;
+      style: SmartOnePageStyleSnapshot;
+    }
   | { status: "no-fit" };
 
 function getNextSmallerFontSize(fontSize: number) {
@@ -183,10 +187,9 @@ export async function fitResumeToOnePage(
 
     // React commits the candidate before the adapter measures the paginated DOM.
     if ((await adapter.measurePageCount()) <= 1) {
-      return { status: "applied", previous: current };
+      return { status: "applied", previous: current, style: candidate };
     }
   }
 
-  adapter.applyStyle(current);
   return { status: "no-fit" };
 }

@@ -343,6 +343,7 @@ async def _async_iter_agent_tool_call_loop(
                 continue
 
             effect = effects_by_call[id(tool_call)]
+            runtime.record_tool_result(effect.invocation)
             if id(tool_call) in executable_call_ids:
                 yield AgentToolLoopTools(tools=[effect.invocation])
             tool_messages.append(

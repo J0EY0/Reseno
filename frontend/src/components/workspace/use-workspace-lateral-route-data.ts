@@ -2,12 +2,12 @@ import { useLayoutEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import {
-  deleteWorkspaceLateralRouteHandoff,
   rememberWorkspaceLateralRoute,
   resolveWorkspaceLateralRoute,
   type PreparedWorkspaceRoute,
   type WorkspaceLateralRouteDataMap,
 } from "@/lib/workspace-route-memory";
+import { deleteWorkspaceHandoffToken } from "@/lib/workspace-route-handoff";
 import type { WorkspaceView } from "@/types/resume";
 
 /**
@@ -28,7 +28,7 @@ export function useWorkspaceLateralRouteData<View extends WorkspaceView>(
       return;
     }
 
-    deleteWorkspaceLateralRouteHandoff(resolution.tokenToDelete);
+    deleteWorkspaceHandoffToken(resolution.tokenToDelete);
     navigate(
       {
         hash: location.hash,

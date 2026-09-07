@@ -106,13 +106,18 @@ def test_streaming_provider_uses_private_tool_activity_stream(
     monkeypatch.setattr(adapter, "stream_tool_call", fake_stream_tool_call)
     monkeypatch.setattr(adapter, "complete_tool_call", forbidden_unary)
 
-    message = asyncio.run(
-        dispatch.async_complete_tool_call(
-            _config(api_family, supports_streaming=True),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
+    message_events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config(api_family, supports_streaming=True),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert stream_calls == 1
     assert [call.name for call in message.tool_calls] == ["lookup"]
@@ -193,13 +198,18 @@ def test_non_streaming_provider_uses_complete_response_without_wall_clock(
     monkeypatch.setattr(adapter, "complete_tool_call", fake_complete_tool_call)
     monkeypatch.setattr(adapter, "stream_tool_call", forbidden_stream)
 
-    message = asyncio.run(
-        dispatch.async_complete_tool_call(
-            _config(api_family, supports_streaming=False),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
+    message_events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config(api_family, supports_streaming=False),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert complete_calls == 1
     assert [call.name for call in message.tool_calls] == ["lookup"]
@@ -239,32 +249,6 @@ def test_non_streaming_tool_dispatch_synthesizes_text_and_done(
     assert events[0].delta == "Completed"
     assert events[1].message is not None
     assert [call.name for call in events[1].message.tool_calls] == ["lookup"]
-
-
-def test_complete_tool_call_consumes_provider_neutral_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stream_calls = 0
-    terminal_message = _terminal_message()
-
-    async def fake_stream_tool_call(*_: object, **__: object):
-        nonlocal stream_calls
-        stream_calls += 1
-        yield LlmStreamEvent(type="activity")
-        yield LlmStreamEvent(type="done", message=terminal_message)
-
-    monkeypatch.setattr(dispatch, "async_stream_tool_call", fake_stream_tool_call)
-
-    message = asyncio.run(
-        dispatch.async_complete_tool_call(
-            _config("openai_compatible_chat", supports_streaming=True),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
-        ),
-    )
-
-    assert stream_calls == 1
-    assert message is terminal_message
 
 
 def test_dispatch_validates_union_arguments_against_provider_projection() -> None:
@@ -311,7 +295,6 @@ def test_dispatch_validates_union_arguments_against_provider_projection() -> Non
 
     strict_calls, strict_errors = validate_tool_calls([call], tools)
     message = dispatch._validated_tool_message(
-        _config("openai_compatible_chat", supports_streaming=True),
         LlmAssistantMessage(tool_calls=[call], stop_reason="tool_calls"),
         tools,
     )
@@ -385,14 +368,16 @@ def test_streaming_openai_dispatch_forwards_request_context(
     request_context = LlmRequestContext(cache_key="resume-session-1")
 
     asyncio.run(
-        dispatch.async_complete_tool_call(
-            replace(
-                _config(api_family, supports_streaming=True),
-                provider="openai",
-            ),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
-            request_context=request_context,
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                replace(
+                    _config(api_family, supports_streaming=True),
+                    provider="openai",
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+                request_context=request_context,
+            )
         ),
     )
 
@@ -425,13 +410,18 @@ def test_dispatch_rejects_duplicate_tool_call_ids_without_losing_identity(
 
     monkeypatch.setattr(openai_chat, "complete_tool_call", fake_complete_tool_call)
 
-    message = asyncio.run(
-        dispatch.async_complete_tool_call(
-            _config("openai_compatible_chat", supports_streaming=False),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
+    message_events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config("openai_compatible_chat", supports_streaming=False),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert message.tool_calls == calls
     assert len(message.validation_errors) == 2
@@ -460,13 +450,18 @@ def test_dispatch_rejects_blank_tool_call_id(
 
     monkeypatch.setattr(openai_chat, "complete_tool_call", fake_complete_tool_call)
 
-    message = asyncio.run(
-        dispatch.async_complete_tool_call(
-            _config("openai_compatible_chat", supports_streaming=False),
-            LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
-            _tools(),
+    message_events = asyncio.run(
+        _collect_events(
+            dispatch.async_stream_tool_call(
+                _config("openai_compatible_chat", supports_streaming=False),
+                LlmPrompt(messages=[{"role": "user", "content": "lookup"}]),
+                _tools(),
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert message.tool_calls == [call]
     assert len(message.validation_errors) == 1

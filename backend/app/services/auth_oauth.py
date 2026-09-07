@@ -103,7 +103,9 @@ async def _authorize(
     client = create_oauth_client(config)
     redirect_uri = f"{config.public_base_url}/api/auth/oauth/github/callback"
     try:
-        authorization = await client.create_authorization_url(redirect_uri)
+        authorization = await client.create_authorization_url(
+            redirect_uri, **({"prompt": "select_account"} if intent == "bind" else {})
+        )
         _new_session(request, config.public_base_url)
         request.session["flow"] = {
             "kind": "oauth",

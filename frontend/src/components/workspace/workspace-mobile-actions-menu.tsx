@@ -66,10 +66,10 @@ export function WorkspaceMobileActionsMenu({
           }}
         >
           <DropdownMenuRadioItem value="zh">
-            {messages.languageChinese}
+            {messages.uiLanguageChinese}
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="en">
-            {messages.languageEnglish}
+            {messages.uiLanguageEnglish}
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
 

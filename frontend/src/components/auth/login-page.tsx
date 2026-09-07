@@ -2,12 +2,14 @@ import { UserRound } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import type { AppMessages } from '@/i18n'
+import type { OAuthLoginControls } from '@/hooks/use-oauth-login'
 import {
   validateLoginForm,
   type LoginFormErrors,
 } from '@/lib/auth-validation'
 
 import { AuthPageShell } from '@/components/auth/auth-page-shell'
+import { AuthLoadingSweep } from '@/components/auth/auth-loading-sweep'
 import { PasswordField } from '@/components/auth/password-field'
 import { ProviderLoginButtons } from '@/components/auth/provider-login-buttons'
 import { Button } from '@/components/ui/button'
@@ -27,9 +29,11 @@ type LoginResult = {
 
 export function LoginPage({
   t,
+  oauth,
   onSubmitCredentials,
 }: {
   t: AppMessages
+  oauth: OAuthLoginControls
   onSubmitCredentials: (credentials: {
     username: string
     password: string
@@ -39,8 +43,7 @@ export function LoginPage({
   const [password, setPassword] = useState('')
   const [formErrors, setFormErrors] = useState<LoginFormErrors>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isOAuthPending, setIsOAuthPending] = useState(false)
-  const isPending = isSubmitting || isOAuthPending
+  const isPending = isSubmitting || oauth.isPending
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -148,7 +151,7 @@ export function LoginPage({
             aria-disabled={isPending}
             disabled={isPending}
           >
-            <span className="auth-loading-border" aria-hidden="true" />
+            <AuthLoadingSweep />
             {t.loginSubmit}
           </Button>
           <span
@@ -164,8 +167,7 @@ export function LoginPage({
           <ProviderLoginButtons
             t={t}
             disabled={isSubmitting}
-            isPending={isOAuthPending}
-            onPendingChange={setIsOAuthPending}
+            oauth={oauth}
           />
         </FieldGroup>
       </form>

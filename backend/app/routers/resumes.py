@@ -40,7 +40,7 @@ def get_resumes(
 ) -> ApiResponse[ResumeListResponse]:
     """Return active resume items or deleted resume previews."""
 
-    return ok_response(ResumeListResponse.model_validate(list_resumes(status_filter)))
+    return ok_response(list_resumes(status_filter))
 
 
 @router.post("", response_model=ApiResponse[ResumeDetailResponse])

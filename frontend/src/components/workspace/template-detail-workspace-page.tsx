@@ -9,6 +9,7 @@ import {
 import { TemplateDetailWorkspaceView } from "@/components/workspace/template-detail-workspace-view";
 import { useTemplateDetailWorkspace } from "@/components/workspace/use-template-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
+import { releaseWorkspaceRouteHandoff } from "@/lib/workspace-route-handoff";
 
 interface TemplateDetailRouteOwnerProps {
   onLogout: () => void;
@@ -43,6 +44,7 @@ function TemplateDetailRouteOwner({
       return;
     }
 
+    releaseWorkspaceRouteHandoff(routeState);
     navigate(
       {
         hash: location.hash,

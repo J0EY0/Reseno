@@ -38,9 +38,9 @@ import type { AppMessages } from "@/i18n";
 import { isAbortError } from "@/lib/api-client";
 import {
   createWorkspaceLateralRouteHandoff,
-  deleteWorkspaceLateralRouteHandoff,
 } from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
+import { deleteWorkspaceHandoffToken } from "@/lib/workspace-route-handoff";
 import type { WorkspaceView } from "@/types/resume";
 
 const WorkspaceMobileActionsMenu = lazy(() =>
@@ -147,7 +147,7 @@ export function WorkspaceShell({
       });
     } catch (error) {
       if (handoffToken) {
-        deleteWorkspaceLateralRouteHandoff(handoffToken);
+        deleteWorkspaceHandoffToken(handoffToken);
       }
       clearPendingView();
       intent.finish();
@@ -222,10 +222,10 @@ export function WorkspaceShell({
                   <SelectContent align="end" position="popper" sideOffset={4}>
                     <SelectGroup>
                       <SelectItem value="zh">
-                        {messages.languageChinese}
+                        {messages.uiLanguageChinese}
                       </SelectItem>
                       <SelectItem value="en">
-                        {messages.languageEnglish}
+                        {messages.uiLanguageEnglish}
                       </SelectItem>
                     </SelectGroup>
                   </SelectContent>

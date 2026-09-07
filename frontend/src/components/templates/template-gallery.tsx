@@ -37,7 +37,7 @@ interface TemplateGalleryProps {
   onTemplateLocaleChange: (locale: DocumentLocale) => void;
   onCreateCustomTemplate: () => void;
   onImportTemplates: (file: File) => void;
-  onDeleteTemplates: (templateIds: string[]) => void;
+  onDeleteTemplates: (templateIds: string[]) => Promise<string[]>;
 }
 
 export function TemplateGallery({

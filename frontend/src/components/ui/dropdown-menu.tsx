@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
+import { ChevronRightIcon, CircleIcon } from "lucide-react"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
@@ -10,14 +10,6 @@ function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
   return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
-}
-
-function DropdownMenuPortal({
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
-  return (
-    <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />
-  )
 }
 
 function DropdownMenuTrigger({
@@ -79,32 +71,6 @@ function DropdownMenuItem({
       )}
       {...props}
     />
-  )
-}
-
-function DropdownMenuCheckboxItem({
-  className,
-  children,
-  checked,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
-  return (
-    <DropdownMenuPrimitive.CheckboxItem
-      data-slot="dropdown-menu-checkbox-item"
-      className={cn(
-        "relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        className
-      )}
-      checked={checked}
-      {...props}
-    >
-      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-        <DropdownMenuPrimitive.ItemIndicator>
-          <CheckIcon className="size-4" />
-        </DropdownMenuPrimitive.ItemIndicator>
-      </span>
-      {children}
-    </DropdownMenuPrimitive.CheckboxItem>
   )
 }
 
@@ -176,22 +142,6 @@ function DropdownMenuSeparator({
   )
 }
 
-function DropdownMenuShortcut({
-  className,
-  ...props
-}: React.ComponentProps<"span">) {
-  return (
-    <span
-      data-slot="dropdown-menu-shortcut"
-      className={cn(
-        "ml-auto text-xs tracking-widest text-muted-foreground",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 function DropdownMenuSub({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
@@ -238,20 +188,4 @@ function DropdownMenuSubContent({
   )
 }
 
-export {
-  DropdownMenu,
-  DropdownMenuPortal,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
-  DropdownMenuItem,
-  DropdownMenuCheckboxItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger,
-  DropdownMenuSubContent,
-}
+export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent }

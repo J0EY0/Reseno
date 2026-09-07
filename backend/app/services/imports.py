@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.schemas.imports import (
     ResumeArtifactV1,
@@ -31,6 +32,10 @@ async def load_json_upload(file: UploadFile) -> Any:
             detail="JSON_UPLOAD_TOO_LARGE",
         )
 
+    return await run_in_threadpool(_decode_json_upload, raw_body)
+
+
+def _decode_json_upload(raw_body: bytes) -> Any:
     try:
         return json.loads(raw_body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

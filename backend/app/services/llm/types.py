@@ -238,7 +238,6 @@ class LlmAssistantMessage:
     reasoning: str = ""
     usage: LlmUsage | None = None
     stop_reason: LlmStopReason = "unknown"
-    response_id: str | None = None
     provider_state: dict[str, Any] = field(default_factory=dict)
     sources: list[LlmWebSource] = field(default_factory=list)
 

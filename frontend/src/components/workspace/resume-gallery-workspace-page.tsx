@@ -1,3 +1,5 @@
+import { useLayoutEffect } from "react";
+
 import { ResumeGallery } from "@/components/resume-gallery";
 import { GalleryRouteSkeleton } from "@/components/gallery-skeletons";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
@@ -5,7 +7,7 @@ import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use
 import { useResumeGalleryWorkspace } from "@/components/workspace/use-resume-gallery-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function ResumeGalleryWorkspacePage() {
+export function ResumeGalleryWorkspacePage({ onReady }: { onReady?: () => void }) {
   const { locale, messages } = useWorkspacePreferences();
   const gallery = useResumeGalleryWorkspace({
     locale,
@@ -15,6 +17,10 @@ export function ResumeGalleryWorkspacePage() {
     "resume",
     gallery.hasLoaded ? gallery.routeData : null,
   );
+
+  useLayoutEffect(() => {
+    if (gallery.hasLoaded || gallery.hasLoadError) onReady?.();
+  }, [gallery.hasLoadError, gallery.hasLoaded, onReady]);
 
   if (gallery.hasLoadError) {
     return (

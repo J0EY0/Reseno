@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import {
   SidebarBasicInfo,
   StandardBasicInfo,
@@ -22,7 +24,7 @@ interface ResumePageContentProps {
   showEmptyTemplateImagePlaceholders?: boolean;
 }
 
-export function StandardResumeContent({
+export const StandardResumeContent = memo(function StandardResumeContent({
   enableContactLinks,
   model,
   pageSections,
@@ -57,9 +59,9 @@ export function StandardResumeContent({
       />
     </div>
   );
-}
+});
 
-export function ResumePageContent({
+export const ResumePageContent = memo(function ResumePageContent({
   editableTemplateImages = false,
   enableContactLinks,
   model,
@@ -130,4 +132,4 @@ export function ResumePageContent({
       />
     </>
   );
-}
+});

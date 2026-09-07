@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 const repositoryRoot = join(frontendRoot, "..");
@@ -14,21 +14,8 @@ function assert(condition, message) {
 
 async function loadTypeScriptModule(path) {
   const source = await readFile(path, "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
 
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require: () => ({}),
-  });
-
-  return module.exports;
+  return evaluateTypeScript(source);
 }
 
 function tool(name, state, overrides = {}) {
@@ -208,12 +195,6 @@ const toolDisplay = await loadTypeScriptModule(
       tool("edit_execute", "input-streaming"),
     ) === "generate-draft",
     "The general resume mutation tool must use the draft-generation status.",
-  );
-  assert(
-    toolDisplay.isAgentEditExecutionTool(
-      tool("edit_execute", "output-available"),
-    ),
-    "Edit observations must be recognized through centralized tool metadata.",
   );
   assert(
     toolDisplay.isToolError(tool("edit_execute", "output-error").state) &&

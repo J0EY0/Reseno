@@ -64,7 +64,7 @@ export function WorkspacePreviewSkeleton() {
   );
 }
 
-export function WorkspaceContentSkeleton() {
+function WorkspaceContentSkeleton() {
   return (
     <Card className="min-h-[520px] rounded-(--radius-workspace) border-border/80 shadow-none">
       <CardContent className="space-y-6 p-6">

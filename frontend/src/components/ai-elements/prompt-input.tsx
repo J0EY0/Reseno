@@ -37,7 +37,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/use-prompt-input-form";
 
-export type PromptInputProps = Omit<
+type PromptInputProps = Omit<
   HTMLAttributes<HTMLFormElement>,
   "onSubmit" | "onError"
 > & {
@@ -107,7 +107,7 @@ export function PromptInput({
   );
 }
 
-export type PromptInputBodyProps = HTMLAttributes<HTMLDivElement>;
+type PromptInputBodyProps = HTMLAttributes<HTMLDivElement>;
 
 export function PromptInputBody({
   className,
@@ -116,7 +116,7 @@ export function PromptInputBody({
   return <div className={cn("contents", className)} {...props} />;
 }
 
-export type PromptInputTextareaProps = ComponentProps<
+type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
 >;
 
@@ -209,7 +209,7 @@ export function PromptInputTextarea({
   );
 }
 
-export type PromptInputFooterProps = Omit<
+type PromptInputFooterProps = Omit<
   ComponentProps<typeof InputGroupAddon>,
   "align"
 >;
@@ -227,7 +227,7 @@ export function PromptInputFooter({
   );
 }
 
-export type PromptInputToolsProps = HTMLAttributes<HTMLDivElement>;
+type PromptInputToolsProps = HTMLAttributes<HTMLDivElement>;
 
 export function PromptInputTools({
   className,
@@ -241,7 +241,7 @@ export function PromptInputTools({
   );
 }
 
-export type PromptInputButtonTooltip =
+type PromptInputButtonTooltip =
   | string
   | {
       content: ReactNode;
@@ -249,7 +249,7 @@ export type PromptInputButtonTooltip =
       side?: ComponentProps<typeof TooltipContent>["side"];
     };
 
-export type PromptInputButtonProps = ComponentProps<typeof InputGroupButton> & {
+type PromptInputButtonProps = ComponentProps<typeof InputGroupButton> & {
   tooltip?: PromptInputButtonTooltip;
 };
 
@@ -291,7 +291,7 @@ export function PromptInputButton({
   );
 }
 
-export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton> & {
+type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton> & {
   status?: ChatStatus;
   onStop?: () => void;
 };

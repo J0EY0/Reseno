@@ -179,10 +179,10 @@ function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
   return value
     .filter(isRecord)
     .map((item): AgentResumeEditSuggestion => {
-      const operation =
-        isRecord(item.operation) && typeof item.operation.type === "string"
-          ? (item.operation as AgentResumeEditSuggestion["operation"])
-          : undefined;
+      if (!isRecord(item.operation) || typeof item.operation.type !== "string") {
+        throw new TypeError("Agent edit requires an explicit operation.");
+      }
+      const operation = item.operation as AgentResumeEditSuggestion["operation"];
       const diffs = Array.isArray(item.diffs)
         ? (item.diffs as AgentResumeEditSuggestion["diffs"])
         : undefined;

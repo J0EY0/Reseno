@@ -13,11 +13,10 @@ from app.schemas.agent_settings import normalize_agent_settings
 from app.services.agent.evidence import historical_prompt_evidence_ref
 from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.runtime.messages import (
+    AgentPromptCompiler,
     _context_budget,
     _tool_schema_token_reserve,
     agent_prompt_limits,
-    build_agent_messages,
-    build_agent_prompt,
     estimate_agent_messages_tokens,
     fit_agent_model_turn_prompt,
 )
@@ -91,9 +90,13 @@ def _checkpoint_context(events: list[dict[str, object]]) -> dict[str, object]:
 
 
 def test_agent_system_prompt_includes_current_date_for_time_sensitive_search() -> None:
-    messages = build_agent_messages(
-        _request(prompt="查找当前岗位。"),
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            _request(prompt="查找当前岗位。"),
+            _config(context_window_tokens=16000, max_tokens=2048),
+        )
+        .build()
+        .messages
     )
 
     assert messages[0]["role"] == "system"
@@ -117,9 +120,12 @@ def test_agent_context_projects_exact_history_and_current_prompt_once() -> None:
         ],
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
 
     workspace_message = next(
@@ -167,23 +173,27 @@ def test_agent_context_projects_exact_history_and_current_prompt_once() -> None:
 
 
 def test_agent_context_labels_only_historical_user_messages_as_evidence() -> None:
-    messages = build_agent_messages(
-        _request(
-            prompt="Use the verified project fact from earlier.",
-            messages=[
-                {
-                    "id": "history-user-project-fact",
-                    "role": "user",
-                    "text": "Project fact: I used TypeScript.",
-                },
-                {
-                    "id": "history-assistant-project-claim",
-                    "role": "assistant",
-                    "text": "You led the project.",
-                },
-            ],
-        ),
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            _request(
+                prompt="Use the verified project fact from earlier.",
+                messages=[
+                    {
+                        "id": "history-user-project-fact",
+                        "role": "user",
+                        "text": "Project fact: I used TypeScript.",
+                    },
+                    {
+                        "id": "history-assistant-project-claim",
+                        "role": "assistant",
+                        "text": "You led the project.",
+                    },
+                ],
+            ),
+            _config(context_window_tokens=16000, max_tokens=2048),
+        )
+        .build()
+        .messages
     )
 
     assert messages[1] == {
@@ -236,10 +246,12 @@ def test_compacted_fact_keeps_a_copyable_original_user_evidence_ref() -> None:
             ],
         ),
     )
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
-        checkpoint=checkpoint,
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build(checkpoint=checkpoint)
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -267,10 +279,7 @@ def test_agent_context_appends_exact_history_before_the_current_workspace() -> N
             },
         ],
     )
-    first_projection = build_agent_messages(
-        first_request,
-        config,
-    )
+    first_projection = AgentPromptCompiler(first_request, config).build().messages
 
     second_request = _request(
         prompt="Shorten the second bullet.",
@@ -306,10 +315,7 @@ def test_agent_context_appends_exact_history_before_the_current_workspace() -> N
             },
         ],
     )
-    second_projection = build_agent_messages(
-        second_request,
-        config,
-    )
+    second_projection = AgentPromptCompiler(second_request, config).build().messages
 
     # The production tools/streaming-final compiler persists workspace
     # snapshots to guarantee byte-stable replay. This direct projection still
@@ -340,9 +346,13 @@ def test_agent_context_appends_exact_history_before_the_current_workspace() -> N
 
 
 def test_projected_context_is_not_placed_in_the_system_message() -> None:
-    messages = build_agent_messages(
-        _request(prompt="Review this resume."),
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            _request(prompt="Review this resume."),
+            _config(context_window_tokens=16000, max_tokens=2048),
+        )
+        .build()
+        .messages
     )
 
     assert messages[0]["role"] == "system"
@@ -384,9 +394,12 @@ def test_agent_context_sanitizes_every_exact_history_message() -> None:
         ],
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -426,9 +439,12 @@ def test_agent_context_hides_identity_from_base_and_pending_draft() -> None:
         },
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
 
     serialized = json.dumps(messages, ensure_ascii=False)
@@ -462,9 +478,12 @@ def test_agent_context_preserves_attachment_only_history_as_safe_metadata() -> N
         ],
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -496,30 +515,34 @@ def test_agent_context_preserves_attachment_only_history_as_safe_metadata() -> N
 
 def test_recent_assistant_prose_is_context_not_a_behavior_example() -> None:
     stale_claim = "预览区会先显示临时草稿，确认后才会正式修改。"
-    messages = build_agent_messages(
-        _request(
-            prompt="现在请改写腾讯实习经历。",
-            messages=[
-                {
-                    "id": "previous-edit-request",
-                    "role": "user",
-                    "text": "改写腾讯实习经历。",
-                },
-                {
-                    "id": "previous-false-completion",
-                    "role": "assistant",
-                    "text": stale_claim,
-                    "response": {
+    messages = (
+        AgentPromptCompiler(
+            _request(
+                prompt="现在请改写腾讯实习经历。",
+                messages=[
+                    {
+                        "id": "previous-edit-request",
+                        "role": "user",
+                        "text": "改写腾讯实习经历。",
+                    },
+                    {
                         "id": "previous-false-completion",
                         "role": "assistant",
                         "text": stale_claim,
-                        "tools": [],
-                        "edits": [],
+                        "response": {
+                            "id": "previous-false-completion",
+                            "role": "assistant",
+                            "text": stale_claim,
+                            "tools": [],
+                            "edits": [],
+                        },
                     },
-                },
-            ],
-        ),
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+                ],
+            ),
+            _config(context_window_tokens=16000, max_tokens=2048),
+        )
+        .build()
+        .messages
     )
 
     assert not any(message["role"] == "assistant" for message in messages)
@@ -539,7 +562,7 @@ def test_recent_assistant_prose_is_context_not_a_behavior_example() -> None:
 def test_each_model_turn_compacts_old_web_excerpts_without_moving_prefix() -> None:
     request = _request(prompt="Research the target role.")
     config = _config(context_window_tokens=32_000, max_tokens=2_048)
-    prompt = build_agent_prompt(request, config)
+    prompt = AgentPromptCompiler(request, config).build()
     prefix_counts = prompt.stable_prefix_message_counts
     old_excerpt = "old evidence " * 12_000
     latest_excerpt = "latest evidence must remain exact"
@@ -615,7 +638,7 @@ def test_each_model_turn_preserves_every_observation_in_the_latest_parallel_batc
 ):
     request = _request(prompt="Compare both current sources.")
     config = _config(context_window_tokens=32_000, max_tokens=2_048)
-    prompt = build_agent_prompt(request, config)
+    prompt = AgentPromptCompiler(request, config).build()
     limits = agent_prompt_limits(request, config)
     assert limits is not None
 
@@ -689,7 +712,7 @@ def test_each_model_turn_preserves_every_observation_in_the_latest_parallel_batc
 def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -> None:
     request = _request(prompt="Tailor the resume to this current job description.")
     config = _config(context_window_tokens=16_000, max_tokens=2_048)
-    prompt = build_agent_prompt(request, config)
+    prompt = AgentPromptCompiler(request, config).build()
     limits = agent_prompt_limits(request, config)
     assert limits is not None
 
@@ -753,7 +776,7 @@ def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -
 def test_each_model_turn_rejects_an_uncompactable_oversized_observation() -> None:
     request = _request(prompt="Inspect the tool result.")
     config = _config(context_window_tokens=16_000, max_tokens=2_048)
-    prompt = build_agent_prompt(request, config)
+    prompt = AgentPromptCompiler(request, config).build()
     prompt.messages.extend(
         [
             {
@@ -803,9 +826,12 @@ def test_agent_context_preserves_named_attachment_metadata_beside_user_text() ->
         ],
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -846,9 +872,12 @@ def test_agent_context_hides_resume_name_in_historical_attachment_filename(
     )
     request.resume["basic"]["name"] = "John Smith"
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -864,11 +893,7 @@ def test_agent_context_budget_separates_compaction_tools_and_safety_margin() -> 
         request,
         config,
     )
-    budget = _context_budget(
-        request,
-        config,
-        tool_schema_tokens=tool_schema_tokens,
-    )
+    budget = _context_budget(config, tool_schema_tokens=tool_schema_tokens)
 
     assert budget is not None
     assert budget.compaction_headroom_tokens == 2_048
@@ -897,11 +922,8 @@ def test_tool_schema_reserve_uses_the_canonical_request_catalog() -> None:
 
 
 def test_agent_context_budget_clamps_auto_reserve_for_a_small_context_window() -> None:
-    request = _request(prompt="检查项目经历")
     budget = _context_budget(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=None),
-        tool_schema_tokens=0,
+        _config(context_window_tokens=16000, max_tokens=None), tool_schema_tokens=0
     )
 
     assert budget is not None
@@ -914,9 +936,8 @@ def test_agent_context_budget_clamps_auto_reserve_for_a_small_context_window() -
 
 
 def test_planner_accepted_prompt_always_has_room_at_dispatch() -> None:
-    request = _request(prompt="检查项目经历")
     config = _config(context_window_tokens=16_000, max_tokens=2_048)
-    budget = _context_budget(request, config, tool_schema_tokens=0)
+    budget = _context_budget(config, tool_schema_tokens=0)
 
     assert budget is not None
     prompt = _ascii_prompt_at_or_below(budget.input_tokens)
@@ -932,7 +953,6 @@ def test_planner_accepted_prompt_always_has_room_at_dispatch() -> None:
 
 
 def test_agent_context_budget_uses_the_provider_independent_auto_reserve() -> None:
-    request = _request(prompt="检查项目经历")
     config = replace(
         _config(context_window_tokens=32_000, max_tokens=None),
         provider="anthropic",
@@ -942,11 +962,7 @@ def test_agent_context_budget_uses_the_provider_independent_auto_reserve() -> No
         thinking_control="native_auto",
     )
 
-    budget = _context_budget(
-        request,
-        config,
-        tool_schema_tokens=0,
-    )
+    budget = _context_budget(config, tool_schema_tokens=0)
 
     assert budget is not None
     assert budget.compaction_headroom_tokens == 16_384
@@ -1028,9 +1044,12 @@ def test_agent_pure_projection_keeps_history_until_context_preparation() -> None
         messages=conversation,
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=6_000, max_tokens=512),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=6000, max_tokens=512)
+        )
+        .build()
+        .messages
     )
     serialized = json.dumps(messages, ensure_ascii=False)
 
@@ -1069,9 +1088,13 @@ def test_agent_exact_projection_preserves_unclassified_user_constraints() -> Non
         for index in range(12)
     )
 
-    messages = build_agent_messages(
-        _request(prompt="Continue.", messages=history),
-        _config(context_window_tokens=5_000, max_tokens=512),
+    messages = (
+        AgentPromptCompiler(
+            _request(prompt="Continue.", messages=history),
+            _config(context_window_tokens=5000, max_tokens=512),
+        )
+        .build()
+        .messages
     )
     assert constraint in json.dumps(messages, ensure_ascii=False)
 
@@ -1106,9 +1129,13 @@ def test_agent_exact_projection_preserves_assistant_proposals() -> None:
             ],
         )
 
-    messages = build_agent_messages(
-        _request(prompt="Use option two.", messages=history),
-        _config(context_window_tokens=5_000, max_tokens=512),
+    messages = (
+        AgentPromptCompiler(
+            _request(prompt="Use option two.", messages=history),
+            _config(context_window_tokens=5000, max_tokens=512),
+        )
+        .build()
+        .messages
     )
     assert proposal in json.dumps(messages, ensure_ascii=False)
 
@@ -1166,9 +1193,12 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
         ],
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=16_000, max_tokens=2_048),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=16000, max_tokens=2048)
+        )
+        .build()
+        .messages
     )
     contexts = [
         json.loads(message["content"])["assistantResponseContext"]
@@ -1213,10 +1243,8 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
         throughMessageId="checkpoint-history-5",
         summary=_checkpoint_context([]),
     )
-    first_projection = build_agent_messages(
-        first_request,
-        config,
-        checkpoint=checkpoint,
+    first_projection = (
+        AgentPromptCompiler(first_request, config).build(checkpoint=checkpoint).messages
     )
     summary_message = next(
         message
@@ -1245,10 +1273,10 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
     # authoritative session loader. Reusing that exact boundary is what keeps
     # the preceding provider payload cacheable instead of rebuilding a moving
     # last-N window on every request.
-    second_projection = build_agent_messages(
-        second_request,
-        config,
-        checkpoint=checkpoint,
+    second_projection = (
+        AgentPromptCompiler(second_request, config)
+        .build(checkpoint=checkpoint)
+        .messages
     )
 
     # The persisted summary and exact tail remain byte-stable. Full
@@ -1302,21 +1330,19 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
         throughMessageId="stable-boundary-5",
         summary=_checkpoint_context([]),
     )
-    build_agent_messages(
-        first_request,
-        compact_config,
-        checkpoint=checkpoint,
-    )
+    AgentPromptCompiler(first_request, compact_config).build(checkpoint=checkpoint)
 
     next_request = _request(
         prompt="继续检查。",
         current_id="checkpoint-larger-model-user",
         messages=history,
     )
-    projection = build_agent_messages(
-        next_request,
-        _config(context_window_tokens=64_000, max_tokens=4_096),
-        checkpoint=checkpoint,
+    projection = (
+        AgentPromptCompiler(
+            next_request, _config(context_window_tokens=64000, max_tokens=4096)
+        )
+        .build(checkpoint=checkpoint)
+        .messages
     )
 
     summary_message = next(
@@ -1349,7 +1375,7 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
         throughMessageId="headroom-history-3",
         summary=_checkpoint_context([]),
     )
-    build_agent_messages(request, config, checkpoint=checkpoint)
+    AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
     initial_boundary = checkpoint.through_message_id
 
     for index in range(1, 6):
@@ -1368,7 +1394,7 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
             current_id=f"headroom-user-{index}",
             messages=history,
         )
-        build_agent_messages(request, config, checkpoint=checkpoint)
+        AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
         assert checkpoint.through_message_id == initial_boundary
 
 
@@ -1386,9 +1412,12 @@ def test_agent_pure_projection_never_drops_recent_exact_messages() -> None:
         messages=recent_messages,
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(context_window_tokens=6_000, max_tokens=512),
+    messages = (
+        AgentPromptCompiler(
+            request, _config(context_window_tokens=6000, max_tokens=512)
+        )
+        .build()
+        .messages
     )
 
     for recent in recent_messages:

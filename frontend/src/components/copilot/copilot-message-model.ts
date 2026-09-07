@@ -5,7 +5,6 @@ import type {
   AgentChatAttachment,
   AgentChatMessage,
   AgentConversationMessage,
-  AgentDraftSnapshot,
   AgentResumeEditSuggestion,
   AgentSessionResponse,
   AgentSource,
@@ -20,17 +19,6 @@ export interface AgentPanelMessage {
   files?: AgentChatAttachment[];
   response?: AgentChatMessage;
   execution?: AgentTurnExecution;
-}
-
-export const getAgentDraftSnapshot = getAgentDraftSnapshotFromMessages;
-
-export function getPendingAgentDraftSnapshot(
-  messages: AgentStoredMessage[],
-): AgentDraftSnapshot | null {
-  const draft = getAgentDraftSnapshot(messages);
-  return draft?.reviewItems.some((item) => item.status === "pending")
-    ? draft
-    : null;
 }
 
 export function toConversationMessage(
@@ -151,7 +139,7 @@ export async function hydrateAgentSession(
   );
 
   return {
-    draftSnapshot: getAgentDraftSnapshot(session.messages),
+    draftSnapshot: getAgentDraftSnapshotFromMessages(session.messages),
     panelMessages: toPanelMessages(session, transientStatusTexts),
     session,
   };

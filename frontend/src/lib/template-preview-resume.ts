@@ -19,7 +19,7 @@ export const TEMPLATE_PREVIEW_SCENARIOS = [
   "research",
 ] as const;
 
-export type TemplatePreviewScenario =
+type TemplatePreviewScenario =
   (typeof TEMPLATE_PREVIEW_SCENARIOS)[number];
 
 export type TemplatePreviewResumes = Record<TemplatePreviewScenario, ResumeData>;

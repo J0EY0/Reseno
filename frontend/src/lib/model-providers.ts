@@ -1,6 +1,6 @@
 import type { ModelConfig } from '@/types/resume'
 
-export type ModelProviderKind = ModelConfig['providerKind']
+type ModelProviderKind = ModelConfig['providerKind']
 export type ModelApiFamily = ModelConfig['apiFamily']
 
 export interface ModelProviderMeta {

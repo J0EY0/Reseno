@@ -135,6 +135,10 @@ class AgentSessionPersistenceError(RuntimeError):
     """Raised when a durable turn transition no longer owns its database row."""
 
 
+class AgentSessionReplacementError(ValueError):
+    """Raised when replacement history contains an invalid assistant response."""
+
+
 class AgentSessionDataError(RuntimeError):
     """Raised when a stored message field cannot be decoded safely."""
 
@@ -212,38 +216,8 @@ def _stored_agent_model_snapshot(row: Row) -> AgentModelSnapshot | None:
 def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse:
     """Load the Agent conversation attached to one resume."""
 
-    rows = conn.execute(
-        """
-        SELECT id, role, text, files_json, response_json, created_at
-        FROM agent_messages
-        WHERE session_id = ?
-        ORDER BY sequence ASC
-        """,
-        (resume_id,),
-    ).fetchall()
-
-    messages = [
-        AgentStoredMessage(
-            id=row["id"],
-            role=row["role"],
-            text=row["text"],
-            files=_decode_files(
-                row["files_json"],
-                session_id=resume_id,
-                message_id=str(row["id"]),
-            ),
-            response=_decode_assistant_response(
-                row["response_json"],
-                session_id=resume_id,
-                message_id=str(row["id"]),
-            ),
-            createdAt=row["created_at"],
-        )
-        for row in rows
-    ]
-    # Public session reads hide checkpoints, but still validate their semantic
-    # boundary so corrupt internal state cannot survive until a later run.
-    _latest_conversation_checkpoint(conn, resume_id)
+    rows = _load_message_rows(conn, resume_id)
+    messages, _checkpoint = _decode_message_rows(rows, resume_id)
     # Timestamps are persisted at millisecond precision. SQLite row order keeps
     # rapid retries deterministic when two executions share the same timestamp.
     execution_rows = conn.execute(
@@ -279,7 +253,7 @@ def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse
 
     return AgentSessionResponse(
         resumeId=resume_id,
-        revision=_session_revision(conn, resume_id),
+        revision=_session_revision(conn, resume_id, rows=rows),
         messages=messages,
         executions=executions,
     )
@@ -339,7 +313,8 @@ def accept_agent_turn(
     try:
         with _transaction(conn):
             require_active_resume(conn, resume_id)
-            current_revision = _session_revision(conn, resume_id)
+            rows = _load_message_rows(conn, resume_id)
+            current_revision = _session_revision(conn, resume_id, rows=rows)
             existing = _message_by_id(conn, user_message.id)
 
             if existing is not None:
@@ -365,6 +340,9 @@ def accept_agent_turn(
                 )
                 if not inserted:
                     raise AgentSessionTurnReplayError(current_revision)
+                inserted_row = _message_by_id(conn, user_message.id)
+                assert inserted_row is not None
+                rows.append(inserted_row)
                 receipt = mark_agent_attachments_sent(
                     resume_id,
                     user_message.files,
@@ -378,19 +356,27 @@ def accept_agent_turn(
                 started_at=now,
                 model_snapshot=model_snapshot,
             )
-            authoritative_revision = _session_revision(conn, resume_id)
+            authoritative_revision = _session_revision(conn, resume_id, rows=rows)
+            messages, conversation_checkpoint = _decode_message_rows(rows, resume_id)
             # `message` is the singular current turn. Provider history must be
             # authoritative, prior-only state even though the turn is already
             # durable before provider work starts.
             authoritative_messages = [
-                message
-                for message in _load_conversation_items(conn, resume_id)
+                AgentConversationItem(
+                    id=message.id,
+                    role=message.role,
+                    text=message.text,
+                    files=message.files,
+                    response=(
+                        message.response.model_dump(mode="json", by_alias=True)
+                        if message.response is not None
+                        else None
+                    ),
+                    createdAt=message.created_at,
+                )
+                for message in messages
                 if message.id != user_message.id
             ]
-            conversation_checkpoint = _latest_conversation_checkpoint(
-                conn,
-                resume_id,
-            )
     except BaseException:
         _compensate_attachment_state(receipt)
         raise
@@ -982,7 +968,12 @@ def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _session_revision(conn: Connection, resume_id: str) -> str:
+def _session_revision(
+    conn: Connection,
+    resume_id: str,
+    *,
+    rows: list[Row] | None = None,
+) -> str:
     """Hash authoritative message history into a stable optimistic revision.
 
     Execution state is deliberately excluded: a background terminal update
@@ -997,15 +988,7 @@ def _session_revision(conn: Connection, resume_id: str) -> str:
         """,
         (resume_id,),
     ).fetchone()
-    messages = conn.execute(
-        """
-        SELECT id, role, text, files_json, response_json, sequence, created_at
-        FROM agent_messages
-        WHERE session_id = ?
-        ORDER BY sequence ASC
-        """,
-        (resume_id,),
-    ).fetchall()
+    messages = _load_message_rows(conn, resume_id) if rows is None else rows
     payload = {
         "session": (
             {"locale": session["locale"], "title": session["title"]}
@@ -1028,59 +1011,85 @@ def _session_revision(conn: Connection, resume_id: str) -> str:
     return hashlib.sha256(_json_dumps(payload).encode("utf-8")).hexdigest()
 
 
-def _load_conversation_items(
-    conn: Connection,
-    resume_id: str,
-) -> list[AgentConversationItem]:
-    """Load normalized history for the provider-facing request."""
-
-    rows = conn.execute(
+def _load_message_rows(conn: Connection, resume_id: str) -> list[Row]:
+    return conn.execute(
         """
-        SELECT id, role, text, files_json, response_json, created_at
+        SELECT id, role, text, files_json, response_json, sequence, created_at
         FROM agent_messages
         WHERE session_id = ?
         ORDER BY sequence ASC
         """,
         (resume_id,),
     ).fetchall()
-    return [
-        AgentConversationItem(
-            id=row["id"],
-            role=row["role"],
-            text=row["text"],
-            files=_decode_files(
-                row["files_json"],
-                session_id=resume_id,
-                message_id=str(row["id"]),
-            ),
-            response=(
-                response.model_dump(mode="json", by_alias=True)
-                if (
-                    response := _decode_assistant_response(
-                        row["response_json"],
-                        session_id=resume_id,
-                        message_id=str(row["id"]),
-                    )
-                )
-                else None
-            ),
-            createdAt=row["created_at"],
+
+
+def _decode_message_rows(
+    rows: list[Row],
+    session_id: str,
+) -> tuple[list[AgentStoredMessage], AgentConversationCheckpoint | None]:
+    messages: list[AgentStoredMessage] = []
+    checkpoints: list[tuple[Row, AgentConversationCheckpoint]] = []
+    for row in rows:
+        message_id = str(row["id"])
+        files = _decode_files(
+            row["files_json"],
+            session_id=session_id,
+            message_id=message_id,
         )
-        for row in rows
-    ]
+        persisted = _decode_persisted_assistant_response(
+            row["response_json"],
+            session_id=session_id,
+            message_id=message_id,
+        )
+        messages.append(
+            AgentStoredMessage(
+                id=message_id,
+                role=row["role"],
+                text=row["text"],
+                files=files,
+                response=persisted.response,
+                createdAt=row["created_at"],
+            ),
+        )
+        if row["role"] == "assistant" and persisted.checkpoint is not None:
+            checkpoints.append((row, persisted.checkpoint))
+
+    sequences = {str(row["id"]): int(row["sequence"]) for row in rows}
+    latest_checkpoint: AgentConversationCheckpoint | None = None
+    latest_boundary_sequence: int | None = None
+    for row, checkpoint in checkpoints:
+        boundary_sequence = sequences.get(checkpoint.through_message_id)
+        if (
+            boundary_sequence is None
+            or boundary_sequence >= int(row["sequence"])
+            or (
+                latest_boundary_sequence is not None
+                and boundary_sequence < latest_boundary_sequence
+            )
+        ):
+            _raise_invalid_stored_message_field(
+                session_id=session_id,
+                message_id=str(row["id"]),
+                field="conversationCheckpoint",
+            )
+        latest_checkpoint = checkpoint
+        latest_boundary_sequence = boundary_sequence
+    return messages, latest_checkpoint
 
 
-def _message_by_id(conn: Connection, message_id: str) -> Any | None:
+def _message_by_id(conn: Connection, message_id: str) -> Row | None:
     """Load a globally unique message id for idempotency validation."""
 
-    return conn.execute(
+    row: Row | None = conn.execute(
         """
-        SELECT session_id, role, text, files_json, sequence
+        SELECT id, session_id, role, text, files_json, response_json,
+            sequence, created_at
         FROM agent_messages
         WHERE id = ?
         """,
         (message_id,),
     ).fetchone()
+    return row
 
 
 def _is_matching_retry(
@@ -1260,63 +1269,6 @@ def _decode_persisted_assistant_response(
         response,
         checkpoint,
     )
-
-
-def _latest_conversation_checkpoint(
-    conn: Connection,
-    session_id: str,
-) -> AgentConversationCheckpoint | None:
-    """Return the newest durable checkpoint without exposing it publicly."""
-
-    rows = conn.execute(
-        """
-        SELECT id, response_json, sequence
-        FROM agent_messages
-        WHERE session_id = ? AND role = 'assistant' AND response_json IS NOT NULL
-        ORDER BY sequence ASC
-        """,
-        (session_id,),
-    ).fetchall()
-    latest_checkpoint: AgentConversationCheckpoint | None = None
-    latest_boundary_sequence: int | None = None
-    # A later marker may reuse the same boundary when only its checkpoint summary
-    # changes, but it must never make previously compacted history exact again.
-    # Validate every marker chronologically before returning the newest one.
-    for row in rows:
-        persisted = _decode_persisted_assistant_response(
-            row["response_json"],
-            session_id=session_id,
-            message_id=str(row["id"]),
-        )
-        checkpoint = persisted.checkpoint
-        if checkpoint is not None:
-            boundary = conn.execute(
-                """
-                SELECT sequence
-                FROM agent_messages
-                WHERE session_id = ? AND id = ?
-                """,
-                (session_id, checkpoint.through_message_id),
-            ).fetchone()
-            boundary_sequence = (
-                int(boundary["sequence"]) if boundary is not None else None
-            )
-            if (
-                boundary_sequence is None
-                or boundary_sequence >= int(row["sequence"])
-                or (
-                    latest_boundary_sequence is not None
-                    and boundary_sequence < latest_boundary_sequence
-                )
-            ):
-                _raise_invalid_stored_message_field(
-                    session_id=session_id,
-                    message_id=str(row["id"]),
-                    field="conversationCheckpoint",
-                )
-            latest_checkpoint = checkpoint
-            latest_boundary_sequence = boundary_sequence
-    return latest_checkpoint
 
 
 def _encode_persisted_assistant_response(
@@ -1500,7 +1452,7 @@ def _normalize_replacement_messages(
         text = message.text.strip()
         files = [file for file in message.files if isinstance(file, dict)]
 
-        if not text and not files and not message.response:
+        if not text and not files and message.response is None:
             continue
 
         raw_id = (message.id or "").strip()
@@ -1538,25 +1490,22 @@ def _replacement_assistant_response(
 ) -> AgentChatMessage:
     """Build a valid assistant payload from replacement history."""
 
-    payload = response if isinstance(response, dict) else {}
-    fallback_text = text or str(payload.get("text") or "")
-    response_id = payload.get("id")
-
-    try:
-        return AgentChatMessage.model_validate(
-            {
-                **payload,
-                "id": response_id if isinstance(response_id, str) else message_id,
-                "role": "assistant",
-                "text": fallback_text,
-            },
-        )
-    except ValueError:
+    if response is None:
         return AgentChatMessage(
             id=message_id,
             role="assistant",
-            text=fallback_text,
+            text=text,
         )
+
+    try:
+        assistant = AgentChatMessage.model_validate(response)
+    except ValueError:
+        raise AgentSessionReplacementError(
+            "Replacement Agent history contains an invalid assistant response.",
+        ) from None
+    return assistant.model_copy(
+        update={"id": message_id, "text": text or assistant.text},
+    )
 
 
 def _next_message_sequence(conn: Connection, session_id: str) -> int:

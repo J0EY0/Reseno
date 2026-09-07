@@ -226,7 +226,9 @@ def authenticate_owner(username: str, password: str) -> OwnerAccount | None:
         return None
 
     password_matches = _verify_password(password, str(row["password_hash"]))
-    username_matches = compare_digest(str(row["username"]), username)
+    username_matches = compare_digest(
+        str(row["username"]).encode("utf-8"), username.encode("utf-8")
+    )
     if not username_matches or not password_matches:
         return None
 
@@ -241,7 +243,9 @@ def owner_identity_matches(username: str, auth_revision: str) -> bool:
 
     return (
         row is not None
-        and compare_digest(str(row["username"]), username)
+        and compare_digest(
+            str(row["username"]).encode("utf-8"), username.encode("utf-8")
+        )
         and compare_digest(str(row["auth_revision"]), auth_revision)
     )
 
@@ -265,7 +269,9 @@ def update_owner_password(
                 current_password,
                 str(row["password_hash"]),
             )
-            username_matches = compare_digest(str(row["username"]), username)
+            username_matches = compare_digest(
+                str(row["username"]).encode("utf-8"), username.encode("utf-8")
+            )
             if not username_matches or not password_matches:
                 conn.rollback()
                 return None

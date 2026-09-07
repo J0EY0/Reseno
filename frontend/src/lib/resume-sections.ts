@@ -5,7 +5,6 @@ import type {
   ExperienceItem,
   ProjectItem,
   PublicationItem,
-  ResumeData,
   ResumeSection,
   SectionItemByKind,
   SectionKind,
@@ -184,68 +183,6 @@ export function isCanonicalResumeSection(value: unknown): value is ResumeSection
     return false
   }
   return value.items.every((item) => isSectionItemForKind(kind, item))
-}
-
-export function isCanonicalResumeData(value: unknown): value is ResumeData {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ['schemaVersion', 'basic', 'sections']) ||
-    value.schemaVersion !== 2 ||
-    !isRecord(value.basic) ||
-    !hasExactKeys(value.basic, [
-      'name',
-      'headline',
-      'phone',
-      'email',
-      'location',
-      'avatar',
-      'summary',
-      'customFields',
-    ]) ||
-    !hasStringFields(value.basic, [
-      'name',
-      'headline',
-      'phone',
-      'email',
-      'location',
-      'avatar',
-      'summary',
-    ]) ||
-    !Array.isArray(value.basic.customFields) ||
-    !value.basic.customFields.every(
-      (field) =>
-        isRecord(field) &&
-        hasExactKeys(field, ['id', 'type', 'label', 'value']) &&
-        typeof field.id === 'string' &&
-        field.id.length > 0 &&
-        ['email', 'phone', 'url', 'text'].includes(String(field.type)) &&
-        typeof field.label === 'string' &&
-        typeof field.value === 'string',
-    ) ||
-    !Array.isArray(value.sections) ||
-    !value.sections.every(isCanonicalResumeSection)
-  ) {
-    return false
-  }
-
-  // Match the backend's document-wide identity invariant so an imported JSON
-  // file cannot enter the editor only to fail later during autosave.
-  const sectionIds = new Set<string>()
-  const itemIds = new Set<string>()
-  for (const section of value.sections) {
-    if (sectionIds.has(section.id)) {
-      return false
-    }
-    sectionIds.add(section.id)
-    for (const item of section.items) {
-      if (itemIds.has(item.id)) {
-        return false
-      }
-      itemIds.add(item.id)
-    }
-  }
-
-  return true
 }
 
 function createEducationItem(): EducationItem {

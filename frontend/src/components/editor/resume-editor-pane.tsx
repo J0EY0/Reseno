@@ -5,8 +5,6 @@ import {
   Suspense,
   useState,
   type ChangeEvent,
-  type Dispatch,
-  type SetStateAction,
 } from "react";
 
 import { AddSectionPopover } from "@/components/editor/add-section-popover";
@@ -26,10 +24,9 @@ import type {
   CustomField,
   ResumeBasicInfo,
   ResumeData,
+  ResumeSection,
   SectionKind,
 } from "@/types/resume";
-
-type CollapsedState = Record<string, boolean>;
 
 const AvatarCropDialog = lazy(() =>
   import("@/components/editor/avatar-crop-dialog").then((module) => ({
@@ -44,31 +41,25 @@ type ResumeEditorPaneProps = {
   documentT: AppMessages | null;
   disabled: boolean;
   resume: ResumeData;
-  setResume: Dispatch<SetStateAction<ResumeData>>;
-  collapsedState: CollapsedState;
-  setCollapsedState: Dispatch<SetStateAction<CollapsedState>>;
+  updateContent: (update: (current: ResumeData) => ResumeData) => void;
+  openSectionId: string | null;
+  toggleSection: (id: string) => void;
+  addSection: (section: ResumeSection) => void;
+  removeSection: (id: string) => void;
   hasLoadError: boolean;
   showSkeleton: boolean;
 };
-
-function collapseAllExcept(current: CollapsedState, openId: string) {
-  return Object.keys({ ...current, [openId]: false }).reduce(
-    (state, key) => {
-      state[key] = key !== openId;
-      return state;
-    },
-    {} as CollapsedState,
-  );
-}
 
 export const ResumeEditorPane = memo(function ResumeEditorPane({
   t,
   documentT,
   disabled,
   resume,
-  setResume,
-  collapsedState,
-  setCollapsedState,
+  updateContent,
+  openSectionId,
+  toggleSection,
+  addSection,
+  removeSection,
   hasLoadError,
   showSkeleton,
 }: ResumeEditorPaneProps) {
@@ -78,7 +69,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     field: K,
     value: ResumeBasicInfo[K],
   ) {
-    setResume((current) => ({
+    updateContent((current) => ({
       ...current,
       basic: { ...current.basic, [field]: value },
     }));
@@ -89,7 +80,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     field: K,
     value: CustomField[K],
   ) {
-    setResume((current) => ({
+    updateContent((current) => ({
       ...current,
       basic: {
         ...current.basic,
@@ -102,7 +93,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
 
   function addCustomField() {
     startTransition(() => {
-      setResume((current) => ({
+      updateContent((current) => ({
         ...current,
         basic: {
           ...current.basic,
@@ -117,7 +108,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
 
   function removeCustomField(id: string) {
     startTransition(() => {
-      setResume((current) => ({
+      updateContent((current) => ({
         ...current,
         basic: {
           ...current.basic,
@@ -144,7 +135,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
   }
 
   function mutateResumeSection(mutation: ResumeSectionMutation) {
-    setResume((current) => {
+    updateContent((current) => {
       const result = applySectionMutation(current.sections, mutation);
 
       // A rejected mutation is atomic: stale UI state must never partially
@@ -157,21 +148,9 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     });
   }
 
-  function removeSection(sectionId: string) {
-    setResume((current) => ({
-      ...current,
-      sections: current.sections.filter((section) => section.id !== sectionId),
-    }));
-    setCollapsedState((current) => {
-      const nextState = { ...current };
-      delete nextState[sectionId];
-      return nextState;
-    });
-  }
-
   function moveSection(sectionId: string, direction: "up" | "down") {
     startTransition(() => {
-      setResume((current) => {
+      updateContent((current) => {
         const currentIndex = current.sections.findIndex(
           (section) => section.id === sectionId,
         );
@@ -207,22 +186,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     };
 
     startTransition(() => {
-      setResume((current) => ({
-        ...current,
-        sections: [...current.sections, nextSection],
-      }));
-    });
-
-    setCollapsedState((current) => collapseAllExcept(current, nextSection.id));
-  }
-
-  function toggleCollapse(id: string) {
-    setCollapsedState((current) => {
-      if (current[id] === false) {
-        return { ...current, [id]: true };
-      }
-
-      return collapseAllExcept(current, id);
+      addSection(nextSection);
     });
   }
 
@@ -261,8 +225,8 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
             <BasicInfoCard
               t={t}
               basic={resume.basic}
-              collapsed={Boolean(collapsedState.basic)}
-              onToggle={() => toggleCollapse("basic")}
+              collapsed={openSectionId !== "basic"}
+              onToggle={() => toggleSection("basic")}
               onUpdateBasic={updateBasic}
               onUpdateCustomField={updateCustomField}
               onAddCustomField={addCustomField}
@@ -281,8 +245,8 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
                 canMoveDown={
                   resume.sections[resume.sections.length - 1]?.id !== section.id
                 }
-                collapsed={Boolean(collapsedState[section.id])}
-                onToggle={() => toggleCollapse(section.id)}
+                collapsed={openSectionId !== section.id}
+                onToggle={() => toggleSection(section.id)}
                 onMutation={mutateResumeSection}
                 onRemoveSection={removeSection}
                 onMoveSectionUp={(sectionId) => moveSection(sectionId, "up")}

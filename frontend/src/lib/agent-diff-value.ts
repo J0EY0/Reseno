@@ -1,4 +1,3 @@
-import type { AgentResumeEditSuggestion } from "@/types/api";
 import type { ResumeDraftDiff } from "@/types/resume";
 import { formatRichTextAsPlainText } from "@/lib/rich-text";
 
@@ -320,23 +319,4 @@ function formatValue(value: unknown, seen: WeakSet<object>): string {
 /** Format every canonical diff field without coupling the UI to item schemas. */
 export function formatAgentDiffValue(value: unknown) {
   return formatValue(value, new WeakSet());
-}
-
-/** Return every real field change owned by this edit, in operation order. */
-export function getAgentEditDiffFields(
-  edit: AgentResumeEditSuggestion,
-  diffs: ResumeDraftDiff[] = edit.diffs ?? [],
-) {
-  return diffs
-    .filter(
-      (diff) =>
-        diff.operationId === edit.id &&
-        JSON.stringify(diff.before) !== JSON.stringify(diff.after),
-    )
-    .map((diff) => ({
-      id: diff.id,
-      label: diff.label,
-      before: formatAgentDiffValue(diff.before),
-      after: formatAgentDiffValue(diff.after),
-    }));
 }

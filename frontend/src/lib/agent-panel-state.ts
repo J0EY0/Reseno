@@ -62,7 +62,7 @@ export function canSubmitAgentPrompt({
   );
 }
 
-export interface AgentQualityWarning {
+interface AgentQualityWarning {
   code: string;
   target: string;
 }

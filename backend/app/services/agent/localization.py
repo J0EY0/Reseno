@@ -4,7 +4,6 @@ from typing import Any
 
 from app.agent_locales import (
     DEFAULT_AGENT_LOCALE,
-    SUPPORTED_AGENT_LOCALES,
     normalize_agent_locale,
 )
 
@@ -161,9 +160,3 @@ def agent_text(locale: str, key: str, **values: Any) -> str:
     bundle = TEXT.get(safe_locale) or TEXT[DEFAULT_AGENT_LOCALE]
     template = bundle.get(key) or TEXT[DEFAULT_AGENT_LOCALE].get(key) or key
     return template.format(**values) if values else template
-
-
-def supported_agent_text_locales() -> tuple[str, ...]:
-    """Return locales expected to exist in the agent localization table."""
-
-    return SUPPORTED_AGENT_LOCALES

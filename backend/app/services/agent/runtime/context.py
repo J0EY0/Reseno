@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import anyio
 
-from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentConversationCheckpoint,
+    AgentToolInvocation,
+)
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -61,6 +65,7 @@ class AgentRuntimeContext:
     on_llm_attempt: Callable[[], None] | None = None
     on_llm_response: Callable[[LlmUsage | None, LlmStopReason], None] | None = None
     on_tool_loop_event: Callable[["AgentToolLoopEvent"], None] | None = None
+    on_tool_result: Callable[[AgentToolInvocation], None] | None = None
 
     def with_llm_request_context(
         self,
@@ -87,6 +92,12 @@ class AgentRuntimeContext:
 
         if self.on_tool_loop_event is not None:
             self.on_tool_loop_event(event)
+
+    def record_tool_result(self, tool: AgentToolInvocation) -> None:
+        """Observe one tool outcome, including writes deferred before execution."""
+
+        if self.on_tool_result is not None:
+            self.on_tool_result(tool)
 
     async def checkpoint(self) -> None:
         """Yield control and stop after an explicit cancellation request."""

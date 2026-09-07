@@ -37,6 +37,7 @@ import {
   getTemplateCatalog,
 } from "@/lib/templates";
 import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
+import type { TemplateArtifactItem } from "@/types/api";
 import {
   createTemplateApi,
   moveTemplateToTrashApi,
@@ -72,8 +73,18 @@ export function useTemplateGalleryWorkspace({
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
+  const importRetryRef = useRef({ active: false, toasts: new Set<string | number>() });
   const setDefaultInFlightRef = useRef(false);
   const { beginNavigation } = useWorkspaceNavigationTransaction();
+  useEffect(() => {
+    const retry = importRetryRef.current;
+    retry.active = true;
+    return () => {
+      retry.active = false;
+      retry.toasts.forEach((id) => toast.dismiss(id));
+      retry.toasts.clear();
+    };
+  }, []);
   const [retryKey, setRetryKey] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(preparedRouteData));
   const [hasLoadError, setHasLoadError] = useState(false);
@@ -86,13 +97,19 @@ export function useTemplateGalleryWorkspace({
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
-  const [defaultTemplateIds, setDefaultTemplateIds] =
-    useState<DefaultTemplateIds>(
-      () => preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
-    );
-  const [customTemplates, setCustomTemplates] = useState<
-    ResumeTemplateDefinition[]
-  >(() => preparedRouteData?.customTemplates ?? []);
+  const [catalog, setCatalog] = useState(() => ({
+    defaultTemplateIds: preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
+    customTemplates: preparedRouteData?.customTemplates ?? [],
+  }));
+  const catalogRef = useRef(catalog);
+  const deletingTemplateIdsRef = useRef(new Set<string>());
+  const updateCatalog = useCallback((update: (current: typeof catalog) => typeof catalog) => {
+    const next = update(catalogRef.current);
+    catalogRef.current = next;
+    setCatalog(next);
+    return next;
+  }, []);
+  const { customTemplates, defaultTemplateIds } = catalog;
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
     [customTemplates, messages],
@@ -128,8 +145,10 @@ export function useTemplateGalleryWorkspace({
           return;
         }
 
-        setDefaultTemplateIds(source.data.defaultTemplateIds);
-        setCustomTemplates(source.data.customTemplates);
+        updateCatalog(() => ({
+          defaultTemplateIds: source.data.defaultTemplateIds,
+          customTemplates: source.data.customTemplates,
+        }));
         setHasLoaded(true);
       } catch (error) {
         if (
@@ -157,7 +176,7 @@ export function useTemplateGalleryWorkspace({
         }
       }
     },
-    [persistence],
+    [persistence, updateCatalog],
   );
 
   useEffect(() => {
@@ -194,7 +213,7 @@ export function useTemplateGalleryWorkspace({
     (
       intent: WorkspaceNavigationIntent,
       templateId: string,
-      data: WorkspaceTemplateRouteData,
+      readData: () => WorkspaceTemplateRouteData,
       targetLocale: DocumentLocale,
       onCommit?: () => void,
     ) => {
@@ -212,7 +231,7 @@ export function useTemplateGalleryWorkspace({
         navigate(getTemplatePath(templateId), {
           state: createTemplateDetailRouteHandoff(
             templateId,
-            data,
+            readData(),
             targetLocale,
           ),
         });
@@ -263,7 +282,7 @@ export function useTemplateGalleryWorkspace({
       commitTemplateDetailNavigation(
         intent,
         templateId,
-        data,
+        () => data,
         templateLocale,
       );
     },
@@ -297,13 +316,11 @@ export function useTemplateGalleryWorkspace({
 
     try {
       const result = await createTemplateApi(draftTemplate);
-      const nextCustomTemplates = [...customTemplates, result.template];
       const publishCreatedTemplate = () => {
-        setCustomTemplates((current) =>
-          current.some((item) => item.id === result.template.id)
-            ? current
-            : [...current, result.template],
-        );
+        updateCatalog((current) => ({
+          ...current,
+          customTemplates: [...current.customTemplates, result.template],
+        }));
       };
       if (!intent.isCurrent()) {
         publishCreatedTemplate();
@@ -328,11 +345,7 @@ export function useTemplateGalleryWorkspace({
       commitTemplateDetailNavigation(
         intent,
         result.template.id,
-        {
-          customTemplates: nextCustomTemplates,
-          defaultTemplateIds,
-          theme,
-        },
+        () => ({ ...catalogRef.current, theme }),
         templateLocale,
         publishCreatedTemplate,
       );
@@ -353,17 +366,17 @@ export function useTemplateGalleryWorkspace({
     beginNavigation,
     commitTemplateDetailNavigation,
     customTemplates,
-    defaultTemplateIds,
     isLoading,
     messages,
     templateCatalog,
     templateLocale,
     theme,
+    updateCatalog,
   ]);
 
-  const importTemplates = useCallback(
-    async (file: File) => {
-      if (importInFlightRef.current) {
+  const importTemplateItems = useCallback(
+    async function persistImports(load: () => Promise<TemplateArtifactItem[]>) {
+      if (importInFlightRef.current || !importRetryRef.current.active) {
         return;
       }
 
@@ -376,24 +389,49 @@ export function useTemplateGalleryWorkspace({
       });
 
       try {
-        const payload = await importTemplatePayload(file);
-        if (payload.templates.length === 0) {
+        const templates = await load();
+        if (templates.length === 0) {
           throw new Error("No valid templates found in imported file.");
         }
 
         const savedImports: ResumeTemplateDefinition[] = [];
-        for (const item of payload.templates) {
-          const result = await createTemplateApi(item);
-          savedImports.push(result.template);
+        const failedImports: TemplateArtifactItem[] = [];
+        for (const item of templates) {
+          try {
+            const result = await createTemplateApi(item, { notifyOnError: false });
+            savedImports.push(result.template);
+            updateCatalog((current) => ({
+              ...current,
+              customTemplates: [...current.customTemplates, result.template],
+            }));
+          } catch (error) {
+            console.error("Failed to save imported template.", error);
+            failedImports.push(item);
+          }
+        }
+        if (failedImports.length > 0) {
+          if (intent.isCurrent()) intent.finish();
+          if (!importRetryRef.current.active) return;
+          importRetryRef.current.toasts.add(toast.error(
+            messages.templateImportPartial
+              .replace("{count}", String(savedImports.length))
+              .replace("{failed}", String(failedImports.length)),
+            {
+              closeButton: true,
+              duration: Infinity,
+              onDismiss: ({ id }) => importRetryRef.current.toasts.delete(id),
+              action: {
+                label: messages.retry,
+                onClick: (event) => {
+                  if (importInFlightRef.current) return event.preventDefault();
+                  void persistImports(async () => failedImports);
+                },
+              },
+            },
+          ));
+          return;
         }
 
-        const firstImportedTemplate = savedImports[0];
-        if (!firstImportedTemplate) {
-          throw new Error("Failed to save imported template.");
-        }
-
-        const nextCustomTemplates = [...customTemplates, ...savedImports];
-        setCustomTemplates(nextCustomTemplates);
         if (!intent.isCurrent()) {
           return;
         }
@@ -411,14 +449,17 @@ export function useTemplateGalleryWorkspace({
           });
           return;
         }
+        const firstImportedTemplate = savedImports.find((saved) =>
+          catalogRef.current.customTemplates.some((item) => item.id === saved.id),
+        );
+        if (!firstImportedTemplate) {
+          intent.finish();
+          return;
+        }
         commitTemplateDetailNavigation(
           intent,
           firstImportedTemplate.id,
-          {
-            customTemplates: nextCustomTemplates,
-            defaultTemplateIds,
-            theme,
-          },
+          () => ({ ...catalogRef.current, theme }),
           templateLocale,
         );
         toast.success(messages.templateImported, { closeButton: true });
@@ -438,50 +479,57 @@ export function useTemplateGalleryWorkspace({
     [
       beginNavigation,
       commitTemplateDetailNavigation,
-      customTemplates,
-      defaultTemplateIds,
       messages,
       templateLocale,
       theme,
+      updateCatalog,
     ],
+  );
+  const importTemplates = useCallback(
+    (file: File) => importTemplateItems(async () => (await importTemplatePayload(file)).templates),
+    [importTemplateItems],
   );
 
   const deleteTemplates = useCallback(
     async (templateIds: string[]) => {
-      const customTemplateIds = templateIds.filter((templateId) =>
-        customTemplates.some((item) => item.id === templateId),
+      const customTemplateIds = [...new Set(templateIds)].filter((templateId) =>
+        !deletingTemplateIdsRef.current.has(templateId) &&
+        catalogRef.current.customTemplates.some((item) => item.id === templateId),
       );
       if (customTemplateIds.length === 0) {
-        return;
+        return [];
       }
-
-      try {
-        for (const templateId of customTemplateIds) {
-          await moveTemplateToTrashApi(templateId);
+      customTemplateIds.forEach((id) => deletingTemplateIdsRef.current.add(id));
+      const deletedIds: string[] = [];
+      for (const templateId of customTemplateIds) {
+        try {
+          await moveTemplateToTrashApi(templateId, { notifyOnError: false });
+          deletedIds.push(templateId);
+          updateCatalog((current) => ({
+            customTemplates: current.customTemplates.filter((item) => item.id !== templateId),
+            defaultTemplateIds: {
+              zh: current.defaultTemplateIds.zh === templateId ? baseTemplateId : current.defaultTemplateIds.zh,
+              en: current.defaultTemplateIds.en === templateId ? baseTemplateId : current.defaultTemplateIds.en,
+            },
+          }));
+        } catch (error) {
+          console.error("Failed to move template to trash.", error);
+        } finally {
+          deletingTemplateIdsRef.current.delete(templateId);
         }
-      } catch (error) {
-        console.error("Failed to move template to trash.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
-        return;
       }
-
-      setCustomTemplates((current) =>
-        current.filter((item) => !customTemplateIds.includes(item.id)),
-      );
-      setDefaultTemplateIds((current) => ({
-        zh: customTemplateIds.includes(current.zh) ? baseTemplateId : current.zh,
-        en: customTemplateIds.includes(current.en) ? baseTemplateId : current.en,
-      }));
-      toast.success(
-        customTemplateIds.length > 1
-          ? messages.templatesDeleted
-          : messages.templateDeleted,
-        { closeButton: true },
-      );
+      if (deletedIds.length < customTemplateIds.length) {
+        toast.error(messages.templateDeletePartial
+          .replace("{count}", String(deletedIds.length))
+          .replace("{failed}", String(customTemplateIds.length - deletedIds.length)),
+        { closeButton: true });
+      } else {
+        toast.success(customTemplateIds.length > 1 ? messages.templatesDeleted : messages.templateDeleted,
+          { closeButton: true });
+      }
+      return deletedIds;
     },
-    [customTemplates, messages],
+    [messages, updateCatalog],
   );
 
   const setDefaultTemplate = useCallback(
@@ -502,7 +550,16 @@ export function useTemplateGalleryWorkspace({
           templateLocale,
           templateId,
         );
-        setDefaultTemplateIds(result.defaultTemplateIds);
+        updateCatalog((current) => ({
+          ...current,
+          defaultTemplateIds: {
+            ...current.defaultTemplateIds,
+            [templateLocale]: getTemplateCatalog(messages, current.customTemplates)
+              .some((item) => item.id === result.defaultTemplateIds[templateLocale])
+              ? result.defaultTemplateIds[templateLocale]
+              : baseTemplateId,
+          },
+        }));
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
         console.error("Failed to update default template.", error);
@@ -514,7 +571,7 @@ export function useTemplateGalleryWorkspace({
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateIds, messages, templateCatalog, templateLocale],
+    [defaultTemplateIds, messages, templateCatalog, templateLocale, updateCatalog],
   );
 
   return {

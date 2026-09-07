@@ -11,14 +11,6 @@ const DEFAULT_FILE_LIMITS = Object.freeze({
   ".tsx": 500,
 });
 const DEFAULT_COMPONENT_BODY_LIMIT = 250;
-const RATCHET_THRESHOLD_LINES = 10;
-
-// These exact ceilings freeze existing debt. A ceiling may only stay flat or fall.
-// Remove an entry once its source is within the default budget.
-const LEGACY_FILE_CEILINGS = Object.freeze({});
-
-// Keys are `<source path>#<component symbol>`, never directory patterns.
-const LEGACY_COMPONENT_CEILINGS = Object.freeze({});
 
 function countLines(source) {
   if (source.length === 0) {
@@ -173,73 +165,21 @@ function collectReactComponents(sourceFile) {
   return components;
 }
 
-function validateExceptionKeys() {
-  const errors = [];
-
-  for (const sourcePath of Object.keys(LEGACY_FILE_CEILINGS)) {
-    if (/[*?[\]]/.test(sourcePath) || !sourcePath.startsWith("src/")) {
-      errors.push(`Invalid file exception key: ${sourcePath}`);
-    }
-  }
-
-  for (const componentKey of Object.keys(LEGACY_COMPONENT_CEILINGS)) {
-    if (
-      /[*?[\]]/.test(componentKey) ||
-      !/^src\/.+\.(?:ts|tsx)#(?:default|[A-Z][A-Za-z0-9]*)$/.test(
-        componentKey,
-      )
-    ) {
-      errors.push(`Invalid component exception key: ${componentKey}`);
-    }
-  }
-
-  return errors;
+function verifyBudget({ actual, defaultLimit, key, kind }) {
+  return actual > defaultLimit
+    ? [`${key} has ${actual} ${kind}; default limit is ${defaultLimit}. Split it.`]
+    : [];
 }
 
-function verifyBudget({ actual, ceiling, defaultLimit, key, kind }) {
-  if (ceiling === undefined) {
-    return actual > defaultLimit
-      ? [`${key} has ${actual} ${kind}; default limit is ${defaultLimit}. Add an exact legacy ceiling or split it.`]
-      : [];
-  }
-
-  if (!Number.isInteger(ceiling) || ceiling <= defaultLimit) {
-    return [`${key} has an invalid legacy ceiling ${ceiling}; it must be an integer above ${defaultLimit}.`];
-  }
-
-  if (actual <= defaultLimit) {
-    return [`${key} is within the default ${defaultLimit}-${kind} limit; remove its stale legacy ceiling.`];
-  }
-
-  if (actual > ceiling) {
-    return [`${key} grew to ${actual} ${kind}; frozen legacy ceiling is ${ceiling}.`];
-  }
-
-  if (ceiling - actual >= RATCHET_THRESHOLD_LINES) {
-    return [`${key} fell to ${actual} ${kind}; ratchet its legacy ceiling down from ${ceiling}.`];
-  }
-
-  return [];
-}
-
-const failures = validateExceptionKeys();
-const seenFileExceptions = new Set();
-const seenComponentExceptions = new Set();
+const failures = [];
 
 for (const absolutePath of await collectSourceFiles(sourceRoot)) {
   const source = await readFile(absolutePath, "utf8");
   const sourcePath = path.relative(frontendRoot, absolutePath).split(path.sep).join("/");
   const extension = path.extname(absolutePath);
-  const fileCeiling = LEGACY_FILE_CEILINGS[sourcePath];
-
-  if (fileCeiling !== undefined) {
-    seenFileExceptions.add(sourcePath);
-  }
-
   failures.push(
     ...verifyBudget({
       actual: countLines(source),
-      ceiling: fileCeiling,
       defaultLimit: DEFAULT_FILE_LIMITS[extension],
       key: sourcePath,
       kind: "line file",
@@ -260,33 +200,14 @@ for (const absolutePath of await collectSourceFiles(sourceRoot)) {
 
   for (const component of collectReactComponents(sourceFile)) {
     const componentKey = `${sourcePath}#${component.symbol}`;
-    const componentCeiling = LEGACY_COMPONENT_CEILINGS[componentKey];
-
-    if (componentCeiling !== undefined) {
-      seenComponentExceptions.add(componentKey);
-    }
-
     failures.push(
       ...verifyBudget({
         actual: component.lines,
-        ceiling: componentCeiling,
         defaultLimit: DEFAULT_COMPONENT_BODY_LIMIT,
         key: componentKey,
         kind: "line component body",
       }),
     );
-  }
-}
-
-for (const sourcePath of Object.keys(LEGACY_FILE_CEILINGS)) {
-  if (!seenFileExceptions.has(sourcePath)) {
-    failures.push(`${sourcePath} has a stale legacy file ceiling: the source file does not exist.`);
-  }
-}
-
-for (const componentKey of Object.keys(LEGACY_COMPONENT_CEILINGS)) {
-  if (!seenComponentExceptions.has(componentKey)) {
-    failures.push(`${componentKey} has a stale legacy component ceiling: the component was not found.`);
   }
 }
 

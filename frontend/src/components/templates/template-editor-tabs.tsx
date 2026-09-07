@@ -3,7 +3,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AppMessages } from "@/i18n";
-import type { ResumeTemplateDefinition } from "@/types/resume";
+import type {
+  ResumeTemplateDefinition,
+  ResumeTemplateUpdate,
+} from "@/types/resume";
 
 import { TemplateTabLabel } from "./editor/editor-fields";
 import { TemplateImagesTab } from "./editor/images-tab";
@@ -20,7 +23,7 @@ export function TemplateEditorTabs({
 }: {
   t: AppMessages;
   template: ResumeTemplateDefinition;
-  onUpdateTemplate: (patch: Partial<ResumeTemplateDefinition>) => void;
+  onUpdateTemplate: (patch: ResumeTemplateUpdate) => void;
 }) {
   const [editorTab, setEditorTab] = useState<TemplateEditorTab>("layout");
   const tabsListRef = useRef<HTMLDivElement>(null);

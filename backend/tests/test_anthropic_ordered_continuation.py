@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.services.llm import AgentLlmConfig, LlmPrompt, async_complete_tool_call
+from app.services.llm import AgentLlmConfig, LlmPrompt, async_stream_tool_call
 from app.services.llm.adapters import anthropic_messages
 from app.services.llm.errors import LlmRequestError
 from app.services.llm.types import LlmStreamEvent
@@ -92,13 +92,18 @@ def test_nonstream_tool_turn_replays_the_exact_ordered_assistant_content(
     monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
     config = _config()
 
-    first = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(messages=[{"role": "user", "content": "Inspect it."}]),
-            [_tool()],
+    first_events = asyncio.run(
+        _collect(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect it."}]),
+                [_tool()],
+            )
         ),
     )
+    assert first_events[-1].type == "done"
+    first = first_events[-1].message
+    assert first is not None
 
     assert first.provider_state == {
         "model": config.model,
@@ -106,34 +111,36 @@ def test_nonstream_tool_turn_replays_the_exact_ordered_assistant_content(
     }
 
     asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "Inspect it."},
-                    {
-                        "role": "assistant",
-                        "content": first.content,
-                        "tool_calls": [
-                            {
-                                "id": first.tool_calls[0].id,
-                                "type": "function",
-                                "function": {
-                                    "name": first.tool_calls[0].name,
-                                    "arguments": first.tool_calls[0].raw_arguments,
+        _collect(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "Inspect it."},
+                        {
+                            "role": "assistant",
+                            "content": first.content,
+                            "tool_calls": [
+                                {
+                                    "id": first.tool_calls[0].id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": first.tool_calls[0].name,
+                                        "arguments": first.tool_calls[0].raw_arguments,
+                                    },
                                 },
-                            },
-                        ],
-                        "provider_state": first.provider_state,
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": first.tool_calls[0].id,
-                        "content": '{"matches":["Project A"]}',
-                    },
-                ],
-            ),
-            [_tool()],
+                            ],
+                            "provider_state": first.provider_state,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": first.tool_calls[0].id,
+                            "content": '{"matches":["Project A"]}',
+                        },
+                    ],
+                ),
+                [_tool()],
+            )
         ),
     )
 
@@ -352,21 +359,23 @@ def test_malformed_or_foreign_continuation_fails_before_provider_request(
         match="Anthropic continuation state is invalid",
     ):
         asyncio.run(
-            async_complete_tool_call(
-                _config(),
-                LlmPrompt(
-                    messages=[
-                        {"role": "user", "content": "Inspect it."},
-                        {
-                            "role": "assistant",
-                            "content": "Checking.",
-                            "tool_calls": [],
-                            "provider_state": provider_state,
-                        },
-                        {"role": "user", "content": "Continue."},
-                    ],
-                ),
-                [_tool()],
+            _collect(
+                async_stream_tool_call(
+                    _config(),
+                    LlmPrompt(
+                        messages=[
+                            {"role": "user", "content": "Inspect it."},
+                            {
+                                "role": "assistant",
+                                "content": "Checking.",
+                                "tool_calls": [],
+                                "provider_state": provider_state,
+                            },
+                            {"role": "user", "content": "Continue."},
+                        ],
+                    ),
+                    [_tool()],
+                )
             ),
         )
 

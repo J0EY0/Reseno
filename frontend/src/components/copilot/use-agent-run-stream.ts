@@ -204,6 +204,12 @@ export function useAgentRunStream({
         // longer observe a commit. Never leave its provisional preview active.
         runMayStillBeActive = runtime.activeRun?.status === 'active'
         runtime.onRollbackAgentDraft(streamedMessageId)
+        if (
+          runMayStillBeActive &&
+          runtime.activeRequestAbort === abortController
+        ) {
+          updates.setSessionLoadError(true)
+        }
         console.error('Failed to consume agent run.', error)
         if (notifyOnFailure && !isApiErrorToastShown(error)) {
           toast.error(runtime.requestFailedText, {
@@ -215,7 +221,7 @@ export function useAgentRunStream({
         }
         return 'failed'
       } finally {
-        if (expectedResumeId) {
+        if (expectedResumeId && !runMayStillBeActive) {
           try {
             await refreshAgentSession(expectedResumeId, true)
           } catch (error) {

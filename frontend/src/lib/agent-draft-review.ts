@@ -11,8 +11,6 @@ import {
   type AgentDraftApplyError,
 } from "./resume-agent-edits";
 
-export type AgentDraftReviewMode = "all" | "single";
-
 export interface AgentDraftReviewProjection {
   diffs: ResumeDraftDiff[];
   errors: AgentDraftApplyError[];

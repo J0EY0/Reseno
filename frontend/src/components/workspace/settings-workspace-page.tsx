@@ -1,3 +1,5 @@
+import { useLayoutEffect } from "react";
+
 import { SettingsPanel } from "@/components/settings-panel";
 import { SettingsPanelSkeleton } from "@/components/settings-panel-skeleton";
 import { useWorkspacePreferencesRoute } from "@/components/workspace/use-workspace-preferences-route";
@@ -5,7 +7,10 @@ import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function SettingsWorkspacePage({ onLogout }: { onLogout: () => void }) {
+export function SettingsWorkspacePage({ onLogout, onReady }: {
+  onLogout: () => void;
+  onReady?: () => void;
+}) {
   const { locale, messages } = useWorkspacePreferences();
   const preferences = useWorkspacePreferencesRoute({
     kind: "settings",
@@ -15,6 +20,10 @@ export function SettingsWorkspacePage({ onLogout }: { onLogout: () => void }) {
     "settings",
     preferences.hasLoaded ? preferences.routeData : null,
   );
+
+  useLayoutEffect(() => {
+    if (preferences.hasLoaded || preferences.hasLoadError) onReady?.();
+  }, [onReady, preferences.hasLoadError, preferences.hasLoaded]);
 
   if (preferences.hasLoadError) {
     return (

@@ -43,6 +43,7 @@ export function useWorkspacePreferencesRoute({
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>(() =>
     normalizeModelConfigs(preparedRouteData, locale),
   );
+  const modelConfigsRef = useRef(modelConfigs);
   const routeData = useMemo(
     () => agentSettings ? { agentSettings, modelConfigs, theme } : null,
     [agentSettings, modelConfigs, theme],
@@ -64,7 +65,9 @@ export function useWorkspacePreferencesRoute({
           return;
         }
 
-        setModelConfigs(normalizeModelConfigs(source.data, initialLocaleRef.current));
+        const nextModelConfigs = normalizeModelConfigs(source.data, initialLocaleRef.current);
+        modelConfigsRef.current = nextModelConfigs;
+        setModelConfigs(nextModelConfigs);
         setHasLoaded(true);
       } catch (error) {
         if (
@@ -112,9 +115,12 @@ export function useWorkspacePreferencesRoute({
   }, [hasPreparedData, loadRouteData, retryKey]);
 
   const changeModelConfigs = useCallback(
-    (nextModelConfigs: ModelConfig[]) => {
+    (update: (current: ModelConfig[]) => ModelConfig[]) => {
+      const nextModelConfigs = update(modelConfigsRef.current);
+      modelConfigsRef.current = nextModelConfigs;
       reconcileModels(nextModelConfigs);
       setModelConfigs(nextModelConfigs);
+      return nextModelConfigs;
     },
     [reconcileModels],
   );

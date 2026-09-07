@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.imports import ImportResumeResponse, ImportTemplatesResponse
@@ -20,7 +21,7 @@ async def import_resume(
     """Import resume items from an uploaded JSON file."""
 
     payload = await load_json_upload(file)
-    artifact = parse_resume_artifact(payload)
+    artifact = await run_in_threadpool(parse_resume_artifact, payload)
 
     return ok_response(
         ImportResumeResponse(
@@ -37,6 +38,6 @@ async def import_templates(
     """Import resume templates from an uploaded JSON file."""
 
     payload = await load_json_upload(file)
-    templates = parse_template_artifact(payload)
+    templates = await run_in_threadpool(parse_template_artifact, payload)
 
     return ok_response(ImportTemplatesResponse(templates=templates))

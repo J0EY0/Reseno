@@ -34,6 +34,8 @@ from app.services.auth_accounts import (
     is_setup_required,
     update_owner_password,
 )
+from app.services.auth_github_app import github_app_configured
+from app.services.auth_identities import list_identities
 from app.services.auth_tokens import (
     create_access_token,
     format_token_expiry,
@@ -111,10 +113,20 @@ def _request_is_loopback(request: Request) -> bool:
 
 @router.get("/setup", response_model=ApiResponse[AuthSetupStatusResponse])
 def get_auth_setup(response: Response) -> ApiResponse[AuthSetupStatusResponse]:
-    """Report whether this instance still needs its owner account."""
+    """Report owner setup and GitHub sign-in availability."""
 
     response.headers["Cache-Control"] = "no-store"
-    return ok_response(AuthSetupStatusResponse(setupRequired=is_setup_required()))
+    setup_required = is_setup_required()
+    return ok_response(
+        AuthSetupStatusResponse(
+            setupRequired=setup_required,
+            githubLoginAvailable=(
+                not setup_required
+                and github_app_configured()
+                and bool(list_identities())
+            ),
+        )
+    )
 
 
 @router.post("/setup", response_model=ApiResponse[AuthLoginResponse])

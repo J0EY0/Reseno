@@ -151,16 +151,19 @@ export function useTrashWorkspace({
 
   const restoreResumes = useCallback(
     async (resumeIds: string[]) => {
-      if (
-        resumeIds.length === 0 ||
-        !deletedResumes.some((item) => resumeIds.includes(item.id))
-      ) {
+      const restoring = deletedResumes.filter((item) => resumeIds.includes(item.id));
+      if (restoring.length === 0) {
         return false;
       }
 
       try {
-        for (const resumeId of resumeIds) {
-          await restoreResumeApi(resumeId);
+        for (const item of restoring) {
+          await restoreResumeApi(item.id);
+          startTransition(() => {
+            setDeletedResumes((current) =>
+              current.filter((resume) => resume.id !== item.id),
+            );
+          });
         }
       } catch (error) {
         console.error("Failed to restore resume.", error);
@@ -170,13 +173,8 @@ export function useTrashWorkspace({
         return false;
       }
 
-      startTransition(() => {
-        setDeletedResumes((current) =>
-          current.filter((item) => !resumeIds.includes(item.id)),
-        );
-      });
       toast.success(
-        resumeIds.length > 1 ? messages.resumesRestored : messages.resumeRestored,
+        restoring.length > 1 ? messages.resumesRestored : messages.resumeRestored,
         { closeButton: true },
       );
       return true;
@@ -186,13 +184,19 @@ export function useTrashWorkspace({
 
   const permanentlyDeleteResumes = useCallback(
     async (resumeIds: string[]) => {
-      if (resumeIds.length === 0) {
+      const deleting = deletedResumes.filter((item) => resumeIds.includes(item.id));
+      if (deleting.length === 0) {
         return false;
       }
 
       try {
-        for (const resumeId of resumeIds) {
-          await deleteResumeForeverApi(resumeId);
+        for (const item of deleting) {
+          await deleteResumeForeverApi(item.id);
+          startTransition(() => {
+            setDeletedResumes((current) =>
+              current.filter((resume) => resume.id !== item.id),
+            );
+          });
         }
       } catch (error) {
         console.error("Failed to permanently delete resume.", error);
@@ -202,20 +206,15 @@ export function useTrashWorkspace({
         return false;
       }
 
-      startTransition(() => {
-        setDeletedResumes((current) =>
-          current.filter((item) => !resumeIds.includes(item.id)),
-        );
-      });
       toast.success(
-        resumeIds.length > 1
+        deleting.length > 1
           ? messages.resumesDeletedForever
           : messages.resumeDeletedForever,
         { closeButton: true },
       );
       return true;
     },
-    [messages],
+    [deletedResumes, messages],
   );
 
   const restoreTemplates = useCallback(
@@ -223,17 +222,20 @@ export function useTrashWorkspace({
       const restoring = deletedTemplates.filter((item) =>
         templateIds.includes(item.id),
       );
-      if (templateIds.length === 0 || restoring.length === 0) {
+      if (restoring.length === 0) {
         return false;
       }
 
-      let restoredItems: ResumeTemplateDefinition[];
       try {
-        const results = [];
-        for (const templateId of templateIds) {
-          results.push(await restoreTemplateApi(templateId));
+        for (const item of restoring) {
+          const { template } = await restoreTemplateApi(item.id);
+          startTransition(() => {
+            setDeletedTemplates((current) =>
+              current.filter((deleted) => deleted.id !== item.id),
+            );
+            setCustomTemplates((current) => [template, ...current]);
+          });
         }
-        restoredItems = results.map((item) => item.template);
       } catch (error) {
         console.error("Failed to restore template.", error);
         if (!isApiErrorToastShown(error)) {
@@ -242,14 +244,8 @@ export function useTrashWorkspace({
         return false;
       }
 
-      startTransition(() => {
-        setDeletedTemplates((current) =>
-          current.filter((item) => !templateIds.includes(item.id)),
-        );
-        setCustomTemplates((current) => [...restoredItems, ...current]);
-      });
       toast.success(
-        templateIds.length > 1
+        restoring.length > 1
           ? messages.templatesRestored
           : messages.templateRestored,
         { closeButton: true },
@@ -261,13 +257,19 @@ export function useTrashWorkspace({
 
   const permanentlyDeleteTemplates = useCallback(
     async (templateIds: string[]) => {
-      if (templateIds.length === 0) {
+      const deleting = deletedTemplates.filter((item) => templateIds.includes(item.id));
+      if (deleting.length === 0) {
         return false;
       }
 
       try {
-        for (const templateId of templateIds) {
-          await deleteTemplateForeverApi(templateId);
+        for (const item of deleting) {
+          await deleteTemplateForeverApi(item.id);
+          startTransition(() => {
+            setDeletedTemplates((current) =>
+              current.filter((template) => template.id !== item.id),
+            );
+          });
         }
       } catch (error) {
         console.error("Failed to permanently delete template.", error);
@@ -277,20 +279,15 @@ export function useTrashWorkspace({
         return false;
       }
 
-      startTransition(() => {
-        setDeletedTemplates((current) =>
-          current.filter((item) => !templateIds.includes(item.id)),
-        );
-      });
       toast.success(
-        templateIds.length > 1
+        deleting.length > 1
           ? messages.templatesDeletedForever
           : messages.templateDeletedForever,
         { closeButton: true },
       );
       return true;
     },
-    [messages],
+    [deletedTemplates, messages],
   );
 
   return {

@@ -254,7 +254,6 @@ def test_edit_batch_is_atomic_when_one_operation_is_invalid() -> None:
     assert batch.observation["retryable"] is True
     assert engine.draft_resume == original_resume
     assert engine.edits == ()
-    assert engine.retry_pending is True
     assert engine.revision == 0
 
 
@@ -283,7 +282,6 @@ def test_exact_noop_does_not_reject_another_valid_edit_in_the_batch() -> None:
     assert batch.draft_resume["sections"][0]["items"][0]["description"] == (
         "面向结构化简历编辑与预览工作流。"
     )
-    assert engine.retry_pending is False
 
 
 def test_equivalent_highlight_representation_is_a_noop() -> None:

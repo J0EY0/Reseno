@@ -6,7 +6,7 @@ import { memo } from "react";
 
 import "./shimmer.css";
 
-export interface TextShimmerProps {
+interface TextShimmerProps {
   children: string;
   as?: "div" | "p" | "span";
   className?: string;

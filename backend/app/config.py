@@ -30,8 +30,6 @@ class Settings:
     export_dir: Path
     user_settings_path: Path
     env_file_path: Path
-    host: str
-    port: int
     frontend_render_base_url: str
     pdf_render_timeout_ms: int
     cors_origins: tuple[str, ...]
@@ -328,8 +326,6 @@ def get_settings() -> Settings:
             data_dir / "user_settings.json",
         ),
         env_file_path=env_file_path,
-        host=os.getenv("APP_HOST", "127.0.0.1"),
-        port=_parse_int(os.getenv("APP_PORT"), 8000),
         frontend_render_base_url=os.getenv(
             "FRONTEND_RENDER_BASE_URL",
             "http://127.0.0.1:5173",

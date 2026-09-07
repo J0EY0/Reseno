@@ -26,7 +26,8 @@ import {
 } from "@/lib/preference-api";
 import { useAuthGate } from "@/hooks/use-auth-gate";
 import { Spinner } from "@/components/ui/spinner";
-import { WorkspaceEntrySkeleton } from "@/components/workspace/workspace-entry-skeleton";
+import { OAuthCallbackPage } from "@/components/auth/oauth-callback-page";
+import { useOAuthLogin } from "@/hooks/use-oauth-login";
 import {
   loadModelsWorkspacePage,
   loadResumeDetailWorkspacePage,
@@ -53,10 +54,6 @@ const loadSetupPage = createRouteLoader(
   () => import("@/components/auth/setup-page"),
   "SetupPage",
 );
-const loadOAuthCallbackPage = createRouteLoader(
-  () => import("@/components/auth/oauth-callback-page"),
-  "OAuthCallbackPage",
-);
 const loadPdfExportRenderer = createRouteLoader(
   () => import("@/components/pdf-export-renderer"),
   "PdfExportRenderer",
@@ -64,7 +61,6 @@ const loadPdfExportRenderer = createRouteLoader(
 const AuthStatusErrorPage = lazy(loadAuthStatusErrorPage);
 const LoginPage = lazy(loadLoginPage);
 const SetupPage = lazy(loadSetupPage);
-const OAuthCallbackPage = lazy(loadOAuthCallbackPage);
 const ResumeGalleryWorkspacePage = lazy(loadResumeGalleryWorkspacePage);
 const WorkspaceLateralLayout = lazy(loadWorkspaceLateralLayout);
 const WorkspacePreferencesProvider = lazy(loadWorkspacePreferencesProvider);
@@ -116,41 +112,16 @@ function AppRouteSuspense({
   );
 }
 
-function OAuthCallbackRoute({
-  isLoading,
-  locale,
-  messages,
-  onComplete,
-}: {
-  isLoading: boolean;
-  locale: Locale;
-  messages: AppMessages;
-  onComplete: (
-    destination: "resume" | "settings",
-    signal: AbortSignal,
-  ) => Promise<void>;
-}) {
-  const { hash } = useLocation();
-  const intent = new URLSearchParams(hash.slice(1)).get("intent");
-  const pending = (
-    <WorkspaceEntrySkeleton
-      destination={intent === "bind" ? "settings" : "resume"}
-      label={messages.workspaceLoading}
-    />
-  );
-
-  if (isLoading) {
-    return pending;
-  }
+function OAuthCallbackRoute() {
+  const [initialLocale] = useState(() => loadLocalePreferenceApi() ?? getSystemLocale());
+  const { isMessagesReady, locale, messages } = useLocaleMessages(initialLocale);
+  if (!isMessagesReady) return null;
 
   return (
-    <AppRouteSuspense fallback={pending}>
+    <>
       <DocumentMetadata locale={locale} messages={messages} />
-      <OAuthCallbackPage
-        t={messages}
-        onComplete={onComplete}
-      />
-    </AppRouteSuspense>
+      <OAuthCallbackPage t={messages} />
+    </>
   );
 }
 
@@ -205,15 +176,6 @@ function AuthEntryRoutes({
   setupPage: ReactNode;
   pdfPage: ReactNode;
 }) {
-  useEffect(() => {
-    if (phase !== "login") {
-      return;
-    }
-
-    void loadOAuthCallbackPage().catch((error: unknown) => {
-      console.error("Failed to preload the OAuth callback route.", error);
-    });
-  }, [phase]);
 
   return (
     <>
@@ -235,13 +197,18 @@ function AuthEntryRoutes({
 
 function App() {
   const { pathname } = useLocation();
+  return pathname === "/auth/callback" ? <OAuthCallbackRoute /> : <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
+  const { pathname } = useLocation();
   const [initialLocale] = useState(() =>
     (loadAuthSession() && loadLocalePreferenceApi()) || getSystemLocale(),
   );
   const hasEnteredAuthenticatedAppRef = useRef(false);
   const { canPersistLocale, changeLocale, isMessagesReady, locale, messages } =
     useLocaleMessages(initialLocale);
-  const { acceptSession, authGate, login, logout, retry, setup } = useAuthGate({
+  const { acceptSession, authGate, destinationCommit, login, logout, retry, setup } = useAuthGate({
     loginFallbackError: messages.loginInvalidCredentials,
     onAuthenticated: () => {
       return changeLocale(loadLocalePreferenceApi() ?? getSystemLocale());
@@ -251,6 +218,12 @@ function App() {
     },
     prepareDestination: prepareAuthDestination,
     requestFallbackError: messages.apiMessages.REQUEST_FAILED,
+  });
+
+  const oauthLogin = useOAuthLogin({
+    enabled: isMessagesReady && authGate.phase === "login",
+    onComplete: (signal) => acceptSession("resume", signal),
+    t: messages,
   });
 
   useEffect(() => {
@@ -264,12 +237,16 @@ function App() {
 
     hasEnteredAuthenticatedAppRef.current = false;
     void import("@/lib/workspace-route-memory").then(
-      ({ clearWorkspaceLateralRouteMemory }) =>
-        clearWorkspaceLateralRouteMemory(),
+      ({ clearWorkspaceRouteMemory }) =>
+        clearWorkspaceRouteMemory(),
     );
   }, [authGate.phase]);
 
   useEffect(() => {
+    if (authGate.phase === "login" && oauthLogin.isCompleting) {
+      return;
+    }
+
     if (isMessagesReady && authGate.phase !== "app") {
       return;
     }
@@ -279,9 +256,7 @@ function App() {
     }
 
     const routeRequest =
-      pathname === "/auth/callback"
-        ? loadOAuthCallbackPage
-        : pathname === "/pdf-export"
+      pathname === "/pdf-export"
         ? loadPdfExportRenderer
         : authGate.phase === "setup"
           ? loadSetupPage
@@ -305,7 +280,7 @@ function App() {
 
     const preferencesRequest =
       authGate.phase === "app" &&
-      pathname !== "/auth/callback" && pathname !== "/pdf-export"
+      pathname !== "/pdf-export"
         ? loadWorkspacePreferencesProvider()
         : undefined;
 
@@ -313,7 +288,7 @@ function App() {
     void Promise.all([routeRequest(), preferencesRequest]).catch((error: unknown) => {
       console.error("Failed to preload the current application route.", error);
     });
-  }, [authGate.phase, isMessagesReady, pathname]);
+  }, [authGate.phase, isMessagesReady, oauthLogin.isCompleting, pathname]);
 
   useEffect(() => {
     if (authGate.phase !== "app" || !canPersistLocale) {
@@ -325,7 +300,7 @@ function App() {
 
   const renderLoginPage = () => (
     <AppRouteSuspense>
-      <LoginPage t={messages} onSubmitCredentials={login} />
+      <LoginPage t={messages} onSubmitCredentials={login} oauth={oauthLogin.controls} />
     </AppRouteSuspense>
   );
   const renderSetupPage = () => (
@@ -336,7 +311,9 @@ function App() {
 
   const renderResumeGalleryWorkspace = () => (
     <AppRouteSuspense>
-      <ResumeGalleryWorkspacePage />
+      <ResumeGalleryWorkspacePage
+        onReady={destinationCommit?.destination === "resume" ? destinationCommit.complete : undefined}
+      />
     </AppRouteSuspense>
   );
   const renderWorkspaceLateralLayout = () => (
@@ -356,7 +333,10 @@ function App() {
   );
   const renderSettingsWorkspace = () => (
     <AppRouteSuspense>
-      <SettingsWorkspacePage onLogout={logout} />
+      <SettingsWorkspacePage
+        onLogout={logout}
+        onReady={destinationCommit?.destination === "settings" ? destinationCommit.complete : undefined}
+      />
     </AppRouteSuspense>
   );
   const renderTemplateGalleryWorkspace = () => (
@@ -380,17 +360,6 @@ function App() {
     </AppRouteSuspense>
   );
 
-  if (pathname === "/auth/callback") {
-    return (
-      <OAuthCallbackRoute
-        isLoading={!isMessagesReady || authGate.phase === "loading"}
-        locale={locale}
-        messages={messages}
-        onComplete={acceptSession}
-      />
-    );
-  }
-
   if (!isMessagesReady || authGate.phase === "loading") {
     return appRouteFallback;
   }
@@ -404,6 +373,10 @@ function App() {
         />
       </AppRouteSuspense>
     );
+  }
+
+  if (authGate.phase === "login" && oauthLogin.isCompleting) {
+    return appRouteFallback;
   }
 
   if (authGate.phase === "setup" || authGate.phase === "login") {

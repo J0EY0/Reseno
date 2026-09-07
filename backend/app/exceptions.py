@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from fastapi import Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
@@ -130,17 +131,18 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """Convert request validation failures into the API envelope."""
 
+    errors = jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
     if not request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"detail": exc.errors()},
+            content={"detail": errors},
         )
 
     return app_error_response(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         code=APP_CODE_VALIDATION_ERROR,
         message=APP_MESSAGE_VALIDATION_ERROR,
-        data={"errors": exc.errors()},
+        data={"errors": errors},
     )
 
 

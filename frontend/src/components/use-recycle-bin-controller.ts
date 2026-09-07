@@ -26,6 +26,8 @@ export function useRecycleBinController({
     onDeleteResumeForever,
     onRestoreTemplate,
     onDeleteTemplateForever,
+    deletedResumes,
+    deletedTemplates,
   });
   const selection = useRecycleBinSelection({
     deletedResumes,

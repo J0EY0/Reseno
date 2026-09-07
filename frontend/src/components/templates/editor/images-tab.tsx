@@ -4,7 +4,10 @@ import { Button } from "@/components/ui/button";
 import { TabsContent } from "@/components/ui/tabs";
 import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
-import type { ResumeTemplateDefinition } from "@/types/resume";
+import type {
+  ResumeTemplateDefinition,
+  ResumeTemplateUpdate,
+} from "@/types/resume";
 
 import { readonlyDisabledControlClassName } from "./editor-values";
 import { TemplateImageCard } from "./template-image-card";
@@ -17,7 +20,7 @@ export function TemplateImagesTab({
 }: {
   t: AppMessages;
   template: ResumeTemplateDefinition;
-  onUpdateTemplate: (patch: Partial<ResumeTemplateDefinition>) => void;
+  onUpdateTemplate: (patch: ResumeTemplateUpdate) => void;
 }) {
   const editor = useTemplateImagesEditor({ t, template, onUpdateTemplate });
 

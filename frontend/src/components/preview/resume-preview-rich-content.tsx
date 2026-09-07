@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useMemo } from "react";
 
 import { getRenderableFieldDiffs } from "@/components/preview/resume-preview-diffs";
 import {
@@ -27,8 +27,11 @@ function HighlightsFallback({
   diffs: FieldDiffs;
   highlights: string[];
 }) {
-  const visibleHighlights = highlights.filter(
-    (value) => !isRichTextEmpty(value),
+  const visibleHighlights = useMemo(
+    () => highlights
+      .filter((value) => !isRichTextEmpty(value))
+      .map(sanitizeRichTextHtml),
+    [highlights],
   );
   const hasDiffs = diffs.length > 0;
   const className = cn(
@@ -41,7 +44,7 @@ function HighlightsFallback({
         className={className}
         data-resume-diff-path={hasDiffs ? diffPath : undefined}
         dangerouslySetInnerHTML={{
-          __html: sanitizeRichTextHtml(visibleHighlights[0]),
+          __html: visibleHighlights[0],
         }}
       />
     );
@@ -53,7 +56,7 @@ function HighlightsFallback({
     >
       {visibleHighlights.map((value, index) => (
         <li
-          dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(value) }}
+          dangerouslySetInnerHTML={{ __html: value }}
           key={`${index}-${value}`}
         />
       ))}
@@ -83,6 +86,7 @@ export function RichListDiff({
   html: string;
 }) {
   const hasDiffs = diffs.length > 0;
+  const sanitized = useMemo(() => sanitizeRichTextHtml(html), [html]);
   const fallback = (
     <div
       className={cn(
@@ -91,7 +95,7 @@ export function RichListDiff({
       data-resume-diff-path={
         hasDiffs ? diffs.map((diff) => diff.path).join(" ") : undefined
       }
-      dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(html) }}
+      dangerouslySetInnerHTML={{ __html: sanitized }}
     />
   );
   return diffs.length === 0 ? (

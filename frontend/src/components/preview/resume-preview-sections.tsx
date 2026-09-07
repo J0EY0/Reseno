@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 
 import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
 import { ResumeDeletedDiffAnchor } from "@/components/preview/resume-preview-deleted-anchor";
@@ -121,8 +121,7 @@ function SectionBlock({
   t,
 }: SectionBlockProps) {
   const title = getSectionTitle(section, t);
-  const allVisibleItems = getRenderableItems(section);
-  const visibleItems = items ?? allVisibleItems;
+  const visibleItems = items ?? getRenderableItems(section);
   const structuralDiff = diff?.structuralDiff;
   const titleDiff = showTitle ? diff?.titleDiff : undefined;
   const markerDiff = structuralDiff ?? titleDiff;
@@ -290,7 +289,7 @@ function SectionBlock({
   );
 }
 
-export function SectionsList({
+export const SectionsList = memo(function SectionsList({
   className,
   deletedItemDiffsBySectionId,
   deletedSectionDiffs = [],
@@ -358,4 +357,4 @@ export function SectionsList({
       ))}
     </div>
   );
-}
+});

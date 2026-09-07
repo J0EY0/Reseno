@@ -23,7 +23,7 @@ from app.schemas.common import APP_CODE_NOT_FOUND
 from app.services import agent_sessions, resumes
 from app.services.agent import attachments as agent_attachments
 from app.services.agent.attachments import mark_agent_attachments_sent
-from app.services.agent.runtime.messages import build_agent_messages
+from app.services.agent.runtime.messages import AgentPromptCompiler
 from app.services.agent_sessions import _current_user_message
 from app.services.llm import AgentLlmConfig, LlmRequestError, common
 from app.services.llm.adapters import (
@@ -227,10 +227,7 @@ def test_current_attachment_filename_hides_resume_name(
     request = _request(attachment, session_id=session_id)
     request.resume["basic"]["name"] = "John Smith"
 
-    messages = build_agent_messages(
-        request,
-        _config(),
-    )
+    messages = AgentPromptCompiler(request, _config()).build().messages
 
     assert _current_request_files(messages)[0]["filename"] == expected_filename
 
@@ -1137,9 +1134,10 @@ def test_uploaded_pdf_reaches_agent_model_payload(client: TestClient) -> None:
         "kind": "text",
     }
 
-    messages = build_agent_messages(
-        _request(attachment, session_id=session_id),
-        _config(),
+    messages = (
+        AgentPromptCompiler(_request(attachment, session_id=session_id), _config())
+        .build()
+        .messages
     )
     files = _current_request_files(messages)
 
@@ -1161,9 +1159,10 @@ def test_uploaded_pdf_keeps_content_beyond_preview_sized_excerpt(
         media_type="application/pdf",
     )
 
-    messages = build_agent_messages(
-        _request(attachment, session_id=session_id),
-        _config(),
+    messages = (
+        AgentPromptCompiler(_request(attachment, session_id=session_id), _config())
+        .build()
+        .messages
     )
 
     assert expected in _current_request_files(messages)[0]["excerpt"]
@@ -1206,7 +1205,7 @@ def test_historical_attachment_is_not_resent_implicitly(
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
-    messages = build_agent_messages(request, _config())
+    messages = AgentPromptCompiler(request, _config()).build().messages
     files = _current_request_files(messages)
 
     assert files == []
@@ -1238,7 +1237,7 @@ def test_historical_attachment_can_be_explicitly_referenced_again(
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
-    messages = build_agent_messages(request, _config())
+    messages = AgentPromptCompiler(request, _config()).build().messages
     files = _current_request_files(messages)
 
     assert expected in files[0]["excerpt"]
@@ -1258,9 +1257,10 @@ def test_uploaded_docx_reaches_agent_model_payload(client: TestClient) -> None:
         ),
     )
 
-    messages = build_agent_messages(
-        _request(attachment, session_id=session_id),
-        _config(),
+    messages = (
+        AgentPromptCompiler(_request(attachment, session_id=session_id), _config())
+        .build()
+        .messages
     )
 
     assert expected in _current_request_files(messages)[0]["excerpt"]
@@ -1282,9 +1282,10 @@ def test_uploaded_image_is_mapped_for_every_visual_adapter(
         media_type="image/png",
     )
 
-    messages = build_agent_messages(
-        _request(attachment, session_id=session_id),
-        _config(),
+    messages = (
+        AgentPromptCompiler(_request(attachment, session_id=session_id), _config())
+        .build()
+        .messages
     )
     content = messages[-1]["content"]
 
@@ -1859,9 +1860,13 @@ def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
         media_type="application/pdf",
     )
 
-    messages = build_agent_messages(
-        _request(attachment, session_id=session_id),
-        _config(api_family="openai_responses"),
+    messages = (
+        AgentPromptCompiler(
+            _request(attachment, session_id=session_id),
+            _config(api_family="openai_responses"),
+        )
+        .build()
+        .messages
     )
     content = messages[-1]["content"]
 
@@ -1936,9 +1941,10 @@ def test_native_attachment_filename_hides_resume_name_without_changing_bytes(
     request = _request(attachment, session_id=session_id)
     request.resume["basic"]["name"] = "John Smith"
 
-    messages = build_agent_messages(
-        request,
-        _config(api_family="openai_responses"),
+    messages = (
+        AgentPromptCompiler(request, _config(api_family="openai_responses"))
+        .build()
+        .messages
     )
     content = messages[-1]["content"]
 
@@ -2000,9 +2006,10 @@ def test_historical_native_attachment_filename_hides_resume_name_without_bytes(
         expected_revision=SYNTHETIC_SESSION_REVISION,
     )
 
-    messages = build_agent_messages(
-        request,
-        _config(api_family="openai_responses"),
+    messages = (
+        AgentPromptCompiler(request, _config(api_family="openai_responses"))
+        .build()
+        .messages
     )
     serialized = json.dumps(messages)
 
@@ -2035,4 +2042,4 @@ def test_more_than_five_current_attachments_is_rejected() -> None:
     )
 
     with pytest.raises(LlmRequestError, match="At most 5 attachments"):
-        build_agent_messages(request, _config())
+        AgentPromptCompiler(request, _config()).build()

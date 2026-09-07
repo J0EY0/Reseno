@@ -29,12 +29,12 @@ export function resolveThinkingMode(
   return value === 'off' && availableModes.includes('off') ? 'off' : 'auto'
 }
 
-export function clampTemperature(value: number) {
+function clampTemperature(value: number) {
   const safe = Number.isFinite(value) ? value : 0
   return Math.min(1, Math.max(0, Math.round(safe * 10) / 10))
 }
 
-export function clampTopP(value: number) {
+function clampTopP(value: number) {
   const safe = Number.isFinite(value) ? value : 0
   return Math.min(1, Math.max(0, Math.round(safe * 100) / 100))
 }
@@ -79,7 +79,7 @@ export function createDefaultModelConfig(
   }
 }
 
-export function normalizeModelConfig(
+function normalizeModelConfig(
   value: unknown,
   locale: Locale,
 ): ModelConfig | null {

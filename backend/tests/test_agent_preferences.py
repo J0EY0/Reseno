@@ -13,7 +13,7 @@ from app.schemas.agent_settings import (
 )
 from app.services.agent.environment import ResumeToolEnvironment
 from app.services.agent.preferences import prepare_agent_request
-from app.services.agent.runtime.messages import build_agent_messages
+from app.services.agent.runtime.messages import AgentPromptCompiler
 from app.services.agent_runs import AgentRunManager
 from app.services.llm import AgentLlmConfig
 
@@ -126,7 +126,7 @@ def test_runtime_prompt_uses_frozen_preferences_without_settings_payload() -> No
         ),
     )
 
-    messages = build_agent_messages(request, _config())
+    messages = AgentPromptCompiler(request, _config()).build().messages
     workspace_message = next(
         message
         for message in reversed(messages)

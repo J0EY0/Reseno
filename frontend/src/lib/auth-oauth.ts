@@ -2,7 +2,7 @@ import { requestApi } from "@/lib/api-client";
 import type { AuthTokenPayload } from "@/lib/auth";
 import { saveAuthSession } from "@/lib/auth-session";
 
-export type OAuthProvider = "github";
+type OAuthProvider = "github";
 export type OAuthIntent = "login" | "bind";
 
 export interface OAuthIdentity {
@@ -11,46 +11,53 @@ export interface OAuthIdentity {
   createdAt: string;
 }
 
+export interface OAuthIdentities {
+  identities: OAuthIdentity[];
+  providers: { provider: OAuthProvider; configured: boolean }[];
+}
+
+export type OAuthIdentitySettingsState =
+  | { status: "ready"; data: OAuthIdentities }
+  | { status: "error" };
+
 interface OAuthCompletion {
   provider: OAuthProvider;
   intent: OAuthIntent;
   auth: AuthTokenPayload | null;
 }
 
-type OAuthResult = Pick<OAuthCompletion, "provider" | "intent">;
+export type OAuthResult = Pick<OAuthCompletion, "provider" | "intent">;
 const oauthBaseRoute = "/api/auth/oauth";
-let completionRequest: {
-  code: string;
-  promise: Promise<OAuthCompletion>;
-  accepted: boolean;
-} | null = null;
 
-export function getOAuthIdentities() {
-  return requestApi<{
-    identities: OAuthIdentity[];
-    providers: { provider: OAuthProvider; configured: boolean }[];
-  }>(`${oauthBaseRoute}/identities`, {
+export function getOAuthIdentities(signal?: AbortSignal) {
+  return requestApi<OAuthIdentities>(`${oauthBaseRoute}/identities`, {
     cacheTtlMs: 1_000,
     notifyOnError: false,
+    signal,
   });
 }
 
-export async function startGitHubSetup() {
-  const { registrationUrl, manifest } = await requestApi<{
-    registrationUrl: string;
-    manifest: Record<string, unknown>;
-  }>(`${oauthBaseRoute}/github/setup`, {
+interface GitHubSetup {
+  registrationUrl: string;
+  manifest: Record<string, unknown>;
+}
+
+export function requestGitHubSetup(signal: AbortSignal) {
+  return requestApi<GitHubSetup>(`${oauthBaseRoute}/github/setup`, {
     auth: true,
     body: { publicBaseUrl: window.location.origin },
     credentials: "include",
     method: "POST",
     notifyOnError: false,
+    signal,
   });
+}
 
+export function submitGitHubSetup(target: string, { registrationUrl, manifest }: GitHubSetup) {
   const form = document.createElement("form");
   form.action = registrationUrl;
   form.method = "POST";
-  form.target = "_self";
+  form.target = target;
   form.hidden = true;
   const input = document.createElement("input");
   input.type = "hidden";
@@ -58,12 +65,17 @@ export async function startGitHubSetup() {
   input.value = JSON.stringify(manifest);
   form.appendChild(input);
   document.body.appendChild(form);
-  form.submit();
+  try {
+    form.submit();
+  } finally {
+    form.remove();
+  }
 }
 
 export async function requestOAuthAuthorization(
   provider: OAuthProvider,
   intent: OAuthIntent,
+  signal: AbortSignal,
 ) {
   const { authorizationUrl } = await requestApi<{ authorizationUrl: string }>(
     `${oauthBaseRoute}/${provider}/${intent}`,
@@ -73,6 +85,7 @@ export async function requestOAuthAuthorization(
       credentials: "include",
       method: "POST",
       notifyOnError: false,
+      signal,
     },
   );
 
@@ -89,30 +102,26 @@ export async function unbindOAuth(provider: OAuthProvider) {
 export async function completeOAuth(
   code: string,
   signal: AbortSignal,
+  expectedIntent: OAuthIntent,
 ): Promise<OAuthResult> {
   signal.throwIfAborted();
-  if (completionRequest?.code !== code) {
-    completionRequest = {
-      code,
-      promise: requestApi<OAuthCompletion>(`${oauthBaseRoute}/complete`, {
-        auth: false,
-        body: { code },
-        credentials: "include",
-        method: "POST",
-        notifyOnError: false,
-      }),
-      accepted: false,
-    };
-  }
-
-  const request = completionRequest;
-  const { provider, intent, auth } = await request.promise;
+  const { provider, intent, auth } = await requestApi<OAuthCompletion>(
+    `${oauthBaseRoute}/complete`,
+    {
+      auth: false,
+      body: { code },
+      credentials: "include",
+      method: "POST",
+      notifyOnError: false,
+      signal,
+    },
+  );
   signal.throwIfAborted();
-  if (!request.accepted) {
-    if (auth) {
-      saveAuthSession(auth.username, auth.accessToken, auth.expiresAt);
-    }
-    request.accepted = true;
+  if (provider !== "github" || intent !== expectedIntent || (intent === "login") !== Boolean(auth)) {
+    throw new Error("OAUTH_INVALID_STATE");
+  }
+  if (auth) {
+    saveAuthSession(auth.username, auth.accessToken, auth.expiresAt);
   }
 
   return { provider, intent };

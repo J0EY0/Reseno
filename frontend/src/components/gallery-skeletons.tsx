@@ -69,7 +69,7 @@ function GalleryCardSkeleton({ isCreate = false }: { isCreate?: boolean }) {
   );
 }
 
-export function GalleryWorkspaceSkeleton({
+function GalleryWorkspaceSkeleton({
   itemCount,
   includeCreateCard = false,
 }: {

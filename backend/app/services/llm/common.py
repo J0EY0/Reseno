@@ -599,6 +599,8 @@ async def async_stream_json(
                 headers=headers,
                 json=payload,
             ) as response:
+                if not response.is_success:
+                    await response.aread()
                 response.raise_for_status()
                 async for event in _aiter_sse_json(response):
                     yield event

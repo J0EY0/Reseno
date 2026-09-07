@@ -1,35 +1,20 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+import { matchPath } from "react-router-dom";
+import { loadTypeScriptModule } from "./typescript-module.mjs";
 
-const moduleUrl = new URL(
-  "../src/lib/workspace-route-memory.ts",
-  import.meta.url,
+const handoffs = await loadTypeScriptModule(
+  new URL("../src/lib/workspace-route-handoff.ts", import.meta.url),
 );
-const source = await readFile(moduleUrl, "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-  fileName: "workspace-route-memory.ts",
-}).outputText;
-const module = { exports: {} };
-
-vm.runInNewContext(compiled, {
-  exports: module.exports,
-  module,
-}, { filename: "workspace-route-memory.js" });
-
 const {
-  clearWorkspaceLateralRouteMemory,
+  clearWorkspaceRouteMemory,
   createWorkspaceLateralRouteHandoff,
-  deleteWorkspaceLateralRouteHandoff,
   getWorkspaceLateralRouteHandoff,
   rememberWorkspaceLateralRoute,
   resolveWorkspaceLateralRoute,
-} = module.exports;
+} = await loadTypeScriptModule(
+  new URL("../src/lib/workspace-route-memory.ts", import.meta.url),
+  { imports: { "@/lib/workspace-route-handoff": handoffs } },
+);
 
 const resume = {
   data: {
@@ -81,7 +66,7 @@ const arrival = resolveWorkspaceLateralRoute(settingsState, "settings");
 assert.equal(arrival.data, settings.data);
 assert.equal(arrival.shouldScrubHistory, true);
 assert.equal(arrival.tokenToDelete, settingsState.token);
-deleteWorkspaceLateralRouteHandoff(arrival.tokenToDelete);
+handoffs.deleteWorkspaceHandoffToken(arrival.tokenToDelete);
 
 const back = resolveWorkspaceLateralRoute(null, "resume");
 assert.equal(
@@ -103,7 +88,7 @@ assert.equal(
   "A consumed token must be removed from browser history.",
 );
 
-clearWorkspaceLateralRouteMemory();
+clearWorkspaceRouteMemory();
 assert.equal(resolveWorkspaceLateralRoute(null, "resume").data, null);
 const clearedDeadToken = resolveWorkspaceLateralRoute(
   settingsState,
@@ -111,5 +96,67 @@ const clearedDeadToken = resolveWorkspaceLateralRoute(
 );
 assert.equal(clearedDeadToken.data, null);
 assert.equal(clearedDeadToken.shouldScrubHistory, true);
+
+const routes = await loadTypeScriptModule(
+  new URL("../src/lib/workspace-route.ts", import.meta.url),
+  {
+    imports: {
+      "react-router-dom": { matchPath },
+      "@/lib/workspace-route-handoff": handoffs,
+    },
+  },
+);
+const templateData = {
+  customTemplates: [{
+    id: "custom-a",
+    layout: { images: [{ src: "A".repeat(5 * 1024 * 1024) }] },
+  }],
+  defaultTemplateIds: { zh: "minimal", en: "minimal" },
+};
+const detailData = {
+  detail: { resume: { id: "resume-a" }, savedAt: "now", versionId: "v1" },
+  routeData: { ...templateData, modelConfigs: [], agentSettings: {} },
+  versions: [],
+};
+const detailState = routes.createResumeDetailRouteHandoff(detailData, 1, 2);
+assert.ok(
+  JSON.stringify(detailState).length < 256,
+  "Resume detail history must not serialize document or template images.",
+);
+assert.equal(
+  routes.getResumeDetailRouteHandoff(structuredClone(detailState), "resume-a").payload,
+  detailData,
+);
+assert.equal(
+  routes.getResumeDetailRouteHandoff(detailState, "another-resume"),
+  null,
+);
+assert.equal(
+  routes.getResumeDetailRouteHandoff({ ...detailState, token: "missing" }, "resume-a"),
+  null,
+);
+const templateState = routes.createTemplateDetailRouteHandoff(
+  "custom-a",
+  templateData,
+  "en",
+);
+assert.ok(
+  JSON.stringify(templateState).length < 256,
+  "Template detail history must not serialize the template catalog.",
+);
+assert.equal(
+  routes.getTemplateDetailRouteHandoff(structuredClone(templateState), "custom-a").data,
+  templateData,
+);
+assert.equal(
+  routes.getTemplateDetailRouteHandoff(templateState, "another-template"),
+  null,
+);
+handoffs.releaseWorkspaceRouteHandoff(detailState);
+assert.equal(routes.getResumeDetailRouteHandoff(detailState, "resume-a"), null);
+assert.ok(routes.getTemplateDetailRouteHandoff(templateState, "custom-a"));
+clearWorkspaceRouteMemory();
+assert.equal(routes.getResumeDetailRouteHandoff(detailState, "resume-a"), null);
+assert.equal(routes.getTemplateDetailRouteHandoff(templateState, "custom-a"), null);
 
 console.log("Workspace route memory verification passed.");

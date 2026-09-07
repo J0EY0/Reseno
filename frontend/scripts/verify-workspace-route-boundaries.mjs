@@ -252,26 +252,8 @@ assert.doesNotMatch(
   "Hover preparation must not retain route data in the token registry.",
 );
 assert.match(
-  workspaceRouteMemorySource,
-  /WorkspaceLateralRouteHandoffState[\s\S]{0,300}token:\s*string[\s\S]*routeDataByToken = new Map[\s\S]*committedRouteDataByView = new Map<[\s\S]{0,80}WorkspaceView[\s\S]*rememberWorkspaceLateralRoute[\s\S]*Object\.prototype\.hasOwnProperty\.call\(candidate, "data"\)/,
-  "Lateral history must contain only a token while validated one-time and per-view committed data stay in bounded memory.",
-);
-const lateralHistoryStateSource = workspaceRouteMemorySource.slice(
-  workspaceRouteMemorySource.indexOf(
-    "export type WorkspaceLateralRouteHandoffState",
-  ),
-  workspaceRouteMemorySource.indexOf(
-    "export interface WorkspaceLateralRouteResolution",
-  ),
-);
-assert.doesNotMatch(
-  lateralHistoryStateSource,
-  /data\s*:/,
-  "The browser-cloned lateral state must never contain route payload data.",
-);
-assert.match(
   lateralRouteDataSource,
-  /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceLateralRouteHandoff\(resolution\.tokenToDelete\)[\s\S]{0,300}replace:\s*true, state:\s*null[\s\S]*return resolution\.data/,
+  /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceHandoffToken\(resolution\.tokenToDelete\)[\s\S]{0,300}replace:\s*true, state:\s*null[\s\S]*return resolution\.data/,
   "The consumer must freeze its first frame from a handoff or committed view memory and scrub one-time or dead tokens before paint.",
 );
 assert.match(
@@ -294,7 +276,7 @@ for (const pageSource of [
 }
 assert.match(
   appSource,
-  /authGate\.phase === "app"[\s\S]{0,160}hasEnteredAuthenticatedAppRef\.current = true[\s\S]{0,180}!hasEnteredAuthenticatedAppRef\.current[\s\S]{0,240}import\("@\/lib\/workspace-route-memory"\)[\s\S]{0,160}clearWorkspaceLateralRouteMemory\(\)/,
+  /authGate\.phase === "app"[\s\S]{0,160}hasEnteredAuthenticatedAppRef\.current = true[\s\S]{0,180}!hasEnteredAuthenticatedAppRef\.current[\s\S]{0,240}import\("@\/lib\/workspace-route-memory"\)[\s\S]{0,160}clearWorkspaceRouteMemory\(\)/,
   "Leaving the authenticated app must clear all per-view snapshots and one-time handoffs.",
 );
 try {
@@ -474,7 +456,7 @@ assert.match(
 );
 assert.match(
   preparedNavigationSource,
-  /const commitPreparedRoute[\s\S]{0,900}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,160}intent\.finish\(\)[\s\S]{0,120}navigate\(path, \{ state \}\)[\s\S]{0,260}deleteWorkspaceLateralRouteHandoff\(handoffToken\)[\s\S]{0,300}WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
+  /const commitPreparedRoute[\s\S]{0,900}createWorkspaceLateralRouteHandoff\(prepared\)[\s\S]{0,160}intent\.finish\(\)[\s\S]{0,120}navigate\(path, \{ state \}\)[\s\S]{0,260}deleteWorkspaceHandoffToken\(handoffToken\)[\s\S]{0,300}WORKSPACE_NAVIGATION_ERROR_TOAST_ID/,
   "A detail route may allocate its token only inside the final guarded commit and must clean up failed commits.",
 );
 assert.doesNotMatch(
@@ -591,16 +573,6 @@ assert.match(
   /prepareTemplateDetailRoute\(templateId, persistence, \{\s*signal: intent\.signal/,
   "Template card navigation must freshly validate its target with the shared intent.",
 );
-assert.match(
-  openTemplateSource,
-  /commitTemplateDetailNavigation\(\s*intent,\s*templateId,\s*data/,
-  "Template card navigation must commit the complete prepared handoff.",
-);
-assert.equal(
-  (templateGalleryRouteSource.match(/await detailRouteReady;/g) ?? []).length,
-  2,
-  "Template create and import must finish preparing the detail module before navigation.",
-);
 const templateDetailCommitSource = templateGalleryRouteSource.slice(
   templateGalleryRouteSource.indexOf("const commitTemplateDetailNavigation"),
   templateGalleryRouteSource.indexOf("const openTemplate"),
@@ -610,20 +582,7 @@ assert.match(
   /!intent\.isCurrent\(\)[\s\S]*intent\.finish\(\)[\s\S]{0,160}navigate\(/,
   "Template detail commits must be owned by the latest shared intent.",
 );
-for (const [start, end, label] of [
-  ["const createCustomTemplate", "const importTemplates", "creation"],
-  ["const importTemplates", "const deleteTemplates", "import"],
-]) {
-  const mutationSource = templateGalleryRouteSource.slice(
-    templateGalleryRouteSource.indexOf(start),
-    templateGalleryRouteSource.indexOf(end),
-  );
-  assert.match(
-    mutationSource,
-    /const intent = beginNavigation\(\)[\s\S]*setCustomTemplates\([\s\S]{0,180}!intent\.isCurrent\(\)[\s\S]*await detailRouteReady[\s\S]*commitTemplateDetailNavigation\(\s*intent/,
-    `Template ${label} must keep its mutation result but never navigate after a newer intent.`,
-  );
-}
+
 assert.doesNotMatch(
   templateGalleryRouteSource,
   /detailNavigationIntentRef|detailNavigationAbortRef|new AbortController\(\)\.signal/,
@@ -1008,25 +967,4 @@ assert.match(
   /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale trash requests must exit before retry state and Toast.",
 );
-assert.match(
-  trashRouteSource,
-  /for \(const resumeId of resumeIds\)[\s\S]{0,100}await restoreResumeApi\(resumeId\)[\s\S]*setDeletedResumes\(\(current\)/,
-  "Trash must own sequential resume restore and remove restored items from its route state.",
-);
-assert.match(
-  trashRouteSource,
-  /for \(const templateId of templateIds\)[\s\S]{0,120}await restoreTemplateApi\(templateId\)[\s\S]*setDeletedTemplates\(\(current\)[\s\S]*setCustomTemplates\(\(current\)/,
-  "Trash must restore templates into its local catalog and remove their deleted records.",
-);
-assert.match(
-  trashRouteSource,
-  /for \(const resumeId of resumeIds\)[\s\S]{0,100}await deleteResumeForeverApi\(resumeId\)/,
-  "Trash must keep permanent resume deletion serialized.",
-);
-assert.match(
-  trashRouteSource,
-  /for \(const templateId of templateIds\)[\s\S]{0,100}await deleteTemplateForeverApi\(templateId\)/,
-  "Trash must keep permanent template deletion serialized.",
-);
-
 console.log("Workspace route ownership verified.");

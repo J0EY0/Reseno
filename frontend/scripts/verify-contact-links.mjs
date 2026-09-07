@@ -4,30 +4,19 @@ import { join } from "node:path";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import vm from "node:vm";
-import * as ts from "typescript";
 
+import { evaluateTypeScript } from "./typescript-module.mjs";
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
 
 const root = new URL("..", import.meta.url).pathname;
 const helperPath = join(root, "src", "lib", "contact-links.ts");
 const source = await readFile(helperPath, "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
-const module = { exports: {} };
-
-vm.runInNewContext(compiled, {
-  exports: module.exports,
-  module,
-  URL,
-  Set,
+const {
+  createContactHref,
+  normalizeContactFieldType,
+} = evaluateTypeScript(source, {
+  globals: { URL, Set },
 });
-
-const { createContactHref, normalizeContactFieldType } = module.exports;
 
 assert.equal(normalizeContactFieldType("url"), "url");
 assert.equal(normalizeContactFieldType("javascript"), "text");

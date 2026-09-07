@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AppMessages } from "@/i18n";
 import { readAvatarFileAsDataUrl } from "@/lib/avatar";
 import { createId } from "@/lib/resume";
 import type {
   ResumeTemplateDefinition,
+  ResumeTemplateUpdate,
   ResumeTemplateImageElement,
   ResumeTemplateLayout,
 } from "@/types/resume";
@@ -41,9 +42,14 @@ export function useTemplateImagesEditor({
 }: {
   t: AppMessages;
   template: ResumeTemplateDefinition;
-  onUpdateTemplate: (patch: Partial<ResumeTemplateDefinition>) => void;
+  onUpdateTemplate: (patch: ResumeTemplateUpdate) => void;
 }) {
   const isReadonly = Boolean(template.isBuiltIn);
+  const uploadsRef = useRef(new Map<string, symbol>());
+  useEffect(() => {
+    const uploads = uploadsRef.current;
+    return () => uploads.clear();
+  }, []);
   // This hook is called above Radix TabsContent so editor-only expansion and
   // name drafts survive tab switches without leaking into saved template data.
   const [expandedImageIdByTemplate, setExpandedImageIdByTemplate] = useState<
@@ -94,17 +100,27 @@ export function useTemplateImagesEditor({
 
   function updateImage(
     imageId: string,
-    patch: Partial<ResumeTemplateImageElement>,
+    patch:
+      | Partial<ResumeTemplateImageElement>
+      | ((image: ResumeTemplateImageElement) => Partial<ResumeTemplateImageElement>),
   ) {
     if (isReadonly) {
       return;
     }
 
-    updateLayout({
-      images: template.layout.images.map((image) =>
-        image.id === imageId ? { ...image, ...patch } : image,
-      ),
-    });
+    onUpdateTemplate((current) => ({
+      layout: {
+        ...current.layout,
+        images: current.layout.images.map((image) =>
+          image.id === imageId
+            ? {
+                ...image,
+                ...(typeof patch === "function" ? patch(image) : patch),
+              }
+            : image,
+        ),
+      },
+    }));
   }
 
   function setImageNameDraftValue(imageId: string, value: string) {
@@ -134,6 +150,7 @@ export function useTemplateImagesEditor({
     }
 
     const imageKey = `${template.id}:${imageId}`;
+    uploadsRef.current.delete(imageKey);
     setExpandedImageIdByTemplate((current) => {
       if (current[template.id] !== imageId) {
         return current;
@@ -168,19 +185,31 @@ export function useTemplateImagesEditor({
   }
 
   async function uploadImage(imageId: string, file: File | undefined) {
-    if (!file) {
+    const original = template.layout.images.find((image) => image.id === imageId);
+    if (!file || !original || isReadonly) {
       return;
     }
-
+    const imageKey = `${template.id}:${imageId}`;
+    const upload = Symbol();
+    uploadsRef.current.set(imageKey, upload);
     try {
       const src = await readAvatarFileAsDataUrl(file);
-      updateImage(imageId, {
+      if (uploadsRef.current.get(imageKey) !== upload) {
+        return;
+      }
+      updateImage(imageId, (current) => ({
         src,
         alt: file.name,
-        name: file.name.replace(/\.[^.]+$/, "") || file.name,
-      });
+        name: current.name === original.name
+          ? file.name.replace(/\.[^.]+$/, "") || file.name
+          : current.name,
+      }));
     } catch (error) {
       console.error("Failed to import template image.", error);
+    } finally {
+      if (uploadsRef.current.get(imageKey) === upload) {
+        uploadsRef.current.delete(imageKey);
+      }
     }
   }
 

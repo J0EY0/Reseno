@@ -9,10 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="resumate-data-flow-") as tmp_dir:
         data_dir = Path(tmp_dir)
-        os.environ["APP_DATA_DIR"] = str(data_dir)
-        os.environ["APP_DB_PATH"] = str(data_dir / "app.db")
-        os.environ["APP_STORAGE_DIR"] = str(data_dir / "storage")
-        os.environ["APP_ENV_FILE"] = str(data_dir / ".env")
+        from tests.runtime_environment import runtime_environment
+
+        os.environ.update(runtime_environment(data_dir))
 
         from fastapi.testclient import TestClient
 
@@ -56,6 +55,7 @@ def main() -> None:
             resume_saved = client.post(
                 "/api/resumes",
                 json={
+                    "documentLocale": "en",
                     "title": "Script Resume",
                     "jobBrief": "Data flow",
                     "typography": {"fontFamily": "inter", "fontSize": 16},

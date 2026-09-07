@@ -185,6 +185,7 @@ export function CopilotModelSelector({
               {group.items.map((config) => (
                 <ModelSelectorItem
                   key={config.id}
+                  keywords={[config.nickname, config.model]}
                   onSelect={() => handleModelSelect(config.id)}
                   value={config.id}
                 >

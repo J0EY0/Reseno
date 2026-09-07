@@ -442,7 +442,6 @@ async def _stream_messages_once(
                     reasoning="".join(reasoning_parts).strip(),
                     usage=anthropic_usage({"usage": usage}),
                     stop_reason=stop_reason,
-                    response_id=response_id,
                     provider_state=_content_blocks_provider_state(
                         blocks,
                         model=config.model,
@@ -810,17 +809,12 @@ def _message_from_payload(
         stop_reason="tool_calls"
         if tool_calls
         else map_stop_reason(payload.get("stop_reason")),
-        response_id=str(payload.get("id") or "") or None,
         provider_state=_content_blocks_provider_state(
             payload.get("content"),
             model=model,
         ),
         sources=sources,
     )
-
-
-def _text(payload: dict[str, Any]) -> str:
-    return _text_and_sources(payload.get("content"))[0]
 
 
 def _text_and_sources(content: Any) -> tuple[str, list[LlmWebSource]]:

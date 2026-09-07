@@ -1,4 +1,5 @@
 import asyncio
+import json
 from io import BytesIO
 
 import pytest
@@ -6,6 +7,7 @@ from fastapi import HTTPException, UploadFile, status
 from fastapi.testclient import TestClient
 
 from app.services.imports import load_json_upload
+from app.services.resume_starters import create_empty_resume
 
 JSON_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
 
@@ -59,3 +61,52 @@ def test_import_endpoint_rejects_json_above_the_size_limit(
     assert response.status_code == status.HTTP_413_CONTENT_TOO_LARGE
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "JSON_UPLOAD_TOO_LARGE"
+
+
+@pytest.mark.parametrize(
+    ("invalid_document", "expected_message"),
+    [
+        ("schema_version", "RESUME_DOCUMENT_INVALID"),
+        ("duplicate_section", "RESUME_DOCUMENT_DUPLICATE_ID"),
+        ("duplicate_item", "RESUME_DOCUMENT_DUPLICATE_ID"),
+    ],
+)
+def test_import_resume_rejects_invalid_document(
+    client: TestClient,
+    invalid_document: str,
+    expected_message: str,
+) -> None:
+    resume = create_empty_resume("earlyCareer", "en")
+    if invalid_document == "schema_version":
+        resume["schemaVersion"] = 1
+    elif invalid_document == "duplicate_section":
+        resume["sections"][1]["id"] = resume["sections"][0]["id"]
+    else:
+        resume["sections"][1]["items"][0]["id"] = resume["sections"][0]["items"][0][
+            "id"
+        ]
+
+    payload = {
+        "format": "resumate.resume",
+        "formatVersion": 1,
+        "templates": [],
+        "resumes": [
+            {
+                "title": "Imported resume",
+                "documentLocale": "en",
+                "resume": resume,
+                "jobBrief": "",
+                "typography": {"fontFamily": "inter", "fontSize": 16},
+                "template": "minimal",
+                "templateSettings": None,
+            }
+        ],
+    }
+    response = client.post(
+        "/api/import/resume",
+        files={"file": ("resume.json", json.dumps(payload), "application/json")},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["code"] == 40000
+    assert response.json()["message"] == expected_message

@@ -1,10 +1,13 @@
 import base64
 import hashlib
+import json
+import re
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from html.parser import HTMLParser
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -36,6 +39,7 @@ from app.services.auth_identities import (
     get_owner_revision,
     list_identities,
 )
+from app.services.auth_oauth_callback import oauth_callback_response
 from app.services.auth_tokens import decode_access_token
 
 PUBLIC_ORIGIN = "http://127.0.0.1:5173"
@@ -173,9 +177,15 @@ def assert_cookie(response: httpx.Response, secure: bool = False) -> None:
     assert ("; secure" in cookie) == secure
 
 
-def authorization(github: GitHub, url: str) -> None:
-    github.authorization = parse_qs(urlsplit(url).query)
+def authorization(github: GitHub, url: str, intent: str = "bind") -> None:
+    github.authorization = parse_qs(urlsplit(url).query, keep_blank_values=True)
     assert urlsplit(url).netloc == "github.com"
+    if intent == "bind":
+        assert github.authorization["prompt"] == ["select_account"]
+    else:
+        assert "prompt" not in github.authorization
+    assert github.authorization["state"][0]
+    assert len(github.authorization["code_challenge"][0]) == 43
     assert github.authorization["code_challenge_method"] == ["S256"]
     assert github.authorization["redirect_uri"] == [
         f"{github.origin}/api/auth/oauth/github/callback"
@@ -186,11 +196,99 @@ def authorization(github: GitHub, url: str) -> None:
 def start(client: TestClient, github: GitHub, intent: str = "bind") -> None:
     response = client.post(f"/api/auth/oauth/github/{intent}")
     assert response.status_code == 200, response.text
-    authorization(github, response.json()["data"]["authorizationUrl"])
+    authorization(github, response.json()["data"]["authorizationUrl"], intent)
     assert_cookie(response, secure=github.origin.startswith("https://"))
 
 
-def callback(client: TestClient, github: GitHub, **query: str) -> dict[str, list[str]]:
+def bridge_data(response: httpx.Response) -> dict[str, Any]:
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert "location" not in response.headers
+    match = re.search(r"const config = (.*);", response.text)
+    assert match is not None
+    data = json.loads(match[1])
+    assert data["result"]["type"] == "resumate:oauth:result"
+    assert set(data["result"]) in ({"type", "code", "intent"}, {"type", "error"})
+    return data
+
+
+def bridge_result(response: httpx.Response) -> dict[str, list[str]]:
+    result = bridge_data(response)["result"]
+    for secret in (
+        "github-app-secret",
+        "github-user-token",
+        "unused-refresh-token",
+        "private-provider-details",
+    ):
+        assert secret not in response.text
+    return {key: [value] for key, value in result.items() if key != "type"}
+
+
+def test_callback_bridge_serializes_script_data_without_html_injection() -> None:
+    class Document(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tags: list[tuple[str, dict[str, str | None]]] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            self.tags.append((tag, dict(attrs)))
+
+    code = '</script><img src=x onerror="alert(1)">&\u2028\u2029'
+    response = oauth_callback_response(PUBLIC_ORIGIN, {"code": code, "intent": "bind"})
+    http_response = httpx.Response(
+        response.status_code, headers=response.headers, content=response.body
+    )
+    assert bridge_data(http_response) == {
+        "origin": PUBLIC_ORIGIN,
+        "result": {
+            "type": "resumate:oauth:result",
+            "code": code,
+            "intent": "bind",
+        },
+        "errorUrl": f"{PUBLIC_ORIGIN}/auth/callback#error=OAUTH_INVALID_STATE",
+    }
+    document = Document()
+    document.feed(http_response.text)
+    scripts = [attrs for tag, attrs in document.tags if tag == "script"]
+    styles = [attrs for tag, attrs in document.tags if tag == "style"]
+    assert len(scripts) == len(styles) == 1
+    assert "src" not in scripts[0]
+    assert not any(tag in {"img", "iframe", "link"} for tag, _ in document.tags)
+    nonce = scripts[0]["nonce"]
+    assert nonce and styles[0]["nonce"] == nonce
+    policy = response.headers["Content-Security-Policy"]
+    assert set(policy.split("; ")) == {
+        "default-src 'none'",
+        f"script-src 'nonce-{nonce}'",
+        f"style-src 'nonce-{nonce}'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'none'",
+    }
+
+
+def test_callback_bridge_nonce_is_unique_per_response() -> None:
+    responses = [
+        oauth_callback_response(PUBLIC_ORIGIN, {"error": "OAUTH_CANCELLED"})
+        for _ in range(2)
+    ]
+    assert (
+        responses[0].headers["Content-Security-Policy"]
+        != responses[1].headers["Content-Security-Policy"]
+    )
+
+
+def callback(
+    client: TestClient,
+    github: GitHub,
+    *,
+    expected_intent: str = "bind",
+    **query: str,
+) -> dict[str, list[str]]:
     query = {
         "state": github.authorization["state"][0],
         "code": f"provider-code-{len(github.used_codes)}",
@@ -200,14 +298,19 @@ def callback(client: TestClient, github: GitHub, **query: str) -> dict[str, list
         f"/api/auth/oauth/github/callback?{urlencode(query)}",
         follow_redirects=False,
     )
+    if expected_intent == "bind":
+        return bridge_result(response)
     assert response.status_code == 303
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     location = urlsplit(response.headers["Location"])
-    assert location.path == "/auth/callback"
+    assert location.path == "/login"
     assert not location.query
-    assert "access_token" not in location.fragment
-    return parse_qs(location.fragment)
+    assert location.netloc in {"", urlsplit(github.origin).netloc}
+    result = parse_qs(location.fragment)
+    assert set(result) in ({"oauth_code"}, {"oauth_error"})
+    assert "access_token" not in response.headers["Location"]
+    return result
 
 
 def bind(client: TestClient, github: GitHub) -> None:
@@ -262,7 +365,7 @@ def setup_callback(client: TestClient, state: str, **query: str) -> httpx.Respon
         params={"state": state, "code": "manifest-code", **query},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code in {200, 303}
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     return response
@@ -288,9 +391,8 @@ def test_manifest_setup_automatically_binds_and_persists_across_app_restarts(
     get_settings.cache_clear()
     with TestClient(create_app()) as restarted:
         start(restarted, github, "login")
-        callback_result = callback(restarted, github)
-        assert callback_result["intent"] == ["login"]
-        code = callback_result["code"][0]
+        callback_result = callback(restarted, github, expected_intent="login")
+        code = callback_result["oauth_code"][0]
         result = restarted.post("/api/auth/oauth/complete", json={"code": code})
         assert result.status_code == 200, result.text
         claims = decode_access_token(result.json()["data"]["auth"]["accessToken"])
@@ -365,10 +467,13 @@ def test_setup_rejects_untrusted_or_failed_callbacks(
         github.fail_conversion = True
         expected = "OAUTH_SETUP_FAILED"
     response = setup_callback(client, state, **query)
-    location = urlsplit(response.headers["Location"])
-    assert parse_qs(location.fragment) == {"error": [expected]}
-    if problem == "cookie":
-        assert not location.netloc
+    assert bridge_result(response) == {"error": [expected]}
+    data = bridge_data(response)
+    if problem in {"cookie", "expired"}:
+        assert data["origin"] == ""
+        assert data["errorUrl"] == "/auth/callback#error=OAUTH_INVALID_STATE"
+    else:
+        assert data["origin"] == github.origin
     assert not github_app_configured()
     assert list_identities() == []
     if problem != "network":
@@ -396,9 +501,7 @@ def test_setup_validates_converted_manifest_before_persisting(
     state = setup(client, github)
     github.manifest_overrides = overrides
     response = setup_callback(client, state)
-    assert parse_qs(urlsplit(response.headers["Location"]).fragment) == {
-        "error": ["OAUTH_SETUP_FAILED"]
-    }
+    assert bridge_result(response) == {"error": ["OAUTH_SETUP_FAILED"]}
     assert not github_app_configured()
 
 
@@ -420,9 +523,7 @@ def test_setup_rechecks_owner_in_configuration_transaction(
     state = setup(client, github)
     github.change_owner_during_conversion = True
     response = setup_callback(client, state)
-    assert parse_qs(urlsplit(response.headers["Location"]).fragment) == {
-        "error": ["OAUTH_OWNER_CHANGED"]
-    }
+    assert bridge_result(response) == {"error": ["OAUTH_OWNER_CHANGED"]}
     assert not github_app_configured()
 
 
@@ -436,9 +537,7 @@ def test_setup_replay_cannot_overwrite_saved_configuration(
     request_count = len(github.requests)
     client.cookies.update(cookies)
     response = setup_callback(client, state)
-    assert parse_qs(urlsplit(response.headers["Location"]).fragment) == {
-        "error": ["OAUTH_ALREADY_CONFIGURED"]
-    }
+    assert bridge_result(response) == {"error": ["OAUTH_ALREADY_CONFIGURED"]}
     assert get_github_app() == original
     assert len(github.requests) == request_count
     assert (
@@ -535,6 +634,10 @@ def test_secure_cookie_follows_each_validated_origin_without_shared_flags(
 def test_public_paths_only_allow_authentication_not_setup_or_binding(
     unauthenticated_client: TestClient,
 ) -> None:
+    assert unauthenticated_client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": False,
+        "githubLoginAvailable": False,
+    }
     for method, path in [
         ("GET", "/api/auth/oauth/identities"),
         ("POST", "/api/auth/oauth/github/bind"),
@@ -553,6 +656,10 @@ def test_google_is_not_a_supported_provider(client: TestClient) -> None:
 
 
 def test_unbound_github_cannot_log_in(client: TestClient, configured: GitHub) -> None:
+    assert client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": False,
+        "githubLoginAvailable": False,
+    }
     response = client.post("/api/auth/oauth/github/login")
     assert response.json()["message"] == "OAUTH_NOT_BOUND"
     assert not configured.requests
@@ -570,10 +677,13 @@ def test_bind_and_login_validate_stable_identity_and_one_use_exchange(
     assert listed["identities"][0]["label"] == "octocat"
     assert listed["identities"][0]["createdAt"].endswith("Z")
     client.headers.pop("Authorization")
+    assert client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": False,
+        "githubLoginAvailable": True,
+    }
     start(client, configured, "login")
-    callback_result = callback(client, configured)
-    assert callback_result["intent"] == ["login"]
-    code = callback_result["code"][0]
+    callback_result = callback(client, configured, expected_intent="login")
+    code = callback_result["oauth_code"][0]
     result = client.post("/api/auth/oauth/complete", json={"code": code})
     assert result.status_code == 200
     claims = decode_access_token(result.json()["data"]["auth"]["accessToken"])
@@ -607,8 +717,52 @@ def test_oauth_callback_rejects_invalid_browser_flow(
         now = time.time()
         monkeypatch.setattr(auth_oauth.time, "time", lambda: now + 600)
     expected = "OAUTH_CANCELLED" if problem == "cancel" else "OAUTH_INVALID_STATE"
-    assert callback(client, configured, **query) == {"error": [expected]}
+    expected_intent = "login" if problem in {"cookie", "expired"} else "bind"
+    error_key = "oauth_error" if expected_intent == "login" else "error"
+    assert callback(client, configured, expected_intent=expected_intent, **query) == {
+        error_key: [expected]
+    }
     assert list_identities() == []
+
+
+@pytest.mark.parametrize("intent", ["login", "bind"])
+@pytest.mark.parametrize("problem", ["cancel", "state"])
+def test_callback_errors_follow_session_intent_not_query_parameters(
+    client: TestClient,
+    configured: GitHub,
+    intent: str,
+    problem: str,
+) -> None:
+    if intent == "login":
+        bind(client, configured)
+    start(client, configured, intent)
+    query = {"intent": "bind" if intent == "login" else "login"}
+    if problem == "cancel":
+        query["error"] = "access_denied"
+        query["error_description"] = "private-provider-details"
+    else:
+        query["state"] = "attacker-state"
+    expected = "OAUTH_CANCELLED" if problem == "cancel" else "OAUTH_INVALID_STATE"
+    error_key = "oauth_error" if intent == "login" else "error"
+    assert callback(client, configured, expected_intent=intent, **query) == {
+        error_key: [expected]
+    }
+
+
+def test_callback_without_session_returns_relative_login_error(
+    client: TestClient,
+) -> None:
+    client.cookies.clear()
+    response = client.get(
+        "/api/auth/oauth/github/callback",
+        params={"state": "untrusted", "code": "untrusted", "intent": "bind"},
+        headers={"Host": "attacker.example"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["Location"] == "/login#oauth_error=OAUTH_INVALID_STATE"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
 
 
 def test_oauth_rejects_broad_scopes_and_provider_network_errors(
@@ -630,7 +784,9 @@ def test_login_matches_github_id_not_display_name(
     bind(client, configured)
     start(client, configured, "login")
     configured.user_id = 99
-    assert callback(client, configured) == {"error": ["OAUTH_NOT_BOUND"]}
+    assert callback(client, configured, expected_intent="login") == {
+        "oauth_error": ["OAUTH_NOT_BOUND"]
+    }
 
 
 def test_exchange_is_bound_to_browser_cookie(
@@ -679,7 +835,7 @@ def test_unbinding_invalidates_pending_login_and_preserves_password_login(
 ) -> None:
     bind(client, configured)
     start(client, configured, "login")
-    code = callback(client, configured)["code"][0]
+    code = callback(client, configured, expected_intent="login")["oauth_code"][0]
     assert client.delete("/api/auth/oauth/github/binding").json()["data"] == {
         "deleted": True
     }
@@ -688,6 +844,10 @@ def test_unbinding_invalidates_pending_login_and_preserves_password_login(
     )
     assert list_identities() == []
     assert github_app_configured()
+    assert client.get("/api/auth/setup").json()["data"] == {
+        "setupRequired": False,
+        "githubLoginAvailable": False,
+    }
     assert (
         client.post(
             "/api/auth/login",

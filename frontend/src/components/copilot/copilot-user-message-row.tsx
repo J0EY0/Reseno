@@ -10,6 +10,7 @@ import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { AgentChatAttachment } from "@/types/api";
 import { Check, Copy, Pencil, RotateCcw, X } from "lucide-react";
+import { memo } from "react";
 
 import { AgentMessageAttachments } from "./copilot-attachments";
 import type { AgentPanelMessage } from "./copilot-message-model";
@@ -21,19 +22,19 @@ interface AgentUserMessageRowProps {
   isRequestBusy: boolean;
   message: AgentPanelMessage;
   onCancelEdit: () => void;
-  onCopy: () => void;
+  onCopy: (message: AgentPanelMessage) => void;
   onDownloadAttachment: (file: AgentChatAttachment) => void;
   onEditTextChange: (value: string) => void;
   onReferenceAttachment: (file: AgentChatAttachment) => void;
-  onRetry: () => void;
-  onStartEdit: () => void;
-  onSubmitEdit: () => void;
+  onRetry: (message: AgentPanelMessage) => void;
+  onStartEdit: (message: AgentPanelMessage) => void;
+  onSubmitEdit: (message: AgentPanelMessage) => void;
   retryable: boolean;
   t: AppMessages;
 }
 
 /** Owns user-message display, editing, and low-frequency actions behind one row. */
-export function AgentUserMessageRow({
+export const AgentUserMessageRow = memo(function AgentUserMessageRow({
   copied,
   editedText,
   isEditing,
@@ -106,7 +107,7 @@ export function AgentUserMessageRow({
                       (event.metaKey || event.ctrlKey)
                     ) {
                       event.preventDefault();
-                      onSubmitEdit();
+                      onSubmitEdit(message);
                     }
                   }}
                 />
@@ -126,7 +127,7 @@ export function AgentUserMessageRow({
                     size="xs"
                     className="h-6 rounded-md bg-foreground px-2.5 text-xs text-background shadow-none hover:bg-foreground/90"
                     disabled={submitDisabled}
-                    onClick={onSubmitEdit}
+                    onClick={() => onSubmitEdit(message)}
                   >
                     <Check className="size-3" />
                     {t.agentSubmitEdit}
@@ -149,7 +150,7 @@ export function AgentUserMessageRow({
               variant="ghost"
               size="icon-xs"
               className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
-              onClick={onCopy}
+              onClick={() => onCopy(message)}
             >
               {copied ? (
                 <Check className="size-3" />
@@ -164,7 +165,7 @@ export function AgentUserMessageRow({
               size="icon-xs"
               className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
               disabled={isRequestBusy}
-              onClick={onStartEdit}
+              onClick={() => onStartEdit(message)}
             >
               <Pencil className="size-3" />
             </MessageAction>
@@ -176,7 +177,7 @@ export function AgentUserMessageRow({
                 size="icon-xs"
                 className="size-5 rounded-md text-muted-foreground transition-[background-color,box-shadow,color] hover:bg-muted hover:text-foreground hover:shadow-sm focus-visible:bg-muted focus-visible:text-foreground focus-visible:shadow-sm"
                 disabled={isRequestBusy}
-                onClick={onRetry}
+                onClick={() => onRetry(message)}
               >
                 <RotateCcw className="size-3" />
               </MessageAction>
@@ -186,4 +187,4 @@ export function AgentUserMessageRow({
       </div>
     </Message>
   );
-}
+});

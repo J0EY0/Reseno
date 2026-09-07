@@ -3,7 +3,7 @@ export const AUTH_REFRESH_LOCK_NAME = 'resumate-auth-refresh'
 const INVALIDATED_TOKEN_CACHE_KEY = 'resumate-invalidated-jwts'
 const INVALIDATED_TOKEN_TTL_MS = 4 * 60 * 60 * 1000
 
-export interface AuthSession {
+interface AuthSession {
   username: string
   authenticatedAt: string
   accessToken: string
@@ -36,7 +36,7 @@ function writeInvalidatedTokenCache(cache: InvalidatedTokenCache) {
   )
 }
 
-export function pruneInvalidatedTokenCache() {
+function pruneInvalidatedTokenCache() {
   const now = Date.now()
   const cache = readInvalidatedTokenCache()
   const nextCache = Object.fromEntries(
@@ -65,7 +65,7 @@ export function isTokenLocallyInvalidated(token: string) {
   return token in pruneInvalidatedTokenCache()
 }
 
-export function getAuthSession(): AuthSession | null {
+function getAuthSession(): AuthSession | null {
   if (typeof window === 'undefined') {
     return null
   }

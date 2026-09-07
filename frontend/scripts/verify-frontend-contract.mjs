@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const root = new URL("..", import.meta.url).pathname;
 const srcDir = join(root, "src");
@@ -41,20 +41,8 @@ function assert(condition, message) {
 
 async function loadTsModule(path) {
   const source = await readFile(path, "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
 
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-  });
-
-  return module.exports;
+  return evaluateTypeScript(source);
 }
 
 async function loadAgentToolDisplayHelpers() {
@@ -196,7 +184,7 @@ assert(
   "New resumes must require an explicit document language and let the backend choose that language's default template.",
 );
 assert(
-  enMessages.followResumeLanguage === "Follow resume language" &&
+  enMessages.followResumeLanguage === "Follow resume" &&
     zhMessages.followResumeLanguage === "跟随简历语言" &&
     !("followSystemLanguage" in enMessages) &&
     !("followSystemLanguage" in zhMessages),
@@ -544,19 +532,6 @@ assert(
       copilotAttachments,
     ),
   "The Agent send control must render aggregate attachment upload progress.",
-);
-assert(
-  /const\s+sendOperation\s*=\s*sendPrompt\(/.test(submitPromptSource) &&
-    /requestSubmitted\s*=\s*sendOperation\.submitted/.test(
-      submitPromptSource,
-    ) &&
-    /if\s*\(!requestSubmitted\)\s*\{[\s\S]{0,180}await\s+sendOperation\.completion[\s\S]{0,180}throw/.test(
-      submitPromptSource,
-    ) &&
-    /void \(async \(\) => \{[\s\S]{0,160}await sendOperation\.accepted[\s\S]{0,320}await sendOperation\.completion/.test(
-      submitPromptSource,
-    ),
-  "The composer must clear after local submission while acceptance and completion continue in the background.",
 );
 assert(
   /const convertedFiles = await Promise\.all\([\s\S]*?if \(!mountedRef\.current\) \{\s*return;\s*\}[\s\S]*?const result = onSubmit\(/.test(

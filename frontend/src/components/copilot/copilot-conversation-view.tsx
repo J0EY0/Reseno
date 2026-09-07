@@ -203,25 +203,15 @@ export function CopilotConversationView({
                     key={message.id}
                     message={message}
                     onCancelEdit={messageActions.cancelEditingUserMessage}
-                    onCopy={() => {
-                      void messageActions.copyUserMessage(message)
-                    }}
-                    onDownloadAttachment={(file) => {
-                      void messageActions.downloadHistoryAttachment(file)
-                    }}
+                    onCopy={messageActions.copyUserMessage}
+                    onDownloadAttachment={messageActions.downloadHistoryAttachment}
                     onEditTextChange={messageActions.setEditingMessageText}
                     onReferenceAttachment={
                       promptActions.referenceHistoryAttachment
                     }
-                    onRetry={() => {
-                      void messageActions.retryUserMessage(message)
-                    }}
-                    onStartEdit={() =>
-                      messageActions.startEditingUserMessage(message)
-                    }
-                    onSubmitEdit={() => {
-                      void messageActions.submitEditedUserMessage(message)
-                    }}
+                    onRetry={messageActions.retryUserMessage}
+                    onStartEdit={messageActions.startEditingUserMessage}
+                    onSubmitEdit={messageActions.submitEditedUserMessage}
                     retryable={message.id === latestUserMessageId}
                     t={t}
                   />

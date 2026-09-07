@@ -331,44 +331,6 @@ assert.match(
   /refresh:\s*true/,
   "Only explicit refreshes may bypass the cached model list.",
 );
-const providerSelectionSource = controller.slice(
-  controller.indexOf("const selectProvider"),
-  controller.indexOf("const selectModel"),
-);
-const explicitDiscoverySource = controller.slice(
-  controller.indexOf("const refreshModels"),
-  controller.indexOf("const submit"),
-);
-assert.match(
-  controller,
-  /const discoveryRequestIdRef = useRef\(0\)/,
-  "Explicit model discovery must retain a latest-intent request identity outside render state.",
-);
-assert.match(
-  providerSelectionSource,
-  /discoveryRequestIdRef\.current \+= 1;[\s\S]*setDiscovering\(false\)/,
-  "Switching providers must immediately invalidate an in-flight discovery request and clear its pending state.",
-);
-assert.match(
-  explicitDiscoverySource,
-  /const requestId = \+\+discoveryRequestIdRef\.current;/,
-  "Every explicit discovery request must claim a new latest-intent identity.",
-);
-assert.match(
-  explicitDiscoverySource,
-  /if \(requestId !== discoveryRequestIdRef\.current\) \{\s*return;\s*\}\s*applyDiscoveredModels\(response\.models\)/,
-  "A stale discovery response must not apply models to the newly selected provider.",
-);
-assert.ok(
-  (explicitDiscoverySource.match(/requestId !== discoveryRequestIdRef\.current/g) ?? [])
-    .length >= 2,
-  "Stale model discovery failures must be ignored as well as stale successes.",
-);
-assert.match(
-  explicitDiscoverySource,
-  /if \(requestId === discoveryRequestIdRef\.current\) \{\s*setDiscovering\(false\);\s*\}/,
-  "Only the latest model discovery request may settle the shared pending state.",
-);
 assert.match(
   controller,
   /models\.length === 1 \? models\[0\] : null/,

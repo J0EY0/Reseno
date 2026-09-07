@@ -4,10 +4,6 @@ from typing import Any
 
 PII_BASIC_FIELDS = frozenset({"name", "phone", "email", "location", "avatar"})
 HIDDEN_BASIC_VALUE = "[hidden]"
-# Model-hidden PII is never writable by Agent tools. Headline and summary are
-# professional content even though they live beside personal fields.
-AGENT_WRITABLE_BASIC_FIELDS = frozenset({"headline", "summary"})
-
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", flags=re.IGNORECASE)

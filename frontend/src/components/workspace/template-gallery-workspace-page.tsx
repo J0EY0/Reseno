@@ -49,7 +49,7 @@ export function TemplateGalleryWorkspacePage() {
         onTemplateLocaleChange={gallery.setTemplateLocale}
         onCreateCustomTemplate={() => void gallery.createCustomTemplate()}
         onImportTemplates={(file) => void gallery.importTemplates(file)}
-        onDeleteTemplates={(ids) => void gallery.deleteTemplates(ids)}
+        onDeleteTemplates={gallery.deleteTemplates}
       />
     </div>
   );

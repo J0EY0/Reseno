@@ -61,14 +61,18 @@ function matchesAcceptedType(file: File, accept?: string) {
     return true;
   }
 
+  const filename = file.name.toLowerCase();
+  const mediaType = file.type.toLowerCase();
   return accept
     .split(",")
-    .map((pattern) => pattern.trim())
+    .map((pattern) => pattern.trim().toLowerCase())
     .filter(Boolean)
     .some((pattern) =>
-      pattern.endsWith("/*")
-        ? file.type.startsWith(pattern.slice(0, -1))
-        : file.type === pattern,
+      pattern.startsWith(".")
+        ? filename.endsWith(pattern)
+        : pattern.endsWith("/*")
+          ? mediaType.startsWith(pattern.slice(0, -1))
+          : mediaType === pattern,
     );
 }
 

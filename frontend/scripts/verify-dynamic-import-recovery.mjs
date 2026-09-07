@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
 
-import * as ts from "typescript";
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const readText = (path) => readFile(new URL(path, frontendRoot), "utf8");
@@ -25,7 +24,7 @@ const [
   mainSource,
   viteConfigSource,
   viteTestCacheSource,
-  workspaceNetworkSource,
+  browserFixturesSource,
   resumeGalleryPageSource,
   templateGalleryPageSource,
   ...viteScriptSources
@@ -36,19 +35,12 @@ const [
   readText("src/main.tsx"),
   readText("vite.config.ts"),
   readText("scripts/vite-test-cache.mjs"),
-  readText("../backend/tests/e2e/test_workspace_route_network.py"),
+  readText("../backend/tests/e2e/conftest.py"),
   readText("src/components/workspace/resume-gallery-workspace-page.tsx"),
   readText("src/components/workspace/template-gallery-workspace-page.tsx"),
   ...programmaticViteScripts.map(readText),
 ]);
 
-const compiledRecoverySource = ts.transpileModule(recoverySource, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
-const module = { exports: {} };
 const listeners = new Map();
 const storage = new Map();
 let reloadCount = 0;
@@ -82,19 +74,15 @@ const windowMock = {
   },
 };
 
-vm.runInNewContext(compiledRecoverySource, {
-  exports: module.exports,
-  module,
-  window: windowMock,
-});
-
 const {
   clearDynamicImportReloadGuard,
   getApplicationRouteErrorDetails,
   installDynamicImportRecovery,
   isDynamicImportFailure,
   tryReloadAfterDynamicImportFailure,
-} = module.exports;
+} = evaluateTypeScript(recoverySource, {
+  globals: { window: windowMock },
+});
 
 assert.deepEqual(
   { ...getApplicationRouteErrorDetails(new Error("ordinary render failure")) },
@@ -248,7 +236,7 @@ assert.match(viteConfigSource, /RESUMATE_VITE_CACHE_DIR/);
 assert.match(viteConfigSource, /cacheDir/);
 assert.match(viteTestCacheSource, /mkdtempSync/);
 assert.match(viteTestCacheSource, /tmpdir\(\)/);
-assert.match(workspaceNetworkSource, /"RESUMATE_VITE_CACHE_DIR"/);
+assert.match(browserFixturesSource, /"RESUMATE_VITE_CACHE_DIR"/);
 
 for (const [index, source] of viteScriptSources.entries()) {
   assert.match(

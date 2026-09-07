@@ -16,7 +16,7 @@ export function applyWorkspaceTheme(theme: "light" | "dark") {
   window.setTimeout(() => transitionBlocker.remove(), 1);
 }
 
-export function normalizeWorkspaceTheme(value: unknown): ThemeMode {
+function normalizeWorkspaceTheme(value: unknown): ThemeMode {
   return value === "dark" || value === "system" ? value : "light";
 }
 

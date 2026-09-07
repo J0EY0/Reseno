@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import vm from "node:vm";
 import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 const copilotRoot = join(
@@ -163,46 +164,22 @@ function compileFunctions(source, declarations, names) {
   for (const declaration of declarations) {
     assert(declaration, `Missing behavior function: ${names.join(", ")}`);
   }
-  const compiled = ts.transpileModule(
+  return evaluateTypeScript(
     `${declarations.map((declaration) => declaration.getText(source)).join("\n")}\nmodule.exports = { ${names.join(", ")} };`,
-    {
-      compilerOptions: {
-        module: ts.ModuleKind.CommonJS,
-        target: ts.ScriptTarget.ES2022,
-      },
-    },
-  ).outputText;
-  const behaviorModule = { exports: {} };
-  vm.runInNewContext(compiled, {
-    exports: behaviorModule.exports,
-    module: behaviorModule,
-  });
-  return behaviorModule.exports;
+  );
 }
 
 async function loadTypeScriptModule(path, imports, globals = {}) {
   const source = await readFile(path, "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
+
+  return evaluateTypeScript(source, {
+    globals: {
+      AbortController,
+      console,
+      ...globals,
     },
-  }).outputText;
-  const behaviorModule = { exports: {} };
-  vm.runInNewContext(compiled, {
-    AbortController,
-    console,
-    exports: behaviorModule.exports,
-    module: behaviorModule,
-    require: (specifier) => {
-      if (Object.hasOwn(imports, specifier)) {
-        return imports[specifier];
-      }
-      throw new Error(`Unexpected import: ${specifier}`);
-    },
-    ...globals,
+    imports,
   });
-  return behaviorModule.exports;
 }
 
 function createDeferred() {
@@ -249,21 +226,9 @@ assert(
 );
 
 const ownershipSource = ownershipDeclaration.getText(sourceFile);
-const compiledOwnership = ts.transpileModule(
+const { isPendingSendOwner } = evaluateTypeScript(
   `${ownershipSource}\nmodule.exports = { isPendingSendOwner };`,
-  {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  },
-).outputText;
-const ownershipModule = { exports: {} };
-vm.runInNewContext(compiledOwnership, {
-  exports: ownershipModule.exports,
-  module: ownershipModule,
-});
-const { isPendingSendOwner } = ownershipModule.exports;
+);
 
 const promptBehaviorNames = [
   "selectActivePromptSubmissionFiles",
@@ -458,15 +423,6 @@ assert(
 assert(
   !sendControllerSource.includes("runtime.sessionRevision ?? undefined"),
   "A resume-scoped Agent request must never fall back to an undefined revision.",
-);
-assert(
-  /requestSubmitted\s*=\s*sendOperation\.submitted[\s\S]{0,160}if \(!requestSubmitted\)/.test(
-    promptActionsSource,
-  ) &&
-    /void \(async \(\) => \{[\s\S]{0,120}await sendOperation\.accepted/.test(
-      promptActionsSource,
-    ),
-  "The composer must clear after local submission while server acceptance continues in the background.",
 );
 assert(
   promptFormSource.includes("selectActivePromptSubmissionFiles("),
@@ -799,8 +755,14 @@ assert(
           edits: [
             {
               id: "edit-authoritative",
-              target: "basics.summary",
+              target: "basic.summary",
               title: "Saved edit",
+              reason: "Use the saved summary.",
+              operation: {
+                type: "replace_field",
+                path: "basic.summary",
+                value: "Saved summary",
+              },
             },
           ],
           id: "assistant-authoritative",
@@ -828,11 +790,11 @@ assert(
             .find((message) => message.response?.draft);
           return sourceMessage
             ? {
-                ...sourceMessage.response.draft,
-                edits: sourceMessage.response.edits ?? [],
-                sourceMessageId: sourceMessage.id,
-                transactionState: sourceMessage.response.transactionState,
-              }
+              ...sourceMessage.response.draft,
+              edits: sourceMessage.response.edits ?? [],
+              sourceMessageId: sourceMessage.id,
+              transactionState: sourceMessage.response.transactionState,
+            }
             : null;
         },
       },
@@ -902,17 +864,17 @@ assert(
 
   assert(
     !committedWhileRunPending &&
-      !reconciledWhileRunPending &&
-      revisionWhileRunPending === null,
+    !reconciledWhileRunPending &&
+    revisionWhileRunPending === null,
     "Session history and its formal draft preview must not commit while the active-run read is pending.",
   );
   assert(
     !messageWrites.some(
       (value) => Array.isArray(value) && value[0]?.id === "assistant-authoritative",
     ) &&
-      reconciledDrafts.length === 0 &&
-      runtime.sessionRevision === null &&
-      loadErrorWrites.at(-1) === true,
+    reconciledDrafts.length === 0 &&
+    runtime.sessionRevision === null &&
+    loadErrorWrites.at(-1) === true,
     "A failed active-run read must leave session history, revision, and the formal draft preview uncommitted.",
   );
 

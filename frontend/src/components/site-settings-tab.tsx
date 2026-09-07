@@ -7,9 +7,11 @@ import {
 } from "lucide-react";
 
 import { PasswordSettingsDialog } from "@/components/password-settings-dialog";
+import { OAuthConnectionDialog } from "@/components/auth/oauth-connection-dialog";
 import { OAuthIdentitySettings } from "@/components/auth/oauth-identity-settings";
+import { useOAuthIdentitySettings } from "@/components/auth/use-oauth-identity-settings";
 import {
-  OptionToggleGroup,
+  OptionSelect,
   SettingsRow,
   SettingsSection,
 } from "@/components/settings-controls";
@@ -45,6 +47,7 @@ export function SiteSettingsTab({
   // This owner stays mounted when Radix unmounts inactive tab content, matching
   // the original behavior where password dialog state lived above TabsContent.
   const passwordController = usePasswordSettings({ t, onPasswordChanged });
+  const oauthController = useOAuthIdentitySettings(t);
   const themeItems: Array<{
     value: ThemeMode;
     label: string;
@@ -56,66 +59,75 @@ export function SiteSettingsTab({
   ];
 
   return (
-    <TabsContent value="site" className="mt-5 flex flex-col gap-6">
-      <SettingsSection title={t.preferencesSettingsTitle}>
-        <SettingsRow
-          icon={<Languages />}
-          label={t.language}
-          description={t.languageSettingsDescription}
-        >
-          <Select
-            value={locale}
-            onValueChange={(value) => {
-              if (value === "zh" || value === "en") {
-                onLocaleChange(value);
-              }
-            }}
+    <>
+      <OAuthConnectionDialog
+        progress={oauthController.progress}
+        onCancel={oauthController.cancelAuthorization}
+        t={t}
+      />
+      <TabsContent value="site" className="mt-5 flex flex-col gap-6">
+        <SettingsSection title={t.preferencesSettingsTitle}>
+          <SettingsRow
+            icon={<Languages />}
+            label={t.language}
+            description={t.languageSettingsDescription}
           >
-            <SelectTrigger
-              aria-label={t.language}
-              className="ml-auto w-28 max-w-full"
+            <Select
+              value={locale}
+              onValueChange={(value) => {
+                if (value === "zh" || value === "en") {
+                  onLocaleChange(value);
+                }
+              }}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="end" position="popper" sideOffset={4}>
-              <SelectGroup>
-                <SelectItem value="zh">{t.languageChinese}</SelectItem>
-                <SelectItem value="en">{t.languageEnglish}</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-        <Separator className="mx-5 w-auto sm:mx-6" />
+              <SelectTrigger
+                aria-label={t.language}
+                className="ml-auto w-28 max-w-full"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end" position="popper" sideOffset={4}>
+                <SelectGroup>
+                  <SelectItem value="zh">{t.uiLanguageChinese}</SelectItem>
+                  <SelectItem value="en">{t.uiLanguageEnglish}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+          <Separator className="mx-5 w-auto sm:mx-6" />
 
-        <SettingsRow
-          icon={<Moon />}
-          label={t.theme}
-          description={t.themeSettingsDescription}
-        >
-          <OptionToggleGroup
-            items={themeItems}
-            value={theme}
-            onChange={onThemeChange}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t.accountSecuritySettingsTitle}>
-        <SettingsRow
-          icon={<KeyRound />}
-          label={t.passwordSettingsTitle}
-          description={t.passwordSettingsDescription}
-        >
-          <div className="flex justify-end">
-            <PasswordSettingsDialog
-              t={t}
-              controller={passwordController}
+          <SettingsRow
+            icon={<Moon />}
+            label={t.theme}
+            description={t.themeSettingsDescription}
+          >
+            <OptionSelect
+              className="w-28"
+              label={t.theme}
+              items={themeItems}
+              value={theme}
+              onChange={onThemeChange}
             />
-          </div>
-        </SettingsRow>
-        <Separator className="mx-5 w-auto sm:mx-6" />
-        <OAuthIdentitySettings t={t} />
-      </SettingsSection>
-    </TabsContent>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title={t.accountSecuritySettingsTitle}>
+          <SettingsRow
+            icon={<KeyRound />}
+            label={t.passwordSettingsTitle}
+            description={t.passwordSettingsDescription}
+          >
+            <div className="flex justify-end">
+              <PasswordSettingsDialog
+                t={t}
+                controller={passwordController}
+              />
+            </div>
+          </SettingsRow>
+          <Separator className="mx-5 w-auto sm:mx-6" />
+          <OAuthIdentitySettings t={t} controller={oauthController} />
+        </SettingsSection>
+      </TabsContent>
+    </>
   );
 }

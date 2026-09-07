@@ -29,7 +29,7 @@ export type AttachmentData =
   | (FileUIPart & { id: string })
   | (SourceDocumentUIPart & { id: string });
 
-export type AttachmentMediaCategory =
+type AttachmentMediaCategory =
   | "image"
   | "video"
   | "audio"
@@ -37,7 +37,7 @@ export type AttachmentMediaCategory =
   | "source"
   | "unknown";
 
-export type AttachmentVariant = "grid" | "inline" | "list";
+type AttachmentVariant = "grid" | "inline" | "list";
 
 const mediaCategoryIcons: Record<AttachmentMediaCategory, typeof ImageIcon> = {
   audio: Music2Icon,
@@ -132,10 +132,10 @@ const AttachmentContext = createContext<AttachmentContextValue | null>(null);
 // Hooks
 // ============================================================================
 
-export const useAttachmentsContext = () =>
+const useAttachmentsContext = () =>
   useContext(AttachmentsContext) ?? { variant: "grid" as const };
 
-export const useAttachmentContext = () => {
+const useAttachmentContext = () => {
   const ctx = useContext(AttachmentContext);
   if (!ctx) {
     throw new Error("Attachment components must be used within <Attachment>");
@@ -147,7 +147,7 @@ export const useAttachmentContext = () => {
 // Attachments - Container
 // ============================================================================
 
-export type AttachmentsProps = HTMLAttributes<HTMLDivElement> & {
+type AttachmentsProps = HTMLAttributes<HTMLDivElement> & {
   variant?: AttachmentVariant;
 };
 
@@ -180,7 +180,7 @@ export const Attachments = ({
 // Attachment - Item
 // ============================================================================
 
-export type AttachmentProps = HTMLAttributes<HTMLDivElement> & {
+type AttachmentProps = HTMLAttributes<HTMLDivElement> & {
   data: AttachmentData;
   onRemove?: () => void;
 };
@@ -230,7 +230,7 @@ export const Attachment = ({
 // AttachmentPreview - Media preview
 // ============================================================================
 
-export type AttachmentPreviewProps = HTMLAttributes<HTMLDivElement> & {
+type AttachmentPreviewProps = HTMLAttributes<HTMLDivElement> & {
   fallbackIcon?: ReactNode;
 };
 
@@ -280,7 +280,7 @@ export const AttachmentPreview = ({
 // AttachmentInfo - Name and type display
 // ============================================================================
 
-export type AttachmentInfoProps = HTMLAttributes<HTMLDivElement> & {
+type AttachmentInfoProps = HTMLAttributes<HTMLDivElement> & {
   showMediaType?: boolean;
 };
 
@@ -312,7 +312,7 @@ export const AttachmentInfo = ({
 // AttachmentRemove - Remove button
 // ============================================================================
 
-export type AttachmentRemoveProps = ComponentProps<typeof Button> & {
+type AttachmentRemoveProps = ComponentProps<typeof Button> & {
   label?: string;
 };
 
@@ -370,7 +370,7 @@ export const AttachmentRemove = ({
 // AttachmentHoverCard - Hover preview
 // ============================================================================
 
-export type AttachmentHoverCardProps = ComponentProps<typeof HoverCard>;
+type AttachmentHoverCardProps = ComponentProps<typeof HoverCard>;
 
 export const AttachmentHoverCard = ({
   openDelay = 0,
@@ -380,7 +380,7 @@ export const AttachmentHoverCard = ({
   <HoverCard closeDelay={closeDelay} openDelay={openDelay} {...props} />
 );
 
-export type AttachmentHoverCardTriggerProps = ComponentProps<
+type AttachmentHoverCardTriggerProps = ComponentProps<
   typeof HoverCardTrigger
 >;
 
@@ -388,7 +388,7 @@ export const AttachmentHoverCardTrigger = (
   props: AttachmentHoverCardTriggerProps
 ) => <HoverCardTrigger {...props} />;
 
-export type AttachmentHoverCardContentProps = ComponentProps<
+type AttachmentHoverCardContentProps = ComponentProps<
   typeof HoverCardContent
 >;
 
@@ -402,26 +402,4 @@ export const AttachmentHoverCardContent = ({
     className={cn("w-auto p-2", className)}
     {...props}
   />
-);
-
-// ============================================================================
-// AttachmentEmpty - Empty state
-// ============================================================================
-
-export type AttachmentEmptyProps = HTMLAttributes<HTMLDivElement>;
-
-export const AttachmentEmpty = ({
-  className,
-  children,
-  ...props
-}: AttachmentEmptyProps) => (
-  <div
-    className={cn(
-      "flex items-center justify-center p-4 text-muted-foreground text-sm",
-      className
-    )}
-    {...props}
-  >
-    {children ?? "No attachments"}
-  </div>
 );

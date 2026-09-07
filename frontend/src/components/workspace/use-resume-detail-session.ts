@@ -1,22 +1,11 @@
-import {
-  useCallback,
-  useDeferredValue,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { useResumeAgentDraft } from "@/hooks/use-resume-agent-draft";
-import type { AppMessages } from "@/i18n";
-import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { createEmptyResume } from "@/lib/resume";
 import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
-import type { AgentDraftDecisionStatus } from "@/types/api";
 import type {
   ResumeData,
-  ResumeTemplateId,
-  ResumeTemplateSettingsOverrides,
+  ResumeSection,
+  ResumeTemplateDefinition,
   ResumeTypographySettings,
   ResumeWorkspaceItem,
 } from "@/types/resume";
@@ -26,179 +15,192 @@ const defaultTypography: ResumeTypographySettings = {
   fontSize: 16,
 };
 
-function createCollapsedState(resume: ResumeData, openId?: string) {
-  return resume.sections.reduce(
-    (state, section) => {
-      state[section.id] = section.id !== openId;
-      return state;
-    },
-    { basic: openId !== "basic" } as Record<string, boolean>,
-  );
-}
+type ResumeStyle = Pick<
+  ResumeWorkspaceItem,
+  "templateSettings" | "typography"
+>;
+type ResumeStyleUpdate =
+  | Partial<ResumeStyle>
+  | ((current: ResumeStyle) => Partial<ResumeStyle>);
 
 interface ResumeDetailSessionOptions {
   initialResume: ResumeWorkspaceItem | null;
-  messages: AppMessages;
-  onResolveDraftReview: (
-    messageId: string,
-    resume: ResumeData,
-    reviewItemIds: string[],
-    status: AgentDraftDecisionStatus,
-  ) => Promise<AgentDraftDecisionResolution>;
 }
 
-/** Owns the live document fields and Agent draft, independent of persistence. */
+/** Owns the editable document and its open editor section. */
 export function useResumeDetailSession({
   initialResume,
-  messages,
-  onResolveDraftReview,
 }: ResumeDetailSessionOptions) {
   const emptyResume = useMemo(() => createEmptyResume(), []);
-  const [resumeItem, setResumeItem] =
-    useState<ResumeWorkspaceItem | null>(initialResume);
-  const [resume, setResume] = useState<ResumeData>(
-    initialResume?.resume ?? emptyResume,
-  );
-  const [collapsedState, setCollapsedState] = useState<Record<string, boolean>>(
-    () => createCollapsedState(initialResume?.resume ?? emptyResume),
-  );
-  const [jobBrief, setJobBrief] = useState(initialResume?.jobBrief ?? "");
-  const [typography, setTypography] = useState<ResumeTypographySettings>(
-    initialResume?.typography ?? defaultTypography,
-  );
-  const [template, setTemplate] = useState<ResumeTemplateId>(
-    initialResume?.template ?? "minimal",
-  );
-  const [templateSettings, setTemplateSettings] =
-    useState<ResumeTemplateSettingsOverrides | null>(
-      initialResume?.templateSettings ?? null,
-    );
-  const liveResume = useMemo<ResumeWorkspaceItem | null>(
-    () => resumeItem
-      ? {
-          ...resumeItem,
-          jobBrief,
-          resume,
-          template,
-          templateSettings,
-          typography,
-        }
-      : null,
-    [jobBrief, resume, resumeItem, template, templateSettings, typography],
-  );
+  const [{ document, openSectionId }, setSession] = useState<{
+    document: ResumeWorkspaceItem | null;
+    openSectionId: string | null;
+  }>(() => ({ document: initialResume, openSectionId: null }));
+  const latestRef = useRef(document);
 
-  const applyAgentDraftResume = useCallback((nextResume: ResumeData) => {
-    setResume(nextResume);
-    setCollapsedState(createCollapsedState(nextResume));
-  }, []);
-  const agent = useResumeAgentDraft({
-    messages,
-    onApplyResume: applyAgentDraftResume,
-    onResolveDraftReview,
-    resume,
-    resumeId: resumeItem?.id,
-  });
-  const { agentDraft, resetAgentDraft } = agent;
-  const latestRef = useRef(liveResume);
-
-  // A stable getter is required after save/discard awaits. Layout sync keeps
-  // it current before another browser event or direct route response can run.
+  // Saves read the latest committed document after awaiting other requests.
   useLayoutEffect(() => {
-    latestRef.current = liveResume;
-  }, [liveResume]);
+    latestRef.current = document;
+  }, [document]);
 
-  const hydrate = useCallback(
-    (item: ResumeWorkspaceItem) => {
-      resetAgentDraft();
-      setResumeItem(item);
-      setResume(item.resume);
-      setCollapsedState(createCollapsedState(item.resume));
-      setJobBrief(item.jobBrief);
-      setTypography(item.typography);
-      setTemplate(item.template);
-      setTemplateSettings(item.templateSettings);
+  const updateDocument = useCallback(
+    (update: (current: ResumeWorkspaceItem) => ResumeWorkspaceItem) => {
+      setSession((current) => {
+        if (!current.document) {
+          return current;
+        }
+        const next = update(current.document);
+        return next === current.document
+          ? current
+          : { ...current, document: next };
+      });
     },
-    [resetAgentDraft],
+    [],
   );
+
+  const hydrate = useCallback((item: ResumeWorkspaceItem) => {
+    setSession({ document: item, openSectionId: null });
+  }, []);
 
   const getSnapshot = useCallback(
     (updatedAt: string): ResumeWorkspaceItem | null => {
       const latest = latestRef.current;
-      if (!latest) {
-        return null;
-      }
-
-      return { ...latest, updatedAt };
+      return latest ? { ...latest, updatedAt } : null;
     },
     [],
   );
 
   const adoptSavedResume = useCallback(
-    (
-      item: ResumeWorkspaceItem,
-      submitted: ResumeWorkspaceItem,
-    ) => {
-      setResumeItem((current) =>
-        current?.id === item.id
+    (item: ResumeWorkspaceItem, submitted: ResumeWorkspaceItem) => {
+      updateDocument((current) =>
+        current.id === item.id
           ? {
               ...current,
-              title:
-                current.title === submitted.title
-                  ? item.title
-                  : current.title,
+              title: current.title === submitted.title ? item.title : current.title,
               updatedAt: item.updatedAt,
             }
           : current,
       );
     },
-    [],
+    [updateDocument],
   );
 
-  const previewPresentation = useMemo(() => {
-    if (agent.review) {
-      return {
-        ...agent.review.projection,
-        review: agent.review,
-      };
-    }
-    return {
-      diffs: agentDraft?.diffs,
-      review: null,
-      resume: agentDraft?.resume ?? resume,
-    };
-  }, [agent.review, agentDraft?.diffs, agentDraft?.resume, resume]);
-  const deferredPreviewPresentation = useDeferredValue(previewPresentation);
-  // Review selection, projected resume, diff marks, and DOM metadata must switch
-  // atomically. Ordinary editor typing can still use the deferred preview path.
-  const renderedPreviewPresentation =
-    previewPresentation.review || deferredPreviewPresentation.review
-      ? previewPresentation
-      : deferredPreviewPresentation;
-  const liveFingerprint = createResumeFingerprint(liveResume);
+  const updateContent = useCallback(
+    (update: ResumeData | ((current: ResumeData) => ResumeData)) => {
+      updateDocument((current) => {
+        const resume = typeof update === "function" ? update(current.resume) : update;
+        return resume === current.resume ? current : { ...current, resume };
+      });
+    },
+    [updateDocument],
+  );
+
+  const rename = useCallback(
+    (title: string) => {
+      const updatedAt = new Date().toISOString();
+      updateDocument((current) =>
+        title === current.title ? current : { ...current, title, updatedAt },
+      );
+    },
+    [updateDocument],
+  );
+
+  const applyTemplate = useCallback(
+    (template: ResumeTemplateDefinition) => {
+      updateDocument((current) => ({
+        ...current,
+        template: template.id,
+        typography: template.typography,
+        templateSettings: template.settings,
+      }));
+    },
+    [updateDocument],
+  );
+
+  const updateStyle = useCallback(
+    (update: ResumeStyleUpdate) => {
+      updateDocument((current) => ({
+        ...current,
+        ...(typeof update === "function" ? update(current) : update),
+      }));
+    },
+    [updateDocument],
+  );
+
+  const applyAgentResume = useCallback((resume: ResumeData) => {
+    setSession((current) =>
+      current.document
+        ? {
+            document: { ...current.document, resume },
+            openSectionId: null,
+          }
+        : current,
+    );
+  }, []);
+
+  const addSection = useCallback((section: ResumeSection) => {
+    setSession((current) =>
+      current.document
+        ? {
+            document: {
+              ...current.document,
+              resume: {
+                ...current.document.resume,
+                sections: [...current.document.resume.sections, section],
+              },
+            },
+            openSectionId: section.id,
+          }
+        : current,
+    );
+  }, []);
+
+  const removeSection = useCallback((id: string) => {
+    setSession((current) =>
+      current.document
+        ? {
+            document: {
+              ...current.document,
+              resume: {
+                ...current.document.resume,
+                sections: current.document.resume.sections.filter(
+                  (section) => section.id !== id,
+                ),
+              },
+            },
+            openSectionId: current.openSectionId === id ? null : current.openSectionId,
+          }
+        : current,
+    );
+  }, []);
+
+  const toggleSection = useCallback((id: string) => {
+    setSession((current) => ({
+      ...current,
+      openSectionId: current.openSectionId === id ? null : id,
+    }));
+  }, []);
+
   return {
-    ...agent,
+    addSection,
     adoptSavedResume,
-    collapsedState,
+    applyAgentResume,
+    applyTemplate,
+    document,
+    fingerprint: createResumeFingerprint(document),
     getSnapshot,
     hydrate,
-    jobBrief,
-    liveFingerprint,
-    liveResume,
-    previewDiffs: renderedPreviewPresentation.diffs,
-    previewResume: renderedPreviewPresentation.resume,
-    previewReview: renderedPreviewPresentation.review,
-    resume,
-    resumeItem,
-    setCollapsedState,
-    setJobBrief,
-    setResume,
-    setResumeItem,
-    setTemplate,
-    setTemplateSettings,
-    setTypography,
-    template,
-    templateSettings,
-    typography,
+    jobBrief: document?.jobBrief ?? "",
+    openSectionId,
+    removeSection,
+    rename,
+    resume: document?.resume ?? emptyResume,
+    template: document?.template ?? "minimal",
+    templateSettings: document?.templateSettings ?? null,
+    typography: document?.typography ?? defaultTypography,
+    toggleSection,
+    updateContent,
+    updateStyle,
   };
 }
 

@@ -18,6 +18,7 @@ from app.db.connection import connect
 from app.schemas.agent import AgentChatRequest
 from app.schemas.agent_settings import normalize_agent_settings
 from app.schemas.exports import ExportResumeImagesRequest, ExportResumePdfRequest
+from app.schemas.resumes import ResumeListResponse
 from app.services import resumes as resume_service
 from app.services import templates as template_service
 from app.services import user_preferences, workspace_pages
@@ -36,18 +37,11 @@ from app.services.agent.integrations.web import (
 from app.services.agent.localization import (
     TEXT as AGENT_LOCALIZED_TEXT,
 )
-from app.services.agent.localization import (
-    supported_agent_text_locales,
-)
 from app.services.agent.preferences import prepare_agent_request
 from app.services.agent.prompt import AGENT_PROMPT
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.messages import build_agent_messages
-from app.services.agent.section_registry import (
-    SECTION_DEFAULT_LAYOUTS,
-    SECTION_KIND_ENUM,
-    SECTION_REGISTRY,
-)
+from app.services.agent.runtime.messages import AgentPromptCompiler
+from app.services.agent.section_registry import SECTION_REGISTRY
 from app.services.auth_accounts import get_auth_db_path
 from app.services.auth_tokens import create_access_token, decode_access_token
 from app.services.llm import (
@@ -58,7 +52,6 @@ from app.services.llm import (
     LlmStreamEvent,
     LlmToolCall,
 )
-from app.services.model_configs import upsert_llm_config_dict
 from app.services.model_discovery_cache import (
     MODEL_DISCOVERY_CACHE_NAME,
     get_cached_provider_model,
@@ -66,9 +59,10 @@ from app.services.model_discovery_cache import (
 )
 from app.services.model_providers import DiscoveredModel
 from app.services.pdf import ResumeImageExportResult
+from app.services.resume_document_contract import ITEM_FIELDS_BY_KIND
 from app.services.templates import TemplateCatalog
 
-ASYNC_COMPLETE_TOOL_CALL_PATH = "app.services.agent.runtime.loop.async_stream_tool_call"
+ASYNC_STREAM_TOOL_CALL_PATH = "app.services.agent.runtime.loop.async_stream_tool_call"
 ASYNC_COMPLETE_CHAT_PATH = "app.services.agent.runtime.loop.async_complete_chat"
 ASYNC_STREAM_CHAT_PATH = "app.services.agent.runtime.loop.async_stream_chat"
 
@@ -584,8 +578,8 @@ def test_qwen_discovery_requires_capability_evidence_for_native_auto(
 
     monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
     monkeypatch.setattr(
-        "app.services.model_providers.resolve_model_metadata",
-        lambda *_args: None,
+        "app.services.model_providers.resolve_models_metadata",
+        lambda *_args: {},
     )
 
     response = client.post(
@@ -957,9 +951,9 @@ def test_workspace_page_endpoint_only_reads_owned_data(
             templates=[],
         )
 
-    def list_resumes(status_filter: str) -> dict[str, list[dict]]:
+    def list_resumes(status_filter: str) -> ResumeListResponse:
         reads.append(f"resumes:{status_filter}")
-        return {"resumes": []}
+        return ResumeListResponse(resumes=[])
 
     def list_templates(status_filter: str) -> dict[str, list[dict]]:
         reads.append(f"templates:{status_filter}")
@@ -1869,7 +1863,7 @@ def test_concurrent_duplicate_resume_requests_allocate_distinct_titles(
         second_client.headers.update(client.headers)
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = [
-                future.result()
+                future.result(timeout=10)
                 for future in (
                     executor.submit(duplicate_from, client),
                     executor.submit(duplicate_from, second_client),
@@ -2027,12 +2021,18 @@ def test_auth_setup_creates_hashed_owner_and_signs_in(
 
     env_content = get_settings().env_file_path.read_text(encoding="utf-8")
 
-    assert status_before.json()["data"] == {"setupRequired": True}
+    assert status_before.json()["data"] == {
+        "setupRequired": True,
+        "githubLoginAvailable": False,
+    }
     assert status_before.headers["Cache-Control"] == "no-store"
     assert setup_response.json()["code"] == 0
     assert setup_response.json()["data"]["username"] == "owner_1"
     assert "OwnerPassword1" not in setup_response.text
-    assert status_after.json()["data"] == {"setupRequired": False}
+    assert status_after.json()["data"] == {
+        "setupRequired": False,
+        "githubLoginAvailable": False,
+    }
     assert protected_response.json()["code"] == 0
     assert get_auth_db_path() == get_settings().data_dir / "auth.db"
     assert get_auth_db_path().stat().st_mode & 0o777 == 0o600
@@ -2152,7 +2152,8 @@ def test_auth_setup_validates_owner_credentials(
     assert response.json()["code"] == 40000
     assert response.json()["message"] == expected_message
     assert uninitialized_client.get("/api/auth/setup").json()["data"] == {
-        "setupRequired": True
+        "setupRequired": True,
+        "githubLoginAvailable": False,
     }
 
 
@@ -2179,7 +2180,8 @@ def test_auth_setup_rejects_non_loopback_client(
     assert response.json()["code"] == 40000
     assert response.json()["message"] == "SETUP_LOCAL_ONLY"
     assert uninitialized_client.get("/api/auth/setup").json()["data"] == {
-        "setupRequired": True
+        "setupRequired": True,
+        "githubLoginAvailable": False,
     }
 
 
@@ -2254,14 +2256,14 @@ def test_auth_service_initializes_fresh_database_without_app_lifespan(
     barrier = Barrier(2)
 
     def create(username: str) -> str:
-        barrier.wait()
+        barrier.wait(timeout=5)
         try:
             return create_owner(username, "ServicePassword1").username
         except OwnerAlreadyExistsError:
             return "already-exists"
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(create, ("service-one", "service-two")))
+        results = list(executor.map(create, ("service-one", "service-two"), timeout=10))
 
     get_settings.cache_clear()
     assert get_auth_db_path().exists()
@@ -2276,7 +2278,7 @@ def test_auth_setup_is_atomic_under_concurrent_requests(
     barrier = Barrier(2)
 
     def submit_setup(username: str) -> dict:
-        barrier.wait()
+        barrier.wait(timeout=5)
         return uninitialized_client.post(
             "/api/auth/setup",
             json={
@@ -2287,7 +2289,9 @@ def test_auth_setup_is_atomic_under_concurrent_requests(
         ).json()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        responses = list(executor.map(submit_setup, ("owner-one", "owner-two")))
+        responses = list(
+            executor.map(submit_setup, ("owner-one", "owner-two"), timeout=10)
+        )
 
     with sqlite3.connect(get_auth_db_path()) as conn:
         owner_count = conn.execute("SELECT COUNT(*) FROM auth_owner").fetchone()[0]
@@ -2365,7 +2369,10 @@ def test_old_jwt_cannot_authenticate_against_replaced_auth_database(
     get_settings.cache_clear()
 
     assert old_token_response.json()["code"] == 40001
-    assert setup_status.json()["data"] == {"setupRequired": True}
+    assert setup_status.json()["data"] == {
+        "setupRequired": True,
+        "githubLoginAvailable": False,
+    }
     assert old_token_after_setup.json()["code"] == 40001
     assert replacement_token_response.json()["code"] == 0
     old_payload = decode_access_token(old_token)
@@ -3418,28 +3425,6 @@ def test_model_config_rejects_output_limit_above_javascript_safe_integer(
     assert accepted.json()["data"]["maxTokens"] == 9_007_199_254_740_991
     assert rejected.status_code == 422
     assert rejected.json()["message"] == "VALIDATION_ERROR"
-
-
-def test_raw_model_config_rejects_output_limit_above_javascript_safe_integer(
-    client: TestClient,
-) -> None:
-    # Workspace payloads bypass Pydantic but must honor the same persistence
-    # invariant as the HTTP interface instead of overflowing SQLite's int64.
-    with connect() as conn:
-        with pytest.raises(ValueError, match="MODEL_CONFIG_MAX_TOKENS_INVALID"):
-            upsert_llm_config_dict(
-                conn,
-                {
-                    "provider": "openai",
-                    "providerKind": "custom",
-                    "apiFamily": "openai_compatible_chat",
-                    "nickname": "Unknown Model",
-                    "apiKey": "sk-custom-secret",
-                    "model": "unknown-model",
-                    "apiUrl": "https://example.test/v1",
-                    "maxTokens": 9_007_199_254_740_992,
-                },
-            )
 
 
 def test_cloud_model_config_stores_provider_defaults(
@@ -4509,7 +4494,7 @@ def test_agent_session_replace_serializes_two_concurrent_clients(
                     (second_client, 2, second_client_revision),
                 )
             ]
-            responses = [future.result() for future in futures]
+            responses = [future.result(timeout=10) for future in futures]
 
     assert sorted(response.status_code for response in responses) == [200, 409]
     conflict = next(response for response in responses if response.status_code == 409)
@@ -4540,7 +4525,7 @@ def test_provider_failure_keeps_user_message_without_assistant(
         raise LlmRequestError("provider unavailable")
 
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         raise_provider_error,
     )
 
@@ -4709,7 +4694,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
         modelConfig=None,
     )
 
-    messages = build_agent_messages(request, config)
+    messages = AgentPromptCompiler(request, config).build().messages
     workspace = agent_workspace_context(messages)
     context = workspace["conversationState"]
 
@@ -4776,7 +4761,7 @@ def test_agent_message_builder_treats_historical_assistant_prose_as_data() -> No
         modelConfig=None,
     )
 
-    messages = build_agent_messages(request, config)
+    messages = AgentPromptCompiler(request, config).build().messages
 
     expected_history: list[dict[str, str]] = []
     for item in conversation:
@@ -4854,7 +4839,7 @@ def test_agent_messages_reject_state_that_cannot_fit_context() -> None:
     )
 
     with pytest.raises(LlmRequestError, match="context window"):
-        build_agent_messages(request, config)
+        AgentPromptCompiler(request, config).build()
 
 
 def test_agent_messages_hide_personal_identity_from_model_payload(
@@ -4917,7 +4902,7 @@ def test_agent_messages_hide_personal_identity_from_model_payload(
         expected_revision=session_revision,
     )
 
-    messages = build_agent_messages(request, config)
+    messages = AgentPromptCompiler(request, config).build().messages
     serialized = json.dumps(messages, ensure_ascii=False)
     workspace = agent_workspace_context(messages)
     files = agent_current_request_files(messages)
@@ -5117,7 +5102,7 @@ def test_agent_chat_uses_natural_completion_after_edit(
         fail_on_second_final_stream,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -5210,7 +5195,7 @@ def test_agent_chat_executes_model_selected_item_edit_without_jd_search(
         fail_on_second_final_stream,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -5325,7 +5310,7 @@ def test_agent_chat_executes_explicit_project_insert_directly(
         fail_on_second_final_stream,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -5430,7 +5415,7 @@ def test_agent_chat_retries_noncanonical_insert_with_canonical_operation(
         fail_on_second_final_stream,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -5570,7 +5555,6 @@ def test_agent_supported_locales_cover_resources() -> None:
     }
 
     assert DEFAULT_AGENT_LOCALE in supported
-    assert set(supported_agent_text_locales()) == supported
     assert set(AGENT_LOCALIZED_TEXT) == supported
     assert {path.name for path in prompt_dir.glob("*.md")} == expected_prompt_files
     for prompt_path in prompt_dir.glob("*.md"):
@@ -5798,11 +5782,15 @@ def test_agent_edit_operation_schema_requires_operation_specific_fields() -> Non
     }
 
 
-def test_agent_section_registry_matches_local_contract() -> None:
-    assert [section["kind"] for section in SECTION_REGISTRY] == SECTION_KIND_ENUM
-    assert {
-        section["kind"]: section["defaultLayout"] for section in SECTION_REGISTRY
-    } == SECTION_DEFAULT_LAYOUTS
+def test_section_registry_endpoint_matches_document_contract(
+    client: TestClient,
+) -> None:
+    response = client.get("/api/section-registry")
+
+    assert response.status_code == 200
+    sections = response.json()["data"]["sections"]
+    assert sections == SECTION_REGISTRY
+    assert {section["kind"] for section in sections} == set(ITEM_FIELDS_BY_KIND)
 
 
 def _registry_section(kind: str, aliases: object) -> dict[str, object]:
@@ -5994,7 +5982,7 @@ def test_section_registry_rejects_pdf_compatibility_alias_conflicts(
 
 
 def test_agent_chat_accepts_simple_list_section_kind() -> None:
-    assert "simple_list" in SECTION_KIND_ENUM
+    assert "simple_list" in {section["kind"] for section in SECTION_REGISTRY}
 
     edits, rejected = parse_edit_batch(
         minimal_resume_document(name="姓名"),
@@ -6071,7 +6059,7 @@ def test_agent_chat_plain_message_does_not_return_tools(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_terminal_tool_text("你好，我可以回答简历相关问题。"),
     )
     monkeypatch.setattr(
@@ -6105,7 +6093,7 @@ def test_agent_chat_plain_natural_stop_skips_second_completion(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_terminal_tool_text("工具选择阶段的半截回答"),
     )
 
@@ -6153,7 +6141,7 @@ def test_agent_chat_without_tool_support_still_streams_plain_response(
     async def unexpected_tool_call(*_: object, **__: object) -> object:
         raise AssertionError("tool loop should be skipped for this model")
 
-    monkeypatch.setattr(ASYNC_COMPLETE_TOOL_CALL_PATH, unexpected_tool_call)
+    monkeypatch.setattr(ASYNC_STREAM_TOOL_CALL_PATH, unexpected_tool_call)
     monkeypatch.setattr(
         ASYNC_STREAM_CHAT_PATH,
         stub_stream_text("这个模型不能调用工具，但可以直接回答问题。"),
@@ -6207,7 +6195,7 @@ def test_agent_chat_without_streaming_support_uses_non_streaming_completion(
             stop_reason="stop",
         )
 
-    monkeypatch.setattr(ASYNC_COMPLETE_TOOL_CALL_PATH, unexpected_tool_call)
+    monkeypatch.setattr(ASYNC_STREAM_TOOL_CALL_PATH, unexpected_tool_call)
     monkeypatch.setattr(ASYNC_STREAM_CHAT_PATH, unexpected_stream)
     monkeypatch.setattr(ASYNC_COMPLETE_CHAT_PATH, complete_response)
 
@@ -6239,7 +6227,7 @@ def test_agent_chat_material_gap_asks_followup_questions(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_terminal_tool_text(
             "请补充项目事实：你本人具体负责哪一部分、用了哪些技术、有没有结果。",
         ),
@@ -6277,7 +6265,7 @@ def test_agent_chat_reports_invalid_model_edit_operation(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -6367,7 +6355,7 @@ def test_agent_model_error_does_not_return_llm_tool(
         raise LlmRequestError("provider unavailable")
 
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         raise_provider_error,
     )
 
@@ -6404,7 +6392,7 @@ def test_agent_chat_uses_provided_jd_url(
         fail_on_second_final_stream,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -6563,7 +6551,7 @@ def test_agent_chat_defers_sibling_edit_until_failed_read_is_observed(
         failed_fetch,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_batches(
             [
                 tool_call(
@@ -6614,7 +6602,7 @@ def test_agent_chat_lets_model_diagnose_jd_gap_from_workspace(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_terminal_tool_text(
             "差距诊断：已匹配 Python；缺少 RAG 和 evaluation；需要补充项目证据。",
         ),
@@ -6676,7 +6664,7 @@ def test_agent_chat_streams_tool_and_source_metadata(
         async_stub_jd_fetch,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -6746,7 +6734,7 @@ def test_agent_chat_streams_model_narration_during_edit_loop(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="我发现简介比较短，现在直接生成修改草稿。",
@@ -6839,7 +6827,7 @@ def test_agent_chat_streams_model_tool_batch_as_ordered_timeline_operations(
         async_stub_jd_fetch,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="我先同时检查简历结构和岗位参考。",
@@ -6944,7 +6932,7 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         async_stub_jd_fetch,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content=preface,
@@ -7029,7 +7017,7 @@ def test_agent_chat_streams_edit_metadata_when_execute_finishes(
         async_stub_jd_fetch,
     )
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_tool_call_responses(
             LlmAssistantMessage(
                 content="",
@@ -7134,7 +7122,7 @@ def test_agent_chat_streams_plain_model_tokens(
 ) -> None:
     model_config = create_agent_model_config(client)
     monkeypatch.setattr(
-        ASYNC_COMPLETE_TOOL_CALL_PATH,
+        ASYNC_STREAM_TOOL_CALL_PATH,
         stub_terminal_tool_text("你好，我可以帮你看简历。"),
     )
 

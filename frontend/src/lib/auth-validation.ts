@@ -29,7 +29,7 @@ function validateRequiredPassword(password: string, t: AppMessages) {
   return undefined;
 }
 
-export function validateNewPassword(password: string, t: AppMessages) {
+function validateNewPassword(password: string, t: AppMessages) {
   const requiredError = validateRequiredPassword(password, t);
   if (requiredError) {
     return requiredError;

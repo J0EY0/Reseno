@@ -10,35 +10,32 @@ import {
   requestResumeImagesExport,
   requestResumePdfExport,
 } from "@/lib/export-api";
-import type { SaveResponse } from "@/types/api";
+import type { ResumeDetailResponse } from "@/types/api";
 import type {
   ResumeTemplateDefinition,
   ResumeWorkspaceItem,
 } from "@/types/resume";
 
 interface ResumeDetailExportOptions {
-  getSnapshot: (updatedAt: string) => ResumeWorkspaceItem | null;
   messages: AppMessages;
-  save: () => Promise<SaveResponse>;
-  template: ResumeTemplateDefinition;
+  save: () => Promise<ResumeDetailResponse>;
+  templates: ResumeTemplateDefinition[];
 }
 
 /** Serializes exports and checkpoints the exact document they reference. */
 export function useResumeDetailExport({
-  getSnapshot,
   messages,
   save,
-  template,
+  templates,
 }: ResumeDetailExportOptions) {
   const exportInFlightRef = useRef(false);
   const [isExporting, setIsExporting] = useState(false);
 
   const runExport = useCallback(
     async (
-      kind: "pdf" | "images" | "json",
       operation: (
         activeResume: ResumeWorkspaceItem,
-        savedVersion: SaveResponse,
+        savedVersion: ResumeDetailResponse,
       ) => Promise<void> | void,
     ) => {
       if (exportInFlightRef.current) {
@@ -49,22 +46,18 @@ export function useResumeDetailExport({
       setIsExporting(true);
       try {
         const savedVersion = await save();
-        const activeResume = getSnapshot(savedVersion.savedAt);
-        if (!activeResume) {
-          throw new Error(`No active resume is available for ${kind} export.`);
-        }
-        await operation(activeResume, savedVersion);
+        await operation(savedVersion.resume, savedVersion);
       } finally {
         exportInFlightRef.current = false;
         setIsExporting(false);
       }
     },
-    [getSnapshot, save],
+    [save],
   );
 
   const exportPdf = useCallback(async () => {
     try {
-      await runExport("pdf", async (activeResume, savedVersion) => {
+      await runExport(async (activeResume, savedVersion) => {
         const result = await requestResumePdfExport({
           fileNameSeed: activeResume.title,
           resumeId: activeResume.id,
@@ -84,7 +77,7 @@ export function useResumeDetailExport({
 
   const exportImages = useCallback(async () => {
     try {
-      await runExport("images", async (activeResume, savedVersion) => {
+      await runExport(async (activeResume, savedVersion) => {
         const result = await requestResumeImagesExport({
           fileNameSeed: activeResume.title,
           resumeId: activeResume.id,
@@ -104,7 +97,11 @@ export function useResumeDetailExport({
 
   const exportJson = useCallback(async () => {
     try {
-      await runExport("json", (activeResume) => {
+      await runExport((activeResume) => {
+        const template = templates.find((item) => item.id === activeResume.template);
+        if (!template) {
+          throw new Error("The saved resume's template definition is unavailable.");
+        }
         downloadResumeJson(activeResume, template);
         toast.success(messages.exportJsonSuccess, { closeButton: true });
       });
@@ -114,7 +111,7 @@ export function useResumeDetailExport({
         toast.error(messages.exportJsonFailed, { closeButton: true });
       }
     }
-  }, [messages.exportJsonFailed, messages.exportJsonSuccess, runExport, template]);
+  }, [messages.exportJsonFailed, messages.exportJsonSuccess, runExport, templates]);
 
   return { exportImages, exportJson, exportPdf, isExporting };
 }

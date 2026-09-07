@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const [source, agentSource, routePreparationSource] = await Promise.all([
@@ -12,23 +12,10 @@ const [source, agentSource, routePreparationSource] = await Promise.all([
 const cachedThemes = [];
 
 function compileModule(sourceText, dependencies = {}) {
-  const module = { exports: {} };
-  const compiled = ts.transpileModule(sourceText, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require(specifier) {
-      assert.ok(Object.hasOwn(dependencies, specifier), `Unexpected dependency: ${specifier}`);
-      return dependencies[specifier];
-    },
-    DOMException,
+  return evaluateTypeScript(sourceText, {
+    globals: { DOMException },
+    imports: dependencies,
   });
-  return module.exports;
 }
 
 const { createWorkspacePreferencesPersistence } = compileModule(source, {

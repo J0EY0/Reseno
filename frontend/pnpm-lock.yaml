@@ -32,9 +32,6 @@ importers:
       '@streamdown/cjk':
         specifier: ^1.0.3
         version: 1.0.3(@types/mdast@4.0.4)(micromark-util-types@2.0.2)(micromark@4.0.2)(react@19.2.4)(unified@11.0.5)
-      '@streamdown/code':
-        specifier: ^1.1.1
-        version: 1.1.1(react@19.2.4)
       '@streamdown/math':
         specifier: ^1.0.2
         version: 1.0.2(react@19.2.4)
@@ -68,6 +65,9 @@ importers:
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
       cmdk:
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -83,9 +83,6 @@ importers:
       nanoid:
         specifier: ^5.1.7
         version: 5.1.7
-      next-themes:
-        specifier: ^0.4.6
-        version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       pdfjs-dist:
         specifier: ^6.0.227
         version: 6.0.227
@@ -101,9 +98,6 @@ importers:
       react-router-dom:
         specifier: ^7.13.1
         version: 7.13.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      shiki:
-        specifier: ^4.1.0
-        version: 4.1.0
       sonner:
         specifier: ^2.0.8
         version: 2.0.8(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -1870,11 +1864,6 @@ packages:
 
   '@streamdown/cjk@1.0.3':
     resolution: {integrity: sha512-WRg8HR/gHbBoTgsMd91OKFUClIoDcEFVofJvluvEAyjx3KpU0aGgD9tGDqHkHj14ShoMSkX0IYetWGegTcwIJw==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/code@1.1.1':
-    resolution: {integrity: sha512-i7HTNuDgZWb+VdrNVOam9gQhIc5MSSDXKWXgbUrn/4vSRaSMM+Rtl10MQj4wLWPNpF7p80waJsAqFP8HZfb0Jg==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
@@ -3804,12 +3793,6 @@ packages:
 
   natural-compare@1.4.0:
     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
-
-  next-themes@0.4.6:
-    resolution: {integrity: sha512-pZvgD5L0IEvX5/9GWyHMf3m8BKiVQwsCMHfoFosXtXBMnaS0ZnIJ9ST4b4NqLVKDEm8QBxoNNGNaBv2JNF6XNA==}
-    peerDependencies:
-      react: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
-      react-dom: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
 
   node-releases@2.0.36:
     resolution: {integrity: sha512-TdC8FSgHz8Mwtw9g5L4gR/Sh9XhSP/0DEkQxfEFXOpiul5IiHgHan2VhYYb6agDSfp4KuvltmGApc8HMgUrIkA==}
@@ -6772,11 +6755,6 @@ snapshots:
       - micromark-util-types
       - unified
 
-  '@streamdown/code@1.1.1(react@19.2.4)':
-    dependencies:
-      react: 19.2.4
-      shiki: 3.23.0
-
   '@streamdown/math@1.0.2(react@19.2.4)':
     dependencies:
       katex: 0.16.45
@@ -9182,11 +9160,6 @@ snapshots:
   nanoid@5.1.7: {}
 
   natural-compare@1.4.0: {}
-
-  next-themes@0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
-    dependencies:
-      react: 19.2.4
-      react-dom: 19.2.4(react@19.2.4)
 
   node-releases@2.0.36: {}
 

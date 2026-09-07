@@ -263,7 +263,6 @@ async def _stream_events(
             reasoning="".join(reasoning_parts).strip(),
             usage=message.usage,
             stop_reason=message.stop_reason,
-            response_id=message.response_id,
             provider_state=message.provider_state,
             sources=message.sources,
         )
@@ -553,7 +552,6 @@ def _message_from_response(response: object) -> LlmAssistantMessage:
         tool_calls=tool_calls,
         usage=responses_usage(response),
         stop_reason=stop_reason,
-        response_id=getattr(response, "id", None),
         provider_state=_continuation_provider_state(response),
         sources=sources,
     )

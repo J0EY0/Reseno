@@ -24,14 +24,14 @@ import type { AgentPanelMessage } from './copilot-message-model'
  */
 export type AgentRequestPhase = 'idle' | 'preparing' | 'responding'
 
-export interface PendingAgentSend {
+interface PendingAgentSend {
   optimisticMessageId: string
   resolve: (status: AgentRunStatus) => void
   resumeId?: string
   rollbackMessages: AgentPanelMessage[]
 }
 
-export interface AgentConversationRuntime {
+interface AgentConversationRuntime {
   activeRequestAbort: AbortController | null
   activeRun: AgentRunResponse | null
   currentResumeId?: string

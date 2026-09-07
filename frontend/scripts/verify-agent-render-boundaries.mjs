@@ -127,7 +127,6 @@ assert(
     assistantResponse.includes("<InlineCitationSource") &&
     assistantResponse.includes("sourceByUrl") &&
     !assistantResponse.includes("<citation") &&
-    !assistantResponse.includes('from "@/components/ai-elements/sources"') &&
     !assistantResponse.includes("source.excerpt") &&
     responseContent.includes("inlineTail") &&
     responseContent.includes("[&>p:last-child]:inline"),
@@ -187,12 +186,11 @@ assert(
   "Message history must keep only resolved receipts and compact quality warnings behind its summary seam.",
 );
 assert(
-  /export function AgentUserMessageRow/.test(userMessageRow) &&
+  /function AgentUserMessageRow/.test(userMessageRow) &&
     userMessageRow.includes("<AgentMessageAttachments") &&
     userMessageRow.includes("const canRetry") &&
     userMessageRow.includes("message.execution?.status") &&
     userMessageRow.includes("tooltip={t.agentRetry}") &&
-    userMessageRow.includes("onClick={onRetry}") &&
     !userMessageRow.includes('role="status"') &&
     !userMessageRow.includes("agentRunFailed") &&
     !userMessageRow.includes("agentRunCancelled") &&

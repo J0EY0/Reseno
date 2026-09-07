@@ -113,6 +113,7 @@ try {
   assert.equal(fittedResult.status, "applied");
   assert.deepEqual(fittedResult.previous, currentStyle);
   assert.equal(fittedStyles.length, 1);
+  assert.deepEqual(fittedResult.style, fittedStyles[0]);
 
   const compactGapStyles = [];
   const compactGapMeasurements = [2, 1];
@@ -141,32 +142,24 @@ try {
   );
   assert.deepEqual(exhaustedResult, { status: "no-fit" });
   assert.ok(exhaustedStyles.length > 1);
-  assert.deepEqual(
-    exhaustedStyles.at(-1),
-    currentStyle,
-    "An unsuccessful fit must restore the exact prior style.",
+  assert.equal(
+    "style" in exhaustedResult,
+    false,
+    "An unsuccessful preview trial must not return a style to commit.",
   );
 
-  assert.deepEqual(workspaceRoute.getWorkspaceRoute("/resume/abc"), {
-    kind: "resume-detail",
-    id: "abc",
-  });
-  assert.deepEqual(workspaceRoute.getWorkspaceRoute("/template/minimal"), {
-    kind: "template-detail",
-    id: "minimal",
-  });
-  assert.deepEqual(workspaceRoute.getWorkspaceRoute("/unknown"), {
-    kind: "unknown",
-  });
-  assert.deepEqual(workspaceRoute.workspaceAppRoutePaths, [
-    "/resume",
-    "/resume/:id",
-    "/templates",
-    "/template/:id",
-    "/trash",
-    "/models",
-    "/settings",
-  ]);
+  for (const [pathname, expectedRoute] of [
+    ["/resume", { kind: "resume-gallery" }],
+    ["/resume/abc", { kind: "resume-detail", id: "abc" }],
+    ["/templates", { kind: "template-gallery" }],
+    ["/template/minimal", { kind: "template-detail", id: "minimal" }],
+    ["/trash", { kind: "trash" }],
+    ["/models", { kind: "models" }],
+    ["/settings", { kind: "settings" }],
+    ["/unknown", { kind: "unknown" }],
+  ]) {
+    assert.deepEqual(workspaceRoute.getWorkspaceRoute(pathname), expectedRoute);
+  }
   assert.equal(
     Array.from(resumeTitle.truncateResumeTitle("😀".repeat(60))).length,
     50,
@@ -356,12 +349,11 @@ try {
   );
   assert.ok(
     /useImperativeHandle\(/.test(documentPreviewSource) &&
-      /measurePageCount:\s*\(\)\s*=>/.test(documentPreviewSource) &&
-      /frame < 8/.test(documentPreviewSource) &&
+      /measurePageCount:/.test(documentPreviewSource) &&
       /canvasControls\.map/.test(documentPreviewSource) &&
       /useDocumentCanvas\(\)/.test(documentPreviewSource) &&
       /data-slot="document-canvas-viewport"/.test(documentPreviewSource) &&
-      /measurePageCount:\s*\(\)\s*=>\s*previewHandle\.measurePageCount\(\)/.test(
+      /measurePageCount:\s*\(\)\s*=>\s*previewHandle\.measurePageCount\(/.test(
         resumeDetailCommandsSource,
       ),
     "The document canvas must own viewport controls while retaining pagination measurement.",
@@ -378,13 +370,13 @@ try {
     "Both detail routes need a preview fallback without forcing preview remounts.",
   );
   assert.ok(
-    /<ResumeEditorPane[\s\S]*?setResume=\{commands\.setResume\}[\s\S]*?setCollapsedState=\{commands\.setCollapsedState\}/.test(
+    /<ResumeEditorPane[\s\S]*?updateContent=\{commands\.updateContent\}[\s\S]*?openSectionId=\{state\.openSectionId\}[\s\S]*?toggleSection=\{commands\.toggleSection\}[\s\S]*?addSection=\{commands\.addSection\}[\s\S]*?removeSection=\{commands\.removeSection\}/.test(
       resumeDetailViewSource,
     ) &&
       !/function updateBasic|applySectionMutation|readAvatarFileAsDataUrl/.test(
         resumeDetailRouteSource + resumeDetailViewSource,
       ),
-    "Resume detail must retain editor state ownership without reabsorbing editor mutations.",
+    "Resume detail must pass document commands and the open section to its editor pane.",
   );
   assert.ok(
     /export const ResumeEditorPane = memo\(/.test(resumeEditorPaneSource) &&

@@ -1,21 +1,32 @@
-import { useCallback, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { toast } from "sonner";
 
 import type { DocumentCanvasHandle } from "@/components/preview/document-canvas";
 import type { ResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import type { ResumeDetailSaveController } from "@/components/workspace/use-resume-detail-save";
 import type { AppMessages } from "@/i18n";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   createDefaultResumeTitle,
   normalizeResumeTitle,
   truncateResumeTitle,
 } from "@/lib/resume-title";
-import { fitResumeToOnePage } from "@/lib/smart-one-page";
+import {
+  fitResumeToOnePage,
+  type SmartOnePageStyleSnapshot,
+} from "@/lib/smart-one-page";
 import { createTemplateSettings } from "@/lib/templates";
 import { duplicateResumeApi } from "@/lib/workspace-api";
 import type { ResumeDetailResponse } from "@/types/api";
 import type {
+  ResumeData,
   ResumeTemplateDefinition,
   ResumeTemplateSettings,
 } from "@/types/resume";
@@ -25,9 +36,21 @@ interface ResumeDetailCommandsOptions {
   isLoading: boolean;
   messages: AppMessages;
   navigateToResume: (detail: ResumeDetailResponse) => void;
+  previewResume: ResumeData;
   resumeOrdinal: number;
-  save: ResumeDetailSaveController;
-  session: ResumeDetailSession;
+  save: Pick<ResumeDetailSaveController, "hasUnsavedChanges" | "save" | "saveState">;
+  session: Pick<
+    ResumeDetailSession,
+    | "applyTemplate"
+    | "document"
+    | "fingerprint"
+    | "rename"
+    | "resume"
+    | "template"
+    | "templateSettings"
+    | "typography"
+    | "updateStyle"
+  >;
   templateCatalog: ResumeTemplateDefinition[];
 }
 
@@ -37,6 +60,7 @@ export function useResumeDetailCommands({
   isLoading,
   messages,
   navigateToResume,
+  previewResume,
   resumeOrdinal,
   save,
   session,
@@ -46,18 +70,45 @@ export function useResumeDetailCommands({
   const documentPreviewRef = useRef<DocumentCanvasHandle | null>(null);
   const [isDuplicating, setIsDuplicating] = useState(false);
   const [isSmartFitting, setIsSmartFitting] = useState(false);
+  const [candidateStyle, setCandidateStyle] =
+    useState<SmartOnePageStyleSnapshot | null>(null);
+  const fittingRef = useRef<{
+    controller: AbortController;
+    fingerprint: string;
+    resume: ResumeData;
+  } | null>(null);
+  const latestSessionRef = useRef(session);
   const [isPreviewReady, setIsPreviewReady] = useState(false);
   const [isTitleDialogOpen, setIsTitleDialogOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+
+  useLayoutEffect(() => {
+    latestSessionRef.current = session;
+    const fitting = fittingRef.current;
+    if (
+      fitting &&
+      (fitting.fingerprint !== session.fingerprint ||
+        fitting.resume !== previewResume)
+    ) {
+      fitting.controller.abort();
+    }
+  }, [previewResume, session]);
+  useEffect(() => () => fittingRef.current?.controller.abort(), []);
+  const previewStyle =
+    fittingRef.current &&
+    fittingRef.current.fingerprint === session.fingerprint &&
+    fittingRef.current.resume === previewResume
+      ? candidateStyle
+      : null;
 
   const setTitleDialogOpen = useCallback(
     (open: boolean) => {
       setIsTitleDialogOpen(open);
       if (open) {
-        setTitleDraft(session.resumeItem?.title || messages.untitledResume);
+        setTitleDraft(session.document?.title || messages.untitledResume);
       }
     },
-    [messages.untitledResume, session.resumeItem?.title],
+    [messages.untitledResume, session.document?.title],
   );
 
   const changeTitleDraft = useCallback((value: string) => {
@@ -65,20 +116,11 @@ export function useResumeDetailCommands({
   }, []);
 
   const saveTitle = useCallback(() => {
-    session.setResumeItem((current) => {
-      if (!current) {
-        return current;
-      }
-      const fallbackTitle =
-        session.resume.basic.name ||
-        createDefaultResumeTitle(messages, resumeOrdinal) ||
-        messages.untitledResume;
-      const nextTitle = normalizeResumeTitle(titleDraft, fallbackTitle);
-
-      return nextTitle === current.title
-        ? current
-        : { ...current, title: nextTitle, updatedAt: new Date().toISOString() };
-    });
+    const fallbackTitle =
+      session.resume.basic.name ||
+      createDefaultResumeTitle(messages, resumeOrdinal) ||
+      messages.untitledResume;
+    session.rename(normalizeResumeTitle(titleDraft, fallbackTitle));
     setIsTitleDialogOpen(false);
   }, [messages, resumeOrdinal, session, titleDraft]);
 
@@ -95,39 +137,46 @@ export function useResumeDetailCommands({
       ) {
         return;
       }
-      session.setTemplate(templateId);
-      session.setTypography(target.typography);
-      session.setTemplateSettings(target.settings);
+      session.applyTemplate(target);
     },
     [session, templateCatalog],
   );
 
   const restoreTemplateDefaults = useCallback(() => {
-    session.setTypography({ ...activeTemplate.typography });
     // Null makes the selected template the single source of layout defaults.
-    session.setTemplateSettings(null);
+    session.updateStyle({
+      typography: { ...activeTemplate.typography },
+      templateSettings: null,
+    });
   }, [activeTemplate.typography, session]);
 
   const updateTemplateSettings = useCallback(
     (patch: Partial<ResumeTemplateSettings>) => {
-      session.setTemplateSettings((current) =>
-        createTemplateSettings(activeTemplate.preset, {
+      session.updateStyle((current) => ({
+        templateSettings: createTemplateSettings(activeTemplate.preset, {
           ...activeTemplate.settings,
-          ...(current ?? {}),
+          ...(current.templateSettings ?? {}),
           ...patch,
         }),
-      );
+      }));
     },
     [activeTemplate, session],
   );
 
   const fitOnePage = useCallback(async () => {
     const previewHandle = documentPreviewRef.current;
-    if (!isPreviewReady || isSmartFitting || !previewHandle) {
+    if (!isPreviewReady || fittingRef.current || !previewHandle) {
       return;
     }
 
     setIsSmartFitting(true);
+    const controller = new AbortController();
+    let measurementKey: object | undefined;
+    fittingRef.current = {
+      controller,
+      fingerprint: session.fingerprint,
+      resume: previewResume,
+    };
     const previous = {
       templateSettings: session.templateSettings,
       typography: session.typography,
@@ -139,20 +188,30 @@ export function useResumeDetailCommands({
     try {
       const result = await fitResumeToOnePage(previous, effectiveSettings, {
         applyStyle(snapshot) {
-          session.setTypography(snapshot.typography);
-          session.setTemplateSettings(snapshot.templateSettings);
+          controller.signal.throwIfAborted();
+          measurementKey = snapshot;
+          setCandidateStyle(snapshot);
         },
-        measurePageCount: () => previewHandle.measurePageCount(),
+        measurePageCount: () =>
+          previewHandle.measurePageCount(controller.signal, measurementKey),
       });
+      controller.signal.throwIfAborted();
       if (result.status === "already-one-page") {
         toast.info(messages.smartOnePageAlready, { duration: 1_800 });
       } else if (result.status === "applied") {
+        session.updateStyle(result.style);
         toast.success(messages.smartOnePageApplied, {
           action: {
             label: messages.undoAction,
             onClick: () => {
-              session.setTypography(result.previous.typography);
-              session.setTemplateSettings(result.previous.templateSettings);
+              const latest = latestSessionRef.current;
+              if (
+                latest.typography !== result.style.typography ||
+                latest.templateSettings !== result.style.templateSettings
+              ) {
+                return;
+              }
+              session.updateStyle(result.previous);
             },
           },
           duration: 6_000,
@@ -160,14 +219,21 @@ export function useResumeDetailCommands({
       } else {
         toast.info(messages.smartOnePageNoChange, { duration: 1_800 });
       }
+    } catch (error) {
+      if (!isAbortError(error)) {
+        console.error("Failed to fit resume to one page.", error);
+        toast.error(messages.loadError, { closeButton: true });
+      }
     } finally {
+      fittingRef.current = null;
+      setCandidateStyle(null);
       setIsSmartFitting(false);
     }
-  }, [activeTemplate, isPreviewReady, isSmartFitting, messages, session]);
+  }, [activeTemplate, isPreviewReady, messages, previewResume, session]);
 
   const duplicate = useCallback(async () => {
     if (
-      !session.resumeItem ||
+      !session.document ||
       isLoading ||
       save.saveState === "saving" ||
       duplicateInFlightRef.current
@@ -186,7 +252,7 @@ export function useResumeDetailCommands({
         return;
       }
 
-      const detail = await duplicateResumeApi(session.resumeItem.id);
+      const detail = await duplicateResumeApi(session.document.id);
       toast.success(messages.resumeDuplicated, {
         action: {
           label: messages.viewDuplicateResume,
@@ -210,7 +276,7 @@ export function useResumeDetailCommands({
       duplicateInFlightRef.current = false;
       setIsDuplicating(false);
     }
-  }, [isLoading, messages, navigateToResume, save, session.resumeItem]);
+  }, [isLoading, messages, navigateToResume, save, session.document]);
 
   return {
     applyTemplate,
@@ -222,6 +288,7 @@ export function useResumeDetailCommands({
     isPreviewReady,
     isSmartFitting,
     isTitleDialogOpen,
+    previewStyle,
     restoreTemplateDefaults,
     saveTitle,
     setPreviewReady: setIsPreviewReady,

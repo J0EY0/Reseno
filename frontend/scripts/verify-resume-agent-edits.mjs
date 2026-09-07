@@ -331,16 +331,21 @@ assert(
 );
 
 assert(
-    /import\s*\{\s*useResumeAgentDraft\s*\}\s*from\s*["']@\/hooks\/use-resume-agent-draft["']/.test(
-    sessionSource,
+  /useResumeAgentDraft\(\{[\s\S]*?onApplyResume:\s*session\.applyAgentResume[\s\S]*?resume:\s*session\.resume/.test(
+    workspaceSource,
   ) &&
-    /useResumeAgentDraft\(\{[\s\S]*?messages,[\s\S]*?onApplyResume:\s*applyAgentDraftResume[\s\S]*?resume,[\s\S]*?\}\)/.test(
-      sessionSource,
-    ) &&
-    !/agentDraftBaseRef|currentResumeRef|createAgentDraftBaseSnapshot|applyAgentEditsWithMerge/.test(
+    !/useResumeAgentDraft|agentDraftBaseRef|currentResumeRef|createAgentDraftBaseSnapshot|applyAgentEditsWithMerge/.test(
       sessionSource,
     ),
-  "The resume detail session must consume the Agent draft transaction through one hook seam.",
+  "The workspace must connect the Agent draft to the formal document through the session's apply operation.",
+);
+assert(
+  /resume:\s*agent\.agentDraft\?\.resume \?\? session\.resume/.test(workspaceSource) &&
+    /useDeferredValue\(previewPresentation\)/.test(workspaceSource) &&
+    /liveResume:\s*session\.document/.test(workspaceSource) &&
+    /getSnapshot:\s*session\.getSnapshot/.test(workspaceSource) &&
+    !/agentDraft|previewResume|useDeferredValue/.test(sessionSource),
+  "Draft projections must remain in the workspace preview while save snapshots read only the formal document.",
 );
 assert(
   !/createContext|useContext/.test(draftHookSource) &&
@@ -423,12 +428,8 @@ assert(
   /const resolveAgentDraftReview = useCallback\([\s\S]*?while \(activeRequestRef\.current\)[\s\S]*?resolveAgentDraftDecision\([\s\S]*?adoptPersistedSave\([\s\S]*?activeRequestRef\.current = trackedRequest/.test(
     saveSource,
   ) &&
-    /const resolveAgentDraftReviewRef = useRef[\s\S]*?onResolveDraftReview:\s*resolveAgentDraftReview[\s\S]*?resolveAgentDraftReviewRef\.current = save\.resolveAgentDraftReview/.test(
-      workspaceSource,
-    ) &&
-    /onResolveDraftReview,[\s\S]*?useResumeAgentDraft\(\{[\s\S]*?onResolveDraftReview/.test(
-      sessionSource,
-    ),
+    /onResolveDraftReview:\s*save\.resolveAgentDraftReview/.test(workspaceSource) &&
+    !/resolveAgentDraftReviewRef/.test(workspaceSource),
   "Draft review decisions must serialize with resume saves and adopt only authoritative receipts.",
 );
 assert(
@@ -438,7 +439,7 @@ assert(
   "Unsaved local edits may adopt a formal resume only after this apply was committed as requested.",
 );
 assert(
-  (sessionSource.match(/resetAgentDraft\(\)/g) ?? []).length === 1 &&
+  /function hydrateResume\([^)]*\) \{\s*agent\.resetAgentDraft\(\);\s*session\.hydrate\(item\);/.test(workspaceSource) &&
     /const resetAgentDraft = useCallback\(\(\) => \{[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setStoredAgentDraft\(null\)[\s\S]*?setResolvingStatus\(null\)[\s\S]*?reviewSelectionControllerRef\.current\?\.reset\(\)/.test(
       draftHookSource,
     ),
@@ -477,12 +478,11 @@ const {
   createReviewItemIdByOperationId,
   getAdjacentAgentDraftReviewItemId,
   getAgentDraftReviewSuccessorId,
+  getAgentDraftSnapshotFromMessages,
   getPendingAgentDraftReviewItems,
   projectAgentDraftReview,
 } = await server.ssrLoadModule("/src/lib/agent-draft-review.ts");
 const {
-  getAgentDraftSnapshot,
-  getPendingAgentDraftSnapshot,
   hydrateAgentSession,
   toConversationMessage,
 } = await server.ssrLoadModule(
@@ -502,6 +502,59 @@ const {
   applyAgentEditsWithMerge,
   createAgentDraftBaseSnapshot,
 } = agentEditModule;
+
+{
+  const baseResume = createResume();
+  const legacyEdit = {
+    id: "missing-operation",
+    title: "Update summary",
+    target: "basic.summary",
+    reason: "Use the supplied description.",
+    replacement: "Summary without an executable operation",
+  };
+  for (const result of [
+    applyAgentEditsToDraft(baseResume, [legacyEdit]),
+    applyAgentEditsWithMerge(baseResume, baseResume, [legacyEdit]),
+  ]) {
+    assert(
+      result.appliedCount === 0 && result.diffs.length === 0 &&
+        result.errors[0]?.reason === "missing_operation" &&
+        JSON.stringify(result.resume) === JSON.stringify(baseResume),
+      "An edit without an explicit operation must leave the resume unchanged.",
+    );
+  }
+}
+
+{
+  const { mergeAgentMessage, createEmptyAssistantMessage } =
+    await server.ssrLoadModule("/src/lib/agent-message-codec.ts");
+  const validEdit = {
+    id: "explicit-operation", title: "Update summary", target: "basic.summary",
+    reason: "Use the supplied description.",
+    operation: { type: "replace_field", path: "basic.summary", value: "New summary" },
+  };
+  for (const status of ["planned", "executed", "rejected"]) {
+    const message = mergeAgentMessage(createEmptyAssistantMessage(), {
+      edits: [{ ...validEdit, status }],
+    });
+    assert(
+      message.edits[0].status === status &&
+        JSON.stringify(message.edits[0].operation) === JSON.stringify(validEdit.operation),
+      "Message decoding must retain explicit operations and their review status.",
+    );
+  }
+  for (const operation of [undefined, null, {}]) {
+    let rejected = false;
+    try {
+      mergeAgentMessage(createEmptyAssistantMessage(), {
+        edits: [validEdit, { ...validEdit, id: "invalid-operation", operation }],
+      });
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, "Message decoding must reject a malformed edit batch atomically.");
+  }
+}
 
 {
   const baseResume = createResume();
@@ -691,21 +744,21 @@ const {
       },
     },
   ];
-  const pendingDraft = getPendingAgentDraftSnapshot(storedMessages);
+  const pendingDraft = getAgentDraftSnapshotFromMessages(storedMessages);
 
   assert(
     pendingDraft?.sourceMessageId === "assistant-durable-draft" &&
       pendingDraft.transactionState === "committed" &&
       pendingDraft.baseResume === baseResume &&
       pendingDraft.edits[0] === edit,
-    "Session hydration must recover the committed pending draft and its immutable base.",
+    "Stored messages must retain the committed pending draft and its immutable base.",
   );
   const terminalMessages = structuredClone(storedMessages);
   terminalMessages[0].response.draft.reviewItems[0].status = "discarded";
   assert(
-    getAgentDraftSnapshot(terminalMessages)?.reviewItems[0].status ===
+    getAgentDraftSnapshotFromMessages(terminalMessages)?.reviewItems[0].status ===
       "discarded" &&
-      getAgentDraftSnapshot([]) === null,
+      getAgentDraftSnapshotFromMessages([]) === null,
     "Authoritative hydration must distinguish a terminal draft from no draft.",
   );
 

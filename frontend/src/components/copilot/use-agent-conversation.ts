@@ -164,6 +164,9 @@ export function useAgentConversation({
     runtimeRef,
     updates,
   })
+  const retrySession = useCallback(() => {
+    setSessionLoadAttempt((attempt) => attempt + 1)
+  }, [])
   const { cancelScheduledSend, sendPrompt, stopResponding } =
     useAgentSendController({
       agentDraftState,
@@ -175,6 +178,7 @@ export function useAgentConversation({
       isSessionMutationPending,
       resume,
       resumeId,
+      retrySession,
       runtimeRef,
       selectedModelConfig,
       updates,
@@ -193,9 +197,6 @@ export function useAgentConversation({
     () => mergeStreamingAgentMessage(messages, streamingMessage),
     [messages, streamingMessage],
   )
-  const retrySession = useCallback(() => {
-    setSessionLoadAttempt((attempt) => attempt + 1)
-  }, [])
   const isConversationReady = isSessionReady && !isSessionMutationPending
   const isRequestBusy = requestPhase !== 'idle'
   const status: AgentPanelStatus = sessionLoadError

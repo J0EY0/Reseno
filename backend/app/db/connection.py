@@ -1,5 +1,4 @@
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
 
 from app.config import get_settings
@@ -29,13 +28,3 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
 
     return conn
-
-
-def get_connection() -> Iterator[sqlite3.Connection]:
-    """Yield a database connection and always close it afterwards."""
-
-    conn = connect()
-    try:
-        yield conn
-    finally:
-        conn.close()

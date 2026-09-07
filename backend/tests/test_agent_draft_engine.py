@@ -175,7 +175,6 @@ def test_unrelated_existing_period_issue_does_not_block_summary_edit() -> None:
     assert engine.base_resume["basic"]["summary"] == "原始简介"
     assert engine.draft_resume == batch.draft_resume
     assert engine.edits == batch.edits
-    assert engine.retry_pending is False
     assert engine.transaction_state == "provisional"
 
     turn = engine.finalize(completed=True)

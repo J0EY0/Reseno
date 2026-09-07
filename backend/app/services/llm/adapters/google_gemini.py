@@ -497,7 +497,6 @@ def _message_from_payload(payload: dict[str, Any]) -> LlmAssistantMessage:
         reasoning=_reasoning(payload),
         usage=_usage(payload),
         stop_reason="tool_calls" if tool_calls else _stop_reason(payload),
-        response_id=str(payload.get("id") or "") or None,
         # Stateless replay needs Gemini's generated and hosted-tool steps in
         # order, without user input or client function results.
         provider_state={"steps": provider_steps} if provider_steps else {},

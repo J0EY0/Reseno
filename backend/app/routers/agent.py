@@ -52,6 +52,7 @@ from app.services.agent_sessions import (
     AgentResumeVersionConflictError,
     AgentSessionActiveRunConflictError,
     AgentSessionDataError,
+    AgentSessionReplacementError,
     AgentSessionRevisionConflictError,
     AgentSessionTurnReplayError,
     apply_agent_draft_decision,
@@ -231,10 +232,6 @@ def put_agent_resume_session(
     except AgentResumeUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     except AgentSessionRevisionConflictError as exc:
-        # The application-wide HTTPException handler intentionally converts
-        # business failures to HTTP 200. Concurrency conflicts must remain a
-        # transport-level 409 so clients cannot mistake a stale save for one
-        # that committed.
         return _agent_transport_error(
             status.HTTP_409_CONFLICT,
             "AGENT_SESSION_REVISION_CONFLICT",
@@ -255,6 +252,11 @@ def put_agent_resume_session(
         )
     except AgentSessionDataError:
         return _agent_session_data_error()
+    except AgentSessionReplacementError:
+        return _agent_transport_error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "AGENT_SESSION_REPLACEMENT_INVALID",
+        )
 
     return ok_response(session)
 

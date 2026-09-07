@@ -113,8 +113,10 @@ try {
     "/src/lib/auth-validation.ts",
   );
 
-  testState.responses.push({ setupRequired: true });
-  assert.deepEqual(await auth.getAuthSetupStatus(), { setupRequired: true });
+  testState.responses.push({ setupRequired: true, githubLoginAvailable: false });
+  assert.deepEqual(await auth.getAuthSetupStatus(), {
+    setupRequired: true, githubLoginAvailable: false,
+  });
   assert.deepEqual(testState.requests.shift(), {
     route: "/api/auth/setup",
     options: {
@@ -242,93 +244,92 @@ try {
   assert.deepEqual(testState.invalidatedTokens, ["token-1", "token-2"]);
 
   const oauth = await server.ssrLoadModule("/src/lib/auth-oauth.ts");
-  const oauthResponse = deferredResponse();
-  testState.responses.push(oauthResponse.promise);
-  const firstCallback = new AbortController();
-  const secondCallback = new AbortController();
-  const completing = Promise.allSettled([
-    oauth.completeOAuth("entry-retry-code", firstCallback.signal),
-    oauth.completeOAuth("entry-retry-code", secondCallback.signal),
-  ]);
-  firstCallback.abort();
-  const oauthSession = { ...refreshedSession, accessToken: "oauth-login" };
-  oauthResponse.resolve({ provider: "github", intent: "login", auth: oauthSession });
-  const [cancelledCallback, activeCallback] = await completing;
-  assert.equal(cancelledCallback.status, "rejected", "An unmounted callback must not accept the shared exchange.");
-  assert.equal(cancelledCallback.reason.name, "AbortError");
-  assert.deepEqual(activeCallback, { status: "fulfilled", value: { provider: "github", intent: "login" } });
-  assert.deepEqual(testState.session, oauthSession);
-  assert.equal(testState.savedSessions.length, 6, "Only the active callback may save the exchanged session.");
-  assert.deepEqual(await oauth.completeOAuth("entry-retry-code", new AbortController().signal), { provider: "github", intent: "login" },
-    "Retrying page preparation must reuse the already completed code exchange.");
-  assert.equal(
-    testState.savedSessions.length,
-    6,
-    "Retrying page preparation must not accept the session twice.",
+  const savesBeforeOAuth = testState.savedSessions.length;
+  testState.responses.push({ provider: "github", intent: "bind", auth: null });
+  await assert.rejects(
+    oauth.completeOAuth("wrong-intent", new AbortController().signal, "login"),
+    /OAUTH_INVALID_STATE/,
   );
-  assert.equal(testState.requests.length, 1, "One callback code must make exactly one exchange request.");
+  assert.deepEqual(testState.session, newLoginSession);
+  assert.equal(testState.savedSessions.length, savesBeforeOAuth);
+  assert.equal(testState.requests.shift().options.body.code, "wrong-intent");
+
+  testState.responses.push({ provider: "github", intent: "bind", auth: null });
+  assert.deepEqual(
+    await oauth.completeOAuth("bind-code", new AbortController().signal, "bind"),
+    { provider: "github", intent: "bind" },
+  );
+  assert.deepEqual(testState.session, newLoginSession,
+    "Binding must preserve the current parent session.");
+  assert.equal(testState.savedSessions.length, savesBeforeOAuth);
+  assert.equal(testState.requests.shift().options.body.code, "bind-code");
+
+  const loginController = new AbortController();
+  const oauthSession = { ...refreshedSession, accessToken: "oauth-login" };
+  testState.responses.push({ provider: "github", intent: "login", auth: oauthSession });
+  assert.deepEqual(
+    await oauth.completeOAuth("parent-login", loginController.signal, "login"),
+    { provider: "github", intent: "login" },
+  );
+  assert.deepEqual(testState.session, oauthSession);
+  assert.equal(testState.savedSessions.length, savesBeforeOAuth + 1);
   assert.deepEqual(testState.requests.shift(), {
     route: "/api/auth/oauth/complete",
     options: {
       auth: false,
-      body: { code: "entry-retry-code" },
+      body: { code: "parent-login" },
       credentials: "include",
       method: "POST",
       notifyOnError: false,
+      signal: loginController.signal,
     },
   });
+  assert.equal(testState.requests.length, 0);
 
   auth.clearAuthSession();
   const savesBeforeCancellation = testState.savedSessions.length;
   const cancelledResponse = deferredResponse();
   testState.responses.push(cancelledResponse.promise);
-  const cancelledCallers = [new AbortController(), new AbortController()];
-  const cancelledCompletions = Promise.allSettled(cancelledCallers.map(({ signal }) =>
-    oauth.completeOAuth("abandoned-callback-code", signal),
-  ));
-  cancelledCallers.forEach((controller) => controller.abort());
+  const cancelledController = new AbortController();
+  const cancelledCompletion = assert.rejects(
+    oauth.completeOAuth("abandoned-popup", cancelledController.signal, "login"),
+    { name: "AbortError" },
+  );
+  cancelledController.abort();
   cancelledResponse.resolve({
     provider: "github", intent: "login",
-    auth: { ...oauthSession, accessToken: "abandoned-callback-login" },
+    auth: { ...oauthSession, accessToken: "abandoned-popup-login" },
   });
-  for (const result of await cancelledCompletions) {
-    assert.equal(result.status, "rejected");
-    assert.equal(result.reason.name, "AbortError");
-  }
-  assert.equal(testState.session, null, "A late exchange must not log in after every caller has cancelled.");
+  await cancelledCompletion;
+  assert.equal(testState.session, null,
+    "A cancelled parent must not save a late exchange response.");
   assert.equal(testState.savedSessions.length, savesBeforeCancellation);
-  assert.equal(testState.requests.length, 1, "Cancelled callers must still share one code exchange.");
-  assert.equal(testState.requests.shift().options.body.code, "abandoned-callback-code");
-
-  const nextOAuthSession = { ...oauthSession, accessToken: "next-callback-login" };
-  testState.responses.push({ provider: "github", intent: "login", auth: nextOAuthSession });
-  assert.deepEqual(await oauth.completeOAuth("next-callback-code", new AbortController().signal), {
-    provider: "github", intent: "login",
-  });
-  assert.deepEqual(testState.session, nextOAuthSession, "An abandoned callback must not prevent a new login.");
-  assert.equal(testState.savedSessions.length, savesBeforeCancellation + 1);
   assert.equal(testState.requests.length, 1);
-  assert.equal(testState.requests.shift().options.body.code, "next-callback-code");
+  const cancelledRequest = testState.requests.shift();
+  assert.equal(cancelledRequest.options.body.code, "abandoned-popup");
+  assert.equal(cancelledRequest.options.signal, cancelledController.signal);
+  assert.equal(cancelledRequest.options.signal.aborted, true);
+
+  const nextOAuthSession = { ...oauthSession, accessToken: "next-popup-login" };
+  testState.responses.push({ provider: "github", intent: "login", auth: nextOAuthSession });
+  assert.deepEqual(
+    await oauth.completeOAuth("next-popup", new AbortController().signal, "login"),
+    { provider: "github", intent: "login" },
+  );
+  assert.deepEqual(testState.session, nextOAuthSession,
+    "An abandoned popup must not prevent a new login.");
+  assert.equal(testState.savedSessions.length, savesBeforeCancellation + 1);
+  assert.equal(testState.requests.shift().options.body.code, "next-popup");
 
   const savesBeforeAbortedStart = testState.savedSessions.length;
   const abortedStart = new AbortController();
   abortedStart.abort();
   await assert.rejects(
-    oauth.completeOAuth("aborted-before-start", abortedStart.signal),
+    oauth.completeOAuth("aborted-before-start", abortedStart.signal, "login"),
     { name: "AbortError" },
   );
   assert.equal(testState.requests.length, 0);
   assert.equal(testState.savedSessions.length, savesBeforeAbortedStart);
-
-  auth.clearAuthSession();
-  await oauth.completeOAuth("next-callback-code", new AbortController().signal);
-  assert.equal(testState.session, null, "Reusing an accepted callback must not undo logout.");
-  auth.saveAuthSession("owner", "later-login", refreshedSession.expiresAt);
-  const savesBeforeReplay = testState.savedSessions.length;
-  await oauth.completeOAuth("next-callback-code", new AbortController().signal);
-  assert.equal(testState.session.accessToken, "later-login");
-  assert.equal(testState.savedSessions.length, savesBeforeReplay);
-  assert.equal(testState.requests.length, 0);
 
   const messages = {
     loginUsernameRequired: "username-required",

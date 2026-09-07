@@ -21,7 +21,6 @@ try {
   const {
     compactResumeDraftDiffs,
     formatAgentDiffValue,
-    getAgentEditDiffFields,
   } = await server.ssrLoadModule("/src/lib/agent-diff-value.ts");
   const value = formatAgentDiffValue({
     id: "project-1",
@@ -141,6 +140,7 @@ try {
       title: "First summary edit",
       target: "basic.summary",
       reason: "First step",
+      operation: { type: "replace_field", path: "basic.summary", value: "B" },
       diffs: [{
         id: "diff-summary-1",
         operationId: "edit-summary-1",
@@ -156,6 +156,7 @@ try {
       title: "Second summary edit",
       target: "basic.summary",
       reason: "Second step",
+      operation: { type: "replace_field", path: "basic.summary", value: "C" },
       diffs: [{
         id: "diff-summary-2",
         operationId: "edit-summary-2",
@@ -167,28 +168,21 @@ try {
       }],
     },
   ];
-  assert.deepEqual(getAgentEditDiffFields(sameTargetEdits[0]), [
-    {
-      id: "diff-summary-1",
-      label: "Summary",
-      before: "A",
-      after: "B",
-    },
-  ]);
-  assert.deepEqual(getAgentEditDiffFields(sameTargetEdits[1]), [
-    {
-      id: "diff-summary-2",
-      label: "Summary",
-      before: "B",
-      after: "C",
-    },
-  ]);
 
   const multiFieldEdit = {
     id: "edit-project-1",
     title: "Refine project",
     target: "sections.project.items.project-1",
     reason: "Make the project more concise",
+    operation: {
+      type: "update_item",
+      sectionId: "project",
+      itemId: "project-1",
+      patch: {
+        description: "Built an AI resume editor with live preview.",
+        highlights: ["Reduced state complexity"],
+      },
+    },
     diffs: [
       {
         id: "agent-diff-edit-project-1-description",
@@ -225,20 +219,6 @@ try {
       },
     ],
   };
-  assert.deepEqual(getAgentEditDiffFields(multiFieldEdit), [
-    {
-      id: "agent-diff-edit-project-1-description",
-      label: "Project Description",
-      before: "Built an AI resume editor with real-time preview.",
-      after: "Built an AI resume editor with live preview.",
-    },
-    {
-      id: "agent-diff-edit-project-1-highlights",
-      label: "Project Highlights",
-      before: "• Reduced state complexity\n• Improved interaction details",
-      after: "• Reduced state complexity",
-    },
-  ]);
 
   const { AgentChangeSummary } = await server.ssrLoadModule(
     "/src/components/copilot/copilot-change-summary.tsx",

@@ -4,7 +4,7 @@ import type { AppMessages, Locale } from "@/i18n";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { AgentSettings, ModelConfig, ThemeMode } from "@/types/resume";
 
-export interface WorkspacePreferencesContextValue {
+interface WorkspacePreferencesContextValue {
   agentSettings: AgentSettings | null;
   changeAgentSettings: (settings: AgentSettings) => void;
   changeLocale: (locale: Locale) => void;

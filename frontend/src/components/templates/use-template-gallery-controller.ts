@@ -20,7 +20,7 @@ export function useTemplateGalleryController({
 }: {
   templates: ResumeTemplateDefinition[];
   pageSize: number;
-  onDeleteTemplates: (templateIds: string[]) => void;
+  onDeleteTemplates: (templateIds: string[]) => Promise<string[]>;
 }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isSelecting, setIsSelecting] = useState(false);
@@ -88,18 +88,12 @@ export function useTemplateGalleryController({
     },
     [customTemplateIdSet],
   );
-  const confirmDelete = useCallback(() => {
-    if (pendingDeleteIds.length > 0) {
-      onDeleteTemplates(pendingDeleteIds);
-    }
-    if (pendingDeleteIds.length > 1) {
-      const pendingDeleteIdSet = new Set(pendingDeleteIds);
-      setSelectedIds((current) =>
-        current.filter((id) => !pendingDeleteIdSet.has(id)),
-      );
-    }
+  const confirmDelete = useCallback(async () => {
+    const deleted = onDeleteTemplates(pendingDeleteIds);
     setPendingDeleteIds([]);
     setIsDeleteDialogOpen(false);
+    const deletedIds = new Set(await deleted);
+    setSelectedIds((current) => current.filter((id) => !deletedIds.has(id)));
   }, [onDeleteTemplates, pendingDeleteIds]);
   const setDeleteDialogOpen = useCallback((nextOpen: boolean) => {
     setIsDeleteDialogOpen(nextOpen);

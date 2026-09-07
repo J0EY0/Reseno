@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const modulePath = new URL(
@@ -9,20 +9,7 @@ const modulePath = new URL(
   frontendRoot,
 );
 const source = await readFile(modulePath, "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
-const module = { exports: {} };
-
-vm.runInNewContext(compiled, {
-  exports: module.exports,
-  module,
-});
-
-const { getWorkspaceRouteDataPath } = module.exports;
+const { getWorkspaceRouteDataPath } = evaluateTypeScript(source);
 const expectedPaths = {
   "resume-gallery": "/api/workspace/pages/resumes",
   "resume-detail": "/api/workspace/pages/resume-editor",
@@ -156,30 +143,21 @@ const preparationSource = await readFile(
   new URL("src/components/workspace/workspace-route-preparation.ts", frontendRoot),
   "utf8",
 );
-const preparationModule = { exports: {} };
 let entryDependencies;
-vm.runInNewContext(ts.transpileModule(preparationSource, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText, {
-  module: preparationModule,
-  exports: preparationModule.exports,
-  require(specifier) {
-    const imports = {
-      "@/lib/api-client": {},
-      "@/lib/template-presets": {},
-      "@/lib/workspace-api": {
-        fetchWorkspaceRouteData: (...args) => entryDependencies.fetch(...args),
-      },
-      "@/components/preview/document-canvas-loader": {},
-      "@/components/workspace/workspace-route-loaders": {
-        preloadWorkspaceRoute: (...args) => entryDependencies.preload(...args),
-      },
-    };
-    assert.ok(Object.hasOwn(imports, specifier), `Unexpected entry dependency: ${specifier}`);
-    return imports[specifier];
+const { prepareWorkspaceEntry } = evaluateTypeScript(preparationSource, {
+  imports: {
+    "@/lib/api-client": { isAbortError: (error) => error?.name === "AbortError" },
+    "@/lib/template-presets": {},
+    "@/lib/workspace-api": {
+      fetchWorkspaceRouteData: (...args) => entryDependencies.fetch(...args),
+    },
+    "@/components/preview/document-canvas-loader": {},
+    "@/components/workspace/workspace-route-loaders": {
+      preloadWorkspaceRoute: (...args) => entryDependencies.preload(...args),
+    },
   },
 });
-const { prepareWorkspaceEntry } = preparationModule.exports;
+
 function deferred() {
   let resolve;
   let reject;
@@ -208,14 +186,14 @@ for (const [view, routeKind] of [["resume", "resume-gallery"], ["settings", "set
     prepared = true;
     return result;
   });
-  assert.deepEqual(events, ["module", "data"], "Entry modules and page data must begin loading together.");
+  assert.deepEqual(events, ["module", "data"], "Entry resources must begin loading together.");
   routeData.resolve({ kind: routeKind, data });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(prepared, false, "Page data alone must not publish an unready route entry.");
   routeModule.resolve();
   const result = await entering;
   assert.equal(result.view, view);
-  assert.equal(result.data, data);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data)), data);
   assert.deepEqual(Object.keys(result).sort(), ["data", "view"], "Entry preparation must leave history-token allocation to the final auth commit.");
 }
 

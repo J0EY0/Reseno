@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useEffectEvent, useState } from "react";
+import { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
@@ -13,7 +13,7 @@ import {
   isApiErrorCode,
   isApiErrorToastShown,
 } from "@/lib/api-client";
-import { AUTH_SESSION_KEY } from "@/lib/auth-session";
+import { AUTH_SESSION_KEY, getAccessToken } from "@/lib/auth-session";
 import {
   createWorkspaceLateralRouteHandoff,
   type PreparedWorkspaceRoute,
@@ -25,6 +25,11 @@ type AuthGateState =
   | { phase: "login" }
   | { phase: "app" }
   | { phase: "error" };
+
+type AuthDestinationCommit = {
+  destination: "resume" | "settings";
+  complete: () => void;
+};
 
 export function useAuthGate({
   loginFallbackError,
@@ -45,6 +50,15 @@ export function useAuthGate({
   const navigate = useNavigate();
   const [authGate, setAuthGate] = useState<AuthGateState>({ phase: "loading" });
   const [authCheckAttempt, setAuthCheckAttempt] = useState(0);
+  const [hasOAuthLoginCallback] = useState(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    return window.location.pathname === "/login" && (params.has("oauth_code") || params.has("oauth_error"));
+  });
+  const [destinationCommit, setDestinationCommit] = useState<AuthDestinationCommit | null>(null);
+  const commitRef = useRef<{
+    request: AuthDestinationCommit;
+    cancel: () => void;
+  } | null>(null);
   const synchronizeAuthSession = useEffectEvent(() => {
     const hasSession = loadAuthSession();
     if (hasSession && authGate.phase === "login") {
@@ -65,9 +79,16 @@ export function useAuthGate({
         synchronizeAuthSession();
       }
     };
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) synchronizeAuthSession();
+    };
 
     window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
   }, []);
 
   useEffect(() => {
@@ -86,7 +107,7 @@ export function useAuthGate({
         }
 
         setAuthGate({
-          phase: loadAuthSession() ? "app" : "login",
+          phase: !hasOAuthLoginCallback && loadAuthSession() ? "app" : "login",
         });
       })
       .catch(() => {
@@ -98,7 +119,11 @@ export function useAuthGate({
     return () => {
       cancelled = true;
     };
-  }, [authCheckAttempt]);
+  }, [authCheckAttempt, hasOAuthLoginCallback]);
+
+  useEffect(() => () => {
+    commitRef.current?.cancel();
+  }, []);
 
   useEffect(() => {
     if (authGate.phase !== "app") {
@@ -190,12 +215,46 @@ export function useAuthGate({
       setAuthGate({ phase: "login" });
       throw new Error(requestFallbackError);
     }
+    const acceptedToken = getAccessToken();
 
-    startTransition(() => {
-      setAuthGate({ phase: "app" });
-      navigate(`/${destination}`, {
-        replace: true,
-        state: prepared ? createWorkspaceLateralRouteHandoff(prepared) : null,
+    commitRef.current?.cancel();
+    await new Promise<void>((resolve, reject) => {
+      function finish(error?: unknown) {
+        if (commitRef.current?.request !== request) return;
+        commitRef.current = null;
+        signal.removeEventListener("abort", abort);
+        setDestinationCommit(null);
+        if (error) reject(error);
+        else resolve();
+      }
+      function abort() {
+        if (commitRef.current?.request !== request) return;
+        finish(signal.reason);
+        if (getAccessToken() === acceptedToken) {
+          setAuthGate({ phase: "login" });
+          navigate("/login", { replace: true });
+        }
+      }
+      const request: AuthDestinationCommit = {
+        destination,
+        complete: () => {
+          if (signal.aborted) abort();
+          else finish();
+        },
+      };
+      commitRef.current = {
+        request,
+        cancel: () => finish(new DOMException("Aborted", "AbortError")),
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      startTransition(() => {
+        if (signal.aborted) return;
+        setDestinationCommit(request);
+        setAuthGate({ phase: "app" });
+        navigate(`/${destination}`, {
+          replace: true,
+          state: prepared ? createWorkspaceLateralRouteHandoff(prepared) : null,
+        });
       });
     });
   }
@@ -203,6 +262,7 @@ export function useAuthGate({
   return {
     acceptSession,
     authGate,
+    destinationCommit,
     login,
     logout,
     retry,

@@ -14,7 +14,6 @@ const [
   authPageShellSource,
   templateEditorSource,
   copilotPanelShellSource,
-  toolSource,
   copilotChangeSummarySource,
   draftReviewComparisonSource,
   pdfExportRendererSource,
@@ -56,10 +55,6 @@ const [
     ),
     readFile(
       new URL("src/components/copilot/copilot-panel-shell.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/ai-elements/tool.tsx", projectRoot),
       "utf8",
     ),
     readFile(
@@ -359,7 +354,6 @@ for (const statusToken of ["success", "warning", "info"]) {
   );
 }
 const statusComponentSource = [
-  toolSource,
   copilotChangeSummarySource,
   pdfExportRendererSource,
 ].join("\n");
@@ -369,29 +363,6 @@ assert(
   ),
   "Application status UI must use semantic status colors instead of palette utilities.",
 );
-for (const semanticClass of [
-  "text-success",
-  "text-warning",
-  "text-info",
-  "text-destructive",
-]) {
-  assert(
-    statusComponentSource.includes(semanticClass),
-    `Application status UI is missing ${semanticClass}.`,
-  );
-}
-for (const [state, semanticClass] of [
-  ["approval-requested", "text-warning"],
-  ["approval-responded", "text-info"],
-  ["output-available", "text-success"],
-  ["output-denied", "text-warning"],
-  ["output-error", "text-destructive"],
-]) {
-  assert(
-    new RegExp(`"${state}":[^\\n]*${semanticClass}`).test(toolSource),
-    `Tool state ${state} must use ${semanticClass}.`,
-  );
-}
 assert(
   copilotChangeSummarySource.includes("text-warning") &&
     draftReviewComparisonSource.includes("bg-card") &&
@@ -401,6 +372,7 @@ assert(
 );
 assert(
   pdfExportRendererSource.includes("bg-background") &&
+    pdfExportRendererSource.includes("text-destructive") &&
     !pdfExportRendererSource.includes("bg-white p-8 text-sm text-destructive"),
   "PDF export errors must keep semantic destructive contrast in dark mode.",
 );

@@ -1,4 +1,8 @@
 import { matchPath } from "react-router-dom";
+import {
+  createWorkspaceHandoffToken,
+  readWorkspaceHandoffToken,
+} from "@/lib/workspace-route-handoff";
 
 import type { DocumentLocale, WorkspaceView } from "@/types/resume";
 import type {
@@ -6,7 +10,7 @@ import type {
   WorkspaceTemplateRouteData,
 } from "@/lib/workspace-route-data";
 
-export type WorkspaceRoute =
+type WorkspaceRoute =
   | { kind: "resume-gallery" }
   | { kind: "resume-detail"; id: string }
   | { kind: "template-gallery" }
@@ -25,7 +29,7 @@ function hasDefaultTemplateIds(value: unknown) {
   return typeof candidate.zh === "string" && typeof candidate.en === "string";
 }
 
-export interface TemplateDetailRouteHandoff {
+interface TemplateDetailRouteHandoff {
   data: WorkspaceTemplateRouteData;
   kind: "template-detail-handoff";
   templateLocale: DocumentLocale;
@@ -44,14 +48,15 @@ export function createResumeDetailRouteHandoff(
   payload: PreparedResumeDetailRouteData,
   resumeOrdinal: number,
   resumeCount: number,
-): ResumeDetailRouteHandoff {
-  return {
+): { kind: "resume-detail-handoff"; token: string } {
+  const detail: ResumeDetailRouteHandoff = {
     kind: "resume-detail-handoff",
     payload,
     resumeCount,
     resumeId: payload.detail.resume.id,
     resumeOrdinal,
   };
+  return { kind: detail.kind, token: createWorkspaceHandoffToken(detail) };
 }
 
 export function getResumeDetailRouteHandoff(
@@ -62,7 +67,19 @@ export function getResumeDetailRouteHandoff(
     return null;
   }
 
-  const candidate = state as Partial<ResumeDetailRouteHandoff>;
+  if (
+    !("kind" in state) ||
+    state.kind !== "resume-detail-handoff" ||
+    !("token" in state)
+  ) {
+    return null;
+  }
+  const candidate = readWorkspaceHandoffToken(state.token) as
+    | Partial<ResumeDetailRouteHandoff>
+    | undefined;
+  if (!candidate) {
+    return null;
+  }
   const payload = candidate.payload;
   if (
     candidate.kind !== "resume-detail-handoff" ||
@@ -89,13 +106,14 @@ export function createTemplateDetailRouteHandoff(
   templateId: string,
   data: WorkspaceTemplateRouteData,
   templateLocale: DocumentLocale,
-): TemplateDetailRouteHandoff {
-  return {
+): { kind: "template-detail-handoff"; token: string } {
+  const detail: TemplateDetailRouteHandoff = {
     data,
     kind: "template-detail-handoff",
     templateId,
     templateLocale,
   };
+  return { kind: detail.kind, token: createWorkspaceHandoffToken(detail) };
 }
 
 export function getTemplateDetailRouteHandoff(
@@ -106,7 +124,19 @@ export function getTemplateDetailRouteHandoff(
     return null;
   }
 
-  const candidate = state as Partial<TemplateDetailRouteHandoff>;
+  if (
+    !("kind" in state) ||
+    state.kind !== "template-detail-handoff" ||
+    !("token" in state)
+  ) {
+    return null;
+  }
+  const candidate = readWorkspaceHandoffToken(state.token) as
+    | Partial<TemplateDetailRouteHandoff>
+    | undefined;
+  if (!candidate) {
+    return null;
+  }
   if (
     candidate.kind !== "template-detail-handoff" ||
     candidate.templateId !== templateId ||
@@ -121,7 +151,7 @@ export function getTemplateDetailRouteHandoff(
   return candidate as TemplateDetailRouteHandoff;
 }
 
-export const workspaceRoutePaths = {
+const workspaceRoutePaths = {
   resumeGallery: "/resume",
   resumeDetail: "/resume/:id",
   templateGallery: "/templates",
@@ -130,8 +160,6 @@ export const workspaceRoutePaths = {
   models: "/models",
   settings: "/settings",
 } as const;
-
-export const workspaceAppRoutePaths = Object.values(workspaceRoutePaths);
 
 const workspacePathByView: Record<WorkspaceView, string> = {
   resume: workspaceRoutePaths.resumeGallery,

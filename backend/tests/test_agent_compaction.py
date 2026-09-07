@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 from functools import partial
 
 import anyio
@@ -7,8 +9,8 @@ import pytest
 from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
 from app.services.agent.evidence import historical_prompt_evidence_ref
 from app.services.agent.runtime import compaction
+from app.services.agent.runtime import messages as message_compiler
 from app.services.agent.runtime.compaction import (
-    prepare_agent_messages,
     prepare_agent_prompt,
 )
 from app.services.agent.runtime.context import (
@@ -19,10 +21,9 @@ from app.services.agent.runtime.context import (
 )
 from app.services.agent.runtime.messages import (
     CHECKPOINT_CONTEXT_TOKEN_BUDGET,
+    AgentPromptCompiler,
     _current_draft_state,
     _estimated_json_tokens,
-    agent_checkpoint_context,
-    agent_compaction_events,
     agent_prompt_limits,
     estimate_agent_messages_tokens,
 )
@@ -93,20 +94,6 @@ def _legacy_history() -> list[dict[str, object]]:
     return history
 
 
-def _checkpoint_from_messages(messages: list[LlmInputMessage]) -> dict[str, object]:
-    content = next(
-        message["content"]
-        for message in messages
-        if message["role"] == "user"
-        and isinstance(message["content"], str)
-        and message["content"].startswith('{"conversationCheckpoint":')
-    )
-    assert isinstance(content, str)
-    value = json.loads(content)["conversationCheckpoint"]
-    assert isinstance(value, dict)
-    return value
-
-
 def test_conversation_checkpoint_state_is_runtime_owned() -> None:
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="history-user",
@@ -122,12 +109,12 @@ def test_conversation_checkpoint_state_is_runtime_owned() -> None:
 
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=128_000),
             AgentRuntimeContext(conversation_state=state),
         ),
-    )
+    ).messages
 
     assert state.active_checkpoint == checkpoint
     assert not hasattr(request, "_active_conversation_checkpoint")
@@ -160,7 +147,10 @@ def test_checkpoint_events_hide_identity_and_keep_assistant_context() -> None:
         ],
     )
 
-    events = agent_compaction_events(request, start_count=0, end_count=2)
+    events = AgentPromptCompiler(request, _config()).checkpoint_summary(
+        len(request.messages),
+        CHECKPOINT_CONTEXT_TOKEN_BUDGET,
+    )["events"]
     serialized = json.dumps(events, ensure_ascii=False)
 
     assert "Private Person" not in serialized
@@ -188,12 +178,12 @@ def test_long_history_stays_exact_when_it_fits_the_model_context() -> None:
 
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=128_000),
             runtime,
         ),
-    )
+    ).messages
 
     assert attempts == []
     assert runtime.conversation_state.active_checkpoint is None
@@ -208,7 +198,7 @@ def test_long_history_stays_exact_when_it_fits_the_model_context() -> None:
     repeated_runtime = AgentRuntimeContext()
     anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             repeated,
             _config(context_window_tokens=128_000),
             repeated_runtime,
@@ -234,7 +224,9 @@ def test_checkpoint_context_is_bounded() -> None:
                 },
             ],
         )
-    context = agent_checkpoint_context(_request(history), end_count=len(history))
+    context = AgentPromptCompiler(_request(history), _config()).checkpoint_summary(
+        len(history), CHECKPOINT_CONTEXT_TOKEN_BUDGET
+    )
     serialized = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
 
     assert (
@@ -295,12 +287,12 @@ def test_compacted_prompt_keeps_the_question_that_a_terse_reply_answers() -> Non
     runtime = AgentRuntimeContext()
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=6_000),
             runtime,
         ),
-    )
+    ).messages
     serialized = json.dumps(messages, ensure_ascii=False)
 
     assert runtime.conversation_state.active_checkpoint is not None
@@ -390,7 +382,9 @@ def test_oversized_assistant_event_does_not_hide_an_earlier_user_fact() -> None:
         ],
     )
 
-    context = agent_checkpoint_context(request, end_count=2)
+    context = AgentPromptCompiler(request, _config()).checkpoint_summary(
+        2, CHECKPOINT_CONTEXT_TOKEN_BUDGET
+    )
 
     serialized = json.dumps(context, ensure_ascii=False)
     assert historical_prompt_evidence_ref("important-user-fact") in serialized
@@ -420,12 +414,12 @@ def test_loaded_checkpoint_is_not_rebuilt_just_because_history_is_long() -> None
 
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=128_000),
             AgentRuntimeContext(conversation_state=state),
         ),
-    )
+    ).messages
 
     assert state.active_checkpoint == loaded
     assert "Keep this verified constraint." in json.dumps(messages)
@@ -462,12 +456,12 @@ def test_rollover_rebuilds_oversized_checkpoint_at_same_boundary() -> None:
 
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=6_000),
             AgentRuntimeContext(conversation_state=state),
         ),
-    )
+    ).messages
 
     serialized = json.dumps(messages, ensure_ascii=False)
     assert state.active_checkpoint is not None
@@ -500,7 +494,7 @@ def test_cancellation_does_not_change_checkpoint() -> None:
     with pytest.raises(AgentRunAborted):
         anyio.run(
             partial(
-                prepare_agent_messages,
+                prepare_agent_prompt,
                 request,
                 _config(),
                 AgentRuntimeContext(
@@ -511,6 +505,80 @@ def test_cancellation_does_not_change_checkpoint() -> None:
         )
 
     assert state.active_checkpoint == loaded
+
+
+def test_cancelled_compilation_keeps_event_loop_and_checkpoint_available(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loaded = AgentConversationCheckpoint(
+        throughMessageId="legacy-assistant-21",
+        summary={"trust": "untrusted_history_data", "events": []},
+    )
+    original_summary = loaded.model_copy(deep=True)
+    state = AgentConversationState(loaded_checkpoint=loaded, active_checkpoint=loaded)
+    original = compaction._compile_agent_prompt
+
+    def delayed_compile(request, config, checkpoint):
+        try:
+            assert checkpoint is not loaded
+            entered.set()
+            assert release.wait(timeout=3)
+            checkpoint.summary["events"].append({"text": "Worker-local data"})
+            return original(request, config, checkpoint)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(compaction, "_compile_agent_prompt", delayed_compile)
+
+    async def scenario():
+        task = asyncio.create_task(
+            prepare_agent_prompt(
+                _request(_legacy_history()),
+                _config(),
+                AgentRuntimeContext(conversation_state=state),
+            ),
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert not task.done()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 3)
+
+    asyncio.run(scenario())
+    assert state.active_checkpoint is loaded
+    assert state.loaded_checkpoint is loaded
+    assert loaded == original_summary
+
+
+def test_compaction_prepares_current_material_once(monkeypatch):
+    history = [
+        {
+            "id": f"message-{index}",
+            "role": "user" if index % 2 == 0 else "assistant",
+            "text": "Factual resume context. " * 180,
+        }
+        for index in range(80)
+    ]
+    original = message_compiler._current_attachment_payload
+    calls = 0
+
+    def counted_material(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        message_compiler, "_current_attachment_payload", counted_material
+    )
+    runtime = AgentRuntimeContext()
+    anyio.run(partial(prepare_agent_prompt, _request(history), _config(), runtime))
+    assert runtime.conversation_state.active_checkpoint is not None
+    assert calls == 1
 
 
 def test_context_rollover_handoffs_the_last_historical_user_turn() -> None:
@@ -528,12 +596,12 @@ def test_context_rollover_handoffs_the_last_historical_user_turn() -> None:
     runtime = AgentRuntimeContext()
     messages = anyio.run(
         partial(
-            prepare_agent_messages,
+            prepare_agent_prompt,
             request,
             _config(context_window_tokens=6_000),
             runtime,
         ),
-    )
+    ).messages
 
     assert runtime.conversation_state.active_checkpoint is not None
     assert (
@@ -692,3 +760,39 @@ def test_plain_text_token_estimate_is_unchanged() -> None:
         )
         == 11
     )
+
+
+def test_loaded_checkpoint_projects_only_the_exact_history_tail(monkeypatch):
+    history = [
+        {
+            "id": f"message-{index}",
+            "role": "user" if index % 2 == 0 else "assistant",
+            "text": "Factual resume context. " * 180,
+        }
+        for index in range(80)
+    ]
+    loaded = AgentConversationCheckpoint(
+        throughMessageId="message-69",
+        summary={"trust": "untrusted_history_data", "events": []},
+    )
+    counts = []
+    original = message_compiler._conversation_entries
+
+    def project_tail(conversation, **kwargs):
+        counts.append(len(conversation))
+        return original(conversation, **kwargs)
+
+    monkeypatch.setattr(message_compiler, "_conversation_entries", project_tail)
+    runtime = AgentRuntimeContext(
+        conversation_state=AgentConversationState(active_checkpoint=loaded),
+    )
+    anyio.run(
+        partial(
+            prepare_agent_prompt,
+            _request(history),
+            _config(context_window_tokens=32_768),
+            runtime,
+        ),
+    )
+    assert counts == [10]
+    assert runtime.conversation_state.active_checkpoint == loaded

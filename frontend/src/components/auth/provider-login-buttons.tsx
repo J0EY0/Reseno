@@ -1,48 +1,22 @@
 import GithubIcon from "@lobehub/icons/es/Github/components/Mono";
-import { useState } from "react";
-import { toast } from "sonner";
 
+import { AuthLoadingSweep } from "@/components/auth/auth-loading-sweep";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldSeparator } from "@/components/ui/field";
+import type { OAuthLoginControls } from "@/hooks/use-oauth-login";
 import type { AppMessages } from "@/i18n";
-import { isApiErrorCode } from "@/lib/api-client";
-import { requestOAuthAuthorization } from "@/lib/auth-oauth";
 
 export function ProviderLoginButtons({
   disabled,
-  isPending,
-  onPendingChange,
+  oauth,
   t,
 }: {
   disabled: boolean;
-  isPending: boolean;
-  onPendingChange: (isPending: boolean) => void;
+  oauth: OAuthLoginControls;
   t: AppMessages;
 }) {
-  const [requestError, setRequestError] = useState<string | null>(null);
-
-  async function signIn() {
-    if (disabled || isPending) {
-      return;
-    }
-    setRequestError(null);
-    onPendingChange(true);
-
-    try {
-      const authorizationUrl = await requestOAuthAuthorization("github", "login");
-      window.location.assign(authorizationUrl);
-    } catch (error) {
-      if (
-        isApiErrorCode(error, "OAUTH_NOT_CONFIGURED") ||
-        isApiErrorCode(error, "OAUTH_NOT_BOUND")
-      ) {
-        toast.info(t.oauthGithubNotBound, { closeButton: true });
-      } else {
-        setRequestError(error instanceof Error ? error.message : t.oauthStartFailed);
-      }
-      onPendingChange(false);
-    }
-  }
+  const { availability, isPending, requestError } = oauth;
+  const isDisabled = disabled || isPending || availability.status !== "ready";
 
   return (
     <>
@@ -59,11 +33,11 @@ export function ProviderLoginButtons({
             aria-label={t.oauthContinueGithub}
             title={t.oauthContinueGithub}
             aria-busy={isPending || undefined}
-            aria-disabled={disabled || isPending}
-            disabled={disabled || isPending}
-            onClick={() => void signIn()}
+            aria-disabled={isDisabled}
+            disabled={isDisabled}
+            onClick={() => void oauth.signIn()}
           >
-            <span className="auth-loading-border" aria-hidden="true" />
+            <AuthLoadingSweep />
             <GithubIcon data-icon="inline-start" aria-hidden="true" />
           </Button>
         </div>
@@ -76,7 +50,21 @@ export function ProviderLoginButtons({
         >
           {isPending ? t.oauthStarting : ""}
         </span>
-        <FieldError>{requestError}</FieldError>
+        <FieldError>
+          {requestError ?? (availability.status === "error" ? availability.message : null)}
+        </FieldError>
+        {availability.status === "error" ? (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="self-center"
+            disabled={disabled || isPending}
+            onClick={oauth.retry}
+          >
+            {t.retry}
+          </Button>
+        ) : null}
       </Field>
     </>
   );

@@ -48,10 +48,6 @@ export default defineConfig({
             return
           }
 
-          if (id.includes('/@emotion/')) {
-            return
-          }
-
           if (
             isNodePackage(id, 'react') ||
             isNodePackage(id, 'react-dom') ||
@@ -61,70 +57,6 @@ export default defineConfig({
           ) {
             return 'vendor-react'
           }
-
-          if (
-            id.includes('/shiki/') ||
-            id.includes('/@shikijs/')
-          ) {
-            return 'vendor-shiki'
-          }
-
-          if (
-            id.includes('/streamdown/') ||
-            id.includes('/@streamdown/') ||
-            id.includes('/mermaid/') ||
-            id.includes('/katex/')
-          ) {
-            return
-          }
-
-          if (
-            id.includes('/@lobehub/') ||
-            id.includes('/antd-style/') ||
-            id.includes('/@ant-design/')
-          ) {
-            return
-          }
-
-          if (id.includes('/@tiptap/') || id.includes('/prosemirror-')) {
-            return
-          }
-
-          if (
-            id.includes('/@radix-ui/') ||
-            id.includes('/radix-ui/') ||
-            id.includes('/cmdk/')
-          ) {
-            return
-          }
-
-          if (
-            id.includes('/lucide-react/') ||
-            id.includes('/@icons-pack/')
-          ) {
-            return
-          }
-
-          if (id.includes('/@tanstack/')) {
-            return
-          }
-
-          if (id.includes('/html2canvas/')) {
-            return 'vendor-html2canvas'
-          }
-
-          if (
-            id.includes('/jspdf/') ||
-            id.includes('/dompurify/') ||
-            id.includes('/fflate/') ||
-            id.includes('/canvg/') ||
-            id.includes('/raf/') ||
-            id.includes('/rgbcolor/') ||
-            id.includes('/stackblur-canvas/')
-          ) {
-            return 'vendor-jspdf'
-          }
-          return
         },
       },
     },

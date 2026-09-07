@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 const sourceRoot = join(frontendRoot, "src");
@@ -34,33 +34,17 @@ const apiClient = {
 
 async function loadTypeScriptModule(fileName) {
   const source = await readFile(join(sourceRoot, "lib", fileName), "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
 
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require: (specifier) => {
-      if (specifier === "@/lib/api-client") {
-        return apiClient;
-      }
-      if (specifier === "@/lib/agent-draft-review") {
-        return {
-          projectAgentDraftReview: () => {
-            throw new Error("Draft projection is outside this transport test.");
-          },
-        };
-      }
-      throw new Error(`Unexpected import: ${specifier}`);
+  return evaluateTypeScript(source, {
+    imports: {
+      "@/lib/api-client": apiClient,
+      "@/lib/agent-draft-review": {
+        projectAgentDraftReview: () => {
+          throw new Error("Draft projection is outside this transport test.");
+        },
+      },
     },
   });
-
-  return module.exports;
 }
 
 function takeLastCall(kind) {

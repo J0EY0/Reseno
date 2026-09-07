@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
 
@@ -10,8 +11,9 @@ from app.services.llm import (
     AgentLlmConfig,
     LlmPrompt,
     LlmRequestError,
+    LlmStreamEvent,
     async_complete_chat,
-    async_complete_tool_call,
+    async_stream_tool_call,
 )
 from app.services.llm.adapters import anthropic_messages
 from app.services.thinking import ThinkingControl
@@ -257,13 +259,21 @@ def test_anthropic_registers_tools_without_redundant_auto_tool_choice(
     monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(thinking_control="native_auto"),
-            LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
-            [_tool()],
+        _collect_events(
+            async_stream_tool_call(
+                _config(thinking_control="native_auto"),
+                LlmPrompt(messages=[{"role": "user", "content": "Review."}]),
+                [_tool()],
+            )
         ),
     )
 
     payload = captured["payload"]
     assert payload["tools"][0]["name"] == "resume_lookup"
     assert "tool_choice" not in payload
+
+
+async def _collect_events(
+    stream: AsyncIterator[LlmStreamEvent],
+) -> list[LlmStreamEvent]:
+    return [event async for event in stream]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.schemas.agent import AgentChatRequest, AgentConversationCheckpoint
 from app.services.llm import AgentLlmConfig, LlmRequestError
-from app.services.llm.types import LlmInputMessage, LlmPrompt
+from app.services.llm.types import LlmPrompt
 
 from .context import (
     AgentContextWindowError,
@@ -11,29 +11,12 @@ from .context import (
 )
 from .messages import (
     CHECKPOINT_CONTEXT_TOKEN_BUDGET,
-    agent_checkpoint_context,
+    AgentPromptCompiler,
     agent_checkpoint_message_count,
     agent_compaction_boundaries,
     agent_prompt_limits,
-    build_agent_prompt,
     estimate_agent_messages_tokens,
 )
-
-
-async def prepare_agent_messages(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-    runtime: AgentRuntimeContext,
-) -> list[LlmInputMessage]:
-    """Prepare only the model-visible messages for non-provider consumers."""
-
-    return (
-        await prepare_agent_prompt(
-            request,
-            config,
-            runtime,
-        )
-    ).messages
 
 
 async def prepare_agent_prompt(
@@ -44,15 +27,34 @@ async def prepare_agent_prompt(
     """Build one bounded prompt without making a second model request."""
 
     await runtime.checkpoint()
-    state = runtime.conversation_state
+    checkpoint = runtime.conversation_state.active_checkpoint
+    prompt, next_checkpoint = await runtime.run_sync(
+        _compile_agent_prompt,
+        request,
+        config,
+        checkpoint.model_copy(deep=True) if checkpoint is not None else None,
+    )
+    runtime.conversation_state.active_checkpoint = next_checkpoint
+    return prompt
+
+
+def _compile_agent_prompt(
+    request: AgentChatRequest,
+    config: AgentLlmConfig,
+    checkpoint: AgentConversationCheckpoint | None,
+) -> tuple[LlmPrompt, AgentConversationCheckpoint | None]:
+    state = AgentConversationState(active_checkpoint=checkpoint)
     checkpoint_count = agent_checkpoint_message_count(
         request,
         state.active_checkpoint,
     )
+    compiler = AgentPromptCompiler(
+        request, config, history_start_count=checkpoint_count
+    )
     prompt, checkpoint = _prompt_at_boundary(
         request,
-        config,
         state=state,
+        compiler=compiler,
         boundary_count=checkpoint_count,
     )
     limits = agent_prompt_limits(request, config)
@@ -79,8 +81,8 @@ async def prepare_agent_prompt(
                     boundary_count, _message_id = boundaries[index]
                     candidate_prompt, candidate_checkpoint = _prompt_at_boundary(
                         request,
-                        config,
                         state=state,
+                        compiler=compiler,
                         boundary_count=boundary_count,
                     )
                     evaluated[index] = (
@@ -125,8 +127,8 @@ async def prepare_agent_prompt(
             checkpoint_token_budget = CHECKPOINT_CONTEXT_TOKEN_BUDGET
             handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
                 request,
-                config,
                 state=state,
+                compiler=compiler,
                 boundary_count=history_count,
                 rebuild_checkpoint=True,
                 checkpoint_token_budget=checkpoint_token_budget,
@@ -139,8 +141,8 @@ async def prepare_agent_prompt(
                 )
                 handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
                     request,
-                    config,
                     state=state,
+                    compiler=compiler,
                     boundary_count=history_count,
                     rebuild_checkpoint=True,
                     checkpoint_token_budget=checkpoint_token_budget,
@@ -152,8 +154,8 @@ async def prepare_agent_prompt(
                 checkpoint_token_budget = 1
                 handoff_prompt, handoff_checkpoint = _prompt_at_boundary(
                     request,
-                    config,
                     state=state,
+                    compiler=compiler,
                     boundary_count=history_count,
                     rebuild_checkpoint=True,
                     checkpoint_token_budget=checkpoint_token_budget,
@@ -168,15 +170,14 @@ async def prepare_agent_prompt(
     if limits is not None and estimated_tokens > limits.input_tokens:
         raise _context_window_error()
 
-    state.active_checkpoint = checkpoint
-    return prompt
+    return prompt, checkpoint
 
 
 def _prompt_at_boundary(
     request: AgentChatRequest,
-    config: AgentLlmConfig,
     *,
     state: AgentConversationState,
+    compiler: AgentPromptCompiler,
     boundary_count: int,
     rebuild_checkpoint: bool = False,
     checkpoint_token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
@@ -185,15 +186,12 @@ def _prompt_at_boundary(
         request,
         boundary_count,
         state=state,
+        compiler=compiler,
         rebuild_checkpoint=rebuild_checkpoint,
         checkpoint_token_budget=checkpoint_token_budget,
     )
     return (
-        build_agent_prompt(
-            request,
-            config,
-            checkpoint=checkpoint,
-        ),
+        compiler.build(checkpoint),
         checkpoint,
     )
 
@@ -203,6 +201,7 @@ def _checkpoint_at_boundary(
     boundary_count: int,
     *,
     state: AgentConversationState,
+    compiler: AgentPromptCompiler,
     rebuild_checkpoint: bool = False,
     checkpoint_token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
 ) -> AgentConversationCheckpoint | None:
@@ -222,11 +221,7 @@ def _checkpoint_at_boundary(
         return active
     return AgentConversationCheckpoint(
         throughMessageId=message_id,
-        summary=agent_checkpoint_context(
-            request,
-            end_count=boundary_count,
-            token_budget=checkpoint_token_budget,
-        ),
+        summary=compiler.checkpoint_summary(boundary_count, checkpoint_token_budget),
     )
 
 

@@ -101,21 +101,12 @@ class _ContextBudget:
 
 
 @dataclass(frozen=True)
-class _ConversationProjection:
-    """Conversation state projected behind the public message-builder seam."""
-
-    exact_messages: list[LlmInputMessage]
-    stable_prefix_message_counts: tuple[int, ...]
-    checkpoint: dict[str, Any] | None
-    state: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class _ConversationEntries:
     """Exact history envelopes and stable product-event prefix counts."""
 
     messages: list[LlmInputMessage]
     stable_prefix_message_counts: tuple[int, ...]
+    source_message_counts: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -127,126 +118,120 @@ class AgentPromptLimits:
     target_tokens: int
 
 
-def build_agent_messages(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-    *,
-    checkpoint: AgentConversationCheckpoint | None = None,
-) -> list[LlmInputMessage]:
-    """Build the model-visible transcript without provider cache metadata."""
+class AgentPromptCompiler:
+    """Prepare immutable turn material once and project exact history boundaries."""
 
-    return build_agent_prompt(
-        request,
-        config,
-        checkpoint=checkpoint,
-    ).messages
-
-
-def build_agent_prompt(
-    request: AgentChatRequest,
-    config: AgentLlmConfig,
-    *,
-    checkpoint: AgentConversationCheckpoint | None = None,
-) -> LlmPrompt:
-    """Build model messages with current-request attachments only.
-
-    Original bytes are included only when the selected adapter explicitly
-    supports their media type. Otherwise the same original is lazily extracted
-    into complete text; extraction never truncates silently.
-    """
-
-    profile = execution_profile_for_request(request)
-    system_content = "\n\n".join(
-        [
-            AGENT_PROMPT,
-            f"Current date: {date.today().isoformat()}.",
-            execution_profile_prompt(profile),
-        ],
-    )
-    messages: list[LlmInputMessage] = [
-        {
-            "role": "system",
-            "content": system_content,
-        },
-    ]
-
-    tool_schema_tokens = _tool_schema_token_reserve(request, config)
-    hidden_terms = _request_hidden_terms(request)
-    context_files, binary_parts = _current_attachment_payload(
-        request,
-        config,
-        tool_schema_tokens=tool_schema_tokens,
-        hidden_terms=hidden_terms,
-    )
-    workspace = _workspace_context(
-        request,
-        hidden_terms=hidden_terms,
-    )
-    current_prompt = _sanitized_text(
-        _current_prompt(request),
-        hidden_terms=hidden_terms,
-    )
-    projection = _conversation_projection(
-        request,
-        config=config,
-        tool_schema_tokens=tool_schema_tokens,
-        hidden_terms=hidden_terms,
-        checkpoint=checkpoint,
-    )
-    sanitized_state = sanitize_agent_value(
-        projection.state,
-        hidden_terms=hidden_terms,
-    )
-    workspace["conversationState"] = (
-        sanitized_state if isinstance(sanitized_state, dict) else {}
-    )
-
-    stable_prefix_message_counts: list[int] = []
-    if projection.checkpoint is not None:
-        messages.append(
-            {
-                "role": "user",
-                "content": _json_message(
-                    "conversationCheckpoint",
-                    projection.checkpoint,
-                ),
-            },
+    def __init__(
+        self,
+        request: AgentChatRequest,
+        config: AgentLlmConfig,
+        *,
+        history_start_count: int = 0,
+    ) -> None:
+        self._request = request
+        self._history_start_count = history_start_count
+        tool_schema_tokens = _tool_schema_token_reserve(request, config)
+        resume = DraftTransaction.from_request(request).active_resume
+        self._hidden_terms = _request_hidden_terms(request, resume)
+        context_files, binary_parts = _current_attachment_payload(
+            request,
+            config,
+            tool_schema_tokens=tool_schema_tokens,
+            hidden_terms=self._hidden_terms,
         )
-        stable_prefix_message_counts.append(len(messages))
-    exact_start = len(messages)
-    messages.extend(projection.exact_messages)
-    stable_prefix_message_counts.extend(
-        exact_start + count for count in projection.stable_prefix_message_counts
-    )
+        workspace = _workspace_context(request, resume, hidden_terms=self._hidden_terms)
+        budget = _context_budget(config, tool_schema_tokens=tool_schema_tokens)
+        state = {
+            "currentDraft": _current_draft_state(
+                request,
+                token_budget=_state_token_budget(
+                    budget.input_tokens if budget else None
+                ),
+            )
+        }
+        workspace["conversationState"] = sanitize_agent_value(
+            state,
+            hidden_terms=self._hidden_terms,
+        )
+        self._workspace_content = _json_message("workspaceContext", workspace)
+        self._current_content = _current_turn_content(
+            _sanitized_text(_current_prompt(request), hidden_terms=self._hidden_terms),
+            context_files=context_files,
+            binary_parts=binary_parts,
+        )
+        self._system_content = "\n\n".join(
+            [
+                AGENT_PROMPT,
+                f"Current date: {date.today().isoformat()}.",
+                execution_profile_prompt(execution_profile_for_request(request)),
+            ]
+        )
+        self._entries = _conversation_entries(
+            request.messages[history_start_count:],
+            hidden_terms=self._hidden_terms,
+        )
+        self._checkpoint_events: list[dict[str, Any] | None] | None = None
 
-    # The model needs one authoritative workspace: the current resume or draft.
-    # Historical turns retain dialogue and evidence references, not stale copies
-    # of the full resume.
-    messages.append(
-        {
-            "role": "user",
-            "content": _json_message("workspaceContext", workspace),
-        },
-    )
+    def build(
+        self,
+        checkpoint: AgentConversationCheckpoint | None = None,
+    ) -> LlmPrompt:
+        messages: list[LlmInputMessage] = [
+            {"role": "system", "content": self._system_content},
+        ]
+        stable_counts: list[int] = []
+        checkpoint_count = agent_checkpoint_message_count(self._request, checkpoint)
+        if checkpoint_count < self._history_start_count:
+            raise LlmRequestError("The conversation checkpoint boundary is invalid.")
+        if checkpoint is not None:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": _json_message(
+                        "conversationCheckpoint",
+                        _checkpoint_context_value(
+                            checkpoint.summary,
+                            hidden_terms=self._hidden_terms,
+                        ),
+                    ),
+                }
+            )
+            stable_counts.append(len(messages))
+        relative_count = checkpoint_count - self._history_start_count
+        offset = (
+            self._entries.source_message_counts[relative_count - 1]
+            if relative_count
+            else 0
+        )
+        exact_start = len(messages)
+        messages.extend(self._entries.messages[offset:])
+        stable_counts.extend(
+            exact_start + count - offset
+            for count in self._entries.stable_prefix_message_counts
+            if count > offset
+        )
+        messages.extend(
+            [
+                {"role": "user", "content": self._workspace_content},
+                {"role": "user", "content": self._current_content},
+            ]
+        )
+        stable_counts.append(len(messages))
+        return LlmPrompt(
+            messages=messages,
+            stable_prefix_message_counts=tuple(stable_counts),
+        )
 
-    # Only the current turn may carry extracted text or original bytes. The
-    # persisted transcript deliberately replays the user's plain prompt on the
-    # next turn instead of retaining sensitive attachment payloads forever.
-    messages.append(
-        {
-            "role": "user",
-            "content": _current_turn_content(
-                current_prompt,
-                context_files=context_files,
-                binary_parts=binary_parts,
-            ),
-        },
-    )
-    stable_prefix_message_counts.append(len(messages))
-    return LlmPrompt(
-        messages=messages,
-        stable_prefix_message_counts=tuple(stable_prefix_message_counts),
-    )
+    def checkpoint_summary(self, end_count: int, token_budget: int) -> dict[str, Any]:
+        if self._checkpoint_events is None:
+            self._checkpoint_events = [
+                _bounded_checkpoint_event(event)
+                for event in agent_compaction_events(
+                    self._request,
+                    hidden_terms=self._hidden_terms,
+                )
+            ]
+        return _checkpoint_context(self._checkpoint_events[:end_count], token_budget)
 
 
 def _json_message(name: str, value: Any) -> str:
@@ -339,9 +324,7 @@ def _current_attachment_payload(
             _fit_attachment_context(
                 text_context,
                 token_budget=_attachment_context_token_budget(
-                    request,
-                    config,
-                    tool_schema_tokens=tool_schema_tokens,
+                    config, tool_schema_tokens=tool_schema_tokens
                 ),
             ),
             binary_parts,
@@ -370,10 +353,10 @@ def _attachment_session_id(request: AgentChatRequest) -> str:
 
 def _workspace_context(
     request: AgentChatRequest,
+    resume: dict[str, Any],
     *,
     hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
-    resume = DraftTransaction.from_request(request).active_resume
     workspace: dict[str, Any] = {
         "responseLanguage": _locale_name(request),
         "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
@@ -383,7 +366,10 @@ def _workspace_context(
     return sanitized_workspace if isinstance(sanitized_workspace, dict) else {}
 
 
-def _request_hidden_terms(request: AgentChatRequest) -> tuple[str, ...]:
+def _request_hidden_terms(
+    request: AgentChatRequest,
+    resume: dict[str, Any],
+) -> tuple[str, ...]:
     """Hide identity known by either the saved resume or pending candidate.
 
     A pending draft can legitimately clear or replace a personal field. The
@@ -397,57 +383,10 @@ def _request_hidden_terms(request: AgentChatRequest) -> tuple[str, ...]:
             (
                 *resume_hidden_terms(request.resume),
                 *resume_hidden_terms(
-                    DraftTransaction.from_request(request).active_resume,
+                    resume,
                 ),
             ),
         ),
-    )
-
-
-def _conversation_projection(
-    request: AgentChatRequest,
-    *,
-    config: AgentLlmConfig,
-    tool_schema_tokens: int,
-    hidden_terms: tuple[str, ...],
-    checkpoint: AgentConversationCheckpoint | None,
-) -> _ConversationProjection:
-    # A persisted checkpoint replaces exactly one authoritative history
-    # prefix. The remaining product messages stay exact and ordered, which is
-    # what lets a later request reuse the previous provider prompt prefix.
-    conversation = list(request.messages)
-    checkpoint_count = (
-        _checkpoint_message_count(conversation, checkpoint.through_message_id)
-        if checkpoint is not None
-        else 0
-    )
-    entries = _conversation_entries(
-        conversation[checkpoint_count:],
-        hidden_terms=hidden_terms,
-    )
-    context_budget = _context_budget(
-        request,
-        config,
-        tool_schema_tokens=tool_schema_tokens,
-    )
-    state_token_budget = _state_token_budget(
-        context_budget.input_tokens if context_budget is not None else None,
-    )
-    current_draft = _current_draft_state(
-        request,
-        token_budget=state_token_budget,
-    )
-    state = {"currentDraft": current_draft}
-    checkpoint_context = (
-        _checkpoint_context_value(checkpoint.summary, hidden_terms=hidden_terms)
-        if checkpoint is not None
-        else None
-    )
-    return _ConversationProjection(
-        exact_messages=entries.messages,
-        stable_prefix_message_counts=entries.stable_prefix_message_counts,
-        checkpoint=checkpoint_context,
-        state=state,
     )
 
 
@@ -516,14 +455,12 @@ def agent_compaction_boundaries(
 def agent_compaction_events(
     request: AgentChatRequest,
     *,
-    start_count: int,
-    end_count: int,
+    hidden_terms: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     """Project history into bounded, untrusted checkpoint data."""
 
-    hidden_terms = _request_hidden_terms(request)
     events: list[dict[str, Any]] = []
-    for item in list(request.messages)[start_count:end_count]:
+    for item in request.messages:
         role = _conversation_item_role(item)
         message_id = _conversation_item_id(item)
         event: dict[str, Any] = {
@@ -566,37 +503,20 @@ def agent_compaction_events(
     return events
 
 
-def agent_checkpoint_context(
-    request: AgentChatRequest,
-    *,
-    end_count: int,
-    token_budget: int = CHECKPOINT_CONTEXT_TOKEN_BUDGET,
+def _checkpoint_context(
+    events: list[dict[str, Any] | None],
+    token_budget: int,
 ) -> dict[str, Any]:
-    """Return one deterministic, bounded checkpoint from authoritative history."""
-
     selected: list[dict[str, Any]] = []
-    events = agent_compaction_events(
-        request,
-        start_count=0,
-        end_count=end_count,
-    )
-    for event in reversed(events):
-        bounded = _bounded_checkpoint_event(event)
+    for bounded in reversed(events):
         if bounded is None:
             continue
         candidate = [bounded, *selected]
-        payload = {
-            "trust": "untrusted_history_data",
-            "events": candidate,
-        }
+        payload = {"trust": "untrusted_history_data", "events": candidate}
         if _estimated_json_tokens(payload) > token_budget:
             continue
         selected = candidate
-
-    return {
-        "trust": "untrusted_history_data",
-        "events": selected,
-    }
+    return {"trust": "untrusted_history_data", "events": selected}
 
 
 def _bounded_checkpoint_event(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -658,9 +578,7 @@ def agent_prompt_limits(
     """Return the main prompt limits without exposing provider cache details."""
 
     budget = _context_budget(
-        request,
-        config,
-        tool_schema_tokens=_tool_schema_token_reserve(request, config),
+        config, tool_schema_tokens=_tool_schema_token_reserve(request, config)
     )
     if budget is None:
         return None
@@ -844,6 +762,7 @@ def _conversation_entries(
 ) -> _ConversationEntries:
     entries: list[LlmInputMessage] = []
     stable_prefix_message_counts: list[int] = []
+    source_message_counts: list[int] = []
     for item in conversation:
         item_entry_count = len(entries)
         role = _conversation_item_role(item)
@@ -872,6 +791,7 @@ def _conversation_entries(
                 )
             if len(entries) > item_entry_count:
                 stable_prefix_message_counts.append(len(entries))
+            source_message_counts.append(len(entries))
             continue
         message_id = _conversation_item_id(item)
         if text:
@@ -926,22 +846,18 @@ def _conversation_entries(
         if len(entries) > item_entry_count:
             stable_prefix_message_counts.append(len(entries))
 
+        source_message_counts.append(len(entries))
+
     return _ConversationEntries(
         messages=entries,
         stable_prefix_message_counts=tuple(stable_prefix_message_counts),
+        source_message_counts=tuple(source_message_counts),
     )
 
 
 def _sanitized_text(value: str, *, hidden_terms: tuple[str, ...]) -> str:
     sanitized = sanitize_agent_value(value, hidden_terms=hidden_terms)
     return sanitized if isinstance(sanitized, str) else ""
-
-
-def _append_unique(items: list[Any], value: Any) -> bool:
-    if value in items:
-        return False
-    items.append(value)
-    return True
 
 
 def _conversation_item_attachment_metadata(
@@ -1223,7 +1139,6 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _context_budget(
-    request: AgentChatRequest,
     config: AgentLlmConfig,
     *,
     tool_schema_tokens: int,
@@ -1273,21 +1188,15 @@ def _context_budget(
 
 
 def _context_input_budget_tokens(
-    request: AgentChatRequest,
     config: AgentLlmConfig,
     *,
     tool_schema_tokens: int = 0,
 ) -> int | None:
-    budget = _context_budget(
-        request,
-        config,
-        tool_schema_tokens=tool_schema_tokens,
-    )
+    budget = _context_budget(config, tool_schema_tokens=tool_schema_tokens)
     return budget.input_tokens if budget else None
 
 
 def _attachment_context_token_budget(
-    request: AgentChatRequest,
     config: AgentLlmConfig,
     *,
     tool_schema_tokens: int,
@@ -1300,9 +1209,7 @@ def _attachment_context_token_budget(
     """
 
     input_budget = _context_input_budget_tokens(
-        request,
-        config,
-        tool_schema_tokens=tool_schema_tokens,
+        config, tool_schema_tokens=tool_schema_tokens
     )
     if input_budget is None:
         return DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET

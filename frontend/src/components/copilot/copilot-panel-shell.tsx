@@ -29,7 +29,7 @@ export function CopilotPanelShell({
   )
 }
 
-export function AgentSessionLoading({ t }: { t: AppMessages }) {
+function AgentSessionLoading({ t }: { t: AppMessages }) {
   return (
     <div
       aria-live="polite"

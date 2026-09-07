@@ -348,8 +348,8 @@ function ResumeDetailAccountActions({
         </SelectTrigger>
         <SelectContent align="end" position="popper" sideOffset={4}>
           <SelectGroup>
-            <SelectItem value="zh">{messages.languageChinese}</SelectItem>
-            <SelectItem value="en">{messages.languageEnglish}</SelectItem>
+            <SelectItem value="zh">{messages.uiLanguageChinese}</SelectItem>
+            <SelectItem value="en">{messages.uiLanguageEnglish}</SelectItem>
           </SelectGroup>
         </SelectContent>
       </Select>

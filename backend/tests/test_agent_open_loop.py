@@ -14,6 +14,7 @@ from app.services.agent.integrations import web as agent_web
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.runtime import streaming as agent_streaming
 from app.services.agent.runtime.context import AgentRuntimeContext
+from app.services.agent_runs import _AgentRunMetrics
 from app.services.llm import (
     AgentLlmConfig,
     LlmAssistantMessage,
@@ -574,6 +575,7 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
             fake_model_response,
         )
 
+        metrics = _AgentRunMetrics()
         events = [
             event
             async for event in agent_loop.async_iter_agent_tool_call_loop(
@@ -581,6 +583,10 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
                     f"候选人事实：我会 React 和 TypeScript。请参考 {url} 更新简介。",
                 ),
                 _config(),
+                AgentRuntimeContext(
+                    on_tool_loop_event=metrics.record_tool_loop_event,
+                    on_tool_result=metrics.record_tool_result,
+                ),
             )
         ]
         result = _completed_result(events)
@@ -604,6 +610,11 @@ def test_loop_regenerates_a_write_after_reading_same_response_observations(
         assert result.message is not None
         assert len(result.message.sources) == 1
         assert result.message.sources[0].url == url
+        assert metrics.edit_batch_outcomes == {
+            "accepted": 1,
+            "rejected": 0,
+            "deferred": 1,
+        }
 
     asyncio.run(scenario())
 

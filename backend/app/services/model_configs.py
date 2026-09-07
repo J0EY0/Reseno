@@ -1,17 +1,18 @@
 import secrets
+from contextlib import closing
+from dataclasses import asdict, dataclass
 from sqlite3 import Connection, Row
-from typing import Any
 
 from app.db.connection import connect
 from app.schemas.model_configs import (
-    MAX_USER_MAX_TOKENS,
+    ApiFamily,
     ModelConfigResponse,
     ModelConfigUpsertRequest,
+    ProviderKind,
 )
 from app.services.llm_secrets import (
     decrypt_api_key,
     encrypt_api_key,
-    extract_plain_api_key,
     mask_api_key,
     mask_encrypted_api_key,
 )
@@ -29,17 +30,34 @@ MODEL_CONFIG_ID_ALPHABET = (
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 MODEL_CONFIG_ID_LENGTH = 16
-SUPPORTED_API_FAMILIES = {
-    "openai_responses",
-    "openai_compatible_chat",
-    "anthropic_messages",
-    "google_gemini",
-}
-SUPPORTED_PROVIDER_KINDS = {"cloud", "local", "custom"}
 
 
 class ModelConfigNotFoundError(LookupError):
     """Raised when a requested model config id does not exist."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ModelConfigValues:
+    client_id: str
+    name: str
+    provider: str
+    provider_kind: ProviderKind
+    api_family: ApiFamily
+    model: str
+    base_url: str | None
+    encrypted_api_key: str | None
+    api_key_preview: str
+    temperature: float | None
+    top_p: float | None
+    max_tokens: int | None
+    context_window_tokens: int
+    supports_image: bool
+    supports_thinking: bool
+    thinking_mode: ThinkingMode
+    can_disable_thinking: bool
+    supports_tools: bool
+    supports_streaming: bool
+    is_default: bool = False
 
 
 def _row_to_response(row: Row) -> ModelConfigResponse:
@@ -117,7 +135,7 @@ def _list_llm_configs(conn: Connection) -> list[ModelConfigResponse]:
 def list_llm_configs() -> list[ModelConfigResponse]:
     """Load enabled model configs without exposing the persistence seam."""
 
-    with connect() as conn:
+    with closing(connect()) as conn:
         return _list_llm_configs(conn)
 
 
@@ -146,25 +164,23 @@ def _allocate_llm_config_id(conn: Connection) -> str:
 
 
 def _build_upsert_values(
-    item: dict[str, Any],
+    request: ModelConfigUpsertRequest,
     existing: Row | None,
-) -> tuple[Any, ...]:
+) -> _ModelConfigValues:
     """Normalize incoming config data into SQL upsert values."""
 
-    client_id = str(item.get("id") or item.get("client_id") or "").strip()
-    provider = str(item.get("provider") or "").strip()
-    provider_kind = str(
-        item.get("providerKind") or item.get("provider_kind") or "",
-    ).strip()
-    api_family = str(item.get("apiFamily") or item.get("api_family") or "").strip()
-    model = str(item.get("model") or "").strip()
-    name = str(item.get("nickname") or item.get("name") or model).strip()
+    client_id = (request.client_id or "").strip()
+    provider = request.provider.strip()
+    provider_kind = request.provider_kind
+    api_family = request.api_family
+    model = request.model.strip()
+    name = request.nickname.strip() or model
     base_url = resolve_model_provider_base_url(
         provider,
         provider_kind,
-        str(item.get("apiUrl") or item.get("base_url") or ""),
+        request.api_url,
     )
-    api_key = extract_plain_api_key(item)
+    api_key = (request.api_key or "").strip() or None
     encrypted_api_key = None
     api_key_preview = ""
 
@@ -175,15 +191,6 @@ def _build_upsert_values(
         else:
             encrypted_api_key = encrypt_api_key(api_key)
             api_key_preview = mask_api_key(api_key)
-    elif (
-        existing is not None
-        and provider_kind == "cloud"
-        and existing["provider"] == provider
-        and existing["api_family"] == api_family
-    ):
-        encrypted_api_key = existing["encrypted_api_key"]
-        api_key_preview = existing["api_key_preview"]
-
     _validate_requested_config(
         provider=provider,
         provider_kind=provider_kind,
@@ -191,7 +198,7 @@ def _build_upsert_values(
         model=model,
     )
     metadata = _selected_model_metadata(
-        item=item,
+        request=request,
         existing=existing,
         provider=provider,
         provider_kind=provider_kind,
@@ -200,70 +207,46 @@ def _build_upsert_values(
         base_url=base_url,
         api_key=api_key,
     )
-    supports_image = _supports_image_value(
-        item=item,
-        provider_kind=provider_kind,
-        metadata=metadata,
-    )
-    supports_thinking = _supports_thinking_value(
-        item=item,
-        provider_kind=provider_kind,
-        metadata=metadata,
+    is_cloud = provider_kind == "cloud"
+    supports_image = metadata.supports_image if is_cloud else request.supports_image
+    supports_thinking = (
+        metadata.thinking_control != "none" if is_cloud else request.supports_thinking
     )
     can_disable_thinking = (
         provider_kind == "cloud" and "off" in metadata.available_thinking_modes
     )
     thinking_mode = _validated_thinking_mode(
-        _raw_value(item, "thinkingMode"),
+        request.thinking_mode,
         can_disable_thinking=can_disable_thinking,
     )
-    supports_tools = _supports_tools_value(
-        item=item,
-        provider_kind=provider_kind,
-        metadata=metadata,
-    )
-    supports_streaming = _supports_streaming_value(
-        item=item,
-        provider_kind=provider_kind,
-        metadata=metadata,
+    supports_tools = metadata.supports_tools if is_cloud else request.supports_tools
+    supports_streaming = (
+        metadata.supports_streaming if is_cloud else request.supports_streaming
     )
 
-    return (
-        client_id,
-        name or model,
-        provider,
-        provider_kind,
-        api_family,
-        model,
-        base_url or None,
-        encrypted_api_key,
-        api_key_preview,
-        (
-            None
-            if provider_kind == "cloud"
-            else _optional_float(_raw_value(item, "temperature"))
-        ),
-        (
-            None
-            if provider_kind == "cloud"
-            else _optional_float(_raw_value(item, "topP"))
-        ),
-        # `NULL` is the durable Auto sentinel. A numeric value is an explicit
-        # user override for every provider kind, including managed cloud APIs.
-        # Keep that distinction in storage instead of materializing today's
-        # discovered model ceiling, which can change independently over time.
-        _validated_max_tokens(
-            _raw_value(item, "maxTokens"),
+    return _ModelConfigValues(
+        client_id=client_id,
+        name=name,
+        provider=provider,
+        provider_kind=provider_kind,
+        api_family=api_family,
+        model=model,
+        base_url=base_url or None,
+        encrypted_api_key=encrypted_api_key,
+        api_key_preview=api_key_preview,
+        temperature=None if is_cloud else request.temperature,
+        top_p=None if is_cloud else request.top_p,
+        max_tokens=_validated_max_tokens(
+            request.max_tokens,
             metadata.max_output_tokens,
         ),
-        metadata.context_window_tokens,
-        int(supports_image),
-        int(supports_thinking),
-        thinking_mode,
-        int(can_disable_thinking),
-        int(supports_tools),
-        int(supports_streaming),
-        0,
+        context_window_tokens=metadata.context_window_tokens,
+        supports_image=supports_image,
+        supports_thinking=supports_thinking,
+        thinking_mode=thinking_mode,
+        can_disable_thinking=can_disable_thinking,
+        supports_tools=supports_tools,
+        supports_streaming=supports_streaming,
     )
 
 
@@ -274,12 +257,7 @@ def _validate_requested_config(
     api_family: str,
     model: str,
 ) -> None:
-    if (
-        not provider
-        or not model
-        or provider_kind not in SUPPORTED_PROVIDER_KINDS
-        or api_family not in SUPPORTED_API_FAMILIES
-    ):
+    if not provider or not model:
         raise ValueError("MODEL_CONFIG_INVALID_PROVIDER")
 
     if provider_kind == "local" and api_family != "openai_compatible_chat":
@@ -288,7 +266,7 @@ def _validate_requested_config(
 
 def _selected_model_metadata(
     *,
-    item: dict[str, Any],
+    request: ModelConfigUpsertRequest,
     existing: Row | None,
     provider: str,
     provider_kind: str,
@@ -307,10 +285,10 @@ def _selected_model_metadata(
             api_key=api_key,
         )
 
-    context_window_tokens = _positive_int(_raw_value(item, "contextWindowTokens"))
+    context_window_tokens = request.context_window_tokens
     raw_model = (
         {"context_window": context_window_tokens}
-        if context_window_tokens is not None
+        if context_window_tokens is not None and context_window_tokens > 0
         else {}
     )
     return enrich_selected_model(
@@ -387,129 +365,26 @@ def _validated_cloud_model_metadata(
     raise ValueError("MODEL_CONFIG_MODEL_NOT_DISCOVERED")
 
 
-def _supports_image_value(
-    *,
-    item: dict[str, Any],
-    provider_kind: str,
-    metadata: DiscoveredModel,
-) -> bool:
-    if provider_kind == "cloud":
-        return metadata.supports_image
-    return bool(_raw_value(item, "supportsImage") or False)
-
-
-def _supports_thinking_value(
-    *,
-    item: dict[str, Any],
-    provider_kind: str,
-    metadata: DiscoveredModel,
-) -> bool:
-    if provider_kind == "cloud":
-        return metadata.thinking_control != "none"
-    return bool(_raw_value(item, "supportsThinking") or False)
-
-
-def _supports_tools_value(
-    *,
-    item: dict[str, Any],
-    provider_kind: str,
-    metadata: DiscoveredModel,
-) -> bool:
-    """Return whether this config can run the agent's tool-selection loop."""
-
-    if provider_kind != "cloud":
-        value = _raw_value(item, "supportsTools")
-        return bool(value) if value is not None else metadata.supports_tools
-
-    return metadata.supports_tools
-
-
-def _supports_streaming_value(
-    *,
-    item: dict[str, Any],
-    provider_kind: str,
-    metadata: DiscoveredModel,
-) -> bool:
-    """Return whether this config can stream final assistant text."""
-
-    if provider_kind != "cloud":
-        value = _raw_value(item, "supportsStreaming")
-        return bool(value) if value is not None else metadata.supports_streaming
-
-    return metadata.supports_streaming
-
-
 def _validated_thinking_mode(
-    value: Any,
+    value: ThinkingMode,
     *,
     can_disable_thinking: bool,
 ) -> ThinkingMode:
-    """Validate one user preference against the selected model capability.
+    """Validate the reasoning preference against the selected model capability."""
 
-    Missing values select ``auto`` so newly created configurations have the
-    safe, provider-managed behavior. ``off`` is never downgraded silently: a
-    model switch that removes explicit disable support must be normalized by
-    the caller or rejected here before any database write occurs.
-    """
-
-    if value is None or value == "auto":
-        return "auto"
-    if value == "off":
-        if not can_disable_thinking:
-            raise ValueError("MODEL_CONFIG_THINKING_MODE_UNSUPPORTED")
-        return "off"
-    raise ValueError("MODEL_CONFIG_THINKING_MODE_INVALID")
+    if value == "off" and not can_disable_thinking:
+        raise ValueError("MODEL_CONFIG_THINKING_MODE_UNSUPPORTED")
+    return value
 
 
-def _raw_value(item: dict[str, Any], camel_key: str) -> Any:
-    snake_key = _camel_to_snake(camel_key)
-    return item.get(camel_key) if camel_key in item else item.get(snake_key)
-
-
-def _camel_to_snake(value: str) -> str:
-    result = []
-    for char in value:
-        if char.isupper():
-            result.append("_")
-            result.append(char.lower())
-        else:
-            result.append(char)
-    return "".join(result).lstrip("_")
-
-
-def _optional_float(value: Any) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
-
-
-def _positive_int(value: Any) -> int | None:
-    if isinstance(value, int) and value > 0:
-        return value
-    if isinstance(value, str) and value.isdigit() and int(value) > 0:
-        return int(value)
-    return None
-
-
-def _validated_max_tokens(value: Any, max_output_tokens: int | None) -> int | None:
-    """Validate one persisted output override without changing its meaning.
-
-    `None` means Auto and must remain distinguishable from an explicit numeric
-    cap. When provider discovery or LiteLLM knows the model ceiling, rejecting
-    an oversized value is safer than silently storing a different value from
-    the one the user submitted. Raw workspace imports also cross this seam, so
-    validation lives here in addition to the HTTP schema.
-    """
+def _validated_max_tokens(
+    value: int | None,
+    max_output_tokens: int | None,
+) -> int | None:
+    """Validate an optional output override against the selected model ceiling."""
 
     if value is None:
         return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value <= 0
-        or value > MAX_USER_MAX_TOKENS
-    ):
-        raise ValueError("MODEL_CONFIG_MAX_TOKENS_INVALID")
     if max_output_tokens is not None and value > max_output_tokens:
         raise ValueError("MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT")
     return value
@@ -528,63 +403,43 @@ def _existing_api_key_matches(existing: Row, api_key: str) -> bool:
         return False
 
 
-def _same_nullable_float(left: Any, right: Any) -> bool:
+def _same_nullable_float(left: float | None, right: float | None) -> bool:
     if left is None or right is None:
         return left is None and right is None
     return float(left) == float(right)
 
 
-def _is_same_upsert_values(existing: Row, values: tuple[Any, ...]) -> bool:
+def _is_same_upsert_values(existing: Row, values: _ModelConfigValues) -> bool:
     """Return true when an upsert would not change the stored config row."""
-
-    (
-        client_id,
-        name,
-        provider,
-        provider_kind,
-        api_family,
-        model,
-        base_url,
-        encrypted_api_key,
-        api_key_preview,
-        temperature,
-        top_p,
-        max_tokens,
-        context_window_tokens,
-        supports_image,
-        supports_thinking,
-        thinking_mode,
-        can_disable_thinking,
-        supports_tools,
-        supports_streaming,
-        is_default,
-    ) = values
 
     return (
         existing["enabled"] == 1
-        and existing["client_id"] == client_id
-        and existing["name"] == name
-        and existing["provider"] == provider
-        and existing["provider_kind"] == provider_kind
-        and existing["api_family"] == api_family
-        and existing["model"] == model
-        and existing["base_url"] == base_url
+        and existing["client_id"] == values.client_id
+        and existing["name"] == values.name
+        and existing["provider"] == values.provider
+        and existing["provider_kind"] == values.provider_kind
+        and existing["api_family"] == values.api_family
+        and existing["model"] == values.model
+        and existing["base_url"] == values.base_url
         and (
-            encrypted_api_key is None
-            or existing["encrypted_api_key"] == encrypted_api_key
+            values.encrypted_api_key is None
+            or existing["encrypted_api_key"] == values.encrypted_api_key
         )
-        and (not api_key_preview or existing["api_key_preview"] == api_key_preview)
-        and _same_nullable_float(existing["temperature"], temperature)
-        and _same_nullable_float(existing["top_p"], top_p)
-        and existing["max_tokens"] == max_tokens
-        and existing["context_window_tokens"] == context_window_tokens
-        and int(existing["supports_image"]) == int(supports_image)
-        and int(existing["supports_thinking"]) == int(supports_thinking)
-        and existing["thinking_mode"] == thinking_mode
-        and int(existing["can_disable_thinking"]) == int(can_disable_thinking)
-        and int(existing["supports_tools"]) == int(supports_tools)
-        and int(existing["supports_streaming"]) == int(supports_streaming)
-        and int(existing["is_default"]) == int(is_default)
+        and (
+            not values.api_key_preview
+            or existing["api_key_preview"] == values.api_key_preview
+        )
+        and _same_nullable_float(existing["temperature"], values.temperature)
+        and _same_nullable_float(existing["top_p"], values.top_p)
+        and existing["max_tokens"] == values.max_tokens
+        and existing["context_window_tokens"] == values.context_window_tokens
+        and bool(existing["supports_image"]) == values.supports_image
+        and bool(existing["supports_thinking"]) == values.supports_thinking
+        and existing["thinking_mode"] == values.thinking_mode
+        and bool(existing["can_disable_thinking"]) == values.can_disable_thinking
+        and bool(existing["supports_tools"]) == values.supports_tools
+        and bool(existing["supports_streaming"]) == values.supports_streaming
+        and bool(existing["is_default"]) == values.is_default
     )
 
 
@@ -629,33 +484,17 @@ def upsert_llm_config(
 ) -> ModelConfigResponse:
     """Create or update one model config from a validated API request."""
 
-    return upsert_llm_config_dict(
-        conn,
-        request.model_dump(by_alias=True),
-    )
-
-
-def upsert_llm_config_dict(
-    conn: Connection,
-    item: dict[str, Any],
-) -> ModelConfigResponse:
-    """Create or update one model config from a raw workspace payload item."""
-
-    requested_client_id = str(
-        item.get("id") or item.get("client_id") or "",
-    ).strip()
+    requested_client_id = (request.client_id or "").strip()
     existing = (
         _select_llm_config(conn, requested_client_id) if requested_client_id else None
     )
     client_id = (
         requested_client_id if existing is not None else _allocate_llm_config_id(conn)
     )
-    item = {
-        **item,
-        "id": client_id,
-        "client_id": client_id,
-    }
-    values = _build_upsert_values(item, existing)
+    values = _build_upsert_values(
+        request.model_copy(update={"client_id": client_id}),
+        existing,
+    )
 
     if existing is not None and _is_same_upsert_values(existing, values):
         conn.execute("BEGIN IMMEDIATE")
@@ -694,7 +533,28 @@ def upsert_llm_config_dict(
             supports_streaming,
             is_default
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (
+            :client_id,
+            :name,
+            :provider,
+            :provider_kind,
+            :api_family,
+            :model,
+            :base_url,
+            :encrypted_api_key,
+            :api_key_preview,
+            :temperature,
+            :top_p,
+            :max_tokens,
+            :context_window_tokens,
+            :supports_image,
+            :supports_thinking,
+            :thinking_mode,
+            :can_disable_thinking,
+            :supports_tools,
+            :supports_streaming,
+            :is_default
+        )
         ON CONFLICT(client_id) DO UPDATE SET
             name = excluded.name,
             provider = excluded.provider,
@@ -707,8 +567,12 @@ def upsert_llm_config_dict(
                     THEN excluded.encrypted_api_key
                 WHEN llm_configs.provider = excluded.provider
                     AND llm_configs.api_family = excluded.api_family
-                    AND COALESCE(llm_configs.base_url, '') =
-                        COALESCE(excluded.base_url, '')
+                    AND (
+                        (llm_configs.provider_kind = 'cloud'
+                            AND excluded.provider_kind = 'cloud')
+                        OR COALESCE(llm_configs.base_url, '') =
+                            COALESCE(excluded.base_url, '')
+                    )
                     THEN llm_configs.encrypted_api_key
                 ELSE NULL
             END,
@@ -717,8 +581,12 @@ def upsert_llm_config_dict(
                     THEN excluded.api_key_preview
                 WHEN llm_configs.provider = excluded.provider
                     AND llm_configs.api_family = excluded.api_family
-                    AND COALESCE(llm_configs.base_url, '') =
-                        COALESCE(excluded.base_url, '')
+                    AND (
+                        (llm_configs.provider_kind = 'cloud'
+                            AND excluded.provider_kind = 'cloud')
+                        OR COALESCE(llm_configs.base_url, '') =
+                            COALESCE(excluded.base_url, '')
+                    )
                     THEN llm_configs.api_key_preview
                 ELSE ''
             END,
@@ -736,7 +604,7 @@ def upsert_llm_config_dict(
             is_default = excluded.is_default,
             updated_at = CURRENT_TIMESTAMP
         """,
-        values,
+        asdict(values),
     )
 
     row = _select_llm_config(conn, client_id)

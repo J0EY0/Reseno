@@ -4,11 +4,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuthSetupStatusResponse(BaseModel):
-    """Whether the instance still needs its owner account."""
+    """Owner setup and GitHub sign-in availability."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     setup_required: bool = Field(alias="setupRequired")
+    github_login_available: bool = Field(alias="githubLoginAvailable")
 
 
 class AuthSetupRequest(BaseModel):

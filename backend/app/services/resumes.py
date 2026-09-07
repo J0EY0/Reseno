@@ -4,6 +4,7 @@ import re
 import secrets
 import shutil
 from collections.abc import Iterable
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
@@ -16,8 +17,11 @@ from app.config import get_settings
 from app.db.connection import connect
 from app.document_locales import DocumentLocale
 from app.schemas.imports import TemplateSettingsOverrides, TypographySettings
+from app.schemas.resume_document_generated import ResumeDocument
 from app.schemas.resumes import (
     MAX_RESUME_TITLE_LENGTH,
+    DeletedResumeWorkspaceItemResponse,
+    ResumeListResponse,
     ResumeWorkspaceItemResponse,
     is_valid_resume_id,
 )
@@ -27,6 +31,12 @@ from app.services.resume_document_contract import (
     validate_resume_document,
 )
 from app.services.resume_starters import create_empty_resume
+from app.services.storage_deletions import (
+    delete_storage,
+    recover_storage_deletion,
+    recover_storage_deletions,
+    storage_id_reserved,
+)
 from app.services.template_presets import get_builtin_template_preset
 from app.services.templates import (
     is_deleted_template,
@@ -78,7 +88,7 @@ def _allocate_resume_id(conn: Connection) -> str:
             "SELECT 1 FROM resumes WHERE id = ?",
             (resume_id,),
         ).fetchone()
-        if row is None:
+        if row is None and not storage_id_reserved("resumes", resume_id):
             return resume_id
 
     raise HTTPException(
@@ -176,7 +186,7 @@ def _resume_version_payload(resume_item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _ensure_resume_document(value: Any) -> dict[str, Any]:
+def _ensure_resume_document(value: object) -> ResumeDocument:
     """Validate the stored resume document shape expected by the frontend."""
 
     try:
@@ -188,7 +198,7 @@ def _ensure_resume_document(value: Any) -> dict[str, Any]:
         ) from exc
 
 
-def _validate_stored_resume_item(value: Any) -> dict[str, Any]:
+def _validate_stored_resume_item(value: object) -> ResumeWorkspaceItemResponse:
     """Validate one persisted item against the only supported V1/V2 contract."""
 
     if not isinstance(value, dict):
@@ -208,7 +218,7 @@ def _validate_stored_resume_item(value: Any) -> dict[str, Any]:
             detail="RESUME_DOCUMENT_INVALID",
         ) from exc
 
-    return item.model_dump(mode="json", by_alias=True)
+    return item
 
 
 def _write_resume_json(
@@ -241,8 +251,8 @@ def _delete_resume_json(resume_id: str, version_id: int) -> None:
         pass
 
 
-def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
-    """Load one stored resume version JSON file."""
+def _read_resume_bytes(resume_id: str, version_id: int) -> bytes:
+    """Capture a version's file contents while its database pointer is locked."""
 
     path = _resume_version_path(resume_id, version_id)
     if not path.exists():
@@ -251,8 +261,18 @@ def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
             detail="Resume version JSON is missing.",
         )
 
-    return _validate_stored_resume_item(
-        cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    return path.read_bytes()
+
+
+def _parse_resume_bytes(content: bytes) -> ResumeWorkspaceItemResponse:
+    return _validate_stored_resume_item(json.loads(content.decode("utf-8")))
+
+
+def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
+    """Load one stored resume version JSON file."""
+
+    return _parse_resume_bytes(_read_resume_bytes(resume_id, version_id)).model_dump(
+        mode="json", by_alias=True
     )
 
 
@@ -386,7 +406,7 @@ def _save_resume_item(
     deleted: bool,
     deleted_at: str | None = None,
     version_kind: ResumeVersionKind = "checkpoint",
-) -> tuple[str, int, int | None]:
+) -> tuple[int, int | None]:
     """Persist one resume item and create a new version when content changed."""
 
     resume_item = _resume_version_payload(resume_item)
@@ -519,7 +539,7 @@ def _save_resume_item(
         ),
     )
 
-    return resume_id, next_version_id, obsolete_autosave_version_id
+    return next_version_id, obsolete_autosave_version_id
 
 
 def rebind_current_resume_template_references(
@@ -561,7 +581,7 @@ def rebind_current_resume_template_references(
             # A template change necessarily changes the content hash, so the
             # command owns the next version file until the transaction commits.
             created_versions.append((row["id"], current_version_id + 1))
-            _, _, obsolete_autosave_version_id = _save_resume_item(
+            _, obsolete_autosave_version_id = _save_resume_item(
                 conn,
                 resume_item={
                     **resume_item,
@@ -592,62 +612,32 @@ def cleanup_resume_version_files(version_files: Iterable[ResumeVersionFile]) -> 
         _delete_resume_json(resume_id, version_id)
 
 
-def _version_for_resume(
-    conn: Connection,
-    *,
-    resume_id: str,
-    requested_version: int | None,
-    current_version: int,
-) -> int | None:
-    """Choose the newest available resume version at or before a target."""
-
-    if requested_version is None:
-        return current_version
-
-    row = conn.execute(
-        """
-        SELECT MAX(version_id) AS version_id
-        FROM resume_versions
-        WHERE resume_id = ? AND version_id <= ?
-        """,
-        (resume_id, requested_version),
-    ).fetchone()
-    if row is None or row["version_id"] is None:
-        return None
-
-    return int(row["version_id"])
-
-
 def _deleted_resume_preview(
     row: Row,
-    resume_item: dict[str, Any],
-) -> dict[str, Any]:
+    item: ResumeWorkspaceItemResponse,
+) -> DeletedResumeWorkspaceItemResponse:
     """Build the recycle-bin preview without editor-only job context."""
 
-    resume = resume_item["resume"]
-    deleted_at = row["deleted_at"] or row["saved_at"]
-
-    return {
-        "id": row["id"],
-        "title": resume_item["title"],
-        "updatedAt": row["saved_at"],
-        "documentLocale": resume_item["documentLocale"],
-        "resume": resume,
-        "jobBrief": "",
-        "typography": resume_item["typography"],
-        "template": resume_item["template"],
-        "templateSettings": resume_item["templateSettings"],
-        "deletedAt": deleted_at,
-    }
+    return DeletedResumeWorkspaceItemResponse(
+        id=row["id"],
+        title=item.title,
+        updatedAt=row["saved_at"],
+        documentLocale=item.document_locale,
+        resume=item.resume,
+        jobBrief="",
+        typography=item.typography,
+        template=item.template,
+        templateSettings=item.template_settings,
+        deletedAt=row["deleted_at"] or row["saved_at"],
+    )
 
 
-def _load_resume_items(
+def _load_resume_snapshots(
     conn: Connection,
     *,
     deleted: bool,
-    requested_version: int | None = None,
-) -> list[dict[str, Any]]:
-    """Load active or deleted resume items for an optional version."""
+) -> list[tuple[Row, bytes]]:
+    """Capture active or deleted rows with the exact version bytes they reference."""
 
     rows = conn.execute(
         """
@@ -658,24 +648,10 @@ def _load_resume_items(
         """,
         (int(deleted),),
     ).fetchall()
-    items: list[dict[str, Any]] = []
-
-    for row in rows:
-        version_id = _version_for_resume(
-            conn,
-            resume_id=row["id"],
-            requested_version=requested_version,
-            current_version=int(row["current_version_id"]),
-        )
-        if version_id is None:
-            continue
-
-        resume_item = _read_resume_json(row["id"], version_id)
-        items.append(
-            _deleted_resume_preview(row, resume_item) if deleted else resume_item
-        )
-
-    return items
+    return [
+        (row, _read_resume_bytes(row["id"], int(row["current_version_id"])))
+        for row in rows
+    ]
 
 
 def _resume_row(conn: Connection, resume_id: str) -> Row | None:
@@ -873,7 +849,7 @@ def _normalize_resume_item_payload(
     return normalized
 
 
-def list_resumes(status_filter: str = "active") -> dict[str, Any]:
+def list_resumes(status_filter: str = "active") -> ResumeListResponse:
     """Return active resume items or deleted resume previews."""
 
     deleted = status_filter == "deleted"
@@ -883,13 +859,15 @@ def list_resumes(status_filter: str = "active") -> dict[str, Any]:
             detail="Unsupported resume status filter.",
         )
 
-    with connect() as conn:
-        return {
-            "resumes": _load_resume_items(
-                conn,
-                deleted=deleted,
-            )
-        }
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        snapshots = _load_resume_snapshots(conn, deleted=deleted)
+
+    items = []
+    for row, content in snapshots:
+        item = _parse_resume_bytes(content)
+        items.append(_deleted_resume_preview(row, item) if deleted else item)
+    return ResumeListResponse(resumes=items)
 
 
 def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
@@ -897,7 +875,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
 
     saved_at = _utc_now()
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         resume_id = _allocate_resume_id(conn)
         count_row = conn.execute(
@@ -942,7 +920,7 @@ def create_resume(payload: dict[str, Any]) -> dict[str, Any]:
             },
             saved_at=saved_at,
         )
-        _, version_id, _ = _save_resume_item(
+        version_id, _ = _save_resume_item(
             conn,
             resume_item=resume_item,
             saved_at=saved_at,
@@ -962,7 +940,8 @@ def duplicate_resume(resume_id: str) -> dict[str, Any]:
     """Create an independent resume from the source's current content."""
 
     saved_at = _utc_now()
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_resume_row(conn, resume_id)
         if row["deleted"]:
             raise HTTPException(
@@ -979,9 +958,6 @@ def duplicate_resume(resume_id: str) -> dict[str, Any]:
 
         source_item = _read_resume_json(row["id"], current_version_id)
         document_locale = cast(DocumentLocale, source_item["documentLocale"])
-        # Name allocation and insert must share the write lock; otherwise two
-        # simultaneous duplicate requests can choose the same available title.
-        conn.execute("BEGIN IMMEDIATE")
         duplicate_id = _allocate_resume_id(conn)
         duplicate_title = _duplicate_resume_title(
             conn,
@@ -1021,7 +997,7 @@ def duplicate_resume(resume_id: str) -> dict[str, Any]:
             },
             saved_at=saved_at,
         )
-        _, version_id, _ = _save_resume_item(
+        version_id, _ = _save_resume_item(
             conn,
             resume_item=duplicate_item,
             saved_at=saved_at,
@@ -1040,7 +1016,8 @@ def duplicate_resume(resume_id: str) -> dict[str, Any]:
 def load_resume(resume_id: str) -> dict[str, Any]:
     """Load the current detail for one active resume."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         return _load_resume_detail(conn, resume_id=resume_id)
 
 
@@ -1088,7 +1065,7 @@ def save_resume_in_transaction(
         payload=payload,
         saved_at=saved_at,
     )
-    _, version_id, obsolete_autosave_version_id = _save_resume_item(
+    version_id, obsolete_autosave_version_id = _save_resume_item(
         conn,
         resume_item=resume_item,
         saved_at=saved_at,
@@ -1147,7 +1124,7 @@ def save_resume(
     """Persist the latest snapshot and retain only explicit checkpoints."""
 
     result: ResumeSaveTransaction | None = None
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             result = save_resume_in_transaction(
@@ -1173,7 +1150,8 @@ def save_resume(
 def list_resume_versions(resume_id: str) -> dict[str, Any]:
     """List versions for one resume."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN")
         row = _require_resume_row(conn, resume_id)
         rows = conn.execute(
             """
@@ -1199,7 +1177,8 @@ def list_resume_versions(resume_id: str) -> dict[str, Any]:
 def load_resume_version(resume_id: str, version_id: str) -> dict[str, Any]:
     """Load one historical resume version."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         return _load_resume_detail(
             conn,
             resume_id=resume_id,
@@ -1212,7 +1191,8 @@ def trash_resume(resume_id: str) -> dict[str, Any]:
     """Move an active resume into the recycle bin without creating a version."""
 
     deleted_at = _utc_now()
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_resume_row(conn, resume_id)
         current_version_id = int(row["current_version_id"])
         if current_version_id < 1:
@@ -1221,9 +1201,10 @@ def trash_resume(resume_id: str) -> dict[str, Any]:
                 detail="Resume version not found.",
             )
 
-        resume_item = _read_resume_json(row["id"], current_version_id)
+        resume_item = _parse_resume_bytes(
+            _read_resume_bytes(row["id"], current_version_id)
+        )
         if not row["deleted"]:
-            conn.execute("BEGIN")
             conn.execute(
                 """
                 UPDATE resumes
@@ -1234,21 +1215,24 @@ def trash_resume(resume_id: str) -> dict[str, Any]:
                 """,
                 (deleted_at, row["id"]),
             )
-            conn.execute("COMMIT")
             row = _require_resume_row(conn, resume_id)
 
-        return {"resume": _deleted_resume_preview(row, resume_item)}
+        return {
+            "resume": _deleted_resume_preview(row, resume_item).model_dump(
+                mode="json", by_alias=True
+            )
+        }
 
 
 def restore_resume(resume_id: str) -> dict[str, Any]:
     """Restore a deleted resume without creating a version."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _require_resume_row(conn, resume_id)
         if not row["deleted"]:
             return _load_resume_detail(conn, resume_id=row["id"])
 
-        conn.execute("BEGIN")
         conn.execute(
             """
             UPDATE resumes
@@ -1259,8 +1243,6 @@ def restore_resume(resume_id: str) -> dict[str, Any]:
             """,
             (row["id"],),
         )
-        conn.execute("COMMIT")
-
         return _load_resume_detail(conn, resume_id=row["id"])
 
 
@@ -1324,8 +1306,11 @@ def _reject_running_agent_turns(conn: Connection, resume_ids: list[str]) -> None
 def delete_resume_forever(resume_id: str) -> dict[str, Any]:
     """Physically delete one already-deleted resume."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        safe_resume_id = _validate_resume_id(resume_id.strip())
+        if recover_storage_deletion(conn, "resumes", safe_resume_id):
+            return {"id": safe_resume_id}
         row = _require_resume_row(conn, resume_id)
         if not row["deleted"]:
             raise HTTPException(
@@ -1334,10 +1319,17 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
             )
 
         _reject_running_agent_turns(conn, [row["id"]])
-        delete_agent_session_attachments(row["id"])
-        _delete_resume_storage(row["id"])
-        _delete_resume_rows(conn, [row["id"]])
-        conn.execute("COMMIT")
+        def delete_files() -> None:
+            delete_agent_session_attachments(row["id"])
+            _delete_resume_storage(row["id"])
+
+        delete_storage(
+            conn,
+            "resumes",
+            row["id"],
+            delete_files=delete_files,
+            delete_rows=lambda: _delete_resume_rows(conn, [row["id"]]),
+        )
 
     return {"id": row["id"]}
 
@@ -1345,8 +1337,9 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
 def empty_resume_trash() -> dict[str, Any]:
     """Physically delete every resume currently in the recycle bin."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        recover_storage_deletions(conn, "resumes")
         rows = conn.execute(
             """
             SELECT id

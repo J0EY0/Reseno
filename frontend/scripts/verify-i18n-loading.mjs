@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 
@@ -30,20 +30,11 @@ function collectJsonShape(value, path = "$") {
 }
 
 function loadMessageModel(source) {
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
   const localeLoads = [];
   const localeResolvers = new Map();
 
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require(specifier) {
+  const exports = evaluateTypeScript(source, {
+    resolveImport(specifier) {
       if (specifier === "@/i18n") {
         return {
           loadMessages(locale) {
@@ -68,7 +59,7 @@ function loadMessageModel(source) {
     },
   });
 
-  return { exports: module.exports, localeLoads, localeResolvers };
+  return { exports, localeLoads, localeResolvers };
 }
 
 const [

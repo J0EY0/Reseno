@@ -44,6 +44,7 @@ import type {
   DefaultTemplateIds,
   DocumentLocale,
   ResumeTemplateDefinition,
+  ResumeTemplateUpdate,
   ResumeTemplateImageElement,
   WorkspaceView,
 } from "@/types/resume";
@@ -77,9 +78,8 @@ export function useTemplateDetailWorkspace({
   const { changeTheme, persistence, resolvedTheme, theme } = useWorkspacePreferences();
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialLocaleRef = useRef(locale);
-  const initialDetail = useMemo(
+  const [initialDetail] = useState(
     () => resolveInitialTemplateDetail(messages, routeState, templateId),
-    [messages, routeState, templateId],
   );
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -193,7 +193,7 @@ export function useTemplateDetailWorkspace({
         }
 
         const targetTemplate = getTemplateCatalog(
-          messages,
+          getMessagesSync(initialLocaleRef.current),
           routeData.customTemplates,
         ).find((item) => item.id === templateId);
         if (!targetTemplate) {
@@ -223,7 +223,6 @@ export function useTemplateDetailWorkspace({
       }
     },
     [
-      messages,
       persistence,
       hydratePersistedTemplate,
       templateId,
@@ -323,31 +322,33 @@ export function useTemplateDetailWorkspace({
   ]);
 
   const updateTemplate = useCallback(
-    (targetId: string, patch: Partial<ResumeTemplateDefinition>) => {
+    (targetId: string, update: ResumeTemplateUpdate) => {
       setCustomTemplates((current) =>
-        current.map((item) =>
-          item.id === targetId
-            ? {
-                ...item,
-                ...patch,
-                layout: patch.layout
-                  ? patch.preset
-                    ? createTemplateLayout(patch.preset, patch.layout)
-                    : patch.layout
-                  : patch.preset
-                    ? createTemplateLayout(patch.preset)
-                    : item.layout,
-                settings: patch.settings
-                  ? patch.preset
-                    ? createTemplateSettings(patch.preset, patch.settings)
-                    : patch.settings
-                  : patch.preset
-                    ? createTemplateSettings(patch.preset)
-                    : item.settings,
-                updatedAt: new Date().toISOString(),
-              }
-            : item,
-        ),
+        current.map((item) => {
+          if (item.id !== targetId) {
+            return item;
+          }
+          const patch = typeof update === "function" ? update(item) : update;
+          return {
+            ...item,
+            ...patch,
+            layout: patch.layout
+              ? patch.preset
+                ? createTemplateLayout(patch.preset, patch.layout)
+                : patch.layout
+              : patch.preset
+                ? createTemplateLayout(patch.preset)
+                : item.layout,
+            settings: patch.settings
+              ? patch.preset
+                ? createTemplateSettings(patch.preset, patch.settings)
+                : patch.settings
+              : patch.preset
+                ? createTemplateSettings(patch.preset)
+                : item.settings,
+            updatedAt: new Date().toISOString(),
+          };
+        }),
       );
     },
     [],

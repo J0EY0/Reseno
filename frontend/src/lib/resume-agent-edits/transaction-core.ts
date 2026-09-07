@@ -1,4 +1,3 @@
-import type { AgentResumeEditSuggestion } from "@/types/api";
 import type { ResumeEditOperation } from "@/types/resume-edit-operation.generated";
 import type {
   ResumeData,
@@ -131,7 +130,7 @@ export function findItem(section: ResumeSection, itemId: string) {
   return index >= 0 ? { index, item: section.items[index] } : null;
 }
 
-export type ReplaceBasicField = "headline" | "summary";
+type ReplaceBasicField = "headline" | "summary";
 
 export function replaceBasicField(path: unknown): ReplaceBasicField | null {
   switch (path) {
@@ -142,23 +141,4 @@ export function replaceBasicField(path: unknown): ReplaceBasicField | null {
     default:
       return null;
   }
-}
-
-export function fallbackOperation(
-  edit: AgentResumeEditSuggestion,
-): ResumeEditOperation | null {
-  if (edit.operation) {
-    return edit.operation;
-  }
-
-  const field = replaceBasicField(edit.target);
-  if (edit.replacement && field) {
-    return {
-      type: "replace_field",
-      path: `basic.${field}`,
-      value: edit.replacement,
-    };
-  }
-
-  return null;
 }

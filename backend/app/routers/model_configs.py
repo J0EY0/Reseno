@@ -1,3 +1,5 @@
+from contextlib import closing
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.db.connection import connect
@@ -33,7 +35,7 @@ def post_model_config(
 ) -> ApiResponse[ModelConfigResponse]:
     """Create or update one encrypted model config."""
 
-    with connect() as conn:
+    with closing(connect()) as conn:
         try:
             response = upsert_llm_config(conn, request)
         except ValueError as exc:
@@ -42,9 +44,7 @@ def post_model_config(
                 "MODEL_DISCOVERY_FAILED",
                 "MODEL_CONFIG_INVALID_PROVIDER",
                 "MODEL_CONFIG_MODEL_NOT_DISCOVERED",
-                "MODEL_CONFIG_MAX_TOKENS_INVALID",
                 "MODEL_CONFIG_MAX_TOKENS_EXCEEDS_LIMIT",
-                "MODEL_CONFIG_THINKING_MODE_INVALID",
                 "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED",
             }:
                 detail = "BAD_REQUEST"
@@ -62,7 +62,7 @@ def post_model_configs_bulk_delete(
 ) -> ApiResponse[ModelConfigBulkDeleteResponse]:
     """Soft-delete a validated set of model configs atomically."""
 
-    with connect() as conn:
+    with closing(connect()) as conn:
         try:
             deleted_ids = delete_llm_configs(conn, request.ids)
         except ModelConfigNotFoundError as exc:
@@ -78,7 +78,7 @@ def post_model_configs_bulk_delete(
 def delete_model_config(client_id: str) -> ApiResponse[dict[str, str]]:
     """Disable one model config by frontend client id."""
 
-    with connect() as conn:
+    with closing(connect()) as conn:
         delete_llm_config(conn, client_id)
 
     return ok_response({"id": client_id})

@@ -8,8 +8,8 @@ export const DEFAULT_DYNAMIC_ENTRY_GZIP_BYTES = 65 * KIB
 // dialogs, popovers, selects, and sheets retain their enter/exit transitions.
 // Keep this ceiling close to that measured production baseline so future CSS
 // growth still fails here instead of silently accumulating.
-export const MAX_SHELL_CSS_RAW_BYTES = 169_000
-export const MAX_SHELL_CSS_GZIP_BYTES = 27_500
+export const MAX_SHELL_CSS_RAW_BYTES = 162_000
+export const MAX_SHELL_CSS_GZIP_BYTES = 26_600
 export const RATCHET_THRESHOLD = 0.95
 
 export const conditionalFontCssBudgets = [

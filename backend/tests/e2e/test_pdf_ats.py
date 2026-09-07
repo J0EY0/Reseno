@@ -27,9 +27,7 @@ import pytest
 from playwright.sync_api import Browser
 from pypdf import PdfReader
 
-from tests.e2e.test_workspace_route_network import _authenticated_context
-
-pytest_plugins = ("tests.e2e.test_workspace_route_network",)
+from tests.e2e.browser_support import authenticated_context as _authenticated_context
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",

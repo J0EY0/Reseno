@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { loadResumeFontStyles } from "@/components/preview/resume-font-loader";
 import { ResumePreview } from "@/components/preview/resume-preview";
 import {
   getMessagesSync,
@@ -50,15 +51,13 @@ function resolveDocumentLocale(value: string | null): DocumentLocale | null {
 }
 
 async function waitForRenderAssets() {
-  const delay = (milliseconds: number) =>
-    new Promise<void>((resolve) => {
-      window.setTimeout(resolve, milliseconds);
-    });
-
-  await Promise.race([document.fonts?.ready ?? Promise.resolve(), delay(2500)]);
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 
   const images = Array.from(document.images);
-  await Promise.race([
+  await Promise.all([
+    document.fonts?.ready ?? Promise.resolve(),
     Promise.all(
       images.map((image) => {
         if (image.complete) {
@@ -68,7 +67,6 @@ async function waitForRenderAssets() {
         return image.decode().catch(() => undefined);
       }),
     ),
-    delay(2500),
   ]);
 
   await new Promise<void>((resolve) => {
@@ -224,11 +222,14 @@ export function PdfExportRenderer() {
 
     let cancelled = false;
 
-    void waitForRenderAssets().then(() => {
-      if (!cancelled) {
-        setAssetsReadyLoadKey(activeState.loadKey);
-      }
-    });
+    void loadResumeFontStyles(activeState.typography.fontFamily)
+      .catch(() => undefined)
+      .then(waitForRenderAssets)
+      .then(() => {
+        if (!cancelled) {
+          setAssetsReadyLoadKey(activeState.loadKey);
+        }
+      });
 
     return () => {
       cancelled = true;

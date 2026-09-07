@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import {
   createListDiff,
   type ListDiff,
@@ -23,9 +25,12 @@ export function RichHighlights({
   diffs: FieldDiffs;
   highlights: string[];
 }) {
-  const visibleHighlights = highlights
-    .map((value, index) => ({ index, value }))
-    .filter(({ value }) => !isRichTextEmpty(value));
+  const visibleHighlights = useMemo(
+    () => highlights
+      .map((value, index) => ({ index, value: sanitizeRichTextHtml(value) }))
+      .filter(({ value }) => !isRichTextEmpty(value)),
+    [highlights],
+  );
   const before = diffs[0]?.before;
   const after = diffs.at(-1)?.after;
   const canDiffItems =
@@ -56,7 +61,7 @@ export function RichHighlights({
         >
           <span
             dangerouslySetInnerHTML={{
-              __html: sanitizeRichTextHtml(highlight.value),
+              __html: highlight.value,
             }}
           />
         </div>
@@ -84,7 +89,7 @@ export function RichHighlights({
             >
               <span
                 dangerouslySetInnerHTML={{
-                  __html: sanitizeRichTextHtml(value),
+                  __html: value,
                 }}
               />
             </li>
@@ -137,13 +142,13 @@ export function RichListDiff({
   diffs: FieldDiffs;
   html: string;
 }) {
-  const sanitized = sanitizeRichTextHtml(html);
-  const parsed = parseRichList(html);
+  const sanitized = useMemo(() => sanitizeRichTextHtml(html), [html]);
+  const parsed = useMemo(() => parseRichList(html), [html]);
   const before = diffs[0]?.before;
-  const beforeParsed =
-    typeof before === "string"
-      ? parseRichList(before)
-      : null;
+  const beforeParsed = useMemo(
+    () => typeof before === "string" ? parseRichList(before) : null,
+    [before],
+  );
 
   if (!parsed && beforeParsed && isRichTextEmpty(sanitized)) {
     return null;

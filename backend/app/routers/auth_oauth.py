@@ -35,6 +35,7 @@ from app.services.auth_oauth import (
     start_github_setup,
     start_oauth,
 )
+from app.services.auth_oauth_callback import oauth_callback_response
 from app.services.auth_tokens import create_access_token, format_token_expiry
 
 router = APIRouter(prefix="/api/auth/oauth", tags=["auth"])
@@ -102,14 +103,25 @@ async def post_oauth_bind(
 @router.get("/{provider}/callback")
 async def get_oauth_callback(request: Request, provider: OAuthProvider) -> Response:
     origin = _callback_origin(request)
+    flow = request.session.get("flow")
+    is_binding = (
+        isinstance(flow, dict)
+        and flow.get("kind") == "oauth"
+        and flow.get("intent") == "bind"
+    )
     try:
         code, intent = await finish_oauth(request)
-        fragment = urlencode({"code": code, "intent": intent})
     except OAuthFlowError as exc:
         request.session.clear()
-        fragment = urlencode({"error": str(exc)})
+        if is_binding:
+            return oauth_callback_response(origin, {"error": str(exc)})
+        fragment = urlencode({"oauth_error": str(exc)})
+    else:
+        if intent == "bind":
+            return oauth_callback_response(origin, {"code": code, "intent": intent})
+        fragment = urlencode({"oauth_code": code})
     return RedirectResponse(
-        f"{origin}/auth/callback#{fragment}",
+        f"{origin}/login#{fragment}",
         status_code=303,
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
@@ -180,7 +192,7 @@ async def get_github_setup_callback(request: Request) -> Response:
         destination = await finish_github_setup(request)
     except OAuthFlowError as exc:
         request.session.clear()
-        destination = f"{origin}/auth/callback#{urlencode({'error': str(exc)})}"
+        return oauth_callback_response(origin, {"error": str(exc)})
     return RedirectResponse(
         destination,
         status_code=303,

@@ -9,8 +9,8 @@ from app.services.llm import (
     LlmRequestError,
     LlmStreamEvent,
     async_complete_chat,
-    async_complete_tool_call,
     async_stream_chat,
+    async_stream_tool_call,
 )
 from app.services.llm.adapters import (
     anthropic_messages,
@@ -26,6 +26,12 @@ from app.services.llm.output_budget import (
     resolve_request_output_budget,
 )
 from app.services.llm.types import AgentLlmConfig, LlmPrompt
+
+
+async def _collect_events(
+    stream: AsyncIterator[LlmStreamEvent],
+) -> list[LlmStreamEvent]:
+    return [event async for event in stream]
 
 
 def _config(**overrides: object) -> AgentLlmConfig:
@@ -242,9 +248,9 @@ def test_dispatch_revalidates_input_after_each_tool_iteration(monkeypatch) -> No
         },
     ]
 
-    asyncio.run(async_complete_tool_call(config, prompt, tools))
+    asyncio.run(_collect_events(async_stream_tool_call(config, prompt, tools)))
     prompt.messages.append({"role": "assistant", "content": "y" * 8_000})
-    asyncio.run(async_complete_tool_call(config, prompt, tools))
+    asyncio.run(_collect_events(async_stream_tool_call(config, prompt, tools)))
 
     assert captured_limits[0] is not None
     assert captured_limits[1] is not None
@@ -306,7 +312,7 @@ def test_dispatch_resolves_unary_stream_and_tool_budgets_at_one_seam(
         assert [event.type async for event in async_stream_chat(config, prompt)] == [
             "done",
         ]
-        await async_complete_tool_call(config, prompt, tools)
+        await _collect_events(async_stream_tool_call(config, prompt, tools))
 
     asyncio.run(exercise())
 

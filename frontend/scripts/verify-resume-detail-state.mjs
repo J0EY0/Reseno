@@ -1,30 +1,23 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 async function loadModule(path, imports = {}, globals = {}) {
   const source = await readFile(new URL(path, frontendRoot), "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(compiled, {
-    module,
-    exports: module.exports,
-    AbortController,
-    DOMException,
-    console: { error() {}, warn() {} },
-    require(specifier) {
-      assert.ok(Object.hasOwn(imports, specifier), `Unexpected dependency: ${specifier}`);
-      return imports[specifier];
+
+  return evaluateTypeScript(source, {
+    globals: {
+      AbortController,
+      DOMException,
+      console: { error() {}, warn() {} },
+      ...globals,
     },
-    ...globals,
+    imports,
   });
-  return module.exports;
 }
 
 function createHookRunner() {
@@ -131,77 +124,143 @@ const toast = { dismiss() {}, error() {} };
 
 async function sessionFixture(initial = resumeItem()) {
   const runner = createHookRunner();
-  let draft = null;
-  let resetCount = 0;
   const { useResumeDetailSession } = await loadModule("src/components/workspace/use-resume-detail-session.ts", {
     react: runner.react,
-    "@/hooks/use-resume-agent-draft": {
-      useResumeAgentDraft: () => ({
-        agentDraft: draft,
-        review: null,
-        resetAgentDraft() { draft = null; resetCount += 1; },
-      }),
-    },
     "@/lib/resume": { createEmptyResume: () => resumeItem().resume },
     "@/lib/workspace-change-tracking": tracking,
   });
-  runner.mount(() => useResumeDetailSession({ initialResume: initial, messages, onResolveDraftReview: async () => null }));
-  return { runner, setDraft(value) { draft = value; runner.render(); }, get resetCount() { return resetCount; } };
+  runner.mount(() => useResumeDetailSession({ initialResume: initial }));
+  return { runner };
 }
 
 {
-  const { runner, setDraft } = await sessionFixture();
+  const initial = resumeItem();
+  const { runner } = await sessionFixture(initial);
   const getSnapshot = runner.current.getSnapshot;
-  const changedResume = { ...runner.current.resume, basic: { name: "Grace", headline: "Engineer" } };
-  runner.current.setResume(changedResume);
-  runner.current.setJobBrief("New job brief");
-  runner.current.setTypography({ fontFamily: "noto-sans-sc", fontSize: 18 });
-  runner.current.setTemplate("modern");
-  runner.current.setTemplateSettings({ pagePaddingX: 24 });
-  runner.current.setResumeItem((current) => ({ ...current, title: "Edited title" }));
+  const template = {
+    id: "modern",
+    typography: { fontFamily: "noto-sans-sc", fontSize: 18 },
+    settings: { pagePaddingX: 24, pagePaddingY: 30 },
+  };
+  runner.current.applyTemplate(template);
+  runner.flush();
+  assert.deepEqual(plain(runner.current.document), {
+    ...initial,
+    template: template.id,
+    typography: template.typography,
+    templateSettings: template.settings,
+  }, "Applying a template must replace its id, typography and settings together without changing the document content.");
+  runner.current.updateContent((resume) => ({ ...resume, basic: { ...resume.basic, name: "Grace" } }));
+  runner.current.rename("Edited title");
+  runner.current.updateStyle(({ typography }) => ({ typography: { ...typography, fontSize: 20 } }));
+  runner.current.updateStyle(({ templateSettings }) => ({ templateSettings: { ...templateSettings, pagePaddingX: 28 } }));
+  assert.equal(getSnapshot("before-commit").resume.basic.name, "Ada", "Async snapshots must expose the committed document until the next render commits.");
   runner.flush();
   assert.equal(runner.current.getSnapshot, getSnapshot, "Async save and discard callers must retain a stable snapshot getter.");
-  assert.deepEqual(plain(getSnapshot("request-time")), { ...plain(runner.current.liveResume), updatedAt: "request-time" },
-    "Visible live content and save snapshots must include the same edited fields.");
-  assert.equal(runner.current.liveFingerprint, tracking.createResumeFingerprint(runner.current.liveResume));
-  const fingerprint = runner.current.liveFingerprint;
-  setDraft({ resume: { ...changedResume, basic: { name: "Unconfirmed draft", headline: "Director" } }, diffs: [] });
-  assert.equal(runner.current.previewResume.basic.name, "Unconfirmed draft");
-  assert.equal(getSnapshot("later").resume.basic.name, "Grace", "Unconfirmed Agent changes must remain outside the formal save snapshot.");
-  assert.equal(runner.current.liveFingerprint, fingerprint, "A preview-only Agent draft must not mark formal content dirty.");
+  assert.deepEqual(plain(getSnapshot("request-time")), { ...plain(runner.current.document), updatedAt: "request-time" },
+    "Visible content and save snapshots must include the same edited fields.");
+  assert.equal(runner.current.resume.basic.name, "Grace");
+  assert.equal(runner.current.document.title, "Edited title");
+  assert.equal(runner.current.jobBrief, initial.jobBrief);
+  assert.equal(runner.current.template, template.id);
+  assert.deepEqual(plain(runner.current.typography), { fontFamily: "noto-sans-sc", fontSize: 20 });
+  assert.deepEqual(plain(runner.current.templateSettings), { pagePaddingX: 28, pagePaddingY: 30 },
+    "Queued partial style operations must preserve both the template defaults and earlier edits.");
+  assert.equal(runner.current.fingerprint, tracking.createResumeFingerprint(runner.current.document));
   runner.unmount();
 }
 
 {
-  const fixture = await sessionFixture();
-  const { runner } = fixture;
+  const { runner } = await sessionFixture();
   const getter = runner.current.getSnapshot;
-  fixture.setDraft({ resume: resumeItem().resume, diffs: [] });
+  const submitted = getter("submitted");
+  runner.current.toggleSection("basic");
+  runner.flush();
   const nextDocument = { ...resumeItem("resume-b"), title: "Next document", jobBrief: "Next job" };
   runner.current.hydrate(nextDocument);
   runner.flush();
-  assert.equal(fixture.resetCount, 1, "Replacing the document must clear the whole Agent draft once.");
+  assert.equal(runner.current.openSectionId, null, "Hydration must close the previous document's editor section.");
   assert.deepEqual(plain(getter("next-time")), { ...nextDocument, updatedAt: "next-time" },
     "The stable getter must follow a hydrated document rather than retain the old document.");
-  assert.equal(runner.current.previewResume, nextDocument.resume);
+  runner.current.adoptSavedResume({ ...submitted, title: "Old receipt", updatedAt: "late-save" }, submitted);
+  runner.flush();
+  assert.deepEqual(plain(runner.current.document), nextDocument, "A late receipt from the previous document must not change the hydrated document.");
+  assert.equal(runner.current.resume, nextDocument.resume);
+  assert.equal(runner.current.jobBrief, "Next job");
   runner.unmount();
 }
 
 {
   const { runner } = await sessionFixture();
   const submitted = runner.current.getSnapshot("submitted");
-  runner.current.setResume({ ...submitted.resume, basic: { name: "New typing", headline: "Engineer" } });
-  runner.current.setResumeItem((current) => ({ ...current, title: "New title after submit" }));
+  const newerTypography = { fontFamily: "noto-sans-sc", fontSize: 20 };
+  runner.current.updateContent({ ...submitted.resume, basic: { name: "New typing", headline: "Engineer" } });
+  runner.current.rename("New title after submit");
+  runner.current.updateStyle({ typography: newerTypography, templateSettings: { pagePaddingX: 28 } });
   runner.flush();
   runner.current.adoptSavedResume({ ...submitted, title: "Server-normalized title", updatedAt: "saved" }, submitted);
   runner.flush();
-  assert.equal(runner.current.liveResume.resume.basic.name, "New typing", "A save receipt must not replace text entered after submission.");
-  assert.equal(runner.current.liveResume.title, "New title after submit", "A save receipt must preserve a newer local title.");
-  assert.equal(runner.current.liveResume.updatedAt, "saved");
+  assert.equal(runner.current.document.resume.basic.name, "New typing", "A save receipt must not replace text entered after submission.");
+  assert.equal(runner.current.document.title, "New title after submit", "A save receipt must preserve a newer local title.");
+  assert.deepEqual(plain(runner.current.document.typography), newerTypography, "A save receipt must preserve style edits made after submission.");
+  assert.deepEqual(plain(runner.current.document.templateSettings), { pagePaddingX: 28 });
+  assert.equal(runner.current.document.jobBrief, submitted.jobBrief);
+  assert.equal(runner.current.document.updatedAt, "saved");
   const unchangedTitle = runner.current.getSnapshot("submitted-again");
   runner.current.adoptSavedResume({ ...unchangedTitle, title: "Normalized unchanged title" }, unchangedTitle);
   runner.flush();
-  assert.equal(runner.current.liveResume.title, "Normalized unchanged title", "An untouched submitted title may adopt server normalization.");
+  assert.equal(runner.current.document.title, "Normalized unchanged title", "An untouched submitted title may adopt server normalization.");
+  runner.unmount();
+}
+
+{
+  const { runner } = await sessionFixture();
+  const education = { id: "education", kind: "education", title: "Education", items: [] };
+  const skills = { id: "skills", kind: "simple_list", title: "Skills", items: [] };
+  const fingerprint = runner.current.fingerprint;
+  runner.current.toggleSection("basic");
+  runner.flush();
+  assert.equal(runner.current.openSectionId, "basic");
+  assert.equal(runner.current.fingerprint, fingerprint, "Opening an editor section must not dirty the saved document.");
+  runner.current.toggleSection("basic");
+  runner.flush();
+  assert.equal(runner.current.openSectionId, null);
+  runner.current.addSection(education);
+  runner.current.addSection(skills);
+  runner.flush();
+  assert.deepEqual(plain(runner.current.resume.sections), [education, skills], "Queued additions must preserve every section.");
+  assert.equal(runner.current.openSectionId, "skills", "Adding a section must open that section and close the previous one.");
+  runner.current.removeSection("education");
+  runner.flush();
+  assert.equal(runner.current.openSectionId, "skills", "Removing another section must preserve the currently open editor.");
+  runner.current.removeSection("skills");
+  runner.flush();
+  assert.equal(runner.current.openSectionId, null, "Removing the open section must clear its editor state.");
+  assert.deepEqual(plain(runner.current.resume.sections), []);
+  runner.current.toggleSection("basic");
+  const applied = { ...runner.current.resume, basic: { name: "Confirmed Agent edit", headline: "Engineer" } };
+  runner.current.applyAgentResume(applied);
+  runner.flush();
+  assert.equal(runner.current.resume, applied);
+  assert.equal(runner.current.openSectionId, null, "Applying a confirmed Agent result must close stale editor sections.");
+  assert.equal(runner.current.getSnapshot("after-apply").resume, applied);
+  assert.equal(runner.current.document.title, "Original title");
+  assert.equal(runner.current.jobBrief, "Original job brief");
+  runner.unmount();
+}
+
+{
+  const { runner } = await sessionFixture(null);
+  assert.equal(runner.current.document, null);
+  assert.equal(runner.current.getSnapshot("empty"), null);
+  runner.current.updateContent(resumeItem().resume);
+  runner.current.rename("Not loaded");
+  runner.current.updateStyle({ typography: { fontFamily: "inter", fontSize: 20 } });
+  runner.flush();
+  assert.equal(runner.current.document, null, "Editor operations must not fabricate a document before loading completes.");
+  runner.current.hydrate(resumeItem());
+  runner.flush();
+  assert.equal(runner.current.getSnapshot("loaded").id, "resume-a");
   runner.unmount();
 }
 
@@ -248,9 +307,10 @@ async function saveFixture({ initial = resumeItem(), api = {} } = {}) {
   const saving = runner.current.save();
   edit({ ...submitted, title: "Typed while saving" });
   gate.resolve(detail({ ...submitted, updatedAt: "saved" }, "version-b"));
-  await saving;
+  const saved = await saving;
   runner.flush();
   assert.equal(requests[0].payload.title, "Submitted title");
+  assert.equal(saved.resume?.title, "Submitted title", "Save callers must receive the persisted document that belongs to the returned version, without later typing.");
   assert.equal(runner.current.hasUnsavedChanges(), true, "A successful older save must not clear newer local edits.");
   assert.equal(runner.current.changeCount, 1, "The confirmed baseline must expose only the newer title as unsaved.");
   assert.equal(runner.current.activeVersionId, "version-b");
@@ -266,10 +326,12 @@ async function saveFixture({ initial = resumeItem(), api = {} } = {}) {
   assert.equal(runner.current.hasUnsavedChanges(), false);
   assert.equal(runner.current.changeCount, 0);
   assert.equal(runner.current.requiresCheckpointPromotion(), true);
-  await runner.current.save("checkpoint");
+  const checkpointReceipt = await runner.current.save("checkpoint");
   runner.flush();
   assert.deepEqual(fixture.requests.map(({ mode }) => mode), ["autosave", "checkpoint"], "A clean autosave still needs a formal checkpoint before leaving.");
   assert.equal(runner.current.requiresCheckpointPromotion(), false);
+  assert.deepEqual(plain(await runner.current.save()), plain(checkpointReceipt), "An unchanged document must reuse the persisted snapshot and its matching version.");
+  assert.equal(fixture.requests.length, 2, "Exporting an already checkpointed document must not add another save.");
   runner.unmount();
 }
 
@@ -308,6 +370,85 @@ async function saveFixture({ initial = resumeItem(), api = {} } = {}) {
   assert.equal(runner.current.activeVersionId, "version-3");
   assert.equal(runner.current.requiresCheckpointPromotion(), false,
     "Discarding after autosave must adopt the restoration checkpoint and clear promotion state.");
+  runner.unmount();
+}
+
+{
+  const gate = deferred();
+  const fixture = await saveFixture({ api: { version: () => gate.promise } });
+  const { runner } = fixture;
+  const switching = runner.current.selectVersion("version-old");
+  runner.flush();
+  fixture.edit({ ...resumeItem(), title: "Typed during version request" });
+  gate.resolve(detail({ ...resumeItem(), title: "Historical title" }, "version-old"));
+  await switching;
+  runner.flush();
+  assert.equal(fixture.live.title, "Typed during version request", "A delayed historical response must preserve input entered after the request started.");
+  assert.equal(runner.current.hasUnsavedChanges(), true);
+  assert.equal(runner.current.activeVersionId, "version-a");
+  assert.equal(runner.current.isVersionLoading, false);
+  runner.unmount();
+}
+
+{
+  const gate = deferred();
+  let requestSignal;
+  const fixture = await saveFixture({ api: { version: (_resumeId, _versionId, options) => {
+    requestSignal = options?.signal;
+    return gate.promise;
+  } } });
+  const { runner } = fixture;
+  const switching = runner.current.selectVersion("version-old");
+  runner.flush();
+  runner.unmount();
+  assert.equal(requestSignal?.aborted, true, "Leaving the route must cancel its pending historical read.");
+  gate.resolve(detail({ ...resumeItem(), title: "Historical title" }, "version-old"));
+  await switching;
+  assert.equal(fixture.live.title, "Original title", "A historical read must never hydrate an unmounted route, even if transport ignores cancellation.");
+}
+
+for (const queued of [false, true]) {
+  const runner = createHookRunner();
+  const gate = deferred();
+  const downloads = [];
+  const failures = [];
+  const savedResume = { ...resumeItem(), template: "custom-a" };
+  let writeCount = 0;
+  const persistence = await saveFixture({ api: { save: () => ++writeCount === 1 ? gate.promise : undefined } });
+  persistence.edit(savedResume);
+  const templates = ["custom-a", "custom-b"].map((id) => ({
+    id, name: id, preset: "minimal", description: "", layout: {}, settings: {}, typography: savedResume.typography,
+  }));
+  const { createResumeArtifact } = await loadModule("src/lib/export-api.ts", {
+    "@/lib/api-client": {},
+    "@/lib/template-presets": { isBuiltinTemplateId: (id) => id === "minimal" },
+  });
+  const { useResumeDetailExport } = await loadModule("src/components/workspace/use-resume-detail-export.ts", {
+    react: runner.react,
+    sonner: { toast: { success() {}, error(message) { failures.push(message); } } },
+    "@/lib/api-client": { isApiErrorToastShown: () => false },
+    "@/lib/export-api": {
+      downloadResumeJson(resume, definition) { downloads.push(createResumeArtifact(resume, definition)); },
+    },
+  });
+  const save = () => persistence.runner.current.save();
+  runner.mount(() => useResumeDetailExport({ messages: { exportJsonFailed: "Export failed" }, save, templates }));
+  const autosaving = queued ? persistence.runner.current.save("autosave") : null;
+  const exporting = runner.current.exportJson();
+  const newerResume = { ...savedResume, title: "Typed during export", template: "custom-b" };
+  persistence.edit(newerResume);
+  runner.render();
+  gate.resolve(detail(savedResume));
+  await autosaving;
+  await exporting;
+  const exportedResume = queued ? newerResume : savedResume;
+  assert.equal(downloads.length, 1, "Changing custom templates during a checkpoint must not break JSON export.");
+  assert.equal(downloads[0].resumes[0].title, exportedResume.title, "JSON must export the document returned by its own checkpoint, including saves queued behind autosave.");
+  assert.equal(downloads[0].templates[0].definition.name, exportedResume.template);
+  assert.equal(failures.length, 0);
+  assert.equal(persistence.runner.current.hasUnsavedChanges(), !queued);
+  assert.equal(persistence.live.template, "custom-b");
+  persistence.runner.unmount();
   runner.unmount();
 }
 

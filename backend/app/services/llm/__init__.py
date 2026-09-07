@@ -1,7 +1,6 @@
 from .config import resolve_agent_llm_config
 from .dispatch import (
     async_complete_chat,
-    async_complete_tool_call,
     async_stream_chat,
     async_stream_tool_call,
     supports_native_attachment,
@@ -37,7 +36,6 @@ __all__ = [
     "LlmUsage",
     "LlmWebSource",
     "async_complete_chat",
-    "async_complete_tool_call",
     "async_stream_chat",
     "async_stream_tool_call",
     "resolve_agent_llm_config",

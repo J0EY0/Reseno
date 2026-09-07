@@ -172,7 +172,6 @@ def test_anthropic_tool_stream_assembles_arguments_only_after_message_stop(
     ]
     terminal = events[-1].message
     assert terminal is not None
-    assert terminal.response_id == "msg-tool-stream"
     assert terminal.stop_reason == "tool_calls"
     assert terminal.usage and terminal.usage.total_tokens == 12
     assert terminal.tool_calls[0].id == "toolu-stream"

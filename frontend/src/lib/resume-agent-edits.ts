@@ -4,7 +4,6 @@ import { applyOperation } from "./resume-agent-edits/apply-operations";
 import { applyOperationWithMerge } from "./resume-agent-edits/three-way-merge";
 import {
   cloneResume,
-  fallbackOperation,
   type AgentDraftApplyError,
   type AgentDraftApplyErrorReason,
   type AgentDraftApplyResult,
@@ -37,7 +36,7 @@ export function applyAgentEditsToDraft(
   let appliedEditCount = 0;
 
   edits.forEach((edit) => {
-    const operation = fallbackOperation(edit);
+    const operation = edit.operation;
 
     if (!operation) {
       errors.push({
@@ -108,11 +107,7 @@ export function applyAgentEditsWithMerge(
   let appliedEditCount = 0;
 
   for (const edit of edits) {
-    const operation = fallbackOperation(edit);
-    if (!operation) {
-      // The validation pass above guarantees this cannot happen.
-      continue;
-    }
+    const operation = edit.operation;
 
     const merged = applyOperationWithMerge(
       baseWorking,

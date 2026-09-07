@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type {
   DocumentLocale,
   ResumeTemplateDefinition,
+  ResumeTemplateUpdate,
 } from "@/types/resume";
 
 import { TemplateEditorTabs } from "./template-editor-tabs";
@@ -27,7 +28,7 @@ interface TemplateEditorProps {
   onCreateCustomTemplate: () => void;
   onUpdateTemplate: (
     templateId: string,
-    patch: Partial<ResumeTemplateDefinition>,
+    patch: ResumeTemplateUpdate,
   ) => void;
 }
 
@@ -50,7 +51,7 @@ export function TemplateEditor({
   const defaultTemplateButtonLabel = isDefaultTemplate
     ? t.defaultTemplateLabel
     : t.setDefaultTemplate;
-  const updateTemplate = (patch: Partial<ResumeTemplateDefinition>) =>
+  const updateTemplate = (patch: ResumeTemplateUpdate) =>
     onUpdateTemplate(template.id, patch);
 
   return (

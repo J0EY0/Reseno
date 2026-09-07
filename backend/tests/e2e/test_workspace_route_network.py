@@ -10,278 +10,35 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
 import time
-import urllib.error
-import urllib.request
 from collections import Counter
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from pathlib import Path
-from socket import AF_INET, SOCK_STREAM, socket
-from typing import Any, TextIO
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import (
     Browser,
-    BrowserContext,
     Locator,
     Page,
     Request,
     Route,
     expect,
-    sync_playwright,
 )
 from playwright.sync_api import Error as PlaywrightError
 
-from app.services.model_metadata import (
-    MODEL_METADATA_CACHE_NAME,
-    MODEL_METADATA_CACHE_SOURCE,
-    MODEL_METADATA_CACHE_VERSION,
+from tests.e2e.browser_support import (
+    authenticated_context as _authenticated_context,
 )
+from tests.e2e.browser_support import browser_session
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",
     reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
 )
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-BACKEND_ROOT = REPOSITORY_ROOT / "backend"
-FRONTEND_ROOT = REPOSITORY_ROOT / "frontend"
-_BROWSER_AUTH_SESSION: dict[str, str] | None = None
-
-
-def _unused_port() -> int:
-    with socket(AF_INET, SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
-
-
-def _process_output(log: TextIO) -> str:
-    log.flush()
-    log.seek(0)
-    return log.read()
-
-
-def _wait_for_url(
-    url: str,
-    process: subprocess.Popen[str],
-    log: TextIO,
-    *,
-    timeout_seconds: float = 30,
-) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    last_error: Exception | None = None
-
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            pytest.fail(
-                f"Server exited while waiting for {url}.\n{_process_output(log)}"
-            )
-
-        try:
-            with urllib.request.urlopen(url, timeout=1) as response:
-                if response.status < 500:
-                    return
-        except (OSError, urllib.error.URLError) as error:
-            last_error = error
-
-        time.sleep(0.1)
-
-    pytest.fail(f"Timed out waiting for {url}: {last_error}\n{_process_output(log)}")
-
-
-def _stop_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-
-
-@pytest.fixture(scope="module")
-def workspace_servers() -> Iterator[tuple[str, str]]:
-    """Start isolated backend/frontend servers and seed one resume."""
-
-    global _BROWSER_AUTH_SESSION
-
-    node = shutil.which("node")
-    vite_cli = FRONTEND_ROOT / "node_modules" / "vite" / "bin" / "vite.js"
-    if node is None or not vite_cli.exists():
-        pytest.fail("Install frontend dependencies before running browser E2E tests.")
-
-    backend_port = _unused_port()
-    frontend_port = _unused_port()
-    backend_url = f"http://127.0.0.1:{backend_port}"
-    frontend_url = f"http://127.0.0.1:{frontend_port}"
-    processes: list[subprocess.Popen[str]] = []
-    logs: list[TextIO] = []
-
-    with tempfile.TemporaryDirectory(prefix="resumate-route-e2e-") as data_dir:
-        data_path = Path(data_dir)
-        model_metadata_path = data_path / MODEL_METADATA_CACHE_NAME
-        model_metadata_path.parent.mkdir(parents=True)
-        model_metadata_path.write_text(
-            json.dumps(
-                {
-                    "version": MODEL_METADATA_CACHE_VERSION,
-                    "source": MODEL_METADATA_CACHE_SOURCE,
-                    "catalogs": {
-                        source: {
-                            "fetchedAt": datetime.now(UTC).isoformat(
-                                timespec="seconds"
-                            ),
-                            "providers": {},
-                        }
-                        for source in ("litellm", "modelsDev")
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        backend_env = {
-            **os.environ,
-            "APP_DATA_DIR": str(data_path),
-            "APP_DB_PATH": str(data_path / "app.db"),
-            "APP_STORAGE_DIR": str(data_path / "storage"),
-            "APP_ENV_FILE": str(data_path / ".env"),
-            "FRONTEND_RENDER_BASE_URL": frontend_url,
-            "BACKEND_CORS_ORIGINS": frontend_url,
-        }
-        frontend_env = {
-            **os.environ,
-            "RESUMATE_VITE_CACHE_DIR": str(data_path / "vite-cache"),
-            "VITE_DEV_API_TARGET": backend_url,
-        }
-
-        try:
-            backend_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-            logs.append(backend_log)
-            backend_process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "uvicorn",
-                    "app.main:app",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(backend_port),
-                ],
-                cwd=BACKEND_ROOT,
-                env=backend_env,
-                stdout=backend_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            processes.append(backend_process)
-            _wait_for_url(f"{backend_url}/health", backend_process, backend_log)
-
-            setup_request = urllib.request.Request(
-                f"{backend_url}/api/auth/setup",
-                data=json.dumps(
-                    {
-                        "username": "e2e-owner",
-                        "password": "E2ePassword2026",
-                        "confirmPassword": "E2ePassword2026",
-                    }
-                ).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(setup_request, timeout=10) as response:
-                setup_payload = json.load(response)["data"]
-            access_token = str(setup_payload["accessToken"])
-            _BROWSER_AUTH_SESSION = {
-                "username": str(setup_payload["username"]),
-                "authenticatedAt": "2026-08-09T00:00:00.000Z",
-                "accessToken": access_token,
-                "expiresAt": str(setup_payload["expiresAt"]),
-            }
-
-            frontend_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-            logs.append(frontend_log)
-            frontend_process = subprocess.Popen(
-                [
-                    node,
-                    str(vite_cli),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(frontend_port),
-                    "--strictPort",
-                ],
-                cwd=FRONTEND_ROOT,
-                env=frontend_env,
-                stdout=frontend_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            processes.append(frontend_process)
-            _wait_for_url(frontend_url, frontend_process, frontend_log)
-
-            create_request = urllib.request.Request(
-                f"{backend_url}/api/resumes",
-                data=b'{"documentLocale":"en"}',
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(create_request, timeout=10) as response:
-                payload = json.load(response)
-            resume_id = str(payload["data"]["resume"]["id"])
-
-            yield frontend_url, resume_id
-        finally:
-            for process in reversed(processes):
-                _stop_process(process)
-            for log in logs:
-                log.close()
-            _BROWSER_AUTH_SESSION = None
-
-
-@pytest.fixture(scope="module")
-def browser() -> Iterator[Browser]:
-    with sync_playwright() as playwright:
-        instance = playwright.chromium.launch(headless=True)
-        try:
-            yield instance
-        finally:
-            instance.close()
-
-
-def _authenticated_context(
-    browser: Browser,
-    **kwargs: Any,
-) -> BrowserContext:
-    session = _BROWSER_AUTH_SESSION
-    if session is None:
-        raise RuntimeError("Browser auth session has not been initialized.")
-
-    context = browser.new_context(
-        extra_http_headers={"Authorization": f"Bearer {session['accessToken']}"},
-        **kwargs,
-    )
-    session_json = json.dumps(session)
-    context.add_init_script(
-        script=(
-            "window.localStorage.setItem("
-            "'resumate-auth-session', "
-            f"{json.dumps(session_json)});"
-        )
-    )
-    return context
-
 
 ApiRequest = tuple[str, str]
 AUTH_SETUP_STATUS_REQUEST: ApiRequest = ("GET", "/api/auth/setup")
@@ -3064,7 +2821,7 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
         expect(pending_status).to_be_visible(timeout=750)
         assert held_chat_routes == []
         if action == "send":
-            expect(prompt).to_have_value("")
+            expect(prompt).to_have_value("请检查并生成修改草稿。")
         expect(attachment_trigger).to_be_enabled()
         expect(model_trigger).to_be_enabled()
         if action == "send":
@@ -3078,16 +2835,29 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
             )
 
         page.unroute(settings_pattern, hold_settings)
-        held_settings_routes.pop().fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+        settings_route = held_settings_routes.pop()
+        settings_route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "locale": "zh",
+                    **settings_route.request.post_data_json["settings"],
+                },
+            },
         )
 
         deadline = time.monotonic() + 3
         while not held_chat_routes and time.monotonic() < deadline:
             page.wait_for_timeout(20)
         assert len(held_chat_routes) == 1
+        expected_model_nickname = (
+            current_model_nickname if action == "send" else next_model_nickname
+        )
+        expect(model_trigger).to_have_attribute(
+            "aria-label",
+            f"下一条消息将使用 {expected_model_nickname}",
+        )
         if action == "send":
             request_payload = held_chat_routes[0].request.post_data_json
             assert request_payload["message"]["text"] == ("请检查并生成修改草稿。")
@@ -3131,6 +2901,8 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
             exact=True,
         )
         expect(edit_status).to_be_visible(timeout=750)
+        if action == "send":
+            expect(prompt).to_have_value("")
 
         deadline = time.monotonic() + 3
         while not held_event_routes and time.monotonic() < deadline:
@@ -3154,9 +2926,14 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
         for route in held_settings_routes:
             try:
                 route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+                    json={
+                        "code": 0,
+                        "message": "OK",
+                        "data": {
+                            "locale": "zh",
+                            **route.request.post_data_json["settings"],
+                        },
+                    },
                 )
             except PlaywrightError:
                 pass
@@ -3243,9 +3020,14 @@ def test_agent_model_switch_during_active_run_applies_to_next_message(
 
         def fulfill_settings_update(route: Route) -> None:
             route.fulfill(
-                status=200,
-                content_type="application/json",
-                body='{"code":0,"message":"OK","data":{"locale":"zh"}}',
+                json={
+                    "code": 0,
+                    "message": "OK",
+                    "data": {
+                        "locale": "zh",
+                        **route.request.post_data_json["settings"],
+                    },
+                },
             )
 
         def fulfill_active_run(route: Route) -> None:
@@ -5565,7 +5347,11 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 2048, "height": 1226})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 2048, "height": 1226},
+    )
     page = context.new_page()
     resume_id: str | None = None
     duplicate_request_count = 0
@@ -5875,7 +5661,7 @@ def test_created_resume_is_not_published_before_detail_is_ready(
             "combobox",
             name=re.compile(r"^(Resume language|简历语言)$"),
         ).click()
-        page.get_by_role("option", name="EN", exact=True).click()
+        page.get_by_role("option", name=re.compile(r"^(English|英文)$")).click()
         with page.expect_response(
             lambda response: (
                 response.request.method == "POST"
@@ -6195,8 +5981,8 @@ def test_resume_agent_composer_actions_do_not_animate_during_theme_changes(
         color_scheme="light",
         viewport={"width": 1440, "height": 900},
     )
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
+    session = browser_session
+    assert session
     context.add_init_script(
         script=(
             "window.localStorage.setItem('resumate-auth-session', "
@@ -6352,8 +6138,8 @@ def test_workspace_theme_changes_do_not_animate_visible_palette_properties(
         color_scheme="light",
         viewport={"width": 1440, "height": 900},
     )
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
+    session = browser_session
+    assert session
     context.add_init_script(
         script=(
             "window.localStorage.setItem('resumate-auth-session', "
@@ -6479,8 +6265,8 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
         color_scheme="light",
         viewport={"width": 1440, "height": 900},
     )
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
+    session = browser_session
+    assert session
     context.add_init_script(
         script=(
             "window.localStorage.setItem('resumate-auth-session', "
@@ -6493,11 +6279,13 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
         page.goto(f"{frontend_url}/settings", wait_until="networkidle")
         theme_group = page.get_by_role("group", name="主题", exact=True)
         expect(theme_group).to_be_visible()
+        theme_group_handle = theme_group.element_handle()
         initial_dark = page.locator("html").evaluate(
             "element => element.classList.contains('dark')"
         )
         target_label = "日间" if initial_dark else "夜间"
-        target = theme_group.get_by_label(target_label, exact=True)
+        theme_group.get_by_role("combobox", name="主题", exact=True).click()
+        target = page.get_by_role("option", name=target_label, exact=True)
         expect(target).to_be_visible()
 
         result = page.evaluate(
@@ -6507,7 +6295,10 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
               const initialDark = document.documentElement.classList.contains('dark');
               const frames = [];
               const startedAt = performance.now();
-              target.click();
+              target.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter',
+                bubbles: true,
+              }));
               await new Promise(resolve => {
                 const sample = now => {
                   frames.push({
@@ -6535,15 +6326,16 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
                 finalDark: document.documentElement.classList.contains('dark'),
                 frames,
                 initialDark,
-                state: target.getAttribute('data-state'),
+                selectedValue: group.querySelector('[role="combobox"]')
+                  ?.textContent?.trim(),
               };
             }
             """,
-            [theme_group.element_handle(), target.element_handle()],
+            [theme_group_handle, target.element_handle()],
         )
 
         assert result["finalDark"] is not result["initialDark"], result
-        assert result["state"] == "on", result
+        assert result["selectedValue"] == target_label, result
         assert len(result["frames"]) >= 5, result
         assert all(
             frame["dark"] == result["finalDark"] for frame in result["frames"]
@@ -10021,11 +9813,130 @@ def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
         context.close()
 
 
+@pytest.mark.browser_smoke
+def test_resume_section_operations_keep_a_single_open_editor(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 1000},
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+
+    try:
+        created_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"documentLocale": "zh", "title": "Section editor ownership"},
+        )
+        assert created_response.ok
+        created = created_response.json()["data"]["resume"]
+        resume_id = created["id"]
+        sections = [
+            {"id": "education", "kind": "education", "title": "教育经历", "items": []},
+            {
+                "id": "experience",
+                "kind": "experience",
+                "title": "既有经历",
+                "items": [],
+            },
+        ]
+        saved_response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                "title": created["title"],
+                "documentLocale": created["documentLocale"],
+                "resume": {**created["resume"], "sections": sections},
+                "jobBrief": created["jobBrief"],
+                "typography": created["typography"],
+                "template": created["template"],
+                "templateSettings": created["templateSettings"],
+            },
+        )
+        assert saved_response.ok
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        open_sections = page.locator(
+            '.resume-editor-panel button[aria-label$=": 展开或收起模块"]'
+            '[aria-expanded="true"]'
+        )
+        basic = page.get_by_role("button", name="基本信息: 展开或收起模块", exact=True)
+        education = page.get_by_role(
+            "button", name="教育经历: 展开或收起模块", exact=True
+        )
+        project = page.get_by_role(
+            "button", name="项目经历: 展开或收起模块", exact=True
+        )
+        expect(open_sections).to_have_count(0)
+        basic.click()
+        expect(basic).to_have_attribute("aria-expanded", "true")
+        education.click()
+        expect(education).to_have_attribute("aria-expanded", "true")
+        expect(basic).to_have_attribute("aria-expanded", "false")
+        expect(open_sections).to_have_count(1)
+        education.click()
+        expect(open_sections).to_have_count(0)
+        education.click()
+
+        page.get_by_role("button", name="新增模块", exact=True).click()
+        page.get_by_role("option", name=re.compile("^项目经历")).click()
+        expect(project).to_have_attribute("aria-expanded", "true")
+        expect(education).to_have_attribute("aria-expanded", "false")
+        expect(open_sections).to_have_count(1)
+
+        page.get_by_role("button", name="教育经历: 删除板块", exact=True).click()
+        dialog = page.get_by_role("alertdialog")
+        dialog.get_by_role("button", name="删除板块", exact=True).click()
+        expect(education).to_have_count(0)
+        expect(project).to_have_attribute("aria-expanded", "true")
+        expect(open_sections).to_have_count(1)
+        with page.expect_response(
+            lambda response: response.request.method == "PUT"
+            and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+        ) as saving:
+            page.keyboard.press("ControlOrMeta+s")
+        assert saving.value.ok
+        persisted = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()
+        persisted_sections = persisted["data"]["resume"]["resume"]["sections"]
+        assert [section["title"] for section in persisted_sections] == [
+            "既有经历",
+            "项目经历",
+        ]
+
+        page.get_by_role("button", name="项目经历: 删除板块", exact=True).click()
+        dialog.get_by_role("button", name="删除板块", exact=True).click()
+        expect(project).to_have_count(0)
+        expect(open_sections).to_have_count(0)
+        with page.expect_response(
+            lambda response: response.request.method == "PUT"
+            and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+        ) as saving:
+            page.keyboard.press("ControlOrMeta+s")
+        assert saving.value.ok
+        persisted = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()
+        assert persisted["data"]["resume"]["resume"]["sections"] == [sections[1]]
+        page.reload(wait_until="networkidle")
+        expect(open_sections).to_have_count(0)
+        expect(
+            page.get_by_role("button", name="既有经历: 展开或收起模块", exact=True)
+        ).to_have_attribute("aria-expanded", "false")
+    finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
 def test_project_tech_stack_is_saved_without_blurring_the_input(
     browser: Browser,
     workspace_servers: tuple[str, str],
 ) -> None:
-    frontend_url, resume_id = workspace_servers
+    frontend_url, _ = workspace_servers
     context = _authenticated_context(
         browser,
         viewport={"width": 1672, "height": 870},
@@ -10041,9 +9952,14 @@ def test_project_tech_stack_is_saved_without_blurring_the_input(
             save_payloads.append(payload)
         route.continue_()
 
-    page.route(f"**/api/resumes/{resume_id}*", capture_save)
-
     try:
+        created_response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"documentLocale": "zh", "template": "minimal"},
+        )
+        assert created_response.ok
+        resume_id = created_response.json()["data"]["resume"]["id"]
+        page.route(f"**/api/resumes/{resume_id}*", capture_save)
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
         page.get_by_role(
             "button",
@@ -10936,7 +10852,7 @@ def test_template_gallery_reflow_finishes_with_sidebar_motion(
 @pytest.mark.parametrize(
     ("gallery_path", "search_name", "search_query"),
     [
-        ("/resume", None, None),
+        ("/resume", "resume-search", "Sparse sidebar motion"),
         ("/templates", "template-search", "Minimal"),
     ],
 )
@@ -10944,8 +10860,8 @@ def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
     browser: Browser,
     workspace_servers: tuple[str, str],
     gallery_path: str,
-    search_name: str | None,
-    search_query: str | None,
+    search_name: str,
+    search_query: str,
 ) -> None:
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
@@ -10954,6 +10870,7 @@ def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
         viewport={"width": 1672, "height": 1100},
     )
     page = context.new_page()
+    resume_id: str | None = None
 
     def capture_motion() -> dict[str, Any]:
         return page.locator('[data-slot="sidebar-trigger"]').evaluate(
@@ -11040,9 +10957,17 @@ def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
         assert min(progress) >= -0.5, {"x": x_values, "progress": progress}
 
     try:
+        if gallery_path == "/resume":
+            search_query = f"{search_query} {time.time_ns()}"
+            created_response = context.request.post(
+                f"{frontend_url}/api/resumes",
+                data={"documentLocale": "zh", "title": search_query},
+            )
+            assert created_response.ok
+            resume_id = created_response.json()["data"]["resume"]["id"]
+
         page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
-        if search_name and search_query:
-            page.locator(f'input[name="{search_name}"]').fill(search_query)
+        page.locator(f'input[name="{search_name}"]').fill(search_query)
 
         page.wait_for_function(
             """
@@ -11055,6 +10980,12 @@ def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
         assert_stable_motion(capture_motion())
         assert_stable_motion(capture_motion())
     finally:
+        if resume_id:
+            trash_response = context.request.post(
+                f"{frontend_url}/api/resumes/{resume_id}/trash"
+            )
+            if trash_response.ok:
+                context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
         context.close()
 
 
@@ -11853,7 +11784,9 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 2048, "height": 1226})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 2048, "height": 1226}
+    )
     page = context.new_page()
     template_id: str | None = None
 
@@ -11907,6 +11840,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
             exact=True,
         ).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
+        page.get_by_text("内置模板 · 只读", exact=True).wait_for(state="hidden")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
 
         page.get_by_role("tab", name="装饰", exact=True).click()
@@ -12036,6 +11970,8 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         y_input = page.get_by_role("spinbutton", name="纵向位置", exact=True)
         width_input = page.get_by_role("spinbutton", name="宽度", exact=True)
         height_input = page.get_by_role("spinbutton", name="高度", exact=True)
+        x_input.fill("166")
+        x_input.press("Enter")
 
         for field_label in (
             "横向位置",
@@ -12547,7 +12483,9 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 960})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 960}
+    )
     page = context.new_page()
     template_id: str | None = None
     resume_id: str | None = None
@@ -12560,6 +12498,7 @@ def test_empty_template_image_placeholder_only_renders_in_template_preview(
             exact=True,
         ).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
+        page.get_by_text("内置模板 · 只读", exact=True).wait_for(state="hidden")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
 
         page.get_by_role("tab", name="装饰", exact=True).click()
@@ -14641,6 +14580,106 @@ def test_recycle_bin_bulk_actions_appear_after_selection(
         context.close()
 
 
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize("collection", ["resumes", "templates"])
+@pytest.mark.parametrize("operation", ["delete", "restore"])
+def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    collection: str,
+    operation: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(browser, locale="en-US")
+    context.add_init_script("localStorage.setItem('resumate-locale', 'en')")
+    page = context.new_page()
+    items: dict[str, str] = {}
+    attempts: list[str] = []
+
+    try:
+        for index in range(2):
+            title = f"Partial batch {collection} {operation} {index}"
+            if collection == "resumes":
+                data = {"documentLocale": "en", "title": title}
+            else:
+                preset = json.loads(
+                    (BACKEND_ROOT / "app/services/template_presets.json").read_text()
+                )["minimal"]
+                data = {
+                    "template": {
+                        "preset": "minimal",
+                        "name": title,
+                        "description": "",
+                        **{
+                            key: preset[key]
+                            for key in ("layout", "typography", "settings")
+                        },
+                    }
+                }
+            response = context.request.post(
+                f"{frontend_url}/api/{collection}", data=data
+            )
+            assert response.ok, response.text()
+            item_id = response.json()["data"][collection.removesuffix("s")]["id"]
+            items[item_id] = title
+            assert context.request.post(
+                f"{frontend_url}/api/{collection}/{item_id}/trash"
+            ).ok
+
+        def fail_second_item(route: Route) -> None:
+            parts = urlparse(route.request.url).path.split("/")
+            item_id = parts[3]
+            expected_method = "DELETE" if operation == "delete" else "POST"
+            if item_id not in items or route.request.method != expected_method:
+                route.continue_()
+                return
+            attempts.append(item_id)
+            if len(attempts) == 2:
+                route.fulfill(
+                    status=503,
+                    json={"code": 50000, "message": "REQUEST_FAILED", "data": None},
+                )
+            else:
+                route.continue_()
+
+        page.route(f"**/api/{collection}/**", fail_second_item)
+        page.goto(f"{frontend_url}/trash?tab={collection}", wait_until="networkidle")
+        for title in items.values():
+            page.get_by_role("checkbox", name=f"Select: {title}", exact=True).check()
+
+        if operation == "delete":
+            page.get_by_role("button", name="Delete selected", exact=True).click()
+            dialog = page.get_by_role("alertdialog")
+            dialog.get_by_role("button", name="Delete selected", exact=True).click()
+        else:
+            page.get_by_role("button", name="Restore selected", exact=True).click()
+
+        expect(
+            page.get_by_text("Request failed. Please try again later.", exact=True)
+        ).to_be_visible()
+        assert len(attempts) == 2
+        succeeded, failed = attempts
+        expect(page.get_by_text(items[succeeded], exact=True)).to_have_count(0)
+        expect(page.get_by_text(items[failed], exact=True)).to_have_count(1)
+
+        if operation == "delete":
+            dialog.get_by_role("button", name="Delete Forever", exact=True).click()
+            expect(dialog).to_have_count(0)
+        else:
+            page.get_by_role("button", name="Restore selected", exact=True).click()
+
+        expect(page.get_by_text(items[failed], exact=True)).to_have_count(0)
+        assert attempts == [succeeded, failed, failed]
+        source = context.request.get(f"{frontend_url}/api/{collection}").json()["data"]
+        active_ids = {item["id"] for item in source[collection]}
+        assert (set(items) <= active_ids) is (operation == "restore")
+    finally:
+        for item_id in items:
+            context.request.post(f"{frontend_url}/api/{collection}/{item_id}/trash")
+            context.request.delete(f"{frontend_url}/api/{collection}/{item_id}")
+        context.close()
+
+
 def test_recycle_bin_preview_is_read_only_for_resume_and_template(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -15246,7 +15285,8 @@ def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
     context = browser.new_context(viewport={"width": 375, "height": 812}, locale=locale)
     page = context.new_page()
     api_requests: list[ApiRequest] = []
-    page.on(
+    external_requests: list[str] = []
+    context.on(
         "request",
         lambda request: (
             api_requests.append(api_request)
@@ -15254,7 +15294,25 @@ def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
             else None
         ),
     )
-    page.route(
+    def isolate_external_requests(route: Route) -> None:
+        if urlparse(route.request.url).netloc != urlparse(frontend_url).netloc:
+            external_requests.append(route.request.url)
+            route.abort()
+            return
+        route.continue_()
+
+    context.route("**/*", isolate_external_requests)
+    context.route(
+        "**/api/auth/setup",
+        lambda route: route.fulfill(
+            json={
+                "code": 0,
+                "message": "OK",
+                "data": {"setupRequired": False, "githubLoginAvailable": True},
+            },
+        ),
+    )
+    context.route(
         "**/api/auth/oauth/github/login",
         lambda route: route.fulfill(
             status=503 if error_code == "OAUTH_NOT_CONFIGURED" else 403,
@@ -15268,9 +15326,12 @@ def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
         password_button = page.locator('form button[type="submit"]')
         expect(github_button).to_be_enabled()
         expect(page.locator('[data-slot="field-separator"]')).to_be_visible()
+        expect(page.get_by_text("Google", exact=True)).to_have_count(0)
         page.locator("#username").fill(" e2e-owner ")
         page.locator("#password").fill("E2ePassword2026")
-        github_button.click()
+        with page.expect_popup() as popup_event:
+            github_button.click()
+        popup = popup_event.value
         info_toast = page.locator('[data-sonner-toast][data-type="info"]')
         expect(info_toast.get_by_text(toast_message, exact=True)).to_be_visible()
         expect(info_toast).to_have_css("opacity", "1")
@@ -15280,7 +15341,9 @@ def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
         expect(page.locator("#username")).to_have_value(" e2e-owner ")
         expect(page.locator("#password")).to_have_value("E2ePassword2026")
         assert page.url == f"{frontend_url}/login"
+        assert popup.is_closed()
         assert len(context.pages) == 1
+        assert not external_requests
         assert api_requests.count(("POST", "/api/auth/oauth/github/login")) == 1
         assert ("GET", "/api/auth/oauth/providers") not in api_requests
         assert ("POST", "/api/auth/login") not in api_requests
@@ -15445,12 +15508,14 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         password_button = page.locator('form button[type="submit"]')
         loading_buttons = page.locator("form button.auth-loading-button")
         expect(loading_buttons).to_have_count(2)
-        loading_borders = loading_buttons.locator(".auth-loading-border")
-        expect(loading_borders).to_have_count(2)
-        password_border = password_button.locator(".auth-loading-border")
-        github_border = github_button.locator(".auth-loading-border")
-        expect(password_border).to_have_attribute("aria-hidden", "true")
-        expect(github_border).to_have_attribute("aria-hidden", "true")
+        loading_sweeps = loading_buttons.locator(".auth-loading-sweep")
+        expect(loading_sweeps).to_have_count(2)
+        password_sweep = password_button.locator(".auth-loading-sweep")
+        github_sweep = github_button.locator(".auth-loading-sweep")
+        expect(password_sweep).to_have_attribute("aria-hidden", "true")
+        expect(github_sweep).to_have_attribute("aria-hidden", "true")
+        expect(password_sweep).to_have_css("opacity", "0")
+        expect(github_sweep).to_have_css("opacity", "0")
         input_borders = page.locator('form [data-slot="input-group"]')
         expect(input_borders).to_have_count(2)
         password_spinner = password_button.locator(
@@ -15464,7 +15529,8 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         page.locator("#password").fill("E2ePassword2026")
         initial_bounds = password_button.bounding_box()
         assert initial_bounds is not None
-        initial_size = (initial_bounds["width"], initial_bounds["height"])
+        initial_github_bounds = github_button.bounding_box()
+        assert initial_github_bounds is not None
 
         page.clock.install()
         page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
@@ -15493,14 +15559,14 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         assert pending_announcement.text_content()
         expect(password_button).to_have_text("Sign In")
         pending_bounds = password_button.bounding_box()
-        assert pending_bounds is not None
-        assert (pending_bounds["width"], pending_bounds["height"]) == initial_size
+        assert pending_bounds == initial_bounds
+        assert github_button.bounding_box() == initial_github_bounds
         page.clock.resume()
         expect(password_button).to_have_css("opacity", "1")
         expect(github_button).to_have_css("opacity", "0.5")
-        expect(password_border).to_have_css("opacity", "1")
-        expect(github_border).to_have_css("opacity", "0")
-        border_style = password_border.evaluate(
+        expect(password_sweep).to_have_css("opacity", "1")
+        expect(github_sweep).to_have_css("opacity", "0")
+        sweep_style = password_sweep.evaluate(
             """
             element => {
               const style = getComputedStyle(element, '::after')
@@ -15508,18 +15574,16 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
                 animation: style.animationName,
                 iterations: style.animationIterationCount,
                 playState: style.animationPlayState,
-                path: style.offsetPath,
-                distance: style.offsetDistance,
+                transform: style.transform,
               }
             }
             """
         )
-        assert border_style["animation"] == "auth-loading-border", border_style
-        assert border_style["iterations"] == "infinite", border_style
-        assert border_style["playState"] == "running", border_style
-        assert border_style["path"] == "border-box", border_style
+        assert sweep_style["animation"] != "none", sweep_style
+        assert sweep_style["iterations"] == "infinite", sweep_style
+        assert sweep_style["playState"] == "running", sweep_style
         assert (
-            github_border.evaluate(
+            github_sweep.evaluate(
                 "element => getComputedStyle(element, '::after').animationPlayState"
             )
             == "paused"
@@ -15535,22 +15599,41 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         page.wait_for_function(
             """
             previous => getComputedStyle(document.querySelector(
-              'form button[type="submit"] .auth-loading-border'
-            ), '::after').offsetDistance !== previous
+              'form button[type="submit"] .auth-loading-sweep'
+            ), '::after').transform !== previous
             """,
-            arg=border_style["distance"],
+            arg=sweep_style["transform"],
         )
         page.emulate_media(reduced_motion="reduce")
-        expect(password_border).to_have_css("opacity", "1")
-        expect(password_border).not_to_have_css("background-color", "rgba(0, 0, 0, 0)")
-        assert loading_borders.evaluate_all(
+        expect(password_sweep).to_have_css("opacity", "1")
+        assert loading_sweeps.evaluate_all(
             """
             elements => elements.map(element => {
               const style = getComputedStyle(element, '::after')
-              return [style.animationName, style.display]
+              return style.animationName
             })
             """
-        ) == [["none", "none"], ["none", "none"]]
+        ) == ["none", "none"]
+        reduced_style = password_sweep.evaluate(
+            """
+            element => {
+              const style = getComputedStyle(element, '::after')
+              return {
+                transform: style.transform,
+                background: style.backgroundImage,
+                display: style.display,
+                visibility: style.visibility,
+                opacity: style.opacity,
+              }
+            }
+            """
+        )
+        assert reduced_style["transform"] == "none", reduced_style
+        assert "linear-gradient(" in reduced_style["background"], reduced_style
+        assert reduced_style["display"] != "none", reduced_style
+        assert reduced_style["visibility"] == "visible", reduced_style
+        assert float(reduced_style["opacity"]) > 0, reduced_style
+        expect(github_sweep).to_have_css("opacity", "0")
         page.emulate_media(reduced_motion="no-preference")
 
         pending_routes.pop().fulfill(
@@ -15568,21 +15651,21 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         expect(password_spinner).to_have_count(0)
         expect(github_spinner).to_have_count(0)
         expect(pending_announcement).to_have_text("")
-        expect(password_border).to_have_css("opacity", "0")
-        expect(github_border).to_have_css("opacity", "0")
-        assert loading_borders.evaluate_all(
+        expect(password_sweep).to_have_css("opacity", "0")
+        expect(github_sweep).to_have_css("opacity", "0")
+        assert loading_sweeps.evaluate_all(
             "elements => elements.map(element => "
             "getComputedStyle(element, '::after').animationPlayState)"
         ) == ["paused", "paused"]
-        paused_positions = loading_borders.evaluate_all(
+        paused_positions = loading_sweeps.evaluate_all(
             "elements => elements.map(element => "
-            "getComputedStyle(element, '::after').offsetDistance)"
+            "getComputedStyle(element, '::after').transform)"
         )
         page.wait_for_timeout(80)
         assert (
-            loading_borders.evaluate_all(
+            loading_sweeps.evaluate_all(
                 "elements => elements.map(element => "
-                "getComputedStyle(element, '::after').offsetDistance)"
+                "getComputedStyle(element, '::after').transform)"
             )
             == paused_positions
         )
@@ -15632,255 +15715,6 @@ def test_password_login_preserves_button_content_and_keeps_success_handoff_locke
         context.close()
 
 
-def test_oauth_login_retries_authorization_and_locks_password_submission(
-    browser: Browser,
-    workspace_servers: tuple[str, str],
-) -> None:
-    frontend_url, _ = workspace_servers
-    context = browser.new_context(
-        viewport={"width": 375, "height": 812}, locale="en-US"
-    )
-    page = context.new_page()
-    api_requests: list[ApiRequest] = []
-    start_requests: list[Request] = []
-    pending_routes: list[Route] = []
-    page.on(
-        "request",
-        lambda request: (
-            api_requests.append(api_request)
-            if (api_request := _api_request(request)) is not None
-            else None
-        ),
-    )
-
-    def start_login(route: Route) -> None:
-        start_requests.append(route.request)
-        if len(start_requests) == 1:
-            pending_routes.append(route)
-            return
-        route.fulfill(
-            json={
-                "code": 0,
-                "message": "OK",
-                "data": {"authorizationUrl": f"{frontend_url}/oauth-provider-check"},
-            },
-        )
-
-    page.route("**/api/auth/oauth/github/login", start_login)
-    page.route(
-        "**/oauth-provider-check",
-        lambda route: route.fulfill(content_type="text/html", body="Provider redirect"),
-    )
-
-    try:
-        page.goto(f"{frontend_url}/login", wait_until="networkidle")
-        provider_group = page.get_by_role(
-            "group", name="Third-party sign-in", exact=True
-        )
-        github_button = provider_group.get_by_role("button")
-        password_button = page.locator('form button[type="submit"]')
-        loading_buttons = page.locator("form button.auth-loading-button")
-        expect(loading_buttons).to_have_count(2)
-        loading_borders = loading_buttons.locator(".auth-loading-border")
-        expect(loading_borders).to_have_count(2)
-        password_border = password_button.locator(".auth-loading-border")
-        github_border = github_button.locator(".auth-loading-border")
-        expect(password_border).to_have_attribute("aria-hidden", "true")
-        expect(github_border).to_have_attribute("aria-hidden", "true")
-        input_borders = page.locator('form [data-slot="input-group"]')
-        expect(input_borders).to_have_count(2)
-        expect(github_button).to_be_enabled()
-        expect(github_button).to_have_js_property("disabled", False)
-        expect(github_button).to_have_accessible_name("Continue with GitHub")
-        assert github_button.inner_text() == ""
-        github_icon = github_button.locator('[data-icon="inline-start"]')
-        github_icon_markup = github_icon.evaluate("icon => icon.outerHTML")
-        expect(password_button).to_have_text("Sign In")
-        expect(page.locator('[data-slot="field-separator"]')).to_be_visible()
-        expect(page.get_by_role("button", name=re.compile("Google"))).to_have_count(0)
-        assert ("GET", "/api/auth/oauth/providers") not in api_requests
-        assert page.evaluate(
-            "document.documentElement.scrollWidth <= window.innerWidth"
-        )
-        page.screenshot(path="/tmp/resumate-oauth-login-mobile.png", full_page=True)
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.screenshot(path="/tmp/resumate-oauth-login-desktop.png", full_page=True)
-        page.set_viewport_size({"width": 375, "height": 812})
-        page.locator("#username").fill("e2e-owner")
-        page.locator("#password").fill("E2ePassword2026")
-        initial_bounds = github_button.bounding_box()
-        assert initial_bounds is not None
-        initial_size = (initial_bounds["width"], initial_bounds["height"])
-        initial_icon_bounds = github_icon.bounding_box()
-        assert initial_icon_bounds is not None
-
-        page.clock.install()
-        page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
-        github_button.click()
-        expect(github_button).to_be_disabled()
-        expect(github_button).to_have_js_property("disabled", True)
-        expect(password_button).to_be_disabled()
-        expect(password_button).to_have_js_property("disabled", True)
-        expect(github_button).to_have_attribute("aria-disabled", "true")
-        expect(password_button).to_have_attribute("aria-disabled", "true")
-        expect(github_button).to_have_attribute("aria-busy", "true")
-        expect(password_button).not_to_have_attribute("aria-busy", "true")
-        expect(github_button).to_have_accessible_name("Continue with GitHub")
-        assert github_button.inner_text() == ""
-        expect(github_icon).to_be_visible()
-        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
-        github_spinner = github_button.locator('[data-slot="auth-pending-indicator"]')
-        password_spinner = password_button.locator(
-            '[data-slot="auth-pending-indicator"]'
-        )
-        pending_announcement = provider_group.locator(
-            '[data-slot="auth-pending-announcement"]'
-        )
-        expect(github_spinner).to_have_count(0)
-        expect(password_spinner).to_have_count(0)
-        expect(pending_announcement).to_have_attribute("aria-live", "polite")
-        assert pending_announcement.text_content()
-        expect(password_button).to_have_text("Sign In")
-        page.clock.run_for(150)
-        expect(github_icon).to_be_visible()
-        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
-        expect(github_spinner).to_have_count(0)
-        assert pending_announcement.text_content()
-        page.clock.run_for(100)
-        expect(github_icon).to_be_visible()
-        assert github_icon.evaluate("icon => icon.outerHTML") == github_icon_markup
-        expect(github_spinner).to_have_count(0)
-        expect(password_spinner).to_have_count(0)
-        assert pending_announcement.text_content()
-        expect(github_button).to_have_accessible_name("Continue with GitHub")
-        assert github_button.inner_text() == ""
-        expect(github_button).to_have_css("opacity", "1")
-        expect(password_button).to_have_css("opacity", "0.5")
-        expect(github_border).to_have_css("opacity", "1")
-        expect(password_border).to_have_css("opacity", "0")
-        assert loading_borders.evaluate_all(
-            "elements => elements.map(element => "
-            "getComputedStyle(element, '::after').animationPlayState)"
-        ) == ["paused", "running"]
-        assert input_borders.evaluate_all(
-            """
-            elements => elements.map(element => {
-              const style = getComputedStyle(element, '::after')
-              return [style.animationName, style.content, style.backgroundImage]
-            })
-            """
-        ) == [["none", "none", "none"], ["none", "none", "none"]]
-        pending_icon_bounds = github_icon.bounding_box()
-        assert pending_icon_bounds is not None
-        assert pending_icon_bounds == initial_icon_bounds
-        pending_button_bounds = github_button.bounding_box()
-        assert pending_button_bounds is not None
-        assert (
-            pending_button_bounds["width"],
-            pending_button_bounds["height"],
-        ) == initial_size
-        pending_bounds = github_button.bounding_box()
-        assert pending_bounds is not None
-        page.mouse.click(
-            pending_bounds["x"] + pending_bounds["width"] / 2,
-            pending_bounds["y"] + pending_bounds["height"] / 2,
-        )
-        page.locator("#password").press("Enter")
-        assert len(start_requests) == 1
-        assert ("POST", "/api/auth/login") not in api_requests
-        pending_routes.pop().fulfill(
-            status=503, json={"detail": {"code": "REQUEST_FAILED"}}
-        )
-        page.clock.resume()
-        expect(
-            page.get_by_text("Request failed. Please try again later.", exact=True)
-        ).to_be_visible()
-        expect(github_button).to_be_enabled()
-        expect(github_button).to_have_js_property("disabled", False)
-        expect(password_button).to_be_enabled()
-        expect(password_button).to_have_js_property("disabled", False)
-        expect(github_button).not_to_have_attribute("aria-busy", "true")
-        expect(page.locator("#username")).to_have_value("e2e-owner")
-        expect(page.locator("#password")).to_have_value("E2ePassword2026")
-        expect(github_spinner).to_have_count(0)
-        expect(password_spinner).to_have_count(0)
-        expect(pending_announcement).to_have_text("")
-        expect(password_border).to_have_css("opacity", "0")
-        expect(github_border).to_have_css("opacity", "0")
-        assert loading_borders.evaluate_all(
-            "elements => elements.map(element => "
-            "getComputedStyle(element, '::after').animationPlayState)"
-        ) == ["paused", "paused"]
-        paused_positions = loading_borders.evaluate_all(
-            "elements => elements.map(element => "
-            "getComputedStyle(element, '::after').offsetDistance)"
-        )
-        page.wait_for_timeout(80)
-        assert (
-            loading_borders.evaluate_all(
-                "elements => elements.map(element => "
-                "getComputedStyle(element, '::after').offsetDistance)"
-            )
-            == paused_positions
-        )
-        assert page.url == f"{frontend_url}/login"
-        page.evaluate(
-            """
-            () => {
-              const github = document.querySelector(
-                '[aria-label="Continue with GitHub"]'
-              )
-              const password = document.querySelector('form button[type="submit"]')
-              const elements = [...document.querySelectorAll(
-                '#username, #password, [data-slot="auth-particle-background"], ' +
-                '#root > main > [data-slot="card"]'
-              )]
-              const states = []
-              const record = label => {
-                states.push({
-                  label,
-                  github: github?.disabled,
-                  password: password?.disabled,
-                  retained: elements.every(element => element.isConnected),
-                  formVisible: Boolean(
-                    document.querySelector('#username')?.checkVisibility()
-                  ),
-                })
-                window.name = JSON.stringify(states)
-              }
-              record('initial')
-              new MutationObserver(() => queueMicrotask(() => record('mutation')))
-                .observe(document.body, {
-                  attributes: true,
-                  subtree: true,
-                  attributeFilter: ['disabled'],
-                })
-              addEventListener('beforeunload', () => record('beforeunload'))
-              addEventListener('pagehide', () => record('pagehide'))
-            }
-            """
-        )
-        github_button.click()
-        page.wait_for_url(f"{frontend_url}/oauth-provider-check")
-        handoff_states = json.loads(page.evaluate("window.name"))
-        assert any(state["label"] == "beforeunload" for state in handoff_states)
-        assert all(
-            state["retained"] and state["formVisible"] for state in handoff_states
-        ), handoff_states
-        for key in ("github", "password"):
-            first_locked = next(
-                index for index, state in enumerate(handoff_states) if state[key]
-            )
-            assert all(state[key] for state in handoff_states[first_locked:]), (
-                handoff_states
-            )
-        assert len(start_requests) == 2
-        assert all(request.method == "POST" for request in start_requests)
-        assert all("authorization" not in request.headers for request in start_requests)
-        assert ("GET", "/api/auth/oauth/providers") not in api_requests
-        assert len(context.pages) == 1
-    finally:
-        context.close()
 
 
 def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
@@ -15891,10 +15725,22 @@ def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
     context = _authenticated_context(
         browser, viewport={"width": 375, "height": 812}, locale="en-US"
     )
+    context.set_extra_http_headers({})
     page = context.new_page()
     binding_requests: list[Request] = []
+    external_requests: list[str] = []
+    provider_requests: list[Request] = []
     identity_label = "a-very-long-connected-owner-account-label@example.com"
-    page.route(
+
+    def isolate_external_requests(route: Route) -> None:
+        if urlparse(route.request.url).netloc != urlparse(frontend_url).netloc:
+            external_requests.append(route.request.url)
+            route.abort()
+            return
+        route.continue_()
+
+    context.route("**/*", isolate_external_requests)
+    context.route(
         "**/api/auth/oauth/identities",
         lambda route: route.fulfill(
             json={
@@ -15928,17 +15774,18 @@ def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
                 "data": {"deleted": True}
                 if route.request.method == "DELETE"
                 else {
-                    "authorizationUrl": f"{frontend_url}/oauth-binding-check",
+                    "authorizationUrl": "https://github.com/oauth-binding-check",
                 },
             },
         )
 
-    page.route("**/api/auth/oauth/github/binding", change_binding)
-    page.route("**/api/auth/oauth/github/bind", change_binding)
-    page.route(
-        "**/oauth-binding-check",
-        lambda route: route.fulfill(content_type="text/html", body="Binding redirect"),
-    )
+    def show_provider(route: Route) -> None:
+        provider_requests.append(route.request)
+        route.fulfill(content_type="text/html", body="Binding authorization")
+
+    context.route("**/api/auth/oauth/github/binding", change_binding)
+    context.route("**/api/auth/oauth/github/bind", change_binding)
+    context.route("https://github.com/oauth-binding-check", show_provider)
 
     try:
         page.goto(f"{frontend_url}/settings", wait_until="networkidle")
@@ -15977,14 +15824,22 @@ def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
         expect(disconnect_button).to_be_enabled()
         expect(page.get_by_text(identity_label, exact=True)).to_be_visible()
         disconnect_button.click()
-        connect_button = page.get_by_role("button", name="Connect GitHub", exact=True)
+        connect_button = page.get_by_role(
+            "button", name="Connect GitHub", exact=True, include_hidden=True
+        )
         expect(connect_button).to_be_enabled()
         expect(page.get_by_text(identity_label, exact=True)).to_have_count(0)
         page.locator(
             '[data-sonner-toast][data-type="success"] [data-close-button]'
         ).click()
-        connect_button.click()
-        page.wait_for_url(f"{frontend_url}/oauth-binding-check")
+        with page.expect_popup() as popup_event:
+            connect_button.click()
+        popup = popup_event.value
+        popup.wait_for_url("https://github.com/oauth-binding-check")
+        assert page.url == f"{frontend_url}/settings"
+        expect(connect_button).to_be_disabled()
+        expect(connect_button).to_have_attribute("aria-busy", "true")
+        expect(page.get_by_text(identity_label, exact=True)).to_have_count(0)
         assert [request.method for request in binding_requests] == [
             "DELETE",
             "DELETE",
@@ -15994,42 +15849,21 @@ def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
             request.headers.get("authorization", "").startswith("Bearer ")
             for request in binding_requests
         )
-        assert len(context.pages) == 1
+        assert len(context.pages) == 2
+        assert len(provider_requests) == 1
+        assert "authorization" not in provider_requests[0].headers
+        assert not external_requests
     finally:
         context.close()
 
 
-def _expect_oauth_callback_skeleton(page: Page, destination: str) -> None:
-    expect(
-        page.locator('#root form, #root > main > [data-slot="card"]')
-    ).to_have_count(0)
-    expect(
-        page.locator('#root svg[role="status"][aria-label="Loading"]')
-    ).to_have_count(0)
-    entry = page.locator('[data-slot="workspace-entry-skeleton"]')
-    expect(entry).to_be_visible()
-    expect(entry).to_have_attribute("data-destination", destination)
-    expect(entry).to_have_attribute("role", "status")
-    expect(entry).to_have_attribute("aria-busy", "true")
-    expect(entry.locator(".sr-only")).not_to_have_text("")
-    route_slot = (
-        "settings-panel-skeleton"
-        if destination == "settings"
-        else "gallery-route-skeleton"
-    )
-    expect(entry.locator(f'[data-slot="{route_slot}"]')).to_be_visible()
-    expect(page.locator('[data-slot="sidebar-container"]')).to_have_count(0)
 
 
-@pytest.mark.parametrize("entry", ["password", "github"])
-def test_login_entries_mount_complete_gallery_with_workspace_shell(
+def test_password_login_mounts_complete_gallery_with_workspace_shell(
     browser: Browser,
     workspace_servers: tuple[str, str],
-    entry: str,
 ) -> None:
     frontend_url, _ = workspace_servers
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
     context = browser.new_context(
         locale="en-US", viewport={"width": 1280, "height": 800}
     )
@@ -16046,37 +15880,11 @@ def test_login_entries_mount_complete_gallery_with_workspace_shell(
     )
 
     try:
-        if entry == "password":
-            page.goto(f"{frontend_url}/login", wait_until="domcontentloaded")
-            page.locator("#username").fill("e2e-owner")
-            page.locator("#password").fill("E2ePassword2026")
-            _start_workspace_frame_recording(page)
-            page.locator('form button[type="submit"]').click()
-        else:
-            page.route(
-                "**/api/auth/oauth/complete",
-                lambda route: route.fulfill(
-                    json={
-                        "code": 0,
-                        "message": "OK",
-                        "data": {
-                            "provider": "github",
-                            "intent": "login",
-                            "auth": {
-                                "username": session["username"],
-                                "accessToken": session["accessToken"],
-                                "expiresAt": session["expiresAt"],
-                                "tokenType": "bearer",
-                            },
-                        },
-                    },
-                ),
-            )
-            page.goto(
-                f"{frontend_url}/auth/callback#code=gallery-entry&intent=login",
-                wait_until="domcontentloaded",
-            )
-            _start_workspace_frame_recording(page)
+        page.goto(f"{frontend_url}/login", wait_until="domcontentloaded")
+        page.locator("#username").fill("e2e-owner")
+        page.locator("#password").fill("E2ePassword2026")
+        _start_workspace_frame_recording(page)
+        page.locator('form button[type="submit"]').click()
 
         deadline = time.monotonic() + 5
         while not module_routes and time.monotonic() < deadline:
@@ -16136,7 +15944,7 @@ def test_login_entries_mount_complete_gallery_with_workspace_shell(
                 timeline.append(state)
         diagnostics = json.dumps(
             {
-                "entry": entry,
+                "entry": "password",
                 "timeline": timeline,
                 "resumeFrames": len(resume_frames),
                 "skeletonFrames": sum(
@@ -16146,14 +15954,6 @@ def test_login_entries_mount_complete_gallery_with_workspace_shell(
         )
         assert resume_frames, diagnostics
         assert not any(frame["hasAppFallback"] for frame in frames), diagnostics
-        if entry == "github":
-            assert all(
-                not frame["hasLogin"] and not frame["hasAuthCard"] for frame in frames
-            ), diagnostics
-            assert not any(
-                frame["hasRouteSkeleton"] and not frame["hasEntrySkeleton"]
-                for frame in frames
-            ), diagnostics
         first_workspace_frame = next(
             index for index, frame in enumerate(frames) if frame["hasSidebar"]
         )
@@ -16166,20 +15966,18 @@ def test_login_entries_mount_complete_gallery_with_workspace_shell(
             and not frame["hasLogin"]
             for frame in frames[first_workspace_frame:]
         ), diagnostics
-        page.screenshot(path=f"/tmp/resumate-login-entry-{entry}.png")
+        page.screenshot(path="/tmp/resumate-login-entry-password.png")
     finally:
         context.close()
 
 
-@pytest.mark.parametrize("entry", ["github", "setup"])
-def test_authenticated_entry_retries_gallery_without_repeating_authentication(
+def test_setup_entry_retries_gallery_without_repeating_authentication(
     browser: Browser,
     workspace_servers: tuple[str, str],
-    entry: str,
 ) -> None:
     frontend_url, _ = workspace_servers
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
+    session = browser_session
+    assert session
     auth_payload = {
         "username": session["username"],
         "accessToken": session["accessToken"],
@@ -16194,14 +15992,13 @@ def test_authenticated_entry_retries_gallery_without_repeating_authentication(
 
     def authenticate(route: Route) -> None:
         if route.request.method == "GET":
-            data = {"setupRequired": not auth_requests}
+            data = {
+                "setupRequired": not auth_requests,
+                "githubLoginAvailable": False,
+            }
         else:
             auth_requests.append(route.request)
-            data = (
-                {"provider": "github", "intent": "login", "auth": auth_payload}
-                if entry == "github"
-                else auth_payload
-            )
+            data = auth_payload
         route.fulfill(json={"code": 0, "message": "OK", "data": data})
 
     def load_gallery(route: Route) -> None:
@@ -16211,24 +16008,15 @@ def test_authenticated_entry_retries_gallery_without_repeating_authentication(
         else:
             route.continue_()
 
-    page.route(
-        "**/api/auth/oauth/complete" if entry == "github" else "**/api/auth/setup",
-        authenticate,
-    )
+    page.route("**/api/auth/setup", authenticate)
     page.route("**/api/workspace/pages/resumes*", load_gallery)
 
     try:
-        if entry == "github":
-            page.goto(
-                f"{frontend_url}/auth/callback#code=gallery-retry&intent=login",
-                wait_until="domcontentloaded",
-            )
-        else:
-            page.goto(f"{frontend_url}/setup", wait_until="domcontentloaded")
-            page.locator("#setup-username").fill("e2e-owner")
-            page.locator("#setup-password").fill("E2ePassword2026")
-            page.locator("#setup-confirm-password").fill("E2ePassword2026")
-            page.get_by_role("button", name="Create and Continue", exact=True).click()
+        page.goto(f"{frontend_url}/setup", wait_until="domcontentloaded")
+        page.locator("#setup-username").fill("e2e-owner")
+        page.locator("#setup-password").fill("E2ePassword2026")
+        page.locator("#setup-confirm-password").fill("E2ePassword2026")
+        page.get_by_role("button", name="Create and Continue", exact=True).click()
 
         page.wait_for_url(f"{frontend_url}/resume")
         retry_button = page.get_by_role("button", name="Retry", exact=True)
@@ -16301,642 +16089,12 @@ def test_password_login_recovers_when_session_is_lost_during_gallery_preparation
         context.close()
 
 
-@pytest.mark.parametrize("intent", ["login", "bind"])
-def test_oauth_callback_completes_once_and_preserves_authenticated_workspace(
-    browser: Browser,
-    workspace_servers: tuple[str, str],
-    intent: str,
-) -> None:
-    frontend_url, _ = workspace_servers
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
-    context = (
-        _authenticated_context(browser, locale="en-US")
-        if intent == "bind"
-        else browser.new_context(locale="en-US")
-    )
-    page = context.new_page()
-    completion_requests: list[Request] = []
-    completion_routes: list[Route] = []
-    destination_routes: list[Route] = []
-    code = f"browser-oauth-{intent}"
-    hint = "login" if intent == "bind" else "bind"
-    destination = "settings" if intent == "bind" else "resume"
-    destination_module = (
-        "**/src/components/workspace/settings-workspace-page.tsx*"
-        if intent == "bind"
-        else "**/src/components/workspace/resume-gallery-workspace-page.tsx*"
-    )
-
-    def complete_authorization(route: Route) -> None:
-        completion_requests.append(route.request)
-        completion_routes.append(route)
-
-    page.route("**/api/auth/oauth/complete", complete_authorization)
-    page.route(destination_module, lambda route: destination_routes.append(route))
-
-    try:
-        page.goto(f"{frontend_url}/auth/callback#code={code}&intent={hint}")
-        entry_skeleton = page.locator('[data-slot="workspace-entry-skeleton"]')
-        _expect_oauth_callback_skeleton(
-            page, "settings" if hint == "bind" else "resume"
-        )
-        page.wait_for_function("window.location.hash === ''")
-        assert len(completion_routes) == 1
-        with page.expect_request(destination_module):
-            completion_routes.pop().fulfill(
-                json={
-                    "code": 0,
-                    "message": "OK",
-                    "data": {
-                        "provider": "github",
-                        "intent": intent,
-                        "auth": None
-                        if intent == "bind"
-                        else {
-                            "username": session["username"],
-                            "accessToken": session["accessToken"],
-                            "expiresAt": session["expiresAt"],
-                            "tokenType": "bearer",
-                        },
-                    },
-                },
-            )
-        _expect_oauth_callback_skeleton(page, destination)
-        assert page.url == f"{frontend_url}/auth/callback"
-        assert len(destination_routes) == 1
-        destination_routes.pop().continue_()
-        page.wait_for_url(f"{frontend_url}/{destination}")
-        page.wait_for_load_state("networkidle")
-        assert len(completion_requests) == 1
-        assert completion_requests[0].method == "POST"
-        assert completion_requests[0].post_data_json == {"code": code}
-        assert code not in completion_requests[0].headers.get("referer", "")
-        assert page.evaluate("window.location.hash") == ""
-        stored_session = page.evaluate(
-            "JSON.parse(localStorage.getItem('resumate-auth-session'))"
-        )
-        assert stored_session["accessToken"] == session["accessToken"]
-        assert stored_session["expiresAt"] == session["expiresAt"]
-        expect(page.locator('[data-slot="sidebar-inset"]')).to_be_visible()
-        expect(entry_skeleton).to_have_count(0)
-        if intent == "bind":
-            assert stored_session["authenticatedAt"] == session["authenticatedAt"]
-        else:
-            assert (
-                page.evaluate("sessionStorage.getItem('resumate-auth-session')") is None
-            )
-    finally:
-        context.close()
 
 
-@pytest.mark.parametrize("reduced_motion", ["no-preference", "reduce"])
-@pytest.mark.parametrize("intent", ["login", "bind"])
-@pytest.mark.parametrize(
-    "startup_resource",
-    ["**/api/auth/setup", "**/src/components/auth/oauth-callback-page.tsx*"],
-)
-def test_oauth_callback_keeps_authentication_waiting_until_workspace_mounts(
-    browser: Browser,
-    workspace_servers: tuple[str, str],
-    startup_resource: str,
-    intent: str,
-    reduced_motion: str,
-) -> None:
-    frontend_url, _ = workspace_servers
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
-    context = (
-        _authenticated_context(browser, locale="en-US", reduced_motion=reduced_motion)
-        if intent == "bind"
-        else browser.new_context(locale="en-US", reduced_motion=reduced_motion)
-    )
-    page = context.new_page()
-    journey_frames: list[dict[str, object]] = []
-    startup_routes: list[Route] = []
-    completion_requests: list[Request] = []
-    completion_routes: list[Route] = []
-    destination_routes: list[Route] = []
-    data_routes: list[Route] = []
-    backend_callback_requests: list[Request] = []
-    destination = "settings" if intent == "bind" else "resume"
-    destination_module = (
-        "**/src/components/workspace/settings-workspace-page.tsx*"
-        if intent == "bind"
-        else "**/src/components/workspace/resume-gallery-workspace-page.tsx*"
-    )
-    destination_data = (
-        "**/api/workspace/pages/settings*"
-        if intent == "bind"
-        else "**/api/workspace/pages/resumes*"
-    )
-    route_skeleton_slot = (
-        "settings-panel-skeleton" if intent == "bind" else "gallery-route-skeleton"
-    )
-    destination_selector = (
-        '[data-slot="sidebar-inset"] [data-slot="tabs-trigger"][data-state="active"]'
-        if intent == "bind"
-        else 'input[name="resume-search"]'
-    )
-    initial_selector = destination_selector if intent == "bind" else "#username"
-    code = f"browser-oauth-{intent}-visual-continuity"
-    provider_url = "https://github-provider.test/authorize"
-    backend_callback_url = (
-        f"{frontend_url}/api/auth/oauth/github/callback?code=provider-code"
-    )
-    frontend_callback_url = f"{frontend_url}/auth/callback#code={code}&intent={intent}"
-    frame_prefix = "__RESUMATE_OAUTH_FRAME__"
-
-    def record_journey_frame(message: object) -> None:
-        text = getattr(message, "text", "")
-        if isinstance(text, str) and text.startswith(frame_prefix):
-            journey_frames.append(json.loads(text.removeprefix(frame_prefix)))
-
-    def redirect_from_backend_callback(route: Route) -> None:
-        backend_callback_requests.append(route.request)
-        route.fulfill(
-            status=303,
-            headers={
-                "Cache-Control": "no-store",
-                "Location": frontend_callback_url,
-            },
-        )
-
-    def complete_authorization(route: Route) -> None:
-        completion_requests.append(route.request)
-        completion_routes.append(route)
-
-    page.on("console", record_journey_frame)
-    page.add_init_script(
-        f"""
-        (() => {{
-          const prefix = {json.dumps(frame_prefix)};
-          const visibleElement = element => {{
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return (
-              style.display !== 'none' &&
-              style.visibility !== 'hidden' &&
-              Number(style.opacity) !== 0 &&
-              rect.width > 0 &&
-              rect.height > 0
-            );
-          }};
-          const visible = selector => {{
-            const element = document.querySelector(selector);
-            return Boolean(element && visibleElement(element));
-          }};
-          const capture = () => {{
-            const entry = document.querySelector(
-              '[data-slot="workspace-entry-skeleton"]'
-            );
-            console.debug(prefix + JSON.stringify({{
-              time: Date.now(),
-              url: location.href,
-              initial: visible({json.dumps(initial_selector)}),
-              login: visible('#username'),
-              form: visible('#root form'),
-              sidebar: visible('[data-slot="sidebar-container"]'),
-              authCard: visible('#root > main > [data-slot="card"]'),
-              provider: visible('#provider-document'),
-              oldStatus: [...document.querySelectorAll('#root p')].some(element =>
-                element.textContent?.includes('Verifying your account. Please wait.')
-                && visibleElement(element)
-              ),
-              spinner: visible('#root svg[role="status"][aria-label="Loading"]'),
-              entry: Boolean(entry && visibleElement(entry)),
-              destination: entry?.getAttribute('data-destination') ?? null,
-              routeSkeleton: visible('[data-slot="{route_skeleton_slot}"]'),
-              workspace: visible({json.dumps(destination_selector)}),
-            }}));
-            requestAnimationFrame(capture);
-          }};
-          requestAnimationFrame(capture);
-        }})();
-        """
-    )
-    page.route(
-        f"**/api/auth/oauth/github/{intent}",
-        lambda route: route.fulfill(
-            json={
-                "code": 0,
-                "message": "OK",
-                "data": {"authorizationUrl": provider_url},
-            }
-        ),
-    )
-    if intent == "bind":
-        page.route(
-            "**/api/auth/oauth/identities",
-            lambda route: route.fulfill(
-                json={
-                    "code": 0,
-                    "message": "OK",
-                    "data": {
-                        "identities": [],
-                        "providers": [{"provider": "github", "configured": True}],
-                    },
-                }
-            ),
-        )
-    page.route(
-        provider_url,
-        lambda route: route.fulfill(
-            content_type="text/html",
-            body=(
-                '<main id="provider-document">'
-                "<h1>GitHub authorization</h1>"
-                f"<a href={json.dumps(backend_callback_url)}>Authorize</a>"
-                "</main>"
-            ),
-        ),
-    )
-    page.route("**/api/auth/oauth/github/callback?*", redirect_from_backend_callback)
-    page.route("**/api/auth/oauth/complete", complete_authorization)
-
-    try:
-        initial_route = "settings" if intent == "bind" else "login"
-        page.goto(f"{frontend_url}/{initial_route}", wait_until="networkidle")
-        expect(page.locator(initial_selector)).to_be_visible()
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-        button_name = "Connect GitHub" if intent == "bind" else "Continue with GitHub"
-        page.get_by_role("button", name=button_name, exact=True).click()
-        page.wait_for_url(provider_url)
-        expect(page.locator("#provider-document")).to_be_visible()
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-
-        page.route(startup_resource, lambda route: startup_routes.append(route))
-        page.route(destination_module, lambda route: destination_routes.append(route))
-        page.route(destination_data, lambda route: data_routes.append(route))
-        with page.expect_request(startup_resource):
-            page.get_by_role("link", name="Authorize", exact=True).click()
-        entry_skeleton = page.locator('[data-slot="workspace-entry-skeleton"]')
-        _expect_oauth_callback_skeleton(page, destination)
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-        expect(
-            page.get_by_text("Verifying your account. Please wait.", exact=True)
-        ).to_have_count(0)
-        expect(
-            page.locator('#root svg[role="status"][aria-label="Loading"]')
-        ).to_have_count(0)
-        assert len(startup_routes) == 1
-        startup_routes.pop().continue_()
-        page.wait_for_function("window.location.hash === ''")
-        assert len(backend_callback_requests) == 1
-        assert backend_callback_requests[0].method == "GET"
-        assert page.url == f"{frontend_url}/auth/callback"
-        deadline = time.monotonic() + 3
-        while not completion_routes and time.monotonic() < deadline:
-            page.wait_for_timeout(20)
-        assert len(completion_routes) == 1
-        _expect_oauth_callback_skeleton(page, destination)
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-
-        with page.expect_request(destination_module):
-            completion_routes.pop().fulfill(
-                json={
-                    "code": 0,
-                    "message": "OK",
-                    "data": {
-                        "provider": "github",
-                        "intent": intent,
-                        "auth": None
-                        if intent == "bind"
-                        else {
-                            "username": session["username"],
-                            "accessToken": session["accessToken"],
-                            "expiresAt": session["expiresAt"],
-                            "tokenType": "bearer",
-                        },
-                    },
-                }
-            )
-        assert page.url == f"{frontend_url}/auth/callback"
-        _expect_oauth_callback_skeleton(page, destination)
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-        assert len(destination_routes) == 1
-        destination_routes.pop().continue_()
-        deadline = time.monotonic() + 3
-        while not data_routes and time.monotonic() < deadline:
-            page.wait_for_timeout(20)
-        assert len(data_routes) == 1
-        assert page.url == f"{frontend_url}/auth/callback"
-        _expect_oauth_callback_skeleton(page, destination)
-        page.screenshot(path=f"/tmp/resumate-oauth-callback-{intent}-pending.png")
-        page.evaluate(
-            """
-            () => new Promise(resolve => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-            })
-            """
-        )
-        data_routes.pop().continue_()
-        page.wait_for_url(f"{frontend_url}/{destination}")
-        expect(page.locator(destination_selector)).to_be_visible()
-        expect(entry_skeleton).to_have_count(0)
-        page.screenshot(path=f"/tmp/resumate-oauth-callback-{intent}-complete.png")
-        page.wait_for_timeout(50)
-        assert len(completion_requests) == 1
-        assert completion_requests[0].post_data_json == {"code": code}
-
-        journey_frames.sort(key=lambda frame: float(frame["time"]))
-        first_initial_frame = next(
-            index for index, frame in enumerate(journey_frames) if frame["initial"]
-        )
-        first_provider_frame = next(
-            index for index, frame in enumerate(journey_frames) if frame["provider"]
-        )
-        first_callback_frame = next(
-            index
-            for index, frame in enumerate(journey_frames)
-            if urlparse(str(frame["url"])).path == "/auth/callback"
-        )
-        first_workspace_frame = next(
-            index
-            for index, frame in enumerate(journey_frames)
-            if index > first_callback_frame and frame["workspace"]
-        )
-        journey_timeline: list[dict[str, object]] = []
-        for frame in journey_frames:
-            state = {key: value for key, value in frame.items() if key != "time"}
-            if not journey_timeline or state != journey_timeline[-1]:
-                journey_timeline.append(state)
-        assert (
-            first_initial_frame
-            < first_provider_frame
-            < first_callback_frame
-            < first_workspace_frame
-        ), journey_timeline
-        journey_handoff_frames = journey_frames[first_provider_frame:]
-        assert not any(
-            frame["login"]
-            or frame["authCard"]
-            or frame["oldStatus"]
-            or frame["spinner"]
-            for frame in journey_handoff_frames
-        ), json.dumps(journey_timeline)
-        assert not any(
-            urlparse(str(frame["url"])).path == "/login"
-            for frame in journey_handoff_frames
-        ), journey_timeline
-        callback_frames = [
-            frame
-            for frame in journey_frames[first_callback_frame:]
-            if urlparse(str(frame["url"])).path == "/auth/callback"
-        ]
-        assert callback_frames
-        assert all(
-            not frame["login"] and not frame["authCard"] and not frame["form"]
-            for frame in callback_frames
-        ), json.dumps(journey_timeline)
-        first_entry_frame = next(
-            index
-            for index, frame in enumerate(journey_frames)
-            if index >= first_callback_frame and frame["entry"]
-        )
-        assert all(
-            frame["entry"] or frame["workspace"]
-            for frame in journey_frames[first_entry_frame:]
-        ), json.dumps(journey_timeline)
-        assert all(
-            not frame["routeSkeleton"] or frame["entry"]
-            for frame in journey_frames[first_entry_frame:]
-        ), json.dumps(journey_timeline)
-        first_sidebar_frame = next(
-            index
-            for index, frame in enumerate(journey_frames)
-            if index >= first_callback_frame and frame["sidebar"]
-        )
-        assert all(
-            frame["workspace"] and frame["sidebar"]
-            and not frame["entry"] and not frame["routeSkeleton"]
-            for frame in journey_frames[first_sidebar_frame:]
-        ), json.dumps(journey_timeline)
-    finally:
-        context.close()
 
 
-@pytest.mark.parametrize(
-    ("fragment", "expected_exchanges"),
-    [
-        ("error=OAUTH_CANCELLED", 0),
-        ("error=OAUTH_INVALID_STATE", 0),
-        ("code=expired&intent=login", 1),
-    ],
-)
-def test_oauth_callback_errors_clear_fragment_and_return_to_login(
-    browser: Browser,
-    workspace_servers: tuple[str, str],
-    fragment: str,
-    expected_exchanges: int,
-) -> None:
-    frontend_url, _ = workspace_servers
-    context = browser.new_context(
-        viewport={"width": 375, "height": 812}, locale="en-US"
-    )
-    page = context.new_page()
-    completion_requests: list[Request] = []
-
-    def reject_authorization(route: Route) -> None:
-        completion_requests.append(route.request)
-        route.fulfill(
-            status=400,
-            json={"code": 40000, "message": "OAUTH_INVALID_STATE", "data": None},
-        )
-
-    page.route("**/api/auth/oauth/complete", reject_authorization)
-
-    try:
-        page.goto(f"{frontend_url}/auth/callback#{fragment}", wait_until="networkidle")
-        expect(
-            page.get_by_role("button", name="Back to sign-in", exact=True)
-        ).to_be_visible()
-        assert page.url == f"{frontend_url}/auth/callback"
-        assert len(completion_requests) == expected_exchanges
-        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
-        assert page.evaluate(
-            "document.documentElement.scrollWidth <= window.innerWidth"
-        )
-        page.get_by_role("button", name="Back to sign-in", exact=True).click()
-        page.wait_for_url(f"{frontend_url}/login")
-        expect(page.get_by_role("button", name="Sign In", exact=True)).to_be_enabled()
-    finally:
-        context.close()
 
 
-def test_oauth_github_setup_retries_and_posts_manifest_in_same_tab(
-    browser: Browser,
-    workspace_servers: tuple[str, str],
-) -> None:
-    frontend_url, _ = workspace_servers
-    session = _BROWSER_AUTH_SESSION
-    assert session is not None
-    context = browser.new_context(
-        viewport={"width": 375, "height": 812}, locale="en-US"
-    )
-    context.add_init_script(
-        f"""
-        if (window.location.origin === {json.dumps(frontend_url)}) {{
-          localStorage.setItem(
-            'resumate-auth-session', {json.dumps(json.dumps(session))}
-          );
-        }}
-        """
-    )
-    context.add_cookies(
-        [{"name": "oauth-test-session", "value": "browser-proof", "url": frontend_url}]
-    )
-    context.add_init_script(
-        """
-        (() => {
-          const originalFetch = window.fetch;
-          window.__oauthSetupFetch = [];
-          window.fetch = function(input, init) {
-            if (String(input).endsWith('/api/auth/oauth/github/setup')) {
-              window.__oauthSetupFetch.push({ credentials: init?.credentials });
-            }
-            return originalFetch.call(this, input, init);
-          };
-        })();
-        """
-    )
-    page = context.new_page()
-    setup_requests: list[Request] = []
-    registration_requests: list[Request] = []
-    registration_url = "https://github.com/settings/apps/new?state=browser-setup-state"
-    manifest = {
-        "name": "ResuMate Browser Regression",
-        "url": frontend_url,
-        "redirect_url": f"{frontend_url}/api/auth/oauth/github/setup/callback",
-        "callback_urls": [f"{frontend_url}/api/auth/oauth/github/callback"],
-        "public": False,
-        "default_permissions": {},
-        "default_events": [],
-    }
-    page.route(
-        "**/api/auth/oauth/identities",
-        lambda route: route.fulfill(
-            json={
-                "code": 0,
-                "message": "OK",
-                "data": {
-                    "identities": [],
-                    "providers": [{"provider": "github", "configured": False}],
-                },
-            },
-        ),
-    )
-
-    def start_setup(route: Route) -> None:
-        setup_requests.append(route.request)
-        if len(setup_requests) == 1:
-            route.fulfill(status=503, json={"detail": {"code": "REQUEST_FAILED"}})
-            return
-        route.fulfill(
-            json={
-                "code": 0,
-                "message": "OK",
-                "data": {"registrationUrl": registration_url, "manifest": manifest},
-            },
-        )
-
-    def register_manifest(route: Route) -> None:
-        registration_requests.append(route.request)
-        route.fulfill(content_type="text/html", body="GitHub app creation confirmation")
-
-    page.route("**/api/auth/oauth/github/setup", start_setup)
-    page.route("https://github.com/settings/apps/new?*", register_manifest)
-
-    try:
-        page.goto(f"{frontend_url}/settings", wait_until="networkidle")
-        setup_button = page.get_by_role(
-            "button", name="Set up and connect GitHub", exact=True
-        )
-        expect(setup_button).to_be_enabled()
-        expect(page.get_by_text("Google", exact=True)).to_have_count(0)
-        expect(page.get_by_role("textbox")).to_have_count(0)
-        assert page.evaluate(
-            "document.documentElement.scrollWidth <= window.innerWidth"
-        )
-        setup_button.scroll_into_view_if_needed()
-        page.screenshot(path="/tmp/resumate-oauth-setup-mobile.png", full_page=True)
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.screenshot(path="/tmp/resumate-oauth-setup-desktop.png", full_page=True)
-        page.set_viewport_size({"width": 375, "height": 812})
-
-        setup_button.click()
-        expect(
-            page.get_by_text("Request failed. Please try again later.", exact=True)
-        ).to_be_visible()
-        expect(setup_button).to_be_enabled()
-        assert page.url == f"{frontend_url}/settings"
-        assert page.evaluate("window.__oauthSetupFetch") == [{"credentials": "include"}]
-        setup_button.click()
-        page.wait_for_url(registration_url)
-        assert len(setup_requests) == 2
-        assert all(request.method == "POST" for request in setup_requests)
-        assert all(
-            request.post_data_json == {"publicBaseUrl": frontend_url}
-            for request in setup_requests
-        )
-        for request in setup_requests:
-            assert request.header_value("authorization") == (
-                f"Bearer {session['accessToken']}"
-            )
-            assert request.header_value("origin") == frontend_url
-            assert "oauth-test-session=browser-proof" in (
-                request.header_value("cookie") or ""
-            )
-        assert len(registration_requests) == 1
-        registration = registration_requests[0]
-        assert registration.method == "POST"
-        assert registration.is_navigation_request()
-        assert registration.header_value("origin") == frontend_url
-        assert registration.header_value("authorization") is None
-        assert registration.header_value("cookie") is None
-        assert registration.header_value("content-type") == (
-            "application/x-www-form-urlencoded"
-        )
-        assert parse_qs(urlparse(registration.url).query) == {
-            "state": ["browser-setup-state"]
-        }
-        form_fields = parse_qs(registration.post_data or "")
-        assert set(form_fields) == {"manifest"}
-        assert json.loads(form_fields["manifest"][0]) == manifest
-        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
-        assert len(context.pages) == 1
-    finally:
-        context.close()
 
 
 @pytest.fixture
@@ -17023,9 +16181,11 @@ def test_workspace_preferences_gallery_theme_preserves_saved_agent_settings(
     page.locator('a[href="/settings"]').click()
     page.wait_for_url(f"{frontend_url}/settings")
     page.get_by_role("tab", name="AI 助手", exact=True).click()
-    expect(page.get_by_label("严格", exact=True)).to_have_attribute("data-state", "on")
-    expect(page.get_by_label("仅给建议", exact=True)).to_have_attribute(
-        "data-state", "on"
+    expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
+        "严格"
+    )
+    expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
+        "仅给建议"
     )
     expect(page.get_by_role("combobox", name="默认模型", exact=True)).to_contain_text(
         "Shared preferences model"
@@ -17040,11 +16200,13 @@ def test_workspace_preferences_follow_route_changes_and_history(
     page, preferences = workspace_preferences_page
     frontend_url, resume_id = workspace_servers
     page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    page.get_by_role("combobox", name="建议风格", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_label("增强", exact=True).click()
+        page.get_by_role("option", name="增强", exact=True).click()
     page.get_by_role("tab", name="通用设置", exact=True).click()
+    page.get_by_role("combobox", name="主题", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_label("夜间", exact=True).click()
+        page.get_by_role("option", name="夜间", exact=True).click()
     page.evaluate("window.__preferencesDocument = document")
 
     for route_path, back_label in (
@@ -17077,11 +16239,13 @@ def test_workspace_preferences_follow_route_changes_and_history(
             page.wait_for_url(f"{frontend_url}{gallery_path}")
             page.wait_for_load_state("networkidle")
 
-    expect(page.get_by_label("夜间", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_role("combobox", name="主题", exact=True)).to_have_text("夜间")
     page.get_by_role("tab", name="AI 助手", exact=True).click()
-    expect(page.get_by_label("增强", exact=True)).to_have_attribute("data-state", "on")
-    expect(page.get_by_label("仅给建议", exact=True)).to_have_attribute(
-        "data-state", "on"
+    expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
+        "增强"
+    )
+    expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
+        "仅给建议"
     )
     assert page.evaluate("window.__preferencesDocument === document")
     assert len(preferences["writes"]) == 2
@@ -17100,17 +16264,22 @@ def test_workspace_preferences_queue_keeps_latest_change_before_navigation(
         "**/api/workspace/user-settings*", lambda route: held_routes.append(route)
     )
 
-    page.get_by_label("增强", exact=True).click()
+    page.get_by_role("combobox", name="建议风格", exact=True).click()
+    page.get_by_role("option", name="增强", exact=True).click()
     deadline = time.monotonic() + 3
     while not held_routes and time.monotonic() < deadline:
         page.wait_for_timeout(20)
     assert len(held_routes) == 1
 
-    page.get_by_label("平衡", exact=True).click()
-    page.get_by_label("始终确认", exact=True).click()
-    expect(page.get_by_label("平衡", exact=True)).to_have_attribute("data-state", "on")
-    expect(page.get_by_label("始终确认", exact=True)).to_have_attribute(
-        "data-state", "on"
+    page.get_by_role("combobox", name="建议风格", exact=True).click()
+    page.get_by_role("option", name="平衡", exact=True).click()
+    page.get_by_role("combobox", name="修改确认方式", exact=True).click()
+    page.get_by_role("option", name="始终确认", exact=True).click()
+    expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
+        "平衡"
+    )
+    expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
+        "始终确认"
     )
     assert len(held_routes) == 1
 
@@ -17130,9 +16299,11 @@ def test_workspace_preferences_queue_keeps_latest_change_before_navigation(
     assert preferences["settings"]["agentSettings"]["behaviorMode"] == "balanced"
     assert preferences["settings"]["agentSettings"]["confirmationMode"] == "always"
     page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
-    expect(page.get_by_label("平衡", exact=True)).to_have_attribute("data-state", "on")
-    expect(page.get_by_label("始终确认", exact=True)).to_have_attribute(
-        "data-state", "on"
+    expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
+        "平衡"
+    )
+    expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
+        "始终确认"
     )
 
 
@@ -17144,8 +16315,9 @@ def test_workspace_preferences_latest_failure_rolls_back_every_route(
     page, preferences = workspace_preferences_page
     frontend_url, _ = workspace_servers
     page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
+    page.get_by_role("combobox", name="建议风格", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_label("增强", exact=True).click()
+        page.get_by_role("option", name="增强", exact=True).click()
     page.get_by_role("tab", name="通用设置", exact=True).click()
 
     page.route(
@@ -17155,21 +16327,25 @@ def test_workspace_preferences_latest_failure_rolls_back_every_route(
             json={"code": 50000, "message": "REQUEST_FAILED", "data": None},
         ),
     )
+    page.get_by_role("combobox", name="主题", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_label("夜间", exact=True).click()
+        page.get_by_role("option", name="夜间", exact=True).click()
     expect(page.locator("html")).not_to_have_class(re.compile(r"\bdark\b"))
-    expect(page.get_by_label("日间", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_role("combobox", name="主题", exact=True)).to_have_text("日间")
 
     for route_path in ("/resume", "/templates", "/settings"):
         page.locator(f'a[href="{route_path}"]').click()
         page.wait_for_url(f"{frontend_url}{route_path}")
         page.wait_for_load_state("networkidle")
         expect(page.locator("html")).not_to_have_class(re.compile(r"\bdark\b"))
-    expect(page.get_by_label("日间", exact=True)).to_have_attribute("data-state", "on")
+    expect(page.get_by_role("combobox", name="主题", exact=True)).to_have_text("日间")
     page.get_by_role("tab", name="AI 助手", exact=True).click()
+    page.get_by_role("combobox", name="建议风格", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_label("平衡", exact=True).click()
-    expect(page.get_by_label("增强", exact=True)).to_have_attribute("data-state", "on")
+        page.get_by_role("option", name="平衡", exact=True).click()
+    expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
+        "增强"
+    )
     assert preferences["settings"]["theme"] == "light"
     assert preferences["settings"]["agentSettings"]["behaviorMode"] == "aggressive"
 

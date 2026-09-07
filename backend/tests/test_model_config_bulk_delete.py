@@ -1,3 +1,5 @@
+from contextlib import closing
+
 from fastapi.testclient import TestClient
 
 from app.db.connection import connect
@@ -23,7 +25,7 @@ def _create_model_config(client: TestClient, name: str) -> str:
 
 def _enabled_by_id(*config_ids: str) -> dict[str, int]:
     placeholders = ", ".join("?" for _ in config_ids)
-    with connect() as conn:
+    with closing(connect()) as conn:
         rows = conn.execute(
             f"""
             SELECT client_id, enabled

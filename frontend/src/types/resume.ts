@@ -125,7 +125,7 @@ export type ResumeSectionItem = SectionItemByKind[SectionKind]
 
 // A simple-list section owns one rich-text document. Its visible bullets live
 // inside `content`, so they keep one stable item ID for autosave and Agent diffs.
-export type SectionItemsByKind<K extends SectionKind> =
+type SectionItemsByKind<K extends SectionKind> =
   K extends 'simple_list'
     ? [SectionItemByKind[K]]
     : SectionItemByKind[K][]
@@ -149,7 +149,7 @@ export interface ResumeData {
 
 export type DocumentLocale = 'zh' | 'en'
 
-export type ResumeDraftDiffKind = 'added' | 'modified' | 'deleted' | 'moved'
+type ResumeDraftDiffKind = 'added' | 'modified' | 'deleted' | 'moved'
 
 export interface ResumeDraftDiff {
   id: string
@@ -293,6 +293,10 @@ export type DefaultTemplateIds = Record<DocumentLocale, ResumeTemplateId>
 export interface DeletedResumeWorkspaceItem extends ResumeWorkspaceItem {
   deletedAt: string
 }
+
+export type ResumeTemplateUpdate =
+  | Partial<ResumeTemplateDefinition>
+  | ((current: ResumeTemplateDefinition) => Partial<ResumeTemplateDefinition>)
 
 export interface DeletedResumeTemplateDefinition extends ResumeTemplateDefinition {
   deletedAt: string

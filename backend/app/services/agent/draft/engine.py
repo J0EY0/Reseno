@@ -206,10 +206,6 @@ class DraftEditEngine:
         return self._transaction.accumulate(self._edits)
 
     @property
-    def retry_pending(self) -> bool:
-        return self._retry_pending
-
-    @property
     def revision(self) -> int:
         return self._revision
 

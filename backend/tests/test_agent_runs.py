@@ -87,6 +87,32 @@ def _request(resume_id: str = "resume1") -> AgentChatRequest:
     )
 
 
+def test_completed_run_releases_history_without_changing_public_snapshot() -> None:
+    request = _request().model_copy(
+        update={
+            "messages": [
+                AgentConversationItem(
+                    id="history", role="user", text="Details " * 1000
+                ),
+            ],
+        },
+    )
+    run = agent_runs.AgentRun(
+        id="retained-run",
+        turn=_accepted_turn(request, "retained-run"),
+        resume_id="resume1",
+        status="completed",
+    )
+    before = run.response()
+    manager = AgentRunManager()
+    manager._runs[run.id] = run
+    asyncio.run(manager._release(run))
+    assert run.request.messages == []
+    assert request.messages
+    assert run.response() == before
+    assert manager._runs[run.id] is run
+
+
 def _current_session_revision(resume_id: str) -> str:
     """Read the optimistic revision used by real run-acceptance tests."""
 
@@ -205,6 +231,16 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
         resume_id=request.resume_id,
     )
 
+    assert run.response().base_resume == request_resume
+    run.status = "completed"
+    manager = AgentRunManager()
+    manager._runs[run.id] = run
+    asyncio.run(manager._release(run))
+    assert not run.request.messages
+    assert run.request.draft_state is None
+    snapshot = run.response()
+    assert snapshot.base_resume == request_resume
+    snapshot.base_resume["basic"]["headline"] = "Client-only mutation"
     assert run.response().base_resume == request_resume
 
 
@@ -736,7 +772,7 @@ def test_hard_delete_purges_durably_finished_run_before_memory_terminal(
 
             resumes.trash_resume(resume_id)
             await asyncio.to_thread(resumes.delete_resume_forever, resume_id)
-            await manager.purge_resume(resume_id)
+            await manager.purge_missing_resume_runs()
 
             with pytest.raises(agent_runs.AgentRunNotFoundError):
                 await manager.get(run.id)

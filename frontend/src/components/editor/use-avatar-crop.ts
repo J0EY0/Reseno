@@ -9,8 +9,8 @@ import {
 
 const maxStageWidth = 520
 const maxStageHeight = 420
-export const avatarCropPreviewWidth = 108
-export const avatarCropPreviewHeight = Math.round(
+const avatarCropPreviewWidth = 108
+const avatarCropPreviewHeight = Math.round(
   avatarCropPreviewWidth / avatarCropAspectRatio,
 )
 

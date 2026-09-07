@@ -1,6 +1,6 @@
 import type { AgentSettings, ModelConfig } from '@/types/resume'
 
-export function createDefaultAgentSettings(
+function createDefaultAgentSettings(
   modelConfigs: readonly Pick<ModelConfig, "id">[] = [],
 ): AgentSettings {
   return {

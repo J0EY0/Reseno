@@ -170,7 +170,6 @@ async def stream(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     stop_reason: LlmStopReason = "unknown"
-    response_id: str | None = None
     usage = None
     terminal_seen = False
     minimax_reasoning = ""
@@ -183,8 +182,6 @@ async def stream(
             ),
         )
         async for chunk in stream_response:
-            if response_id is None:
-                response_id = getattr(chunk, "id", None)
             if chunk_usage := openai_chat_usage(chunk):
                 usage = chunk_usage
             if not chunk.choices:
@@ -244,7 +241,6 @@ async def stream(
             reasoning=(minimax_reasoning or "".join(reasoning_parts)).strip(),
             usage=usage,
             stop_reason=stop_reason,
-            response_id=response_id,
         ),
     )
 
@@ -430,7 +426,6 @@ def _message_from_response(
         reasoning=reasoning.strip(),
         usage=openai_chat_usage(response),
         stop_reason=stop_reason,
-        response_id=getattr(response, "id", None),
         provider_state=(
             {
                 "model": config.model,

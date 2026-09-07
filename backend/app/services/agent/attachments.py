@@ -6,8 +6,8 @@ import shutil
 import xml.etree.ElementTree as ElementTree
 import zipfile
 from base64 import b64encode
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,6 +60,14 @@ _TEXT_SUFFIXES = {
 # message becomes authoritative. ResuMate runs one backend process by default;
 # avoiding a persistent lock keeps this development-stage boundary lightweight.
 _ATTACHMENT_LIFECYCLE_LOCK = RLock()
+
+
+@contextmanager
+def locked_agent_attachment_storage() -> Iterator[None]:
+    """Keep attachment snapshots and lifecycle changes mutually exclusive."""
+
+    with _ATTACHMENT_LIFECYCLE_LOCK:
+        yield
 
 
 class AgentAttachmentError(ValueError):

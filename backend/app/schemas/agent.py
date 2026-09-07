@@ -332,7 +332,7 @@ class AgentResumeEditSuggestion(BaseModel):
     target: str
     reason: str
     replacement: str | None = None
-    operation: dict[str, Any] | None = None
+    operation: dict[str, Any]
     evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
     status: Literal["planned", "executed", "rejected"] = "planned"
     diffs: list[dict[str, Any]] = Field(default_factory=list)
@@ -398,12 +398,6 @@ class AgentChatMessage(BaseModel):
                 "Draft review items must preserve message edit order.",
             )
         return self
-
-
-class AgentChatResponse(BaseModel):
-    """Response body for agent chat requests."""
-
-    message: AgentChatMessage
 
 
 class AgentStoredMessage(BaseModel):

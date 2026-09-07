@@ -5,6 +5,11 @@ import type {
   TrashRouteData,
 } from "@/lib/workspace-route-data";
 import type { WorkspaceView } from "@/types/resume";
+import {
+  clearWorkspaceRouteHandoffs,
+  createWorkspaceHandoffToken,
+  readWorkspaceHandoffToken,
+} from "@/lib/workspace-route-handoff";
 
 export interface WorkspaceLateralRouteDataMap {
   models: ModelSettingsRouteData;
@@ -23,7 +28,7 @@ export type PreparedWorkspaceRoute<
   };
 }[View];
 
-export type WorkspaceLateralRouteHandoffState<
+type WorkspaceLateralRouteHandoffState<
   View extends WorkspaceView = WorkspaceView,
 > = {
   [CurrentView in View]: {
@@ -33,7 +38,7 @@ export type WorkspaceLateralRouteHandoffState<
   };
 }[View];
 
-export interface WorkspaceLateralRouteResolution<
+interface WorkspaceLateralRouteResolution<
   View extends WorkspaceView,
 > {
   data: WorkspaceLateralRouteDataMap[View] | null;
@@ -41,15 +46,10 @@ export interface WorkspaceLateralRouteResolution<
   tokenToDelete: string | null;
 }
 
-const routeDataByToken = new Map<string, PreparedWorkspaceRoute>();
 const committedRouteDataByView = new Map<
   WorkspaceView,
   PreparedWorkspaceRoute
 >();
-const routeMemorySession = `${Date.now().toString(36)}-${Math.random()
-  .toString(36)
-  .slice(2)}`;
-let nextRouteToken = 0;
 
 function hasValidTheme(data: Record<string, unknown>) {
   return (
@@ -132,9 +132,7 @@ export function createWorkspaceLateralRouteHandoff<
   prepared: PreparedWorkspaceRoute<View>,
 ): WorkspaceLateralRouteHandoffState<View> {
   rememberWorkspaceLateralRoute(prepared);
-  nextRouteToken += 1;
-  const token = `${routeMemorySession}-${nextRouteToken}`;
-  routeDataByToken.set(token, prepared as PreparedWorkspaceRoute);
+  const token = createWorkspaceHandoffToken(prepared);
 
   return {
     kind: "workspace-lateral-handoff",
@@ -163,7 +161,9 @@ export function getWorkspaceLateralRouteHandoff(
     return null;
   }
 
-  const prepared = routeDataByToken.get(candidate.token);
+  const prepared = readWorkspaceHandoffToken(candidate.token) as
+    | PreparedWorkspaceRoute
+    | undefined;
   return prepared &&
     prepared.view === candidate.view &&
     hasWorkspaceLateralRouteData(prepared.view, prepared.data)
@@ -212,13 +212,7 @@ export function resolveWorkspaceLateralRoute<
   };
 }
 
-export function deleteWorkspaceLateralRouteHandoff(token: string | null) {
-  if (token) {
-    routeDataByToken.delete(token);
-  }
-}
-
-export function clearWorkspaceLateralRouteMemory() {
-  routeDataByToken.clear();
+export function clearWorkspaceRouteMemory() {
+  clearWorkspaceRouteHandoffs();
   committedRouteDataByView.clear();
 }

@@ -12,10 +12,10 @@ import { isAbortError } from "@/lib/api-client";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import {
   createWorkspaceLateralRouteHandoff,
-  deleteWorkspaceLateralRouteHandoff,
   type PreparedWorkspaceRoute,
 } from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
+import { deleteWorkspaceHandoffToken } from "@/lib/workspace-route-handoff";
 import type { WorkspaceView } from "@/types/resume";
 
 interface PreparedWorkspaceNavigationOptions {
@@ -69,7 +69,7 @@ export function usePreparedWorkspaceNavigation({
             navigate(path, { state });
           } catch (error) {
             if (handoffToken) {
-              deleteWorkspaceLateralRouteHandoff(handoffToken);
+              deleteWorkspaceHandoffToken(handoffToken);
             }
             intent.finish();
             console.error("Failed to commit the prepared route.", error);

@@ -15,17 +15,18 @@ export interface AuthTokenPayload {
   tokenType: string
 }
 
-export interface AuthSetupStatusPayload {
+interface AuthSetupStatusPayload {
   setupRequired: boolean
+  githubLoginAvailable: boolean
 }
 
-export interface AuthSetupPayload {
+interface AuthSetupPayload {
   username: string
   password: string
   confirmPassword: string
 }
 
-export interface AuthPasswordUpdatePayload {
+interface AuthPasswordUpdatePayload {
   currentPassword: string
   newPassword: string
   confirmPassword: string

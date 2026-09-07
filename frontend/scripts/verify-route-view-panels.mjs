@@ -157,7 +157,7 @@ const settingsRow = settingsControls.slice(
 );
 const settingsSection = settingsControls.slice(
   settingsControls.indexOf("export function SettingsSection"),
-  settingsControls.indexOf("export function OptionToggleGroup"),
+  settingsControls.indexOf("export function OptionSelect"),
 );
 const siteSettings = sources.get("site-settings-tab.tsx");
 const agentSettings = sources.get("agent-settings-tab.tsx");
@@ -257,16 +257,6 @@ assert.equal(
   2,
   "Agent settings must keep model and interaction preferences as separate sections.",
 );
-assert.match(
-  settingsControls,
-  /text-muted-foreground transition-colors duration-150/,
-  "Settings option groups must keep inactive choices visually secondary and animate only color changes.",
-);
-assert.doesNotMatch(
-  settingsControls,
-  /data-\[state=on\]:(?:bg|text)-primary/,
-  "Settings option groups must not resemble primary actions or navigation tabs.",
-);
 assert.match(agentSettings, /defaultModelConfigId: value/);
 assert.match(agentSettings, /responseLanguage: value/);
 assert.match(agentSettings, /behaviorMode: value/);
@@ -284,7 +274,7 @@ assert.equal(
   "The default-model Select must retain room for longer values.",
 );
 assert.equal(
-  (agentSettings.match(/className="ml-auto w-40"/g) ?? []).length,
+  (agentSettings.match(/className="ml-auto w-44 max-w-full"/g) ?? []).length,
   1,
   "The response-language Select must balance compactness and label length.",
 );

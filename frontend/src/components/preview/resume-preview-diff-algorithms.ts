@@ -1,7 +1,7 @@
 import { diffArrays } from "diff/lib/diff/array.js";
 import { diffWords } from "diff/lib/diff/word.js";
 
-export interface InlineDiffPart {
+interface InlineDiffPart {
   changed: boolean;
   value: string;
 }

@@ -100,6 +100,7 @@ export function useAgentSendController({
   refreshAgentSession,
   resume,
   resumeId,
+  retrySession,
   runtimeRef,
   selectedModelConfig,
   updates,
@@ -113,6 +114,7 @@ export function useAgentSendController({
   refreshAgentSession: RefreshAgentSession
   resume: ResumeData
   resumeId?: string
+  retrySession: () => void
   runtimeRef: AgentConversationRuntimeRef
   selectedModelConfig: ModelConfig | null
   updates: AgentConversationUpdates
@@ -183,7 +185,14 @@ export function useAgentSendController({
     // Keep the subscriber connected so the rollback event can clear any
     // provisional preview before the run reports its terminal state.
     if (activeRun) {
-      void stopAgentRun(activeRun.id).catch((error) => {
+      void stopAgentRun(activeRun.id).then(() => {
+        if (
+          runtime.activeRun === activeRun &&
+          !runtime.activeRequestAbort
+        ) {
+          retrySession()
+        }
+      }).catch((error) => {
         runtime.stopRequested = false
         console.error('Failed to stop agent run.', error)
         if (!isApiErrorToastShown(error)) {
@@ -199,7 +208,13 @@ export function useAgentSendController({
       runtime.stopRequested = false
       setAgentRequestPhase(runtime, updates, 'idle')
     }
-  }, [cancelAgentSendPreflight, cancelScheduledSend, runtimeRef, updates])
+  }, [
+    cancelAgentSendPreflight,
+    cancelScheduledSend,
+    retrySession,
+    runtimeRef,
+    updates,
+  ])
 
   const sendPrompt: SendAgentPrompt = useCallback(
     (

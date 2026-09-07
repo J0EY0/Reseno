@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from re import sub
+from time import monotonic
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -215,8 +216,10 @@ def _wait_for_resume_render(page: Page, render_url: str, timeout: int) -> None:
 
     # The frontend owns pagination and marks the page ready only after fonts
     # and images settle. Both PDF and image exports therefore share this gate.
-    page.goto(render_url, wait_until="networkidle", timeout=timeout)
-    page.wait_for_selector("[data-pdf-ready='true']", timeout=timeout)
+    deadline = monotonic() + timeout / 1000
+    page.goto(render_url, wait_until="domcontentloaded", timeout=timeout)
+    remaining_timeout = max(1, (deadline - monotonic()) * 1000)
+    page.wait_for_selector("[data-pdf-ready='true']", timeout=remaining_timeout)
 
 
 def write_resume_pdf(

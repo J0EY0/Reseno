@@ -1,22 +1,16 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
 import ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const srcRoot = new URL("../src/", import.meta.url);
 const readSource = (path) => readFile(new URL(path, srcRoot), "utf8");
 
 async function loadPureTsModule(path, globals = {}) {
   const source = await readSource(path);
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(compiled, { exports: module.exports, module, ...globals });
-  return module.exports;
+
+  return evaluateTypeScript(source, { globals });
 }
 
 const [
@@ -40,8 +34,6 @@ const [
   templateGalleryGrid,
   templateGalleryController,
   gallerySkeletons,
-  codeBlock,
-  codeBlockHighlighter,
   sourceBudgets,
 ] = await Promise.all([
   readSource("components/ui/sidebar.tsx"),
@@ -64,8 +56,6 @@ const [
   readSource("components/templates/template-gallery-grid.tsx"),
   readSource("components/templates/use-template-gallery-controller.ts"),
   readSource("components/gallery-skeletons.tsx"),
-  readSource("components/ai-elements/code-block.tsx"),
-  readSource("components/ai-elements/code-block-highlighter.ts"),
   readFile(new URL("verify-source-budgets.mjs", import.meta.url), "utf8"),
 ]);
 
@@ -290,64 +280,13 @@ for (const [
     `The ${name} gallery empty state must remain flat inside its single bordered surface.`,
   );
 }
-const literalShikiImports = [
-  'import("shiki/core")',
-  'import("shiki/engine/javascript")',
-  'import("shiki/langs/json.mjs")',
-  'import("shiki/themes/github-light.mjs")',
-  'import("shiki/themes/github-dark.mjs")',
-];
 assert(
-  codeBlock.includes('from "./code-block-highlighter"') &&
-    !codeBlock.includes('from "shiki/core"') &&
-    !codeBlock.includes('from "shiki/engine/javascript"') &&
-    literalShikiImports.every((moduleImport) =>
-      codeBlockHighlighter.includes(moduleImport),
-    ) &&
-    (codeBlockHighlighter.match(/import\("shiki\//g) ?? []).length === 5 &&
-    !codeBlockHighlighter.includes("./code-block") &&
-    !/from ["']react["']/.test(codeBlockHighlighter),
-  "Code highlighting must retain five literal Shiki chunks without eager or cyclic dependencies.",
-);
-assert(
-  codeBlockHighlighter.includes("highlighterCache.set(language, highlighterPromise)") &&
-    codeBlockHighlighter.includes("tokensCache.set(tokensCacheKey, tokenized)") &&
-    codeBlockHighlighter.includes("subscribers.get(tokensCacheKey)?.add(callback)") &&
-    codeBlockHighlighter.includes("listener(tokenized)") &&
-    (codeBlockHighlighter.match(/subscribers\.delete\(tokensCacheKey\)/g) ?? [])
-      .length === 2 &&
-    codeBlock.includes("highlightCode(code, language) ?? rawTokens") &&
-    codeBlock.includes("asyncTokens?.key === tokensCacheKey"),
-  "Code highlighting must preserve promise/token caches, subscriber cleanup, and raw-token fallback.",
-);
-const { createRawTokens, getTokensCacheKey } = await loadPureTsModule(
-  "components/ai-elements/code-block-highlighter.ts",
-);
-assert.equal(
-  getTokensCacheKey("x".repeat(101) + "tail", "json"),
-  `json:105:${"x".repeat(100)}:${"x".repeat(96)}tail`,
-  "Code token cache keys must retain the language, length, and source edges.",
-);
-assert.equal(
-  JSON.stringify(createRawTokens("first\n\nlast")),
-  JSON.stringify({
-    bg: "transparent",
-    fg: "inherit",
-    tokens: [
-      [{ color: "inherit", content: "first" }],
-      [],
-      [{ color: "inherit", content: "last" }],
-    ],
-  }),
-  "Raw code tokens must preserve empty lines while Shiki loads.",
-);
-assert(
-  !/ui\/sidebar\.tsx|avatar-crop-dialog\.tsx#AvatarCropDialog|resume-gallery\.tsx#ResumeGallery|template-gallery\.tsx#TemplateGallery|ai-elements\/code-block\.tsx/.test(
+  !/ui\/sidebar\.tsx|avatar-crop-dialog\.tsx#AvatarCropDialog|resume-gallery\.tsx#ResumeGallery|template-gallery\.tsx#TemplateGallery/.test(
     sourceBudgets,
   ),
   "Refactored UI modules must stay on default source and component budgets.",
 );
 
 console.log(
-  "Sidebar, gallery, avatar crop, and code highlighting boundaries verified.",
+  "Sidebar, gallery, and avatar crop boundaries verified.",
 );

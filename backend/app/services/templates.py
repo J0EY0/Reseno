@@ -16,6 +16,12 @@ from fastapi import HTTPException, status
 from app.config import get_settings
 from app.db.connection import connect
 from app.document_locales import DOCUMENT_LOCALES, DocumentLocale
+from app.services.storage_deletions import (
+    delete_storage,
+    recover_storage_deletion,
+    recover_storage_deletions,
+    storage_id_reserved,
+)
 from app.services.template_presets import (
     BUILT_IN_TEMPLATE_IDS,
     get_builtin_template_preset,
@@ -157,9 +163,7 @@ def _save_template_item(
     *,
     template_item: dict[str, Any],
     saved_at: str,
-    deleted: bool,
-    deleted_at: str | None = None,
-) -> str:
+) -> None:
     """Persist one template item without creating versions."""
 
     template_id = template_item.get("id")
@@ -179,7 +183,7 @@ def _save_template_item(
             deleted_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, 0, NULL, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             saved_at = excluded.saved_at,
@@ -191,13 +195,9 @@ def _save_template_item(
             template_id,
             _template_name(template_item),
             saved_at,
-            int(deleted),
-            deleted_at,
         ),
     )
     _write_template_json(template_id, template_item)
-
-    return template_id
 
 
 def _load_template_items(
@@ -235,7 +235,7 @@ def _allocate_template_id(conn: Connection) -> str:
             "SELECT 1 FROM templates WHERE id = ?",
             (template_id,),
         ).fetchone()
-        if row is None:
+        if row is None and not storage_id_reserved("templates", template_id):
             return template_id
 
     raise HTTPException(
@@ -401,8 +401,6 @@ def create_template(payload: dict[str, Any]) -> dict[str, Any]:
                 conn,
                 template_item=template_item,
                 saved_at=saved_at,
-                deleted=False,
-                deleted_at=None,
             )
             conn.execute("COMMIT")
         except Exception:
@@ -434,8 +432,6 @@ def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]
                 conn,
                 template_item=template_item,
                 saved_at=saved_at,
-                deleted=False,
-                deleted_at=None,
             )
             conn.execute("COMMIT")
         except Exception:
@@ -458,7 +454,7 @@ def trash_template(template_id: str) -> dict[str, Any]:
 
     rebind_result = None
     try:
-        with connect() as conn:
+        with closing(connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             deleted_at = _utc_now()
             row = _require_custom_template_row(conn, template_id)
@@ -548,8 +544,11 @@ def restore_template(template_id: str) -> dict[str, Any]:
 def delete_template_forever(template_id: str) -> dict[str, Any]:
     """Physically delete one already-deleted custom template."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        safe_template_id = _validate_template_id(template_id.strip())
+        if recover_storage_deletion(conn, "templates", safe_template_id):
+            return {"id": safe_template_id}
         row = _require_custom_template_row(
             conn,
             template_id,
@@ -561,9 +560,16 @@ def delete_template_forever(template_id: str) -> dict[str, Any]:
                 detail="Only deleted templates can be permanently deleted.",
             )
 
-        _delete_template_storage(row["id"])
-        conn.execute("DELETE FROM templates WHERE id = ?", (row["id"],))
-        conn.execute("COMMIT")
+        def delete_rows() -> None:
+            conn.execute("DELETE FROM templates WHERE id = ?", (row["id"],))
+
+        delete_storage(
+            conn,
+            "templates",
+            row["id"],
+            delete_files=lambda: _delete_template_storage(row["id"]),
+            delete_rows=delete_rows,
+        )
 
     return {"id": row["id"]}
 
@@ -571,8 +577,9 @@ def delete_template_forever(template_id: str) -> dict[str, Any]:
 def empty_template_trash() -> dict[str, Any]:
     """Physically delete every custom template currently in the recycle bin."""
 
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        recover_storage_deletions(conn, "templates")
         rows = conn.execute(
             """
             SELECT id
@@ -596,7 +603,7 @@ def save_default_template(
     """Persist the workspace default template after validating the reference."""
 
     safe_template_id = _validate_template_id(template_id.strip())
-    with connect() as conn:
+    with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         if not is_visible_template(conn, safe_template_id):
             raise HTTPException(

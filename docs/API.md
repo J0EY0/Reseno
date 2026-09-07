@@ -49,11 +49,12 @@ const ApiCode = {
 
 ### GET `/api/auth/setup`
 
-用途：查询实例是否仍需创建唯一 owner。响应带 `Cache-Control: no-store`。
+用途：查询实例是否仍需创建唯一 owner，以及 GitHub 登录是否可用。响应带 `Cache-Control: no-store`。
 
 ```ts
 type AuthSetupStatusResponse = {
   setupRequired: boolean
+  githubLoginAvailable: boolean
 }
 ```
 
@@ -1044,8 +1045,6 @@ type AgentSettings = {
 APP_DATA_DIR=~/.resumate
 APP_DB_PATH=~/.resumate/app.db
 APP_STORAGE_DIR=~/.resumate/storage
-APP_HOST=127.0.0.1
-APP_PORT=8000
 FRONTEND_RENDER_BASE_URL=http://127.0.0.1:5173
 PDF_RENDER_TIMEOUT_MS=30000
 BACKEND_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173

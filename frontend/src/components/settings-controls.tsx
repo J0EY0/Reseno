@@ -2,9 +2,14 @@ import type { ReactNode } from "react";
 
 import { Card } from "@/components/ui/card";
 import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group";
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 
 export function SettingsRow({
   icon,
@@ -25,7 +30,7 @@ export function SettingsRow({
     >
       <div className="flex min-w-0 items-start gap-3">
         <span
-          className="mt-0.5 flex size-8 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-5"
+          className="mt-0.5 flex size-8 shrink-0 items-center justify-center text-foreground [&_svg]:size-5"
           aria-hidden="true"
         >
           {icon}
@@ -61,39 +66,45 @@ export function SettingsSection({
   );
 }
 
-export function OptionToggleGroup<T extends string>({
+export function OptionSelect<T extends string>({
+  className,
+  label,
   items,
   value,
   onChange,
 }: {
+  className?: string;
+  label: string;
   items: Array<{ value: T; label: string; icon?: ReactNode }>;
   value: T;
   onChange: (value: T) => void;
 }) {
   return (
-    <ToggleGroup
-      type="single"
-      variant="outline"
-      spacing={0}
+    <Select
       value={value}
-      className="w-full"
       onValueChange={(nextValue) => {
-        if (nextValue) {
-          onChange(nextValue as T);
+        const item = items.find((option) => option.value === nextValue);
+        if (item) {
+          onChange(item.value);
         }
       }}
     >
-      {items.map((item) => (
-        <ToggleGroupItem
-          key={item.value}
-          value={item.value}
-          aria-label={item.label}
-          className="min-w-0 flex-auto shrink px-2 text-muted-foreground transition-colors duration-150"
-        >
-          {item.icon}
-          <span className="min-w-0 truncate">{item.label}</span>
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
+      <SelectTrigger
+        aria-label={label}
+        className={cn("ml-auto w-44 max-w-full", className)}
+      >
+        <SelectValue>{items.find((item) => item.value === value)?.label}</SelectValue>
+      </SelectTrigger>
+      <SelectContent align="end" position="popper" sideOffset={4}>
+        <SelectGroup>
+          {items.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.icon}
+              {item.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   );
 }

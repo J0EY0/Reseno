@@ -13,8 +13,8 @@ from app.services.llm import (
     LlmRequestContext,
     LlmRequestError,
     async_complete_chat,
-    async_complete_tool_call,
     async_stream_chat,
+    async_stream_tool_call,
     common,
 )
 from app.services.llm.adapters import (
@@ -576,17 +576,19 @@ def test_moonshot_chat_tool_dispatch_sends_request_prompt_cache_key(
     monkeypatch.setattr(openai_chat, "async_openai_client", lambda _: client)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(
-                provider="moonshot",
-                provider_kind="cloud",
-                api_family="openai_compatible_chat",
-                base_url="https://api.moonshot.ai/v1",
-                supports_streaming=False,
-            ),
-            LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
-            [],
-            request_context=LlmRequestContext(cache_key="resume-session-1"),
+        _collect_stream(
+            async_stream_tool_call(
+                _config(
+                    provider="moonshot",
+                    provider_kind="cloud",
+                    api_family="openai_compatible_chat",
+                    base_url="https://api.moonshot.ai/v1",
+                    supports_streaming=False,
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
+                [],
+                request_context=LlmRequestContext(cache_key="resume-session-1"),
+            )
         ),
     )
 
@@ -745,18 +747,22 @@ def test_openai_chat_rejects_malformed_call_in_terminal_tool_batch(
 
     with pytest.raises(LlmRequestError, match="invalid function call batch"):
         asyncio.run(
-            async_complete_tool_call(
-                _config(supports_streaming=False),
-                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "resume_lookup",
-                            "parameters": {"type": "object"},
+            _collect_stream(
+                async_stream_tool_call(
+                    _config(supports_streaming=False),
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Inspect my resume."}]
+                    ),
+                    [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "resume_lookup",
+                                "parameters": {"type": "object"},
+                            },
                         },
-                    },
-                ],
+                    ],
+                )
             ),
         )
 
@@ -786,17 +792,19 @@ def test_openai_responses_tool_dispatch_sends_request_prompt_cache_key(
     monkeypatch.setattr(openai_responses, "async_openai_client", lambda _: client)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(
-                provider="openai",
-                provider_kind="cloud",
-                api_family="openai_responses",
-                base_url="https://api.openai.com/v1",
-                supports_streaming=False,
-            ),
-            LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
-            [],
-            request_context=LlmRequestContext(cache_key="resume-session-1"),
+        _collect_stream(
+            async_stream_tool_call(
+                _config(
+                    provider="openai",
+                    provider_kind="cloud",
+                    api_family="openai_responses",
+                    base_url="https://api.openai.com/v1",
+                    supports_streaming=False,
+                ),
+                LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
+                [],
+                request_context=LlmRequestContext(cache_key="resume-session-1"),
+            )
         ),
     )
 
@@ -854,21 +862,25 @@ def test_openai_responses_rejects_malformed_call_in_terminal_tool_batch(
 
     with pytest.raises(LlmRequestError, match="invalid function call batch"):
         asyncio.run(
-            async_complete_tool_call(
-                _config(
-                    api_family="openai_responses",
-                    supports_streaming=False,
-                ),
-                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "resume_lookup",
-                            "parameters": {"type": "object"},
+            _collect_stream(
+                async_stream_tool_call(
+                    _config(
+                        api_family="openai_responses",
+                        supports_streaming=False,
+                    ),
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Inspect my resume."}]
+                    ),
+                    [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "resume_lookup",
+                                "parameters": {"type": "object"},
+                            },
                         },
-                    },
-                ],
+                    ],
+                )
             ),
         )
 
@@ -1048,11 +1060,13 @@ def test_openai_chat_tool_error_is_not_retried(monkeypatch) -> None:
 
     with pytest.raises(LlmRequestError):
         asyncio.run(
-            async_complete_tool_call(
-                _config(),
-                LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
-                [],
-                on_provider_attempt=record_attempt,
+            _collect_stream(
+                async_stream_tool_call(
+                    _config(),
+                    LlmPrompt(messages=[{"role": "user", "content": "inspect"}]),
+                    [],
+                    on_provider_attempt=record_attempt,
+                )
             ),
         )
 
@@ -1456,32 +1470,37 @@ def test_openai_responses_adapter_flattens_tools(monkeypatch) -> None:
         api_family="openai_responses",
     )
 
-    message = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "system", "content": "system text"},
-                    {"role": "user", "content": "hello"},
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "edit_execute",
-                        "description": "Execute edits",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"edits": {"type": "array"}},
-                            "required": ["edits"],
-                            "additionalProperties": False,
+    message_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "system", "content": "system text"},
+                        {"role": "user", "content": "hello"},
+                    ]
+                ),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "edit_execute",
+                            "description": "Execute edits",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"edits": {"type": "array"}},
+                                "required": ["edits"],
+                                "additionalProperties": False,
+                            },
                         },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert message.tool_calls[0].id == "call-1"
     assert message.tool_calls[0].arguments == {"edits": []}
@@ -1588,46 +1607,56 @@ def test_openai_responses_replays_encrypted_reasoning_before_tool_results(
         },
     ]
 
-    first = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(messages=[{"role": "user", "content": "Improve my resume."}]),
-            tools,
+    first_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(messages=[{"role": "user", "content": "Improve my resume."}]),
+                tools,
+            )
         ),
     )
+    assert first_events[-1].type == "done"
+    first = first_events[-1].message
+    assert first is not None
     assert first.provider_state == {"continuation_items": reasoning_items}
     tool_call = first.tool_calls[0]
-    second = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "Improve my resume."},
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.name,
-                                    "arguments": tool_call.raw_arguments,
+    second_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "Improve my resume."},
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": tool_call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call.name,
+                                        "arguments": tool_call.raw_arguments,
+                                    },
                                 },
-                            },
-                        ],
-                        "provider_state": first.provider_state,
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": '{"ok":true}',
-                    },
-                ]
-            ),
-            tools,
+                            ],
+                            "provider_state": first.provider_state,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": '{"ok":true}',
+                        },
+                    ]
+                ),
+                tools,
+            )
         ),
     )
+    assert second_events[-1].type == "done"
+    second = second_events[-1].message
+    assert second is not None
 
     assert second.content == "Done"
     assert client.requests[0]["include"] == ["reasoning.encrypted_content"]
@@ -1736,13 +1765,18 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
         },
     ]
 
-    first = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
-            tools,
+    first_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
+                tools,
+            )
         ),
     )
+    assert first_events[-1].type == "done"
+    first = first_events[-1].message
+    assert first is not None
     first_assistant = {
         "role": "assistant",
         "content": None,
@@ -1763,52 +1797,62 @@ def test_xai_responses_replays_encrypted_reasoning_across_tool_rounds(
         "tool_call_id": first.tool_calls[0].id,
         "content": '{"ok":true}',
     }
-    second = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "Inspect my resume."},
-                    first_assistant,
-                    first_tool_result,
-                ]
-            ),
-            tools,
+    second_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "Inspect my resume."},
+                        first_assistant,
+                        first_tool_result,
+                    ]
+                ),
+                tools,
+            )
         ),
     )
-    third = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "Inspect my resume."},
-                    first_assistant,
-                    first_tool_result,
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": second.tool_calls[0].id,
-                                "type": "function",
-                                "function": {
-                                    "name": second.tool_calls[0].name,
-                                    "arguments": second.tool_calls[0].raw_arguments,
+    assert second_events[-1].type == "done"
+    second = second_events[-1].message
+    assert second is not None
+    third_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "Inspect my resume."},
+                        first_assistant,
+                        first_tool_result,
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": second.tool_calls[0].id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": second.tool_calls[0].name,
+                                        "arguments": second.tool_calls[0].raw_arguments,
+                                    },
                                 },
-                            },
-                        ],
-                        "provider_state": second.provider_state,
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": second.tool_calls[0].id,
-                        "content": '{"ok":true}',
-                    },
-                ]
-            ),
-            tools,
+                            ],
+                            "provider_state": second.provider_state,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": second.tool_calls[0].id,
+                            "content": '{"ok":true}',
+                        },
+                    ]
+                ),
+                tools,
+            )
         ),
     )
+    assert third_events[-1].type == "done"
+    third = third_events[-1].message
+    assert third is not None
 
     assert third.content == "Done"
     assert client.requests[0]["store"] is False
@@ -2157,27 +2201,32 @@ def test_tool_argument_validation_returns_repair_error(monkeypatch) -> None:
 
     monkeypatch.setattr(common, "AsyncOpenAI", FakeAsyncOpenAI)
 
-    message = asyncio.run(
-        async_complete_tool_call(
-            _config(),
-            LlmPrompt(messages=[{"role": "user", "content": "find project"}]),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "description": "Lookup resume",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"query": {"type": "string"}},
-                            "required": ["query"],
-                            "additionalProperties": False,
+    message_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                _config(),
+                LlmPrompt(messages=[{"role": "user", "content": "find project"}]),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "description": "Lookup resume",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                                "additionalProperties": False,
+                            },
                         },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert [tool_call.id for tool_call in message.tool_calls] == ["call-1"]
     assert message.validation_errors
@@ -2211,27 +2260,32 @@ def test_tool_argument_validation_preserves_each_mixed_batch_result(
 
     monkeypatch.setattr(google_gemini, "async_post_json", fake_post_json)
 
-    message = asyncio.run(
-        async_complete_tool_call(
-            _config(api_family="google_gemini"),
-            LlmPrompt(messages=[{"role": "user", "content": "find skills"}]),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "description": "Lookup resume",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"query": {"type": "string"}},
-                            "required": ["query"],
-                            "additionalProperties": False,
+    message_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                _config(api_family="google_gemini"),
+                LlmPrompt(messages=[{"role": "user", "content": "find skills"}]),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "description": "Lookup resume",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                                "additionalProperties": False,
+                            },
                         },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert [tool_call.id for tool_call in message.tool_calls] == [
         "fc-valid",
@@ -2290,30 +2344,35 @@ def test_anthropic_adapter_maps_tool_schema_and_calls(monkeypatch) -> None:
         api_family="anthropic_messages",
     )
 
-    message = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "system", "content": "system text"},
-                    {"role": "user", "content": "hello"},
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "description": "Lookup resume",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"query": {"type": "string"}},
+    message_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "system", "content": "system text"},
+                        {"role": "user", "content": "hello"},
+                    ]
+                ),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "description": "Lookup resume",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                            },
                         },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert captured["url"] == "https://api.anthropic.com/v1/messages"
     assert captured["headers"]["x-api-key"] == "sk-test-secret"
@@ -2405,23 +2464,27 @@ def test_anthropic_rejects_malformed_call_in_terminal_tool_batch(
 
     with pytest.raises(LlmRequestError, match="invalid tool use batch"):
         asyncio.run(
-            async_complete_tool_call(
-                _config(
-                    provider="anthropic",
-                    provider_kind="cloud",
-                    api_family="anthropic_messages",
-                    supports_streaming=False,
-                ),
-                LlmPrompt(messages=[{"role": "user", "content": "Inspect my resume."}]),
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "resume_lookup",
-                            "parameters": {"type": "object"},
+            _collect_stream(
+                async_stream_tool_call(
+                    _config(
+                        provider="anthropic",
+                        provider_kind="cloud",
+                        api_family="anthropic_messages",
+                        supports_streaming=False,
+                    ),
+                    LlmPrompt(
+                        messages=[{"role": "user", "content": "Inspect my resume."}]
+                    ),
+                    [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "resume_lookup",
+                                "parameters": {"type": "object"},
+                            },
                         },
-                    },
-                ],
+                    ],
+                )
             ),
         )
 
@@ -2442,35 +2505,37 @@ def test_anthropic_adapter_marks_static_prompt_prefixes_for_caching(
     monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(
-                provider="anthropic",
-                provider_kind="cloud",
-                base_url="https://api.anthropic.com/v1",
-                api_family="anthropic_messages",
-            ),
-            LlmPrompt(
-                messages=[
-                    {"role": "system", "content": "stable system instructions"},
-                    {"role": "user", "content": "hello"},
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "parameters": {"type": "object"},
+        _collect_stream(
+            async_stream_tool_call(
+                _config(
+                    provider="anthropic",
+                    provider_kind="cloud",
+                    base_url="https://api.anthropic.com/v1",
+                    api_family="anthropic_messages",
+                ),
+                LlmPrompt(
+                    messages=[
+                        {"role": "system", "content": "stable system instructions"},
+                        {"role": "user", "content": "hello"},
+                    ]
+                ),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "parameters": {"type": "object"},
+                        },
                     },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "second_tool",
-                        "parameters": {"type": "object"},
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "second_tool",
+                            "parameters": {"type": "object"},
+                        },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
 
@@ -2543,46 +2608,48 @@ def test_anthropic_automatic_cache_advances_through_tool_results(
     monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(
-                provider="anthropic",
-                provider_kind="cloud",
-                base_url="https://api.anthropic.com/v1",
-                api_family="anthropic_messages",
-            ),
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "inspect my resume"},
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "toolu-cache",
-                                "type": "function",
-                                "function": {
-                                    "name": "resume_lookup",
-                                    "arguments": '{"query":"skills"}',
+        _collect_stream(
+            async_stream_tool_call(
+                _config(
+                    provider="anthropic",
+                    provider_kind="cloud",
+                    base_url="https://api.anthropic.com/v1",
+                    api_family="anthropic_messages",
+                ),
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "inspect my resume"},
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "toolu-cache",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "resume_lookup",
+                                        "arguments": '{"query":"skills"}',
+                                    },
                                 },
-                            },
-                        ],
-                    },
+                            ],
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": "toolu-cache",
+                            "content": '{"matches":["Python"]}',
+                        },
+                    ]
+                ),
+                [
                     {
-                        "role": "tool",
-                        "tool_call_id": "toolu-cache",
-                        "content": '{"matches":["Python"]}',
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "parameters": {"type": "object"},
+                        },
                     },
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "parameters": {"type": "object"},
-                    },
-                },
-            ],
+                ],
+            )
         ),
     )
 
@@ -2612,30 +2679,32 @@ def test_non_official_anthropic_endpoint_does_not_receive_cache_control(
     monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
 
     asyncio.run(
-        async_complete_tool_call(
-            _config(
-                provider="anthropic",
-                provider_kind=provider_kind,
-                base_url="https://anthropic-compatible.example.test/v1",
-                api_family="anthropic_messages",
-                model="claude-sonnet-4-6",
-                thinking_control="native_auto",
-            ),
-            LlmPrompt(
-                messages=[
-                    {"role": "system", "content": "stable instructions"},
-                    {"role": "user", "content": "inspect my resume"},
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "parameters": {"type": "object"},
+        _collect_stream(
+            async_stream_tool_call(
+                _config(
+                    provider="anthropic",
+                    provider_kind=provider_kind,
+                    base_url="https://anthropic-compatible.example.test/v1",
+                    api_family="anthropic_messages",
+                    model="claude-sonnet-4-6",
+                    thinking_control="native_auto",
+                ),
+                LlmPrompt(
+                    messages=[
+                        {"role": "system", "content": "stable instructions"},
+                        {"role": "user", "content": "inspect my resume"},
+                    ]
+                ),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "parameters": {"type": "object"},
+                        },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
 
@@ -2740,13 +2809,20 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
         },
     ]
 
-    first = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(messages=[{"role": "user", "content": "Inspect my project."}]),
-            tools,
+    first_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[{"role": "user", "content": "Inspect my project."}]
+                ),
+                tools,
+            )
         ),
     )
+    assert first_events[-1].type == "done"
+    first = first_events[-1].message
+    assert first is not None
     assert first.reasoning == "I should inspect the resume."
     assert first.provider_state == {
         "model": "claude-thinking",
@@ -2765,38 +2841,43 @@ def test_anthropic_thinking_tool_roundtrip_replays_signed_block(
         ],
     }
 
-    second = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "user", "content": "Inspect my project."},
-                    {
-                        "role": "assistant",
-                        "content": first.content or None,
-                        "tool_calls": [
-                            {
-                                "id": first.tool_calls[0].id,
-                                "type": "function",
-                                "function": {
-                                    "name": first.tool_calls[0].name,
-                                    "arguments": first.tool_calls[0].raw_arguments,
+    second_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "user", "content": "Inspect my project."},
+                        {
+                            "role": "assistant",
+                            "content": first.content or None,
+                            "tool_calls": [
+                                {
+                                    "id": first.tool_calls[0].id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": first.tool_calls[0].name,
+                                        "arguments": first.tool_calls[0].raw_arguments,
+                                    },
                                 },
-                            },
-                        ],
-                        "reasoning_content": first.reasoning,
-                        "provider_state": first.provider_state,
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": first.tool_calls[0].id,
-                        "content": '{"matches":["Project A"]}',
-                    },
-                ]
-            ),
-            tools,
+                            ],
+                            "reasoning_content": first.reasoning,
+                            "provider_state": first.provider_state,
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": first.tool_calls[0].id,
+                            "content": '{"matches":["Project A"]}',
+                        },
+                    ]
+                ),
+                tools,
+            )
         ),
     )
+    assert second_events[-1].type == "done"
+    second = second_events[-1].message
+    assert second is not None
 
     assert second.content == "Done"
     assert all("thinking" not in payload for payload in captured_payloads)
@@ -2915,7 +2996,6 @@ def test_anthropic_stream_maps_sse_events(monkeypatch) -> None:
     assert events[-1].message
     assert events[-1].message.content == "Hello"
     assert events[-1].message.reasoning == "think"
-    assert events[-1].message.response_id == "msg-stream"
     assert events[-1].message.provider_state == {
         "model": "gpt-test",
         "content_blocks": [
@@ -2995,30 +3075,35 @@ def test_gemini_adapter_builds_stateless_interaction(monkeypatch) -> None:
         top_p=None,
     )
 
-    message = asyncio.run(
-        async_complete_tool_call(
-            config,
-            LlmPrompt(
-                messages=[
-                    {"role": "system", "content": "system text"},
-                    {"role": "user", "content": "hello"},
-                ]
-            ),
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "resume_lookup",
-                        "description": "Lookup resume",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"query": {"type": "string"}},
+    message_events = asyncio.run(
+        _collect_stream(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(
+                    messages=[
+                        {"role": "system", "content": "system text"},
+                        {"role": "user", "content": "hello"},
+                    ]
+                ),
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "resume_lookup",
+                            "description": "Lookup resume",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                            },
                         },
                     },
-                },
-            ],
+                ],
+            )
         ),
     )
+    assert message_events[-1].type == "done"
+    message = message_events[-1].message
+    assert message is not None
 
     assert captured["url"] == (
         "https://generativelanguage.googleapis.com/v1/interactions"
@@ -3706,7 +3791,6 @@ def test_gemini_v1_tool_stream_buffers_arguments_until_completed_action(
     assert all(event.message is None for event in events[:-1])
     message = events[-1].message
     assert message
-    assert message.response_id == "gemini-tool-stream"
     assert message.reasoning == "Need resume context."
     assert message.stop_reason == "tool_calls"
     assert message.tool_calls[0].id == "fc-stream"

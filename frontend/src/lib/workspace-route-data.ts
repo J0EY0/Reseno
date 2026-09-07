@@ -13,7 +13,7 @@ import type {
   WorkspaceVersionSummary,
 } from "@/types/api";
 
-export type WorkspaceRouteDataKind =
+type WorkspaceRouteDataKind =
   | "resume-gallery"
   | "resume-detail"
   | "template-gallery"

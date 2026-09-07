@@ -1,8 +1,3 @@
-import type {
-  Dispatch,
-  SetStateAction,
-} from "react";
-
 import type { AgentPanelStatus } from "@/components/copilot/copilot-panel-types";
 import type { AgentDraftReviewController } from "@/hooks/use-resume-agent-draft";
 import type {
@@ -16,6 +11,7 @@ import type {
 import type {
   ModelConfig,
   ResumeData,
+  ResumeSection,
   ResumeDraftDiff,
   ResumeTemplateDefinition,
   ResumeTemplateId,
@@ -26,9 +22,9 @@ import type {
   WorkspaceView,
 } from "@/types/resume";
 
-export type ResumeDetailSaveState = "idle" | "saving" | "saved";
+type ResumeDetailSaveState = "idle" | "saving" | "saved";
 
-export interface ResumeDetailSaveViewState {
+interface ResumeDetailSaveViewState {
   activeVersionId: string | null;
   changeCount: number;
   lastSavedAt: string | null;
@@ -36,22 +32,23 @@ export interface ResumeDetailSaveViewState {
   versions: WorkspaceVersionSummary[];
 }
 
-export interface ResumeDetailDocumentViewState {
+interface ResumeDetailDocumentViewState {
   isPreviewReady: boolean;
   isSmartFittingOnePage: boolean;
+  measurementKey?: object;
 }
 
-export interface ResumeDetailTitleViewState {
+interface ResumeDetailTitleViewState {
   draft: string;
   isOpen: boolean;
 }
 
-export interface ResumeDetailLeaveViewState {
+interface ResumeDetailLeaveViewState {
   isOpen: boolean;
   isResolving: boolean;
 }
 
-export interface ResumeDetailAgentViewState {
+interface ResumeDetailAgentViewState {
   draft: AgentDraftState | null;
   draftState: AgentDraftState | null;
   isPanelCollapsed: boolean;
@@ -61,10 +58,12 @@ export interface ResumeDetailAgentViewState {
   selectedModelConfigId: string;
 }
 
-export interface ResumeDetailWorkspaceState {
+interface ResumeDetailWorkspaceState {
   activeTemplate: ResumeTemplateDefinition;
+  previewTemplate: ResumeTemplateDefinition;
+  previewTypography: ResumeTypographySettings;
   agent: ResumeDetailAgentViewState;
-  collapsedState: Record<string, boolean>;
+  openSectionId: string | null;
   document: ResumeDetailDocumentViewState;
   hasLoadError: boolean;
   hasVersionLoadError: boolean;
@@ -88,7 +87,7 @@ export interface ResumeDetailWorkspaceState {
   typography: ResumeTypographySettings;
 }
 
-export interface ResumeDetailAgentCommands {
+interface ResumeDetailAgentCommands {
   applyDraft: () => Promise<AgentSessionResponse | null>;
   changeSelectedModelConfig: (modelConfigId: string) => void;
   discardDraft: () => Promise<AgentSessionResponse | null>;
@@ -106,7 +105,7 @@ export interface ResumeDetailAgentCommands {
   setPanelCollapsed: (collapsed: boolean) => void;
 }
 
-export interface ResumeDetailWorkspaceCommands {
+interface ResumeDetailWorkspaceCommands {
   agent: ResumeDetailAgentCommands;
   applyTemplate: (templateId: string) => void;
   back: () => void;
@@ -126,10 +125,10 @@ export interface ResumeDetailWorkspaceCommands {
   save: () => void | Promise<unknown>;
   saveTitle: () => void | Promise<void>;
   selectVersion: (versionId: string) => void;
-  setCollapsedState: Dispatch<
-    SetStateAction<Record<string, boolean>>
-  >;
-  setResume: Dispatch<SetStateAction<ResumeData>>;
+  addSection: (section: ResumeSection) => void;
+  removeSection: (sectionId: string) => void;
+  toggleSection: (sectionId: string) => void;
+  updateContent: (update: (current: ResumeData) => ResumeData) => void;
   setTitleDialogOpen: (open: boolean) => void;
   updateTemplateSettings: (
     patch: Partial<ResumeTemplateSettings>,

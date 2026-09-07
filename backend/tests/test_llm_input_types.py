@@ -76,7 +76,7 @@ def test_prompt_rejects_invalid_stable_prefix_boundaries(
 @pytest.mark.parametrize(
     "entry_point",
     [
-        dispatch.async_complete_tool_call,
+        dispatch.async_stream_tool_call,
         dispatch.async_stream_chat,
         common.chat_completion_params,
         openai_chat.complete,

@@ -29,7 +29,7 @@ const AUTOSAVE_DELAY_MS = 5_000;
 const AUTOSAVE_MAX_WAIT_MS = 30_000;
 const AUTOSAVE_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
-export type ResumeDetailSaveState = "idle" | "saving" | "saved";
+type ResumeDetailSaveState = "idle" | "saving" | "saved";
 
 interface ActiveResumeSave {
   promise: Promise<SaveResponse>;
@@ -85,16 +85,14 @@ export function useResumeDetailSave({
   const activeVersionIdRef = useRef(activeVersionId);
   const lastSavedAtRef = useRef(lastSavedAt);
   const lastSaveModeRef = useRef<ResumeSaveMode>("checkpoint");
-  const persistedFingerprintRef = useRef(
-    createResumeFingerprint(initialResume),
-  );
+  const persistedFingerprintRef = useRef(createResumeFingerprint(initialResume));
   const persistedResumeRef = useRef<ResumeWorkspaceItem | null>(initialResume);
   const recentlySavedFingerprintsRef = useRef<Set<string>>(new Set());
   const autosaveBurstStartedAtRef = useRef<number | null>(null);
   const autosaveGenerationRef = useRef(0);
   const autosaveRetryAttemptRef = useRef(0);
   const skipCheckpointPromotionRef = useRef(false);
-  const versionLoadRequestRef = useRef<string | null>(null);
+  const versionLoadRequestRef = useRef<AbortController | null>(null);
   const ownerLifecycleRef = useRef<symbol | null>(null);
 
   useEffect(() => {
@@ -103,6 +101,8 @@ export function useResumeDetailSave({
     return () => {
       if (ownerLifecycleRef.current === owner) {
         ownerLifecycleRef.current = null;
+        versionLoadRequestRef.current?.abort();
+        versionLoadRequestRef.current = null;
       }
     };
   }, [resumeId]);
@@ -142,13 +142,12 @@ export function useResumeDetailSave({
   );
 
   const hasUnsavedChanges = useCallback(
-    () =>
-      Boolean(
-        getSnapshot(lastSavedAtRef.current ?? "") &&
-          createResumeFingerprint(
-            getSnapshot(lastSavedAtRef.current ?? ""),
-          ) !== persistedFingerprintRef.current,
-      ),
+    () => {
+      const snapshot = getSnapshot(lastSavedAtRef.current ?? "");
+      return Boolean(
+        snapshot && createResumeFingerprint(snapshot) !== persistedFingerprintRef.current,
+      );
+    },
     [getSnapshot],
   );
 
@@ -174,11 +173,9 @@ export function useResumeDetailSave({
     async (
       saveMode: ResumeSaveMode = "checkpoint",
       options: Pick<ApiRequestOptions, "notifyOnError"> = {},
-    ): Promise<SaveResponse> => {
+    ): Promise<ResumeDetailResponse> => {
       let latestCompletedSave: SaveResponse | null = null;
 
-      // One route owns one resume. Serializing intents keeps export and leave
-      // actions from observing an older save while a newer snapshot is queued.
       while (activeRequestRef.current) {
         const activeRequest = activeRequestRef.current;
         try {
@@ -199,6 +196,9 @@ export function useResumeDetailSave({
         activeVersionIdRef.current ??
         undefined;
       const stableResume = getSnapshot(effectiveLastSavedAt ?? "");
+      if (!stableResume || stableResume.id !== resumeId) {
+        throw new Error("No active resume is available to save.");
+      }
       const stableFingerprint = createResumeFingerprint(stableResume);
       const requiresCheckpointPromotion =
         saveMode === "checkpoint" && lastSaveModeRef.current === "autosave";
@@ -207,20 +207,18 @@ export function useResumeDetailSave({
         stableFingerprint === persistedFingerprintRef.current &&
         !requiresCheckpointPromotion &&
         effectiveLastSavedAt &&
-        (effectiveVersionId || !stableResume)
+        effectiveVersionId &&
+        persistedResumeRef.current
       ) {
         setSaveState("saved");
         return {
+          resume: persistedResumeRef.current,
           savedAt: effectiveLastSavedAt,
           versionId: effectiveVersionId,
         };
       }
 
-      if (!stableResume || stableResume.id !== resumeId) {
-        throw new Error("No active resume is available to save.");
-      }
-
-      const request = (async (): Promise<SaveResponse> => {
+      const request = (async (): Promise<ResumeDetailResponse> => {
         setSaveState("saving");
         recentlySavedFingerprintsRef.current.clear();
         try {
@@ -249,7 +247,7 @@ export function useResumeDetailSave({
             }
           }
 
-          return { savedAt: saved.savedAt, versionId: saved.versionId };
+          return saved;
         } catch (error) {
           setSaveState("idle");
           throw error;
@@ -412,31 +410,52 @@ export function useResumeDetailSave({
 
   const selectVersion = useCallback(
     async (versionId: string) => {
+      const owner = ownerLifecycleRef.current;
       if (
+        !owner ||
         versionId === activeVersionIdRef.current ||
         versionLoadRequestRef.current ||
-        saveState === "saving"
+        activeRequestRef.current
       ) {
         return;
       }
 
-      versionLoadRequestRef.current = versionId;
+      const controller = new AbortController();
+      versionLoadRequestRef.current = controller;
+      const requestedFingerprint = createResumeFingerprint(
+        getSnapshot(lastSavedAtRef.current ?? ""),
+      );
       setIsVersionLoading(true);
       setHasVersionLoadError(false);
       try {
-        const detail = await fetchResumeVersionApi(resumeId, versionId);
+        const detail = await fetchResumeVersionApi(resumeId, versionId, {
+          signal: controller.signal,
+        });
+        if (
+          controller.signal.aborted ||
+          ownerLifecycleRef.current !== owner ||
+          createResumeFingerprint(getSnapshot(lastSavedAtRef.current ?? "")) !==
+          requestedFingerprint
+        ) {
+          return;
+        }
         onHydrateResume(detail.resume);
         hydratePersistedResume(detail, versions);
       } catch (error) {
+        if (controller.signal.aborted || ownerLifecycleRef.current !== owner) {
+          return;
+        }
         console.error("Failed to load resume version.", error);
         setHasVersionLoadError(true);
         setSaveState("idle");
       } finally {
-        versionLoadRequestRef.current = null;
-        setIsVersionLoading(false);
+        if (versionLoadRequestRef.current === controller) {
+          versionLoadRequestRef.current = null;
+          setIsVersionLoading(false);
+        }
       }
     },
-    [hydratePersistedResume, onHydrateResume, resumeId, saveState, versions],
+    [getSnapshot, hydratePersistedResume, onHydrateResume, resumeId, versions],
   );
 
   useEffect(() => {
@@ -554,10 +573,7 @@ export function useResumeDetailSave({
 
   return {
     activeVersionId,
-    changeCount: countResumeChanges(
-      persistedResume,
-      liveResume,
-    ),
+    changeCount: countResumeChanges(persistedResume, liveResume),
     discard,
     hasUnsavedChanges,
     hasVersionLoadError,

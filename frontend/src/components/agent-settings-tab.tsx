@@ -2,7 +2,7 @@ import { Bot, Gauge, Languages, ShieldCheck } from "lucide-react";
 
 import { ModelProviderIcon } from "@/components/model-provider-icon";
 import {
-  OptionToggleGroup,
+  OptionSelect,
   SettingsRow,
   SettingsSection,
 } from "@/components/settings-controls";
@@ -157,7 +157,7 @@ export function AgentSettingsTab({
           >
             <SelectTrigger
               aria-label={t.agentResponseLanguage}
-              className="ml-auto w-40"
+              className="ml-auto w-44 max-w-full"
             >
               <SelectValue />
             </SelectTrigger>
@@ -179,7 +179,8 @@ export function AgentSettingsTab({
           label={t.agentBehavior}
           description={t.agentBehaviorHint}
         >
-          <OptionToggleGroup
+          <OptionSelect
+            label={t.agentBehavior}
             items={behaviorItems}
             value={agentSettings.behaviorMode}
             onChange={(value) =>
@@ -197,7 +198,8 @@ export function AgentSettingsTab({
           label={t.agentConfirmationMode}
           description={t.agentConfirmationModeHint}
         >
-          <OptionToggleGroup
+          <OptionSelect
+            label={t.agentConfirmationMode}
             items={confirmationItems}
             value={agentSettings.confirmationMode}
             onChange={(value) =>

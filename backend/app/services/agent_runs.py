@@ -6,11 +6,12 @@ import logging
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import closing
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from sqlite3 import OperationalError
 from time import monotonic
-from typing import Final, Literal, TypeGuard
+from typing import Any, Final, Literal, TypeGuard
 from uuid import uuid4
 
 from app.db.connection import connect
@@ -28,7 +29,6 @@ from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.agent.runtime.loop import (
     AgentToolLoopCompleted,
     AgentToolLoopEvent,
-    AgentToolLoopTools,
 )
 from app.services.agent.runtime.streaming import (
     AgentCompleted,
@@ -99,6 +99,10 @@ class AgentRun:
     replay_message: dict[str, object] = field(default_factory=dict)
     terminalizing: bool = False
     started_monotonic: float = field(default_factory=monotonic, repr=False)
+    _base_resume: dict[str, Any] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._base_resume = DraftTransaction.from_request(self.request).base_resume
 
     @property
     def request(self) -> AgentChatRequest:
@@ -108,7 +112,7 @@ class AgentRun:
         return AgentRunResponse(
             id=self.id,
             resumeId=self.resume_id,
-            baseResume=DraftTransaction.from_request(self.request).base_resume,
+            baseResume=deepcopy(self._base_resume),
             status=self.status,
             executionState=self.execution_state,
             errorCode=self.error_code,
@@ -274,24 +278,24 @@ class _AgentRunMetrics:
                 (monotonic() - self.run_started_monotonic) * 1000,
             )
 
-        if not isinstance(event, AgentToolLoopTools):
+    def record_tool_result(self, tool: AgentToolInvocation) -> None:
+        """Record one completed or deferred tool result independently of UI events."""
+
+        started_at = _timestamp_seconds(tool.started_at)
+        completed_at = _timestamp_seconds(tool.completed_at)
+        if (
+            tool.id in self._observed_tool_ids
+            or not tool.title
+            or started_at is None
+            or completed_at is None
+            or completed_at < started_at
+        ):
             return
-        for tool in event.tools:
-            started_at = _timestamp_seconds(tool.started_at)
-            completed_at = _timestamp_seconds(tool.completed_at)
-            if (
-                tool.id in self._observed_tool_ids
-                or not tool.title
-                or started_at is None
-                or completed_at is None
-                or completed_at < started_at
-            ):
-                continue
-            self._observed_tool_ids.add(tool.id)
-            self._tool_intervals_by_name.setdefault(tool.title, []).append(
-                (started_at, completed_at),
-            )
-            self._record_edit_batch(tool)
+        self._observed_tool_ids.add(tool.id)
+        self._tool_intervals_by_name.setdefault(tool.title, []).append(
+            (started_at, completed_at),
+        )
+        self._record_edit_batch(tool)
 
     def _record_edit_batch(self, tool: AgentToolInvocation) -> None:
         """Extract only server-authored counters and codes from an edit result.
@@ -478,17 +482,6 @@ class AgentRunManager:
                 return run
         return None
 
-    async def purge_resume(self, resume_id: str) -> None:
-        """Forget replay state owned by a permanently deleted resume."""
-
-        async with self._lock:
-            purge_ids = {
-                run_id
-                for run_id, run in self._runs.items()
-                if run.resume_id == resume_id
-            }
-            self._purge_runs_unlocked(purge_ids)
-
     async def purge_missing_resume_runs(self) -> None:
         """Forget runs whose resume rows were deleted in one batch."""
 
@@ -601,6 +594,7 @@ class AgentRunManager:
             on_llm_attempt=metrics.record_model_attempt,
             on_llm_response=metrics.record_model_response,
             on_tool_loop_event=metrics.record_tool_loop_event,
+            on_tool_result=metrics.record_tool_result,
         )
         final_status: AgentRunStatus = "failed"
         try:
@@ -895,6 +889,12 @@ class AgentRunManager:
             run.condition.notify_all()
 
     async def _release(self, run: AgentRun) -> None:
+        run.turn = replace(
+            run.turn,
+            request=run.request.model_copy(
+                update={"messages": [], "draft_state": None}
+            ),
+        )
         async with self._lock:
             self._reserved_run_ids.discard(run.id)
             if run.resume_id and self._active_by_resume.get(run.resume_id) == run.id:

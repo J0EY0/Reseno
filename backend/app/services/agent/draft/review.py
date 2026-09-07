@@ -137,19 +137,6 @@ def build_draft_review_items(
     ]
 
 
-def pending_review_edit_ids(
-    review_items: Iterable[AgentDraftReviewItem],
-) -> set[str]:
-    """Return edit IDs owned by unresolved review items."""
-
-    return {
-        edit_id
-        for item in review_items
-        if item.status == "pending"
-        for edit_id in item.edit_ids
-    }
-
-
 def _operation_target_key(
     edit: AgentResumeEditSuggestion,
     operation: dict[str, object],

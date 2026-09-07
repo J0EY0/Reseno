@@ -9,7 +9,7 @@ export interface WorkspacePreferencesSnapshot {
   agentSettings: AgentSettings | null;
 }
 
-export type WorkspacePreferencesPatch = Partial<{
+type WorkspacePreferencesPatch = Partial<{
   locale: Locale;
   theme: ThemeMode;
   agentSettings: AgentSettings;

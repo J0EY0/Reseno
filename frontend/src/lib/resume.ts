@@ -26,30 +26,11 @@ export function createEmptyResume(): ResumeData {
   }
 }
 
-export function createCollapsedState(resume: ResumeData) {
-  return resume.sections.reduce(
-    (state, section) => {
-      state[section.id] = false
-      return state
-    },
-    { basic: false } as Record<string, boolean>,
-  )
-}
-
 export function getSectionTitle(
   section: { kind: SectionKind; title: string },
   t: AppMessages,
 ) {
   return section.title.trim() || t.sectionTitles[section.kind]
-}
-
-export function getSectionSummary(
-  section: { items: readonly unknown[] },
-  t: AppMessages,
-) {
-  const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
-
-  return `${section.items.length} ${itemLabel}`
 }
 
 export function getInitials(name: string) {

@@ -477,11 +477,14 @@ def test_partially_failed_empty_template_trash_is_retryable(
 
     def delete_first_then_fail(path: Path) -> None:
         nonlocal completed_path, deletion_calls
-        deletion_calls += 1
-        if deletion_calls == 2:
-            raise PermissionError("forced file deletion failure")
+        is_template = path.parent == get_settings().storage_dir / "templates"
+        if is_template:
+            deletion_calls += 1
+            if deletion_calls == 2:
+                raise PermissionError("forced file deletion failure")
         original_rmtree(path)
-        completed_path = path
+        if is_template:
+            completed_path = path
 
     with monkeypatch.context() as partial_failure:
         partial_failure.setattr(

@@ -438,13 +438,52 @@ try {
     api.requestApi("/api/protected", { notifyOnError: false }),
     (error) =>
       assertRequestFailure(error, api, {
-        messageKey: "REQUEST_FAILED",
+        messageKey: "AUTHENTICATION_REQUIRED",
+        notified: false,
       }),
   );
   assert.equal(requests.length, 0);
   assert.equal(testState.clearedAuthCount, 1);
   assert.deepEqual(testState.redirects, ["/login"]);
-  assert.deepEqual(testState.toasts, ["localized:REQUEST_FAILED"]);
+  assert.deepEqual(testState.toasts, []);
+
+  for (const run of [
+    () => api.requestApi("/api/protected"),
+    () => api.uploadApi("/api/upload", new FormData()),
+    () => api.fetchApiResource("/api/resource"),
+  ]) {
+    reset(api);
+    testState.token = null;
+    await assert.rejects(run(), (error) =>
+      assertRequestFailure(error, api, { messageKey: "AUTHENTICATION_REQUIRED" }),
+    );
+    assert.equal(requests.length, 0);
+    assert.deepEqual(testState.toasts, ["localized:AUTHENTICATION_REQUIRED"]);
+    assert.deepEqual(testState.redirects, ["/login"]);
+  }
+
+  for (const run of [
+    () => api.requestApi("/api/failure"),
+    () => api.uploadApi("/api/upload", new FormData()),
+    () => api.fetchApiResource("/api/resource"),
+  ]) {
+    for (const reply of [
+      { body: '<html>Bad Gateway</html>', contentType: "text/html", status: 502 },
+      { body: '{"detail":"Not Found"}', contentType: "application/json", status: 404 },
+    ]) {
+      reset(api);
+      replies.push(reply);
+      await assert.rejects(run(), (error) =>
+        assertRequestFailure(error, api, { status: reply.status }),
+      );
+      assert.deepEqual(testState.toasts, ["localized:REQUEST_FAILED"]);
+    }
+
+    reset(api);
+    enqueueNetworkError();
+    await assert.rejects(run(), (error) => assertRequestFailure(error, api));
+    assert.deepEqual(testState.toasts, ["localized:REQUEST_FAILED"]);
+  }
 
   reset(api);
   enqueueJson(

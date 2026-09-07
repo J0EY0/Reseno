@@ -21,7 +21,6 @@ try {
   ]);
   const {
     createResumeSection,
-    isCanonicalResumeData,
     isCanonicalResumeSection,
     parseCommaSeparatedItems,
     projectResumeSection,
@@ -331,35 +330,6 @@ try {
     }),
     false,
     "Legacy generic sections must not silently enter the V2 model.",
-  );
-
-  const document = {
-    schemaVersion: 2,
-    basic: {
-      name: "",
-      headline: "",
-      phone: "",
-      email: "",
-      location: "",
-      avatar: "",
-      summary: "",
-      customFields: [],
-    },
-    sections: [project],
-  };
-  assert.equal(isCanonicalResumeData(document), true);
-  assert.equal(
-    isCanonicalResumeData({ ...document, schemaVersion: 1 }),
-    false,
-    "The frontend import boundary must reject non-V2 documents.",
-  );
-  assert.equal(
-    isCanonicalResumeData({
-      ...document,
-      sections: [project, { ...project, id: "duplicate-section" }],
-    }),
-    false,
-    "The frontend must reject duplicate item identities before autosave.",
   );
 
   console.log("Resume section V2 domain checks passed.");

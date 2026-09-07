@@ -64,20 +64,16 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
                 stop_reason="tool_calls",
             ),
         )
-        runtime.record_tool_loop_event(
-            AgentToolLoopTools(
-                tools=[
-                    AgentToolInvocation(
-                        id="tool-search",
-                        type="tool-web_search",
-                        title="web_search",
-                        state="output-available",
-                        startedAt="2026-08-23T01:00:00.000Z",
-                        completedAt="2026-08-23T01:00:01.250Z",
-                    ),
-                ],
-            ),
+        tool = AgentToolInvocation(
+            id="tool-search",
+            type="tool-web_search",
+            title="web_search",
+            state="output-available",
+            startedAt="2026-08-23T01:00:00.000Z",
+            completedAt="2026-08-23T01:00:01.250Z",
         )
+        runtime.record_tool_result(tool)
+        runtime.record_tool_loop_event(AgentToolLoopTools(tools=[tool]))
         runtime.record_llm_attempt()
         runtime.record_llm_response(
             LlmAssistantMessage(
@@ -274,6 +270,9 @@ def test_run_metrics_merge_parallel_tool_time_and_keep_retry_in_one_model_interv
     event = AgentToolLoopTools(tools=[fetch_one, fetch_two, edit])
     metrics.record_tool_loop_event(event)
     metrics.record_tool_loop_event(event)
+    for tool in event.tools:
+        metrics.record_tool_result(tool)
+        metrics.record_tool_result(tool)
 
     assert metrics.model_attempts == 2
     assert metrics.model_responses == 1
@@ -355,9 +354,8 @@ def test_edit_batch_metrics_keep_only_counts_outcomes_and_machine_codes() -> Non
         completedAt="2026-08-23T01:00:02.010Z",
     )
 
-    metrics.record_tool_loop_event(
-        AgentToolLoopTools(tools=[rejected, accepted, deferred]),
-    )
+    for tool in (rejected, accepted, deferred):
+        metrics.record_tool_result(tool)
 
     assert metrics.edit_batch_outcomes == {
         "accepted": 1,

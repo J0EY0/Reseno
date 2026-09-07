@@ -77,9 +77,11 @@ function ResumeDetailContent({
         documentT={documentMessages}
         disabled={Boolean(state.agent.review?.resolvingStatus)}
         resume={state.resume}
-        setResume={commands.setResume}
-        collapsedState={state.collapsedState}
-        setCollapsedState={commands.setCollapsedState}
+        updateContent={commands.updateContent}
+        openSectionId={state.openSectionId}
+        toggleSection={commands.toggleSection}
+        addSection={commands.addSection}
+        removeSection={commands.removeSection}
         hasLoadError={state.hasVersionLoadError}
         showSkeleton={showDocumentSkeleton}
       />
@@ -90,12 +92,13 @@ function ResumeDetailContent({
         <Suspense fallback={<WorkspacePreviewSkeleton />}>
           <DocumentCanvas
             ref={previewRef}
+            measurementKey={state.document.measurementKey}
             variant="resume"
             t={messages}
             documentT={documentMessages}
             resume={state.previewResume}
-            typography={state.typography}
-            template={state.activeTemplate}
+            typography={state.previewTypography}
+            template={state.previewTemplate}
             diffs={state.previewDiffs}
             draftReview={
               state.previewReview

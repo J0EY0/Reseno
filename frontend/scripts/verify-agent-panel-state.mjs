@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import vm from "node:vm";
 import { readFile } from "node:fs/promises";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 
@@ -13,21 +13,8 @@ function assert(condition, message) {
 
 async function loadTypeScriptModule(path) {
   const source = await readFile(path, "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
 
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require: () => ({}),
-  });
-
-  return module.exports;
+  return evaluateTypeScript(source);
 }
 
 const panelState = await loadTypeScriptModule(

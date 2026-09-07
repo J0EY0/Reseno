@@ -31,7 +31,7 @@ export function ModelConfigPanel({
   locale: Locale
   t: AppMessages
   configs: ModelConfig[]
-  onChange: (configs: ModelConfig[]) => void
+  onChange: (update: (current: ModelConfig[]) => ModelConfig[]) => ModelConfig[]
 }) {
   const [pendingDeleteModelConfigId, setPendingDeleteModelConfigId] = useState<
     string | null
@@ -78,7 +78,9 @@ export function ModelConfigPanel({
 
     try {
       await deleteModelConfig(modelConfigId)
-      const nextConfigs = configs.filter((item) => item.id !== modelConfigId)
+      const nextConfigs = onChange((current) =>
+        current.filter((item) => item.id !== modelConfigId),
+      )
       const nextTotalPages = Math.max(
         1,
         Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
@@ -89,7 +91,6 @@ export function ModelConfigPanel({
         selection.changePage(nextTotalPages)
       }
 
-      onChange(nextConfigs)
       toast.success(t.modelConfigDeleted, { closeButton: true })
     } catch (error) {
       console.error('Failed to delete model config.', error)
@@ -114,8 +115,8 @@ export function ModelConfigPanel({
     try {
       const response = await deleteModelConfigs(modelConfigIds)
       const deletedModelConfigIdSet = new Set(response.ids)
-      const nextConfigs = configs.filter(
-        (item) => !deletedModelConfigIdSet.has(item.id),
+      const nextConfigs = onChange((current) =>
+        current.filter((item) => !deletedModelConfigIdSet.has(item.id)),
       )
       const nextTotalPages = Math.max(
         1,
@@ -127,7 +128,6 @@ export function ModelConfigPanel({
         selection.changePage(nextTotalPages)
       }
 
-      onChange(nextConfigs)
       setPendingBulkDeleteModelConfigIds([])
       toast.success(t.modelConfigsDeleted, { closeButton: true })
     } catch (error) {
@@ -183,8 +183,8 @@ export function ModelConfigPanel({
           trigger={null}
           restoreFocus={() => editDialog.returnFocus?.focus()}
           onSubmit={(nextConfig) =>
-            onChange(
-              configs.map((item) =>
+            onChange((current) =>
+              current.map((item) =>
                 item.id === editDialog.config.id ? nextConfig : item,
               ),
             )
@@ -213,12 +213,11 @@ export function ModelConfigPanel({
                 locale={locale}
                 mode="create"
                 onSubmit={(nextConfig) => {
-                  const nextConfigs = [...configs, nextConfig]
+                  const nextConfigs = onChange((current) => [...current, nextConfig])
                   setEnteringModelConfigId(nextConfig.id)
                   selection.changePage(
                     Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
                   )
-                  onChange(nextConfigs)
                 }}
               />
             </div>

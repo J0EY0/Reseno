@@ -167,6 +167,11 @@ def _persist_committed_draft(
                     "title": "Update headline",
                     "target": "basic.headline",
                     "reason": "Use the requested title.",
+                    "operation": {
+                        "type": "replace_field",
+                        "path": "basic.headline",
+                        "value": "Updated headline",
+                    },
                 },
             ],
             transactionState="committed",
@@ -426,6 +431,51 @@ def test_replacing_session_history_clears_private_conversation_checkpoints(
 
     assert next_turn.conversation_state.loaded_checkpoint is None
     assert next_turn.conversation_state.active_checkpoint is None
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("tools", [{"id": "invalid-tool", "state": "invalid-state"}]),
+        ("edits", [{"id": "invalid-edit"}]),
+        ("draft", {"baseResume": {}, "reviewItems": []}),
+        (None, {}),
+    ],
+)
+def test_replacing_session_rejects_invalid_response_without_changing_history(
+    client: TestClient,
+    field: str | None,
+    invalid_value: object,
+) -> None:
+    resume_id = _resume_id(f"resume-invalid-replacement-{field}")
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=f"assistant-invalid-replacement-{field}",
+        )
+        original = load_agent_session(conn, resume_id)
+
+    messages = [
+        message.model_dump(mode="json", by_alias=True)
+        for message in original.messages
+    ]
+    if field is None:
+        messages[-1]["text"] = ""
+        messages[-1]["response"] = invalid_value
+    else:
+        messages[-1]["response"][field] = invalid_value
+    response = client.put(
+        f"/api/agent/resumes/{resume_id}/session",
+        json={"locale": "zh", "revision": original.revision, "messages": messages},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": {"code": "AGENT_SESSION_REPLACEMENT_INVALID"},
+    }
+    with closing(connect()) as conn:
+        assert load_agent_session(conn, resume_id) == original
 
 
 def test_accept_agent_turn_allows_exact_unfinished_retry_without_duplicate(
@@ -953,6 +1003,11 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
                         "title": "Update headline",
                         "target": "basic.headline",
                         "reason": "Use the requested title.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.headline",
+                            "value": "Updated headline",
+                        },
                     },
                 ],
                 transactionState="committed",
@@ -1016,6 +1071,11 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
                         "title": "Update headline",
                         "target": "basic.headline",
                         "reason": "Use the requested title.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.headline",
+                            "value": "Updated headline",
+                        },
                     },
                 ],
                 transactionState="committed",
@@ -1044,6 +1104,11 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
                         "title": "Update summary",
                         "target": "basic.summary",
                         "reason": "Use the newer request.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.summary",
+                            "value": "Updated summary",
+                        },
                     },
                 ],
                 transactionState="committed",
@@ -1141,6 +1206,11 @@ def test_agent_draft_decision_route_returns_the_updated_session(
                         "title": "Update headline",
                         "target": "basic.headline",
                         "reason": "Use the requested title.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.headline",
+                            "value": "Updated headline",
+                        },
                     },
                 ],
                 transactionState="committed",
@@ -1245,8 +1315,13 @@ def test_agent_draft_decisions_reduce_pending_items_and_apply_all_remaining(
                     {
                         "id": f"edit-partial-{index}",
                         "title": f"Change {index}",
-                        "target": f"independent.target.{index}",
+                        "target": f"sections.independent-{index}",
                         "reason": "Review independently.",
+                        "operation": {
+                            "type": "update_section",
+                            "sectionId": f"independent-{index}",
+                            "patch": {"title": f"Updated section {index}"},
+                        },
                     }
                     for index in range(5)
                 ],
@@ -1529,6 +1604,11 @@ def test_apply_boundary_rejects_a_non_latest_pending_draft(
                         "title": "Update headline",
                         "target": "basic.headline",
                         "reason": "Use the requested title.",
+                        "operation": {
+                            "type": "replace_field",
+                            "path": "basic.headline",
+                            "value": "Updated headline",
+                        },
                     },
                 ],
                 draft={

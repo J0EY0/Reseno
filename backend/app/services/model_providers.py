@@ -11,6 +11,7 @@ from app.services.model_metadata import (
     ensure_provider_model_metadata,
     explicit_thinking_off_capability,
     resolve_model_metadata,
+    resolve_models_metadata,
 )
 from app.services.thinking import (
     ThinkingControl,
@@ -307,8 +308,11 @@ def discover_provider_models(
         provider.id,
         [model_id for model_id in raw_model_ids if model_id],
     )
+    metadata = resolve_models_metadata(provider.id, raw_model_ids)
     normalized = [
-        _normalize_discovered_model(provider.id, raw)
+        _normalize_discovered_model(
+            provider.id, raw, metadata.get(_model_id_from_raw(raw)),
+        )
         for raw in raw_models
         if _model_id_from_raw(raw)
     ]
@@ -329,10 +333,9 @@ def enrich_selected_model(
 ) -> DiscoveredModel:
     """Return a model metadata snapshot for a selected model id."""
 
-    return _normalize_discovered_model(
-        provider_id,
-        {"id": model_id, **(raw_model or {})},
-    )
+    raw = {"id": model_id, **(raw_model or {})}
+    metadata = resolve_model_metadata(provider_id, _model_id_from_raw(raw))
+    return _normalize_discovered_model(provider_id, raw, metadata)
 
 
 def _raw_discovered_models(
@@ -413,19 +416,30 @@ def _anthropic_models(
     api_url: str,
     api_key: str,
 ) -> list[dict[str, Any]]:
-    payload = _get_json(
-        _model_list_url(provider, api_url),
-        headers={
-            "Accept": "application/json",
-            "x-api-key": api_key.strip(),
-            "anthropic-version": "2023-06-01",
-        },
-    )
-    data = payload.get("data")
-    if not isinstance(data, list):
-        raise ModelDiscoveryError("Anthropic returned an unsupported model list.")
-
-    return [item for item in data if isinstance(item, dict)]
+    base_url = _model_list_url(provider, api_url)
+    url = base_url
+    headers = {
+        "Accept": "application/json",
+        "x-api-key": api_key.strip(),
+        "anthropic-version": "2023-06-01",
+    }
+    models: list[dict[str, Any]] = []
+    seen_cursors: set[str] = set()
+    while True:
+        payload = _get_json(url, headers=headers)
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise ModelDiscoveryError("Anthropic returned an unsupported model list.")
+        models.extend(item for item in data if isinstance(item, dict))
+        if not payload.get("has_more"):
+            return models
+        cursor = payload.get("last_id")
+        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            raise ModelDiscoveryError(
+                "Anthropic returned an invalid model page cursor.",
+            )
+        seen_cursors.add(cursor)
+        url = str(httpx.URL(base_url).copy_set_param("after_id", cursor))
 
 
 def _gemini_models(
@@ -433,18 +447,27 @@ def _gemini_models(
     api_url: str,
     api_key: str,
 ) -> list[dict[str, Any]]:
-    payload = _get_json(
-        _model_list_url(provider, api_url),
-        headers={
-            "Accept": "application/json",
-            "x-goog-api-key": api_key.strip(),
-        },
-    )
-    models = payload.get("models")
-    if not isinstance(models, list):
-        raise ModelDiscoveryError("Gemini returned an unsupported model list.")
-
-    return [item for item in models if isinstance(item, dict)]
+    base_url = _model_list_url(provider, api_url)
+    url = base_url
+    headers = {
+        "Accept": "application/json",
+        "x-goog-api-key": api_key.strip(),
+    }
+    models: list[dict[str, Any]] = []
+    seen_cursors: set[str] = set()
+    while True:
+        payload = _get_json(url, headers=headers)
+        page_models = payload.get("models")
+        if not isinstance(page_models, list):
+            raise ModelDiscoveryError("Gemini returned an unsupported model list.")
+        models.extend(item for item in page_models if isinstance(item, dict))
+        cursor = payload.get("nextPageToken")
+        if cursor is None or cursor == "":
+            return models
+        if not isinstance(cursor, str) or cursor in seen_cursors:
+            raise ModelDiscoveryError("Gemini returned an invalid model page cursor.")
+        seen_cursors.add(cursor)
+        url = str(httpx.URL(base_url).copy_set_param("pageToken", cursor))
 
 
 def _get_json(url: str, *, headers: dict[str, str]) -> dict[str, Any]:
@@ -468,6 +491,7 @@ def _get_json(url: str, *, headers: dict[str, str]) -> dict[str, Any]:
 def _normalize_discovered_model(
     provider_id: str,
     raw: dict[str, Any],
+    litellm_metadata: ModelMetadata | None,
 ) -> DiscoveredModel:
     model_id = _model_id_from_raw(raw)
     provider_context = _provider_context_limit(provider_id, raw)
@@ -479,7 +503,6 @@ def _normalize_discovered_model(
         or raw.get("output_token_limit"),
     )
     metadata_source = "provider" if provider_context or provider_output else "fallback"
-    litellm_metadata = resolve_model_metadata(provider_id, model_id)
     if provider_context is None and litellm_metadata is not None:
         provider_context = litellm_metadata.context_window_tokens
         metadata_source = "litellm" if provider_context else metadata_source
@@ -519,10 +542,9 @@ def _normalize_discovered_model(
         thinking_control=thinking_control,
         metadata_source=metadata_source,
         available_thinking_modes=available_thinking_modes(can_disable_thinking),
-        supports_tools=_supports_tools(provider_id, model_id, raw, litellm_metadata),
+        supports_tools=_supports_tools(provider_id, raw, litellm_metadata),
         supports_streaming=_supports_streaming(
             provider_id,
-            model_id,
             raw,
             litellm_metadata,
         ),
@@ -716,7 +738,6 @@ def _nested_bool(value: object, *path: str) -> bool | None:
 
 def _supports_tools(
     provider_id: str,
-    model_id: str,
     raw: dict[str, Any],
     metadata: ModelMetadata | None,
 ) -> bool:
@@ -740,7 +761,6 @@ def _supports_tools(
 
 def _supports_streaming(
     provider_id: str,
-    model_id: str,
     raw: dict[str, Any],
     metadata: ModelMetadata | None,
 ) -> bool:

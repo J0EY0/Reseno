@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
 let activeFetch;
@@ -56,37 +56,23 @@ async function loadTypeScriptModule(fileName, imports = {}, globals = {}) {
     join(frontendRoot, "src", "lib", fileName),
     "utf8",
   );
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
 
-  vm.runInNewContext(compiled, {
-    DOMException,
-    Error,
-    Response,
-    SyntaxError,
-    TextDecoder,
-    URL,
-    exports: module.exports,
-    module,
-    require: (specifier) => {
-      if (Object.hasOwn(imports, specifier)) {
-        return imports[specifier];
-      }
-      throw new Error(`Unexpected import: ${specifier}`);
+  return evaluateTypeScript(source, {
+    globals: {
+      DOMException,
+      Error,
+      Response,
+      SyntaxError,
+      TextDecoder,
+      URL,
+      window: {
+        clearTimeout,
+        setTimeout: (callback) => setTimeout(callback, 0),
+      },
+      ...globals,
     },
-    window: {
-      clearTimeout,
-      setTimeout: (callback) => setTimeout(callback, 0),
-    },
-    ...globals,
+    imports,
   });
-
-  return module.exports;
 }
 
 async function captureError(action) {

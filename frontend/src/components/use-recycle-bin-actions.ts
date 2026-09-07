@@ -6,12 +6,14 @@ import type {
   TrashActionKey,
 } from "@/components/recycle-bin-types";
 
-type TrashActionCallbacks = Pick<
+type RecycleBinActionOptions = Pick<
   RecycleBinPanelProps,
   | "onRestoreResume"
   | "onDeleteResumeForever"
   | "onRestoreTemplate"
   | "onDeleteTemplateForever"
+  | "deletedResumes"
+  | "deletedTemplates"
 >;
 
 export function useRecycleBinActions({
@@ -19,8 +21,17 @@ export function useRecycleBinActions({
   onDeleteResumeForever,
   onRestoreTemplate,
   onDeleteTemplateForever,
-}: TrashActionCallbacks) {
-  const [pendingAction, setPendingAction] = useState<PendingTrashAction>(null);
+  deletedResumes,
+  deletedTemplates,
+}: RecycleBinActionOptions) {
+  const [requestedAction, setRequestedAction] = useState<PendingTrashAction>(null);
+  const remainingIds = requestedAction?.ids.filter((id) =>
+    (requestedAction.type === "resume-item" ? deletedResumes : deletedTemplates)
+      .some((item) => item.id === id),
+  );
+  const pendingAction = requestedAction && remainingIds?.length
+    ? { ...requestedAction, ids: remainingIds }
+    : null;
   const [runningActionKey, setRunningActionKey] =
     useState<TrashActionKey | null>(null);
   // Visible state drives feedback; the ref closes the same-render double-click gap.
@@ -31,11 +42,11 @@ export function useRecycleBinActions({
   }
 
   function closeDialog() {
-    setPendingAction(null);
+    setRequestedAction(null);
   }
 
   function requestDelete(action: Exclude<PendingTrashAction, null>) {
-    setPendingAction(action);
+    setRequestedAction(action);
   }
 
   async function runTrashAction(

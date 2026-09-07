@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as ts from "typescript";
+
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 
@@ -14,39 +14,20 @@ function normalize(value) {
 }
 
 function loadPreviewModule(source, starterByPreset) {
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
-  const module = { exports: {} };
-
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require(specifier) {
-      if (specifier === "@/lib/rich-text") {
-        return {
-          serializeListItemsToHtml(items) {
-            return `<ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul>`;
-          },
-        };
-      }
-
-      if (specifier === "@/lib/template-presets") {
-        return {
-          getBuiltinTemplateStarter(preset) {
-            return starterByPreset[preset];
-          },
-        };
-      }
-
-      throw new Error(`Unexpected preview fixture dependency: ${specifier}`);
+  return evaluateTypeScript(source, {
+    imports: {
+      "@/lib/rich-text": {
+        serializeListItemsToHtml(items) {
+          return `<ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul>`;
+        },
+      },
+      "@/lib/template-presets": {
+        getBuiltinTemplateStarter(preset) {
+          return starterByPreset[preset];
+        },
+      },
     },
   });
-
-  return module.exports;
 }
 
 const [previewSource, previewStyles, enSource, zhSource, presetSource] =

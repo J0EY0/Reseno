@@ -42,6 +42,7 @@ from app.services.auth_accounts import ensure_auth_database
 from app.services.auth_oauth import OAUTH_SESSION_TTL_SECONDS
 from app.services.model_metadata import ensure_model_metadata_cache
 from app.services.pdf import cleanup_expired_exports
+from app.services.storage_deletions import recover_pending_storage_deletions
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
 
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     ensure_auth_database()
     ensure_database_schema()
+    recover_pending_storage_deletions()
     with closing(connect()) as conn:
         fail_interrupted_agent_turn_executions(conn)
     ensure_model_metadata_cache()

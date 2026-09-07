@@ -96,21 +96,9 @@ const [
   ),
 ]);
 
-const galleryDetailCommit = galleryRoute.slice(
-  galleryRoute.indexOf("const commitTemplateDetailNavigation"),
-  galleryRoute.indexOf("const openTemplate"),
-);
 const galleryOpenTemplate = galleryRoute.slice(
   galleryRoute.indexOf("const openTemplate"),
   galleryRoute.indexOf("const createCustomTemplate"),
-);
-const galleryCreateTemplate = galleryRoute.slice(
-  galleryRoute.indexOf("const createCustomTemplate"),
-  galleryRoute.indexOf("const importTemplates"),
-);
-const galleryImportTemplates = galleryRoute.slice(
-  galleryRoute.indexOf("const importTemplates"),
-  galleryRoute.indexOf("const deleteTemplates"),
 );
 
 assert(
@@ -152,18 +140,7 @@ assert(
     !/resume-builder/.test(galleryRoute),
   "Gallery intent may preload detail modules only through literal dynamic imports.",
 );
-assert(
-  /await prepareTemplateDetailRoute\(templateId, persistence, \{[\s\S]{0,120}signal: intent\.signal/.test(
-    galleryOpenTemplate,
-  ) &&
-    /commitTemplateDetailNavigation\(\s*intent,\s*templateId,\s*data/.test(
-      galleryOpenTemplate,
-    ) &&
-    /startTransition[\s\S]{0,240}intent\.finish\(\)[\s\S]{0,120}navigate\(getTemplatePath/.test(
-      galleryDetailCommit,
-    ),
-  "Cold gallery navigation must resolve fresh detail data and modules before its transition commit.",
-);
+
 assert(
   /const preloadTemplateDetail = useCallback\([\s\S]{0,300}preloadTemplateDetailRoute\(\)/.test(
     galleryRoute,
@@ -242,27 +219,6 @@ assert(
       galleryRoute,
     ),
   "The gallery route must flush shared preferences and own an abortable StrictMode-safe load.",
-);
-assert(
-  /createCustomTemplateFromBase[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
-    galleryCreateTemplate,
-  ) &&
-    /await detailRouteReady[\s\S]*publishCreatedTemplate[\s\S]*messages\.templateCreatedOpenFailed[\s\S]*commitTemplateDetailNavigation\([\s\S]{0,260}publishCreatedTemplate/.test(
-      galleryCreateTemplate,
-    ) &&
-    /importTemplatePayload[\s\S]*for \(const item of payload\.templates\)[\s\S]*createTemplateApi[\s\S]*commitTemplateDetailNavigation/.test(
-      galleryImportTemplates,
-    ),
-  "Create must publish only after preparation or its failure, while import persists before detail navigation.",
-);
-assert(
-  /templateIds\.filter[\s\S]*customTemplates\.some[\s\S]*moveTemplateToTrashApi[\s\S]*setCustomTemplates/.test(
-    galleryRoute,
-  ) &&
-    /saveDefaultTemplateApi\(\s*templateLocale,\s*templateId,?\s*\)[\s\S]*setDefaultTemplateIds/.test(
-      galleryRoute,
-    ),
-  "Delete and default-template mutations must remain gallery-owned and server-backed.",
 );
 assert(
   galleryRoute.includes("useLocalizedMessages(templateLocale)") &&

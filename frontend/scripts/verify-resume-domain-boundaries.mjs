@@ -44,7 +44,6 @@ const domainModules = new Map([
       "createSectionItem",
       "hasSectionContent",
       "hasSectionItemContent",
-      "isCanonicalResumeData",
       "isCanonicalResumeSection",
       "isSectionItemForKind",
       "parseCommaSeparatedItems",

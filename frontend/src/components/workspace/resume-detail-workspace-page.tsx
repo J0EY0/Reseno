@@ -9,6 +9,7 @@ import {
 import { ResumeDetailWorkspaceView } from "@/components/workspace/resume-detail-workspace-view";
 import { useResumeDetailWorkspace } from "@/components/workspace/use-resume-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
+import { releaseWorkspaceRouteHandoff } from "@/lib/workspace-route-handoff";
 
 interface ResumeDetailRouteOwnerProps {
   onLogout: () => void;
@@ -45,6 +46,7 @@ function ResumeDetailRouteOwner({
 
     // Keep the seed for this mount, but do not let browser history resurrect
     // it after a newer checkpoint has become the server authority.
+    releaseWorkspaceRouteHandoff(routeState);
     navigate(
       {
         hash: location.hash,

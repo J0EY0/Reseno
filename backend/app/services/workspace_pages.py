@@ -2,10 +2,7 @@ from typing import Any
 
 from app.schemas.agent_settings import AgentSettings, normalize_agent_settings
 from app.schemas.model_configs import ModelConfigResponse
-from app.schemas.resumes import (
-    DeletedResumeWorkspaceItemResponse,
-    ResumeWorkspaceItemResponse,
-)
+from app.schemas.resumes import DeletedResumeWorkspaceItemResponse
 from app.schemas.templates import (
     DeletedTemplateDefinitionResponse,
     TemplateDefinitionResponse,
@@ -55,10 +52,7 @@ def load_resumes_page() -> ResumesPageResponse:
 
     settings = load_user_settings()
     default_template_ids, custom_templates = _template_context()
-    resumes = [
-        ResumeWorkspaceItemResponse.model_validate(item)
-        for item in list_resumes("active")["resumes"]
-    ]
+    resumes = list_resumes("active").resumes
 
     return ResumesPageResponse(
         theme=normalize_theme(settings.get("theme")),
@@ -104,7 +98,7 @@ def load_trash_page() -> TrashPageResponse:
     default_template_ids, custom_templates = _template_context()
     deleted_resumes = [
         DeletedResumeWorkspaceItemResponse.model_validate(item)
-        for item in list_resumes("deleted")["resumes"]
+        for item in list_resumes("deleted").resumes
     ]
     deleted_templates = [
         DeletedTemplateDefinitionResponse.model_validate(item)

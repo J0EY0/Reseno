@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -30,11 +31,15 @@ import type {
 } from "@/types/resume";
 
 export interface DocumentCanvasHandle {
-  measurePageCount: () => Promise<number>;
+  measurePageCount: (
+    signal: AbortSignal,
+    measurementKey?: object,
+  ) => Promise<number>;
 }
 
 interface DocumentCanvasBaseProps {
   documentT: AppMessages;
+  measurementKey?: object;
   onPaginationReadyChange?: (ready: boolean) => void;
   resume: ResumeData;
   t: AppMessages;
@@ -65,12 +70,37 @@ type DocumentCanvasProps =
       variant: "template";
     });
 
-async function measureCanvasPageCount(element: HTMLElement | null) {
-  for (let frame = 0; frame < 8; frame += 1) {
-    await new Promise<number>(requestAnimationFrame);
-  }
-
-  return Number(element?.dataset.resumePageCount) || 1;
+function measureCanvasPageCount(
+  element: HTMLElement | null,
+  signal: AbortSignal,
+  isCurrent: () => boolean,
+) {
+  return new Promise<number>((resolve, reject) => {
+    let frame = 0;
+    const abort = () => {
+      cancelAnimationFrame(frame);
+      signal.removeEventListener("abort", abort);
+      reject(new DOMException("Preview measurement cancelled", "AbortError"));
+    };
+    const measure = () => {
+      if (signal.aborted || !element?.isConnected) {
+        abort();
+      } else if (
+        isCurrent() && element.dataset.resumePaginationReady === "true"
+      ) {
+        signal.removeEventListener("abort", abort);
+        resolve(Number(element.dataset.resumePageCount));
+      } else {
+        frame = requestAnimationFrame(measure);
+      }
+    };
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+    frame = requestAnimationFrame(measure);
+  });
 }
 
 export const DocumentCanvas = memo(
@@ -79,6 +109,10 @@ export const DocumentCanvas = memo(
     ref,
   ) {
     const previewRef = useRef<HTMLElement | null>(null);
+    const committedMeasurementKey = useRef(props.measurementKey);
+    useLayoutEffect(() => {
+      committedMeasurementKey.current = props.measurementKey;
+    }, [props.measurementKey]);
     const [pageCount, setPageCount] = useState(1);
     const {
       currentPage,
@@ -104,7 +138,12 @@ export const DocumentCanvas = memo(
     useImperativeHandle(
       ref,
       () => ({
-        measurePageCount: () => measureCanvasPageCount(previewRef.current),
+        measurePageCount: (signal, measurementKey) =>
+          measureCanvasPageCount(
+            previewRef.current,
+            signal,
+            () => committedMeasurementKey.current === measurementKey,
+          ),
       }),
       [],
     );

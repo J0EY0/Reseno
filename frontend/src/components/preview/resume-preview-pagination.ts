@@ -6,7 +6,7 @@ import {
   type ResumePreviewModel,
 } from "@/components/preview/resume-preview-model";
 
-export interface ResumePageSlice {
+interface ResumePageSlice {
   startOffsetMm: number;
   visibleHeightMm: number;
 }
@@ -368,7 +368,14 @@ export function useResumePagination(
       };
     }
 
-    const resizeObserver = new ResizeObserver(scheduleSync);
+    let isInitialObservation = true;
+    const resizeObserver = new ResizeObserver(() => {
+      if (isInitialObservation) {
+        isInitialObservation = false;
+        return;
+      }
+      scheduleSync();
+    });
     resizeObserver.observe(element);
 
     return () => {

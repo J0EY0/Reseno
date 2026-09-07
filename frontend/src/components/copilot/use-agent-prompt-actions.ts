@@ -144,7 +144,7 @@ export function useAgentPromptActions({
       activeUploadAbortRef.current?.abort()
       activeUploadAbortRef.current = uploadAbortController
       let sendStarted = false
-      let requestSubmitted = false
+      let requestAccepted = false
 
       try {
         if (resumeId) {
@@ -219,10 +219,16 @@ export function useAgentPromptActions({
           ...activeReferencedAttachments,
           ...uploadedFiles,
         ])
-        requestSubmitted = sendOperation.submitted
-        if (!requestSubmitted) {
+        if (!sendOperation.submitted) {
           await sendOperation.completion
           throw new Error('The Agent request was not submitted.')
+        }
+        setIsSubmittingPrompt(false)
+        setAttachmentUploadProgress(null)
+        requestAccepted = await sendOperation.accepted
+        if (!requestAccepted) {
+          await sendOperation.completion
+          throw new Error('The Agent request was not accepted by the server.')
         }
 
         const submittedReferenceIds = new Set(
@@ -236,14 +242,6 @@ export function useAgentPromptActions({
         setReferencedAttachments(remainingReferencedAttachments)
 
         void (async () => {
-          const requestAccepted = await sendOperation.accepted
-          if (!requestAccepted) {
-            await sendOperation.completion
-            throw new Error(
-              'The Agent request was not accepted by the server.',
-            )
-          }
-
           const status = await sendOperation.completion
           if (
             status !== 'completed' &&
@@ -297,7 +295,7 @@ export function useAgentPromptActions({
         if (activeUploadAbortRef.current === uploadAbortController) {
           activeUploadAbortRef.current = null
         }
-        if (!requestSubmitted) {
+        if (!requestAccepted) {
           promptSubmissionRef.current = false
         }
       }

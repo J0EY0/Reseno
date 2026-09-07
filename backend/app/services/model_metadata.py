@@ -1,10 +1,13 @@
 import json
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from app.config import get_settings
@@ -49,6 +52,7 @@ MODELS_DEV_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _CATALOG_CACHE: dict[str, Any] | None = None
+_CATALOG_CACHE_LOCK = RLock()
 
 
 @dataclass(frozen=True)
@@ -68,34 +72,46 @@ class ModelMetadata:
 def resolve_model_metadata(provider: str, model: str) -> ModelMetadata | None:
     """Return cached normalized metadata for one provider/model pair."""
 
+    return resolve_models_metadata(provider, [model]).get(model)
+
+
+def resolve_models_metadata(
+    provider: str,
+    models: list[str],
+) -> dict[str, ModelMetadata]:
+    """Resolve selected model ids against one current provider catalog snapshot."""
+
     provider_key = provider.strip().lower()
-    model_key = model.strip()
-    if not provider_key or not model_key:
-        return None
+    model_keys = {
+        model: _normalize_model_name(model) for model in models if model.strip()
+    }
+    if not provider_key or not model_keys:
+        return {}
 
     cache = _load_cache()
     provider_models = _cache_provider_models(cache, provider_key)
-    if not provider_models:
-        return None
-
-    normalized_model = _normalize_model_name(model_key)
+    normalized_models: dict[str, dict[str, Any]] = {}
     for cached_model, value in provider_models.items():
-        if not isinstance(value, dict):
-            continue
-        if _normalize_model_name(cached_model) == normalized_model:
-            return _metadata_from_lightweight_item(value)
+        if isinstance(value, dict):
+            normalized_models.setdefault(_normalize_model_name(cached_model), value)
 
-    return None
+    result: dict[str, ModelMetadata] = {}
+    for model, normalized_model in model_keys.items():
+        value = normalized_models.get(normalized_model)
+        if value is not None:
+            metadata = _metadata_from_lightweight_item(value)
+            if metadata is not None:
+                result[model] = metadata
+    return result
 
 
 def ensure_model_metadata_cache() -> bool:
     """Ensure the lightweight provider metadata cache exists when possible."""
 
-    cache_path = _cache_path()
-    cached = _read_cache(cache_path) if cache_path.exists() else {}
-    if cached and _cache_sources_are_fresh(cached):
-        _set_memory_cache(cached)
-        return True
+    with _CATALOG_CACHE_LOCK:
+        cached = _load_cache()
+        if cached and _cache_sources_are_fresh(cached):
+            return True
 
     return refresh_model_metadata_cache() or bool(cached)
 
@@ -134,73 +150,43 @@ def refresh_model_metadata_cache(provider: str | None = None) -> bool:
         return False
 
     provider_key = provider.strip().lower() if provider else None
-    existing = _load_cache()
-    litellm_providers = dict(_cache_catalog_providers(existing, "litellm"))
-    reasoning_providers = dict(_cache_catalog_providers(existing, "modelsDev"))
-    litellm_fetched_at = _cache_catalog_fetched_at(existing, "litellm")
-    reasoning_fetched_at = _cache_catalog_fetched_at(existing, "modelsDev")
-    fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
-    if provider_key:
-        updated = False
-        litellm_models = _provider_models_from_catalog(raw_catalog, provider_key)
-        if litellm_models:
-            # Each HTTP response is a complete source catalog. Once it proves
-            # the requested provider is present, replace that source wholesale
-            # so the single source timestamp describes every stored provider.
+    with _CATALOG_CACHE_LOCK:
+        existing = _load_cache()
+        litellm_providers = dict(_cache_catalog_providers(existing, "litellm"))
+        reasoning_providers = dict(_cache_catalog_providers(existing, "modelsDev"))
+        litellm_fetched_at = _cache_catalog_fetched_at(existing, "litellm")
+        reasoning_fetched_at = _cache_catalog_fetched_at(existing, "modelsDev")
+        fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
+        update_litellm = bool(raw_catalog) and (
+            provider_key is None
+            or bool(_provider_models_from_catalog(raw_catalog, provider_key))
+        )
+        update_reasoning = bool(reasoning_catalog) and (
+            provider_key is None
+            or _reasoning_catalog_has_provider(reasoning_catalog, provider_key)
+        )
+        if not update_litellm and not update_reasoning:
+            return False
+        if update_litellm:
             litellm_providers = _litellm_providers_from_catalog(raw_catalog)
             litellm_fetched_at = fetched_at
-            updated = True
-
-        if _reasoning_catalog_has_provider(reasoning_catalog, provider_key):
+        if update_reasoning:
             reasoning_providers = _reasoning_providers_from_catalog(
                 reasoning_catalog,
             )
             reasoning_fetched_at = fetched_at
-            updated = True
-
-        if not updated:
+        next_cache = _new_cache(
+            litellm_providers,
+            litellm_fetched_at,
+            reasoning_providers,
+            reasoning_fetched_at,
+        )
+        if not _cache_has_models(next_cache):
             return False
 
-        next_cache = _new_cache(
-            litellm_providers,
-            litellm_fetched_at,
-            reasoning_providers,
-            reasoning_fetched_at,
-        )
-    else:
-        if raw_catalog:
-            litellm_providers = _litellm_providers_from_catalog(raw_catalog)
-            litellm_fetched_at = fetched_at
-        if reasoning_catalog:
-            reasoning_providers = _reasoning_providers_from_catalog(
-                reasoning_catalog,
-            )
-            reasoning_fetched_at = fetched_at
-        next_cache = _new_cache(
-            litellm_providers,
-            litellm_fetched_at,
-            reasoning_providers,
-            reasoning_fetched_at,
-        )
-    if not _cache_has_models(next_cache):
-        return False
-
-    _write_cache(next_cache)
-    _set_memory_cache(next_cache)
-    return True
-
-
-def _build_cache(
-    raw_catalog: dict[str, Any],
-    reasoning_catalog: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
-    return _new_cache(
-        _litellm_providers_from_catalog(raw_catalog),
-        fetched_at if raw_catalog else None,
-        _reasoning_providers_from_catalog(reasoning_catalog or {}),
-        fetched_at if reasoning_catalog else None,
-    )
+        _write_cache(next_cache)
+        _set_memory_cache(next_cache)
+        return True
 
 
 def _litellm_providers_from_catalog(
@@ -430,17 +416,16 @@ def _metadata_from_lightweight_item(value: dict[str, Any]) -> ModelMetadata | No
 def _load_cache() -> dict[str, Any]:
     global _CATALOG_CACHE
 
-    if _CATALOG_CACHE is not None:
+    with _CATALOG_CACHE_LOCK:
+        if _CATALOG_CACHE is None:
+            _CATALOG_CACHE = _read_cache(_cache_path())
         return _CATALOG_CACHE
-
-    cache = _read_cache(_cache_path())
-    _CATALOG_CACHE = cache
-    return cache
 
 
 def _set_memory_cache(cache: dict[str, Any]) -> None:
     global _CATALOG_CACHE
-    _CATALOG_CACHE = cache
+    with _CATALOG_CACHE_LOCK:
+        _CATALOG_CACHE = cache
 
 
 def _cache_path() -> Path:
@@ -477,12 +462,19 @@ def _read_cache(path: Path) -> dict[str, Any]:
 def _write_cache(cache: dict[str, Any]) -> None:
     cache_path = _cache_path()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
-    tmp_path.write_text(
-        json.dumps(cache, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
+    descriptor, name = tempfile.mkstemp(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+        text=True,
     )
-    tmp_path.replace(cache_path)
+    tmp_path = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temp_file:
+            json.dump(cache, temp_file, ensure_ascii=False, separators=(",", ":"))
+        tmp_path.replace(cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _cache_sources_are_fresh(cache: dict[str, Any]) -> bool:

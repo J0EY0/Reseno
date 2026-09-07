@@ -1,28 +1,9 @@
 import os
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, status
 
 from app.config import MASTER_KEY_ENV_NAME, get_settings
-
-SENSITIVE_MODEL_KEYS = {
-    "apiKey",
-    "api_key",
-    "apiKeyEnvName",
-    "api_key_env_name",
-    "encryptedApiKey",
-    "encrypted_api_key",
-    "secretKey",
-    "secret_key",
-    "accessToken",
-    "access_token",
-    "refreshToken",
-    "refresh_token",
-    "authorization",
-    "authorizationHeader",
-    "authorization_header",
-}
 
 
 def _get_fernet() -> Fernet:
@@ -77,32 +58,3 @@ def mask_encrypted_api_key(encrypted_api_key: str | None) -> str:
         return ""
 
     return mask_api_key(decrypt_api_key(encrypted_api_key))
-
-
-def extract_plain_api_key(config: dict[str, Any]) -> str | None:
-    """Read a plaintext API key from incoming client config data."""
-
-    api_key = config.get("apiKey") or config.get("api_key")
-    return api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
-
-
-def sanitize_model_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Remove secret-bearing fields from one model config object."""
-
-    return {
-        key: value for key, value in config.items() if key not in SENSITIVE_MODEL_KEYS
-    }
-
-
-def sanitize_workspace_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Remove model secrets and LLM config snapshots before SQLite persistence."""
-
-    sanitized = dict(payload)
-    changed = False
-
-    for key in ("modelConfigs", "modelConfig"):
-        if key in sanitized:
-            sanitized.pop(key)
-            changed = True
-
-    return sanitized, changed

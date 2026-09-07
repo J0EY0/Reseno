@@ -2,10 +2,6 @@
 
 import { Button } from "@/components/ui/button";
 import {
-  ButtonGroup,
-  ButtonGroupText,
-} from "@/components/ui/button-group";
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -13,20 +9,9 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes } from "react";
-import {
-  Children,
-  createContext,
-  isValidElement,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
 
-export type MessageProps = HTMLAttributes<HTMLDivElement> & {
+type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
 };
 
@@ -43,7 +28,7 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
   />
 );
 
-export type MessageContentProps = HTMLAttributes<HTMLDivElement>;
+type MessageContentProps = HTMLAttributes<HTMLDivElement>;
 
 export const MessageContent = ({
   children,
@@ -63,7 +48,7 @@ export const MessageContent = ({
   </div>
 );
 
-export type MessageActionsProps = ComponentProps<"div">;
+type MessageActionsProps = ComponentProps<"div">;
 
 export const MessageActions = ({
   className,
@@ -75,7 +60,7 @@ export const MessageActions = ({
   </div>
 );
 
-export type MessageActionProps = ComponentProps<typeof Button> & {
+type MessageActionProps = ComponentProps<typeof Button> & {
   tooltip?: string;
   label?: string;
 };
@@ -110,231 +95,3 @@ export const MessageAction = ({
 
   return button;
 };
-
-interface MessageBranchContextType {
-  currentBranch: number;
-  totalBranches: number;
-  goToPrevious: () => void;
-  goToNext: () => void;
-  setBranchCount: (count: number) => void;
-}
-
-const MessageBranchContext = createContext<MessageBranchContextType | null>(
-  null
-);
-
-const useMessageBranch = () => {
-  const context = useContext(MessageBranchContext);
-
-  if (!context) {
-    throw new Error(
-      "MessageBranch components must be used within MessageBranch"
-    );
-  }
-
-  return context;
-};
-
-export type MessageBranchProps = HTMLAttributes<HTMLDivElement> & {
-  defaultBranch?: number;
-  onBranchChange?: (branchIndex: number) => void;
-};
-
-export const MessageBranch = ({
-  defaultBranch = 0,
-  onBranchChange,
-  className,
-  ...props
-}: MessageBranchProps) => {
-  const [currentBranch, setCurrentBranch] = useState(defaultBranch);
-  const [branchCount, setBranchCount] = useState(0);
-  const effectiveCurrentBranch =
-    branchCount > 0 ? Math.min(currentBranch, branchCount - 1) : 0;
-
-  const handleBranchChange = useCallback(
-    (newBranch: number) => {
-      const nextBranch =
-        branchCount > 0
-          ? Math.min(Math.max(newBranch, 0), branchCount - 1)
-          : 0;
-
-      setCurrentBranch(nextBranch);
-      onBranchChange?.(nextBranch);
-    },
-    [branchCount, onBranchChange]
-  );
-
-  const goToPrevious = useCallback(() => {
-    const newBranch =
-      effectiveCurrentBranch > 0 ? effectiveCurrentBranch - 1 : branchCount - 1;
-    handleBranchChange(newBranch);
-  }, [effectiveCurrentBranch, branchCount, handleBranchChange]);
-
-  const goToNext = useCallback(() => {
-    const newBranch =
-      effectiveCurrentBranch < branchCount - 1 ? effectiveCurrentBranch + 1 : 0;
-    handleBranchChange(newBranch);
-  }, [effectiveCurrentBranch, branchCount, handleBranchChange]);
-
-  const contextValue = useMemo<MessageBranchContextType>(
-    () => ({
-      currentBranch: effectiveCurrentBranch,
-      goToNext,
-      goToPrevious,
-      setBranchCount,
-      totalBranches: branchCount,
-    }),
-    [branchCount, effectiveCurrentBranch, goToNext, goToPrevious]
-  );
-
-  return (
-    <MessageBranchContext.Provider value={contextValue}>
-      <div
-        className={cn("grid w-full gap-2 [&>div]:pb-0", className)}
-        {...props}
-      />
-    </MessageBranchContext.Provider>
-  );
-};
-
-export type MessageBranchContentProps = HTMLAttributes<HTMLDivElement>;
-
-export const MessageBranchContent = ({
-  children,
-  ...props
-}: MessageBranchContentProps) => {
-  const { currentBranch, setBranchCount, totalBranches } = useMessageBranch();
-  const childrenArray = useMemo(
-    () => Children.toArray(children).filter(isValidElement),
-    [children]
-  );
-
-  useEffect(() => {
-    if (totalBranches !== childrenArray.length) {
-      setBranchCount(childrenArray.length);
-    }
-  }, [childrenArray.length, setBranchCount, totalBranches]);
-
-  return childrenArray.map((branch, index) => (
-    <div
-      className={cn(
-        "grid gap-2 overflow-hidden [&>div]:pb-0",
-        index === currentBranch ? "block" : "hidden"
-      )}
-      key={branch.key ?? `branch-${index}`}
-      {...props}
-    >
-      {branch}
-    </div>
-  ));
-};
-
-export type MessageBranchSelectorProps = ComponentProps<typeof ButtonGroup>;
-
-export const MessageBranchSelector = ({
-  className,
-  ...props
-}: MessageBranchSelectorProps) => {
-  const { totalBranches } = useMessageBranch();
-
-  // Don't render if there's only one branch
-  if (totalBranches <= 1) {
-    return null;
-  }
-
-  return (
-    <ButtonGroup
-      className={cn(
-        "[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md",
-        className
-      )}
-      orientation="horizontal"
-      {...props}
-    />
-  );
-};
-
-export type MessageBranchPreviousProps = ComponentProps<typeof Button>;
-
-export const MessageBranchPrevious = ({
-  children,
-  ...props
-}: MessageBranchPreviousProps) => {
-  const { goToPrevious, totalBranches } = useMessageBranch();
-
-  return (
-    <Button
-      aria-label="Previous branch"
-      disabled={totalBranches <= 1}
-      onClick={goToPrevious}
-      size="icon-sm"
-      type="button"
-      variant="ghost"
-      {...props}
-    >
-      {children ?? <ChevronLeftIcon size={14} />}
-    </Button>
-  );
-};
-
-export type MessageBranchNextProps = ComponentProps<typeof Button>;
-
-export const MessageBranchNext = ({
-  children,
-  ...props
-}: MessageBranchNextProps) => {
-  const { goToNext, totalBranches } = useMessageBranch();
-
-  return (
-    <Button
-      aria-label="Next branch"
-      disabled={totalBranches <= 1}
-      onClick={goToNext}
-      size="icon-sm"
-      type="button"
-      variant="ghost"
-      {...props}
-    >
-      {children ?? <ChevronRightIcon size={14} />}
-    </Button>
-  );
-};
-
-export type MessageBranchPageProps = HTMLAttributes<HTMLSpanElement>;
-
-export const MessageBranchPage = ({
-  className,
-  ...props
-}: MessageBranchPageProps) => {
-  const { currentBranch, totalBranches } = useMessageBranch();
-
-  return (
-    <ButtonGroupText
-      className={cn(
-        "border-none bg-transparent text-muted-foreground shadow-none",
-        className
-      )}
-      {...props}
-    >
-      {currentBranch + 1} of {totalBranches}
-    </ButtonGroupText>
-  );
-};
-
-export type MessageToolbarProps = ComponentProps<"div">;
-
-export const MessageToolbar = ({
-  className,
-  children,
-  ...props
-}: MessageToolbarProps) => (
-  <div
-    className={cn(
-      "mt-4 flex w-full items-center justify-between gap-4",
-      className
-    )}
-    {...props}
-  >
-    {children}
-  </div>
-);

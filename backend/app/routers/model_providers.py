@@ -1,3 +1,5 @@
+from contextlib import closing
+
 from fastapi import APIRouter, HTTPException
 
 from app.db.connection import connect
@@ -141,7 +143,7 @@ def discover_models(
 
 
 def _saved_api_key(client_id: str) -> str:
-    with connect() as conn:
+    with closing(connect()) as conn:
         row = conn.execute(
             """
             SELECT encrypted_api_key
