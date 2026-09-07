@@ -95,7 +95,7 @@ assert.match(
 );
 assert.match(
   documentCanvasHookSource,
-  /resumate-document-canvas-scale-v1/,
+  /reseno-document-canvas-scale-v1/,
   "Canvas zoom must use a versioned local preference key.",
 );
 assert.match(

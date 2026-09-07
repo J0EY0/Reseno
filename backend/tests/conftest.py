@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from tests.runtime_environment import runtime_environment
 
-_BOOTSTRAP_DATA_DIR = tempfile.TemporaryDirectory(prefix="resumate-pytest-bootstrap-")
+_BOOTSTRAP_DATA_DIR = tempfile.TemporaryDirectory(prefix="reseno-pytest-bootstrap-")
 os.environ.update(runtime_environment(Path(_BOOTSTRAP_DATA_DIR.name)))
 
 

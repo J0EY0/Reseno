@@ -12,7 +12,7 @@ pytestmark = pytest.mark.skipif(
     reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
 )
 
-RESULT_TYPE = "resumate:oauth:result"
+RESULT_TYPE = "reseno:oauth:result"
 
 
 def _expect_completion(flow: TabFlow, tab: Page) -> None:
@@ -212,7 +212,7 @@ def test_closing_github_tab_cancels_pending_completion(
     flow = tab_flow("bind")
     flow.open()
     original_session = flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     )
     tab = flow.start()
     flow.confirm(tab)
@@ -225,7 +225,7 @@ def test_closing_github_tab_cancels_pending_completion(
     flow.page.wait_for_timeout(100)
     flow.assert_parent()
     assert flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     ) == original_session
     flow.assert_binding_toast()
     expect(flow.page.get_by_text("connected-owner", exact=True)).to_have_count(0)
@@ -242,7 +242,7 @@ def test_dialog_cancel_closes_github_tab_and_ignores_late_completion(
     flow = tab_flow("bind")
     flow.open()
     original_session = flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     )
     tab = flow.start()
     flow.confirm(tab)
@@ -258,7 +258,7 @@ def test_dialog_cancel_closes_github_tab_and_ignores_late_completion(
     flow.page.wait_for_timeout(100)
     flow.assert_parent()
     assert flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     ) == original_session
     flow.assert_binding_toast()
     expect(flow.page.get_by_text("connected-owner", exact=True)).to_have_count(0)
@@ -280,7 +280,7 @@ def test_leaving_binding_settings_aborts_authorization_without_a_toast(
     flow.page.locator('a[href="/settings"]').click()
     expect(flow.button()).to_be_enabled()
     original_session = flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     )
     tab = flow.start()
     flow.confirm(tab)
@@ -296,5 +296,5 @@ def test_leaving_binding_settings_aborts_authorization_without_a_toast(
     assert flow.page.url == f"{flow.url}/resume"
     expect(flow.page.locator("[data-sonner-toast]")).to_have_count(0)
     assert flow.page.evaluate(
-        "localStorage.getItem('resumate-auth-session')"
+        "localStorage.getItem('reseno-auth-session')"
     ) == original_session

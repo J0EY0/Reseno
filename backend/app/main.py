@@ -89,10 +89,10 @@ def create_app() -> FastAPI:
         OAuthSessionMiddleware,
         secret_key=hmac.digest(
             os.environ[JWT_SECRET_ENV_NAME].encode(),
-            b"resumate-oauth-session",
+            b"reseno-oauth-session",
             hashlib.sha256,
         ).hex(),
-        session_cookie="resumate-oauth",
+        session_cookie="reseno-oauth",
         max_age=OAUTH_SESSION_TTL_SECONDS,
         path="/api/auth/oauth",
         same_site="lax",

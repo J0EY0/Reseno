@@ -171,7 +171,7 @@ try {
 
 实习项：\`company\` 改为「腾讯」，\`position\` 改为「前端开发实习生」，\`location\` 清空；将“企业协同产品线”移入 \`description\`。
 
-项目项：\`name\` 改为「ResuMate AI Agent简历制作网站」，技术栈拆分至 \`techStack\`，\`role\` 清空。
+项目项：\`name\` 改为「Reseno AI Agent简历制作网站」，技术栈拆分至 \`techStack\`，\`role\` 清空。
 
 教育项：把“计算机科学与技术”从 \`degree\` 移到 \`major\`，\`degree\` 简化为「本科」。
 
@@ -203,7 +203,7 @@ try {
     "字段错位修复",
     "腾讯",
     "前端开发实习生",
-    "ResuMate AI Agent简历制作网站",
+    "Reseno AI Agent简历制作网站",
     "企业协同产品线",
     "A4 纸张预览",
     "匹配度改写",
@@ -282,7 +282,7 @@ try {
 
 | JD 要求 | 简历证据 |
 | --- | --- |
-| React | ResuMate 项目 |`;
+| React | Reseno 项目 |`;
   const comparisonTableMarkup = renderToStaticMarkup(
     createElement(MessageResponse, {
       children: comparisonTable,
@@ -318,7 +318,7 @@ try {
     "The JD fixture must remain a valid GFM table at the rich-rendering seam.",
   );
 
-  for (const tableText of ["JD 要求", "简历证据", "React", "ResuMate 项目"]) {
+  for (const tableText of ["JD 要求", "简历证据", "React", "Reseno 项目"]) {
     assert.match(
       editedResponseMarkup,
       new RegExp(tableText),

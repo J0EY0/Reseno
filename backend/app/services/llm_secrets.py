@@ -37,7 +37,7 @@ def decrypt_api_key(encrypted_api_key: str) -> str:
         return _get_fernet().decrypt(encrypted_api_key.encode("ascii")).decode("utf-8")
     except InvalidToken as exc:
         raise RuntimeError(
-            "Unable to decrypt API key with RESUMATE_MASTER_KEY."
+            "Unable to decrypt API key with RESENO_MASTER_KEY."
         ) from exc
 
 

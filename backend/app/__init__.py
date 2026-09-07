@@ -1,1 +1,1 @@
-"""ResuMate backend package."""
+"""Reseno backend package."""

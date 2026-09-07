@@ -21,7 +21,7 @@ interface ApiCacheEntry {
 const getRequestCache = new Map<string, ApiCacheEntry>();
 const API_ERROR_NOTIFIED = Symbol("apiErrorNotified");
 
-type ResuMateApiError = Error & {
+type ResenoApiError = Error & {
   [API_ERROR_NOTIFIED]?: true;
   apiCode?: string;
   status?: number;
@@ -138,8 +138,8 @@ function isApiResponse<T>(value: unknown): value is ApiResponse<T> {
 }
 
 function markApiErrorNotified(error: Error) {
-  (error as ResuMateApiError)[API_ERROR_NOTIFIED] = true;
-  return error as ResuMateApiError;
+  (error as ResenoApiError)[API_ERROR_NOTIFIED] = true;
+  return error as ResenoApiError;
 }
 
 function isApiErrorNotified(error: unknown) {
@@ -212,11 +212,11 @@ function notifyApiErrorOnce(error: unknown) {
 
 function createApiError(
   messageKey: string,
-  metadata: Pick<ResuMateApiError, "apiCode" | "status"> = {},
+  metadata: Pick<ResenoApiError, "apiCode" | "status"> = {},
   notifyOnError = true,
 ) {
   const message = resolveApiMessage(messageKey);
-  const error = new Error(message) as ResuMateApiError;
+  const error = new Error(message) as ResenoApiError;
 
   error.apiCode = metadata.apiCode;
   error.status = metadata.status;

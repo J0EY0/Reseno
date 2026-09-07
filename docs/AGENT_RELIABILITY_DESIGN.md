@@ -1,10 +1,10 @@
-# ResuMate Agent 可靠性架构
+# Reseno Agent 可靠性架构
 
 日期：2026-08-22
 
 ## 目标
 
-ResuMate Agent 是简历编辑 Agent，不是通用 Agent 平台。它的核心产物是一组可预览、
+Reseno Agent 是简历编辑 Agent，不是通用 Agent 平台。它的核心产物是一组可预览、
 可应用、可丢弃的结构化简历草稿；自然语言回复用于分析、解释结果或提出聚焦问题。
 
 设计参考 Pi 的开放模型循环：模型拥有工具选择权，工具 observation 回到同一个模型

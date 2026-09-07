@@ -129,7 +129,7 @@ for (const mode of ["bind", "setup"]) {
     assert.equal(f.opened.length, 1);
     assert.equal(f.opened[0].length, 2);
     assert.equal(f.opened[0][0], setup ? "" : "https://github.com/login/oauth/authorize");
-    assert.match(f.opened[0][1], /^resumate-github-/);
+    assert.match(f.opened[0][1], /^reseno-github-/);
     assert.equal(f.submits, setup ? 1 : 0);
     assert.deepEqual(f.focusHistory, ["tab"]);
     assert.equal(f.progress.at(-1).stage, "waiting");

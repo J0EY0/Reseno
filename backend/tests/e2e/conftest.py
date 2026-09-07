@@ -97,7 +97,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
     processes: list[subprocess.Popen[str]] = []
     logs: list[TextIO] = []
 
-    with tempfile.TemporaryDirectory(prefix="resumate-route-e2e-") as data_dir:
+    with tempfile.TemporaryDirectory(prefix="reseno-route-e2e-") as data_dir:
         data_path = Path(data_dir)
         model_metadata_path = data_path / MODEL_METADATA_CACHE_NAME
         model_metadata_path.parent.mkdir(parents=True)
@@ -127,7 +127,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
         }
         frontend_env = {
             **os.environ,
-            "RESUMATE_VITE_CACHE_DIR": str(data_path / "vite-cache"),
+            "RESENO_VITE_CACHE_DIR": str(data_path / "vite-cache"),
             "VITE_DEV_API_TARGET": backend_url,
         }
 

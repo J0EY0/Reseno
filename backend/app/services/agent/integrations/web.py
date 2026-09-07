@@ -47,7 +47,7 @@ FETCH_TIMEOUT_SECONDS = 10.0
 PAGE_HTTP_TIMEOUT_SECONDS = 3.0
 DYNAMIC_CONTENT_TIMEOUT_MS = 4_000
 DUCKDUCKGO_SEARCH_URL = "https://html.duckduckgo.com/html/"
-WEB_USER_AGENT = "Mozilla/5.0 (compatible; ResuMate/1.0)"
+WEB_USER_AGENT = "Mozilla/5.0 (compatible; Reseno/1.0)"
 WEB_ACCEPT_LANGUAGE = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
 FETCH_EXCERPT_MAX_CHARS = 2_400
 PAGE_PASSAGE_MAX_CHARS = 700

@@ -38,7 +38,7 @@ const [
 ]);
 
 const bootstrapMatch = indexSource.match(
-  /<script data-resumate-theme-bootstrap>([\s\S]*?)<\/script>/,
+  /<script data-reseno-theme-bootstrap>([\s\S]*?)<\/script>/,
 );
 assert(bootstrapMatch, "index.html must synchronously bootstrap the saved theme.");
 
@@ -119,7 +119,7 @@ assert.deepEqual(
 
 assert(
   themeSource.includes(
-    'workspaceThemePreferenceKey = "resumate-theme"',
+    'workspaceThemePreferenceKey = "reseno-theme"',
   ) && themeSource.includes("loadWorkspaceThemePreference"),
   "The runtime and HTML bootstrap must share the validated theme cache contract.",
 );

@@ -22,7 +22,7 @@ from .preferences import execution_profile_for_request
 
 _SCHEMA_PATH = Path(__file__).with_name("resume_edit_operation.schema.json")
 _RESUME_SCHEMA_PATH = _SCHEMA_PATH.parent.parent / "resume_document.schema.json"
-_RESUME_SCHEMA_REFERENCE = "https://resumate.local/schemas/resume-document-v2.json"
+_RESUME_SCHEMA_REFERENCE = "https://reseno.local/schemas/resume-document-v2.json"
 
 
 def _schema_target(root: dict[str, Any], reference: str) -> object:

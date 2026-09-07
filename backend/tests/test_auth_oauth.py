@@ -209,7 +209,7 @@ def bridge_data(response: httpx.Response) -> dict[str, Any]:
     match = re.search(r"const config = (.*);", response.text)
     assert match is not None
     data = json.loads(match[1])
-    assert data["result"]["type"] == "resumate:oauth:result"
+    assert data["result"]["type"] == "reseno:oauth:result"
     assert set(data["result"]) in ({"type", "code", "intent"}, {"type", "error"})
     return data
 
@@ -245,7 +245,7 @@ def test_callback_bridge_serializes_script_data_without_html_injection() -> None
     assert bridge_data(http_response) == {
         "origin": PUBLIC_ORIGIN,
         "result": {
-            "type": "resumate:oauth:result",
+            "type": "reseno:oauth:result",
             "code": code,
             "intent": "bind",
         },
@@ -343,7 +343,7 @@ def setup(client: TestClient, github: GitHub) -> str:
     assert manifest["default_events"] == []
     assert manifest["request_oauth_on_install"] is False
     assert "hook_attributes" not in manifest
-    assert manifest["name"].startswith("ResuMate-")
+    assert manifest["name"].startswith("Reseno-")
     assert manifest["url"] == github.origin
     assert (
         manifest["redirect_url"]

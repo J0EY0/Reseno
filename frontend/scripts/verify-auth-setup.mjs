@@ -13,7 +13,7 @@ const testState = {
   invalidatedTokens: [],
   lockNames: [],
 };
-globalThis.__RESUMATE_AUTH_SETUP_TEST_STATE__ = testState;
+globalThis.__RESENO_AUTH_SETUP_TEST_STATE__ = testState;
 const navigatorDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "navigator",
@@ -43,7 +43,7 @@ function deferredResponse() {
 
 const virtualModules = {
   "@/lib/api-client": `
-    const state = globalThis.__RESUMATE_AUTH_SETUP_TEST_STATE__;
+    const state = globalThis.__RESENO_AUTH_SETUP_TEST_STATE__;
     export const apiRoutes = {
       authLogin: "/api/auth/login",
       authPassword: "/api/auth/password",
@@ -56,8 +56,8 @@ const virtualModules = {
     }
   `,
   "@/lib/auth-session": `
-    const state = globalThis.__RESUMATE_AUTH_SETUP_TEST_STATE__;
-    export const AUTH_REFRESH_LOCK_NAME = "resumate-auth-refresh";
+    const state = globalThis.__RESENO_AUTH_SETUP_TEST_STATE__;
+    export const AUTH_REFRESH_LOCK_NAME = "reseno-auth-refresh";
     export function clearAuthSession() { state.session = null; }
     export function getAccessToken() { return state.session?.accessToken ?? null; }
     export function loadAuthSession() { return state.session !== null; }
@@ -70,7 +70,7 @@ const virtualModules = {
     }
   `,
 };
-const virtualImportPrefix = "virtual:resumate-auth-setup-test:";
+const virtualImportPrefix = "virtual:reseno-auth-setup-test:";
 const virtualPrefix = `\0${virtualImportPrefix}`;
 const server = await createServer({
   cacheDir: createViteTestCacheDir(),
@@ -79,7 +79,7 @@ const server = await createServer({
   root: process.cwd(),
   plugins: [
     {
-      name: "resumate-auth-setup-test-mocks",
+      name: "reseno-auth-setup-test-mocks",
       enforce: "pre",
       resolveId(id) {
         return id.startsWith(virtualImportPrefix) ? `\0${id}` : null;
@@ -197,7 +197,7 @@ try {
   assert.deepEqual(testState.session, nextSession);
   assert.deepEqual(testState.invalidatedTokens, ["token-1", "token-2"]);
   assert.equal(testState.savedSessions.length, 3);
-  assert.deepEqual(testState.lockNames, Array(3).fill("resumate-auth-refresh"));
+  assert.deepEqual(testState.lockNames, Array(3).fill("reseno-auth-refresh"));
   assert.equal(testState.requests.shift().route, "/api/auth/refresh");
 
   const logoutResponse = deferredResponse();
@@ -409,7 +409,7 @@ try {
   assert.equal(testState.responses.length, 0);
   console.log("Authentication setup and refresh coordination verified.");
 } finally {
-  delete globalThis.__RESUMATE_AUTH_SETUP_TEST_STATE__;
+  delete globalThis.__RESENO_AUTH_SETUP_TEST_STATE__;
   if (navigatorDescriptor) {
     Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
   } else {

@@ -230,7 +230,7 @@ class EmbeddedTemplate(ArtifactModel):
 class ResumeArtifactV1(ArtifactModel):
     """The only supported JSON resume import format."""
 
-    format: Literal["resumate.resume"]
+    format: Literal["reseno.resume"]
     format_version: Literal[1] = Field(alias="formatVersion")
     templates: list[EmbeddedTemplate]
     resumes: list[ResumeArtifactItem] = Field(min_length=1)
@@ -257,7 +257,7 @@ class ResumeArtifactV1(ArtifactModel):
 class TemplateArtifactV1(ArtifactModel):
     """The only supported JSON template import format."""
 
-    format: Literal["resumate.template"]
+    format: Literal["reseno.template"]
     format_version: Literal[1] = Field(alias="formatVersion")
     templates: list[TemplateArtifactItem] = Field(min_length=1)
 

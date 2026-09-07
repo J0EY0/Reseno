@@ -27,7 +27,7 @@ def test_verification_preserves_inherited_runtime_files(
     master_key = Fernet.generate_key().decode()
     jwt_secret = "synthetic-existing-jwt-secret-123456789"
     env_path.write_text(
-        f"RESUMATE_MASTER_KEY={master_key}\nRESUMATE_JWT_SECRET={jwt_secret}\n",
+        f"RESENO_MASTER_KEY={master_key}\nRESENO_JWT_SECRET={jwt_secret}\n",
         encoding="utf-8",
     )
     existing_files = {
@@ -43,8 +43,8 @@ from app.config import get_settings
 
 settings = get_settings()
 assert str(settings.env_file_path) != os.environ["PROBE_ENV_FILE"]
-assert os.environ["RESUMATE_MASTER_KEY"] != os.environ["PROBE_MASTER_KEY"]
-assert os.environ["RESUMATE_JWT_SECRET"] != os.environ["PROBE_JWT_SECRET"]
+assert os.environ["RESENO_MASTER_KEY"] != os.environ["PROBE_MASTER_KEY"]
+assert os.environ["RESENO_JWT_SECRET"] != os.environ["PROBE_JWT_SECRET"]
 
 
 @pytest.mark.parametrize(
@@ -60,8 +60,8 @@ def test_isolated_client(request, fixture_name, tmp_path):
         settings.export_dir, settings.user_settings_path, settings.env_file_path,
     ):
         assert path.is_relative_to(tmp_path)
-    assert os.environ["RESUMATE_MASTER_KEY"] != os.environ["PROBE_MASTER_KEY"]
-    assert os.environ["RESUMATE_JWT_SECRET"] != os.environ["PROBE_JWT_SECRET"]
+    assert os.environ["RESENO_MASTER_KEY"] != os.environ["PROBE_MASTER_KEY"]
+    assert os.environ["RESENO_JWT_SECRET"] != os.environ["PROBE_JWT_SECRET"]
 """,
         encoding="utf-8",
     )
@@ -75,9 +75,9 @@ def test_isolated_client(request, fixture_name, tmp_path):
             "model_metadata._fetch_catalog = lambda: {}; "
             "model_metadata._fetch_reasoning_catalog = lambda: {}; "
             "runpy.run_path('scripts/verify_data_flow.py', run_name='__main__'); "
-            "assert os.environ['RESUMATE_MASTER_KEY'] != "
+            "assert os.environ['RESENO_MASTER_KEY'] != "
             "os.environ['PROBE_MASTER_KEY']; "
-            "assert os.environ['RESUMATE_JWT_SECRET'] != "
+            "assert os.environ['RESENO_JWT_SECRET'] != "
             "os.environ['PROBE_JWT_SECRET']",
         ]
     )
@@ -92,8 +92,8 @@ def test_isolated_client(request, fixture_name, tmp_path):
             "APP_ENV_FILE": str(env_path),
             "APP_USER_SETTINGS_PATH": str(settings_path),
             "EXPORT_DIR": str(export_dir),
-            "RESUMATE_MASTER_KEY": master_key,
-            "RESUMATE_JWT_SECRET": jwt_secret,
+            "RESENO_MASTER_KEY": master_key,
+            "RESENO_JWT_SECRET": jwt_secret,
             "PROBE_MASTER_KEY": master_key,
             "PROBE_JWT_SECRET": jwt_secret,
             "PROBE_ENV_FILE": str(env_path),

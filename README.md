@@ -1,6 +1,6 @@
-# ResuMate
+# Reseno
 
-ResuMate is a resume workspace with a React frontend and a FastAPI backend. It
+Reseno is a resume workspace with a React frontend and a FastAPI backend. It
 supports structured resume editing, workspace persistence, imports, AI agent assisting.
 
 ## Stack
@@ -18,11 +18,11 @@ supports structured resume editing, workspace persistence, imports, AI agent ass
 ## Configuration
 
 Backend defaults are documented in `backend/.env.example`. The backend stores
-runtime data outside the Git working tree under `~/.resumate` by default.
+runtime data outside the Git working tree under `~/.reseno` by default.
 
-There are no default credentials. On first opening ResuMate locally, create the
+There are no default credentials. On first opening Reseno locally, create the
 single owner username and password on the setup page. Authentication is stored
-separately in `~/.resumate/auth.db`; the resume database remains unchanged.
+separately in `~/.reseno/auth.db`; the resume database remains unchanged.
 
 Owner sessions use JWTs valid for 36 hours after issuance or refresh. Browser
 sessions are kept in local storage and shared by tabs on the same origin.
@@ -32,7 +32,7 @@ Signing in or out synchronizes open tabs. Valid sessions survive browser restart
 
 Create the owner with a username and password, then choose **Set up and connect
 GitHub** in account settings. Confirm the app creation and authorization on GitHub
-to bind your account. ResuMate fills in the instance address and callback URLs and
+to bind your account. Reseno fills in the instance address and callback URLs and
 saves the configuration automatically; no OAuth credentials need to be copied or
 added to `.env`.
 
@@ -40,7 +40,7 @@ Each instance uses a private GitHub App owned by its deployment owner, created
 through the [GitHub App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
 There is no shared authentication service. The app requests no access to repository
 contents or email. Its client secret is encrypted in `auth.db` with
-`RESUMATE_MASTER_KEY`; back up the runtime `.env` together with that database.
+`RESENO_MASTER_KEY`; back up the runtime `.env` together with that database.
 GitHub access and refresh tokens are used only during authentication and are not
 stored. Local JWTs are never included in callback URLs.
 

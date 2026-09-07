@@ -203,7 +203,7 @@ def _create_probe_resume(
                 {
                     "id": "ats-achievement-1",
                     "name": "年度工程奖" if is_zh else "Engineering Excellence Award",
-                    "issuer": "ResuMate Foundation",
+                    "issuer": "Reseno Foundation",
                     "date": "2025",
                     "url": "https://example.com/awards/engineering",
                     "description": (

@@ -12,8 +12,8 @@ from app.config import JWT_SECRET_ENV_NAME, get_settings
 
 ACCESS_TOKEN_TTL_SECONDS = 36 * 60 * 60
 JWT_ALGORITHM = "HS256"
-JWT_ISSUER = "resumate"
-JWT_AUDIENCE = "resumate-api"
+JWT_ISSUER = "reseno"
+JWT_AUDIENCE = "reseno-api"
 JWT_REQUIRED_CLAIMS = ("sub", "rev", "iat", "exp", "jti", "iss", "aud")
 
 _revoked_token_hashes: dict[str, int] = {}

@@ -36,7 +36,7 @@ def _request(
                     "items": [
                         {
                             "id": "project-1",
-                            "name": "ResuMate AI Agent 简历制作网站",
+                            "name": "Reseno AI Agent 简历制作网站",
                             "role": "",
                             "techStack": [
                                 "React",

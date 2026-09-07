@@ -238,11 +238,11 @@ try {
 
   const project = createResumeSection("project");
   Object.assign(project.items[0], {
-    name: "ResuMate",
+    name: "Reseno",
     role: "Maintainer",
     techStack: ["React", "FastAPI"],
     period: "2026",
-    url: "https://example.com/resumate",
+    url: "https://example.com/reseno",
     description: "Semantic resume editor",
     highlights: ["<ul><li>Stable V2 model</li></ul>"],
   });
@@ -257,10 +257,10 @@ try {
     },
     {
       layout: "timeline",
-      title: "ResuMate",
+      title: "Reseno",
       subtitle: "Maintainer",
       meta: "React · FastAPI",
-      url: "https://example.com/resumate",
+      url: "https://example.com/reseno",
     },
     "Preview/PDF projection must retain the semantic project fields.",
   );

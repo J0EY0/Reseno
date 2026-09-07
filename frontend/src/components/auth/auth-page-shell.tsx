@@ -11,10 +11,12 @@ import { AppToaster } from "@/components/app-toaster";
 import { AuthParticleBackground } from "@/components/auth/auth-particle-background";
 
 export function AuthPageShell({
+  brandTitle,
   children,
   description,
   formTitle,
 }: {
+  brandTitle: string;
   children: ReactNode;
   description?: string;
   formTitle: string;
@@ -47,6 +49,11 @@ export function AuthPageShell({
             className="relative hidden overflow-hidden md:block"
           >
             <AuthParticleBackground />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-linear-to-t from-(--auth-particle-edge)/85 via-(--auth-particle-edge)/30 to-transparent px-8 pt-20 pb-8 lg:pb-10">
+              <p className="text-4xl leading-none font-semibold tracking-tight text-(--auth-particle-foreground)">
+                {brandTitle}
+              </p>
+            </div>
           </div>
         </div>
       </Card>

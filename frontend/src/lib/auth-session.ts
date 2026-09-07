@@ -1,6 +1,6 @@
-export const AUTH_SESSION_KEY = 'resumate-auth-session'
-export const AUTH_REFRESH_LOCK_NAME = 'resumate-auth-refresh'
-const INVALIDATED_TOKEN_CACHE_KEY = 'resumate-invalidated-jwts'
+export const AUTH_SESSION_KEY = 'reseno-auth-session'
+export const AUTH_REFRESH_LOCK_NAME = 'reseno-auth-refresh'
+const INVALIDATED_TOKEN_CACHE_KEY = 'reseno-invalidated-jwts'
 const INVALIDATED_TOKEN_TTL_MS = 4 * 60 * 60 * 1000
 
 interface AuthSession {

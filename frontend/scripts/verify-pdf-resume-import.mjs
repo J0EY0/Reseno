@@ -16,8 +16,8 @@ const { DOMMatrix, ImageData, Path2D } =
 const pdfWorkerFileUrl = pathToFileURL(
   require.resolve("pdfjs-dist/build/pdf.worker.min.mjs"),
 ).href;
-const pdfWorkerUrlModuleId = "\0resumate-pdf-worker-url";
-const authSessionImportId = "virtual:resumate-pdf-import-auth-session";
+const pdfWorkerUrlModuleId = "\0reseno-pdf-worker-url";
+const authSessionImportId = "virtual:reseno-pdf-import-auth-session";
 const authSessionModuleId = `\0${authSessionImportId}`;
 const parserModuleDirectory = new URL(
   "../src/lib/pdf-resume-import/",
@@ -178,7 +178,7 @@ const server = await createServer({
   root: process.cwd(),
   plugins: [
     {
-      name: "resumate-pdf-worker-url",
+      name: "reseno-pdf-worker-url",
       enforce: "pre",
       resolveId(id) {
         if (id === authSessionImportId) {
@@ -671,7 +671,7 @@ function verifyProjectItemGrouping(buildResumeFromLines) {
       line("xiaoming@example.com", 1),
       line("项目经历", 2, 14),
       line("React + TypeScript + Tailwind", 3),
-      line("ResuMate", 4),
+      line("Reseno", 4),
       line("2026.03 - 至今", 5),
       line("AI Agent 简历制作网站", 6),
       line("• 实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。", 7),
@@ -682,7 +682,7 @@ function verifyProjectItemGrouping(buildResumeFromLines) {
   const project = resume.sections.find((section) => section.kind === "project");
 
   assert.equal(project?.items.length, 1);
-  assert.equal(project?.items[0]?.name, "ResuMate");
+  assert.equal(project?.items[0]?.name, "Reseno");
   assert.equal(project?.items[0]?.period, "2026.03 - 至今");
   assert.equal(project?.items[0]?.highlights.length, 2);
 }
@@ -1553,7 +1553,7 @@ function verifyZhMinimalStructureRegression(
   const project = requiredSection(resume, "project");
   assert.equal(project.items.length, 1);
   assert.deepEqual(selectItemFields(project.items[0]), {
-    title: "ResuMate",
+    title: "Reseno",
     subtitle: "AI Agent 简历制作网站",
     meta: "React · TypeScript · Tailwind · shadcn/ui",
     period: "2026.03 - 至今",

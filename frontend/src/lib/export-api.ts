@@ -95,7 +95,7 @@ export function createResumeArtifact(
   };
 
   return {
-    format: "resumate.resume",
+    format: "reseno.resume",
     formatVersion: 1,
     templates: isBuiltInTemplate
       ? []

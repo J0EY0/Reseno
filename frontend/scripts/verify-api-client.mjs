@@ -21,7 +21,7 @@ const testState = {
   token: "token-a",
   toasts: [],
 };
-globalThis.__RESUMATE_API_CLIENT_TEST_STATE__ = testState;
+globalThis.__RESENO_API_CLIENT_TEST_STATE__ = testState;
 globalThis.window = {
   location: {
     pathname: "/resume",
@@ -180,8 +180,8 @@ const virtualModules = {
     }
   `,
   "@/lib/auth-session": `
-    const state = globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
-    export const AUTH_REFRESH_LOCK_NAME = "resumate-auth-refresh";
+    const state = globalThis.__RESENO_API_CLIENT_TEST_STATE__;
+    export const AUTH_REFRESH_LOCK_NAME = "reseno-auth-refresh";
     export function clearAuthSession() {
       state.clearedAuthCount += 1;
       state.token = null;
@@ -192,13 +192,13 @@ const virtualModules = {
     }
   `,
   sonner: `
-    const state = globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
+    const state = globalThis.__RESENO_API_CLIENT_TEST_STATE__;
     export const toast = {
       error(message) { state.toasts.push(message); },
     };
   `,
 };
-const virtualImportPrefix = "virtual:resumate-api-client-test:";
+const virtualImportPrefix = "virtual:reseno-api-client-test:";
 const virtualPrefix = `\0${virtualImportPrefix}`;
 const server = await createServer({
   cacheDir: createViteTestCacheDir(),
@@ -207,7 +207,7 @@ const server = await createServer({
   root: process.cwd(),
   plugins: [
     {
-      name: "resumate-api-client-test-mocks",
+      name: "reseno-api-client-test-mocks",
       enforce: "pre",
       resolveId(id) {
         return id.startsWith(virtualImportPrefix) ? `\0${id}` : null;
@@ -376,7 +376,7 @@ try {
       await new Promise((resolve) => setImmediate(resolve));
     }
     assert.deepEqual(testState.lockRequests, [
-      { name: "resumate-auth-refresh", options: { mode: "shared" } },
+      { name: "reseno-auth-refresh", options: { mode: "shared" } },
     ]);
     assert.equal(testState.clearedAuthCount, 0);
     testState.token = "token-b";
@@ -692,7 +692,7 @@ try {
 } finally {
   axios.defaults.adapter = originalAxiosAdapter;
   globalThis.fetch = originalFetch;
-  delete globalThis.__RESUMATE_API_CLIENT_TEST_STATE__;
+  delete globalThis.__RESENO_API_CLIENT_TEST_STATE__;
   delete globalThis.window;
   if (originalNavigator) {
     Object.defineProperty(globalThis, "navigator", originalNavigator);

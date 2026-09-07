@@ -111,7 +111,7 @@ class ModelConfigUpsertRequest(BaseModel):
         le=MAX_USER_MAX_TOKENS,
         description=(
             "Optional per-request output-token override; null delegates the "
-            "limit to ResuMate's automatic runtime policy."
+            "limit to Reseno's automatic runtime policy."
         ),
     )
     context_window_tokens: int | None = Field(

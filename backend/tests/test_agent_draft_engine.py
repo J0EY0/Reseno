@@ -63,7 +63,7 @@ def _request(
                         },
                         {
                             "id": "target-project",
-                            "name": "ResuMate",
+                            "name": "Reseno",
                             "role": "后端工程师",
                             "techStack": [],
                             "period": "",
@@ -107,7 +107,7 @@ def test_user_materials_automatically_ground_an_edit(
         lambda _resume_id, _file: "项目事实：使用 Kafka 处理消息。",
     )
     request = _request(
-        "使用我之前确认的信息和当前附件优化 ResuMate 项目。",
+        "使用我之前确认的信息和当前附件优化 Reseno 项目。",
         messages=[
             AgentConversationItem(
                 id="confirmed-project-result",
@@ -186,7 +186,7 @@ def test_unrelated_existing_period_issue_does_not_block_summary_edit() -> None:
 def test_unrelated_existing_period_issue_does_not_block_project_highlight() -> None:
     engine = DraftEditEngine.open(
         _request(
-            "候选人事实：我负责 ResuMate 后端平台工程。请优化 ResuMate 项目亮点。",
+            "候选人事实：我负责 Reseno 后端平台工程。请优化 Reseno 项目亮点。",
         ),
     )
 
@@ -197,7 +197,7 @@ def test_unrelated_existing_period_issue_does_not_block_project_highlight() -> N
                     "type": "update_item",
                     "sectionId": "project",
                     "itemId": "target-project",
-                    "patch": {"highlights": ["负责 ResuMate 后端平台工程。"]},
+                    "patch": {"highlights": ["负责 Reseno 后端平台工程。"]},
                 },
                 target="sections.project.items.target-project",
                 evidence_refs=[
@@ -211,7 +211,7 @@ def test_unrelated_existing_period_issue_does_not_block_project_highlight() -> N
     assert batch.accepted is True
     assert batch.draft_resume["sections"][0]["items"][0]["period"] == "not-a-date"
     assert batch.draft_resume["sections"][0]["items"][1]["highlights"] == [
-        "负责 ResuMate 后端平台工程。",
+        "负责 Reseno 后端平台工程。",
     ]
 
 
@@ -244,7 +244,7 @@ def test_draft_engine_does_not_infer_permissions_from_prompt_wording() -> None:
 
 def test_field_wording_does_not_create_a_runtime_scope() -> None:
     engine = DraftEditEngine.open(
-        _request("只改 ResuMate 项目描述，把已有 A4 预览事实写入描述。"),
+        _request("只改 Reseno 项目描述，把已有 A4 预览事实写入描述。"),
     )
 
     batch = engine.execute(
@@ -316,8 +316,8 @@ def test_reorder_is_staged_without_parsing_the_user_prompt() -> None:
 def test_normalization_keeps_supported_prose_that_repeats_structured_fields() -> None:
     engine = DraftEditEngine.open(
         _request(
-            "候选人事实：专注后端平台工程；ResuMate 项目角色是产品开发，"
-            "项目描述是 ResuMate 产品开发。请更新个人简介，以及 ResuMate 的"
+            "候选人事实：专注后端平台工程；Reseno 项目角色是产品开发，"
+            "项目描述是 Reseno 产品开发。请更新个人简介，以及 Reseno 的"
             "项目角色和项目描述。",
         ),
     )
@@ -339,7 +339,7 @@ def test_normalization_keeps_supported_prose_that_repeats_structured_fields() ->
                     "itemId": "target-project",
                     "patch": {
                         "role": "产品开发",
-                        "description": "ResuMate 产品开发",
+                        "description": "Reseno 产品开发",
                     },
                 },
                 target="sections.project.items.target-project",
@@ -356,7 +356,7 @@ def test_normalization_keeps_supported_prose_that_repeats_structured_fields() ->
     assert batch.draft_resume["basic"]["summary"] == "专注后端平台工程。"
     project = batch.draft_resume["sections"][0]["items"][1]
     assert project["role"] == "产品开发"
-    assert project["description"] == "ResuMate 产品开发"
+    assert project["description"] == "Reseno 产品开发"
     assert len(batch.edits) == 2
     assert batch.revision == 1
 

@@ -132,7 +132,7 @@ interface EmbeddedTemplateArtifact {
 }
 
 export interface ResumeArtifactV1 {
-  format: "resumate.resume";
+  format: "reseno.resume";
   formatVersion: 1;
   templates: EmbeddedTemplateArtifact[];
   resumes: ResumeArtifactItem[];

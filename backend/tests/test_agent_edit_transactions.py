@@ -18,7 +18,7 @@ from app.services.llm import LlmRequestError, LlmToolCall
 
 _CANDIDATE_FACTS = (
     "候选人事实：我关注复杂交互与工程质量。"
-    "项目事实：我在 ResuMate 担任产品开发，构建可验证的 Agent 编辑流程，"
+    "项目事实：我在 Reseno 担任产品开发，构建可验证的 Agent 编辑流程，"
     "面向结构化简历编辑与预览工作流，实现事务化编辑以避免部分修改进入草稿，"
     "并提供失败信息以支持模型修复完整批次。"
     "请据此优化个人简介和项目经历。"
@@ -50,7 +50,7 @@ def _resume() -> dict:
                 "items": [
                     {
                         "id": "project-1",
-                        "name": "ResuMate",
+                        "name": "Reseno",
                         "role": "",
                         "techStack": [],
                         "period": "",
@@ -129,14 +129,14 @@ def test_environment_replays_canonical_read_call_idempotently() -> None:
         first_call = LlmToolCall(
             id="call-idempotent-lookup",
             name="resume_lookup",
-            arguments={"query": "ResuMate", "includeItems": True},
-            raw_arguments='{"query":"ResuMate","includeItems":true}',
+            arguments={"query": "Reseno", "includeItems": True},
+            raw_arguments='{"query":"Reseno","includeItems":true}',
         )
         replayed_call = LlmToolCall(
             id="call-idempotent-lookup",
             name="resume_lookup",
-            arguments={"includeItems": True, "query": "ResuMate"},
-            raw_arguments='{ "includeItems": true, "query": "ResuMate" }',
+            arguments={"includeItems": True, "query": "Reseno"},
+            raw_arguments='{ "includeItems": true, "query": "Reseno" }',
         )
 
         first = await environment.invoke(first_call, AgentRuntimeContext())
@@ -158,8 +158,8 @@ def test_environment_records_completed_tool_timestamps() -> None:
             LlmToolCall(
                 id="call-timed-lookup",
                 name="resume_lookup",
-                arguments={"query": "ResuMate", "includeItems": True},
-                raw_arguments='{"query":"ResuMate","includeItems":true}',
+                arguments={"query": "Reseno", "includeItems": True},
+                raw_arguments='{"query":"Reseno","includeItems":true}',
             ),
             AgentRuntimeContext(),
         )
@@ -606,7 +606,7 @@ def test_update_item_records_canonical_field_diffs() -> None:
                     "sectionId": "project",
                     "itemId": "project-1",
                     "patch": {
-                        "name": "ResuMate",
+                        "name": "Reseno",
                         "description": "面向结构化简历编辑与预览工作流。",
                         "highlights": [
                             "实现事务化编辑以避免部分修改进入草稿。",
@@ -789,14 +789,14 @@ def test_batch_validation_uses_prior_operations_and_preserves_sequence() -> None
     }
     engine = DraftEditEngine.open(
         _request(
-            "项目事实：我开发 ResuMate，角色：开发者，实现事务化 Agent 编辑。"
+            "项目事实：我开发 Reseno，角色：开发者，实现事务化 Agent 编辑。"
             "请新增项目经历模块、项目条目和项目描述。",
             resume=empty_resume,
         ),
     )
     project_item = {
         "id": "project-1",
-        "name": "ResuMate",
+        "name": "Reseno",
         "role": "开发者",
         "techStack": [],
         "period": "",

@@ -52,7 +52,7 @@ def _import_templates(page: Page, names: list[str]) -> None:
             "mimeType": "application/json",
             "buffer": json.dumps(
                 {
-                    "format": "resumate.template",
+                    "format": "reseno.template",
                     "formatVersion": 1,
                     "templates": [_template(name) for name in names],
                 }

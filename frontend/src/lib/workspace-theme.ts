@@ -1,6 +1,6 @@
 import type { ThemeMode } from "@/types/resume";
 
-export const workspaceThemePreferenceKey = "resumate-theme";
+export const workspaceThemePreferenceKey = "reseno-theme";
 
 export function applyWorkspaceTheme(theme: "light" | "dark") {
   const transitionBlocker = document.createElement("style");

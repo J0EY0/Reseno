@@ -1,5 +1,50 @@
-<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="64" height="64" rx="14" fill="#0F172A"/>
-  <text x="32" y="40" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="800" letter-spacing="-2" fill="#FFFFFF">RM</text>
-  <path d="M12 48H52" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="reseno-favicon-title reseno-favicon-desc" preserveAspectRatio="xMidYMid meet">
+  <title id="reseno-favicon-title">Reseno — Classic Ribbon Favicon</title>
+  <desc id="reseno-favicon-desc">Original classic blue ribbon geometry and gradients. Proportionally fitted to a square transparent canvas for favicon use. No embedded raster images, fonts, external resources, or scripts.</desc>
+  <defs>
+    <linearGradient id="reseno-left-gradient" x1="90" y1="249" x2="60.100" y2="540.938" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0641B1"/>
+      <stop offset="0.25" stop-color="#1258E2"/>
+      <stop offset="0.5" stop-color="#2670FC"/>
+      <stop offset="0.75" stop-color="#408AFC"/>
+      <stop offset="1" stop-color="#54A5FE"/>
+    </linearGradient>
+    <linearGradient id="reseno-right-gradient" x1="610" y1="0" x2="563.587" y2="404.677" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#56A8FF"/>
+      <stop offset="0.25" stop-color="#408AFC"/>
+      <stop offset="0.5" stop-color="#2870FC"/>
+      <stop offset="0.75" stop-color="#1058E9"/>
+      <stop offset="1" stop-color="#0840A9"/>
+    </linearGradient>
+    <radialGradient id="reseno-ribbon-gradient" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(521.2970 0.0000 -0.0000 265.2560 58.4774 405.4530)">
+      <stop offset="0" stop-color="#4697FD"/>
+      <stop offset="0.4" stop-color="#4492FD"/>
+      <stop offset="0.5" stop-color="#428DFD"/>
+      <stop offset="0.75" stop-color="#2E76FB"/>
+      <stop offset="1" stop-color="#1760F7"/>
+    </radialGradient>
+    <linearGradient id="reseno-left-fold-edge" x1="37" y1="269" x2="181" y2="284" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8CC6FF" stop-opacity="0"/>
+      <stop offset="0.48" stop-color="#8CC6FF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#8CC6FF" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="reseno-right-fold-edge" x1="519" y1="338" x2="669" y2="411" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8CC6FF" stop-opacity="0.10"/>
+      <stop offset="0.65" stop-color="#8CC6FF" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#8CC6FF" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="reseno-outline">
+      <path d="M 702,0   H 655   C 582,0 520,53 520,124   V 337   L 333,155   C 304,126 275,115 246,115   C 218,115 192,124 169,146   L 40,266   C 14,290 0,316 0,347   V 544   H 48   C 120,544 180,494 180,430   V 282   L 407,493   C 448,533 505,542 557,501   L 654,410   C 685,383 702,354 702,319   Z"/>
+    </clipPath>
+  </defs>
+  <g id="reseno-classic-symbol" transform="matrix(0.079772079772 0 0 0.079772079772 4.000000000000 10.301994301994)">
+    <g clip-path="url(#reseno-outline)">
+      <path id="reseno-ribbon" fill="url(#reseno-ribbon-gradient)" d="M 702,0   H 655   C 582,0 520,53 520,124   V 337   L 333,155   C 304,126 275,115 246,115   C 218,115 192,124 169,146   L 40,266   C 14,290 0,316 0,347   V 544   H 48   C 120,544 180,494 180,430   V 282   L 407,493   C 448,533 505,542 557,501   L 654,410   C 685,383 702,354 702,319   Z"/>
+      <path id="reseno-left-return" fill="url(#reseno-left-gradient)" d="M -2,548 V 347   C -2,314 15,288 40,266   C 75,239 134,249 180,282   V 430 C 180,494 120,544 48,544 Z"/>
+      <path id="reseno-right-return" fill="url(#reseno-right-gradient)" d="M 520,337 V 124   C 520,53 582,0 655,0   H 705 V 319   C 705,348 695,365 680,383   C 648,417 577,398 520,337 Z"/>
+      <path id="reseno-left-fold" d="M 40,266 C 75,239 134,249 180,282" stroke="url(#reseno-left-fold-edge)" stroke-width="2.2" stroke-linecap="round"/>
+      <path id="reseno-right-fold" d="M 520,337 C 577,398 648,417 680,383" stroke="url(#reseno-right-fold-edge)" stroke-width="2.4" stroke-linecap="round"/>
+    </g>
+  </g>
 </svg>

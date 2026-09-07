@@ -187,7 +187,7 @@ def test_insert_item_still_requires_an_id() -> None:
         "type": "insert_item",
         "sectionId": "project",
         "item": {
-            "name": "ResuMate",
+            "name": "Reseno",
             "highlights": ["Built a resume editor."],
         },
     }

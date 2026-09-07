@@ -1697,7 +1697,7 @@ for (const operation of [
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -1783,7 +1783,7 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -1865,7 +1865,7 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -1969,7 +1969,7 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -2073,7 +2073,7 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -2164,7 +2164,7 @@ for (const authoritativeStatus of ["applied", "discarded"]) {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},
@@ -2273,7 +2273,7 @@ for (const {
     location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
     localStorage: {
       getItem(key) {
-        return key === "resumate-auth-session" ? authSession : null;
+        return key === "reseno-auth-session" ? authSession : null;
       },
       removeItem() {},
       setItem() {},

@@ -24,7 +24,7 @@ try {
   } = await server.ssrLoadModule("/src/lib/agent-diff-value.ts");
   const value = formatAgentDiffValue({
     id: "project-1",
-    name: "ResuMate",
+    name: "Reseno",
     role: "Frontend engineer",
     techStack: ["React", "TypeScript", "Tailwind CSS"],
     period: "2025–2026",
@@ -34,7 +34,7 @@ try {
   });
 
   for (const expected of [
-    "ResuMate",
+    "Reseno",
     "Frontend engineer",
     "React",
     "TypeScript",
@@ -378,7 +378,7 @@ try {
 
   const insertedProject = {
     id: "project-new",
-    name: "ResuMate",
+    name: "Reseno",
     description: "Initial description",
     highlights: [],
   };

@@ -30,7 +30,7 @@ function getAvatarPlaceholderLabel(src: string, fallbackLabel: string) {
   try {
     const decoded = decodeURIComponent(src);
 
-    if (!decoded.includes('data-resumate-avatar-placeholder="true"')) {
+    if (!decoded.includes('data-reseno-avatar-placeholder="true"')) {
       return null;
     }
 

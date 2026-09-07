@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://resumate.local/schemas/resume-document-v2.json",
+  "$id": "https://reseno.local/schemas/resume-document-v2.json",
   "title": "ResumeDocumentV2",
   "type": "object",
   "properties": {

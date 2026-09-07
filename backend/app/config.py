@@ -8,14 +8,14 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = Path("~/.resumate")
+DEFAULT_DATA_DIR = Path("~/.reseno")
 DEFAULT_ENV_EXAMPLE_PATH = BASE_DIR / ".env.example"
-MASTER_KEY_ENV_NAME = "RESUMATE_MASTER_KEY"
+MASTER_KEY_ENV_NAME = "RESENO_MASTER_KEY"
 MASTER_KEY_COMMENT = (
-    "# DO NOT CHANGE: RESUMATE_MASTER_KEY decrypts secrets stored in SQLite."
+    "# DO NOT CHANGE: RESENO_MASTER_KEY decrypts secrets stored in SQLite."
 )
-JWT_SECRET_ENV_NAME = "RESUMATE_JWT_SECRET"
-JWT_SECRET_COMMENT = "# DO NOT CHANGE: RESUMATE_JWT_SECRET signs browser JWTs."
+JWT_SECRET_ENV_NAME = "RESENO_JWT_SECRET"
+JWT_SECRET_COMMENT = "# DO NOT CHANGE: RESENO_JWT_SECRET signs browser JWTs."
 
 
 @dataclass(frozen=True)
@@ -205,7 +205,7 @@ def _validate_master_key(value: str) -> str:
     try:
         Fernet(value.encode("ascii"))
     except (ValueError, TypeError) as exc:
-        raise RuntimeError("Invalid RESUMATE_MASTER_KEY in .env.") from exc
+        raise RuntimeError("Invalid RESENO_MASTER_KEY in .env.") from exc
 
     return value
 
@@ -214,7 +214,7 @@ def _validate_jwt_secret(value: str) -> str:
     """Validate the minimum entropy needed for JWT signing."""
 
     if len(value.encode("utf-8")) < 32:
-        raise RuntimeError("Invalid RESUMATE_JWT_SECRET in .env.")
+        raise RuntimeError("Invalid RESENO_JWT_SECRET in .env.")
 
     return value
 
@@ -315,7 +315,7 @@ def get_settings() -> Settings:
     storage_dir = _path_from_env("APP_STORAGE_DIR", data_dir / "storage")
 
     return Settings(
-        app_name="ResuMate Backend",
+        app_name="Reseno Backend",
         app_version="0.1.0",
         data_dir=data_dir,
         db_path=_path_from_env("APP_DB_PATH", data_dir / "app.db"),

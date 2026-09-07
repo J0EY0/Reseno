@@ -418,14 +418,14 @@ def test_changed_number_with_unit_still_requires_evidence() -> None:
 
 def test_identity_matching_ignores_only_latin_cjk_boundary_spacing() -> None:
     resume = _resume()
-    resume["sections"][0]["items"][0]["name"] = "ResuMate AI Agent简历制作网站"
+    resume["sections"][0]["items"][0]["name"] = "Reseno AI Agent简历制作网站"
 
     _, spacing_issues = ground_edit_evidence(
         resume,
         _request("修复项目字段错位。", resume=resume),
         [
             _update_target(
-                {"name": "ResuMate AI Agent 简历制作网站"},
+                {"name": "Reseno AI Agent 简历制作网站"},
                 evidence_refs=["resume:item:project:target"],
             ),
         ],
@@ -435,7 +435,7 @@ def test_identity_matching_ignores_only_latin_cjk_boundary_spacing() -> None:
         _request("修复项目字段错位。", resume=resume),
         [
             _update_target(
-                {"name": "ResuMate AI Assistant 简历制作网站"},
+                {"name": "Reseno AI Assistant 简历制作网站"},
                 evidence_refs=["resume:item:project:target"],
             ),
         ],
@@ -443,7 +443,7 @@ def test_identity_matching_ignores_only_latin_cjk_boundary_spacing() -> None:
 
     assert spacing_issues == []
     assert _unsupported(changed_identity_issues)["claims"] == [
-        "identity:name:ResuMate AI Assistant 简历制作网站",
+        "identity:name:Reseno AI Assistant 简历制作网站",
     ]
 
 

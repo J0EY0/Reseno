@@ -2310,8 +2310,8 @@ def test_old_jwt_cannot_authenticate_against_replaced_auth_database(
     from app.main import create_app
 
     env_file = tmp_path / ".env"
-    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
-    monkeypatch.delenv("RESUMATE_JWT_SECRET", raising=False)
+    monkeypatch.delenv("RESENO_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESENO_JWT_SECRET", raising=False)
     first_data_dir = tmp_path / "first-data"
     replacement_data_dir = tmp_path / "replacement-data"
     business_db_path = tmp_path / "app.db"
@@ -3084,14 +3084,14 @@ def test_master_key_generated_once(client: TestClient) -> None:
     second_content = env_file.read_text(encoding="utf-8")
 
     assert second_settings.env_file_path == env_file
-    assert "APP_DATA_DIR=~/.resumate" in first_content
+    assert "APP_DATA_DIR=~/.reseno" in first_content
     assert "AUTH_USERNAME" not in first_content
     assert "AUTH_PASSWORD" not in first_content
-    assert "DO NOT CHANGE: RESUMATE_MASTER_KEY" in first_content
-    assert "DO NOT CHANGE: RESUMATE_JWT_SECRET" in first_content
+    assert "DO NOT CHANGE: RESENO_MASTER_KEY" in first_content
+    assert "DO NOT CHANGE: RESENO_JWT_SECRET" in first_content
     assert first_content == second_content
-    assert first_content.count("RESUMATE_MASTER_KEY=") == 1
-    assert first_content.count("RESUMATE_JWT_SECRET=") == 1
+    assert first_content.count("RESENO_MASTER_KEY=") == 1
+    assert first_content.count("RESENO_JWT_SECRET=") == 1
 
 
 def test_existing_master_key_is_not_rewritten(tmp_path, monkeypatch) -> None:
@@ -3100,11 +3100,11 @@ def test_existing_master_key_is_not_rewritten(tmp_path, monkeypatch) -> None:
     jwt_secret = "x" * 48
     original_content = (
         f"CUSTOM_VALUE=preserved\n"
-        f"RESUMATE_MASTER_KEY={master_key}\n"
-        f"RESUMATE_JWT_SECRET={jwt_secret}\n"
+        f"RESENO_MASTER_KEY={master_key}\n"
+        f"RESENO_JWT_SECRET={jwt_secret}\n"
     )
     env_file.write_text(original_content, encoding="utf-8")
-    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESENO_MASTER_KEY", raising=False)
     monkeypatch.setenv("APP_ENV_FILE", str(env_file))
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
@@ -3121,9 +3121,9 @@ def test_existing_master_key_is_not_rewritten(tmp_path, monkeypatch) -> None:
 
 
 def test_default_env_file_lives_in_data_dir(tmp_path, monkeypatch) -> None:
-    data_dir = tmp_path / ".resumate"
+    data_dir = tmp_path / ".reseno"
     monkeypatch.delenv("APP_ENV_FILE", raising=False)
-    monkeypatch.delenv("RESUMATE_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESENO_MASTER_KEY", raising=False)
     monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
     monkeypatch.setenv("APP_DB_PATH", str(data_dir / "app.db"))
     monkeypatch.setenv("APP_STORAGE_DIR", str(data_dir / "storage"))
@@ -3135,13 +3135,13 @@ def test_default_env_file_lives_in_data_dir(tmp_path, monkeypatch) -> None:
 
     assert settings.env_file_path == env_file.resolve()
     assert env_file.exists()
-    assert "APP_DATA_DIR=~/.resumate" in content
+    assert "APP_DATA_DIR=~/.reseno" in content
     assert "AUTH_USERNAME" not in content
     assert "AUTH_PASSWORD" not in content
-    assert "DO NOT CHANGE: RESUMATE_MASTER_KEY" in content
-    assert "DO NOT CHANGE: RESUMATE_JWT_SECRET" in content
-    assert content.count("RESUMATE_MASTER_KEY=") == 1
-    assert content.count("RESUMATE_JWT_SECRET=") == 1
+    assert "DO NOT CHANGE: RESENO_MASTER_KEY" in content
+    assert "DO NOT CHANGE: RESENO_JWT_SECRET" in content
+    assert content.count("RESENO_MASTER_KEY=") == 1
+    assert content.count("RESENO_JWT_SECRET=") == 1
 
 
 def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
@@ -4652,7 +4652,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                         "items": [
                             {
                                 "id": "project-item-1",
-                                "title": "ResuMate",
+                                "title": "Reseno",
                                 "subtitle": "AI 简历编辑器",
                             },
                         ],
@@ -4687,7 +4687,7 @@ def test_agent_messages_include_compressed_history_and_latest_draft() -> None:
                     "path": "sections.project",
                     "kind": "added",
                     "label": "新增项目经历模块",
-                    "after": "ResuMate",
+                    "after": "Reseno",
                 },
             ],
         },
@@ -5008,7 +5008,7 @@ def test_agent_edit_execute_uses_pending_draft_resume() -> None:
             "items": [
                 {
                     "id": "project-1",
-                    "name": "ResuMate",
+                    "name": "Reseno",
                     "role": "前端开发",
                     "techStack": [],
                     "period": "",
@@ -5698,7 +5698,7 @@ def test_agent_delete_operations_are_previewed_without_text_intent_routing() -> 
             "items": [
                 {
                     "id": "project-1",
-                    "name": "ResuMate",
+                    "name": "Reseno",
                     "role": "",
                     "techStack": [],
                     "period": "",
@@ -6919,7 +6919,7 @@ def test_agent_chat_streams_terminal_model_text_after_tool_observation(
         "任职主体与实际职责。\n\n"
         "P2：补全个人标题，并让简介同时覆盖教育背景、实习经历、项目经验和核心"
         "技能，但不要添加当前简历没有提供的数字。\n\n"
-        "P3：将 ResuMate 项目中散落在名称、角色、技术栈和描述里的内容归位，"
+        "P3：将 Reseno 项目中散落在名称、角色、技术栈和描述里的内容归位，"
         "再用互不重复的亮点说明实现内容。\n\n"
         "P4：所有经历优先写清具体任务、采用的方法和已经存在的交付结果；缺少"
         "量化证据时应追问，而不是虚构性能提升或用户规模。\n\n"
@@ -7180,7 +7180,7 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
                 "resume.json",
                 json.dumps(
                     {
-                        "format": "resumate.resume",
+                        "format": "reseno.resume",
                         "formatVersion": 1,
                         "templates": [],
                         "resumes": [resume_item],
@@ -7212,31 +7212,31 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
     [
         {"resumes": [resume_artifact_item(title="Missing envelope")]},
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "format_version": 1,
             "templates": [],
             "resumes": [resume_artifact_item(title="Snake case")],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 2,
             "templates": [],
             "resumes": [resume_artifact_item(title="Unsupported version")],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [{**resume_artifact_item(), "id": "server-owned-id"}],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -7248,7 +7248,7 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
             ],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -7260,7 +7260,7 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
             ],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -7271,7 +7271,7 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
             ],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -7282,7 +7282,7 @@ def test_import_resume_accepts_v1_artifact(client: TestClient) -> None:
             ],
         },
         {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -7322,7 +7322,7 @@ def test_import_resume_rejects_noncanonical_list_item_content(
 ) -> None:
     artifact_item = resume_artifact_item(title="Invalid List Resume")
     payload = {
-        "format": "resumate.resume",
+        "format": "reseno.resume",
         "formatVersion": 1,
         "templates": [],
         "resumes": [{**artifact_item, "resume": noncanonical_list_resume()}],
@@ -7352,7 +7352,7 @@ def test_import_resume_accepts_embedded_custom_template_bundle(
         "templateSettings": {"pagePaddingX": 10},
     }
     payload = {
-        "format": "resumate.resume",
+        "format": "reseno.resume",
         "formatVersion": 1,
         "templates": [{"ref": "custom:0", "definition": template}],
         "resumes": [resume],
@@ -7394,7 +7394,7 @@ def test_import_resume_accepts_multiple_resumes_sharing_embedded_template(
         },
     ]
     payload = {
-        "format": "resumate.resume",
+        "format": "reseno.resume",
         "formatVersion": 1,
         "templates": [{"ref": "custom:0", "definition": template}],
         "resumes": resumes,
@@ -7444,7 +7444,7 @@ def test_import_resume_rejects_invalid_custom_template_references(
     template_id: str,
 ) -> None:
     payload = {
-        "format": "resumate.resume",
+        "format": "reseno.resume",
         "formatVersion": 1,
         "templates": templates,
         "resumes": [{**resume_artifact_item(), "template": template_id}],
@@ -7469,7 +7469,7 @@ def test_import_resume_rejects_invalid_custom_template_references(
 def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
     template = template_artifact_item(name="Imported template")
     payload = {
-        "format": "resumate.template",
+        "format": "reseno.template",
         "formatVersion": 1,
         "templates": [template],
     }
@@ -7493,7 +7493,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
     [
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 2,
                 "templates": [template_artifact_item()],
             },
@@ -7501,7 +7501,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
         ),
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 1,
                 "templates": [],
             },
@@ -7509,7 +7509,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
         ),
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 1,
                 "templates": [
                     {**template_artifact_item(), "preset": "unknown-template"}
@@ -7519,7 +7519,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
         ),
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 1,
                 "templates": [
                     {
@@ -7532,7 +7532,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
         ),
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 1,
                 "templates": [
                     {
@@ -7549,7 +7549,7 @@ def test_import_templates_accepts_v1_artifact(client: TestClient) -> None:
         ),
         (
             {
-                "format": "resumate.template",
+                "format": "reseno.template",
                 "formatVersion": 1,
                 "templates": [
                     {

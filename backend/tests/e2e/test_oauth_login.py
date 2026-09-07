@@ -159,7 +159,7 @@ def test_github_login_uses_current_page_and_consumes_callback_once(
     assert len(flow.starts) == len(flow.completions) == len(flow.galleries) == 1
     assert (
         flow.page.evaluate(
-            "JSON.parse(localStorage.getItem('resumate-auth-session')).accessToken"
+            "JSON.parse(localStorage.getItem('reseno-auth-session')).accessToken"
         )
         == browser_session["accessToken"]
     )
@@ -282,7 +282,7 @@ def test_github_login_failures_return_to_login_and_allow_retry(
         expect(flow.page.locator('[data-slot="field-error"]')).to_be_visible()
     expect(flow.page).to_have_url(f"{flow.url}/login")
     expect(flow.button()).to_be_enabled()
-    assert flow.page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is None
     assert not flow.galleries
     flow.start()
     flow.confirm()
@@ -324,7 +324,7 @@ def test_leaving_login_callback_ignores_late_results_and_clears_its_session(
         flow.finish()
         flow.wait_count(flow.galleries, 1)
         assert (
-            flow.page.evaluate("localStorage.getItem('resumate-auth-session')")
+            flow.page.evaluate("localStorage.getItem('reseno-auth-session')")
             is not None
         )
     flow.assert_callback_spinner()
@@ -337,12 +337,12 @@ def test_leaving_login_callback_ignores_late_results_and_clears_its_session(
         flow.respond(flow.galleries[0], flow.gallery_data())
     flow.page.wait_for_timeout(200)
     expect(flow.page).to_have_url(leave_url)
-    assert flow.page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is None
     assert len(flow.galleries) == (1 if stage == "workspace" else 0)
     flow.page.reload(wait_until="networkidle")
     expect(flow.button()).to_be_enabled()
     assert len(flow.completions) == 1
-    assert flow.page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is None
     flow.hold_gallery = False
     flow.start()
     flow.confirm()
@@ -362,14 +362,14 @@ def test_github_login_gallery_failure_retries_without_reauthenticating(
     expect(flow.page).to_have_url(f"{flow.url}/resume")
     expect(flow.page.get_by_role("button", name="Retry", exact=True)).to_be_visible()
     expect(flow.page.locator('[data-slot="sidebar-inset"]')).to_be_visible()
-    session = flow.page.evaluate("localStorage.getItem('resumate-auth-session')")
+    session = flow.page.evaluate("localStorage.getItem('reseno-auth-session')")
     assert session is not None
     flow.gallery_failures = 0
     flow.page.get_by_role("button", name="Retry", exact=True).click()
     expect(flow.page.locator('input[name="resume-search"]')).to_be_visible()
     assert len(flow.starts) == len(flow.completions) == 1
     assert (
-        flow.page.evaluate("localStorage.getItem('resumate-auth-session')") == session
+        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
     )
 
 
@@ -404,7 +404,7 @@ def test_github_callback_can_leave_before_auth_bootstrap_finishes(
     expect(flow.button()).to_be_enabled()
     assert not flow.completions and not flow.galleries
     assert flow.page.evaluate("location.hash") == ""
-    assert flow.page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is None
     flow.start()
     flow.confirm()
     flow.finish()
@@ -435,7 +435,7 @@ def test_github_callback_browser_back_ignores_late_exchange_and_can_retry(
         for origin in flow.context.storage_state()["origins"]
         if origin["origin"] == flow.url
     )
-    assert not any(item["name"] == "resumate-auth-session" for item in app_storage)
+    assert not any(item["name"] == "reseno-auth-session" for item in app_storage)
     flow.confirm()
     assert len(flow.completions) == 2
     assert all(

@@ -166,6 +166,6 @@ def agent_llm_request_context(
         return None
 
     cache_key = sha256(
-        f"resumate-agent-prompt-cache:{resume_id}".encode(),
+        f"reseno-agent-prompt-cache:{resume_id}".encode(),
     ).hexdigest()
     return LlmRequestContext(cache_key=cache_key)

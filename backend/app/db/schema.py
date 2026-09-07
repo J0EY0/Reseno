@@ -52,7 +52,7 @@ def _expected_schema() -> SchemaObjectSignature:
 def _unsupported_schema_error() -> UnsupportedDatabaseSchemaError:
     db_path = get_db_path()
     return UnsupportedDatabaseSchemaError(
-        f"The database at {db_path} is not compatible with ResuMate schema "
+        f"The database at {db_path} is not compatible with Reseno schema "
         f"v{CURRENT_SCHEMA_VERSION}. Move or delete it to create a fresh "
         f"schema v{CURRENT_SCHEMA_VERSION} database."
     )

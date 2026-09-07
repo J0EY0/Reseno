@@ -57,7 +57,7 @@ _TEXT_SUFFIXES = {
 # Attachment metadata and SQLite history cannot share one transaction. This
 # process-local lock makes cleanup/manual deletion and the consumption handoff
 # mutually exclusive, so a stale unsent snapshot cannot delete a file after its
-# message becomes authoritative. ResuMate runs one backend process by default;
+# message becomes authoritative. Reseno runs one backend process by default;
 # avoiding a persistent lock keeps this development-stage boundary lightweight.
 _ATTACHMENT_LIFECYCLE_LOCK = RLock()
 

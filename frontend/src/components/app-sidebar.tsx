@@ -64,19 +64,16 @@ export function AppSidebar({
     >
       <SidebarHeader className="min-h-20 justify-center overflow-hidden border-sidebar-border px-2 py-3 transition-[min-height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:min-h-16">
         <div className="flex h-10 w-full items-center gap-3 overflow-hidden transition-[height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:h-8">
-          <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-8">
+          <div className="flex size-10 shrink-0 items-center justify-center transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-8">
             <img
               src="/logo.svg"
-              alt="ResuMate"
-              className="size-[170%] max-w-none object-cover transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-[150%]"
+              alt="Reseno"
+              className="size-full object-contain"
             />
           </div>
           <div className="min-w-0 transition-[opacity,visibility] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:invisible group-data-[collapsible=icon]:opacity-0">
-            <p className="truncate text-base font-semibold tracking-tight">
+            <p className="truncate text-xl leading-tight font-semibold tracking-tight">
               {t.brandTitle}
-            </p>
-            <p className="truncate text-sm text-sidebar-foreground/65">
-              {t.brandSubtitle}
             </p>
           </div>
         </div>

@@ -7,8 +7,8 @@ import {
   type OAuthResult,
 } from "@/lib/auth-oauth";
 
-export const OAUTH_TAB_RESULT = "resumate:oauth:result";
-export const OAUTH_TAB_RECEIVED = "resumate:oauth:received";
+export const OAUTH_TAB_RESULT = "reseno:oauth:result";
+export const OAUTH_TAB_RECEIVED = "reseno:oauth:received";
 
 export type OAuthProgress =
   | { stage: "preparing" | "waiting" }
@@ -30,7 +30,7 @@ export async function authorizeGitHubBinding({
   t,
 }: OAuthBindingOptions): Promise<void> {
   signal.throwIfAborted();
-  const name = `resumate-github-${crypto.randomUUID()}`;
+  const name = `reseno-github-${crypto.randomUUID()}`;
   const controller = new AbortController();
   const origin = window.location.origin;
   let tab: Window | null = null;

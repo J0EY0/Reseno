@@ -17,8 +17,8 @@ from app.services.resume_document_contract import (
 
 RESUME_ARTIFACT_FORMAT_VERSION = 1
 TEMPLATE_ARTIFACT_FORMAT_VERSION = 1
-RESUME_ARTIFACT_FORMAT = "resumate.resume"
-TEMPLATE_ARTIFACT_FORMAT = "resumate.template"
+RESUME_ARTIFACT_FORMAT = "reseno.resume"
+TEMPLATE_ARTIFACT_FORMAT = "reseno.template"
 MAX_JSON_UPLOAD_BYTES = 10 * 1024 * 1024
 
 

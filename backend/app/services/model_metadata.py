@@ -36,7 +36,7 @@ LITELLM_PROVIDER_ALIASES: dict[str, set[str]] = {
 }
 
 # models.dev provider ids are normalized here so its reasoning controls can
-# enrich the same ResuMate provider/model seam used by discovery. This source
+# enrich the same Reseno provider/model seam used by discovery. This source
 # supplies only explicit Off capability; token limits and other runtime facts
 # continue to come from provider responses and LiteLLM.
 MODELS_DEV_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -142,7 +142,7 @@ def ensure_provider_model_metadata(provider: str, model_ids: list[str]) -> bool:
 
 
 def refresh_model_metadata_cache(provider: str | None = None) -> bool:
-    """Fetch supplemental catalogs and persist ResuMate's lightweight subset."""
+    """Fetch supplemental catalogs and persist Reseno's lightweight subset."""
 
     raw_catalog = _fetch_catalog()
     reasoning_catalog = _fetch_reasoning_catalog()
@@ -345,7 +345,7 @@ def _catalog_item_belongs_to_provider(
 
     candidate_provider = _normalize_model_name(str(value.get("litellm_provider") or ""))
     source_prefix = _normalize_model_name(source_key.split("/", 1)[0])
-    # Require LiteLLM's provider identity to match this ResuMate provider. This
+    # Require LiteLLM's provider identity to match this Reseno provider. This
     # keeps proxy-hosted variants such as OpenRouter, Azure, or Fireworks from
     # polluting official provider metadata.
     if candidate_provider:
@@ -576,7 +576,7 @@ def _cache_has_models(cache: dict[str, Any]) -> bool:
 def _fetch_catalog() -> dict[str, Any]:
     request = urllib.request.Request(
         MODEL_METADATA_URL,
-        headers={"User-Agent": "ResuMate/0.1 model metadata"},
+        headers={"User-Agent": "Reseno/0.1 model metadata"},
     )
     try:
         with urllib.request.urlopen(
@@ -595,7 +595,7 @@ def _fetch_reasoning_catalog() -> dict[str, Any]:
 
     request = urllib.request.Request(
         MODEL_REASONING_METADATA_URL,
-        headers={"User-Agent": "ResuMate/0.1 model metadata"},
+        headers={"User-Agent": "Reseno/0.1 model metadata"},
     )
     try:
         with urllib.request.urlopen(

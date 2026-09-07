@@ -370,7 +370,7 @@ def test_official_deepseek_tool_turn_replays_reasoning_with_non_null_content() -
             {
                 "role": "tool",
                 "tool_call_id": "call-projects",
-                "content": '{"projects":["ResuMate"]}',
+                "content": '{"projects":["Reseno"]}',
             },
         ],
         config=_config(

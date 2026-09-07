@@ -14,6 +14,7 @@ export function AuthStatusErrorPage({
 }) {
   return (
     <AuthPageShell
+      brandTitle={t.brandTitle}
       formTitle={t.authStatusErrorFormTitle}
       description={t.authStatusErrorDescription}
     >

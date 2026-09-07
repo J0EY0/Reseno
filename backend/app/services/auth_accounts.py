@@ -71,7 +71,7 @@ class OwnerAlreadyExistsError(RuntimeError):
 
 @dataclass(frozen=True)
 class OwnerAccount:
-    """The single account that owns a ResuMate instance."""
+    """The single account that owns a Reseno instance."""
 
     username: str
     auth_revision: str

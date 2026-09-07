@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const backendTarget =
   process.env.VITE_DEV_API_TARGET ?? 'http://127.0.0.1:8000'
 const viteCacheDir =
-  process.env.RESUMATE_VITE_CACHE_DIR ?? 'node_modules/.vite'
+  process.env.RESENO_VITE_CACHE_DIR ?? 'node_modules/.vite'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 function isNodePackage(id: string, packageName: string) {

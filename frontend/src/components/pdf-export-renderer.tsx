@@ -28,8 +28,8 @@ import type {
 
 declare global {
   interface Window {
-    __RESUMATE_PDF_READY__?: boolean;
-    __RESUMATE_PDF_ERROR__?: string;
+    __RESENO_PDF_READY__?: boolean;
+    __RESENO_PDF_ERROR__?: string;
   }
 }
 
@@ -123,12 +123,12 @@ export function PdfExportRenderer() {
   );
 
   useEffect(() => {
-    window.__RESUMATE_PDF_READY__ = false;
-    window.__RESUMATE_PDF_ERROR__ = activeError ?? undefined;
+    window.__RESENO_PDF_READY__ = false;
+    window.__RESENO_PDF_ERROR__ = activeError ?? undefined;
   }, [activeError, loadKey]);
 
   useEffect(() => {
-    window.__RESUMATE_PDF_READY__ = isReady;
+    window.__RESENO_PDF_READY__ = isReady;
   }, [isReady]);
 
   useEffect(() => {
@@ -194,7 +194,7 @@ export function PdfExportRenderer() {
             : "Failed to load PDF export data.";
 
         if (!cancelled) {
-          window.__RESUMATE_PDF_ERROR__ = message;
+          window.__RESENO_PDF_ERROR__ = message;
           setError({ loadKey, message });
         }
       }

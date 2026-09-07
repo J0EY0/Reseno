@@ -48,7 +48,7 @@ def _encode_test_token(payload: dict[str, object]) -> str:
     )
 
 
-def test_access_token_requires_resumate_issuer_and_audience(
+def test_access_token_requires_reseno_issuer_and_audience(
     client: TestClient,
 ) -> None:
     now = int(time.time())
@@ -77,8 +77,8 @@ def test_access_token_rejects_a_future_issued_at_claim(
             "iat": now + 60,
             "exp": now + 120,
             "jti": "test-jwt-id",
-            "iss": "resumate",
-            "aud": "resumate-api",
+            "iss": "reseno",
+            "aud": "reseno-api",
         }
     )
 
@@ -97,8 +97,8 @@ def test_access_token_requires_one_exact_audience(
             "iat": now,
             "exp": now + 60,
             "jti": "test-jwt-id",
-            "iss": "resumate",
-            "aud": ["resumate-api", "another-service"],
+            "iss": "reseno",
+            "aud": ["reseno-api", "another-service"],
         }
     )
 
@@ -117,8 +117,8 @@ def test_access_token_normalizes_malformed_time_claim_errors(
             "iat": [],
             "exp": now + 60,
             "jti": "test-jwt-id",
-            "iss": "resumate",
-            "aud": "resumate-api",
+            "iss": "reseno",
+            "aud": "reseno-api",
         }
     )
 

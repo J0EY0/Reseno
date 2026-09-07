@@ -84,7 +84,7 @@ def test_github_authorization_dialog_blocks_parent_and_can_cancel(
     assert bounds is not None
     assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width
     flow.page.screenshot(
-        path=f"/private/tmp/resumate-oauth-dialog-{mode}-{locale}-{width}.png"
+        path=f"/private/tmp/reseno-oauth-dialog-{mode}-{locale}-{width}.png"
     )
     if cancel_method == "button":
         dialog.get_by_role("button", name=cancel_label, exact=True).click()
@@ -111,5 +111,5 @@ def test_github_authorization_dialog_blocks_parent_and_can_cancel(
     flow.assert_binding_toast(locale=locale)
     expect(flow.page.locator('[data-slot="field-error"]')).to_have_count(0)
     flow.page.screenshot(
-        path=f"/private/tmp/resumate-github-binding-cancel-{locale}.png"
+        path=f"/private/tmp/reseno-github-binding-cancel-{locale}.png"
     )

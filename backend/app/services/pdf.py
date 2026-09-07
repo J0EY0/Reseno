@@ -203,7 +203,7 @@ def _create_render_context(
         }
         context.add_init_script(
             "window.localStorage.setItem("
-            "'resumate-auth-session', "
+            "'reseno-auth-session', "
             f"{json.dumps(json.dumps(auth_session))}"
             ");",
         )

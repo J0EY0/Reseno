@@ -44,7 +44,7 @@ def available_thinking_modes(
     """Return the stable UI modes for a verified disable capability.
 
     ``auto`` is always valid, including for non-reasoning models, because it
-    means ResuMate will not force a disable protocol. ``off`` appears only when
+    means Reseno will not force a disable protocol. ``off`` appears only when
     the normalized model capability guarantees an explicit provider request.
     """
 

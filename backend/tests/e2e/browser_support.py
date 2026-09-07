@@ -22,7 +22,7 @@ def authenticated_context(
     context.add_init_script(
         script=(
             "window.localStorage.setItem("
-            "'resumate-auth-session', "
+            "'reseno-auth-session', "
             f"{json.dumps(session_json)});"
         )
     )

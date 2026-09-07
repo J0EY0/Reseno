@@ -26,7 +26,7 @@ type PanSession = [
 ];
 
 const DOCUMENT_CANVAS_SCALE_STORAGE_KEY =
-  "resumate-document-canvas-scale-v1";
+  "reseno-document-canvas-scale-v1";
 
 function loadDocumentCanvasScale() {
   if (typeof window === "undefined") {

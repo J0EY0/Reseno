@@ -1,4 +1,4 @@
-# ResuMate Frontend API Contract
+# Reseno Frontend API Contract
 
 ## 基础约定
 
@@ -904,7 +904,7 @@ type ModelConfigsResponse = {
 ### POST `/api/model-configs`
 
 用途：创建或更新大模型配置。请求可携带一次性明文 `apiKey`，后端使用
-`.env` 中的 `RESUMATE_MASTER_KEY` 加密后写入 SQLite；明文只在当前请求内
+`.env` 中的 `RESENO_MASTER_KEY` 加密后写入 SQLite；明文只在当前请求内
 使用，不写入日志、不返回前端。
 
 请求：
@@ -1039,19 +1039,19 @@ type AgentSettings = {
 
 后端通过环境变量配置运行时数据路径，默认不把数据库、导出文件、上传文件
 或真实 `.env` 当作源码。未设置 `APP_ENV_FILE` 时，真实 `.env` 默认位于
-`APP_DATA_DIR/.env`，本地即 `~/.resumate/.env`：
+`APP_DATA_DIR/.env`，本地即 `~/.reseno/.env`：
 
 ```env
-APP_DATA_DIR=~/.resumate
-APP_DB_PATH=~/.resumate/app.db
-APP_STORAGE_DIR=~/.resumate/storage
+APP_DATA_DIR=~/.reseno
+APP_DB_PATH=~/.reseno/app.db
+APP_STORAGE_DIR=~/.reseno/storage
 FRONTEND_RENDER_BASE_URL=http://127.0.0.1:5173
 PDF_RENDER_TIMEOUT_MS=30000
 BACKEND_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
-# RESUMATE_MASTER_KEY 在 .env.example 中留空，真实 .env 首次启动自动填充
-RESUMATE_MASTER_KEY=
-# RESUMATE_JWT_SECRET 在 .env.example 中留空，真实 .env 首次启动自动填充
-RESUMATE_JWT_SECRET=
+# RESENO_MASTER_KEY 在 .env.example 中留空，真实 .env 首次启动自动填充
+RESENO_MASTER_KEY=
+# RESENO_JWT_SECRET 在 .env.example 中留空，真实 .env 首次启动自动填充
+RESENO_JWT_SECRET=
 ```
 
 业务 `app.db` 继续使用 schema v1，不加入或迁移任何认证表。唯一 owner 的用户名、
@@ -1060,8 +1060,8 @@ Argon2id 密码哈希和随机认证 revision 单独保存在 `APP_DATA_DIR/auth
 
 SQLite 中的大模型配置保存非敏感字段、`encrypted_api_key` 和固定长度
 `api_key_preview`。真实 `.env` 缺失时后端会在运行时数据目录中从
-`backend/.env.example` 生成一份，再把 `RESUMATE_MASTER_KEY` 填成 Fernet key
-并把 `RESUMATE_JWT_SECRET` 填成随机签名密钥，两者都会标记 `DO NOT CHANGE`；
-之后启动如果已经存在有效值，绝不重新生成或覆盖。ResuMate 不提供默认用户名或
+`backend/.env.example` 生成一份，再把 `RESENO_MASTER_KEY` 填成 Fernet key
+并把 `RESENO_JWT_SECRET` 填成随机签名密钥，两者都会标记 `DO NOT CHANGE`；
+之后启动如果已经存在有效值，绝不重新生成或覆盖。Reseno 不提供默认用户名或
 密码；首次打开时通过 `POST /api/auth/setup` 创建唯一 owner，之后通过设置页调用
 `POST /api/auth/password` 修改密码。

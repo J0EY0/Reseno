@@ -55,7 +55,7 @@ type SkillSample =
 
 function createAvatarPlaceholder(label: string) {
   const safeLabel = label.replaceAll('"', "&quot;");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="300" data-resumate-avatar-placeholder="true" data-placeholder-label="${safeLabel}"></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="300" data-reseno-avatar-placeholder="true" data-placeholder-label="${safeLabel}"></svg>`;
 
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }

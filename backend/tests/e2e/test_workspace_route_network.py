@@ -1070,7 +1070,7 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
         locale="zh-CN",
         viewport={"width": 1672, "height": 870},
     )
-    context.add_init_script(script="localStorage.setItem('resumate-theme', 'dark');")
+    context.add_init_script(script="localStorage.setItem('reseno-theme', 'dark');")
     page = context.new_page()
     held_decision_routes: list[Route] = []
 
@@ -3542,7 +3542,7 @@ def test_resume_agent_uses_canvas_toggle_and_compact_actions_menu(
         workspace = page.locator(".resume-workspace")
         workspace.wait_for(state="visible")
 
-        assert header.get_by_text("ResuMate AI", exact=True).count() == 0
+        assert header.get_by_text("Reseno AI", exact=True).count() == 0
         assert (
             page.locator(
                 '[data-slot="sheet-content"], [data-slot="sheet-overlay"]'
@@ -4429,7 +4429,7 @@ def test_resume_agent_toggle_keeps_dark_surface_opaque_during_panel_motion(
         locale="zh-CN",
         viewport={"width": 1440, "height": 900},
     )
-    context.add_init_script(script="localStorage.setItem('resumate-theme', 'dark');")
+    context.add_init_script(script="localStorage.setItem('reseno-theme', 'dark');")
     page = context.new_page()
 
     def serve_dark_resume_workspace(route: Route) -> None:
@@ -5985,12 +5985,12 @@ def test_resume_agent_composer_actions_do_not_animate_during_theme_changes(
     assert session
     context.add_init_script(
         script=(
-            "window.localStorage.setItem('resumate-auth-session', "
+            "window.localStorage.setItem('reseno-auth-session', "
             f"{json.dumps(json.dumps(session))});"
         )
     )
     context.add_init_script(
-        script=f"localStorage.setItem('resumate-theme', {json.dumps(initial_theme)});"
+        script=f"localStorage.setItem('reseno-theme', {json.dumps(initial_theme)});"
     )
     page = context.new_page()
 
@@ -6142,7 +6142,7 @@ def test_workspace_theme_changes_do_not_animate_visible_palette_properties(
     assert session
     context.add_init_script(
         script=(
-            "window.localStorage.setItem('resumate-auth-session', "
+            "window.localStorage.setItem('reseno-auth-session', "
             f"{json.dumps(json.dumps(session))});"
         )
     )
@@ -6269,7 +6269,7 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
     assert session
     context.add_init_script(
         script=(
-            "window.localStorage.setItem('resumate-auth-session', "
+            "window.localStorage.setItem('reseno-auth-session', "
             f"{json.dumps(json.dumps(session))});"
         )
     )
@@ -14591,7 +14591,7 @@ def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
 ) -> None:
     frontend_url, _ = workspace_servers
     context = _authenticated_context(browser, locale="en-US")
-    context.add_init_script("localStorage.setItem('resumate-locale', 'en')")
+    context.add_init_script("localStorage.setItem('reseno-locale', 'en')")
     page = context.new_page()
     items: dict[str, str] = {}
     attempts: list[str] = []
@@ -15142,7 +15142,7 @@ def test_theme_bootstrap_matches_saved_preference_before_react_mounts(
     frontend_url, _ = workspace_servers
     context = browser.new_context(color_scheme=os_color_scheme)
     context.add_init_script(
-        script=f"localStorage.setItem('resumate-theme', {json.dumps(saved_theme)});"
+        script=f"localStorage.setItem('reseno-theme', {json.dumps(saved_theme)});"
     )
     page = context.new_page()
     blocked_main_requests = 0
@@ -15184,7 +15184,7 @@ def test_login_input_group_autofill_respects_component_surface(
     frontend_url, _ = workspace_servers
     context = browser.new_context(locale="en-US")
     context.add_init_script(
-        script=f"localStorage.setItem('resumate-theme', {json.dumps(theme)});"
+        script=f"localStorage.setItem('reseno-theme', {json.dumps(theme)});"
     )
     page = context.new_page()
 
@@ -15351,7 +15351,7 @@ def test_oauth_login_keeps_github_visible_and_explains_unbound_account(
             "document.documentElement.scrollWidth <= window.innerWidth"
         )
         page.screenshot(
-            path=f"/tmp/resumate-oauth-unbound-{locale}-{error_code}.png",
+            path=f"/tmp/reseno-oauth-unbound-{locale}-{error_code}.png",
             full_page=True,
         )
     finally:
@@ -15440,7 +15440,7 @@ def test_login_session_refresh_is_shared_between_tabs(
         other_page.wait_for_function(
             """
             async () => (await navigator.locks.query()).pending.some(
-              lock => lock.name === 'resumate-auth-refresh'
+              lock => lock.name === 'reseno-auth-refresh'
             )
             """
         )
@@ -15812,9 +15812,9 @@ def test_oauth_settings_disconnect_retry_and_connect_on_mobile(
             """
         ), "Connected account details and controls must fit inside their settings row."
         disconnect_button.scroll_into_view_if_needed()
-        page.screenshot(path="/tmp/resumate-oauth-settings-mobile.png", full_page=True)
+        page.screenshot(path="/tmp/reseno-oauth-settings-mobile.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 900})
-        page.screenshot(path="/tmp/resumate-oauth-settings-desktop.png", full_page=True)
+        page.screenshot(path="/tmp/reseno-oauth-settings-desktop.png", full_page=True)
         page.set_viewport_size({"width": 375, "height": 812})
 
         disconnect_button.click()
@@ -15966,7 +15966,7 @@ def test_password_login_mounts_complete_gallery_with_workspace_shell(
             and not frame["hasLogin"]
             for frame in frames[first_workspace_frame:]
         ), diagnostics
-        page.screenshot(path="/tmp/resumate-login-entry-password.png")
+        page.screenshot(path="/tmp/reseno-login-entry-password.png")
     finally:
         context.close()
 
@@ -16068,7 +16068,7 @@ def test_password_login_recovers_when_session_is_lost_during_gallery_preparation
         assert len(data_routes) == 1
         expect(password_button).to_be_disabled()
         expect(github_button).to_be_disabled()
-        page.evaluate("localStorage.removeItem('resumate-auth-session')")
+        page.evaluate("localStorage.removeItem('reseno-auth-session')")
         data_routes.pop().continue_()
 
         expect(password_button).to_be_enabled()
@@ -16078,7 +16078,7 @@ def test_password_login_recovers_when_session_is_lost_during_gallery_preparation
             page.get_by_text("Request failed. Please try again later.", exact=True)
         ).to_be_visible()
         assert page.url == f"{frontend_url}/login"
-        assert page.evaluate("localStorage.getItem('resumate-auth-session')") is None
+        assert page.evaluate("localStorage.getItem('reseno-auth-session')") is None
         expect(page.locator('[data-slot="sidebar-container"]')).to_have_count(0)
 
         page.unroute("**/api/workspace/pages/resumes*")
@@ -16364,7 +16364,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
         page.get_by_role("option", name="EN", exact=True).click()
     expect(page.get_by_role("combobox", name="Language", exact=True)).to_have_text("EN")
     assert preferences["localeWrites"] == ["en"]
-    assert page.evaluate("localStorage.getItem('resumate-locale')") == "en"
+    assert page.evaluate("localStorage.getItem('reseno-locale')") == "en"
 
     page.locator('a[href="/settings"]').click()
     page.wait_for_url(f"{frontend_url}/settings")
@@ -16375,7 +16375,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
         page.get_by_role("option", name="中文", exact=True).click()
     expect(page.get_by_role("tab", name="通用设置", exact=True)).to_be_visible()
     assert preferences["localeWrites"] == ["en", "zh"]
-    assert page.evaluate("localStorage.getItem('resumate-locale')") == "zh"
+    assert page.evaluate("localStorage.getItem('reseno-locale')") == "zh"
 
     page.locator('a[href="/templates"]').click()
     page.wait_for_url(f"{frontend_url}/templates")
@@ -16396,7 +16396,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
     with page.expect_response("**/api/workspace/user-settings*", timeout=5000):
         page.get_by_role("option", name="EN", exact=True).click()
     expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text("中文")
-    page.wait_for_function("localStorage.getItem('resumate-locale') === 'zh'")
+    page.wait_for_function("localStorage.getItem('reseno-locale') === 'zh'")
     assert len(failed_writes) == 1
     assert preferences["localeWrites"] == ["en", "zh"]
     page.locator('a[href="/settings"]').click()
@@ -16414,7 +16414,7 @@ def test_workspace_preferences_use_restored_locale_after_password_login(
     context = browser.new_context(
         locale="en-US", viewport={"width": 1440, "height": 900}
     )
-    context.add_init_script("localStorage.setItem('resumate-locale', 'zh')")
+    context.add_init_script("localStorage.setItem('reseno-locale', 'zh')")
     page = context.new_page()
     held_catalogs: list[Route] = []
     settings_requests: list[Request] = []
@@ -16455,6 +16455,6 @@ def test_workspace_preferences_use_restored_locale_after_password_login(
         expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text(
             "中文"
         )
-        assert page.evaluate("localStorage.getItem('resumate-locale')") == "zh"
+        assert page.evaluate("localStorage.getItem('reseno-locale')") == "zh"
     finally:
         context.close()

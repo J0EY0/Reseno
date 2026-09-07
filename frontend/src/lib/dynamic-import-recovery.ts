@@ -1,5 +1,5 @@
 const DYNAMIC_IMPORT_RELOAD_GUARD_KEY =
-  "resumate-dynamic-import-reload-route";
+  "reseno-dynamic-import-reload-route";
 
 const DYNAMIC_IMPORT_ERROR_PATTERN =
   /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|chunkloaderror|loading chunk [^ ]+ failed/i;

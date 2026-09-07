@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="resumate-data-flow-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="reseno-data-flow-") as tmp_dir:
         data_dir = Path(tmp_dir)
         from tests.runtime_environment import runtime_environment
 
@@ -102,8 +102,8 @@ def main() -> None:
             db_bytes = (data_dir / "app.db").read_bytes()
             assert b"sk-script-workspace-secret" not in db_bytes
             env_bytes = (data_dir / ".env").read_bytes()
-            assert b"RESUMATE_MASTER_KEY=" in env_bytes
-            assert b"RESUMATE_JWT_SECRET=" in env_bytes
+            assert b"RESENO_MASTER_KEY=" in env_bytes
+            assert b"RESENO_JWT_SECRET=" in env_bytes
             assert b"sk-script-workspace-secret" not in env_bytes
 
         print("Backend data flow verified.")

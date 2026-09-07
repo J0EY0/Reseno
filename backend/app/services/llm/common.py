@@ -82,7 +82,7 @@ def make_web_source(
     title: str = "",
     excerpt: str = "",
 ) -> LlmWebSource:
-    """Normalize one provider citation into ResuMate's stable source identity."""
+    """Normalize one provider citation into Reseno's stable source identity."""
 
     normalized_url = _normalized_web_source_url(url)
     digest = sha256(normalized_url.encode("utf-8")).hexdigest()[:16]

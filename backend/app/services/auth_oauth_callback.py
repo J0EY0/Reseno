@@ -12,7 +12,7 @@ def oauth_callback_response(origin: str, result: dict[str, str]) -> HTMLResponse
         json.dumps(
             {
                 "origin": origin,
-                "result": {"type": "resumate:oauth:result", **result},
+                "result": {"type": "reseno:oauth:result", **result},
                 "errorUrl": (
                     f"{origin}/auth/callback#error={APP_MESSAGE_OAUTH_INVALID_STATE}"
                 ),
@@ -28,7 +28,7 @@ def oauth_callback_response(origin: str, result: dict[str, str]) -> HTMLResponse
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
-<title>ResuMate</title>
+<title>Reseno</title>
 <style nonce="{nonce}">
 :root {{ color-scheme: light dark; background: #f4f4f5; }}
 @media (prefers-color-scheme: dark) {{ :root {{ background: #09090b; }} }}
@@ -50,7 +50,7 @@ body {{ margin: 0; }}
   }}, 5000);
   function receive(event) {{
     if (event.origin !== config.origin || event.source !== opener ||
-        event.data?.type !== "resumate:oauth:received") return;
+        event.data?.type !== "reseno:oauth:received") return;
     window.clearTimeout(timeout);
     window.removeEventListener("message", receive);
   }}

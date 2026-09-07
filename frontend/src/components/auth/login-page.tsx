@@ -89,6 +89,7 @@ export function LoginPage({
 
   return (
     <AuthPageShell
+      brandTitle={t.brandTitle}
       formTitle={t.loginFormTitle}
       description={t.loginFormSubtitle}
     >

@@ -24,7 +24,7 @@ def test_import_computation_yields_to_other_coroutines(
     if kind == "resume":
         saved = resumes.create_resume({"documentLocale": "en"})["resume"]
         payload = {
-            "format": "resumate.resume",
+            "format": "reseno.resume",
             "formatVersion": 1,
             "templates": [],
             "resumes": [
@@ -39,7 +39,7 @@ def test_import_computation_yields_to_other_coroutines(
         parser_name = "parse_resume_artifact"
     else:
         payload = {
-            "format": "resumate.template",
+            "format": "reseno.template",
             "formatVersion": 1,
             "templates": [portable_template("Import")],
         }

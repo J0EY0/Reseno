@@ -26,13 +26,13 @@ class TabFlow:
         self.intent = "login" if mode == "login" else "bind"
         self.context = browser.new_context(locale="en-US", **options)
         self.context.add_init_script(
-            "localStorage.setItem('resumate-locale', 'en');"
-            "localStorage.setItem('resumate-theme', 'light');"
+            "localStorage.setItem('reseno-locale', 'en');"
+            "localStorage.setItem('reseno-theme', 'light');"
         )
         if self.intent == "bind":
             self.context.add_init_script(
                 f"if (location.origin === {json.dumps(frontend_url)}) "
-                "localStorage.setItem('resumate-auth-session', "
+                "localStorage.setItem('reseno-auth-session', "
                 f"{json.dumps(json.dumps(browser_session))});"
             )
         self.available = True
@@ -57,7 +57,7 @@ class TabFlow:
             "https://github-provider.test/apps/new?state=setup-state"
         )
         self.manifest = {
-            "name": "ResuMate Browser Test",
+            "name": "Reseno Browser Test",
             "url": frontend_url,
             "redirect_url": f"{frontend_url}/api/auth/oauth/github/setup/callback",
             "callback_urls": [f"{frontend_url}/api/auth/oauth/github/callback"],
@@ -429,8 +429,8 @@ def test_github_tab_completes_in_parent_without_document_navigation(
     assert not flow.completions
     assert not tab.is_closed()
     if width == 1440 and reduced_motion == "no-preference":
-        flow.page.screenshot(path=f"/private/tmp/resumate-tab-{mode}-parent.png")
-        tab.screenshot(path=f"/private/tmp/resumate-tab-{mode}-provider-mock.png")
+        flow.page.screenshot(path=f"/private/tmp/reseno-tab-{mode}-parent.png")
+        tab.screenshot(path=f"/private/tmp/reseno-tab-{mode}-provider-mock.png")
     flow.confirm(tab)
     expect(tab).to_have_url(f"{flow.url}/api/auth/oauth/github/callback")
     sample("completion")
@@ -505,7 +505,7 @@ def test_github_tab_completes_in_parent_without_document_navigation(
             for frame in stage_frames
         ), (stage, stage_frames)
     if width == 1440 and reduced_motion == "no-preference":
-        flow.page.screenshot(path=f"/private/tmp/resumate-tab-{mode}-complete.png")
+        flow.page.screenshot(path=f"/private/tmp/reseno-tab-{mode}-complete.png")
     assert flow.page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
@@ -555,7 +555,7 @@ def test_github_binding_identity_failure_retries_without_reauthorizing(
 ) -> None:
     flow = tab_flow("bind")
     flow.open()
-    session = flow.page.evaluate("localStorage.getItem('resumate-auth-session')")
+    session = flow.page.evaluate("localStorage.getItem('reseno-auth-session')")
     tab = flow.start()
     flow.confirm(tab)
     flow.identity_failures = 1
@@ -574,7 +574,7 @@ def test_github_binding_identity_failure_retries_without_reauthorizing(
     expect(flow.page.get_by_text("connected-owner", exact=True)).to_be_visible()
     expect(flow.page.get_by_role("button", name="Disconnect GitHub")).to_be_enabled()
     assert (
-        flow.page.evaluate("localStorage.getItem('resumate-auth-session')") == session
+        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
     )
     assert len(flow.starts) == 1
     assert len(flow.completions) == 1
@@ -601,7 +601,7 @@ def test_github_callback_without_opener_never_exchanges_or_loads_workspace(
         "/api/auth/oauth/github/callback"
     ]
     assert (
-        flow.page.evaluate("localStorage.getItem('resumate-auth-session')") is not None
+        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is not None
     )
 
 
@@ -618,7 +618,7 @@ def test_github_callback_requires_acknowledgement_from_original_page(
     tab = opened.value
     expect(tab).to_have_url(f"{flow.url}/api/auth/oauth/github/callback")
     tab.evaluate(
-        "window.postMessage({type: 'resumate:oauth:received'}, location.origin)"
+        "window.postMessage({type: 'reseno:oauth:received'}, location.origin)"
     )
     expect(tab).to_have_url(f"{flow.url}/auth/callback", timeout=10_000)
     expect(
@@ -661,7 +661,7 @@ def test_github_completion_rejects_server_intent_mismatch(
 ) -> None:
     flow = tab_flow(mode)
     flow.open()
-    session = flow.page.evaluate("localStorage.getItem('resumate-auth-session')")
+    session = flow.page.evaluate("localStorage.getItem('reseno-auth-session')")
     tab = flow.start()
     flow.confirm(tab)
     flow.finish(intent="login")
@@ -671,6 +671,6 @@ def test_github_completion_rejects_server_intent_mismatch(
     assert tab.is_closed()
     flow.assert_parent()
     assert (
-        flow.page.evaluate("localStorage.getItem('resumate-auth-session')") == session
+        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
     )
     assert len(flow.completions) == 1

@@ -232,11 +232,11 @@ for (const pageSource of [resumeGalleryPageSource, templateGalleryPageSource]) {
   );
 }
 
-assert.match(viteConfigSource, /RESUMATE_VITE_CACHE_DIR/);
+assert.match(viteConfigSource, /RESENO_VITE_CACHE_DIR/);
 assert.match(viteConfigSource, /cacheDir/);
 assert.match(viteTestCacheSource, /mkdtempSync/);
 assert.match(viteTestCacheSource, /tmpdir\(\)/);
-assert.match(browserFixturesSource, /"RESUMATE_VITE_CACHE_DIR"/);
+assert.match(browserFixturesSource, /"RESENO_VITE_CACHE_DIR"/);
 
 for (const [index, source] of viteScriptSources.entries()) {
   assert.match(

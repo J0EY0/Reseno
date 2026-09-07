@@ -603,7 +603,7 @@ def _anthropic_thinking(
     1,024 thinking tokens and, without interleaving, requires that budget to
     remain strictly below the request's inclusive ``max_tokens``.
 
-    The 16K ceiling is ResuMate's Auto quality policy. It prevents legacy
+    The 16K ceiling is Reseno's Auto quality policy. It prevents legacy
     thinking from consuming an arbitrarily large discovered output capability;
     it is distinct from both a user's max_tokens override and the durable
     visible-summary budget used by history compaction.

@@ -28,7 +28,7 @@ Run selected cases or save the JSON report:
 uv run --locked python scripts/agent_model_eval.py \
   --case advice_only_no_edits \
   --case current_attachment_boundary \
-  --output /tmp/resumate-agent-model-eval.json
+  --output /tmp/reseno-agent-model-eval.json
 ```
 
 Exit codes:
@@ -80,7 +80,7 @@ comparing configured models on the same fixture:
   `toolErrorCodeCounts`. They contain only stable internal codes, never tool
   inputs, resume text, rejection reasons, or provider error text.
 
-`requestAttempts` covers attempts explicitly dispatched by ResuMate. A
+`requestAttempts` covers attempts explicitly dispatched by Reseno. A
 provider SDK may perform opaque transport retries internally; those cannot be
 reported separately unless the SDK exposes them.
 

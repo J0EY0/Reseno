@@ -1,6 +1,6 @@
 import { locales, type Locale } from '@/i18n'
 
-const localePreferenceKey = 'resumate-locale'
+const localePreferenceKey = 'reseno-locale'
 
 export function loadLocalePreference() {
   if (typeof window === 'undefined') {

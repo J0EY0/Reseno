@@ -213,7 +213,7 @@ def test_required_changed_paths_detect_field_level_misplacement() -> None:
     )
     observation = EvaluationObservation(
         response_text="Draft ready.",
-        edit_payloads=("React TypeScript ResuMate",),
+        edit_payloads=("React TypeScript Reseno",),
         edit_targets=("sections.project.items.project-1",),
         edit_count=1,
         rejected_edit_count=0,

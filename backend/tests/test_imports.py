@@ -87,7 +87,7 @@ def test_import_resume_rejects_invalid_document(
         ]
 
     payload = {
-        "format": "resumate.resume",
+        "format": "reseno.resume",
         "formatVersion": 1,
         "templates": [],
         "resumes": [

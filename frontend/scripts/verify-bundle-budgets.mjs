@@ -184,7 +184,7 @@ function collectFirstPartyDynamicEntries(manifest, measurements) {
 
 async function verifyBundleBudgets() {
   const temporaryOutput = await mkdtemp(
-    path.join(tmpdir(), 'resumate-bundle-budgets-'),
+    path.join(tmpdir(), 'reseno-bundle-budgets-'),
   )
 
   try {

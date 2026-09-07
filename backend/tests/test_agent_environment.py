@@ -50,7 +50,7 @@ def _request(prompt: str) -> AgentChatRequest:
                     "items": [
                         {
                             "id": "project-1",
-                            "name": "ResuMate",
+                            "name": "Reseno",
                             "role": "",
                             "techStack": [],
                             "period": "",

@@ -1,8 +1,8 @@
-# ResuMate Project Context
+# Reseno Project Context
 
 ## 产品定位
 
-ResuMate 是一个融合 AI Agent 的简历制作工作台。当前阶段目标是持续打磨前端产品体验、数据结构、A4 渲染与导出链路，同时保持真实后端的领域职责清晰。
+Reseno 是一个融合 AI Agent 的简历制作工作台。当前阶段目标是持续打磨前端产品体验、数据结构、A4 渲染与导出链路，同时保持真实后端的领域职责清晰。
 
 核心用户路径：
 

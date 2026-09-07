@@ -2,14 +2,14 @@
 
 ## Goal
 
-ResuMate should keep provider differences inside the backend provider layer. The
+Reseno should keep provider differences inside the backend provider layer. The
 agent runtime should select a saved model config and call one unified LLM
 interface without knowing whether the underlying provider is OpenAI, Anthropic,
 Gemini, or an OpenAI-compatible endpoint.
 
 ## Provider Modes
 
-ResuMate supports three configuration modes:
+Reseno supports three configuration modes:
 
 - Cloud provider: a curated brand with backend model discovery.
 - Local runtime: an OpenAI-compatible endpoint with optional backend model

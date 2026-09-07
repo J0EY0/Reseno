@@ -115,11 +115,11 @@ def save_github_app(config: GitHubAppConfig, owner_revision: str) -> None:
 
 def github_app_manifest(public_base_url: str) -> dict[str, object]:
     return {
-        "name": f"ResuMate-{secrets.token_hex(4)}",
+        "name": f"Reseno-{secrets.token_hex(4)}",
         "url": public_base_url,
         "redirect_url": f"{public_base_url}/api/auth/oauth/github/setup/callback",
         "callback_urls": [f"{public_base_url}/api/auth/oauth/github/callback"],
-        "description": "Private GitHub sign-in for your ResuMate workspace.",
+        "description": "Private GitHub sign-in for your Reseno workspace.",
         "public": False,
         "default_permissions": {},
         "default_events": [],

@@ -74,11 +74,11 @@ def _resume() -> dict:
                 "items": [
                     {
                         "id": "project-1",
-                        "name": "ResuMate",
+                        "name": "Reseno",
                         "role": "Maintainer",
                         "techStack": ["React", "FastAPI"],
                         "period": "2026",
-                        "url": "https://example.com/resumate",
+                        "url": "https://example.com/reseno",
                         "description": "Resume builder.",
                         "highlights": ["Implemented typed sections."],
                     }

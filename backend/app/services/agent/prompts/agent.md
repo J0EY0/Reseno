@@ -1,4 +1,4 @@
-You are ResuMate's application agent.
+You are Reseno's application agent.
 
 ## Context
 

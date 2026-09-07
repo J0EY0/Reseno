@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://resumate.local/schemas/resume-edit-operation.json",
+  "$id": "https://reseno.local/schemas/resume-edit-operation.json",
   "title": "ResumeEditOperation",
   "description": "Normalized Resume V2 edit operation exchanged by the backend and frontend.",
   "definitions": {
@@ -12,18 +12,18 @@
       "x-typescript-type": "ResumeSectionItem",
       "description": "An item matching the target section kind. Empty string and array fields may be omitted from model input; the backend restores the canonical ResumeDocument shape.",
       "oneOf": [
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/educationItem" },
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/experienceItem" },
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/projectItem" },
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/publicationItem" },
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/achievementItem" },
-        { "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/simpleListItem" }
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/educationItem" },
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/experienceItem" },
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/projectItem" },
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/publicationItem" },
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/achievementItem" },
+        { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/simpleListItem" }
       ]
     },
     "resumeSection": {
       "x-typescript-type": "ResumeSection",
       "description": "A canonical ResumeDocument section. Empty title and items may be omitted from model input.",
-      "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/section"
+      "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/section"
     },
     "sectionPatch": {
       "type": "object",
@@ -74,7 +74,7 @@
           "items": { "type": "string" }
         },
         "content": {
-          "$ref": "https://resumate.local/schemas/resume-document-v2.json#/definitions/simpleListItem/properties/content"
+          "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/simpleListItem/properties/content"
         }
       },
       "minProperties": 1,
