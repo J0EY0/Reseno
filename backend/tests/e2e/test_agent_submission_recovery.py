@@ -56,6 +56,7 @@ def test_rejected_post_preserves_prompt_and_local_attachment(
         page.route("**/api/agent/chat", lambda route: route.abort("failed"))
         _open_agent(page, frontend_url, resume_id)
         prompt = page.get_by_role("textbox", name="你想了解什么？", exact=True)
+        expect(prompt).to_have_attribute("placeholder", "你想了解什么？")
         prompt.fill("发送失败后保留这段文字。")
         page.locator('[data-slot="agent-composer"] input[type="file"]').set_input_files(
             {
@@ -110,9 +111,10 @@ def test_exhausted_stream_can_recover_without_reloading(
         }
 
         def fulfill_run(route: Route) -> None:
-            route.fulfill(
-                json={"code": 0, "message": "OK", "data": None if finished else run}
-            )
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["run"] = None if finished else run
+            route.fulfill(response=response, json=payload)
 
         def fulfill_events(route: Route) -> None:
             nonlocal event_requests
@@ -125,7 +127,7 @@ def test_exhausted_stream_can_recover_without_reloading(
             stops += 1
             route.fulfill(json={"code": 0, "message": "OK", "data": run})
 
-        page.route(f"**/api/agent/resumes/{resume_id}/run", fulfill_run)
+        page.route(f"**/api/agent/resumes/{resume_id}/recovery", fulfill_run)
         page.route(f"**/api/agent/runs/{run_id}/events*", fulfill_events)
         page.route(f"**/api/agent/runs/{run_id}", stop_run)
         _open_agent(page, frontend_url, resume_id)

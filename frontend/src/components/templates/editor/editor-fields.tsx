@@ -32,7 +32,7 @@ export function TemplateSelectRow({
   return (
     <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4">
       <span className="flex min-w-0 items-center">
-        <span className="min-w-0 truncate text-sm font-medium text-foreground">
+        <span className="min-w-0 text-sm leading-5 font-medium text-foreground">
           {label}
         </span>
       </span>

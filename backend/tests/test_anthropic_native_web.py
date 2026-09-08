@@ -385,3 +385,62 @@ def test_stream_native_search_emits_activity_and_continues_pause(
         "web_search_tool_result",
         "text",
     ]
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_native_tool_continuation_recomputes_remaining_shared_output(
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+) -> None:
+    from dataclasses import replace
+
+    from app.services.llm import LlmPrompt, async_stream_tool_call
+
+    config = replace(
+        _config(),
+        shared_context_window_tokens=8_000,
+        context_window_tokens=8_000,
+        supports_streaming=streaming,
+    )
+    paused = {"type": "text", "text": "source " * 1_000}
+    payloads = []
+
+    async def post(_: str, **kwargs: Any) -> dict[str, Any]:
+        payloads.append(deepcopy(kwargs["payload"]))
+        return {
+            "content": [paused]
+            if len(payloads) == 1
+            else [{"type": "text", "text": "Done"}],
+            "stop_reason": "pause_turn" if len(payloads) == 1 else "end_turn",
+        }
+
+    async def stream(_: str, **kwargs: Any):
+        payloads.append(deepcopy(kwargs["payload"]))
+        first = len(payloads) == 1
+        yield {"type": "message_start", "message": {"id": "response"}}
+        yield {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": paused if first else {"type": "text", "text": "Done"},
+        }
+        yield {"type": "content_block_stop", "index": 0}
+        yield {
+            "type": "message_delta",
+            "delta": {"stop_reason": "pause_turn" if first else "end_turn"},
+        }
+        yield {"type": "message_stop"}
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", post)
+    monkeypatch.setattr(anthropic_messages, "async_stream_json", stream)
+    events = asyncio.run(
+        _collect(
+            async_stream_tool_call(
+                config,
+                LlmPrompt(messages=[{"role": "user", "content": "task " * 3_200}]),
+                [_edit_tool()],
+            )
+        )
+    )
+    assert events[-1].message.stop_reason == "stop"
+    assert len(payloads) == 2
+    assert 0 < payloads[1]["max_tokens"] < payloads[0]["max_tokens"]

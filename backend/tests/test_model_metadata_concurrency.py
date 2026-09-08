@@ -1,7 +1,9 @@
+import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Event, current_thread
+from threading import Barrier
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,17 +38,17 @@ def test_concurrent_cache_writes_leave_one_complete_snapshot(
     assert list(cache_path.parent.glob("*.tmp")) == []
 
 
-def test_concurrent_partial_refreshes_preserve_both_catalogs(
-    client: TestClient,
+def test_concurrent_refreshes_fetch_each_source_once_and_publish_together(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first_write_started = Event()
-    second_snapshot_read = Event()
-    original_load = model_metadata._load_cache
-    original_write = model_metadata._write_cache
+    async def run() -> None:
+        lite_started = asyncio.Event()
+        reasoning_started = asyncio.Event()
+        release = asyncio.Event()
 
-    def fetch_catalog():
-        if current_thread().name == "litellm":
+        async def fetch_lite():
+            lite_started.set()
+            await release.wait()
             return {
                 "openai/gpt-test": {
                     "litellm_provider": "openai",
@@ -54,48 +56,49 @@ def test_concurrent_partial_refreshes_preserve_both_catalogs(
                     "supports_reasoning": True,
                 },
             }
-        return {}
 
-    def fetch_reasoning():
-        if current_thread().name == "models-dev":
-            assert first_write_started.wait(timeout=5)
+        async def fetch_reasoning():
+            reasoning_started.set()
+            await release.wait()
             return {
-                "openai": {
-                    "models": {
-                        "gpt-test": {"reasoning_options": [{"type": "toggle"}]},
+                "providers": {
+                    "openai": {
+                        "models": {
+                            "gpt-test": {"reasoning_options": [{"type": "toggle"}]},
+                        },
                     },
                 },
+                "models": {
+                    "openai/base-test": {
+                        "id": "openai/base-test",
+                        "limit": {"context": 128000},
+                    }
+                },
             }
-        return {}
 
-    def load_cache():
-        snapshot = original_load()
-        if current_thread().name == "models-dev":
-            second_snapshot_read.set()
-        return snapshot
+        lite = AsyncMock(side_effect=fetch_lite)
+        reasoning = AsyncMock(side_effect=fetch_reasoning)
+        monkeypatch.setattr(model_metadata, "_fetch_catalog", lite)
+        monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", reasoning)
+        first = asyncio.create_task(model_metadata.refresh_model_metadata_cache())
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(lite_started.wait(), reasoning_started.wait()), 3
+            )
+            assert model_metadata.resolve_model_metadata("openai", "gpt-test") is None
+            assert await model_metadata.refresh_model_metadata_cache() is False
+            lite.assert_awaited_once()
+            reasoning.assert_awaited_once()
+        finally:
+            release.set()
+            await first
 
-    def write_cache(cache):
-        if current_thread().name == "litellm":
-            first_write_started.set()
-            second_snapshot_read.wait(timeout=0.2)
-        original_write(cache)
+        cache_path = get_settings().data_dir / model_metadata.MODEL_METADATA_CACHE_NAME
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert model_metadata._CATALOG_CACHE == cache
+        metadata = model_metadata.resolve_model_metadata("openai", "gpt-test")
+        assert metadata is not None
+        assert metadata.context_window_tokens == 128_000
+        assert metadata.can_disable_thinking is True
 
-    def refresh(name: str) -> bool:
-        current_thread().name = name
-        return model_metadata.refresh_model_metadata_cache(provider="openai")
-
-    monkeypatch.setattr(model_metadata, "_fetch_catalog", fetch_catalog)
-    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", fetch_reasoning)
-    monkeypatch.setattr(model_metadata, "_load_cache", load_cache)
-    monkeypatch.setattr(model_metadata, "_write_cache", write_cache)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(refresh, name) for name in ("litellm", "models-dev")]
-        assert all(future.result(timeout=10) for future in futures)
-
-    cache_path = get_settings().data_dir / model_metadata.MODEL_METADATA_CACHE_NAME
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert model_metadata._CATALOG_CACHE == cache
-    metadata = model_metadata.resolve_model_metadata("openai", "gpt-test")
-    assert metadata is not None
-    assert metadata.context_window_tokens == 128_000
-    assert metadata.can_disable_thinking is True
+    asyncio.run(run())

@@ -28,6 +28,7 @@ from playwright.sync_api import (
 from app.config import get_settings
 from app.document_locales import DocumentLocale
 from app.schemas.exports import ExportResumeRenderRequest
+from app.services.render_assets import route_render_image
 
 EXPORT_FILE_TTL = timedelta(hours=1)
 logger = logging.getLogger(__name__)
@@ -193,7 +194,9 @@ def _create_render_context(
     context = browser.new_context(
         viewport={"width": 794, "height": 1123},
         device_scale_factor=device_scale_factor,
+        service_workers="block",
     )
+    context.route("**/*", route_render_image)
     if access_token and token_expires_at:
         auth_session = {
             "username": username or "resume-render",
@@ -201,11 +204,13 @@ def _create_render_context(
             "accessToken": access_token,
             "expiresAt": token_expires_at,
         }
+        render_base = json.dumps(_normalize_render_base_url())
         context.add_init_script(
+            f"if (window.location.origin === new URL({render_base}).origin) {{"
             "window.localStorage.setItem("
             "'reseno-auth-session', "
             f"{json.dumps(json.dumps(auth_session))}"
-            ");",
+            ");}",
         )
 
     return context

@@ -46,7 +46,6 @@ const domainModules = new Map([
       "hasSectionItemContent",
       "isCanonicalResumeSection",
       "isSectionItemForKind",
-      "parseCommaSeparatedItems",
       "projectResumeSection",
       "projectResumeSections",
     ],
@@ -316,10 +315,17 @@ assert(
 );
 assert(
   sectionEditorFields.includes("lazy(() =>") &&
-    sectionEditorFields.includes("import('./rich-highlights-editor')") &&
-    sectionEditorFields.includes("inputState.publishedValue === serializedValue") &&
-    sectionEditorFields.includes("serializedValue !== inputState.publishedValue"),
-  "Shared section fields must retain the rich-editor lazy boundary and external draft adoption.",
+    sectionEditorFields.includes("import('./rich-highlights-editor')"),
+  "Shared section fields must retain the rich-editor lazy boundary.",
+);
+const inlineTextListInput = await readFile(
+  path.join(sourceRoot, "components/editor/inline-text-list-input.tsx"), "utf8",
+);
+assert(
+  inlineTextListInput.includes("<InlineTextInput") &&
+    inlineTextListInput.includes("inputState.publishedValue === serializedValue") &&
+    /\? inputState\.draft\s*:\s*serializedValue/.test(inlineTextListInput),
+  "Inline text lists must preserve local typing and adopt external value updates.",
 );
 for (const [index, sectionKind] of [
   "education",

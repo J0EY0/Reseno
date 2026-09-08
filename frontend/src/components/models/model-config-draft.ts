@@ -215,6 +215,22 @@ export function validateModelConfigDraft(
     }
     return errors;
   }
+  if (draft.providerKind === "local") {
+    for (const field of ["temperature", "topP"] as const) {
+      const value = draft[field].trim();
+      const parsed = Number(value);
+      if (
+        value &&
+        (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
+          !Number.isFinite(parsed) ||
+          (field === "temperature" ? parsed < 0 || parsed > 2 : parsed <= 0 || parsed > 1))
+      ) {
+        errors[field] = field === "temperature"
+          ? messages.validationTemperature
+          : messages.validationTopP;
+      }
+    }
+  }
   if (!draft.apiUrl.trim()) {
     errors.apiUrl = messages.validationRequired;
   } else if (!isValidHttpUrl(draft.apiUrl.trim())) {
@@ -304,8 +320,14 @@ export function createSavedModelConfig(
       draft.providerKind === "cloud"
         ? provider.defaultBaseUrl.trim()
         : draft.apiUrl.trim(),
-    temperature: null,
-    topP: null,
+    temperature:
+      draft.providerKind === "local" && draft.temperature.trim()
+        ? Number(draft.temperature)
+        : null,
+    topP:
+      draft.providerKind === "local" && draft.topP.trim()
+        ? Number(draft.topP)
+        : null,
     // An empty draft value is Auto (null); a number is an intentional request
     // override for every provider kind, including official cloud providers.
     maxTokens: normalizeMaxTokens(Number(draft.maxTokens)),

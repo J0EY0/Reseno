@@ -3,6 +3,7 @@ import { useRef, type PointerEvent } from "react";
 
 import type { AppMessages } from "@/i18n";
 import { getInitials } from "@/lib/resume";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 import type {
   ResumeBasicInfo,
@@ -115,7 +116,7 @@ export function AvatarPreview({
         <img
           data-avatar-image="true"
           src={basic.avatar}
-          alt={basic.name}
+          alt={getRichTextPlainText(basic.name)}
           className={cn(
             "block size-full object-cover object-center",
             imageClassName,

@@ -147,15 +147,12 @@ export function TemplateGallery({
             <Button
               type="button"
               disabled={isImporting || isCreating}
+              aria-label={isCreating ? t.creating : t.newTemplate}
               aria-busy={isCreating || undefined}
               onClick={onCreateCustomTemplate}
             >
-              {isCreating ? (
-                <Spinner data-icon="inline-start" aria-label={t.creating} />
-              ) : (
-                <CopyPlus data-icon="inline-start" />
-              )}
-              {isCreating ? t.creating : t.newTemplate}
+              <CopyPlus data-icon="inline-start" />
+              {t.newTemplate}
             </Button>
           </>
         }

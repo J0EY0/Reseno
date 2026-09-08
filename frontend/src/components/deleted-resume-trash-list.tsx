@@ -9,6 +9,7 @@ import {
 import { formatTrashTimestamp } from "@/components/recycle-bin-format";
 import { TabsContent } from "@/components/ui/tabs";
 import type { AppMessages, Locale } from "@/i18n";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import { createTemplateSettings, getTemplateById } from "@/lib/templates";
 import type {
   DeletedResumeTemplateDefinition,
@@ -31,7 +32,8 @@ export function DeletedResumeTrashList({
   const items = controller.resumes.items;
   const previewTemplates = [...templates, ...deletedTemplates];
   const tableItems: RecycleBinTableItem[] = items.map((item) => {
-    const title = item.title || item.resume.basic.name || t.untitledResume;
+    const title =
+      item.title || getRichTextPlainText(item.resume.basic.name) || t.untitledResume;
     const baseTemplate = getTemplateById(previewTemplates, item.template);
     const template: ResumeTemplateDefinition = {
       ...baseTemplate,
@@ -55,7 +57,7 @@ export function DeletedResumeTrashList({
       ),
       title,
       subtitle:
-        item.resume.basic.headline ||
+        getRichTextPlainText(item.resume.basic.headline) ||
         item.resume.basic.email ||
         item.resume.basic.phone,
       deletedAtText: formatTrashTimestamp(locale, item.deletedAt),

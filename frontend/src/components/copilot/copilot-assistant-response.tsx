@@ -18,6 +18,7 @@ import {
 } from "@/lib/agent-markdown-presentation";
 import { isPlainAgentText } from "@/lib/agent-message-rendering";
 import type { AgentSource } from "@/types/api";
+import type { AppMessages } from "@/i18n";
 import { useMemo } from "react";
 
 import {
@@ -42,7 +43,7 @@ function getValidSourceUrl(source: AgentSource) {
 
 type AgentWebSource = AgentSource & { url: string };
 
-function AgentSourcesCitation({ sources }: { sources: AgentWebSource[] }) {
+function AgentSourcesCitation({ sources, t }: { sources: AgentWebSource[]; t: AppMessages }) {
   if (!sources.length) {
     return null;
   }
@@ -56,14 +57,15 @@ function AgentSourcesCitation({ sources }: { sources: AgentWebSource[] }) {
         <InlineCitationCardBody>
           <InlineCitationCarousel>
             <InlineCitationCarouselHeader>
-              <InlineCitationCarouselPrev />
-              <InlineCitationCarouselNext />
+              <InlineCitationCarouselPrev aria-label={t.agentPreviousSource} />
+              <InlineCitationCarouselNext aria-label={t.agentNextSource} />
               <InlineCitationCarouselIndex />
             </InlineCitationCarouselHeader>
             <InlineCitationCarouselContent>
               {sources.map((source) => (
                 <InlineCitationCarouselItem key={source.url}>
                   <InlineCitationSource
+                    copyLabel={t.agentCopySourceLink}
                     title={source.title || source.url}
                     url={source.url}
                   />
@@ -102,11 +104,13 @@ export function AgentAssistantResponse({
   fieldLabels,
   isStreaming = false,
   sources,
+  t,
   text,
 }: {
   fieldLabels?: ReadonlyMap<string, string>;
   isStreaming?: boolean;
   sources: AgentSource[] | undefined;
+  t: AppMessages;
   text: string;
 }) {
   const webSources = useMemo(() => getWebSources(sources), [sources]);
@@ -147,7 +151,7 @@ export function AgentAssistantResponse({
       {hasWebSources ? (
         <>
           {" "}
-          <AgentSourcesCitation sources={webSources} />
+          <AgentSourcesCitation sources={webSources} t={t} />
         </>
       ) : null}
     </div>

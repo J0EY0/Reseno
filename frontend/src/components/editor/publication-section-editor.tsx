@@ -1,8 +1,8 @@
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import type { PublicationItem } from '@/types/resume'
 
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
 import { ResumeItemEditorShell } from './resume-item-editor-shell'
 import { compactResumeFieldClassName } from './resume-section-editor-fields'
 import type { TypedSectionEditorProps } from './resume-section-editor-types'
@@ -46,37 +46,45 @@ export function PublicationSectionEditor({
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.publicationTitle} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.publicationTitle}
+            multiline
             value={item.title}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.publicationTitle}
-            onChange={(event) => updateItem(item, { title: event.target.value })}
+            onChange={(value) => updateItem(item, { title: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.authors} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.authors}
+            multiline
             value={item.authors}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.authors}
-            onChange={(event) => updateItem(item, { authors: event.target.value })}
+            onChange={(value) => updateItem(item, { authors: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.venue}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.venue}
             value={item.venue}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.venue}
-            onChange={(event) => updateItem(item, { venue: event.target.value })}
+            onChange={(value) => updateItem(item, { venue: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.date}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.date}
             value={item.date}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.date}
-            onChange={(event) => updateItem(item, { date: event.target.value })}
+            onChange={(value) => updateItem(item, { date: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.url} className="md:col-span-2">
@@ -90,14 +98,14 @@ export function PublicationSectionEditor({
           />
         </FormField>
         <FormField label={t.fieldLabels.description} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.description}
+            multiline
             value={item.description}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.publicationDescription}
-            onChange={(event) =>
-              updateItem(item, { description: event.target.value })
-            }
+            onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
       </div>

@@ -55,7 +55,17 @@ export function AgentChangeSummary({
   }
 
   const applied = reviewItems.filter((item) => item.status === "applied").length;
-  const discarded = reviewItems.length - applied;
+  const discarded = reviewItems.filter((item) => item.status === "discarded").length;
+  const superseded = reviewItems.filter((item) => item.status === "superseded").length;
+  const receipt = superseded === 0
+    ? formatReceipt(t.agentDraftResolutionReceipt, applied, discarded)
+    : applied === 0 && discarded === 0
+      ? t.agentDraftSuperseded
+      : [
+          applied > 0 ? formatCount(t.agentDraftAppliedCount, applied) : null,
+          discarded > 0 ? formatCount(t.agentDraftDiscardedCount, discarded) : null,
+          formatCount(t.agentDraftSupersededCount, superseded),
+        ].filter(Boolean).join(" · ");
 
   return (
     <div className="mt-3 grid justify-items-start gap-1.5">
@@ -65,9 +75,7 @@ export function AgentChangeSummary({
           data-slot="agent-draft-resolution-receipt"
         >
           <CheckCheck aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className="truncate">
-            {formatReceipt(t.agentDraftResolutionReceipt, applied, discarded)}
-          </span>
+          <span className="min-w-0 break-words">{receipt}</span>
         </div>
       ) : null}
       {qualityWarnings.length > 0 ? (

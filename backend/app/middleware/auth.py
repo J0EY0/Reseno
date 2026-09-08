@@ -68,7 +68,7 @@ async def jwt_auth_middleware(
         return unauthorized_response("missing_token")
 
     try:
-        payload = decode_access_token(token)
+        payload = await run_in_threadpool(decode_access_token, token)
     except AuthTokenError:
         return unauthorized_response("invalid_or_expired_token")
 

@@ -12,7 +12,7 @@ from app.schemas.resumes import (
 )
 
 AgentDraftDecisionStatus = Literal["applied", "discarded"]
-AgentDraftReviewItemStatus = Literal["pending", "applied", "discarded"]
+AgentDraftReviewItemStatus = Literal["pending", "applied", "discarded", "superseded"]
 AgentTransactionState = Literal["none", "provisional", "committed", "rolled_back"]
 AgentRunStatus = Literal["active", "completed", "cancelled", "failed"]
 AgentTurnExecutionStatus = Literal["running", "succeeded", "failed", "cancelled"]
@@ -434,6 +434,13 @@ class AgentSessionResponse(BaseModel):
     revision: str
     messages: list[AgentStoredMessage] = Field(default_factory=list)
     executions: list[AgentTurnExecution] = Field(default_factory=list)
+
+
+class AgentSessionRecoveryResponse(BaseModel):
+    """One durable conversation and its matching reconnectable run."""
+
+    session: AgentSessionResponse
+    run: AgentRunResponse | None
 
 
 class AgentSessionReplaceRequest(BaseModel):

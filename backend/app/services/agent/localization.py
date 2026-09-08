@@ -83,7 +83,7 @@ TEXT: dict[str, dict[str, str]] = {
         "diff.label.item_field": "{kind} {field}",
     },
     "zh": {
-        "edit.default.reason": "根据当前请求生成可预览草稿。",
+        "edit.default.reason": "根据当前请求生成可预览草稿",
         "edit.default.title": "修改建议 {index}",
         "edit.title.add": "新增{label}",
         "edit.title.delete": "删除{label}",
@@ -92,33 +92,33 @@ TEXT: dict[str, dict[str, str]] = {
         "edit.label.sections": "简历模块",
         "error.edit_execute_rejected_detailed": (
             "没有可执行的修改被接受。请检查 sectionId、itemId、path、patch "
-            "和 operation type 等必填字段。"
+            "和 operation type 等必填字段"
         ),
-        "error.edit_entry_must_object": "修改条目必须是对象。",
-        "error.tool_blocked_suggest_only": "仅给建议模式下已禁用草稿编辑工具。",
+        "error.edit_entry_must_object": "修改条目必须是对象",
+        "error.tool_blocked_suggest_only": "仅给建议模式下已禁用草稿编辑工具",
         "error.unknown_tool": "未知工具：{name}",
         "error.web_fetch_failed": (
-            "无法抓取这个链接。请让用户粘贴内容，或提供另一个可访问链接。"
+            "无法抓取这个链接。请让用户粘贴内容，或提供另一个可访问链接"
         ),
         "error.web_search_failed": (
-            "网页搜索暂时不可用。请缩小查询范围，或让用户提供相关链接。"
+            "网页搜索暂时不可用。请缩小查询范围，或让用户提供相关链接"
         ),
         "error.context_window_exceeded": (
             "当前简历、附件和请求无法放入所选模型的上下文窗口。请缩短本次输入，"
-            "或选择上下文窗口更大的模型。"
+            "或选择上下文窗口更大的模型"
         ),
         "model.error.label": "提供方返回",
         "model.error.text": (
             "已找到模型配置「{name}」，但调用模型失败。请检查 API 地址、API Key、"
-            "模型名称和网络连通性后重试。"
+            "模型名称和网络连通性后重试"
         ),
         "model.setup.text": (
             "当前还没有可用的大模型配置。请先在「大模型配置」中新增模型、填写 "
-            "API Key，然后再让 Agent 分析或修改简历。"
+            "API Key，然后再让 Agent 分析或修改简历"
         ),
         "locale.name": "Chinese",
         "response.model_turn_limit": (
-            "Agent 在安全完成前已达到模型操作轮次上限。未完成的修改均未应用，请重试。"
+            "Agent 在安全完成前已达到模型操作轮次上限。未完成的修改均未应用，请重试"
         ),
         "diff.field.company": "企业",
         "diff.field.content": "内容",

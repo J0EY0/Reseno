@@ -256,6 +256,32 @@ try {
   const { ResumeDiffText } = await server.ssrLoadModule(
     "/src/components/preview/resume-preview-diff-text.tsx",
   );
+  for (const [before, after] of [
+    ["Engineer", "<p><strong>Engineer</strong></p>"],
+    ["<p><strong>Engineer</strong></p>", "Engineer"],
+  ]) {
+    const formatStream = await renderToReadableStream(
+      React.createElement(ResumeDiffText, {
+        richText: true,
+        value: after,
+        diffs: [{
+          id: "format-position",
+          operationId: "format-position",
+          path: "sections.experience.items.tencent.position",
+          kind: "modified",
+          label: "Format position",
+          before,
+          after,
+        }],
+      }),
+    );
+    await formatStream.allReady;
+    const formatRendered = await new Response(formatStream).text();
+    assert.match(formatRendered, /resume-diff-field--whole/);
+    assert.match(formatRendered, /data-resume-diff-path="sections\.experience\.items\.tencent\.position"/);
+    assert.doesNotMatch(formatRendered, /&lt;(?:p|strong)&gt;/);
+  }
+
   const clearedFieldStream = await renderToReadableStream(
     React.createElement(ResumeDiffText, {
       value: "",

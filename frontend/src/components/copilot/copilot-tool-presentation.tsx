@@ -229,6 +229,7 @@ export function AgentMessageTimeline({
           return (
             <div key={part.id}>
               <AgentAssistantResponse
+                  t={t}
                 fieldLabels={fieldLabels}
                 isStreaming={part.id === activeTextPartId}
                 sources={part.id === lastTextPartId ? sources : undefined}

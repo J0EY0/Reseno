@@ -54,6 +54,25 @@ export async function discoverModels(input: {
   )
 }
 
+export interface ModelContextWindowReference {
+  status: 'found' | 'not_found' | 'ambiguous'
+  contextWindowTokens: number | null
+  matchedModel: string | null
+  source: string | null
+}
+
+export function getModelContextWindowReference(
+  input: { provider: string; model: string },
+  signal?: AbortSignal,
+) {
+  return requestApi<ModelContextWindowReference>(apiRoutes.modelContextWindow, {
+    method: 'POST',
+    body: input,
+    signal,
+    notifyOnError: false,
+  })
+}
+
 export async function saveModelConfig(
   config: Omit<ModelConfig, 'id' | 'availableThinkingModes'> & { id?: string },
   apiKey?: string,

@@ -6,6 +6,7 @@ from hashlib import blake2s
 from typing import Any
 
 from app.schemas.agent import AgentChatRequest, AgentResumeEditSuggestion
+from app.services.resume_rich_text import resume_text_content
 
 from .attachments import AgentAttachmentError, attachment_text
 
@@ -238,7 +239,7 @@ def _identity_claims(value: object) -> dict[_ClaimKey, str]:
 
     for field, field_value in value.items():
         if field in _BASIC_IDENTITY_FIELDS | _ITEM_IDENTITY_FIELDS:
-            display = _string(field_value)
+            display = resume_text_content(_string(field_value))
             normalized = _normalize(display)
             if normalized:
                 claims[("identity", field, normalized)] = (
@@ -250,7 +251,7 @@ def _identity_claims(value: object) -> dict[_ClaimKey, str]:
 
 
 def _number_claims(text: str) -> dict[str, str]:
-    normalized_text = unicodedata.normalize("NFKC", text)
+    normalized_text = unicodedata.normalize("NFKC", resume_text_content(text))
     values = {
         _number_claim_key(match.group(0)): re.sub(r"\s+", "", match.group(0))
         for match in _NUMBER_PATTERN.finditer(normalized_text)
@@ -284,7 +285,7 @@ def _tech_stack_claims(value: object) -> dict[str, str]:
         for raw_value in stack:
             if not isinstance(raw_value, str):
                 continue
-            for segment in re.split(r"[,，、;；|·]+", raw_value):
+            for segment in re.split(r"[,，、;；|·]+", resume_text_content(raw_value)):
                 display = segment.strip()
                 if not display:
                     continue
@@ -303,7 +304,7 @@ def _evidence_supports_claim(text: str, claim: _ClaimKey) -> bool:
 
 
 def _contains_value(text: str, normalized_value: str) -> bool:
-    normalized_text = _normalize(text)
+    normalized_text = _normalize(resume_text_content(text))
     if not normalized_value:
         return False
     if re.fullmatch(r"[a-z0-9.+#/-]+(?: [a-z0-9.+#/-]+)*", normalized_value):
@@ -643,7 +644,7 @@ def _find_item(
 
 def _flatten_text(value: object) -> str:
     if isinstance(value, str):
-        return value
+        return resume_text_content(value)
     if isinstance(value, list):
         return "\n".join(_flatten_text(item) for item in value)
     if isinstance(value, dict):

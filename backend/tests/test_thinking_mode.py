@@ -1,6 +1,8 @@
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,10 +39,12 @@ def _write_two_source_metadata_cache(
                 "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
                 "catalogs": {
                     "litellm": {
+                        "contextModels": {},
                         "fetchedAt": "2020-01-01T00:00:00+00:00",
                         "providers": {"openai": {"gpt-partial": litellm_model}},
                     },
                     "modelsDev": {
+                        "contextModels": {},
                         "fetchedAt": "2020-01-01T00:00:00+00:00",
                         "providers": {"openai": {"gpt-partial": reasoning_model}},
                     },
@@ -69,6 +73,9 @@ def _write_two_source_metadata_cache(
         ({"reasoning_options": [{"type": "effort", "values": ["minimal"]}]}, False),
         ({"supported_reasoning_efforts": ["minimal", "low"]}, False),
         ({"supports_reasoning": True}, None),
+        ({"thinking_always_on": True}, False),
+        ({"reasoning_effort_levels": ["none", "low"]}, True),
+        ({"reasoning_effort_levels": ["minimal", "low"]}, False),
     ],
 )
 def test_explicit_thinking_off_capability_requires_none_or_toggle(
@@ -196,39 +203,51 @@ def test_models_dev_reasoning_options_enrich_source_neutral_metadata(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-off": {
-                "litellm_provider": "openai",
-                "supports_reasoning": True,
-            },
-            "openai/gpt-minimal": {
-                "litellm_provider": "openai",
-                "supports_reasoning": True,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "openai/gpt-off": {
+                    "litellm_provider": "openai",
+                    "supports_reasoning": True,
+                },
+                "openai/gpt-minimal": {
+                    "litellm_provider": "openai",
+                    "supports_reasoning": True,
+                },
+            }
+        ),
     )
     monkeypatch.setattr(
         model_metadata,
         "_fetch_reasoning_catalog",
-        lambda: {
-            "openai": {
-                "models": {
-                    "gpt-off": {
-                        "id": "gpt-off",
-                        "reasoning_options": [{"type": "toggle"}],
-                    },
-                    "gpt-minimal": {
-                        "id": "gpt-minimal",
-                        "reasoning_options": [
-                            {"type": "effort", "values": ["minimal", "low"]},
-                        ],
+        AsyncMock(
+            return_value={
+                "providers": {
+                    "openai": {
+                        "models": {
+                            "gpt-off": {
+                                "id": "gpt-off",
+                                "reasoning_options": [{"type": "toggle"}],
+                            },
+                            "gpt-minimal": {
+                                "id": "gpt-minimal",
+                                "reasoning_options": [
+                                    {"type": "effort", "values": ["minimal", "low"]},
+                                ],
+                            },
+                        },
                     },
                 },
-            },
-        },
+                "models": {
+                    "openai/base-test": {
+                        "id": "openai/base-test",
+                        "limit": {"context": 128000},
+                    }
+                },
+            }
+        ),
     )
 
-    assert model_metadata.refresh_model_metadata_cache(provider="openai") is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
     off = model_metadata.resolve_model_metadata("openai", "gpt-off")
     minimal = model_metadata.resolve_model_metadata("openai", "gpt-minimal")
 
@@ -237,7 +256,7 @@ def test_models_dev_reasoning_options_enrich_source_neutral_metadata(
     get_settings.cache_clear()
 
 
-def test_litellm_only_refresh_preserves_but_does_not_trust_stale_off_metadata(
+def test_litellm_only_refresh_preserves_stale_off_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,30 +277,34 @@ def test_litellm_only_refresh_preserves_but_does_not_trust_stale_off_metadata(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-partial": {
-                "litellm_provider": "openai",
-                "max_input_tokens": 200,
-                "supports_reasoning": True,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "openai/gpt-partial": {
+                    "litellm_provider": "openai",
+                    "max_input_tokens": 200,
+                    "supports_reasoning": True,
+                },
+            }
+        ),
     )
-    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", lambda: {})
+    monkeypatch.setattr(
+        model_metadata, "_fetch_reasoning_catalog", AsyncMock(return_value={})
+    )
 
-    assert model_metadata.refresh_model_metadata_cache(provider="openai") is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
     metadata = model_metadata.resolve_model_metadata("openai", "gpt-partial")
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
 
     assert metadata is not None
     assert metadata.context_window_tokens == 200
-    assert metadata.can_disable_thinking is None
+    assert metadata.can_disable_thinking is True
     assert cache["catalogs"]["litellm"]["fetchedAt"] != ("2020-01-01T00:00:00+00:00")
     assert cache["catalogs"]["modelsDev"]["fetchedAt"] == ("2020-01-01T00:00:00+00:00")
     assert model_metadata._cache_sources_are_fresh(cache) is False
     get_settings.cache_clear()
 
 
-def test_models_dev_only_refresh_preserves_stale_litellm_limits_without_off(
+def test_models_dev_only_refresh_preserves_litellm_limits_and_explicit_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -300,32 +323,42 @@ def test_models_dev_only_refresh_preserves_stale_litellm_limits_without_off(
             "canDisableThinking": True,
         },
     )
-    monkeypatch.setattr(model_metadata, "_fetch_catalog", lambda: {})
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", AsyncMock(return_value={}))
     monkeypatch.setattr(
         model_metadata,
         "_fetch_reasoning_catalog",
-        lambda: {
-            "openai": {
-                "models": {
-                    "gpt-partial": {
-                        "id": "gpt-partial",
-                        "reasoning": True,
-                        "reasoning_options": [
-                            {"type": "effort", "values": ["minimal", "low"]},
-                        ],
+        AsyncMock(
+            return_value={
+                "providers": {
+                    "openai": {
+                        "models": {
+                            "gpt-partial": {
+                                "id": "gpt-partial",
+                                "reasoning": True,
+                                "reasoning_options": [
+                                    {"type": "effort", "values": ["minimal", "low"]},
+                                ],
+                            },
+                        },
                     },
                 },
-            },
-        },
+                "models": {
+                    "openai/base-test": {
+                        "id": "openai/base-test",
+                        "limit": {"context": 128000},
+                    }
+                },
+            }
+        ),
     )
 
-    assert model_metadata.refresh_model_metadata_cache(provider="openai") is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
     metadata = model_metadata.resolve_model_metadata("openai", "gpt-partial")
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
 
     assert metadata is not None
     assert metadata.context_window_tokens == 100
-    assert metadata.can_disable_thinking is False
+    assert metadata.can_disable_thinking is True
     assert cache["catalogs"]["litellm"]["fetchedAt"] == ("2020-01-01T00:00:00+00:00")
     assert cache["catalogs"]["modelsDev"]["fetchedAt"] != ("2020-01-01T00:00:00+00:00")
     assert model_metadata._cache_sources_are_fresh(cache) is False
@@ -357,13 +390,12 @@ def test_future_metadata_timestamps_do_not_authorize_off(
 
     metadata = model_metadata.resolve_model_metadata("openai", "gpt-partial")
 
-    assert metadata is not None
-    assert metadata.can_disable_thinking is None
+    assert metadata is None
     assert model_metadata._cache_sources_are_fresh(cache) is False
     get_settings.cache_clear()
 
 
-def test_provider_refresh_rebuilds_successful_source_for_every_provider(
+def test_refresh_rebuilds_successful_source_for_every_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -392,16 +424,20 @@ def test_provider_refresh_rebuilds_successful_source_for_every_provider(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-partial": {
-                "litellm_provider": "openai",
-                "max_input_tokens": 200,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "openai/gpt-partial": {
+                    "litellm_provider": "openai",
+                    "max_input_tokens": 200,
+                },
+            }
+        ),
     )
-    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", lambda: {})
+    monkeypatch.setattr(
+        model_metadata, "_fetch_reasoning_catalog", AsyncMock(return_value={})
+    )
 
-    assert model_metadata.refresh_model_metadata_cache(provider="openai") is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
 
     assert model_metadata.resolve_model_metadata("qwen", "qwen-stale") is None
     get_settings.cache_clear()

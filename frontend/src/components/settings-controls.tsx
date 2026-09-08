@@ -26,7 +26,7 @@ export function SettingsRow({
     <div
       role="group"
       aria-label={label}
-      className="grid min-h-20 grid-cols-1 gap-4 px-5 py-4 sm:min-h-16 sm:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] sm:items-center sm:gap-6 sm:px-6 sm:py-3"
+      className="grid min-h-20 grid-cols-1 gap-4 px-5 py-4 sm:px-6 lg:min-h-16 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] lg:items-center lg:gap-6 lg:py-3"
     >
       <div className="flex min-w-0 items-start gap-3">
         <span

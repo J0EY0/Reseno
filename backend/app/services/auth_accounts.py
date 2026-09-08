@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS auth_owner (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
+AUTH_REVOKED_TOKENS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS auth_revoked_tokens (
+    jwt_id TEXT NOT NULL PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+)
+"""
 OAUTH_SCHEMAS = (
     """
     CREATE TABLE IF NOT EXISTS auth_identities (
@@ -108,6 +114,7 @@ def ensure_auth_database() -> None:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(AUTH_SCHEMA)
+                conn.execute(AUTH_REVOKED_TOKENS_SCHEMA)
                 for schema in OAUTH_SCHEMAS:
                     conn.execute(schema)
                 conn.commit()

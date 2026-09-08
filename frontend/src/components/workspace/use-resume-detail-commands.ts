@@ -12,6 +12,7 @@ import type { DocumentCanvasHandle } from "@/components/preview/document-canvas"
 import type { ResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import type { ResumeDetailSaveController } from "@/components/workspace/use-resume-detail-save";
 import type { AppMessages } from "@/i18n";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
 import {
   createDefaultResumeTitle,
@@ -117,7 +118,7 @@ export function useResumeDetailCommands({
 
   const saveTitle = useCallback(() => {
     const fallbackTitle =
-      session.resume.basic.name ||
+      getRichTextPlainText(session.resume.basic.name) ||
       createDefaultResumeTitle(messages, resumeOrdinal) ||
       messages.untitledResume;
     session.rename(normalizeResumeTitle(titleDraft, fallbackTitle));

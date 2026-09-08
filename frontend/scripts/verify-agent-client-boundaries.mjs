@@ -13,7 +13,7 @@ const apiClient = {
     agentAttachment: (resumeId, attachmentId) =>
       `/api/agent/resumes/${resumeId}/attachments/${attachmentId}`,
     agentAttachments: "/api/agent/attachments",
-    agentResumeRun: (resumeId) => `/api/agent/resumes/${resumeId}/run`,
+    agentResumeRecovery: (resumeId) => `/api/agent/resumes/${resumeId}/recovery`,
     agentResumeSession: (resumeId) => `/api/agent/resumes/${resumeId}/session`,
     agentRun: (runId) => `/api/agent/runs/${runId}`,
   },
@@ -60,11 +60,12 @@ const [attachmentClient, sessionRunClient] = await Promise.all([
 
 {
   const controller = new AbortController();
-  await sessionRunClient.loadActiveAgentRun("resume-run", {
+  await sessionRunClient.loadAgentSessionRecovery("resume-run", {
     signal: controller.signal,
   });
   let call = takeLastCall("request");
-  assert.equal(call.route, "/api/agent/resumes/resume-run/run");
+  assert.equal(call.route, "/api/agent/resumes/resume-run/recovery");
+  assert.equal(call.options.cacheTtlMs, 0);
   assert.equal(call.options.signal, controller.signal);
 
   await sessionRunClient.stopAgentRun("run-stop");

@@ -1,0 +1,28 @@
+Latin Modern 2.005 (21 March 2021)
+
+Copyright 2003-2021 by B. Jackowski and J.M. Nowacki
+(on behalf of TeX Users Groups).
+Computer Modern design: Donald E. Knuth.
+
+This distribution contains these two unmodified OpenType font files:
+  lmroman10-italic.otf
+  lmroman10-bolditalic.otf
+
+The only change to the upstream distribution is selection of these files;
+all other font and TeX package components are omitted. The selected font
+files retain their original bytes, filenames, and embedded metadata.
+No support or endorsement by the original authors is implied.
+
+These fonts are distributed under the GUST Font License version 1.0,
+which incorporates the LaTeX Project Public License version 1.3c or later.
+See GUST-FONT-LICENSE.txt and LPPL-1.3c.txt in this directory.
+
+The complete, unmodified upstream distribution is available from:
+  https://ctan.org/tex-archive/fonts/lm
+  https://mirrors.ctan.org/fonts/lm.zip
+
+The upstream file manifest is available from:
+  https://mirrors.ctan.org/fonts/lm/doc/fonts/lm/MANIFEST-Latin-Modern.TXT
+
+Upstream project:
+  https://www.gust.org.pl/projects/e-foundry/latin-modern/

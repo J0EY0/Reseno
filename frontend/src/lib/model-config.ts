@@ -29,16 +29,6 @@ export function resolveThinkingMode(
   return value === 'off' && availableModes.includes('off') ? 'off' : 'auto'
 }
 
-function clampTemperature(value: number) {
-  const safe = Number.isFinite(value) ? value : 0
-  return Math.min(1, Math.max(0, Math.round(safe * 10) / 10))
-}
-
-function clampTopP(value: number) {
-  const safe = Number.isFinite(value) ? value : 0
-  return Math.min(1, Math.max(0, Math.round(safe * 100) / 100))
-}
-
 export function normalizeMaxTokens(value: unknown) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return null
@@ -134,8 +124,8 @@ function normalizeModelConfig(
       typeof raw.apiUrl === 'string' && raw.apiUrl.trim()
         ? raw.apiUrl
         : '',
-    temperature: temperature === null ? null : clampTemperature(temperature),
-    topP: topP === null ? null : clampTopP(topP),
+    temperature,
+    topP,
     maxTokens: normalizeMaxTokens(raw.maxTokens),
     contextWindowTokens:
       normalizeMaxTokens(raw.contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from sqlite3 import Connection, Row
+from sqlite3 import Connection, DatabaseError, Row
 from typing import Any, Literal, NoReturn
 from uuid import uuid4
 
@@ -214,8 +214,21 @@ def _stored_agent_model_snapshot(row: Row) -> AgentModelSnapshot | None:
 
 
 def load_agent_session(conn: Connection, resume_id: str) -> AgentSessionResponse:
-    """Load the Agent conversation attached to one resume."""
+    """Load messages, executions, and their revision from one SQLite snapshot."""
 
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")
+    try:
+        return _load_agent_session_snapshot(conn, resume_id)
+    finally:
+        if owns_transaction:
+            conn.rollback()
+
+
+def _load_agent_session_snapshot(
+    conn: Connection, resume_id: str
+) -> AgentSessionResponse:
     rows = _load_message_rows(conn, resume_id)
     messages, _checkpoint = _decode_message_rows(rows, resume_id)
     # Timestamps are persisted at millisecond precision. SQLite row order keeps
@@ -446,7 +459,7 @@ def persist_agent_terminal_outcome(
                     "The terminal Agent message could not be persisted.",
                 )
             if outcome.assistant.draft is not None:
-                _discard_older_pending_drafts(
+                _supersede_older_pending_drafts(
                     conn,
                     resume_id,
                     current_message_id=outcome.assistant.id,
@@ -499,7 +512,7 @@ def fail_interrupted_agent_turn_executions(conn: Connection) -> int:
     return max(cursor.rowcount, 0)
 
 
-def _discard_older_pending_drafts(
+def _supersede_older_pending_drafts(
     conn: Connection,
     resume_id: str,
     *,
@@ -534,7 +547,7 @@ def _discard_older_pending_drafts(
                 "draft": response.draft.model_copy(
                     update={
                         "review_items": [
-                            item.model_copy(update={"status": "discarded"})
+                            item.model_copy(update={"status": "superseded"})
                             if item.status == "pending"
                             else item
                             for item in review_items
@@ -882,16 +895,24 @@ def replace_agent_session_messages(
         _compensate_attachment_state(receipt)
         raise
 
-    # Pruning is post-commit garbage collection. It must not turn a completed
-    # replacement into an API failure after the new history is authoritative.
-    try:
-        prune_sent_agent_attachments(safe_resume_id, retained_files)
-    except OSError:
-        logger.warning(
-            "Failed to prune unreferenced Agent attachments for session %s.",
-            safe_resume_id,
-            exc_info=True,
-        )
+    # File removal is post-commit collection under the current DB references.
+    # An outer transaction still owns its rollback boundary and cannot collect.
+    if not conn.in_transaction:
+        try:
+            with _transaction(conn):
+                current_session = load_agent_session(conn, safe_resume_id)
+                current_files = [
+                    file
+                    for message in current_session.messages
+                    for file in message.files
+                ]
+                prune_sent_agent_attachments(safe_resume_id, current_files)
+        except (DatabaseError, OSError):
+            logger.warning(
+                "Failed to prune unreferenced Agent attachments for session %s.",
+                safe_resume_id,
+                exc_info=True,
+            )
     return load_agent_session(conn, safe_resume_id)
 
 

@@ -110,7 +110,7 @@ def test_blocked_github_tab_reopens_prepared_authorization_without_another_post(
     flow.page.evaluate("() => { window.open = window.__nativeOpen; }")
     with flow.page.expect_popup() as tab_event:
         dialog.get_by_role(
-            "button", name="Open GitHub authorization", exact=True
+            "button", name="Open GitHub authorization page", exact=True
         ).click()
     tab = tab_event.value
     expect(tab).to_have_url(flow.provider_url)

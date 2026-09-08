@@ -335,7 +335,8 @@ type ExportResumePdfRequest = {
 ```
 
 渲染页面地址只允许由后端的 `FRONTEND_RENDER_BASE_URL` 配置提供，客户端不能
-覆盖该地址。
+覆盖该地址。导出中的远程图片通过受限连接读取：不携带浏览器凭据，
+每次跳转重新校验目标地址，拒绝内网目标；本地上传的 data URL 图片照常渲染。
 
 响应：
 
@@ -478,16 +479,23 @@ type ResumeDraftDiff = {
   after?: unknown
 }
 
+type AgentDraftReviewItem = {
+  id: string
+  editIds: string[]
+  status: "pending" | "applied" | "discarded" | "superseded"
+}
+
 type AgentDraftState = {
   id: string
-  status: "pending" | "applied" | "discarded"
   sourceMessageId?: string
   createdAt?: string
   updatedAt?: string
   resume: ResumeData
-  editCount: number
+  pendingCount: number
+  reviewItems: AgentDraftReviewItem[]
   edits: AgentResumeEditSuggestion[]
   diffs: ResumeDraftDiff[]
+  transactionState?: "none" | "provisional" | "committed" | "rolled_back"
 }
 
 type AgentModelConfigSelection = {
@@ -554,7 +562,7 @@ type AgentResumeEditSuggestion = {
 
 type AgentCommittedDraft = {
   baseResume: ResumeData
-  status: "pending" | "applied" | "discarded"
+  reviewItems: AgentDraftReviewItem[]
 }
 
 type AgentTimelinePart = {
@@ -674,6 +682,7 @@ data: {"type":"run_done","runId":"agent-run-xxx","status":"completed","execution
   “已运行 N 条操作”。折叠详情只展示产品化执行文案，不默认展示底层工具名、参数或原始输出。
 - `sources` 用于引用来源展示；如果来源可打开，返回 `url`，否则只返回标题和摘要。
 - `edits` 是结构化修改建议；后端必须返回 `ResumeEditOperation`，前端先应用到临时草稿并高亮预览。
+- 审核项的 `superseded` 表示已被后续草稿继承并替代，由服务端在新草稿成功提交时记录；用户审核决定仅接受 `applied` 或 `discarded`，已经应用或主动放弃的审核项保留原状态。
 - 流式过程中 `edit_execute` 完成后可提前发送 `event: edits`，用于同步中间预览；
   应用/撤回按钮只在 `message_done` 之后展示。
 - 前端必须把 `edits` 应用到 pending draft，而不是直接写入正式 `resume`；预览区显示
@@ -698,7 +707,7 @@ data: {"type":"run_done","runId":"agent-run-xxx","status":"completed","execution
 - `message` 是当前唯一用户轮，`messages` 只包含它之前的历史；当前 `message.id`
   不能再次出现在 `messages` 中。
 - 传入 `resumeId` 时，后端会把当前用户消息和最终助手消息写入
-  `agent_sessions` / `agent_messages`。请求必须同时传入最近一次 GET session 返回的
+  `agent_sessions` / `agent_messages`。请求必须同时传入最近一次会话读取返回的
   `revision` 作为 `expectedRevision`；并发冲突返回 409。
 - 附件先通过 Agent 附件接口上传；聊天请求只携带后端返回的附件引用。
 - 后端发生可恢复错误时可发送 `event: error`，也可以直接返回非 2xx JSON error。
@@ -710,11 +719,16 @@ data: {"type":"run_done","runId":"agent-run-xxx","status":"completed","execution
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` | `/api/agent/resumes/:resumeId/run` | 获取该简历当前仍在运行的 run |
+| `GET` | `/api/agent/resumes/:resumeId/recovery` | 一次读取一致的会话历史和可重连 run |
 | `GET` | `/api/agent/runs/:runId/events?after=:lastEventId` | 重放游标之后的事件并继续订阅 |
 | `DELETE` | `/api/agent/runs/:runId` | 显式取消 run，并回滚未完成草稿事务 |
 
 ```ts
+type AgentSessionRecoveryResponse = {
+  session: AgentSessionResponse
+  run: AgentRunResponse | null
+}
+
 type AgentRunResponse = {
   id: string
   resumeId: string | null
@@ -731,8 +745,9 @@ SQLite，但后端重启不会恢复正在执行的 provider 请求。
 
 ### GET `/api/agent/resumes/:resumeId/session`
 
-用途：按简历 ID 加载 Agent 会话历史消息。前端进入简历编辑页时使用当前
-`resumeId` 拉取记录，并继续把最近消息传给 `/api/agent/chat` 作为上下文。
+用途：按简历 ID 加载 Agent 会话历史消息，用于草稿操作和运行终态后的刷新。
+前端进入简历编辑页时调用 `/recovery`，同时恢复历史与运行状态；返回的 run
+存在时对应同一会话的运行中执行记录，已完成时返回包含最终回复的会话。
 
 响应：
 
@@ -904,7 +919,7 @@ type ModelConfigsResponse = {
 ### POST `/api/model-configs`
 
 用途：创建或更新大模型配置。请求可携带一次性明文 `apiKey`，后端使用
-`.env` 中的 `RESENO_MASTER_KEY` 加密后写入 SQLite；明文只在当前请求内
+配置中的 `RESENO_MASTER_KEY` 加密后写入 SQLite；明文只在当前请求内
 使用，不写入日志、不返回前端。
 
 请求：
@@ -1037,31 +1052,38 @@ type AgentSettings = {
 
 ## Runtime Data And Environment
 
-后端通过环境变量配置运行时数据路径，默认不把数据库、导出文件、上传文件
-或真实 `.env` 当作源码。未设置 `APP_ENV_FILE` 时，真实 `.env` 默认位于
-`APP_DATA_DIR/.env`，本地即 `~/.reseno/.env`：
+后端默认读取 `backend/.env`，可通过启动环境中的 `APP_ENV_FILE` 指定其他路径。
+未配置的设置使用代码默认值；进程环境变量优先于文件值，密钥环境变量留空时读取文件值。
+`backend/.env.example` 是可复制的配置示例，真实 `.env` 被 Git 忽略。
 
 ```env
 APP_DATA_DIR=~/.reseno
-APP_DB_PATH=~/.reseno/app.db
-APP_STORAGE_DIR=~/.reseno/storage
+APP_DB_PATH=
+APP_STORAGE_DIR=
+APP_USER_SETTINGS_PATH=
 FRONTEND_RENDER_BASE_URL=http://127.0.0.1:5173
 PDF_RENDER_TIMEOUT_MS=30000
 BACKEND_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
-# RESENO_MASTER_KEY 在 .env.example 中留空，真实 .env 首次启动自动填充
 RESENO_MASTER_KEY=
-# RESENO_JWT_SECRET 在 .env.example 中留空，真实 .env 首次启动自动填充
 RESENO_JWT_SECRET=
 ```
+
+未明确指定的数据库、存储和用户设置路径分别采用 `APP_DATA_DIR/app.db`、
+`APP_DATA_DIR/storage`、`APP_DATA_DIR/user_settings.json`；`EXPORT_DIR` 默认是
+存储目录下的 `exports`。改变配置路径不会移动现有数据。
 
 业务 `app.db` 继续使用 schema v1，不加入或迁移任何认证表。唯一 owner 的用户名、
 Argon2id 密码哈希和随机认证 revision 单独保存在 `APP_DATA_DIR/auth.db`。
 替换 `auth.db` 或修改密码都会使旧 JWT 的 revision 失效。
 
 SQLite 中的大模型配置保存非敏感字段、`encrypted_api_key` 和固定长度
-`api_key_preview`。真实 `.env` 缺失时后端会在运行时数据目录中从
-`backend/.env.example` 生成一份，再把 `RESENO_MASTER_KEY` 填成 Fernet key
-并把 `RESENO_JWT_SECRET` 填成随机签名密钥，两者都会标记 `DO NOT CHANGE`；
-之后启动如果已经存在有效值，绝不重新生成或覆盖。Reseno 不提供默认用户名或
+`api_key_preview`。Fernet 主密钥和 JWT 签名密钥保存在 `.env` 中；首次启动时，
+缺失或留空的密钥会自动生成并一起写回配置文件，不存在时创建文件，写入权限为仅 owner 可读写。
+已有密钥和其他配置内容保留不变。环境变量或配置文件已提供完整密钥时，不写配置文件。
+已有数据库但缺少密钥时，需要恢复原 `.env` 或显式提供原来的两项密钥，不会重新生成。
+备份时应将 `.env`（或外部管理的密钥）与数据库、存储目录一起保留。
+Docker 自动生成密钥时，应挂载可写配置目录，以便原子替换 `.env`，不能仅挂载一个空的
+`.env` 文件。也可以通过环境变量或预先填好的配置文件提供两项固定密钥。密钥与数据目录均需持久化。
+Reseno 不提供默认用户名或
 密码；首次打开时通过 `POST /api/auth/setup` 创建唯一 owner，之后通过设置页调用
 `POST /api/auth/password` 修改密码。

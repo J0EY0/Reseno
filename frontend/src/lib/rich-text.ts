@@ -54,6 +54,9 @@ const CANONICAL_RICH_TEXT_TAGS = new Set([
   'ol',
   'p',
   'strong',
+  'span',
+  'sub',
+  'sup',
   'u',
   'ul',
 ])
@@ -193,7 +196,7 @@ function normalizeTagName(tagName: string) {
   return normalized
 }
 
-function sanitizeNode(node: ChildNode): string {
+function sanitizeNode(node: ChildNode, preserveLineBreaks: boolean): string {
   if (node.nodeType === Node.TEXT_NODE) {
     return escapeHtml(node.textContent ?? '')
   }
@@ -204,29 +207,38 @@ function sanitizeNode(node: ChildNode): string {
 
   const element = node as HTMLElement
   const tagName = normalizeTagName(element.tagName)
+  if (['script', 'style', 'iframe', 'object', 'template'].includes(tagName)) {
+    return ''
+  }
   const children = Array.from(element.childNodes)
-    .map((child) => sanitizeNode(child))
+    .map((child) => sanitizeNode(child, preserveLineBreaks))
     .join('')
 
   switch (tagName) {
+    case 'span':
+      return element.getAttribute('data-academic-italic') === 'true'
+        ? `<span data-academic-italic="true">${children}</span>`
+        : children
     case 'strong':
     case 'em':
     case 'u':
+    case 'sub':
+    case 'sup':
       return `<${tagName}>${children}</${tagName}>`
     case 'ul':
     case 'ol':
-      return stripRichText(children).length > 0
+      return element.textContent?.trim()
         ? `<${tagName}>${children}</${tagName}>`
         : ''
     case 'li':
-      return stripRichText(children).length > 0
+      return element.textContent?.trim()
         ? `<li>${children}</li>`
         : ''
     case 'br':
       return '<br>'
     case 'div':
     case 'p':
-      return stripRichText(children).length > 0
+      return preserveLineBreaks || element.textContent?.trim()
         ? `<p>${children}</p>`
         : ''
     default:
@@ -234,7 +246,7 @@ function sanitizeNode(node: ChildNode): string {
   }
 }
 
-export function sanitizeRichTextHtml(value: string) {
+export function sanitizeRichTextHtml(value: string, preserveLineBreaks = false) {
   if (!value.trim()) {
     return ''
   }
@@ -246,13 +258,16 @@ export function sanitizeRichTextHtml(value: string) {
   const parser = new window.DOMParser()
   const document = parser.parseFromString(value, 'text/html')
   const sanitized = Array.from(document.body.childNodes)
-    .map((node) => sanitizeNode(node))
+    .map((node) => sanitizeNode(node, preserveLineBreaks))
     .join('')
+
+  if (preserveLineBreaks) {
+    return sanitized
+  }
+  return sanitized
     .replace(/(<p>\s*<\/p>)+/g, '')
     .replace(/(<br>\s*){3,}/g, '<br><br>')
     .replace(/^(<br>\s*)+|(<br>\s*)+$/g, '')
-
-  return sanitized
 }
 
 export function isRichTextEmpty(value: string) {
@@ -285,4 +300,45 @@ export function serializeListItemsToHtml(items: string[]) {
   return `<ul>${visibleItems
     .map((item) => `<li>${sanitizeRichTextHtml(item)}</li>`)
     .join('')}</ul>`
+}
+
+export function getRichTextPlainText(value: string) {
+  return formatRichTextAsPlainText(value)?.text ?? value
+}
+
+function flattenRichTextHtml(html: string, multiline: boolean) {
+  const separator = multiline ? '<br>' : ' '
+  return html
+    .replace(/<\/(?:p|div|li)>\s*(?=<(?:p|div|li|ul|ol)>)/gi, separator)
+    .replace(/<br\s*\/?>/gi, separator)
+    .replace(/<\/?(?:p|div|li|ul|ol)>/gi, '')
+}
+
+export function getInlineTextHtml(value: string) {
+  return formatRichTextAsPlainText(value)
+    ? flattenRichTextHtml(sanitizeRichTextHtml(value, true), true)
+    : escapeHtml(value).replace(/\r\n?|\n/g, '<br>')
+}
+
+export function serializeInlineTextToHtml(value: string, multiline = false) {
+  return `<p>${flattenRichTextHtml(getInlineTextHtml(value), multiline)}</p>`
+}
+
+export function serializeInlineTextFromHtml(html: string, multiline = false) {
+  const inlineHtml = flattenRichTextHtml(sanitizeRichTextHtml(html, true), multiline)
+  const plainText = decodeCanonicalRichTextEntities(
+    inlineHtml.replace(/<br>/g, '\n').replace(/<[^>]+>/g, ''),
+  )
+  if (!plainText.trim()) {
+    return ''
+  }
+  return /<(?:strong|em|u|sup|sub)>|<span data-academic-italic="true">/.test(inlineHtml) || formatRichTextAsPlainText(plainText)
+    ? `<p>${inlineHtml}</p>`
+    : plainText
+}
+
+export function joinInlineText(values: string[], separator: string) {
+  return values.some(formatRichTextAsPlainText)
+    ? `<p>${values.map(getInlineTextHtml).join(escapeHtml(separator))}</p>`
+    : values.join(separator)
 }

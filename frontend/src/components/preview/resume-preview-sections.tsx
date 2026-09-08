@@ -121,6 +121,7 @@ function SectionBlock({
   t,
 }: SectionBlockProps) {
   const title = getSectionTitle(section, t);
+  const isUnderlined = layout.section === "underlined";
   const visibleItems = items ?? getRenderableItems(section);
   const structuralDiff = diff?.structuralDiff;
   const titleDiff = showTitle ? diff?.titleDiff : undefined;
@@ -249,12 +250,19 @@ function SectionBlock({
       <ResumeDiffBadge diff={markerDiff} t={t} />
       {showTitle ? (
         <div className="resume-section-header" data-resume-section-header="true">
-          {layout.section === "plain" ? (
+          {layout.section === "plain" || isUnderlined ? (
             <h2
-              className="font-extrabold leading-[1.2]"
+              className={cn(
+                "font-extrabold leading-[1.2]",
+                isUnderlined && "border-b pb-[0.12em] uppercase",
+              )}
               style={{
                 color: settings.headingColor,
                 fontSize: `${settings.sectionTitleScale}em`,
+                borderColor: isUnderlined ? settings.dividerColor : undefined,
+                borderBottomWidth: isUnderlined
+                  ? settings.dividerThickness
+                  : undefined,
               }}
             >
               {renderedTitle}

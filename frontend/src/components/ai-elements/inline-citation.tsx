@@ -254,12 +254,14 @@ export const InlineCitationCarouselNext = ({
 };
 
 type InlineCitationSourceProps = ComponentProps<"div"> & {
+  copyLabel: string;
   title?: string;
   url?: string;
   description?: string;
 };
 
 export const InlineCitationSource = ({
+  copyLabel,
   title,
   url,
   description,
@@ -314,10 +316,10 @@ export const InlineCitationSource = ({
             {url}
           </a>
           <button
-            aria-label="Copy source link"
+            aria-label={copyLabel}
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             onClick={copyUrl}
-            title="Copy link"
+            title={copyLabel}
             type="button"
           >
             <CopyStatusIcon className="size-3.5" />

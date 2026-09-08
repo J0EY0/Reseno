@@ -1,23 +1,20 @@
-import hashlib
 import os
 import secrets
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from threading import Lock
 
 import jwt
 
 from app.config import JWT_SECRET_ENV_NAME, get_settings
+from app.services.auth_accounts import connect_auth_database
 
 ACCESS_TOKEN_TTL_SECONDS = 36 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "reseno"
 JWT_AUDIENCE = "reseno-api"
 JWT_REQUIRED_CLAIMS = ("sub", "rev", "iat", "exp", "jti", "iss", "aud")
-
-_revoked_token_hashes: dict[str, int] = {}
-_revoked_token_lock = Lock()
 
 
 class AuthTokenError(Exception):
@@ -46,24 +43,6 @@ def _get_jwt_secret() -> bytes:
         raise RuntimeError(f"Missing {JWT_SECRET_ENV_NAME}.")
 
     return secret.encode("utf-8")
-
-
-def _hash_token(token: str) -> str:
-    """Hash a token before storing it in the in-memory revocation cache."""
-
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _cleanup_revoked_tokens(now: int) -> None:
-    """Remove expired token hashes from the revocation cache."""
-
-    expired_hashes = [
-        token_hash
-        for token_hash, expires_at in _revoked_token_hashes.items()
-        if expires_at <= now
-    ]
-    for token_hash in expired_hashes:
-        _revoked_token_hashes.pop(token_hash, None)
 
 
 def format_token_expiry(expires_at: int) -> str:
@@ -110,22 +89,14 @@ def create_access_token(
     )
 
 
-def revoke_access_token(token: str, *, expires_at: int) -> None:
-    """Mark a token as unusable until its revocation entry expires."""
+def is_access_token_revoked(jwt_id: str) -> bool:
+    """Return whether a verified token identity has been revoked."""
 
-    now = int(time.time())
-    with _revoked_token_lock:
-        _cleanup_revoked_tokens(now)
-        _revoked_token_hashes[_hash_token(token)] = expires_at
-
-
-def is_access_token_revoked(token: str) -> bool:
-    """Return whether a token is currently revoked."""
-
-    now = int(time.time())
-    with _revoked_token_lock:
-        _cleanup_revoked_tokens(now)
-        return _hash_token(token) in _revoked_token_hashes
+    with closing(connect_auth_database()) as conn:
+        return conn.execute(
+            "SELECT 1 FROM auth_revoked_tokens WHERE jwt_id = ?",
+            (jwt_id,),
+        ).fetchone() is not None
 
 
 def decode_access_token(token: str) -> AuthTokenPayload:
@@ -170,7 +141,7 @@ def decode_access_token(token: str) -> AuthTokenPayload:
     ):
         raise AuthTokenError("Incomplete access token payload.")
 
-    if is_access_token_revoked(token):
+    if is_access_token_revoked(jwt_id):
         raise AuthTokenError("Access token has been revoked.")
 
     return AuthTokenPayload(
@@ -186,5 +157,18 @@ def refresh_access_token(token: str) -> tuple[str, AuthTokenPayload]:
     """Revoke the current token and issue a replacement for the same subject."""
 
     payload = decode_access_token(token)
-    revoke_access_token(token, expires_at=payload.expires_at)
-    return create_access_token(payload.subject, payload.auth_revision)
+    with closing(connect_auth_database()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM auth_revoked_tokens WHERE expires_at <= ?",
+            (int(time.time()),),
+        )
+        inserted = conn.execute(
+            "INSERT OR IGNORE INTO auth_revoked_tokens (jwt_id, expires_at) "
+            "VALUES (?, ?)",
+            (payload.jwt_id, payload.expires_at),
+        )
+        if inserted.rowcount != 1:
+            raise AuthTokenError("Access token has been revoked.")
+        replacement = create_access_token(payload.subject, payload.auth_revision)
+    return replacement

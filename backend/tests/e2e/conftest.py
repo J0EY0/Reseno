@@ -18,8 +18,7 @@ from playwright.sync_api import Browser, sync_playwright
 
 from app.services.model_metadata import (
     MODEL_METADATA_CACHE_NAME,
-    MODEL_METADATA_CACHE_SOURCE,
-    MODEL_METADATA_CACHE_VERSION,
+    MODEL_METADATA_SNAPSHOT_PATH,
 )
 from tests.e2e.browser_support import browser_session
 from tests.runtime_environment import runtime_environment
@@ -101,23 +100,14 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
         data_path = Path(data_dir)
         model_metadata_path = data_path / MODEL_METADATA_CACHE_NAME
         model_metadata_path.parent.mkdir(parents=True)
+        model_metadata_snapshot = json.loads(
+            MODEL_METADATA_SNAPSHOT_PATH.read_text(encoding="utf-8")
+        )
+        fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
+        for catalog in model_metadata_snapshot["catalogs"].values():
+            catalog["fetchedAt"] = fetched_at
         model_metadata_path.write_text(
-            json.dumps(
-                {
-                    "version": MODEL_METADATA_CACHE_VERSION,
-                    "source": MODEL_METADATA_CACHE_SOURCE,
-                    "catalogs": {
-                        source: {
-                            "fetchedAt": datetime.now(UTC).isoformat(
-                                timespec="seconds"
-                            ),
-                            "providers": {},
-                        }
-                        for source in ("litellm", "modelsDev")
-                    },
-                }
-            ),
-            encoding="utf-8",
+            json.dumps(model_metadata_snapshot), encoding="utf-8"
         )
         backend_env = {
             **os.environ,

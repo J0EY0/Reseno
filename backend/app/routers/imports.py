@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, UploadFile
 from starlette.concurrency import run_in_threadpool
 
+from app.routers.upload_route import LimitedUploadRoute
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.imports import ImportResumeResponse, ImportTemplatesResponse
 from app.services.imports import (
@@ -11,7 +12,9 @@ from app.services.imports import (
     parse_template_artifact,
 )
 
-router = APIRouter(prefix="/api/import", tags=["import"])
+router = APIRouter(
+    prefix="/api/import", tags=["import"], route_class=LimitedUploadRoute
+)
 
 
 @router.post("/resume", response_model=ApiResponse[ImportResumeResponse])

@@ -281,7 +281,7 @@ def test_unchanged_preview_content_is_reused_while_typing(
         baseline = _create_experience_resume(page, frontend_url, 15)
         page.goto(f"{frontend_url}/resume/{baseline['id']}", wait_until="networkidle")
         page.get_by_role("button", name="基本信息: 展开或收起模块", exact=True).click()
-        name = page.locator('input[name="name"]')
+        name = page.get_by_role("textbox", name="姓名", exact=True)
         name.fill("Preview Person")
         page.wait_for_timeout(300)
         page.wait_for_function("""() => document.querySelector(
@@ -327,7 +327,7 @@ def test_smart_fit_completion_and_undo_preserve_the_document(
             expect(stack).to_have_attribute("data-resume-page-count", "1")
             page.get_by_role("button", name="撤销", exact=True).click()
         else:
-            page.get_by_text("已是最紧凑状态", exact=True).wait_for()
+            page.get_by_text("未能排到一页，已保留原排版", exact=True).wait_for()
         expect(stack).to_have_attribute("data-resume-page-count", initial_pages)
         page.keyboard.press("ControlOrMeta+s")
         page.wait_for_timeout(200)

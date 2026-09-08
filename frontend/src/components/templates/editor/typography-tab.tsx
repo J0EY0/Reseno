@@ -77,6 +77,7 @@ export function TemplateTypographyTab({
                 <SelectItem value="inter">{t.fontInter}</SelectItem>
                 <SelectItem value="noto_sans_sc">{t.fontNotoSans}</SelectItem>
                 <SelectItem value="serif">{t.fontSerif}</SelectItem>
+                <SelectItem value="times">{t.fontTimes}</SelectItem>
                 <SelectItem value="plex">{t.fontPlex}</SelectItem>
               </SelectGroup>
             </SelectContent>

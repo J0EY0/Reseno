@@ -1,9 +1,6 @@
 import { useEffect } from 'react'
 
-import {
-  loadActiveAgentRun,
-  loadAgentSession,
-} from '@/lib/agent-session-run-client'
+import { loadAgentSessionRecovery } from '@/lib/agent-session-run-client'
 import { connectAgentRun } from '@/lib/agent-stream-client'
 import { isAbortError } from '@/lib/api-client'
 
@@ -79,33 +76,16 @@ export function useAgentSessionHydration({
 
     void (async () => {
       try {
-        // Both reads depend only on resumeId, so start them together. Capture
-        // the run rejection now so a failed session read cannot orphan it.
-        const sessionRequest = loadAgentSession(resumeId, {
+        const recovery = await loadAgentSessionRecovery(resumeId, {
           notifyOnError: false,
           signal: abortController.signal,
         })
-        const activeRunRequest = loadActiveAgentRun(resumeId, {
-          notifyOnError: false,
-          signal: abortController.signal,
-        }).then(
-          (run) => ({ status: 'fulfilled' as const, run }),
-          (error: unknown) => ({ status: 'rejected' as const, error }),
-        )
         const { draftSnapshot, panelMessages, session } =
-          await hydrateAgentSession(sessionRequest)
+          await hydrateAgentSession(Promise.resolve(recovery.session))
         if (cancelled || runtime.activeRequestAbort !== abortController) {
           return
         }
-
-        const activeRunResult = await activeRunRequest
-        if (activeRunResult.status === 'rejected') {
-          throw activeRunResult.error
-        }
-        const { run } = activeRunResult
-        if (cancelled || runtime.activeRequestAbort !== abortController) {
-          return
-        }
+        const { run } = recovery
 
         updates.setMessages(panelMessages)
         runtime.sessionRevision = session.revision

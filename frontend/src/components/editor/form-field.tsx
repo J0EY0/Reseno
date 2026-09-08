@@ -19,6 +19,10 @@ export function FormField({
     <Field className={cn('min-w-0 gap-2', className)}>
       <FieldLabel
         htmlFor={controlId}
+        onClick={() => {
+          const control = document.getElementById(controlId)
+          if (control?.isContentEditable) control.focus()
+        }}
         className="break-words text-xs font-medium leading-tight text-muted-foreground"
       >
         {label}

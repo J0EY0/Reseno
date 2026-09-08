@@ -23,12 +23,16 @@ from ..common import (
     tool_function,
 )
 from ..errors import LlmRequestError
-from ..output_budget import anthropic_request_output_tokens
+from ..output_budget import (
+    anthropic_request_output_tokens,
+    resolve_request_output_budget,
+)
 from ..tool_schema import portable_tool_schema
 from ..types import (
     AgentLlmConfig,
     LlmAssistantMessage,
     LlmInputMessage,
+    LlmPrompt,
     LlmStopReason,
     LlmStreamEvent,
     LlmToolCall,
@@ -128,7 +132,10 @@ async def _stream_messages(
         _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT + 1,
     ):
         terminal: LlmAssistantMessage | None = None
-        events = _stream_messages_once(config, continuation_messages, tools)
+        request_config = resolve_request_output_budget(
+            config, LlmPrompt(messages=continuation_messages), tools,
+        )
+        events = _stream_messages_once(request_config, continuation_messages, tools)
         try:
             async for event in events:
                 if event.type == "done":
@@ -174,7 +181,7 @@ async def _stream_messages(
         continuation_messages.append(
             {
                 "role": "assistant",
-                "content": terminal.content or None,
+                "content": None,
                 "provider_state": terminal.provider_state,
             },
         )
@@ -461,13 +468,17 @@ async def _post_messages(
     messages: list[LlmInputMessage],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    request_payload = _payload(config, messages, tools)
+    continuation_messages = list(messages)
     content_blocks: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
 
     for continuation_count in range(
         _ANTHROPIC_SERVER_TOOL_CONTINUATION_LIMIT + 1,
     ):
+        request_config = resolve_request_output_budget(
+            config, LlmPrompt(messages=continuation_messages), tools,
+        )
+        request_payload = _payload(request_config, continuation_messages, tools)
         response = await async_post_json(
             f"{provider_base_url(config.base_url)}/messages",
             headers=_headers(config),
@@ -497,10 +508,13 @@ async def _post_messages(
                 "Anthropic server tool exceeded its continuation limit.",
             )
         response_blocks = _validated_content_blocks(response_content)
-        request_payload["messages"].append(
+        continuation_messages.append(
             {
                 "role": "assistant",
-                "content": response_blocks,
+                "content": None,
+                "provider_state": _content_blocks_provider_state(
+                    response_blocks, model=config.model,
+                ),
             },
         )
 
@@ -798,7 +812,10 @@ def _message_from_payload(
     *,
     model: str,
 ) -> LlmAssistantMessage:
-    tool_calls = _tool_calls(payload)
+    stop_reason = map_stop_reason(payload.get("stop_reason"))
+    tool_calls = _tool_calls(payload) if stop_reason == "tool_calls" else []
+    if stop_reason == "tool_calls" and not tool_calls:
+        raise LlmRequestError("Model provider returned an invalid tool completion.")
     thinking_blocks = _thinking_blocks_from_content(payload.get("content"))
     text, sources = _text_and_sources(payload.get("content"))
     return LlmAssistantMessage(
@@ -806,9 +823,7 @@ def _message_from_payload(
         tool_calls=tool_calls,
         reasoning=_thinking_text(thinking_blocks),
         usage=anthropic_usage(payload),
-        stop_reason="tool_calls"
-        if tool_calls
-        else map_stop_reason(payload.get("stop_reason")),
+        stop_reason=stop_reason,
         provider_state=_content_blocks_provider_state(
             payload.get("content"),
             model=model,

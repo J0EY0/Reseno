@@ -21,6 +21,11 @@ from ..editing.operations import (
     parse_edit_batch,
 )
 from ..evidence import ground_edit_evidence
+from ..privacy import (
+    AgentPrivacyPlaceholderError,
+    restore_agent_edit_value,
+    resume_hidden_terms,
+)
 
 
 @dataclass(frozen=True)
@@ -53,15 +58,23 @@ class DraftTransaction:
         if isinstance(draft, dict):
             stored_base = draft.get("baseResume")
             if isinstance(stored_base, dict):
-                base_resume = stored_base
+                base_resume = deepcopy(stored_base)
 
-        pending_edit_ids = _pending_response_edit_ids(response)
+        pending_edit_ids = _response_edit_ids(response, "pending")
+        applied_edit_ids = _response_edit_ids(response, "applied")
         raw_prior_edits = response.get("edits") if response else None
         if isinstance(raw_prior_edits, list):
-            prior_edits = tuple(
+            response_edits = tuple(
                 AgentResumeEditSuggestion.model_validate(edit)
                 for edit in raw_prior_edits
-                if isinstance(edit, dict) and edit.get("id") in pending_edit_ids
+                if isinstance(edit, dict)
+            )
+            _apply_edit_operations(
+                base_resume,
+                [edit for edit in response_edits if edit.id in applied_edit_ids],
+            )
+            prior_edits = tuple(
+                edit for edit in response_edits if edit.id in pending_edit_ids
             )
 
         return cls(
@@ -111,30 +124,33 @@ def _pending_transaction_response(
             continue
         response = message.response
         draft = response.get("draft") if response else None
-        if isinstance(draft, dict) and _pending_response_edit_ids(response):
+        if isinstance(draft, dict) and _response_edit_ids(response, "pending"):
             return response
         return None
 
     return None
 
 
-def _pending_response_edit_ids(response: dict[str, Any] | None) -> set[str]:
-    """Return edit IDs that remain unresolved in one persisted response."""
+def _response_edit_ids(
+    response: dict[str, Any] | None,
+    status: str,
+) -> set[str]:
+    """Return edit IDs with one durable review status."""
 
     draft = response.get("draft") if response else None
     review_items = draft.get("reviewItems") if isinstance(draft, dict) else None
     if not isinstance(review_items, list):
         return set()
-    pending_edit_ids: set[str] = set()
+    edit_ids_for_status: set[str] = set()
     for item in review_items:
-        if not isinstance(item, dict) or item.get("status") != "pending":
+        if not isinstance(item, dict) or item.get("status") != status:
             continue
         edit_ids = item.get("editIds")
         if isinstance(edit_ids, list):
-            pending_edit_ids.update(
+            edit_ids_for_status.update(
                 edit_id for edit_id in edit_ids if isinstance(edit_id, str)
             )
-    return pending_edit_ids
+    return edit_ids_for_status
 
 
 @dataclass(frozen=True)
@@ -171,6 +187,7 @@ class DraftEditEngine:
         self._request = request
         self._transaction = transaction or DraftTransaction.from_request(request)
         self._active_resume = self._transaction.active_resume
+        self._hidden_terms = resume_hidden_terms(request.resume, self._active_resume)
         self._draft_resume = deepcopy(self._active_resume)
         self._edits: list[AgentResumeEditSuggestion] = []
         self._materials: dict[str, str] = {}
@@ -228,6 +245,10 @@ class DraftEditEngine:
         """Validate and stage one complete edit batch without partial mutation."""
 
         before_resume = deepcopy(self._draft_resume)
+        try:
+            entries = restore_agent_edit_value(entries, hidden_terms=self._hidden_terms)
+        except AgentPrivacyPlaceholderError as exc:
+            return self._reject([{"index": 1, "reason": str(exc)}])
         model_edits, rejected_edits = parse_edit_batch(
             before_resume,
             entries,

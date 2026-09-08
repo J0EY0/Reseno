@@ -60,14 +60,11 @@ export function NewResumeDialog({
         <Button
           type="button"
           disabled={disabled}
+          aria-label={isCreating ? messages.creating : messages.newResume}
           aria-busy={isCreating || undefined}
         >
-          {isCreating ? (
-            <Spinner data-icon="inline-start" aria-label={messages.creating} />
-          ) : (
-            <CopyPlus data-icon="inline-start" />
-          )}
-          {isCreating ? messages.creating : messages.newResume}
+          <CopyPlus data-icon="inline-start" />
+          {messages.newResume}
         </Button>
       </DialogTrigger>
       <DialogContent closeLabel={messages.close}>

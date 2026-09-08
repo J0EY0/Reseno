@@ -71,7 +71,9 @@ class ResumeToolEnvironment:
         self._request = request
         transaction = DraftTransaction.from_request(request)
         self._draft = DraftEditEngine.open(request, transaction)
-        self._hidden_terms = resume_hidden_terms(self._draft.active_resume)
+        self._hidden_terms = resume_hidden_terms(
+            request.resume, self._draft.active_resume,
+        )
         self._attachments = AttachmentToolAdapter.open(
             request,
             hidden_terms=self._hidden_terms,

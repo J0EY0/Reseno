@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from app.config import get_settings
-from app.services.model_metadata import MODEL_METADATA_CACHE_TTL_SECONDS
+from app.services.model_metadata import (
+    MODEL_METADATA_CACHE_TTL_SECONDS,
+    is_provider_model,
+)
 from app.services.model_providers import DiscoveredModel
 from app.services.thinking import ThinkingControl, available_thinking_modes
 
@@ -35,7 +38,11 @@ def read_cached_provider_models(provider_id: str) -> list[DiscoveredModel] | Non
         )
         for item in raw_models
     ]
-    filtered = [model for model in models if model is not None]
+    filtered = [
+        model
+        for model in models
+        if model is not None and is_provider_model(provider_id, model.id)
+    ]
     return filtered or None
 
 
@@ -121,6 +128,7 @@ def _model_to_cache_item(model: DiscoveredModel) -> dict[str, Any]:
         "label": model.label,
         "contextWindowTokens": model.context_window_tokens,
         "maxOutputTokens": model.max_output_tokens,
+        "sharedContextWindowTokens": model.shared_context_window_tokens,
         "supportsImage": model.supports_image,
         "thinkingControl": model.thinking_control,
         "availableThinkingModes": list(model.available_thinking_modes),
@@ -152,6 +160,10 @@ def _model_from_cache_item(
     if not isinstance(max_output, int) or max_output <= 0:
         max_output = None
 
+    shared_context = item.get("sharedContextWindowTokens")
+    if type(shared_context) is not int or shared_context <= 0:
+        shared_context = None
+
     metadata_source = item.get("metadataSource")
     if not isinstance(metadata_source, str) or not metadata_source.strip():
         metadata_source = "cache"
@@ -161,6 +173,7 @@ def _model_from_cache_item(
         label=label,
         context_window_tokens=context_window,
         max_output_tokens=max_output,
+        shared_context_window_tokens=shared_context,
         supports_image=bool(item.get("supportsImage")),
         thinking_control=_thinking_control(item.get("thinkingControl")),
         metadata_source=metadata_source,

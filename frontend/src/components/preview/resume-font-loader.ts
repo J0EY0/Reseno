@@ -44,6 +44,7 @@ const resumeFontStyleLoaders: Record<
   noto_sans_sc: loadNotoSansStyles,
   plex: loadNotoSansStyles,
   serif: loadNotoSerifStyles,
+  times: loadNotoSerifStyles,
 };
 
 export function loadResumeFontStyles(fontFamily: ResumeFontFamily) {

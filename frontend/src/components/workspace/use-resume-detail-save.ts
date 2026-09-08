@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
+import type { AgentDraftConflictResolution } from "@/lib/agent-draft-review";
 import {
   resolveAgentDraftDecision,
   type AgentDraftDecisionResolution,
@@ -65,8 +66,7 @@ export function useResumeDetailSave({
   onHydrateResume,
   resumeId,
 }: ResumeDetailSaveOptions) {
-  const initialSavedAt =
-    initialCheckpoint?.savedAt ?? initialResume?.updatedAt ?? null;
+  const initialSavedAt = initialCheckpoint?.savedAt ?? initialResume?.updatedAt ?? null;
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialSavedAt);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(
     initialCheckpoint?.versionId ?? null,
@@ -273,6 +273,7 @@ export function useResumeDetailSave({
       currentResume: ResumeData,
       reviewItemIds: string[],
       status: AgentDraftDecisionStatus,
+      conflictResolution?: AgentDraftConflictResolution,
     ): Promise<AgentDraftDecisionResolution> => {
       const owner = ownerLifecycleRef.current;
       const requireCurrentOwner = () => {
@@ -297,7 +298,6 @@ export function useResumeDetailSave({
         }
         requireCurrentOwner();
       }
-
       requireCurrentOwner();
       const hasLocalChanges = hasUnsavedChanges();
       const resolutionPromise = (async () => {
@@ -310,6 +310,7 @@ export function useResumeDetailSave({
             messageId,
             status === "applied"
               ? {
+                  conflictResolution,
                   currentResume,
                   currentVersionId: activeVersionIdRef.current,
                   rebaseOnLatest: !hasLocalChanges,

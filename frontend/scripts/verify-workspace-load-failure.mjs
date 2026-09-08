@@ -277,8 +277,8 @@ const agentSessionLoaderSource = agentSessionRunClientSource.slice(
     "export async function replaceAgentSession",
   ),
 );
-const activeAgentRunLoaderSource = agentSessionRunClientSource.slice(
-  agentSessionRunClientSource.indexOf("export function loadActiveAgentRun"),
+const agentRecoveryLoaderSource = agentSessionRunClientSource.slice(
+  agentSessionRunClientSource.indexOf("export function loadAgentSessionRecovery"),
   agentSessionRunClientSource.indexOf("export function stopAgentRun"),
 );
 
@@ -288,19 +288,14 @@ assert.match(
   "Agent session reads must forward caller-owned cancellation and notification policy.",
 );
 assert.match(
-  activeAgentRunLoaderSource,
+  agentRecoveryLoaderSource,
   /notifyOnError\?: boolean[\s\S]*signal\?: AbortSignal[\s\S]*notifyOnError: options\.notifyOnError[\s\S]*signal: options\.signal/,
-  "Active Agent run reads must forward caller-owned cancellation and notification policy.",
+  "Agent recovery reads must forward caller-owned cancellation and notification policy.",
 );
 assert.match(
   agentSessionHydrationSource,
-  /loadAgentSession\(resumeId,\s*\{\s*notifyOnError: false,\s*signal: abortController\.signal,?\s*\}\)/,
-  "Copilot hydration must silently cancel or surface its session read locally.",
-);
-assert.match(
-  agentSessionHydrationSource,
-  /loadActiveAgentRun\(resumeId,\s*\{\s*notifyOnError: false,\s*signal: abortController\.signal,?\s*\}\)/,
-  "Copilot hydration must silently cancel or surface its active-run read locally.",
+  /loadAgentSessionRecovery\(resumeId,\s*\{\s*notifyOnError: false,\s*signal: abortController\.signal,?\s*\}\)/,
+  "Copilot hydration must silently cancel or surface its recovery read locally.",
 );
 
 console.log("Workspace load failure behavior verified.");

@@ -119,7 +119,16 @@ def test_agent_stream_preserves_historical_user_rows(
         def fulfill_session(route: Route) -> None:
             response = route.fetch()
             payload = response.json()
-            payload["data"]["messages"] = messages
+            payload["data"]["session"]["messages"] = messages
+            payload["data"]["run"] = {
+                "id": "history-run",
+                "resumeId": resume_id,
+                "baseResume": base,
+                "status": "active",
+                "executionState": "running",
+                "errorCode": None,
+                "lastEventId": 0,
+            }
             route.fulfill(response=response, json=payload)
 
         def instrument_user_row(route: Route) -> None:
@@ -154,28 +163,10 @@ def test_agent_stream_preserves_historical_user_rows(
                 return originalFetch(...args);
             };
         """)
-        page.route(f"**/api/agent/resumes/{resume_id}/session", fulfill_session)
+        page.route(f"**/api/agent/resumes/{resume_id}/recovery", fulfill_session)
         page.route(
             "**/src/components/copilot/copilot-user-message-row.tsx*",
             instrument_user_row,
-        )
-        page.route(
-            f"**/api/agent/resumes/{resume_id}/run",
-            lambda route: route.fulfill(
-                json={
-                    "code": 0,
-                    "message": "OK",
-                    "data": {
-                        "id": "history-run",
-                        "resumeId": resume_id,
-                        "baseResume": base,
-                        "status": "active",
-                        "executionState": "running",
-                        "errorCode": None,
-                        "lastEventId": 0,
-                    },
-                }
-            ),
         )
         _open_agent(page, frontend_url, resume_id)
         expect(page.locator(".agent-thread-scroll .is-user")).to_have_count(30)
@@ -240,8 +231,13 @@ def test_agent_history_actions_keep_the_selected_message_and_attachments(
         payload = response.json()
         if route.request.method == "PUT":
             replacements.append(route.request.post_data_json["messages"])
-        payload["data"]["messages"] = messages
-        payload["data"]["executions"] = [
+        session = (
+            payload["data"]["session"]
+            if route.request.url.endswith("/recovery")
+            else payload["data"]
+        )
+        session["messages"] = messages
+        session["executions"] = [
             {
                 "runId": "failed-actions",
                 "turnId": "user-actions",
@@ -259,6 +255,7 @@ def test_agent_history_actions_keep_the_selected_message_and_attachments(
             value: { writeText: async text => { window.__copiedHistoryText = text; } },
         });""")
         page.route(f"**/api/agent/resumes/{resume_id}/session", fulfill_session)
+        page.route(f"**/api/agent/resumes/{resume_id}/recovery", fulfill_session)
         page.route("**/api/agent/chat", lambda route: route.abort("failed"))
         page.route(
             "**/attachments/history-file",
@@ -280,7 +277,7 @@ def test_agent_history_actions_keep_the_selected_message_and_attachments(
             attachment.click()
         assert download.value.suggested_filename == "history.txt"
         attachment.hover()
-        page.get_by_role("button", name="引用到输入框", exact=True).click()
+        page.get_by_role("button", name="添加到消息", exact=True).click()
         expect(
             page.locator('[data-slot="agent-composer"]').get_by_text(
                 "history.txt",
@@ -315,5 +312,71 @@ def test_agent_history_actions_keep_the_selected_message_and_attachments(
         )
         assert payload["messages"] == []
         assert replacements == ([[payload["message"]]] if action == "edit" else [])
+    finally:
+        context.close()
+
+
+def test_completed_reply_is_restored_from_one_recovery_snapshot(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 900}
+    )
+    page = context.new_page()
+    recovery_reads = []
+    separate_reads = []
+
+    def fulfill_recovery(route: Route) -> None:
+        recovery_reads.append(route.request.url)
+        response = route.fetch()
+        payload = response.json()
+        payload["data"]["run"] = None
+        payload["data"]["session"]["messages"] = [
+            {
+                "id": "recovered-user",
+                "role": "user",
+                "text": "Check this resume.",
+                "createdAt": "2026-08-10T00:00:00.000Z",
+            },
+            {
+                "id": "recovered-assistant",
+                "role": "assistant",
+                "text": "The completed reply is preserved.",
+                "createdAt": "2026-08-10T00:00:01.000Z",
+            },
+        ]
+        payload["data"]["session"]["executions"] = [
+            {
+                "runId": "completed-recovery",
+                "turnId": "recovered-user",
+                "status": "succeeded",
+                "errorCode": None,
+                "modelSnapshot": None,
+                "startedAt": "2026-08-10T00:00:00.000Z",
+                "completedAt": "2026-08-10T00:00:01.000Z",
+            }
+        ]
+        route.fulfill(response=response, json=payload)
+
+    def record_separate_read(route: Route) -> None:
+        separate_reads.append(route.request.url)
+        route.continue_()
+
+    try:
+        page.route(f"**/api/agent/resumes/{resume_id}/recovery", fulfill_recovery)
+        page.route(f"**/api/agent/resumes/{resume_id}/session", record_separate_read)
+        _open_agent(page, frontend_url, resume_id)
+        expect(page.locator(".agent-thread-scroll")).to_contain_text(
+            "The completed reply is preserved."
+        )
+        prompt = page.get_by_role("textbox", name="你想了解什么？", exact=True)
+        expect(prompt).to_be_enabled()
+        expect(prompt).to_have_attribute("placeholder", "")
+        assert set(recovery_reads) == {
+            f"{frontend_url}/api/agent/resumes/{resume_id}/recovery"
+        }
+        assert separate_reads == []
     finally:
         context.close()

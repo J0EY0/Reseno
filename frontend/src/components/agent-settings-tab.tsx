@@ -157,7 +157,7 @@ export function AgentSettingsTab({
           >
             <SelectTrigger
               aria-label={t.agentResponseLanguage}
-              className="ml-auto w-44 max-w-full"
+              className="ml-auto w-auto min-w-44 max-w-full"
             >
               <SelectValue />
             </SelectTrigger>

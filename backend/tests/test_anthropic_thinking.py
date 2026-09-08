@@ -277,3 +277,40 @@ async def _collect_events(
     stream: AsyncIterator[LlmStreamEvent],
 ) -> list[LlmStreamEvent]:
     return [event async for event in stream]
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_shared_context_clamp_preserves_legacy_thinking_minimum_before_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+) -> None:
+    from dataclasses import replace
+
+    from app.services.llm import async_stream_tool_call
+
+    def unexpected_transport(*_: Any, **__: Any):
+        raise AssertionError("An invalid thinking budget must not reach transport.")
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", unexpected_transport)
+    monkeypatch.setattr(anthropic_messages, "async_stream_json", unexpected_transport)
+    config = replace(
+        _config(thinking_control="native_budget"),
+        supports_streaming=streaming,
+        context_window_tokens=4_000,
+        shared_context_window_tokens=4_000,
+    )
+
+    async def collect():
+        return [
+            event
+            async for event in async_stream_tool_call(
+                config,
+                LlmPrompt(messages=[{"role": "user", "content": "task " * 2_500}]),
+                [],
+            )
+        ]
+
+    with pytest.raises(
+        LlmRequestError, match="legacy thinking requires max_tokens greater than 1024"
+    ):
+        asyncio.run(collect())

@@ -22,6 +22,13 @@ try {
     compactResumeDraftDiffs,
     formatAgentDiffValue,
   } = await server.ssrLoadModule("/src/lib/agent-diff-value.ts");
+  const { getInlineTextHtml, getRichTextPlainText } = await server.ssrLoadModule("/src/lib/rich-text.ts");
+  const { getInitials } = await server.ssrLoadModule("/src/lib/resume.ts");
+  assert.equal(getInlineTextHtml("R&D <Component>"), "R&amp;D &lt;Component&gt;");
+  assert.equal(getInlineTextHtml("<strong>literal</strong>"), "&lt;strong&gt;literal&lt;/strong&gt;");
+  assert.equal(getRichTextPlainText("<p>H<sub>2</sub>O x<sup>2</sup></p>"), "H2O x2");
+  assert.equal(getInitials("<p><strong>Ada</strong> Lovelace</p>"), "AL");
+  assert.equal(formatAgentDiffValue("<p><sup>Lead</sup> <sub>Engineer</sub></p>"), "Lead Engineer");
   const value = formatAgentDiffValue({
     id: "project-1",
     name: "Reseno",
@@ -241,6 +248,10 @@ try {
         t: {
           agentDraftResolutionReceipt:
             "Applied {applied}, discarded {discarded}",
+          agentDraftSuperseded: "Replaced by later suggestions",
+          agentDraftAppliedCount: "Applied {count}",
+          agentDraftDiscardedCount: "Discarded {count}",
+          agentDraftSupersededCount: "{count} replaced by later suggestions",
           agentQualityDuplicateContent: "Duplicate content",
           agentQualityGeneral: "Review this suggestion",
           agentQualityInconsistentTense: "Inconsistent tense",
@@ -268,6 +279,46 @@ try {
   assert.match(receiptMarkup, /data-slot="agent-draft-resolution-receipt"/);
   assert.match(receiptMarkup, /Applied 2, discarded 1/);
   assert.doesNotMatch(receiptMarkup, /Apply draft|Discard draft|role="group"/);
+  const supersededMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "superseded" },
+    { id: "review-2", editIds: ["edit-2"], status: "superseded" },
+  ]);
+  assert.match(supersededMarkup, /Replaced by later suggestions/);
+  assert.doesNotMatch(supersededMarkup, /Applied|[Dd]iscarded/);
+  const mixedReceiptMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "applied" },
+    { id: "review-2", editIds: ["edit-2"], status: "discarded" },
+    { id: "review-3", editIds: ["edit-3"], status: "superseded" },
+    { id: "review-4", editIds: ["edit-4"], status: "superseded" },
+  ]);
+  assert.match(
+    mixedReceiptMarkup,
+    /Applied 1 · Discarded 1 · 2 replaced by later suggestions/,
+  );
+  assert.doesNotMatch(mixedReceiptMarkup, /[Dd]iscarded 3|truncate/);
+  const partiallyAppliedReceiptMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "applied" },
+    { id: "review-2", editIds: ["edit-2"], status: "superseded" },
+  ]);
+  assert.match(
+    partiallyAppliedReceiptMarkup,
+    /Applied 1 · 1 replaced by later suggestions/,
+  );
+  assert.doesNotMatch(partiallyAppliedReceiptMarkup, /[Dd]iscarded/);
+  const partiallyDiscardedReceiptMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "discarded" },
+    { id: "review-2", editIds: ["edit-2"], status: "superseded" },
+  ]);
+  assert.match(
+    partiallyDiscardedReceiptMarkup,
+    /Discarded 1 · 1 replaced by later suggestions/,
+  );
+  assert.doesNotMatch(partiallyDiscardedReceiptMarkup, /Applied/);
+  const stillPendingMarkup = renderSummary([
+    { id: "review-1", editIds: ["edit-1"], status: "superseded" },
+    { id: "review-2", editIds: ["edit-2"], status: "pending" },
+  ]);
+  assert.equal(stillPendingMarkup, "");
   const warningMarkup = renderSummary(
     [{ id: "review-1", editIds: ["edit-1"], status: "pending" }],
     [{
@@ -304,6 +355,12 @@ try {
     agentDiscardThis: "Discard this change",
     agentDiscardingDraft: "Discarding change",
     agentDraftReview: "Draft change review",
+    agentDraftConflictScope: "Resolve all {count} pending changes",
+    agentDraftConflictOriginalDescription: "Compare your edits with the original suggestion",
+    agentDraftConflictApplyOriginal: "Apply original suggestion",
+    agentDraftConflictKeepManual: "Keep manual edits",
+    agentDraftConflictApplyOriginalHint: "Use the full suggested result",
+    agentDraftConflictKeepManualHint: "Merge suggestions and keep your edits in conflicts",
     agentReviewAll: "All",
     agentReviewNext: "Next change",
     agentReviewOneByOne: "Review one by one",
@@ -313,7 +370,11 @@ try {
     agentReviewSinglePosition: "{current} of {total}",
   };
   const dockActions = {
+    conflicts: [],
+    hasScopeConflicts: false,
     onApply: () => undefined,
+    onApplyOriginal: () => undefined,
+    onKeepManual: () => undefined,
     onDiscard: () => undefined,
     onNext: () => undefined,
     onPrevious: () => undefined,
@@ -339,6 +400,68 @@ try {
   assert.match(allDockMarkup, /Discard remaining/);
   assert.match(allDockMarkup, /aria-label="Review one by one"/);
   assert.doesNotMatch(allDockMarkup, /data-variant="(?:default|outline)"/);
+
+  const conflictedDockMarkup = renderToStaticMarkup(
+    createElement(AgentDraftReviewDock, {
+      t: {
+        ...dockMessages,
+        agentDraftConflictTitle: "Conflicts in this selection: {count}",
+        agentDraftConflictDescription: "Your edits are preserved.",
+        agentDraftConflictInspect: "Resolve draft conflicts",
+      },
+      view: {
+        ...dockActions,
+        conflicts: [{ reviewItemId: "review-1", diffs: [] }],
+        hasScopeConflicts: true,
+        disabled: false,
+        mode: "all",
+        pendingCount: 2,
+        resolvingStatus: null,
+        selectedIndex: -1,
+      },
+    }),
+  );
+  const conflictingApplyButton = conflictedDockMarkup.match(
+    /<button[^>]*aria-label="Apply remaining"[^>]*>/,
+  )?.[0];
+  const conflictingDiscardButton = conflictedDockMarkup.match(
+    /<button[^>]*aria-label="Discard remaining"[^>]*>/,
+  )?.[0];
+  const conflictingReviewButton = conflictedDockMarkup.match(
+    /<button[^>]*aria-label="Review one by one"[^>]*>/,
+  )?.[0];
+  assert.match(conflictedDockMarkup, /Your edits are preserved/);
+  assert.match(conflictedDockMarkup, /Resolve draft conflicts/);
+  assert.match(conflictingApplyButton, /disabled=""/);
+  assert.doesNotMatch(conflictingDiscardButton, /disabled=/);
+  assert.doesNotMatch(conflictingReviewButton, /disabled=/);
+
+  const safeScopeWithOtherConflicts = renderToStaticMarkup(
+    createElement(AgentDraftReviewDock, {
+      t: {
+        ...dockMessages,
+        agentDraftConflictTitle: "Draft conflicts: {count}",
+        agentDraftConflictDescription: "Choose a result for the pending draft.",
+        agentDraftConflictInspect: "Resolve draft conflicts",
+      },
+      view: {
+        ...dockActions,
+        conflicts: [{ reviewItemId: "review-1", diffs: [] }],
+        disabled: false,
+        hasScopeConflicts: false,
+        mode: "single",
+        pendingCount: 2,
+        resolvingStatus: null,
+        selectedIndex: 1,
+      },
+    }),
+  );
+  assert.match(safeScopeWithOtherConflicts, /Resolve draft conflicts/);
+  assert.doesNotMatch(
+    safeScopeWithOtherConflicts.match(/<button[^>]*aria-label="Apply this change"[^>]*>/)?.[0],
+    /disabled=/,
+    "Conflicts elsewhere in the draft must not block applying a safe selected item.",
+  );
 
   const singleDockMarkup = renderToStaticMarkup(
     createElement(AgentDraftReviewDock, {

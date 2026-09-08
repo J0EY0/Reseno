@@ -662,16 +662,16 @@ def test_agent_history_hydrates_over_multiple_frames(
         viewport={"width": 1672, "height": 870},
     )
     page = context.new_page()
-    held_run_routes: list[Route] = []
+    held_recovery_routes: list[Route] = []
 
     try:
         resume_id = _seed_long_agent_history(page, frontend_url, rounds=30)
-        run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+        recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
 
-        def hold_run(route: Route) -> None:
-            held_run_routes.append(route)
+        def hold_recovery(route: Route) -> None:
+            held_recovery_routes.append(route)
 
-        page.route(run_pattern, hold_run)
+        page.route(recovery_pattern, hold_recovery)
         page.goto(
             f"{frontend_url}/resume/{resume_id}",
             wait_until="domcontentloaded",
@@ -716,13 +716,13 @@ def test_agent_history_hydrates_over_multiple_frames(
             """
         )
 
-        page.unroute(run_pattern, hold_run)
-        for route in held_run_routes:
+        page.unroute(recovery_pattern, hold_recovery)
+        for route in held_recovery_routes:
             try:
                 route.continue_()
             except PlaywrightError:
                 pass
-        held_run_routes.clear()
+        held_recovery_routes.clear()
 
         page.wait_for_function(
             """
@@ -799,7 +799,7 @@ def test_agent_history_hydrates_over_multiple_frames(
         ).click()
         expect(latest_user_message.locator("textarea")).to_have_count(0)
     finally:
-        for route in held_run_routes:
+        for route in held_recovery_routes:
             try:
                 route.continue_()
             except PlaywrightError:
@@ -1644,13 +1644,13 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
             message_id="assistant-pending-hydration",
             summary=pending_summary,
         )
-        held_active_run_routes: list[Route] = []
-        active_run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+        held_recovery_routes: list[Route] = []
+        recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
 
-        def hold_active_run(route: Route) -> None:
-            held_active_run_routes.append(route)
+        def hold_recovery(route: Route) -> None:
+            held_recovery_routes.append(route)
 
-        page.route(active_run_pattern, hold_active_run)
+        page.route(recovery_pattern, hold_recovery)
         page.goto(
             f"{frontend_url}/resume/{resume_id}",
             wait_until="domcontentloaded",
@@ -1659,22 +1659,22 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
         loading = page.get_by_text("正在加载 Agent 对话…", exact=True)
         loading.wait_for(state="visible")
         page.wait_for_timeout(100)
-        assert held_active_run_routes
+        assert held_recovery_routes
         empty_prompt = page.get_by_text(
-            "我可以帮你润色经历、调整简历结构。", exact=True
+            "我可以帮你润色经历、调整简历结构", exact=True
         )
         assert empty_prompt.count() == 0
         assert page.get_by_role("button", name="应用剩余全部", exact=True).count() == 0
         assert page.get_by_role("button", name="放弃剩余全部", exact=True).count() == 0
 
-        page.unroute(active_run_pattern, hold_active_run)
-        for route in held_active_run_routes:
+        page.unroute(recovery_pattern, hold_recovery)
+        for route in held_recovery_routes:
             try:
                 route.continue_()
             except PlaywrightError:
                 # React Strict Mode may already have aborted an earlier owner.
                 pass
-        held_active_run_routes.clear()
+        held_recovery_routes.clear()
         loading.wait_for(state="hidden")
         page.get_by_role("button", name="应用剩余全部", exact=True).wait_for(
             state="visible"
@@ -1682,7 +1682,7 @@ def test_pending_agent_draft_waits_for_complete_session_hydration(
         assert page.get_by_role("button", name="放弃剩余全部", exact=True).count() == 1
         assert page.get_by_text(pending_summary, exact=True).count() > 0
     finally:
-        for route in held_active_run_routes:
+        for route in held_recovery_routes:
             route.continue_()
         context.close()
 
@@ -2030,15 +2030,15 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
     )
     page = context.new_page()
     held_module_routes: list[Route] = []
-    held_run_routes: list[Route] = []
+    held_recovery_routes: list[Route] = []
     module_pattern = "**/src/components/copilot/copilot-panel.tsx*"
-    run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+    recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
 
     def hold_module(route: Route) -> None:
         held_module_routes.append(route)
 
-    def hold_run(route: Route) -> None:
-        held_run_routes.append(route)
+    def hold_recovery(route: Route) -> None:
+        held_recovery_routes.append(route)
 
     try:
         page.goto(
@@ -2046,7 +2046,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
             wait_until="networkidle",
         )
         page.route(module_pattern, hold_module)
-        page.route(run_pattern, hold_run)
+        page.route(recovery_pattern, hold_recovery)
 
         trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
         trigger.evaluate("button => button.click()")
@@ -2113,7 +2113,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
             "() => window.__firstAgentPanelShell?.isConnected === true"
         )
         expect(trigger).to_have_attribute("data-agent-status", "loading")
-        assert held_run_routes
+        assert held_recovery_routes
 
         hydration_shell = page.evaluate(
             """
@@ -2171,13 +2171,13 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
             for key in ("height", "width", "x", "y")
         ), {"fallback": fallback_shell, "hydration": hydration_shell}
 
-        page.unroute(run_pattern, hold_run)
-        for route in held_run_routes:
+        page.unroute(recovery_pattern, hold_recovery)
+        for route in held_recovery_routes:
             try:
                 route.continue_()
             except PlaywrightError:
                 pass
-        held_run_routes.clear()
+        held_recovery_routes.clear()
         loading.wait_for(state="hidden")
         ready_shell = page.evaluate(
             """
@@ -2201,7 +2201,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
                 route.continue_()
             except PlaywrightError:
                 pass
-        for route in held_run_routes:
+        for route in held_recovery_routes:
             try:
                 route.continue_()
             except PlaywrightError:
@@ -2223,7 +2223,7 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
     run_id = "agent-toggle-status-run"
     held_event_routes: list[Route] = []
     session_pattern = f"**/api/agent/resumes/{resume_id}/session"
-    run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+    recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
     events_pattern = f"**/api/agent/runs/{run_id}/events*"
 
     try:
@@ -2232,49 +2232,49 @@ def test_collapsed_agent_toggle_keeps_active_run_status(
         ).json()["data"]
         base_resume = resume_detail["resume"]["resume"]
 
+        user_messages = [
+            {
+                "id": "user-agent-toggle-status",
+                "role": "user",
+                "text": "检查这份简历。",
+                "createdAt": "2026-08-10T00:00:00.000Z",
+            }
+        ]
+
         def fulfill_session_with_user_message(route: Route) -> None:
             response = route.fetch()
             payload = response.json()
-            payload["data"]["messages"] = [
-                {
-                    "id": "user-agent-toggle-status",
-                    "role": "user",
-                    "text": "检查这份简历。",
-                    "createdAt": "2026-08-10T00:00:00.000Z",
-                }
-            ]
+            payload["data"]["messages"] = user_messages
             route.fulfill(
                 response=response,
                 content_type="application/json",
                 body=json.dumps(payload),
             )
 
-        def fulfill_active_run(route: Route) -> None:
+        def fulfill_recovery(route: Route) -> None:
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["session"]["messages"] = user_messages
+            payload["data"]["run"] = {
+                "id": run_id,
+                "resumeId": resume_id,
+                "baseResume": base_resume,
+                "status": "active",
+                "executionState": "running",
+                "errorCode": None,
+                "lastEventId": 0,
+            }
             route.fulfill(
-                status=200,
+                response=response,
                 content_type="application/json",
-                body=json.dumps(
-                    {
-                        "code": 0,
-                        "message": "OK",
-                        "data": {
-                            "id": run_id,
-                            "resumeId": resume_id,
-                            "baseResume": base_resume,
-                            "status": "active",
-                            "executionState": "running",
-                            "errorCode": None,
-                            "lastEventId": 0,
-                        },
-                    }
-                ),
+                body=json.dumps(payload),
             )
 
         def hold_events(route: Route) -> None:
             held_event_routes.append(route)
 
         page.route(session_pattern, fulfill_session_with_user_message)
-        page.route(run_pattern, fulfill_active_run)
+        page.route(recovery_pattern, fulfill_recovery)
         page.route(events_pattern, hold_events)
         page.goto(
             f"{frontend_url}/resume/{resume_id}",
@@ -2727,7 +2727,12 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
     def fulfill_retryable_session(route: Route) -> None:
         response = route.fetch()
         payload = response.json()
-        payload["data"]["messages"] = [
+        session = (
+            payload["data"]["session"]
+            if route.request.url.endswith("/recovery")
+            else payload["data"]
+        )
+        session["messages"] = [
             {
                 "id": user_message_id,
                 "role": "user",
@@ -2735,7 +2740,7 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
                 "createdAt": "2026-08-10T00:00:00.000Z",
             }
         ]
-        payload["data"]["executions"] = [
+        session["executions"] = [
             {
                 "runId": "failed-feedback-run",
                 "turnId": user_message_id,
@@ -2769,6 +2774,10 @@ def test_agent_send_and_retry_show_feedback_while_preflight_is_pending(
     page.route(chat_pattern, hold_chat)
     page.route(events_pattern, hold_events)
     if action == "retry":
+        page.route(
+            f"**/api/agent/resumes/{resume_id}/recovery",
+            fulfill_retryable_session,
+        )
         page.route(
             f"**/api/agent/resumes/{resume_id}/session",
             fulfill_retryable_session,
@@ -2976,7 +2985,7 @@ def test_agent_model_switch_during_active_run_applies_to_next_message(
         base_resume = resume_detail["resume"]["resume"]
         workspace_pattern = "**/api/workspace/pages/resume-editor"
         settings_pattern = "**/api/workspace/user-settings*"
-        run_pattern = f"**/api/agent/resumes/{resume_id}/run"
+        recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
         events_pattern = f"**/api/agent/runs/{run_id}/events*"
         chat_pattern = "**/api/agent/chat"
         terminal_event = (
@@ -3030,25 +3039,22 @@ def test_agent_model_switch_during_active_run_applies_to_next_message(
                 },
             )
 
-        def fulfill_active_run(route: Route) -> None:
+        def fulfill_recovery(route: Route) -> None:
+            response = route.fetch()
+            payload = response.json()
+            payload["data"]["run"] = {
+                "id": run_id,
+                "resumeId": resume_id,
+                "baseResume": base_resume,
+                "status": "active",
+                "executionState": "running",
+                "errorCode": None,
+                "lastEventId": 0,
+            }
             route.fulfill(
-                status=200,
+                response=response,
                 content_type="application/json",
-                body=json.dumps(
-                    {
-                        "code": 0,
-                        "message": "OK",
-                        "data": {
-                            "id": run_id,
-                            "resumeId": resume_id,
-                            "baseResume": base_resume,
-                            "status": "active",
-                            "executionState": "running",
-                            "errorCode": None,
-                            "lastEventId": 0,
-                        },
-                    }
-                ),
+                body=json.dumps(payload),
             )
 
         def hold_events(route: Route) -> None:
@@ -3067,7 +3073,7 @@ def test_agent_model_switch_during_active_run_applies_to_next_message(
 
         page.route(workspace_pattern, fulfill_workspace)
         page.route(settings_pattern, fulfill_settings_update)
-        page.route(run_pattern, fulfill_active_run)
+        page.route(recovery_pattern, fulfill_recovery)
         page.route(events_pattern, hold_events)
         page.route(chat_pattern, fulfill_chat)
         page.goto(
@@ -3118,7 +3124,7 @@ def test_agent_model_switch_during_active_run_applies_to_next_message(
         expect(model_trigger).to_contain_text("TEST-NEXT-MODEL")
         expect(
             page.get_by_text(
-                "模型已切换。当前回复继续使用原模型，新模型从下一条消息生效。",
+                "模型已切换。当前回复继续使用原模型，新模型从下一条消息生效",
                 exact=True,
             )
         ).to_be_visible()
@@ -4970,6 +4976,56 @@ def test_format_popover_focuses_template_without_opening_defaults_tooltip(
         context.close()
 
 
+def test_format_popover_font_options_stay_on_one_line(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, resume_id = workspace_servers
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        page.get_by_role("button", name="格式", exact=True).click()
+        font_select = page.get_by_role("combobox", name="字体", exact=True)
+        font_select.click()
+
+        option = page.get_by_role("option", name="Times New Roman", exact=True)
+        expect(option).to_be_visible()
+        line_count = option.evaluate(
+            """
+            element => {
+              const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+              );
+              let node;
+              while ((node = walker.nextNode())) {
+                if (node.textContent?.trim() !== 'Times New Roman') continue;
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                return new Set(
+                  Array.from(range.getClientRects(), rect => Math.round(rect.top)),
+                ).size;
+              }
+              return 0;
+            }
+            """
+        )
+        assert line_count == 1
+
+        option.click()
+        value = font_select.locator('[data-slot="select-value"]')
+        expect(value).to_have_text("Times New Roman")
+        assert value.evaluate(
+            "element => element.scrollWidth <= element.clientWidth + 1"
+        )
+    finally:
+        context.close()
+
+
 def test_format_reset_restores_current_template_defaults_and_persists(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -5027,7 +5083,10 @@ def test_format_reset_restores_current_template_defaults_and_persists(
         template_select_bounds = template_select.bounding_box()
         assert reset_bounds is not None
         assert template_select_bounds is not None
-        assert reset_bounds["x"] + reset_bounds["width"] <= template_select_bounds["x"]
+        assert (
+            template_select_bounds["x"] + template_select_bounds["width"]
+            <= reset_bounds["x"]
+        )
 
         reset_button.click()
 
@@ -5682,7 +5741,12 @@ def test_created_resume_is_not_published_before_detail_is_ready(
 
         pending_create_button = page.locator('button[aria-busy="true"]')
         expect(pending_create_button).to_have_count(1)
-        assert pending_create_button.inner_text() in {"Creating…", "创建中…"}
+        assert pending_create_button.inner_text() in {"New", "新建"}
+        assert pending_create_button.get_attribute("aria-label") in {
+            "Creating…",
+            "创建中…",
+        }
+        assert pending_create_button.locator('[role="status"]').count() == 0
         assert page.locator('a[href^="/resume/"]').count() == initial_card_count
         assert page.url == f"{frontend_url}/resume"
 
@@ -8389,18 +8453,17 @@ def test_agent_hydration_failure_stays_local_without_error_notification(
     page = context.new_page()
     agent_requests: list[ApiRequest] = []
 
+    def record_agent_read(request: Request) -> None:
+        api_request = _api_request(request)
+        if api_request and api_request[1].startswith("/api/agent/"):
+            agent_requests.append(api_request)
+
     def fail_agent_read(route: Route) -> None:
-        request = _api_request(route.request)
-        assert request is not None
-        agent_requests.append(request)
         route.abort()
 
+    page.on("request", record_agent_read)
     page.route(
-        f"**/api/agent/resumes/{resume_id}/session",
-        fail_agent_read,
-    )
-    page.route(
-        f"**/api/agent/resumes/{resume_id}/run",
+        f"**/api/agent/resumes/{resume_id}/recovery",
         fail_agent_read,
     )
 
@@ -8410,12 +8473,9 @@ def test_agent_hydration_failure_stays_local_without_error_notification(
         page.wait_for_timeout(250)
 
         request_counts = Counter(agent_requests)
-        session_request = ("GET", f"/api/agent/resumes/{resume_id}/session")
-        active_run_request = ("GET", f"/api/agent/resumes/{resume_id}/run")
-        # Strict Mode may start and cancel a preflight owner. The notification
-        # contract only requires that both hydration reads actually failed.
-        assert request_counts[session_request] >= 1
-        assert request_counts[active_run_request] >= 1
+        recovery_request = ("GET", f"/api/agent/resumes/{resume_id}/recovery")
+        assert request_counts[recovery_request] >= 1
+        assert set(request_counts) == {recovery_request}
         assert (
             page.locator(
                 '[data-sonner-toast][data-type="error"]:not([data-removed="true"])'
@@ -8802,7 +8862,7 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
         )
         history_trigger.click()
         version_popover = page.locator(
-            '[data-slot="popover-content"][aria-label="保存版本"]'
+            '[data-slot="popover-content"][aria-label="历史版本"]'
         )
         expect(version_popover).to_be_visible()
         version_buttons = version_popover.get_by_role("button")
@@ -9775,7 +9835,7 @@ def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
 
     try:
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        page.locator('button[aria-label$=": 删除板块"]').first.click()
+        page.locator('button[aria-label$=": 删除模块"]').first.click()
 
         dialog = page.locator('[data-slot="alert-dialog-content"]')
         overlay = page.locator('[data-slot="alert-dialog-overlay"]')
@@ -9886,9 +9946,9 @@ def test_resume_section_operations_keep_a_single_open_editor(
         expect(education).to_have_attribute("aria-expanded", "false")
         expect(open_sections).to_have_count(1)
 
-        page.get_by_role("button", name="教育经历: 删除板块", exact=True).click()
+        page.get_by_role("button", name="教育经历: 删除模块", exact=True).click()
         dialog = page.get_by_role("alertdialog")
-        dialog.get_by_role("button", name="删除板块", exact=True).click()
+        dialog.get_by_role("button", name="删除模块", exact=True).click()
         expect(education).to_have_count(0)
         expect(project).to_have_attribute("aria-expanded", "true")
         expect(open_sections).to_have_count(1)
@@ -9905,8 +9965,8 @@ def test_resume_section_operations_keep_a_single_open_editor(
             "项目经历",
         ]
 
-        page.get_by_role("button", name="项目经历: 删除板块", exact=True).click()
-        dialog.get_by_role("button", name="删除板块", exact=True).click()
+        page.get_by_role("button", name="项目经历: 删除模块", exact=True).click()
+        dialog.get_by_role("button", name="删除模块", exact=True).click()
         expect(project).to_have_count(0)
         expect(open_sections).to_have_count(0)
         with page.expect_response(
@@ -11359,6 +11419,137 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
 
 @pytest.mark.browser_smoke
 @pytest.mark.parametrize(
+    ("gallery_path", "search_name", "search_placeholder_key"),
+    [
+        ("/resume", "resume-search", "searchResumesPlaceholder"),
+        ("/templates", "template-search", "searchTemplatesPlaceholder"),
+    ],
+)
+def test_gallery_search_scope_stays_inside_input(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    search_name: str,
+    search_placeholder_key: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    messages = json.loads(
+        (Path(__file__).parents[3] / "frontend/src/i18n/locales/zh.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    search_placeholder = messages[search_placeholder_key]
+    context = _authenticated_context(browser, locale="zh-CN")
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        search = page.locator(f'input[name="{search_name}"]')
+        expect(search).to_have_attribute("placeholder", search_placeholder)
+        expect(page.get_by_text(search_placeholder, exact=True)).to_have_count(0)
+    finally:
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
+    ("gallery_path", "create_path"),
+    [
+        ("/resume", "/api/resumes"),
+        ("/templates", "/api/templates"),
+    ],
+)
+def test_gallery_new_button_keeps_its_geometry_while_creating(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    gallery_path: str,
+    create_path: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}{gallery_path}", wait_until="networkidle")
+        page.evaluate(
+            """
+            createPath => {
+              const originalFetch = window.fetch.bind(window);
+              window.__rejectGalleryCreate = null;
+              window.fetch = async (input, init) => {
+                const request = new Request(input, init);
+                if (
+                  request.method === "POST" &&
+                  new URL(request.url).pathname === createPath
+                ) {
+                  return await new Promise((_, reject) => {
+                    window.__rejectGalleryCreate = () => {
+                      reject(new DOMException("Aborted", "AbortError"));
+                    };
+                  });
+                }
+                return originalFetch(input, init);
+              };
+            }
+            """,
+            create_path,
+        )
+        new_button = page.get_by_role("button", name="新建", exact=True)
+        button = new_button.element_handle()
+        assert button
+        before = button.evaluate(
+            """
+            element => {
+              const rect = element.getBoundingClientRect();
+              return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
+            }
+            """
+        )
+
+        new_button.click()
+        if gallery_path == "/resume":
+            dialog = page.get_by_role("dialog")
+            dialog.get_by_role("combobox", name="简历语言", exact=True).click()
+            page.get_by_role("option", name="中文", exact=True).click()
+            dialog.get_by_role("button", name="创建简历", exact=True).click()
+
+        page.wait_for_function(
+            "button => button.getAttribute('aria-busy') === 'true'",
+            arg=button,
+        )
+        after = button.evaluate(
+            """
+            element => {
+              const rect = element.getBoundingClientRect();
+              return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
+            }
+            """
+        )
+        assert button.evaluate("element => element.innerText") == "新建"
+        assert button.evaluate("element => element.getAttribute('aria-label')") == (
+            "创建中…"
+        )
+        assert button.evaluate(
+            "element => Boolean(element.querySelector('[role=\"status\"]'))"
+        ) is False
+        assert all(
+            abs(after[key] - before[key]) <= 0.5
+            for key in ("x", "y", "width", "height")
+        ), {"before": before, "after": after}
+    finally:
+        try:
+            page.evaluate("window.__rejectGalleryCreate?.()")
+        except PlaywrightError:
+            pass
+        context.close()
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize(
     ("gallery_path", "search_name"),
     [
         ("/resume", "resume-search"),
@@ -12077,11 +12268,11 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
 
         assert image_editor.get_by_role("button", name="外观", exact=True).count() == 0
         image_editor.get_by_text("外观", exact=True).wait_for(state="visible")
-        opacity_slider = page.get_by_role("slider", name="透明度", exact=True)
+        opacity_slider = page.get_by_role("slider", name="不透明度", exact=True)
         opacity_slider.wait_for(state="visible")
         assert opacity_slider.get_attribute("aria-valuetext") == "100%"
         opacity_input = image_editor.get_by_role(
-            "spinbutton", name="透明度", exact=True
+            "spinbutton", name="不透明度", exact=True
         )
         opacity_input.wait_for(state="visible")
         assert opacity_input.input_value() == "100"
@@ -12293,7 +12484,7 @@ def test_template_image_drag_near_page_edge_persists_without_repositioning(
         first_image_editor.get_by_text("外观", exact=True).wait_for(state="visible")
         assert (
             first_image_editor.get_by_role(
-                "spinbutton", name="透明度", exact=True
+                "spinbutton", name="不透明度", exact=True
             ).input_value()
             == "75"
         )
@@ -13332,7 +13523,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
             "头像尺寸",
             "页边距",
             "内容密度",
-            "分割线样式",
+            "分隔线样式",
         ):
             expect(page.get_by_role("combobox", name=label, exact=True)).to_be_visible()
 
@@ -14518,7 +14709,7 @@ def test_recycle_bin_bulk_actions_appear_after_selection(
         expect(bulk_actions).to_have_attribute("aria-hidden", "false")
         bulk_restore = page.get_by_role("button", name="批量恢复", exact=True)
         expect(bulk_restore).to_be_visible()
-        bulk_delete = page.get_by_role("button", name="批量删除", exact=True)
+        bulk_delete = page.get_by_role("button", name="彻底删除所选项", exact=True)
         expect(bulk_delete).to_be_visible()
         bulk_delete.click()
         expect(page.get_by_text("确认彻底删除这份简历？", exact=True)).to_be_visible()
@@ -14648,9 +14839,13 @@ def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
             page.get_by_role("checkbox", name=f"Select: {title}", exact=True).check()
 
         if operation == "delete":
-            page.get_by_role("button", name="Delete selected", exact=True).click()
+            page.get_by_role(
+                "button", name="Permanently Delete Selected Items", exact=True
+            ).click()
             dialog = page.get_by_role("alertdialog")
-            dialog.get_by_role("button", name="Delete selected", exact=True).click()
+            dialog.get_by_role(
+                "button", name="Permanently Delete Selected Items", exact=True
+            ).click()
         else:
             page.get_by_role("button", name="Restore selected", exact=True).click()
 
@@ -14663,7 +14858,7 @@ def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
         expect(page.get_by_text(items[failed], exact=True)).to_have_count(1)
 
         if operation == "delete":
-            dialog.get_by_role("button", name="Delete Forever", exact=True).click()
+            dialog.get_by_role("button", name="Permanently Delete", exact=True).click()
             expect(dialog).to_have_count(0)
         else:
             page.get_by_role("button", name="Restore selected", exact=True).click()
@@ -15269,7 +15464,7 @@ def test_login_input_group_autofill_respects_component_surface(
         (
             "zh-CN",
             "使用 GitHub 继续",
-            "未绑定 GitHub 账号，请先使用密码登录后在设置中绑定。",
+            "未绑定 GitHub 账号，请先使用密码登录后在设置中绑定",
         ),
     ],
 )
@@ -16182,7 +16377,7 @@ def test_workspace_preferences_gallery_theme_preserves_saved_agent_settings(
     page.wait_for_url(f"{frontend_url}/settings")
     page.get_by_role("tab", name="AI 助手", exact=True).click()
     expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
-        "严格"
+        "保守"
     )
     expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
         "仅给建议"
@@ -16202,7 +16397,7 @@ def test_workspace_preferences_follow_route_changes_and_history(
     page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
     page.get_by_role("combobox", name="建议风格", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_role("option", name="增强", exact=True).click()
+        page.get_by_role("option", name="大幅优化", exact=True).click()
     page.get_by_role("tab", name="通用设置", exact=True).click()
     page.get_by_role("combobox", name="主题", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
@@ -16242,7 +16437,7 @@ def test_workspace_preferences_follow_route_changes_and_history(
     expect(page.get_by_role("combobox", name="主题", exact=True)).to_have_text("夜间")
     page.get_by_role("tab", name="AI 助手", exact=True).click()
     expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
-        "增强"
+        "大幅优化"
     )
     expect(page.get_by_role("combobox", name="修改确认方式", exact=True)).to_have_text(
         "仅给建议"
@@ -16265,7 +16460,7 @@ def test_workspace_preferences_queue_keeps_latest_change_before_navigation(
     )
 
     page.get_by_role("combobox", name="建议风格", exact=True).click()
-    page.get_by_role("option", name="增强", exact=True).click()
+    page.get_by_role("option", name="大幅优化", exact=True).click()
     deadline = time.monotonic() + 3
     while not held_routes and time.monotonic() < deadline:
         page.wait_for_timeout(20)
@@ -16317,7 +16512,7 @@ def test_workspace_preferences_latest_failure_rolls_back_every_route(
     page.goto(f"{frontend_url}/settings?tab=agent", wait_until="networkidle")
     page.get_by_role("combobox", name="建议风格", exact=True).click()
     with page.expect_response("**/api/workspace/user-settings*"):
-        page.get_by_role("option", name="增强", exact=True).click()
+        page.get_by_role("option", name="大幅优化", exact=True).click()
     page.get_by_role("tab", name="通用设置", exact=True).click()
 
     page.route(
@@ -16344,7 +16539,7 @@ def test_workspace_preferences_latest_failure_rolls_back_every_route(
     with page.expect_response("**/api/workspace/user-settings*"):
         page.get_by_role("option", name="平衡", exact=True).click()
     expect(page.get_by_role("combobox", name="建议风格", exact=True)).to_have_text(
-        "增强"
+        "大幅优化"
     )
     assert preferences["settings"]["theme"] == "light"
     assert preferences["settings"]["agentSettings"]["behaviorMode"] == "aggressive"

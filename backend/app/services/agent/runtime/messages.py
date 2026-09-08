@@ -15,6 +15,7 @@ from app.services.llm.output_budget import (
     compaction_headroom_tokens,
     estimate_prompt_tokens,
     input_estimation_safety_tokens,
+    shared_context_tokens,
 )
 from app.services.llm.types import (
     LlmContent,
@@ -50,7 +51,7 @@ from .context import AgentContextWindowError
 
 CONTEXT_COMPRESSION_RATIO = 0.85
 CONTEXT_CHECKPOINT_TARGET_RATIO = 0.70
-LATEST_TOOL_EXCERPT_CHARS = 800
+LATEST_TOOL_CONTENT_CHARS = 800
 DEFAULT_ATTACHMENT_CONTEXT_TOKEN_BUDGET = 32_000
 CHECKPOINT_CONTEXT_TOKEN_BUDGET = 1_200
 CHECKPOINT_EVENT_TEXT_TOKEN_BUDGET = 192
@@ -378,16 +379,7 @@ def _request_hidden_terms(
     would accidentally reveal the value that was present in the base resume.
     """
 
-    return tuple(
-        dict.fromkeys(
-            (
-                *resume_hidden_terms(request.resume),
-                *resume_hidden_terms(
-                    resume,
-                ),
-            ),
-        ),
-    )
+    return resume_hidden_terms(request.resume, resume)
 
 
 def _checkpoint_context_value(
@@ -609,7 +601,7 @@ def fit_agent_model_turn_prompt(
     """Fit an appended tool transcript before one provider request.
 
     The durable conversation checkpoint is prepared before the loop. During
-    the loop, only tool observations are appended, so old web excerpts are the
+    the loop, only tool observations are appended, so old web passages are the
     only large disposable payload. Preserve tool-call/result pairing, source
     identity, the latest observation whenever it fits, and every stable prefix
     boundary.
@@ -658,7 +650,7 @@ def fit_agent_model_turn_prompt(
 
     changed = False
     for index in earlier_tool_indexes:
-        changed = _compact_tool_result_excerpts(messages[index]) or changed
+        changed = _compact_tool_result_content(messages[index]) or changed
         if (
             changed
             and estimate_agent_messages_tokens(messages) <= limits.trigger_tokens
@@ -673,9 +665,9 @@ def fit_agent_model_turn_prompt(
         if estimated_tokens <= limits.input_tokens:
             break
         changed = (
-            _compact_tool_result_excerpts(
+            _compact_tool_result_content(
                 messages[index],
-                excerpt_chars=LATEST_TOOL_EXCERPT_CHARS,
+                content_chars=LATEST_TOOL_CONTENT_CHARS,
             )
             or changed
         )
@@ -690,10 +682,10 @@ def fit_agent_model_turn_prompt(
     )
 
 
-def _compact_tool_result_excerpts(
+def _compact_tool_result_content(
     message: LlmInputMessage,
     *,
-    excerpt_chars: int = 0,
+    content_chars: int = 0,
 ) -> bool:
     if message["role"] != "tool":
         return False
@@ -702,7 +694,7 @@ def _compact_tool_result_excerpts(
     except (TypeError, json.JSONDecodeError):
         return False
 
-    compacted = _compact_tool_result_value(value, excerpt_chars=excerpt_chars)
+    compacted = _compact_tool_result_value(value, content_chars=content_chars)
     if compacted == value:
         return False
     message["content"] = json.dumps(
@@ -713,10 +705,10 @@ def _compact_tool_result_excerpts(
     return True
 
 
-def _compact_tool_result_value(value: Any, *, excerpt_chars: int) -> Any:
+def _compact_tool_result_value(value: Any, *, content_chars: int) -> Any:
     if isinstance(value, list):
         return [
-            _compact_tool_result_value(item, excerpt_chars=excerpt_chars)
+            _compact_tool_result_value(item, content_chars=content_chars)
             for item in value
         ]
     if not isinstance(value, dict):
@@ -737,13 +729,32 @@ def _compact_tool_result_value(value: Any, *, excerpt_chars: int) -> Any:
         }
     else:
         compacted = {
-            key: _compact_tool_result_value(item, excerpt_chars=excerpt_chars)
+            key: _compact_tool_result_value(item, content_chars=content_chars)
             for key, item in value.items()
             if key not in {"excerpt", "excerptBoundary"}
         }
-    if excerpt_chars > 0 and isinstance(excerpt, str) and excerpt:
-        compacted["excerpt"] = excerpt[:excerpt_chars]
-        if len(excerpt) > excerpt_chars:
+    passages = value.get("passages")
+    if content_chars > 0 and isinstance(passages, list):
+        retained: list[dict[str, Any]] = []
+        remaining = content_chars
+        for passage in passages:
+            if not isinstance(passage, dict):
+                continue
+            text = passage.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            if remaining <= 0:
+                compacted["passagesTruncated"] = True
+                break
+            retained.append({**passage, "text": text[:remaining]})
+            if len(text) > remaining:
+                compacted["passagesTruncated"] = True
+            remaining -= len(retained[-1]["text"])
+        if retained:
+            compacted["passages"] = retained
+    if content_chars > 0 and isinstance(excerpt, str) and excerpt:
+        compacted["excerpt"] = excerpt[:content_chars]
+        if len(excerpt) > content_chars:
             compacted["excerptTruncated"] = True
     return compacted
 
@@ -974,7 +985,7 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
                 for item in review_items
                 if isinstance(item, dict) and item.get("status") == status
             )
-            for status in ("pending", "applied", "discarded")
+            for status in ("pending", "applied", "discarded", "superseded")
         }
         pending_edit_ids: set[str] = set()
         for item in review_items:
@@ -994,6 +1005,7 @@ def _assistant_response_state(response: dict[str, Any]) -> dict[str, Any]:
             "pendingCount": review_counts["pending"],
             "appliedCount": review_counts["applied"],
             "discardedCount": review_counts["discarded"],
+            "supersededCount": review_counts["superseded"],
         }
         if pending_edits:
             state["pendingEditCount"] = len(pending_edits)
@@ -1144,6 +1156,11 @@ def _context_budget(
     tool_schema_tokens: int,
 ) -> _ContextBudget | None:
     window_tokens = _context_window_tokens(config)
+    shared_window = shared_context_tokens(config)
+    if shared_window is not None:
+        window_tokens = (
+            min(window_tokens, shared_window) if window_tokens else shared_window
+        )
     if window_tokens is None:
         return None
 
@@ -1155,10 +1172,7 @@ def _context_budget(
         window_tokens
         - tool_schema_tokens
         - safety_margin_tokens
-        # A local/custom runtime shares one total context. Retain at least one
-        # token for its dynamically clamped output; official cloud limits are
-        # already explicit input ceilings and need no such deduction.
-        - (1 if config.provider_kind != "cloud" else 0)
+        - (1 if shared_window is not None else 0)
     )
     if input_tokens <= 0:
         raise AgentContextWindowError(

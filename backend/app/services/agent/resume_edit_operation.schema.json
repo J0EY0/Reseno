@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://reseno.local/schemas/resume-edit-operation.json",
   "title": "ResumeEditOperation",
-  "description": "Normalized Resume V2 edit operation exchanged by the backend and frontend.",
+  "description": "Normalized Resume V2 edit operation exchanged by the backend and frontend. Content fields, dates, periods and techStack entries accept plain strings or one sanitized <p> with <strong>/<em>/<u>/<sup>/<sub>. Academic italic uses <span data-academic-italic=\"true\">, independently of <em>. Preserve formatting, symbols, author order and contribution or affiliation markers. Keep unformatted values as plain strings; URLs, email and phone stay plain. Preserve existing paragraph/list structure in summary, highlights and content.",
   "definitions": {
     "nodeId": {
       "type": "string",
@@ -37,35 +37,35 @@
       "type": "object",
       "description": "Patch only fields belonging to the target section kind. Experience: company is the employer; position is the role or title; location is a geographic place. When no dedicated team field exists, keep a team or product-line fact in description. Project: name is the project or product name; role is the candidate's role only; techStack contains individual technologies only; description states project purpose or scope; highlights contain distinct grounded contributions or capabilities. Publication: title is the work title; authors preserves the cited order and contribution markers; venue is the journal or conference; date is the publication year or date. Move misplaced existing content to the correct fields in the same patch and clear obsolete source fields.",
       "properties": {
-        "school": { "type": "string" },
-        "degree": { "type": "string" },
-        "major": { "type": "string" },
-        "gpa": { "type": "string" },
+        "school": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "degree": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "major": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "gpa": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
         "location": {
-          "type": "string",
+          "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText",
           "description": "A geographic place only. If it currently holds a role or title, move that value to the correct field and clear location with an empty string."
         },
-        "period": { "type": "string" },
-        "company": { "type": "string" },
-        "position": { "type": "string" },
-        "name": { "type": "string" },
-        "title": { "type": "string" },
-        "authors": { "type": "string" },
-        "venue": { "type": "string" },
+        "period": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "company": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "position": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "name": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "title": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "authors": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "venue": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
         "role": {
-          "type": "string",
+          "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText",
           "description": "The candidate's role in a project, never a technology list. After moving misplaced technologies to techStack, clear it with an empty string when no grounded role is known."
         },
         "techStack": {
           "type": "array",
           "description": "Individual technologies only. Move non-technology contribution facts found here to highlights, or brief project context to description.",
-          "items": { "type": "string" }
+          "items": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" }
         },
         "url": { "type": "string" },
-        "issuer": { "type": "string" },
-        "date": { "type": "string" },
+        "issuer": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
+        "date": { "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText" },
         "description": {
-          "type": "string",
+          "$ref": "https://reseno.local/schemas/resume-document-v2.json#/definitions/inlineText",
           "description": "Brief context or scope only. Prefer highlights for independent actions, methods, delivered features, capabilities, or outcomes; do not collapse unrelated contributions into this field."
         },
         "highlights": {

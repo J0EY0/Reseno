@@ -1,8 +1,8 @@
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import type { AchievementItem } from '@/types/resume'
 
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
 import { ResumeItemEditorShell } from './resume-item-editor-shell'
 import { compactResumeFieldClassName } from './resume-section-editor-fields'
 import type { TypedSectionEditorProps } from './resume-section-editor-types'
@@ -46,27 +46,33 @@ export function AchievementSectionEditor({
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.achievementName}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.achievementName}
             value={item.name}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.achievementName}
-            onChange={(event) => updateItem(item, { name: event.target.value })}
+            onChange={(value) => updateItem(item, { name: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.issuer}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.issuer}
             value={item.issuer}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.issuer}
-            onChange={(event) => updateItem(item, { issuer: event.target.value })}
+            onChange={(value) => updateItem(item, { issuer: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.date}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.date}
             value={item.date}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.date}
-            onChange={(event) => updateItem(item, { date: event.target.value })}
+            onChange={(value) => updateItem(item, { date: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.url}>
@@ -80,12 +86,14 @@ export function AchievementSectionEditor({
           />
         </FormField>
         <FormField label={t.fieldLabels.description} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.description}
+            multiline
             value={item.description}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.description}
-            onChange={(event) => updateItem(item, { description: event.target.value })}
+            onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
       </div>

@@ -77,12 +77,10 @@ def test_cloud_auto_omits_the_optional_provider_output_limit() -> None:
     )
 
 
-def test_input_ceiling_does_not_reduce_an_explicit_output_override() -> None:
-    # Provider/LiteLLM metadata describes separate input and output ceilings.
-    # A model with 272K input plus 128K output must retain the full 128K output
-    # allowance even when this request carries roughly 250K input tokens.
+def test_independent_input_ceiling_preserves_output_within_the_total_window() -> None:
     config = _config(
         context_window_tokens=272_000,
+        shared_context_window_tokens=400_000,
         max_tokens=128_000,
         model_max_output_tokens=128_000,
     )

@@ -3,6 +3,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
@@ -15,6 +17,7 @@ def main() -> None:
 
         from fastapi.testclient import TestClient
 
+        from app.config import get_settings
         from app.main import create_app
 
         with TestClient(
@@ -101,9 +104,11 @@ def main() -> None:
 
             db_bytes = (data_dir / "app.db").read_bytes()
             assert b"sk-script-workspace-secret" not in db_bytes
-            env_bytes = (data_dir / ".env").read_bytes()
-            assert b"RESENO_MASTER_KEY=" in env_bytes
-            assert b"RESENO_JWT_SECRET=" in env_bytes
+            settings = get_settings()
+            env_bytes = settings.env_file_path.read_bytes()
+            assert set(dotenv_values(settings.env_file_path, interpolate=False)) == {
+                "RESENO_MASTER_KEY", "RESENO_JWT_SECRET",
+            }
             assert b"sk-script-workspace-secret" not in env_bytes
 
         print("Backend data flow verified.")

@@ -5,6 +5,9 @@ from typing import Literal, TypedDict
 type NodeId = str
 
 
+type InlineText = str
+
+
 class CustomField(TypedDict):
     id: str
     type: Literal['email', 'phone', 'url', 'text']
@@ -13,11 +16,11 @@ class CustomField(TypedDict):
 
 
 class Basic(TypedDict):
-    name: str
-    headline: str
+    name: InlineText
+    headline: InlineText
     phone: str
     email: str
-    location: str
+    location: InlineText
     avatar: str
     summary: str
     customFields: list[CustomField]
@@ -25,54 +28,54 @@ class Basic(TypedDict):
 
 class EducationItem(TypedDict):
     id: NodeId
-    school: str
-    degree: str
-    major: str
-    gpa: str
-    location: str
-    period: str
-    description: str
+    school: InlineText
+    degree: InlineText
+    major: InlineText
+    gpa: InlineText
+    location: InlineText
+    period: InlineText
+    description: InlineText
     highlights: list[str]
 
 
 class ExperienceItem(TypedDict):
     id: NodeId
-    company: str
-    position: str
-    location: str
-    period: str
-    description: str
+    company: InlineText
+    position: InlineText
+    location: InlineText
+    period: InlineText
+    description: InlineText
     highlights: list[str]
 
 
 class ProjectItem(TypedDict):
     id: NodeId
-    name: str
-    role: str
-    techStack: list[str]
-    period: str
+    name: InlineText
+    role: InlineText
+    techStack: list[InlineText]
+    period: InlineText
     url: str
-    description: str
+    description: InlineText
     highlights: list[str]
 
 
 class PublicationItem(TypedDict):
     id: NodeId
-    title: str
-    authors: str
-    venue: str
-    date: str
+    title: InlineText
+    authors: InlineText
+    venue: InlineText
+    date: InlineText
     url: str
-    description: str
+    description: InlineText
 
 
 class AchievementItem(TypedDict):
     id: NodeId
-    name: str
-    issuer: str
-    date: str
+    name: InlineText
+    issuer: InlineText
+    date: InlineText
     url: str
-    description: str
+    description: InlineText
 
 
 class SimpleListItem(TypedDict):

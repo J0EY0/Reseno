@@ -3,15 +3,15 @@ import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
-  Bold,
-  Italic,
   List,
   ListOrdered,
   Redo2,
-  Underline as UnderlineIcon,
   Undo2,
 } from "lucide-react";
 import { useEffect, type MouseEvent } from "react";
+
+import { InlineFormatControls } from './inline-format-controls';
+import { resumeTextMarks } from './resume-text-marks';
 
 import type { AppMessages } from "@/i18n";
 import {
@@ -62,6 +62,7 @@ export function RichHighlightsEditor({
           },
         }),
         Underline,
+        ...resumeTextMarks,
         Placeholder.configure({
           placeholder: t.placeholders.highlightItem,
           emptyEditorClass: "is-editor-empty",
@@ -102,7 +103,7 @@ export function RichHighlightsEditor({
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30 transition-colors focus-within:border-ring/50 focus-within:ring-1 focus-within:ring-ring/20">
-      <div className="flex flex-wrap items-center gap-1 border-b border-border/60 bg-muted/25 px-2 py-1">
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-border/60 bg-muted/25 px-2 py-1">
         <Button
           type="button"
           size="icon"
@@ -133,54 +134,7 @@ export function RichHighlightsEditor({
         >
           <Redo2 className="size-4" />
         </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant={editor?.isActive("bold") ? "secondary" : "ghost"}
-          className="size-8"
-          title={t.richTextBold}
-          aria-label={t.richTextBold}
-          onMouseDown={preventToolbarBlur}
-          onClick={() =>
-            runCommand(
-              () => editor?.chain().focus().toggleBold().run() ?? false,
-            )
-          }
-        >
-          <Bold className="size-4" />
-        </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant={editor?.isActive("italic") ? "secondary" : "ghost"}
-          className="size-8"
-          title={t.richTextItalic}
-          aria-label={t.richTextItalic}
-          onMouseDown={preventToolbarBlur}
-          onClick={() =>
-            runCommand(
-              () => editor?.chain().focus().toggleItalic().run() ?? false,
-            )
-          }
-        >
-          <Italic className="size-4" />
-        </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant={editor?.isActive("underline") ? "secondary" : "ghost"}
-          className="size-8"
-          title={t.richTextUnderline}
-          aria-label={t.richTextUnderline}
-          onMouseDown={preventToolbarBlur}
-          onClick={() =>
-            runCommand(
-              () => editor?.chain().focus().toggleUnderline().run() ?? false,
-            )
-          }
-        >
-          <UnderlineIcon className="size-4" />
-        </Button>
+        <InlineFormatControls editor={editor} t={t} />
         <Button
           type="button"
           size="icon"

@@ -36,9 +36,9 @@ export const builtinTemplatePresets = {
       "bodyScale": 0.96,
       "pageBackground": "#ffffff",
       "surfaceColor": "#f8fafc",
-      "headingColor": "#111827",
-      "bodyColor": "#334155",
-      "mutedColor": "#64748b",
+      "headingColor": "#000000",
+      "bodyColor": "#000000",
+      "mutedColor": "#525252",
       "dividerColor": "#202020",
       "dividerThickness": 1
     }
@@ -80,7 +80,7 @@ export const builtinTemplatePresets = {
       "surfaceColor": "#f8fafc",
       "headingColor": "#2563eb",
       "bodyColor": "#000000",
-      "mutedColor": "#71717a",
+      "mutedColor": "#525252",
       "dividerColor": "#3b82f6",
       "dividerThickness": 1
     }
@@ -121,8 +121,8 @@ export const builtinTemplatePresets = {
       "pageBackground": "#ffffff",
       "surfaceColor": "#be123c",
       "headingColor": "#be123c",
-      "bodyColor": "#18181b",
-      "mutedColor": "#71717a",
+      "bodyColor": "#000000",
+      "mutedColor": "#525252",
       "dividerColor": "#be123c",
       "dividerThickness": 1
     }
@@ -162,9 +162,9 @@ export const builtinTemplatePresets = {
       "bodyScale": 0.95,
       "pageBackground": "#ffffff",
       "surfaceColor": "#f5f5f4",
-      "headingColor": "#1c1917",
-      "bodyColor": "#292524",
-      "mutedColor": "#78716c",
+      "headingColor": "#000000",
+      "bodyColor": "#000000",
+      "mutedColor": "#525252",
       "dividerColor": "#44403c",
       "dividerThickness": 1
     }
@@ -205,8 +205,8 @@ export const builtinTemplatePresets = {
       "pageBackground": "#ffffff",
       "surfaceColor": "#e7f2f0",
       "headingColor": "#0f172a",
-      "bodyColor": "#334155",
-      "mutedColor": "#64748b",
+      "bodyColor": "#000000",
+      "mutedColor": "#525252",
       "dividerColor": "#0f766e",
       "dividerThickness": 1.5
     }
@@ -214,8 +214,8 @@ export const builtinTemplatePresets = {
   "academic": {
     "starter": "research",
     "layout": {
-      "basicInfo": "left",
-      "section": "plain",
+      "basicInfo": "centered",
+      "section": "underlined",
       "timelineItemLayout": "split",
       "listItemLayout": "list",
       "avatarPosition": "none",
@@ -229,27 +229,27 @@ export const builtinTemplatePresets = {
       "images": []
     },
     "typography": {
-      "fontFamily": "serif",
-      "fontSize": 16
+      "fontFamily": "times",
+      "fontSize": 14
     },
     "settings": {
-      "pagePaddingTop": 18,
-      "pagePaddingX": 18,
-      "pagePaddingBottom": 16,
-      "sectionGap": 0.8,
-      "itemGap": 0.6,
-      "bodyLineHeight": 1.45,
-      "nameScale": 1.9,
-      "sectionTitleScale": 1.1,
+      "pagePaddingTop": 14,
+      "pagePaddingX": 15,
+      "pagePaddingBottom": 14,
+      "sectionGap": 1.2,
+      "itemGap": 0.4,
+      "bodyLineHeight": 1.2,
+      "nameScale": 1.6,
+      "sectionTitleScale": 1,
       "itemTitleScale": 1,
-      "metaScale": 0.85,
-      "bodyScale": 0.92,
+      "metaScale": 1,
+      "bodyScale": 1,
       "pageBackground": "#ffffff",
       "surfaceColor": "#f8fafc",
-      "headingColor": "#111827",
-      "bodyColor": "#374151",
-      "mutedColor": "#6b7280",
-      "dividerColor": "#9ca3af",
+      "headingColor": "#000000",
+      "bodyColor": "#000000",
+      "mutedColor": "#000000",
+      "dividerColor": "#000000",
       "dividerThickness": 1
     }
   }

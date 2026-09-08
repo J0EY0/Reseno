@@ -212,7 +212,7 @@ assert.match(
 );
 assert.match(
   settingsRow,
-  /\bsm:min-h-16\b[\s\S]*\bsm:py-3\b/,
+  /\blg:min-h-16\b[\s\S]*\blg:py-3\b/,
   "Settings rows must use the approved compact desktop density.",
 );
 assert.doesNotMatch(
@@ -274,9 +274,9 @@ assert.equal(
   "The default-model Select must retain room for longer values.",
 );
 assert.equal(
-  (agentSettings.match(/className="ml-auto w-44 max-w-full"/g) ?? []).length,
+  (agentSettings.match(/className="ml-auto w-auto min-w-44 max-w-full"/g) ?? []).length,
   1,
-  "The response-language Select must balance compactness and label length.",
+  "The response-language Select must grow to fit translated labels without exceeding its container.",
 );
 for (const [attribute, pattern] of [
   ["align", /align="end"/g],

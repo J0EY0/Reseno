@@ -24,6 +24,7 @@ const supportedFontFamilies: ResumeFontFamily[] = [
   'inter',
   'noto_sans_sc',
   'serif',
+  'times',
   'plex',
 ]
 export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const
@@ -180,6 +181,7 @@ export function createTemplateLayout(
       : defaults.basicInfo
   const section =
     overrides.section === 'ruled' ||
+    overrides.section === 'underlined' ||
     overrides.section === 'boxed' ||
     overrides.section === 'accent' ||
     overrides.section === 'plain' ||
@@ -285,7 +287,7 @@ export function createTemplateSettings(
     itemGap: clampNumber(overrides.itemGap ?? defaults.itemGap, 0.4, 1.8, 0.1),
     bodyLineHeight: clampNumber(
       overrides.bodyLineHeight ?? defaults.bodyLineHeight,
-      1.4,
+      1.1,
       2.2,
       0.05,
     ),

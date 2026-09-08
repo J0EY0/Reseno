@@ -1,12 +1,10 @@
 import json
-import os
 import re
 import secrets
 import shutil
-import tempfile
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any, cast
@@ -25,6 +23,12 @@ from app.services.storage_deletions import (
 from app.services.template_presets import (
     BUILT_IN_TEMPLATE_IDS,
     get_builtin_template_preset,
+)
+from app.services.template_publications import (
+    atomic_write_bytes,
+    publish_template,
+    recover_template_publications,
+    restore_template_bytes,
 )
 from app.services.workspace_state import (
     DEFAULT_TEMPLATE_ID,
@@ -94,46 +98,19 @@ def _write_template_json(template_id: str, template_item: dict[str, Any]) -> Non
     """Write one template JSON file atomically."""
 
     path = _template_path(template_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(
         template_item,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    _replace_template_json(path, content)
-
-
-def _replace_template_json(path: Path, content: bytes) -> None:
-    """Atomically replace one template JSON file without sharing temp paths."""
-
-    descriptor, temp_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "wb") as temp_file:
-            temp_file.write(content)
-        os.replace(temp_path, path)
-    finally:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    atomic_write_bytes(path, content)
 
 
 def _restore_template_json(template_id: str, content: bytes | None) -> None:
     """Restore the file state captured before an uncommitted template write."""
 
-    path = _template_path(template_id)
-    if content is None:
-        path.unlink(missing_ok=True)
-        return
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _replace_template_json(path, content)
+    restore_template_bytes(_template_path(template_id), content)
 
 
 def _read_template_json(template_id: str) -> dict[str, Any]:
@@ -205,6 +182,7 @@ def _load_template_items(
     *,
     deleted: bool,
 ) -> list[dict[str, Any]]:
+    recover_template_publications(conn)
     rows = conn.execute(
         """
         SELECT id, deleted_at, saved_at
@@ -229,6 +207,7 @@ def _load_template_items(
 
 
 def _allocate_template_id(conn: Connection) -> str:
+    recover_template_publications(conn)
     for _ in range(20):
         template_id = _generate_template_id()
         row = conn.execute(
@@ -278,6 +257,7 @@ def _require_custom_template_row(
             detail="Built-in templates cannot be changed.",
         )
 
+    recover_template_publications(conn, safe_template_id)
     row = _template_row(conn, safe_template_id, include_deleted=include_deleted)
     if row is None:
         raise HTTPException(
@@ -318,6 +298,7 @@ def resolve_visible_template(
             detail="TEMPLATE_NOT_FOUND",
         )
 
+    recover_template_publications(conn, safe_template_id)
     return _read_template_json(safe_template_id)
 
 
@@ -382,32 +363,36 @@ def list_templates(status_filter: str = "active") -> dict[str, Any]:
     return result
 
 
+def _next_saved_at(previous: str | None = None) -> str:
+    current = _utc_now()
+    if previous is not None and current <= previous:
+        current = (
+            (datetime.fromisoformat(previous) + timedelta(milliseconds=1))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+    return current
+
+
 def create_template(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a backend-owned custom template."""
 
     with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-        saved_at = _utc_now()
         template_id = _allocate_template_id(conn)
-        path = _template_path(template_id)
-        previous_content = path.read_bytes() if path.exists() else None
+        saved_at = _next_saved_at()
         template_item = _build_template_item(
-            template_id=template_id,
-            payload=payload,
-            saved_at=saved_at,
+            template_id=template_id, payload=payload, saved_at=saved_at
         )
-        try:
-            _save_template_item(
-                conn,
-                template_item=template_item,
-                saved_at=saved_at,
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                _restore_template_json(template_id, previous_content)
-            raise
-
+        publish_template(
+            conn,
+            template_id=template_id,
+            saved_at=saved_at,
+            publish=lambda: _save_template_item(
+                conn, template_item=template_item, saved_at=saved_at
+            ),
+            restore=lambda content: _restore_template_json(template_id, content),
+        )
     return {"template": template_item}
 
 
@@ -415,30 +400,22 @@ def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]
     """Replace one active custom template."""
 
     safe_template_id = _validate_template_id(template_id.strip())
-    path = _template_path(safe_template_id)
     with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-        saved_at = _utc_now()
-        previous_content = path.read_bytes() if path.exists() else None
-        try:
-            row = _require_custom_template_row(conn, safe_template_id)
-            template_item = _build_template_item(
-                template_id=row["id"],
-                payload=payload,
-                saved_at=saved_at,
-            )
-
-            _save_template_item(
-                conn,
-                template_item=template_item,
-                saved_at=saved_at,
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                _restore_template_json(safe_template_id, previous_content)
-            raise
-
+        row = _require_custom_template_row(conn, safe_template_id)
+        saved_at = _next_saved_at(row["saved_at"])
+        template_item = _build_template_item(
+            template_id=row["id"], payload=payload, saved_at=saved_at
+        )
+        publish_template(
+            conn,
+            template_id=safe_template_id,
+            saved_at=saved_at,
+            publish=lambda: _save_template_item(
+                conn, template_item=template_item, saved_at=saved_at
+            ),
+            restore=lambda content: _restore_template_json(safe_template_id, content),
+        )
     return {"template": template_item}
 
 
@@ -448,11 +425,12 @@ def trash_template(template_id: str) -> dict[str, Any]:
     # Imported locally because resume commands validate templates through this
     # module. The lifecycle command owns both updates in one SQLite transaction.
     from app.services.resumes import (
+        ResumeTemplateRebindResult,
         cleanup_resume_version_files,
         rebind_current_resume_template_references,
     )
 
-    rebind_result = None
+    rebind_result = ResumeTemplateRebindResult()
     try:
         with closing(connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -469,11 +447,12 @@ def trash_template(template_id: str) -> dict[str, Any]:
                 for locale in DOCUMENT_LOCALES
             }
 
-            rebind_result = rebind_current_resume_template_references(
+            rebind_current_resume_template_references(
                 conn,
                 source_template_id=row["id"],
                 target_template_ids=fallback_template_ids,
                 saved_at=deleted_at,
+                writes=rebind_result,
             )
             for locale in DOCUMENT_LOCALES:
                 selected_default_template_id = default_template_ids[locale]
@@ -491,11 +470,9 @@ def trash_template(template_id: str) -> dict[str, Any]:
             )
             conn.execute("COMMIT")
     except Exception:
-        if rebind_result is not None:
-            cleanup_resume_version_files(rebind_result.created_versions)
+        cleanup_resume_version_files(rebind_result.created_versions)
         raise
 
-    assert rebind_result is not None
     cleanup_resume_version_files(rebind_result.obsolete_autosaves)
     return {
         "template": {

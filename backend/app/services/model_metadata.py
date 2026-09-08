@@ -1,26 +1,39 @@
+import asyncio
 import json
+import logging
 import os
-import re
 import tempfile
-import urllib.error
-import urllib.request
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any
 
+import httpx
+
 from app.config import get_settings
+from app.services.model_context_reference import (
+    ModelContextReference,
+    normalize_base_context_models,
+    normalize_ollama_context_models,
+    resolve_context_reference,
+    valid_context_models,
+)
 
 MODEL_METADATA_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/"
     "model_prices_and_context_window.json"
 )
-MODEL_REASONING_METADATA_URL = "https://models.dev/api.json"
+MODEL_REASONING_METADATA_URL = "https://models.dev/catalog.json"
 MODEL_METADATA_CACHE_NAME = "model-metadata/model_capabilities.json"
-MODEL_METADATA_FETCH_TIMEOUT_SECONDS = 1.5
+MODEL_METADATA_FETCH_TIMEOUT_SECONDS = 15
+MODEL_METADATA_REFRESH_INTERVAL_SECONDS = 60 * 60
+MODEL_METADATA_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+MODEL_METADATA_SNAPSHOT_PATH = Path(__file__).with_name("model_metadata_snapshot.json")
 MODEL_METADATA_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
-MODEL_METADATA_CACHE_VERSION = 3
+MODEL_METADATA_CACHE_VERSION = 6
 MODEL_METADATA_CACHE_SOURCE = "litellm:model_prices_and_context_window+models.dev"
 
 LITELLM_PROVIDER_ALIASES: dict[str, set[str]] = {
@@ -30,29 +43,27 @@ LITELLM_PROVIDER_ALIASES: dict[str, set[str]] = {
     "deepseek": {"deepseek"},
     "qwen": {"dashscope", "qwen"},
     "minimax": {"minimax"},
-    "glm": {"bigmodel", "zhipu", "zhipuai"},
+    "glm": {"bigmodel", "zhipu", "zhipuai", "zai"},
     "moonshot": {"moonshot"},
     "xai": {"xai"},
 }
 
-# models.dev provider ids are normalized here so its reasoning controls can
-# enrich the same Reseno provider/model seam used by discovery. This source
-# supplies only explicit Off capability; token limits and other runtime facts
-# continue to come from provider responses and LiteLLM.
 MODELS_DEV_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "openai": ("openai",),
     "anthropic": ("anthropic",),
     "google": ("google",),
     "deepseek": ("deepseek",),
-    "qwen": ("alibaba",),
-    "minimax": ("minimax",),
-    "glm": ("zai",),
+    "qwen": ("alibaba-cn",),
+    "minimax": ("minimax-cn",),
+    "glm": ("zhipuai",),
     "moonshot": ("moonshotai",),
     "xai": ("xai",),
 }
 
 _CATALOG_CACHE: dict[str, Any] | None = None
 _CATALOG_CACHE_LOCK = RLock()
+_REFRESH_LOCK = Lock()
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,7 @@ class ModelMetadata:
 
     context_window_tokens: int | None = None
     max_output_tokens: int | None = None
+    shared_context_window_tokens: int | None = None
     supports_image: bool | None = None
     supports_thinking: bool | None = None
     can_disable_thinking: bool | None = None
@@ -69,10 +81,30 @@ class ModelMetadata:
     supports_web_search: bool | None = None
 
 
+def is_provider_model(provider: str, model: str) -> bool:
+    """Return whether a model belongs in the provider's model catalog."""
+
+    return provider.strip().casefold() != "qwen" or model.strip().casefold().startswith(
+        ("qwen", "qwq", "qvq"),
+    )
+
+
 def resolve_model_metadata(provider: str, model: str) -> ModelMetadata | None:
     """Return cached normalized metadata for one provider/model pair."""
 
     return resolve_models_metadata(provider, [model]).get(model)
+
+
+def resolve_model_context_reference(provider: str, model: str) -> ModelContextReference:
+    """Read a model's reference context limit without querying its deployment."""
+
+    cache = _load_cache()
+    return resolve_context_reference(
+        provider,
+        model,
+        _cache_catalog(cache, "modelsDev").get("contextModels", {}),
+        _cache_catalog(cache, "litellm").get("contextModels", {}),
+    )
 
 
 def resolve_models_metadata(
@@ -83,7 +115,9 @@ def resolve_models_metadata(
 
     provider_key = provider.strip().lower()
     model_keys = {
-        model: _normalize_model_name(model) for model in models if model.strip()
+        model: _normalize_model_name(model)
+        for model in models
+        if model.strip() and is_provider_model(provider_key, model)
     }
     if not provider_key or not model_keys:
         return {}
@@ -105,88 +139,127 @@ def resolve_models_metadata(
     return result
 
 
-def ensure_model_metadata_cache() -> bool:
-    """Ensure the lightweight provider metadata cache exists when possible."""
+@asynccontextmanager
+async def model_metadata_lifespan() -> AsyncIterator[None]:
+    """Load local model facts and refresh expired sources in the background."""
 
-    with _CATALOG_CACHE_LOCK:
+    _load_cache()
+    task = asyncio.create_task(_refresh_loop(), name="model-metadata-refresh")
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _refresh_loop() -> None:
+    while True:
+        await refresh_model_metadata_cache()
+        await asyncio.sleep(MODEL_METADATA_REFRESH_INTERVAL_SECONDS)
+
+
+async def refresh_model_metadata_cache() -> bool:
+    """Refresh expired sources once, retaining usable facts on failure."""
+
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        return False
+    try:
         cached = _load_cache()
-        if cached and _cache_sources_are_fresh(cached):
-            return True
-
-    return refresh_model_metadata_cache() or bool(cached)
-
-
-def ensure_provider_model_metadata(provider: str, model_ids: list[str]) -> bool:
-    """Refresh one provider's lightweight metadata when current cache misses models.
-
-    Provider discovery must not fail because either supplemental catalog is
-    unavailable. This helper therefore returns a best-effort boolean and never
-    raises for refresh failures; callers still return provider-discovered models.
-    """
-
-    provider_key = provider.strip().lower()
-    normalized_targets = {
-        _normalize_model_name(model_id) for model_id in model_ids if model_id.strip()
-    }
-    if not provider_key or not normalized_targets:
-        return False
-
-    cache = _load_cache()
-    provider_models = _cache_provider_models(cache, provider_key)
-    cached_names = {_normalize_model_name(model_id) for model_id in provider_models}
-    has_miss = not normalized_targets.issubset(cached_names)
-    if provider_models and not has_miss and _cache_sources_are_fresh(cache):
-        return True
-
-    return refresh_model_metadata_cache(provider=provider_key)
-
-
-def refresh_model_metadata_cache(provider: str | None = None) -> bool:
-    """Fetch supplemental catalogs and persist Reseno's lightweight subset."""
-
-    raw_catalog = _fetch_catalog()
-    reasoning_catalog = _fetch_reasoning_catalog()
-    if not raw_catalog and not reasoning_catalog:
-        return False
-
-    provider_key = provider.strip().lower() if provider else None
-    with _CATALOG_CACHE_LOCK:
-        existing = _load_cache()
-        litellm_providers = dict(_cache_catalog_providers(existing, "litellm"))
-        reasoning_providers = dict(_cache_catalog_providers(existing, "modelsDev"))
-        litellm_fetched_at = _cache_catalog_fetched_at(existing, "litellm")
-        reasoning_fetched_at = _cache_catalog_fetched_at(existing, "modelsDev")
-        fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
-        update_litellm = bool(raw_catalog) and (
-            provider_key is None
-            or bool(_provider_models_from_catalog(raw_catalog, provider_key))
+        sources = [
+            source
+            for source in ("litellm", "modelsDev")
+            if not _cache_catalog_is_fresh(cached, source)
+        ]
+        updates = await asyncio.gather(
+            *(_refresh_catalog(source) for source in sources)
         )
-        update_reasoning = bool(reasoning_catalog) and (
-            provider_key is None
-            or _reasoning_catalog_has_provider(reasoning_catalog, provider_key)
-        )
-        if not update_litellm and not update_reasoning:
+        if not any(updates):
             return False
-        if update_litellm:
-            litellm_providers = _litellm_providers_from_catalog(raw_catalog)
-            litellm_fetched_at = fetched_at
-        if update_reasoning:
-            reasoning_providers = _reasoning_providers_from_catalog(
-                reasoning_catalog,
+        with _CATALOG_CACHE_LOCK:
+            current = _load_cache()
+            catalogs = {
+                source: _cache_catalog(current, source)
+                for source in ("litellm", "modelsDev")
+            }
+            for source, update in zip(sources, updates, strict=True):
+                if update is not None:
+                    catalogs[source] = update
+            next_cache = _new_cache(
+                catalogs["litellm"].get("providers", {}),
+                catalogs["litellm"].get("fetchedAt"),
+                catalogs["modelsDev"].get("providers", {}),
+                catalogs["modelsDev"].get("fetchedAt"),
+                litellm_context_models=catalogs["litellm"].get("contextModels", {}),
+                base_context_models=catalogs["modelsDev"].get("contextModels", {}),
             )
-            reasoning_fetched_at = fetched_at
-        next_cache = _new_cache(
-            litellm_providers,
-            litellm_fetched_at,
-            reasoning_providers,
-            reasoning_fetched_at,
-        )
-        if not _cache_has_models(next_cache):
-            return False
-
-        _write_cache(next_cache)
-        _set_memory_cache(next_cache)
+            try:
+                _write_cache(next_cache)
+            except OSError:
+                _LOGGER.warning("Model metadata cache could not be persisted.")
+            _set_memory_cache(next_cache)
         return True
+    finally:
+        _REFRESH_LOCK.release()
+
+
+async def _refresh_catalog(source: str) -> dict[str, Any] | None:
+    raw = await (
+        _fetch_catalog() if source == "litellm" else _fetch_reasoning_catalog()
+    )
+    try:
+        return _build_catalog(source, raw, datetime.now(UTC).isoformat())
+    except ValueError:
+        return None
+
+
+def build_model_metadata_snapshot(
+    litellm: dict[str, Any],
+    reasoning: dict[str, Any],
+    *,
+    fetched_at: str,
+) -> dict[str, Any]:
+    """Normalize both upstream catalogs into the distributable model snapshot."""
+
+    if _parse_fetched_at(fetched_at) is None:
+        raise ValueError("Model metadata snapshot timestamp is invalid.")
+    return {
+        "version": MODEL_METADATA_CACHE_VERSION,
+        "source": MODEL_METADATA_CACHE_SOURCE,
+        "catalogs": {
+            "litellm": _build_catalog("litellm", litellm, fetched_at),
+            "modelsDev": _build_catalog("modelsDev", reasoning, fetched_at),
+        },
+    }
+
+
+def _build_catalog(source: str, raw: dict[str, Any], fetched_at: str) -> dict[str, Any]:
+    providers = _normalize_catalog(source, raw)
+    context_models = (
+        normalize_ollama_context_models(raw)
+        if source == "litellm"
+        else normalize_base_context_models(raw.get("models"))
+    )
+    return {
+        "fetchedAt": fetched_at,
+        "providers": providers,
+        "contextModels": context_models,
+    }
+
+
+def _normalize_catalog(source: str, raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("Model metadata catalog must be an object.")
+    if source == "litellm":
+        providers = _litellm_providers_from_catalog(raw)
+    else:
+        raw_providers = raw.get("providers")
+        if not isinstance(raw_providers, dict):
+            raise ValueError("Model metadata providers must be an object.")
+        providers = _reasoning_providers_from_catalog(raw_providers)
+    if not _valid_providers(providers):
+        raise ValueError("Model metadata catalog contains no usable model facts.")
+    return providers
 
 
 def _litellm_providers_from_catalog(
@@ -223,6 +296,9 @@ def _new_cache(
     litellm_fetched_at: str | None,
     reasoning_providers: dict[str, Any],
     reasoning_fetched_at: str | None,
+    *,
+    litellm_context_models: dict[str, Any] | None = None,
+    base_context_models: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one cache while retaining independent source refresh state."""
 
@@ -233,10 +309,12 @@ def _new_cache(
             "litellm": {
                 "fetchedAt": litellm_fetched_at,
                 "providers": litellm_providers,
+                "contextModels": litellm_context_models or {},
             },
             "modelsDev": {
                 "fetchedAt": reasoning_fetched_at,
                 "providers": reasoning_providers,
+                "contextModels": base_context_models or {},
             },
         },
     }
@@ -247,18 +325,29 @@ def _provider_models_from_catalog(
     provider: str,
 ) -> dict[str, dict[str, Any]]:
     models: dict[str, dict[str, Any]] = {}
-    for source_key, value in raw_catalog.items():
+    for source_key in sorted(
+        raw_catalog,
+        key=lambda key: (
+            _model_id_from_source_key(str(key), provider) != str(key).strip(),
+            str(key),
+        ),
+    ):
+        value = raw_catalog[source_key]
         if source_key == "sample_spec" or not isinstance(value, dict):
             continue
         if not _catalog_item_belongs_to_provider(provider, str(source_key), value):
             continue
 
-        model_id = _model_id_from_source_key(str(source_key))
-        if not model_id:
+        model_id = _model_id_from_source_key(str(source_key), provider)
+        if not model_id or not is_provider_model(provider, model_id):
             continue
         item = _lightweight_item_from_catalog_item(str(source_key), value)
         if item is not None:
-            models[model_id] = item
+            if provider == "anthropic":
+                _set_positive_int(
+                    item, "sharedContextWindowTokens", value.get("max_input_tokens"),
+                )
+            models.setdefault(model_id, item)
 
     return dict(sorted(models.items(), key=lambda entry: entry[0].lower()))
 
@@ -267,7 +356,7 @@ def _provider_models_from_reasoning_catalog(
     raw_catalog: dict[str, Any],
     provider: str,
 ) -> dict[str, dict[str, Any]]:
-    """Extract only explicit Off controls from one models.dev provider entry."""
+    """Extract explicit limits and Off controls from one provider catalog."""
 
     models: dict[str, dict[str, Any]] = {}
     for source_provider in MODELS_DEV_PROVIDER_ALIASES.get(provider, ()):
@@ -282,43 +371,36 @@ def _provider_models_from_reasoning_catalog(
             if not isinstance(value, dict):
                 continue
             can_disable = explicit_thinking_off_capability(value)
-            if can_disable is None:
-                continue
             raw_model_id = value.get("id")
-            model_id = _model_id_from_source_key(
-                raw_model_id if isinstance(raw_model_id, str) else str(source_key),
-            )
-            if not model_id:
+            model_id = (
+                raw_model_id if isinstance(raw_model_id, str) else str(source_key)
+            ).strip()
+            if not model_id or not is_provider_model(provider, model_id):
                 continue
             item: dict[str, Any] = {
                 "sourceKey": f"models.dev:{source_provider}/{source_key}",
-                "canDisableThinking": can_disable,
             }
+            limits = value.get("limit")
+            if isinstance(limits, dict) and provider != "google":
+                _set_positive_int(
+                    item, "sharedContextWindowTokens", limits.get("context"),
+                )
+            _set_optional_bool(item, "canDisableThinking", can_disable)
+            if len(item) == 1:
+                continue
             supports_thinking = _optional_bool(value.get("reasoning"))
-            if supports_thinking is not None:
+            if can_disable is not None and supports_thinking is not None:
                 item["supportsThinking"] = supports_thinking
             models[model_id] = item
 
     return models
 
 
-def _reasoning_catalog_has_provider(
-    raw_catalog: dict[str, Any],
-    provider: str,
-) -> bool:
-    """Return whether a fetched models.dev catalog covers this provider."""
-
-    return any(
-        isinstance(raw_catalog.get(source_provider), dict)
-        for source_provider in MODELS_DEV_PROVIDER_ALIASES.get(provider, ())
-    )
-
-
 def _merge_reasoning_metadata(
     provider_models: dict[str, dict[str, Any]],
     reasoning_models: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Merge models.dev Off facts without replacing LiteLLM capabilities."""
+    """Add models.dev limits and Off facts without replacing LiteLLM facts."""
 
     merged = {model_id: dict(value) for model_id, value in provider_models.items()}
     normalized_ids = {_normalize_model_name(model_id): model_id for model_id in merged}
@@ -326,8 +408,6 @@ def _merge_reasoning_metadata(
         target_id = normalized_ids.get(_normalize_model_name(model_id), model_id)
         existing = merged.get(target_id, {})
         merged[target_id] = {**reasoning, **existing}
-        if "canDisableThinking" in reasoning:
-            merged[target_id]["canDisableThinking"] = reasoning["canDisableThinking"]
     return dict(sorted(merged.items(), key=lambda entry: entry[0].lower()))
 
 
@@ -354,8 +434,11 @@ def _catalog_item_belongs_to_provider(
     return source_prefix in aliases
 
 
-def _model_id_from_source_key(source_key: str) -> str:
-    return source_key.rsplit("/", 1)[-1].strip()
+def _model_id_from_source_key(source_key: str, provider: str) -> str:
+    prefix, separator, model = source_key.strip().partition("/")
+    if separator and prefix.casefold() in LITELLM_PROVIDER_ALIASES.get(provider, set()):
+        return model.strip()
+    return source_key.strip()
 
 
 def _lightweight_item_from_catalog_item(
@@ -372,7 +455,9 @@ def _lightweight_item_from_catalog_item(
         "canDisableThinking",
         explicit_thinking_off_capability(value),
     )
-    _set_optional_bool(item, "supportsStreaming", value.get("supports_streaming"))
+    _set_optional_bool(
+        item, "supportsStreaming", value.get("supports_native_streaming")
+    )
     _set_optional_bool(item, "supportsWebSearch", value.get("supports_web_search"))
 
     supports_tools = _optional_bool(value.get("supports_function_calling"))
@@ -388,6 +473,7 @@ def _metadata_from_lightweight_item(value: dict[str, Any]) -> ModelMetadata | No
     metadata = ModelMetadata(
         context_window_tokens=_positive_int(value.get("contextWindowTokens")),
         max_output_tokens=_positive_int(value.get("maxOutputTokens")),
+        shared_context_window_tokens=_positive_int(value.get("sharedContextWindowTokens")),
         supports_image=_optional_bool(value.get("supportsImage")),
         supports_thinking=_optional_bool(value.get("supportsThinking")),
         can_disable_thinking=_optional_bool(value.get("canDisableThinking")),
@@ -400,6 +486,7 @@ def _metadata_from_lightweight_item(value: dict[str, Any]) -> ModelMetadata | No
         for field in (
             metadata.context_window_tokens,
             metadata.max_output_tokens,
+            metadata.shared_context_window_tokens,
             metadata.supports_image,
             metadata.supports_thinking,
             metadata.can_disable_thinking,
@@ -418,7 +505,29 @@ def _load_cache() -> dict[str, Any]:
 
     with _CATALOG_CACHE_LOCK:
         if _CATALOG_CACHE is None:
-            _CATALOG_CACHE = _read_cache(_cache_path())
+            bundled = _read_cache(MODEL_METADATA_SNAPSHOT_PATH)
+            persisted = _read_cache(_cache_path())
+            catalogs = {}
+            for source in ("litellm", "modelsDev"):
+                candidates = [
+                    _cache_catalog(snapshot, source)
+                    for snapshot in (persisted, bundled)
+                ]
+                catalogs[source] = max(
+                    candidates,
+                    key=lambda catalog: (
+                        _parse_fetched_at(catalog.get("fetchedAt"))
+                        or datetime.min.replace(tzinfo=UTC)
+                    ),
+                )
+            _CATALOG_CACHE = _new_cache(
+                catalogs["litellm"].get("providers", {}),
+                catalogs["litellm"].get("fetchedAt"),
+                catalogs["modelsDev"].get("providers", {}),
+                catalogs["modelsDev"].get("fetchedAt"),
+                litellm_context_models=catalogs["litellm"].get("contextModels", {}),
+                base_context_models=catalogs["modelsDev"].get("contextModels", {}),
+            )
         return _CATALOG_CACHE
 
 
@@ -435,28 +544,77 @@ def _cache_path() -> Path:
 def _read_cache(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {}
-
-    if not isinstance(data, dict):
-        return {}
-    if data.get("version") != MODEL_METADATA_CACHE_VERSION:
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != MODEL_METADATA_CACHE_VERSION
+    ):
         return {}
     catalogs = data.get("catalogs")
     if not isinstance(catalogs, dict):
         return {}
-    if not isinstance(catalogs.get("litellm"), dict):
-        return {}
-    if not isinstance(catalogs.get("modelsDev"), dict):
-        return {}
+    valid = {}
     for source in ("litellm", "modelsDev"):
-        catalog = catalogs[source]
-        if not isinstance(catalog.get("providers"), dict):
-            return {}
-        if not isinstance(catalog.get("fetchedAt"), (str, type(None))):
-            return {}
+        catalog = catalogs.get(source)
+        if (
+            isinstance(catalog, dict)
+            and _parse_fetched_at(catalog.get("fetchedAt")) is not None
+            and _valid_providers(catalog.get("providers"))
+            and valid_context_models(catalog.get("contextModels"))
+        ):
+            valid[source] = catalog
+    return {"catalogs": valid}
 
-    return data
+
+def _valid_providers(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    has_models = False
+    numeric = {"contextWindowTokens", "maxOutputTokens", "sharedContextWindowTokens"}
+    boolean = {
+        "supportsImage",
+        "supportsThinking",
+        "canDisableThinking",
+        "supportsTools",
+        "supportsStreaming",
+        "supportsWebSearch",
+    }
+    for provider, models in value.items():
+        if provider not in LITELLM_PROVIDER_ALIASES or not isinstance(models, dict):
+            return False
+        for model, item in models.items():
+            if (
+                not isinstance(model, str)
+                or not model.strip()
+                or not isinstance(item, dict)
+            ):
+                return False
+            if not item.keys() & (numeric | boolean):
+                return False
+            for key, field in item.items():
+                if key in numeric:
+                    if type(field) is not int or field <= 0:
+                        return False
+                elif key in boolean:
+                    if not isinstance(field, bool):
+                        return False
+                elif key != "sourceKey" or not isinstance(field, str):
+                    return False
+            has_models = True
+    return has_models
+
+
+def _parse_fetched_at(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        fetched = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if fetched.tzinfo is None or fetched > datetime.now(UTC):
+        return None
+    return fetched
 
 
 def _write_cache(cache: dict[str, Any]) -> None:
@@ -486,17 +644,12 @@ def _cache_sources_are_fresh(cache: dict[str, Any]) -> bool:
 
 
 def _cache_catalog_is_fresh(cache: dict[str, Any], source: str) -> bool:
-    fetched_at = _cache_catalog_fetched_at(cache, source)
-    if fetched_at is None:
+    fetched = _parse_fetched_at(_cache_catalog_fetched_at(cache, source))
+    if fetched is None or not _cache_catalog_providers(cache, source):
         return False
-    try:
-        fetched = datetime.fromisoformat(fetched_at)
-    except ValueError:
-        return False
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=UTC)
-    age_seconds = (datetime.now(UTC) - fetched).total_seconds()
-    return 0 <= age_seconds < MODEL_METADATA_CACHE_TTL_SECONDS
+    return (
+        datetime.now(UTC) - fetched
+    ).total_seconds() < MODEL_METADATA_CACHE_TTL_SECONDS
 
 
 def _cache_catalog(cache: dict[str, Any], source: str) -> dict[str, Any]:
@@ -532,85 +685,43 @@ def _cache_provider_models(cache: dict[str, Any], provider: str) -> dict[str, An
     normalized_reasoning_models = (
         reasoning_models if isinstance(reasoning_models, dict) else {}
     )
-    # Token ceilings remain useful conservative fallbacks when a catalog is
-    # stale. Off is different: advertising a removed disable control can make
-    # an accepted user preference execute as reasoning-enabled. Strip only that
-    # capability until the owning source refreshes successfully.
-    if not _cache_catalog_is_fresh(cache, "litellm"):
-        normalized_litellm_models = _without_disable_capability(
-            normalized_litellm_models,
-        )
-    if not _cache_catalog_is_fresh(cache, "modelsDev"):
-        normalized_reasoning_models = _without_disable_capability(
-            normalized_reasoning_models,
-        )
     return _merge_reasoning_metadata(
         normalized_litellm_models,
         normalized_reasoning_models,
     )
 
 
-def _without_disable_capability(
-    provider_models: dict[str, Any],
-) -> dict[str, dict[str, Any]]:
-    """Copy cached models while removing a stale Off declaration."""
-
-    result: dict[str, dict[str, Any]] = {}
-    for model_id, value in provider_models.items():
-        if not isinstance(value, dict):
-            continue
-        item = dict(value)
-        item.pop("canDisableThinking", None)
-        result[model_id] = item
-    return result
+async def _fetch_catalog() -> dict[str, Any]:
+    return await _fetch_json(MODEL_METADATA_URL)
 
 
-def _cache_has_models(cache: dict[str, Any]) -> bool:
-    return any(
-        isinstance(models, dict) and bool(models)
-        for source in ("litellm", "modelsDev")
-        for models in _cache_catalog_providers(cache, source).values()
-    )
+async def _fetch_reasoning_catalog() -> dict[str, Any]:
+    return await _fetch_json(MODEL_REASONING_METADATA_URL)
 
 
-def _fetch_catalog() -> dict[str, Any]:
-    request = urllib.request.Request(
-        MODEL_METADATA_URL,
-        headers={"User-Agent": "Reseno/0.1 model metadata"},
-    )
+async def _fetch_json(url: str) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=MODEL_METADATA_FETCH_TIMEOUT_SECONDS,
-        ) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+        async with asyncio.timeout(MODEL_METADATA_FETCH_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(
+                timeout=MODEL_METADATA_FETCH_TIMEOUT_SECONDS,
+                follow_redirects=True,
+                headers={"User-Agent": "Reseno/0.1 model metadata"},
+            ) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    payload = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        payload.extend(chunk)
+                        if len(payload) > MODEL_METADATA_MAX_DOWNLOAD_BYTES:
+                            return {}
+                data = json.loads(payload)
+    except (httpx.HTTPError, ImportError, OSError, TimeoutError, ValueError):
         return {}
-
-    return data if isinstance(data, dict) else {}
-
-
-def _fetch_reasoning_catalog() -> dict[str, Any]:
-    """Fetch the optional models.dev catalog used for reasoning controls."""
-
-    request = urllib.request.Request(
-        MODEL_REASONING_METADATA_URL,
-        headers={"User-Agent": "Reseno/0.1 model metadata"},
-    )
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=MODEL_METADATA_FETCH_TIMEOUT_SECONDS,
-        ) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
-        return {}
-
     return data if isinstance(data, dict) else {}
 
 
 def _normalize_model_name(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
+    return value.strip().casefold()
 
 
 def _set_positive_int(item: dict[str, Any], key: str, value: Any) -> None:
@@ -626,7 +737,7 @@ def _set_optional_bool(item: dict[str, Any], key: str, value: Any) -> None:
 
 
 def _positive_int(value: Any) -> int | None:
-    if isinstance(value, int) and value > 0:
+    if type(value) is int and value > 0:
         return value
     if isinstance(value, float) and value > 0 and value.is_integer():
         return int(value)
@@ -649,6 +760,9 @@ def explicit_thinking_off_capability(value: dict[str, Any]) -> bool | None:
     effort lists, models.dev-style reasoning options, and Anthropic's nested
     thinking type capability.
     """
+
+    if value.get("thinking_always_on") is True:
+        return False
 
     for key in (
         "supports_none_reasoning_effort",
@@ -675,6 +789,7 @@ def explicit_thinking_off_capability(value: dict[str, Any]) -> bool | None:
         "reasoningOptions",
         "supported_reasoning_efforts",
         "supportedReasoningEfforts",
+        "reasoning_effort_levels",
     ):
         if key not in value:
             continue

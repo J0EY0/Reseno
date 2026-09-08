@@ -91,7 +91,7 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
             kind="tool_done",
             tool={
                 "id": "tool-search",
-                "type": "web_search",
+                "type": "tool-web_search",
                 "state": "output-available",
                 "input": {"query": PRIVATE_PROMPT},
             },
@@ -112,7 +112,7 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
                         "tools": [
                             {
                                 "id": "tool-search",
-                                "type": "web_search",
+                                "type": "tool-web_search",
                                 "title": "web_search",
                                 "state": "output-available",
                                 "input": {"query": PRIVATE_PROMPT},
@@ -159,6 +159,7 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
 
     asyncio.run(agent_runs.AgentRunManager()._execute(run, None))
 
+    assert run.replay_message["tools"][0]["type"] == "tool-web_search"
     summaries = [
         record.getMessage().removeprefix("Agent run summary ")
         for record in caplog.records
@@ -192,7 +193,7 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
             "rejected": 0,
         },
         "edit_batches": [],
-        "tools": "web_search:output-available",
+        "tools": "tool-web_search:output-available",
         "total_tokens": 180,
     }
     assert isinstance(duration_ms, int)

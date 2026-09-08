@@ -1,11 +1,9 @@
-import { Suspense, lazy, useState } from 'react'
+import { Suspense, lazy } from 'react'
 
 import { FieldLegend, FieldSet } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { AppMessages } from '@/i18n'
 import { isRichTextEmpty, serializeHighlightsToHtml } from '@/lib/rich-text'
-import { parseCommaSeparatedItems } from '@/lib/resume-sections'
 
 const RichHighlightsEditor = lazy(() =>
   import('./rich-highlights-editor').then((module) => ({
@@ -100,67 +98,5 @@ export function SimpleContentField({
         />
       </Suspense>
     </FieldSet>
-  )
-}
-
-export function CommaSeparatedInput({
-  id,
-  value,
-  placeholder,
-  onChange,
-}: {
-  id?: string
-  value: string[]
-  placeholder: string
-  onChange: (value: string[]) => void
-}) {
-  const serializedValue = value.join(', ')
-  const [inputState, setInputState] = useState(() => ({
-    draft: serializedValue,
-    publishedValue: serializedValue,
-  }))
-  const displayedValue =
-    inputState.publishedValue === serializedValue
-      ? inputState.draft
-      : serializedValue
-
-  function publishValue(nextDraft: string) {
-    const nextValue = parseCommaSeparatedItems(nextDraft)
-    setInputState({
-      draft: nextDraft,
-      publishedValue: nextValue.join(', '),
-    })
-    onChange(nextValue)
-  }
-
-  return (
-    <Input
-      id={id}
-      value={displayedValue}
-      className={compactResumeFieldClassName}
-      placeholder={placeholder}
-      onFocus={() => {
-        // Adopt an Agent/version update as the next local draft while keeping
-        // our own canonical publishes from disturbing the caret while typing.
-        if (serializedValue !== inputState.publishedValue) {
-          setInputState({
-            draft: serializedValue,
-            publishedValue: serializedValue,
-          })
-        }
-      }}
-      onChange={(event) => {
-        publishValue(event.target.value)
-      }}
-      onBlur={(event) => {
-        const normalizedValue = parseCommaSeparatedItems(event.currentTarget.value)
-        const normalizedDraft = normalizedValue.join(', ')
-        setInputState({
-          draft: normalizedDraft,
-          publishedValue: normalizedDraft,
-        })
-        onChange(normalizedValue)
-      }}
-    />
   )
 }

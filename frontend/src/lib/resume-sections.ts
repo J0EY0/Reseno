@@ -1,4 +1,4 @@
-import { stripRichText } from '@/lib/rich-text'
+import { getRichTextPlainText, joinInlineText } from '@/lib/rich-text'
 import type {
   AchievementItem,
   EducationItem,
@@ -294,14 +294,7 @@ export function createResumeSection(kind: SectionKind): ResumeSection {
 }
 
 function hasText(values: string[]) {
-  return values.some((value) => stripRichText(value).trim())
-}
-
-export function parseCommaSeparatedItems(value: string) {
-  return value
-    .split(/[,，]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+  return values.some((value) => getRichTextPlainText(value).trim())
 }
 
 export function hasSectionItemContent(
@@ -470,7 +463,7 @@ export function projectResumeSection(
             id: item.id,
             title: item.name,
             subtitle: item.role,
-            meta: item.techStack.join(' · '),
+            meta: joinInlineText(item.techStack, ' · '),
             period: item.period,
             description: item.description,
             highlights: item.highlights,

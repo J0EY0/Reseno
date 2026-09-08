@@ -210,6 +210,7 @@ export function useAgentConversation({
   return {
     applyAgentDraft,
     discardAgentDraft,
+    runAgentDraftDecision,
     isSessionReady: isConversationReady,
     messages,
     requestPhase,

@@ -17,12 +17,14 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from app.db.connection import connect
+from app.routers.upload_route import LimitedUploadRoute
 from app.schemas.agent import (
     AgentAttachmentResponse,
     AgentChatRequest,
     AgentDraftDecisionRequest,
     AgentDraftDecisionResponse,
     AgentRunResponse,
+    AgentSessionRecoveryResponse,
     AgentSessionReplaceRequest,
     AgentSessionResponse,
 )
@@ -63,7 +65,7 @@ from app.services.agent_sessions import (
 from app.services.llm import LlmThinkingModeUnsupportedError
 from app.services.user_preferences import load_agent_settings
 
-router = APIRouter(prefix="/api/agent", tags=["agent"])
+router = APIRouter(prefix="/api/agent", tags=["agent"], route_class=LimitedUploadRoute)
 
 
 def _agent_transport_error(
@@ -416,22 +418,27 @@ async def post_agent_chat(
 
 
 @router.get(
-    "/resumes/{resume_id}/run",
-    response_model=ApiResponse[AgentRunResponse | None],
+    "/resumes/{resume_id}/recovery",
+    response_model=ApiResponse[AgentSessionRecoveryResponse],
 )
-async def get_active_agent_run(
+async def get_agent_session_recovery(
     http_request: Request,
     resume_id: str,
-) -> ApiResponse[AgentRunResponse | None]:
-    """Return the reconnectable active run for one resume, if present."""
+) -> ApiResponse[AgentSessionRecoveryResponse] | JSONResponse:
+    """Restore durable history and its matching reconnectable run together."""
 
     if not is_valid_resume_id(resume_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=APP_MESSAGE_BAD_REQUEST,
         )
-    run = await _run_manager(http_request).active_for_resume(resume_id)
-    return ok_response(run.response() if run else None)
+    try:
+        recovery = await _run_manager(http_request).recover_session(resume_id)
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from exc
+    except AgentSessionDataError:
+        return _agent_session_data_error()
+    return ok_response(recovery)
 
 
 @router.get("/runs/{run_id}/events")

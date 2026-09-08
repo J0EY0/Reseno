@@ -205,9 +205,9 @@ def _encrypted_pdf() -> bytes:
 @pytest.mark.parametrize(
     ("filename", "expected_filename", "case_id"),
     [
-        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf", "underscore"),
-        ("John-Smith-CV.pdf", "[redacted_name]-CV.pdf", "hyphen"),
-        ("John.Smith.CV.pdf", "[redacted_name].CV.pdf", "period"),
+        ("John_Smith_CV.pdf", "[redacted_identity_0]_CV.pdf", "underscore"),
+        ("John-Smith-CV.pdf", "[redacted_identity_0]-CV.pdf", "hyphen"),
+        ("John.Smith.CV.pdf", "[redacted_identity_0].CV.pdf", "period"),
     ],
 )
 def test_current_attachment_filename_hides_resume_name(
@@ -1901,9 +1901,9 @@ def test_supported_native_pdf_uses_original_bytes(client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("source_stem", "expected_stem", "case_id"),
     [
-        ("John_Smith_CV", "[redacted_name]_CV", "underscore"),
-        ("John-Smith-CV", "[redacted_name]-CV", "hyphen"),
-        ("John.Smith.CV", "[redacted_name].CV", "period"),
+        ("John_Smith_CV", "[redacted_identity_0]_CV", "underscore"),
+        ("John-Smith-CV", "[redacted_identity_0]-CV", "hyphen"),
+        ("John.Smith.CV", "[redacted_identity_0].CV", "period"),
     ],
 )
 @pytest.mark.parametrize(
@@ -1966,9 +1966,9 @@ def test_native_attachment_filename_hides_resume_name_without_changing_bytes(
 @pytest.mark.parametrize(
     ("filename", "expected_filename", "case_id"),
     [
-        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf", "underscore"),
-        ("John-Smith-CV.pdf", "[redacted_name]-CV.pdf", "hyphen"),
-        ("John.Smith.CV.pdf", "[redacted_name].CV.pdf", "period"),
+        ("John_Smith_CV.pdf", "[redacted_identity_0]_CV.pdf", "underscore"),
+        ("John-Smith-CV.pdf", "[redacted_identity_0]-CV.pdf", "hyphen"),
+        ("John.Smith.CV.pdf", "[redacted_identity_0].CV.pdf", "period"),
     ],
 )
 def test_historical_native_attachment_filename_hides_resume_name_without_bytes(

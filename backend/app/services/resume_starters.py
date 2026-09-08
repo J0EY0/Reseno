@@ -29,7 +29,7 @@ _STARTER_SECTIONS: dict[str, tuple[SectionSpec, ...]] = {
         ("experience", {"zh": "高管经历", "en": "Executive Experience"}),
         ("project", {"zh": "代表性转型项目", "en": "Selected Transformation"}),
         ("achievement", {"zh": "董事会与行业参与", "en": "Board & Advisory"}),
-        ("simple_list", {"zh": "领导力能力", "en": "Leadership Capabilities"}),
+        ("simple_list", {"zh": "领导能力", "en": "Leadership Capabilities"}),
         ("education", {"zh": "", "en": ""}),
     ),
     "research": (

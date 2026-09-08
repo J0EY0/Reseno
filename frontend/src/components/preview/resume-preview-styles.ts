@@ -12,6 +12,8 @@ const fontFamilyMap: Record<ResumeFontFamily, string> = {
     '"Noto Sans SC Variable","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
   serif:
     '"Noto Serif SC Variable","Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif',
+  times:
+    '"Times New Roman",Times,"Liberation Serif","Noto Serif SC Variable","Noto Serif SC",serif',
   plex:
     '"IBM Plex Sans Variable","IBM Plex Sans","Noto Sans SC Variable","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
 };
@@ -40,6 +42,7 @@ export function createResumePreviewStyles({
   };
   const sharedStyles: CSSProperties = {
     ...colorVariables,
+    ["--resume-name-tracking" as string]: fontFamily === "times" ? "0" : "-0.04em",
     backgroundColor: settings.pageBackground,
     color: settings.bodyColor,
     fontFamily: fontStack,

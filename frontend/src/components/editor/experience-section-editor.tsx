@@ -1,8 +1,7 @@
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import type { ExperienceItem } from '@/types/resume'
 
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
 import { ResumeItemEditorShell } from './resume-item-editor-shell'
 import {
   HighlightsField,
@@ -49,44 +48,54 @@ export function ExperienceSectionEditor({
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.company}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.company}
             value={item.company}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.company}
-            onChange={(event) => updateItem(item, { company: event.target.value })}
+            onChange={(value) => updateItem(item, { company: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.position}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.position}
             value={item.position}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.position}
-            onChange={(event) => updateItem(item, { position: event.target.value })}
+            onChange={(value) => updateItem(item, { position: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.location}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.location}
             value={item.location}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.location}
-            onChange={(event) => updateItem(item, { location: event.target.value })}
+            onChange={(value) => updateItem(item, { location: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.period}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.period}
             value={item.period}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.period}
-            onChange={(event) => updateItem(item, { period: event.target.value })}
+            onChange={(value) => updateItem(item, { period: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.description} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.description}
+            multiline
             value={item.description}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.description}
-            onChange={(event) => updateItem(item, { description: event.target.value })}
+            onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
         <HighlightsField

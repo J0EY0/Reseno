@@ -15,6 +15,7 @@ from app.schemas.agent import (
 )
 from app.services.agent.adapters.web import WebToolAdapter
 from app.services.agent.integrations import web as agent_web
+from app.services.agent.integrations.web_network import safe_web_target_addresses
 from app.services.agent.runtime.context import AgentRuntimeContext
 from app.services.llm import LlmToolCall
 
@@ -693,6 +694,14 @@ def test_web_search_renders_a_result_when_static_html_is_only_site_chrome(
 
 def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
     launch_options: dict[str, object] = {}
+    cleanup = []
+
+    class Proxy:
+        async def start(self) -> str:
+            return "socks5://127.0.0.1:1080"
+
+        async def close(self) -> None:
+            cleanup.append("proxy")
 
     class Chromium:
         async def launch(self, **options: object):
@@ -703,7 +712,7 @@ def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
         chromium = Chromium()
 
         async def stop(self) -> None:
-            return None
+            cleanup.append("playwright")
 
     class PlaywrightContext:
         async def start(self):
@@ -715,6 +724,8 @@ def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
         lambda: PlaywrightContext(),
     )
 
+    monkeypatch.setattr(agent_web, "PublicWebProxy", Proxy)
+
     rendered = asyncio.run(
         agent_web._async_render_web_references(
             [("https://jobs.example/positions/7", "frontend", "Frontend")],
@@ -722,7 +733,29 @@ def test_dynamic_renderer_uses_playwright_managed_chromium(monkeypatch) -> None:
     )
 
     assert rendered == {}
-    assert launch_options == {"headless": True}
+    assert launch_options == {
+        "headless": True,
+        "proxy": {"server": "socks5://127.0.0.1:1080", "bypass": "<-loopback>"},
+        "args": [
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ],
+    }
+    assert cleanup == ["playwright", "proxy"]
+
+
+def test_dynamic_renderer_handles_unavailable_proxy(monkeypatch) -> None:
+    class Proxy:
+        async def start(self) -> str:
+            raise OSError("Loopback unavailable")
+
+    monkeypatch.setattr(agent_web, "PublicWebProxy", Proxy)
+    rendered = asyncio.run(
+        agent_web._async_render_web_references(
+            [("https://jobs.example/positions/7", "frontend", "Frontend")],
+        ),
+    )
+    assert rendered == {}
 
 
 def test_dynamic_renderer_waits_for_relevant_job_content() -> None:
@@ -796,7 +829,23 @@ def test_dynamic_renderer_waits_for_relevant_job_content() -> None:
 
 
 def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
-    calls = {"start": 0, "launch": 0, "new_context": 0, "close": 0, "stop": 0}
+    calls = {
+        "start": 0,
+        "launch": 0,
+        "new_context": 0,
+        "close": 0,
+        "stop": 0,
+        "proxy_start": 0,
+        "proxy_close": 0,
+    }
+
+    class Proxy:
+        async def start(self) -> str:
+            calls["proxy_start"] += 1
+            return "socks5://127.0.0.1:1080"
+
+        async def close(self) -> None:
+            calls["proxy_close"] += 1
 
     class Context:
         async def close(self) -> None:
@@ -814,6 +863,10 @@ def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
 
     class Chromium:
         async def launch(self, **_options: object) -> Browser:
+            assert _options["proxy"] == {
+                "server": "socks5://127.0.0.1:1080",
+                "bypass": "<-loopback>",
+            }
             calls["launch"] += 1
             return Browser()
 
@@ -829,6 +882,7 @@ def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
             return Playwright()
 
     monkeypatch.setattr(agent_web, "async_playwright", lambda: PlaywrightContext())
+    monkeypatch.setattr(agent_web, "PublicWebProxy", Proxy)
 
     async def scenario() -> None:
         browser = agent_web.WebBrowser()
@@ -844,6 +898,8 @@ def test_web_browser_reuses_one_lazy_context_for_the_turn(monkeypatch) -> None:
         "new_context": 1,
         "close": 1,
         "stop": 1,
+        "proxy_start": 1,
+        "proxy_close": 1,
     }
 
 
@@ -1247,11 +1303,11 @@ def test_web_network_allows_tun_fake_ip_only_after_public_hostname_resolution(
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
-    assert agent_web._safe_web_target_addresses(
+    assert safe_web_target_addresses(
         "https://html.duckduckgo.com/html/",
-    ) == frozenset({"198.18.0.157"})
+    ) == ("198.18.0.157",)
     assert (
-        agent_web._safe_web_target_addresses(
+        safe_web_target_addresses(
             "https://198.18.0.157/private",
         )
         is None
@@ -1522,7 +1578,7 @@ def test_web_search_sanitizes_query_and_reuses_result_context_for_fetch(
         hidden_terms=("王小明",),
     )
     result_url = "https://careers.example/jobs/frontend-intern"
-    safe_query = "[redacted_name] [redacted_email] 前端实习 JD"
+    safe_query = "[redacted_identity_0] [redacted_email] 前端实习 JD"
     seen_queries: list[tuple[str, str | None, tuple[str, ...]]] = []
 
     async def fake_search(
@@ -1668,11 +1724,18 @@ def test_web_search_observation_distributes_reference_passage_budget(
     )
 
 
+@pytest.mark.parametrize(
+    ("prompt", "expected_query"),
+    [
+        ("请搜索上海的前端实习岗位。", "上海 [redacted_identity_0] 前端实习"),
+        ("请搜索王小明的前端实习岗位。", "[redacted_identity_1] 王小明 前端实习"),
+    ],
+)
 def test_web_search_keeps_hidden_terms_explicitly_entered_in_current_prompt(
-    monkeypatch,
+    monkeypatch, prompt, expected_query,
 ) -> None:
     adapter = _web_adapter(
-        prompt="请搜索上海的前端实习岗位。",
+        prompt=prompt,
         hidden_terms=("王小明", "上海"),
     )
     seen_queries: list[str] = []
@@ -1699,7 +1762,7 @@ def test_web_search_keeps_hidden_terms_explicitly_entered_in_current_prompt(
     )
 
     assert tool.state == "output-available"
-    assert seen_queries == ["上海 [redacted_name] 前端实习"]
+    assert seen_queries == [expected_query]
 
 
 def test_web_search_drops_results_whose_url_would_leak_hidden_terms(

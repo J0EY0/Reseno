@@ -1,5 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouteError } from "react-router-dom";
+
+import { defaultLocale, getLoadedMessages, getMessagesSync, getSystemLocale } from "@/i18n";
+import { loadLocalePreferenceApi } from "@/lib/preference-api";
 
 import {
   getApplicationRouteErrorDetails,
@@ -8,6 +11,16 @@ import {
 
 export function AppRouteErrorPage() {
   const error = useRouteError();
+  const [locale] = useState(() => {
+    let preferredLocale = getSystemLocale();
+    try {
+      preferredLocale = loadLocalePreferenceApi() ?? preferredLocale;
+    } catch {
+      return getLoadedMessages(preferredLocale) ? preferredLocale : defaultLocale;
+    }
+    return getLoadedMessages(preferredLocale) ? preferredLocale : defaultLocale;
+  });
+  const messages = getMessagesSync(locale);
   const details = getApplicationRouteErrorDetails(error);
   const isDynamicImportError = details.kind === "dynamic-import";
 
@@ -19,40 +32,42 @@ export function AppRouteErrorPage() {
   }, [error, isDynamicImportError]);
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-background p-6">
+    <main lang={locale === "zh" ? "zh-CN" : "en"} className="flex min-h-svh w-screen items-center justify-center bg-background p-6">
       <section
         role="alert"
         className="w-full max-w-md rounded-(--radius-card) border border-border bg-card p-8 text-center shadow-card"
       >
         <h1 className="text-xl font-semibold text-foreground">
-          {isDynamicImportError ? "页面资源加载失败" : "页面运行出错"}
+          {isDynamicImportError
+            ? messages.routeResourceLoadErrorTitle
+            : messages.routeRuntimeErrorTitle}
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
           {isDynamicImportError
-            ? "页面模块仍未能从服务器加载，请确认服务正常后再重试。"
-            : "页面执行过程中发生错误，请返回简历页或重新加载后重试。"}
+            ? messages.routeResourceLoadErrorDescription
+            : messages.routeRuntimeErrorDescription}
         </p>
         {details.message ? (
           <p className="mt-4 break-words rounded-lg bg-muted px-3 py-2 text-left font-mono text-xs leading-5 text-muted-foreground">
             {details.message}
           </p>
         ) : null}
-        <div className="mt-6 flex flex-wrap justify-center gap-3">
+        <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row sm:flex-wrap">
           {window.location.pathname !== "/resume" ? (
             <button
               type="button"
-              className="inline-flex h-10 items-center justify-center rounded-md border border-border bg-background px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              className="inline-flex min-h-10 min-w-0 items-center justify-center whitespace-normal break-words rounded-md border border-border bg-background px-5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               onClick={() => window.location.assign("/resume")}
             >
-              返回我的简历
+              {messages.backToResumes}
             </button>
           ) : null}
           <button
             type="button"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            className="inline-flex min-h-10 min-w-0 items-center justify-center whitespace-normal break-words rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             onClick={() => window.location.reload()}
           >
-            重新加载
+            {messages.reloadPage}
           </button>
         </div>
       </section>

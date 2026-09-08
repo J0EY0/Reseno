@@ -8,6 +8,8 @@ from app.schemas.model_configs import (
     DiscoveredModelResponse,
     DiscoverModelsRequest,
     DiscoverModelsResponse,
+    ModelContextReferenceRequest,
+    ModelContextReferenceResponse,
     ModelProviderResponse,
     ModelProvidersResponse,
 )
@@ -16,6 +18,7 @@ from app.services.model_discovery_cache import (
     read_cached_provider_models,
     write_cached_provider_models,
 )
+from app.services.model_metadata import resolve_model_context_reference
 from app.services.model_providers import (
     ModelDiscoveryError,
     discover_provider_models,
@@ -49,6 +52,30 @@ def get_model_providers() -> ApiResponse[ModelProvidersResponse]:
     ]
 
     return ok_response(ModelProvidersResponse(providers=providers))
+
+
+@router.post(
+    "/context-window",
+    response_model=ApiResponse[ModelContextReferenceResponse],
+)
+def get_model_context_reference(
+    request: ModelContextReferenceRequest,
+) -> ApiResponse[ModelContextReferenceResponse]:
+    """Look up a local catalog reference without querying the model service."""
+
+    provider = get_model_provider(request.provider)
+    if provider is None or provider.kind not in {"local", "custom"}:
+        raise HTTPException(status_code=400, detail="MODEL_METADATA_LOOKUP_FAILED")
+
+    reference = resolve_model_context_reference(provider.id, request.model)
+    return ok_response(
+        ModelContextReferenceResponse(
+            status=reference.status,
+            contextWindowTokens=reference.context_window_tokens,
+            matchedModel=reference.matched_model,
+            source=reference.source,
+        ),
+    )
 
 
 @router.post("/discover-models", response_model=ApiResponse[DiscoverModelsResponse])

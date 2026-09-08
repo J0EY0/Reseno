@@ -4,6 +4,7 @@ import type { ChangeEvent } from 'react'
 import type { AppMessages } from '@/i18n'
 import { normalizeContactFieldType } from '@/lib/contact-links'
 import { getInitials } from '@/lib/resume'
+import { getRichTextPlainText } from '@/lib/rich-text'
 import type {
   ContactFieldType,
   CustomField,
@@ -19,10 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
 
 import { EditorCardShell } from './editor-card-shell'
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
 
 export function BasicInfoCard({
   t,
@@ -69,7 +70,7 @@ export function BasicInfoCard({
           <div className="relative">
             <div className="flex aspect-[4/5] items-center justify-center overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-primary/12 to-amber-200/30 text-2xl font-semibold text-primary">
               {hasAvatar ? (
-                <img src={basic.avatar} alt={basic.name} className="size-full object-cover" />
+                <img src={basic.avatar} alt={getRichTextPlainText(basic.name)} className="size-full object-cover" />
               ) : (
                 <span>{getInitials(basic.name)}</span>
               )}
@@ -105,19 +106,19 @@ export function BasicInfoCard({
 
         <div className="grid min-w-0 gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
           <FormField label={t.fieldLabels.name}>
-            <Input
-              name="name"
-              autoComplete="name"
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.name}
               value={basic.name}
-              onChange={(event) => onUpdateBasic('name', event.target.value)}
+              onChange={(value) => onUpdateBasic('name', value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.headline}>
-            <Input
-              name="headline"
-              autoComplete="organization-title"
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.headline}
               value={basic.headline}
-              onChange={(event) => onUpdateBasic('headline', event.target.value)}
+              onChange={(value) => onUpdateBasic('headline', value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.phone}>
@@ -139,19 +140,22 @@ export function BasicInfoCard({
             />
           </FormField>
           <FormField label={t.fieldLabels.location}>
-            <Input
-              name="location"
-              autoComplete="address-level2"
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.location}
               value={basic.location}
-              onChange={(event) => onUpdateBasic('location', event.target.value)}
+              onChange={(value) => onUpdateBasic('location', value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.summary} className="[grid-column:1/-1]">
-            <Textarea
-              rows={4}
-              value={basic.summary}
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.summary}
+              multiline
+              className="min-h-24"
               placeholder={t.placeholders.summary}
-              onChange={(event) => onUpdateBasic('summary', event.target.value)}
+              value={basic.summary}
+              onChange={(value) => onUpdateBasic('summary', value)}
             />
           </FormField>
         </div>

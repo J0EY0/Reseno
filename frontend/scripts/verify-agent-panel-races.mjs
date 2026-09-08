@@ -715,9 +715,8 @@ assert(
   "Stopping a debounced send must restore the pre-send message list.",
 );
 
-{
-  const sessionRequest = createDeferred();
-  const activeRunRequest = createDeferred();
+for (const outcome of ["failed", "cancelled", "completed"]) {
+  const recoveryRequest = createDeferred();
   const messageWrites = [];
   const reconciledDrafts = [];
   const loadErrorWrites = [];
@@ -810,8 +809,7 @@ assert(
         },
       },
       "@/lib/agent-session-run-client": {
-        loadActiveAgentRun: () => activeRunRequest.promise,
-        loadAgentSession: () => sessionRequest.promise,
+        loadAgentSessionRecovery: () => recoveryRequest.promise,
       },
       "@/lib/agent-stream-client": {
         connectAgentRun: () => {
@@ -851,32 +849,35 @@ assert(
     },
   });
 
-  sessionRequest.resolve(authoritativeSession);
   await flushAsyncWork();
-  const committedWhileRunPending = messageWrites.some(
-    (value) => Array.isArray(value) && value[0]?.id === "assistant-authoritative",
+  assert(
+    !messageWrites.some((value) => value[0]?.id === "assistant-authoritative") &&
+    reconciledDrafts.length === 0 && runtime.sessionRevision === null,
+    "Pending recovery must not commit history, revision, or a draft preview.",
   );
-  const reconciledWhileRunPending = reconciledDrafts.length > 0;
-  const revisionWhileRunPending = runtime.sessionRevision;
 
-  activeRunRequest.reject(new Error("active run lookup failed"));
+  if (outcome === "failed") {
+    recoveryRequest.reject(new Error("session recovery failed"));
+  } else {
+    if (outcome === "cancelled") cleanup();
+    recoveryRequest.resolve({ session: authoritativeSession, run: null });
+  }
   await flushAsyncWork();
 
-  assert(
-    !committedWhileRunPending &&
-    !reconciledWhileRunPending &&
-    revisionWhileRunPending === null,
-    "Session history and its formal draft preview must not commit while the active-run read is pending.",
+  const adopted = messageWrites.some(
+    (value) => value[0]?.id === "assistant-authoritative",
   );
-  assert(
-    !messageWrites.some(
-      (value) => Array.isArray(value) && value[0]?.id === "assistant-authoritative",
-    ) &&
-    reconciledDrafts.length === 0 &&
-    runtime.sessionRevision === null &&
-    loadErrorWrites.at(-1) === true,
-    "A failed active-run read must leave session history, revision, and the formal draft preview uncommitted.",
-  );
+  if (outcome === "completed") {
+    assert(adopted && runtime.sessionRevision === "authoritative-revision" &&
+      reconciledDrafts.length === 1,
+      "A recovery snapshot with a completed response must restore its message and draft.");
+  } else {
+    assert(!adopted && reconciledDrafts.length === 0 &&
+      runtime.sessionRevision === null,
+      "Failed or cancelled recovery must not publish history or a stale draft.");
+    assert(loadErrorWrites.at(-1) === (outcome === "failed"),
+      "Only an uncancelled recovery failure should show a loading error.");
+  }
 
   cleanup();
 }

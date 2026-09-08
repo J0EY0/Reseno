@@ -5,11 +5,11 @@ import { ResumeDeletedDiffAnchor } from "@/components/preview/resume-preview-del
 import { interleaveDeletedDiffs } from "@/components/preview/resume-preview-deleted-placement";
 import { ResumeDiffText } from "@/components/preview/resume-preview-diff-text";
 import {
-  getCanonicalItemFieldDiffs,
   getRenderableFieldDiffs,
   type ItemDiffLookup,
   type RenderableItemField,
 } from "@/components/preview/resume-preview-diffs";
+import { ResumeItemText } from "@/components/preview/resume-preview-item-text";
 import {
   RichHighlights,
   RichListDiff,
@@ -36,10 +36,6 @@ import type {
   ResumeTimelineItemLayout,
 } from "@/types/resume";
 
-type RenderableItemTextPart = NonNullable<
-  RenderableSectionItem["subtitleParts"]
->[number];
-
 interface SectionItemsProps {
   deletedItemDiffs?: ResumeDraftDiff[];
   itemDiffById?: Map<string, ItemDiffLookup>;
@@ -48,48 +44,10 @@ interface SectionItemsProps {
   t: AppMessages;
 }
 
-function ItemTextSlot({
-  diff,
-  fallbackDiffs,
-  parts,
-  value,
-}: {
-  diff?: ItemDiffLookup;
-  fallbackDiffs: ResumeDraftDiff[];
-  parts?: RenderableItemTextPart[];
-  value: string;
-}) {
-  if (!parts) {
-    return <ResumeDiffText value={value} diffs={fallbackDiffs} />;
-  }
-
-  return parts.map((part, index) => {
-    const partDiffs = getCanonicalItemFieldDiffs(diff, part.field);
-    if (!part.value && partDiffs.length === 0) {
-      return null;
-    }
-    const hasPreviousText = parts
-      .slice(0, index)
-      .some((candidate) => Boolean(candidate.value));
-
-    return (
-      <Fragment key={part.field}>
-        {part.value && hasPreviousText ? " · " : null}
-        <span
-          className={cn(!part.value && "resume-diff-empty-slot")}
-          data-resume-field={part.field}
-        >
-          <ResumeDiffText value={part.value} diffs={partDiffs} />
-        </span>
-      </Fragment>
-    );
-  });
-}
-
 function hasTextSlot(
   value: string,
   fallbackDiffs: ResumeDraftDiff[],
-  parts: RenderableItemTextPart[] | undefined,
+  parts: RenderableSectionItem["subtitleParts"],
 ) {
   return Boolean(
     value ||
@@ -141,14 +99,13 @@ function TimelineItem({
         fontSize: `${settings.itemTitleScale}em`,
       }}
     >
-      <ResumeDiffText value={item.title} diffs={fieldDiffs("title")} />
+      <ResumeDiffText richText value={item.title} diffs={fieldDiffs("title")} />
     </h3>
   );
   const subtitle = hasSubtitle ? (
     <p
       className={cn(
         "min-w-0 break-words font-medium",
-        layout === "split" && "mt-1",
         !item.subtitle && "resume-diff-empty-slot",
       )}
       style={{
@@ -156,7 +113,7 @@ function TimelineItem({
         fontSize: `${settings.bodyScale}em`,
       }}
     >
-      <ItemTextSlot
+      <ResumeItemText
         diff={diff}
         fallbackDiffs={subtitleDiffs}
         parts={item.subtitleParts}
@@ -180,7 +137,7 @@ function TimelineItem({
           >
             {hasMeta ? (
               <span className={cn(!item.meta && "resume-diff-empty-slot")}>
-                <ItemTextSlot
+                <ResumeItemText
                   diff={diff}
                   fallbackDiffs={metaDiffs}
                   parts={item.metaParts}
@@ -190,6 +147,7 @@ function TimelineItem({
             ) : null}
             {hasPeriod ? (
               <ResumeDiffText
+                richText
                 value={item.period}
                 diffs={periodDiffs}
               />
@@ -214,6 +172,7 @@ function TimelineItem({
             style={{ fontSize: `${settings.metaScale}em` }}
           >
             <ResumeDiffText
+              richText
               value={item.period}
               diffs={periodDiffs}
             />
@@ -230,7 +189,7 @@ function TimelineItem({
             )}
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            <ItemTextSlot
+            <ResumeItemText
               diff={diff}
               fallbackDiffs={metaDiffs}
               parts={item.metaParts}
@@ -243,35 +202,41 @@ function TimelineItem({
   } else {
     heading = (
       <div
-        className="flex items-start justify-between gap-4 max-md:flex-col"
+        className="grid grid-cols-[minmax(0,1fr)_fit-content(45%)] items-baseline gap-x-4 gap-y-1"
         data-resume-page-block="true"
+        style={{ lineHeight: settings.bodyLineHeight }}
       >
-        <div className="min-w-0">
-          {title}
-          {subtitle}
-        </div>
-        {hasMetadata ? (
-          <div
-            className="resume-tone-muted grid min-w-[170px] gap-1 text-right max-md:min-w-0 max-md:text-left"
+        {title}
+        {hasMeta ? (
+          <span
+            className={cn(
+              "resume-tone-muted col-start-2 row-start-1 min-w-0 break-words text-right",
+              !item.meta && "resume-diff-empty-slot",
+            )}
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            {hasMeta ? (
-              <span className={cn(!item.meta && "resume-diff-empty-slot")}>
-                <ItemTextSlot
-                  diff={diff}
-                  fallbackDiffs={metaDiffs}
-                  parts={item.metaParts}
-                  value={item.meta}
-                />
-              </span>
-            ) : null}
-            {hasPeriod ? (
-              <ResumeDiffText
-                value={item.period}
-                diffs={periodDiffs}
-              />
-            ) : null}
-          </div>
+            <ResumeItemText
+              diff={diff}
+              fallbackDiffs={metaDiffs}
+              parts={item.metaParts}
+              value={item.meta}
+            />
+          </span>
+        ) : null}
+        {hasSubtitle ? (
+          <div className="col-start-1 row-start-2 min-w-0">{subtitle}</div>
+        ) : null}
+        {hasPeriod ? (
+          <span
+            className={cn(
+              "resume-tone-muted col-start-2 min-w-0 break-words text-right",
+              hasMeta ? "row-start-2" : "row-start-1",
+              !item.period && "resume-diff-empty-slot",
+            )}
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
+          </span>
         ) : null}
       </div>
     );
@@ -327,6 +292,7 @@ function TimelineItem({
           }}
         >
           <ResumeDiffText
+            richText
             value={item.description}
             diffs={descriptionDiffs}
           />

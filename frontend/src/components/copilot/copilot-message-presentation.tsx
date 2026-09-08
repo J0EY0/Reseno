@@ -72,6 +72,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
             {assistantText ? (
               <div>
                 <AgentAssistantResponse
+                  t={t}
                   fieldLabels={fieldLabels}
                   isStreaming={isStreamingAssistant}
                   sources={response?.sources}

@@ -144,8 +144,10 @@ async function createConversation({ fetchResource, stopRun, loadActiveRun } = {}
   const hydrationModule = await load("components/copilot/use-agent-session-hydration.ts", {
     ...imports,
     "@/lib/agent-session-run-client": {
-      loadActiveAgentRun: async () => loadActiveRun?.() ?? null,
-      loadAgentSession: refreshAgentSession,
+      loadAgentSessionRecovery: async () => ({
+        session: await refreshAgentSession(),
+        run: await loadActiveRun?.() ?? null,
+      }),
     },
     "./copilot-message-model": {
       hydrateAgentSession: async (request) => ({

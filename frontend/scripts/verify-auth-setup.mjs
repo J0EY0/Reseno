@@ -388,10 +388,24 @@ try {
   );
   assert.match(appSource, /authGate\.phase === "setup"/);
   assert.match(appSource, /<Route path="\/setup"/);
+  const authHeaderSource = authPageShellSource.match(
+    /<CardHeader\b[^>]*>([\s\S]*?)<\/CardHeader>/,
+  )?.[1];
+  assert.ok(authHeaderSource, "The auth shell must retain its form header.");
+  assert.match(
+    authHeaderSource,
+    /<h1\b[^>]*>\s*\{formTitle\}\s*<\/h1>/,
+    "The authentication form title must remain the page heading.",
+  );
   assert.doesNotMatch(
-    authPageShellSource,
+    authHeaderSource,
     /brandTitle|FileText/,
-    "The auth shell must not render the redundant brand badge.",
+    "The form header must not repeat the decorative brand badge.",
+  );
+  assert.match(
+    authPageShellSource,
+    /<div\b[^>]*aria-hidden="true"[^>]*>\s*<AuthParticleBackground\s*\/>[\s\S]*?<p\b[^>]*>\s*\{brandTitle\}\s*<\/p>/,
+    "The brand title must remain in the decorative authentication region.",
   );
   assert.doesNotMatch(
     setupPageSource,

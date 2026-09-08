@@ -2,6 +2,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,12 +27,19 @@ def isolated_runtime_environment(tmp_path, monkeypatch) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def stub_model_metadata_fetch(monkeypatch) -> Iterator[None]:
+def stub_model_metadata_fetch(tmp_path, monkeypatch) -> Iterator[None]:
     from app.services import model_metadata
 
     model_metadata._CATALOG_CACHE = None
-    monkeypatch.setattr(model_metadata, "_fetch_catalog", lambda: {})
-    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", lambda: {})
+    monkeypatch.setattr(
+        model_metadata,
+        "MODEL_METADATA_SNAPSHOT_PATH",
+        tmp_path / "no-bundled-models.json",
+    )
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        model_metadata, "_fetch_reasoning_catalog", AsyncMock(return_value={})
+    )
 
     yield
 

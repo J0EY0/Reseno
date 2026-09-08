@@ -102,6 +102,19 @@ def resolve_agent_llm_config(
         model_max_output_tokens = (
             metadata.max_output_tokens if metadata is not None else None
         )
+    shared_context_window_tokens = None
+    if row["provider_kind"] == "cloud":
+        if discovered is not None:
+            shared_context_window_tokens = discovered.shared_context_window_tokens
+            if (
+                shared_context_window_tokens is None
+                and row["provider"] == "anthropic"
+                and discovered.metadata_source in {"provider", "litellm"}
+            ):
+                shared_context_window_tokens = discovered.context_window_tokens
+        if shared_context_window_tokens is None and metadata is not None:
+            shared_context_window_tokens = metadata.shared_context_window_tokens
+
     thinking_control: ThinkingControl = "none"
     if row["thinking_mode"] == "off":
         # Persistence accepts Off only when discovery proved both a model-level
@@ -152,6 +165,7 @@ def resolve_agent_llm_config(
         timeout_seconds=int(row["timeout_seconds"] or REQUEST_TIMEOUT_SECONDS),
         context_window_tokens=row["context_window_tokens"],
         model_max_output_tokens=model_max_output_tokens,
+        shared_context_window_tokens=shared_context_window_tokens,
         supports_image=bool(row["supports_image"]),
         thinking_control=thinking_control,
         supports_tools=bool(row["supports_tools"]),

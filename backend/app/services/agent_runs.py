@@ -20,6 +20,8 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentRunResponse,
     AgentRunStatus,
+    AgentSessionRecoveryResponse,
+    AgentSessionResponse,
     AgentToolInvocation,
     AgentTurnErrorCode,
     AgentTurnExecutionStatus,
@@ -46,6 +48,7 @@ from app.services.agent_sessions import (
     AcceptedAgentTurn,
     AgentTerminalOutcome,
     accept_agent_turn,
+    load_agent_session,
     persist_agent_terminal_outcome,
 )
 from app.services.llm import AgentLlmConfig, LlmUsage, resolve_agent_llm_config
@@ -403,6 +406,7 @@ class AgentRunManager:
         # keeps expensive preparation off the event loop without reopening the
         # same-resume or global admission races.
         self._reserved_run_ids: set[str] = set()
+        self._preparing_runs: dict[str, asyncio.Event] = {}
         self._completed_order: deque[str] = deque()
         self._lock = asyncio.Lock()
         self._shutting_down = False
@@ -418,6 +422,7 @@ class AgentRunManager:
                 raise AgentRunCapacityError
 
             self._reserved_run_ids.add(run_id)
+            self._preparing_runs[run_id] = asyncio.Event()
             if resume_id:
                 self._active_by_resume[resume_id] = run_id
 
@@ -451,6 +456,7 @@ class AgentRunManager:
                     self._execute(run, resolved_config),
                     name=f"agent-run:{run.id}",
                 )
+                self._preparing_runs.pop(run_id).set()
             logger.info(
                 "Accepted Agent run run_id=%s resume_id=%s",
                 run.id,
@@ -459,6 +465,9 @@ class AgentRunManager:
         except BaseException:
             async with self._lock:
                 self._reserved_run_ids.discard(run_id)
+                preparing = self._preparing_runs.pop(run_id, None)
+                if preparing is not None:
+                    preparing.set()
                 if resume_id and self._active_by_resume.get(resume_id) == run_id:
                     self._active_by_resume.pop(resume_id, None)
             raise
@@ -474,13 +483,35 @@ class AgentRunManager:
             raise AgentRunNotFoundError
         return run
 
-    async def active_for_resume(self, resume_id: str) -> AgentRun | None:
-        async with self._lock:
-            run_id = self._active_by_resume.get(resume_id)
-            run = self._runs.get(run_id or "")
-            if run and run.status == "active":
-                return run
-        return None
+    async def recover_session(self, resume_id: str) -> AgentSessionRecoveryResponse:
+        """Return history with the run belonging to its durable running turn."""
+
+        session = await asyncio.to_thread(_read_agent_session, resume_id)
+        while True:
+            execution = next(
+                (item for item in session.executions if item.status == "running"),
+                None,
+            )
+            if execution is None:
+                return AgentSessionRecoveryResponse(session=session, run=None)
+
+            async with self._lock:
+                run = self._runs.get(execution.run_id)
+                if run is not None and run.status == "active":
+                    return AgentSessionRecoveryResponse(
+                        session=session, run=run.response()
+                    )
+                preparing = self._preparing_runs.get(execution.run_id)
+            if preparing is not None:
+                await preparing.wait()
+
+            latest = await asyncio.to_thread(_read_agent_session, resume_id)
+            if preparing is None and any(
+                item.run_id == execution.run_id and item.status == "running"
+                for item in latest.executions
+            ):
+                raise AgentRunNotFoundError
+            session = latest
 
     async def purge_missing_resume_runs(self) -> None:
         """Forget runs whose resume rows were deleted in one batch."""
@@ -938,6 +969,11 @@ def _existing_resume_ids(resume_ids: tuple[str, ...]) -> set[str]:
             if row is not None:
                 existing_ids.add(resume_id)
     return existing_ids
+
+
+def _read_agent_session(resume_id: str) -> AgentSessionResponse:
+    with closing(connect()) as conn:
+        return load_agent_session(conn, resume_id)
 
 
 def _prepare_run_request(

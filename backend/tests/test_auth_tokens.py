@@ -132,7 +132,6 @@ def test_refreshed_token_stays_revoked_until_its_original_expiry(
 ) -> None:
     now = int(time.time())
     monkeypatch.setattr(auth_tokens.time, "time", lambda: now)
-    monkeypatch.setattr(auth_tokens, "_revoked_token_hashes", {})
     token, original_payload = auth_tokens.create_access_token(
         "admin",
         "test-revision",

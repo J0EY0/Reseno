@@ -184,7 +184,7 @@ assert(
   "New resumes must require an explicit document language and let the backend choose that language's default template.",
 );
 assert(
-  enMessages.followResumeLanguage === "Follow resume" &&
+  enMessages.followResumeLanguage === "Match Resume Language" &&
     zhMessages.followResumeLanguage === "跟随简历语言" &&
     !("followSystemLanguage" in enMessages) &&
     !("followSystemLanguage" in zhMessages),
@@ -268,7 +268,7 @@ assert(
   resumeFormatSelectTriggers.length === 3 &&
     [
       ["applyTemplate", "w-32"],
-      ["fontFamily", "w-36"],
+      ["fontFamily", "w-44"],
       ["fontSize", "w-24"],
     ].every(([label, width]) => {
       const trigger = getResumeFormatTrigger(label);
@@ -276,11 +276,7 @@ assert(
       return (
         trigger?.includes('size="sm"') && hasExactBaseWidth(trigger, width)
       );
-    }) &&
-    hasStaticClass(
-      getResumeFormatTrigger("fontFamily") ?? "",
-      "[&:lang(zh)]:w-28",
-    ),
+    }),
   "Resume format select triggers must use content-sized compact widths.",
 );
 assert(

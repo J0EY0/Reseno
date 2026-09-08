@@ -153,9 +153,11 @@ export function AgentMessageAttachments({
 function AgentPromptAttachment({
   attachment,
   onRemove,
+  removeLabel,
 }: {
   attachment: AttachmentData;
   onRemove?: () => void;
+  removeLabel: string;
 }) {
   const label = getAttachmentLabel(attachment);
   const mediaCategory = getMediaCategory(attachment);
@@ -178,7 +180,7 @@ function AgentPromptAttachment({
               <AttachmentPreview />
             </div>
             {onRemove ? (
-              <AttachmentRemove className="absolute inset-0" />
+              <AttachmentRemove className="absolute inset-0" label={removeLabel} />
             ) : null}
           </div>
           <AttachmentInfo />
@@ -211,12 +213,14 @@ function AgentPromptAttachment({
 export function AgentPromptAttachmentsDisplay({
   disableRemoval,
   fallbackLabel,
+  removeLabel,
   onLocalCountChange,
   onRemoveReferenced,
   referencedFiles,
 }: {
   disableRemoval: boolean;
   fallbackLabel: string;
+  removeLabel: string;
   onLocalCountChange: (count: number) => void;
   onRemoveReferenced: (id: string) => void;
   referencedFiles: AgentChatAttachment[];
@@ -240,6 +244,7 @@ export function AgentPromptAttachmentsDisplay({
         <AgentPromptAttachment
           attachment={attachment}
           key={`local-${attachment.id}`}
+          removeLabel={removeLabel}
           onRemove={
             disableRemoval
               ? undefined
@@ -254,6 +259,7 @@ export function AgentPromptAttachmentsDisplay({
           <AgentPromptAttachment
             attachment={attachment}
             key={`referenced-${attachment.id}`}
+            removeLabel={removeLabel}
             onRemove={
               disableRemoval
                 ? undefined

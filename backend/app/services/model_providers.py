@@ -8,8 +8,8 @@ import httpx
 from app.schemas.model_configs import ApiFamily, ProviderKind
 from app.services.model_metadata import (
     ModelMetadata,
-    ensure_provider_model_metadata,
     explicit_thinking_off_capability,
+    is_provider_model,
     resolve_model_metadata,
     resolve_models_metadata,
 )
@@ -58,6 +58,7 @@ class DiscoveredModel:
     supports_image: bool
     thinking_control: ThinkingControl
     metadata_source: str
+    shared_context_window_tokens: int | None = None
     # Modes are a capability contract, not a rendering hint. ``off`` is
     # included only when metadata proves disable support and this provider's
     # active Adapter implements the corresponding wire protocol.
@@ -304,10 +305,6 @@ def discover_provider_models(
         api_key=api_key,
     )
     raw_model_ids = [_model_id_from_raw(raw) for raw in raw_models]
-    ensure_provider_model_metadata(
-        provider.id,
-        [model_id for model_id in raw_model_ids if model_id],
-    )
     metadata = resolve_models_metadata(provider.id, raw_model_ids)
     normalized = [
         _normalize_discovered_model(
@@ -319,7 +316,8 @@ def discover_provider_models(
     filtered = [
         model
         for model in normalized
-        if _is_text_generation_model(provider.id, model.id)
+        if is_provider_model(provider.id, model.id)
+        and _is_text_generation_model(provider.id, model.id)
     ]
 
     return sorted(filtered, key=lambda item: item.id.lower())
@@ -495,6 +493,18 @@ def _normalize_discovered_model(
 ) -> DiscoveredModel:
     model_id = _model_id_from_raw(raw)
     provider_context = _provider_context_limit(provider_id, raw)
+    shared_context = provider_context if provider_id == "anthropic" else None
+    if provider_id != "google":
+        shared_context = shared_context or next(
+            (
+                limit
+                for key in ("context_window", "context_length", "max_context_length")
+                if (limit := _positive_int(raw.get(key))) is not None
+            ),
+            None,
+        )
+        if shared_context is None and litellm_metadata is not None:
+            shared_context = litellm_metadata.shared_context_window_tokens
     provider_output = _positive_int(
         raw.get("max_output_tokens")
         or raw.get("max_tokens")
@@ -532,6 +542,7 @@ def _normalize_discovered_model(
         id=model_id,
         label=model_id,
         context_window_tokens=provider_context,
+        shared_context_window_tokens=shared_context,
         max_output_tokens=provider_output,
         supports_image=_supports_image(
             provider_id,

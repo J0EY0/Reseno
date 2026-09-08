@@ -90,16 +90,24 @@ export function CopilotPanel({
     }
 
     return {
+      conflicts: agentDraftReview.allConflicts,
       disabled:
         agentDraftReview.disabled ||
         isRequestBusy ||
         !conversation.isSessionReady,
+      hasScopeConflicts: agentDraftReview.projection.conflicts.length > 0,
       mode: agentDraftReview.mode,
       onApply: () => {
         void conversation.applyAgentDraft()
       },
+      onApplyOriginal: () => {
+        void conversation.runAgentDraftDecision(agentDraftReview.applyOriginal)
+      },
       onDiscard: () => {
         void conversation.discardAgentDraft()
+      },
+      onKeepManual: () => {
+        void conversation.runAgentDraftDecision(agentDraftReview.keepManual)
       },
       onNext: agentDraftReview.selectNext,
       onPrevious: agentDraftReview.selectPrevious,
@@ -119,10 +127,11 @@ export function CopilotPanel({
     <PromptInputProvider>
       <CopilotPanelBodyFrame
         composer={
-          <div className="grid gap-2">
+          <div className="grid min-w-0 grid-cols-1 gap-2">
             <AgentDraftReviewDock t={t} view={reviewDockView} />
             <CopilotComposer
               globalDropActive={globalDropActive}
+              hasConversationHistory={conversation.messages.length > 0}
               isSessionReady={conversation.isSessionReady}
               modelConfigs={agentModelConfigs}
               onOpenModelSettings={onOpenModelSettings}

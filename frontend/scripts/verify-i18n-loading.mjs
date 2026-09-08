@@ -193,7 +193,7 @@ assert.equal(
 );
 assert.equal(
   zhMessages.apiMessages.AGENT_DRAFT_DECISION_CONFLICT,
-  "该草稿已在其他位置处理。",
+  "该草稿已在其他位置处理",
   "Chinese must localize durable draft decision conflicts.",
 );
 assert.deepEqual(

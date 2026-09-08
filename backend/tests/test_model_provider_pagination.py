@@ -32,11 +32,6 @@ def test_model_discovery_reads_every_page(
         }
 
     monkeypatch.setattr(model_providers, "_get_json", get_json)
-    monkeypatch.setattr(
-        model_providers,
-        "ensure_provider_model_metadata",
-        lambda *_: True,
-    )
     monkeypatch.setattr(model_providers, "resolve_models_metadata", lambda *_: {})
     models = model_providers.discover_provider_models(
         provider_id=provider_id,

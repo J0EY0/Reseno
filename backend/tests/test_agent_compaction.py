@@ -29,10 +29,11 @@ from app.services.agent.runtime.messages import (
 )
 from app.services.llm import AgentLlmConfig
 from app.services.llm.types import LlmContentPart, LlmInputMessage
+from tests.agent_context import with_message_budget
 
 
-def _config(*, context_window_tokens: int = 6_000) -> AgentLlmConfig:
-    return AgentLlmConfig(
+def _config(*, context_window_tokens: int | None = None) -> AgentLlmConfig:
+    config = AgentLlmConfig(
         client_id="context-model",
         name="Context model",
         provider="openai",
@@ -48,6 +49,9 @@ def _config(*, context_window_tokens: int = 6_000) -> AgentLlmConfig:
         context_window_tokens=context_window_tokens,
         supports_streaming=False,
     )
+    if context_window_tokens is not None:
+        return config
+    return with_message_budget(_request([]), config, input_tokens=2_500)
 
 
 def _request(
@@ -284,17 +288,24 @@ def test_compacted_prompt_keeps_the_question_that_a_terse_reply_answers() -> Non
     )
     request = _request(history, prompt="继续优化项目经历。")
 
+    config = _config()
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+    exact = AgentPromptCompiler(request, config).build()
+    assert estimate_agent_messages_tokens(exact.messages) > limits.trigger_tokens
+
     runtime = AgentRuntimeContext()
     messages = anyio.run(
         partial(
             prepare_agent_prompt,
             request,
-            _config(context_window_tokens=6_000),
+            config,
             runtime,
         ),
     ).messages
     serialized = json.dumps(messages, ensure_ascii=False)
 
+    assert estimate_agent_messages_tokens(messages) <= limits.input_tokens
     assert runtime.conversation_state.active_checkpoint is not None
     assert question in serialized
     assert "是的。" in serialized
@@ -335,7 +346,7 @@ def test_context_rollover_still_rejects_an_uncompressible_current_workspace(
             partial(
                 prepare_agent_prompt,
                 request,
-                _config(context_window_tokens=6_000),
+                _config(),
                 AgentRuntimeContext(),
             ),
         )
@@ -458,7 +469,7 @@ def test_rollover_rebuilds_oversized_checkpoint_at_same_boundary() -> None:
         partial(
             prepare_agent_prompt,
             request,
-            _config(context_window_tokens=6_000),
+            _config(),
             AgentRuntimeContext(conversation_state=state),
         ),
     ).messages
@@ -474,7 +485,7 @@ def test_rollover_rebuilds_oversized_checkpoint_at_same_boundary() -> None:
         "role": "user",
         "content": "Continue with this resume.",
     }
-    assert estimate_agent_messages_tokens(messages) <= 6_000
+    assert estimate_agent_messages_tokens(messages) <= 2_500
 
 
 def test_cancellation_does_not_change_checkpoint() -> None:
@@ -593,22 +604,29 @@ def test_context_rollover_handoffs_the_last_historical_user_turn() -> None:
         prompt="Continue.",
     )
 
+    config = _config()
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+    exact = AgentPromptCompiler(request, config).build()
+    assert estimate_agent_messages_tokens(exact.messages) > limits.trigger_tokens
+
     runtime = AgentRuntimeContext()
     messages = anyio.run(
         partial(
             prepare_agent_prompt,
             request,
-            _config(context_window_tokens=6_000),
+            config,
             runtime,
         ),
     ).messages
 
+    assert estimate_agent_messages_tokens(messages) <= limits.input_tokens
     assert runtime.conversation_state.active_checkpoint is not None
     assert (
         runtime.conversation_state.active_checkpoint.through_message_id == "only-user"
     )
     assert messages[-1] == {"role": "user", "content": "Continue."}
-    assert estimate_agent_messages_tokens(messages) <= 6_000
+    assert estimate_agent_messages_tokens(messages) <= 2_500
 
 
 def test_context_rollover_runs_when_an_exact_tail_cannot_reach_the_target() -> None:
@@ -622,9 +640,11 @@ def test_context_rollover_runs_when_an_exact_tail_cannot_reach_the_target() -> N
         ],
         prompt="Continue with enough room for tools.",
     )
-    config = _config(context_window_tokens=6_000)
+    config = _config()
     limits = agent_prompt_limits(request, config)
     assert limits is not None
+    exact = AgentPromptCompiler(request, config).build()
+    assert estimate_agent_messages_tokens(exact.messages) > limits.trigger_tokens
 
     runtime = AgentRuntimeContext()
     prompt = anyio.run(partial(prepare_agent_prompt, request, config, runtime))

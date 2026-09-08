@@ -203,7 +203,7 @@ export function RichListDiff({
     );
   };
 
-  const beforeItems = beforeParsed.items.map(stripRichText);
-  const afterItems = parsed.items.map(stripRichText);
+  const beforeItems = beforeParsed.items;
+  const afterItems = parsed.items;
   return renderList(createListDiff(beforeItems, afterItems));
 }

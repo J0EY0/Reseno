@@ -372,7 +372,7 @@ def test_model_resolution_failure_leaves_no_turn_or_run_reservation(
         with pytest.raises(LlmThinkingModeUnsupportedError):
             await manager.start(request)
 
-        assert await manager.active_for_resume(resume_id) is None
+        assert (await manager.recover_session(resume_id)).run is None
         assert manager._runs == {}
         assert manager._active_by_resume == {}
         assert manager._reserved_run_ids == set()
@@ -1910,7 +1910,7 @@ def test_rejected_terminal_message_downgrades_without_leaking_the_run_slot(
         )
         assert run.task is not None
         await asyncio.wait_for(run.task, timeout=1)
-        assert await manager.active_for_resume(resume_id) is None
+        assert (await manager.recover_session(resume_id)).run is None
         return run.id, await _collect_events(manager, run.id)
 
     run_id, events = asyncio.run(scenario())
@@ -2201,15 +2201,19 @@ def test_terminal_persistence_retries_while_run_stays_active(
                 state=SimpleNamespace(agent_runs=manager),
             ),
         )
-        active_response = await agent_router.get_active_agent_run(
+        recovery_response = await agent_router.get_agent_session_recovery(
             request,
             resume_id,
         )
-        assert active_response.data is not None
-        assert active_response.data.id == run.id
-        assert active_response.data.status == "active"
-        assert active_response.data.execution_state == "running"
-        assert active_response.data.error_code is None
+        assert recovery_response.data is not None
+        recovered = recovery_response.data
+        assert recovered.run is not None
+        assert recovered.run.id == run.id
+        assert recovered.run.status == "active"
+        assert recovered.run.execution_state == "running"
+        assert recovered.run.error_code is None
+        assert recovered.session.executions[-1].run_id == run.id
+        assert recovered.session.executions[-1].status == "running"
         assert run.id in manager._reserved_run_ids
         assert not any("event: run_done" in event.frame for event in run.events)
         with closing(connect()) as conn:
@@ -2224,12 +2228,14 @@ def test_terminal_persistence_retries_while_run_stays_active(
         await asyncio.sleep(0.02)
         assert not run.task.done()
         assert finish_attempts > attempts_before_stop
-        assert await manager.active_for_resume(resume_id) is run
+        recovered_run = (await manager.recover_session(resume_id)).run
+        assert recovered_run is not None
+        assert recovered_run.id == run.id
         assert run.id in manager._reserved_run_ids
 
         allow_finish.set()
         await asyncio.wait_for(run.task, timeout=1)
-        assert await manager.active_for_resume(resume_id) is None
+        assert (await manager.recover_session(resume_id)).run is None
         assert run.id not in manager._reserved_run_ids
         assert sum("event: run_done" in event.frame for event in run.events) == 1
         return run.id

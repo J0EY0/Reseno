@@ -1,7 +1,7 @@
 import type { AgentResumeEditSuggestion } from "@/types/api";
 import type { ResumeData, ResumeDraftDiff } from "@/types/resume";
 import { applyOperation } from "./resume-agent-edits/apply-operations";
-import { applyOperationWithMerge } from "./resume-agent-edits/three-way-merge";
+import { applyOperationWithMerge, getManualResumeChanges } from "./resume-agent-edits/three-way-merge";
 import {
   cloneResume,
   type AgentDraftApplyError,
@@ -89,18 +89,23 @@ export function applyAgentEditsToDraft(
  *
  * The Agent's base snapshot is advanced operation-by-operation beside the
  * current resume. Field edits merge when the user changed a different field;
- * competing field or structural edits reject the complete candidate.
+ * manual-priority resolution keeps competing current values. Structural
+ * conflicts reject the complete candidate.
  */
 export function applyAgentEditsWithMerge(
   baseResume: ResumeData,
   currentResume: ResumeData,
   edits: AgentResumeEditSuggestion[],
+  conflictResolution?: "keep-manual",
 ): AgentDraftApplyResult {
   const validation = applyAgentEditsToDraft(baseResume, edits);
   if (validation.errors.length > 0) {
     return { ...validation, resume: cloneResume(currentResume) };
   }
 
+  const manualChanges = conflictResolution === "keep-manual"
+    ? getManualResumeChanges(baseResume, currentResume)
+    : undefined;
   const baseWorking = cloneResume(baseResume);
   const currentWorking = cloneResume(currentResume);
   const diffs: ResumeDraftDiff[] = [];
@@ -114,6 +119,7 @@ export function applyAgentEditsWithMerge(
       currentWorking,
       edit,
       operation,
+      manualChanges,
     );
 
     if (!merged.ok) {

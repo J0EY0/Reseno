@@ -27,11 +27,14 @@ def test_verification_preserves_inherited_runtime_files(
     master_key = Fernet.generate_key().decode()
     jwt_secret = "synthetic-existing-jwt-secret-123456789"
     env_path.write_text(
-        f"RESENO_MASTER_KEY={master_key}\nRESENO_JWT_SECRET={jwt_secret}\n",
+        f"APP_DATA_DIR={external_dir}\n"
+        f"RESENO_MASTER_KEY={master_key}\n"
+        f"RESENO_JWT_SECRET={jwt_secret}\n",
         encoding="utf-8",
     )
     existing_files = {
-        path: path.read_bytes() for path in (old_export, settings_path, env_path)
+        path: path.read_bytes()
+        for path in (old_export, settings_path, env_path)
     }
     probe = tmp_path / "test_probe.py"
     probe.write_text(
@@ -71,9 +74,13 @@ def test_isolated_client(request, fixture_name, tmp_path):
         else [
             sys.executable,
             "-c",
-            "import os, runpy; from app.services import model_metadata; "
-            "model_metadata._fetch_catalog = lambda: {}; "
-            "model_metadata._fetch_reasoning_catalog = lambda: {}; "
+            "import os, runpy; from pathlib import Path; "
+            "from unittest.mock import AsyncMock; "
+            "from app.services import model_metadata; "
+            "model_metadata.MODEL_METADATA_SNAPSHOT_PATH = "
+            "Path(os.environ['PROBE_MISSING_SNAPSHOT']); "
+            "model_metadata._fetch_catalog = AsyncMock(return_value={}); "
+            "model_metadata._fetch_reasoning_catalog = AsyncMock(return_value={}); "
             "runpy.run_path('scripts/verify_data_flow.py', run_name='__main__'); "
             "assert os.environ['RESENO_MASTER_KEY'] != "
             "os.environ['PROBE_MASTER_KEY']; "
@@ -97,6 +104,7 @@ def test_isolated_client(request, fixture_name, tmp_path):
             "PROBE_MASTER_KEY": master_key,
             "PROBE_JWT_SECRET": jwt_secret,
             "PROBE_ENV_FILE": str(env_path),
+            "PROBE_MISSING_SNAPSHOT": str(tmp_path / "no-bundled-models.json"),
         },
         capture_output=True,
         text=True,

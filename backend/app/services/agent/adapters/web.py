@@ -133,7 +133,8 @@ class WebToolAdapter:
     ) -> AgentToolInvocation:
         prompt_text = self._prompt.casefold()
         query_hidden_terms = tuple(
-            term for term in self._hidden_terms if term.casefold() not in prompt_text
+            term if term.casefold() not in prompt_text else ""
+            for term in self._hidden_terms
         )
         query = sanitize_agent_text(
             str(tool_call.arguments.get("query") or "").strip(),

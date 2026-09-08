@@ -1,12 +1,25 @@
 import json
+from contextlib import closing
+from copy import deepcopy
 
-from app.schemas.agent import AgentChatRequest, AgentConversationItem
+import pytest
+
+from app.db.connection import connect
+from app.schemas.agent import AgentChatMessage, AgentChatRequest, AgentConversationItem
+from app.services import agent_sessions, resumes
 from app.services.agent.contracts import EDIT_EXECUTE_SCHEMA
 from app.services.agent.draft import DraftEditEngine
 from app.services.agent.privacy import (
     HIDDEN_BASIC_VALUE,
     sanitize_agent_resume,
     sanitize_agent_text,
+)
+from tests.test_agent_draft_engine import _request
+from tests.test_agent_turn_protocol import (
+    _accept_turn,
+    _ensure_active_resume,
+    _persist_successful_turn,
+    _resume_save_payload,
 )
 
 
@@ -84,9 +97,9 @@ def test_web_source_url_numeric_path_is_not_redacted_as_phone_number() -> None:
 
 def test_western_name_is_redacted_across_filename_separator() -> None:
     for filename, expected in (
-        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf"),
-        ("JOHN-SMITH-CV.pdf", "[redacted_name]-CV.pdf"),
-        ("john.smith.CV.pdf", "[redacted_name].CV.pdf"),
+        ("John_Smith_CV.pdf", "[redacted_identity_0]_CV.pdf"),
+        ("JOHN-SMITH-CV.pdf", "[redacted_identity_0]-CV.pdf"),
+        ("john.smith.CV.pdf", "[redacted_identity_0].CV.pdf"),
     ):
         assert sanitize_agent_text(filename, hidden_terms=("John Smith",)) == expected
 
@@ -109,7 +122,7 @@ def test_cjk_hidden_term_keeps_literal_replacement_semantics() -> None:
             "王小明_简历.pdf",
             hidden_terms=("王小明",),
         )
-        == "[redacted_name]_简历.pdf"
+        == "[redacted_identity_0]_简历.pdf"
     )
 
 
@@ -159,3 +172,154 @@ def test_agent_write_contract_does_not_offer_hidden_location_writes() -> None:
     serialized_schema = json.dumps(EDIT_EXECUTE_SCHEMA, ensure_ascii=False)
 
     assert "basic.location" not in serialized_schema
+
+
+def test_redacted_identity_rewrite_round_trips_through_confirmed_apply(client):
+    request = _request("润色简介，保持学校、公司和经历事实。")
+    request.resume["basic"].update(
+        name="王小明",
+        location="上海",
+        summary="王小明毕业于上海交通大学，在上海电气从事软件开发。",
+    )
+    resume_id = "privacyroundtrip"
+    _ensure_active_resume(resume_id)
+    payload = _resume_save_payload(headline="Engineer")
+    payload["resume"] = request.resume
+    original = resumes.save_resume(resume_id, payload)
+    with closing(connect()) as conn:
+        request = request.model_copy(
+            update={
+                "resume_id": resume_id,
+                "expected_revision": agent_sessions.load_agent_session(
+                    conn, resume_id
+                ).revision,
+            }
+        )
+        prepared = _accept_turn(conn, request)
+        visible = sanitize_agent_resume(request.resume)
+        model_rewrite = visible["basic"]["summary"].replace("从事", "专注")
+        assert "王小明" not in model_rewrite and "上海" not in model_rewrite
+        engine = DraftEditEngine.open(prepared.request)
+        batch = engine.execute(
+            [
+                {
+                    "operation": {
+                        "type": "replace_field",
+                        "path": "basic.summary",
+                        "value": model_rewrite,
+                    }
+                }
+            ]
+        )
+        assert batch.accepted
+        turn = engine.finalize(True)
+        assert (
+            turn.draft_resume["basic"]["summary"]
+            == "王小明毕业于上海交通大学，在上海电气专注软件开发。"
+        )
+        assert resumes.load_resume(resume_id)["resume"]["resume"] == request.resume
+        _persist_successful_turn(
+            conn,
+            prepared,
+            AgentChatMessage(
+                id="privacy-draft",
+                role="assistant",
+                text="Draft",
+                transactionState="committed",
+                edits=list(batch.edits),
+            ),
+        )
+        session = agent_sessions.load_agent_session(conn, resume_id)
+        agent_sessions.apply_agent_draft_decision(
+            conn,
+            resume_id,
+            message_id="privacy-draft",
+            review_item_ids=[
+                i.id for i in session.messages[-1].response.draft.review_items
+            ],
+            resume=turn.draft_resume,
+            revision=session.revision,
+            expected_version_id=original["versionId"],
+        )
+    formal = resumes.load_resume(resume_id)["resume"]["resume"]
+    assert (
+        formal["basic"]["summary"]
+        == "王小明毕业于上海交通大学，在上海电气专注软件开发。"
+    )
+    assert "[redacted" not in json.dumps(formal, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "[hidden]",
+        "[redacted_name]",
+        "[redacted_email]",
+        "[redacted_phone]",
+        "[redacted_identity_8]",
+        "[redacted_identity_invalid]",
+    ],
+)
+def test_unresolvable_privacy_markers_reject_the_entire_batch(marker):
+    request = _request("优化简介和项目说明")
+    request.resume["basic"].update(name="王小明", location="上海")
+    engine = DraftEditEngine.open(request)
+    prior = engine.execute(
+        [
+            {
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.summary",
+                    "value": "Previously accepted summary.",
+                }
+            },
+        ]
+    )
+    assert prior.accepted
+    before = deepcopy(engine.draft_resume)
+    batch = engine.execute(
+        [
+            {
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.summary",
+                    "value": "Builds reliable software.",
+                }
+            },
+            {
+                "operation": {
+                    "type": "update_item",
+                    "sectionId": "project",
+                    "itemId": "target-project",
+                    "patch": {"highlights": [f"Contributed with {marker}."]},
+                }
+            },
+        ]
+    )
+    assert not batch.accepted
+    assert engine.edits == prior.edits
+    assert engine.draft_resume == before
+    assert engine.finalize(True).draft_resume == before
+
+
+def test_identical_name_and_location_share_one_restorable_slot():
+    request = _request("精简个人简介")
+    request.resume["basic"].update(
+        name="上海", location="上海", summary="上海，负责软件开发。"
+    )
+    visible = sanitize_agent_resume(request.resume)
+    assert visible["basic"]["summary"] == "[redacted_identity_0]，负责软件开发。"
+    engine = DraftEditEngine.open(request)
+    result = engine.execute(
+        [
+            {
+                "operation": {
+                    "type": "replace_field",
+                    "path": "basic.summary",
+                    "value": "[redacted_identity_0]，专注软件开发。",
+                }
+            }
+        ]
+    )
+    assert result.accepted
+    assert result.draft_resume["basic"]["summary"] == "上海，专注软件开发。"

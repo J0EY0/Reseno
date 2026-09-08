@@ -71,7 +71,7 @@ EXPECTED_SECTIONS = {
         ("experience", "高管经历"),
         ("project", "代表性转型项目"),
         ("achievement", "董事会与行业参与"),
-        ("simple_list", "领导力能力"),
+        ("simple_list", "领导能力"),
         ("education", ""),
     ],
     ("executive", "en"): [

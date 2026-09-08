@@ -1,7 +1,5 @@
 import { useEffect, useRef } from "react";
 
-import authLogo from "@/assets/auth-logo.png";
-
 type Particle = {
   x: number;
   y: number;
@@ -111,7 +109,7 @@ export function AuthParticleBackground() {
       if (!sampleContext) return;
 
       const logoWidth = width * 0.8;
-      const logoHeight = logoWidth * 560 / 720;
+      const logoHeight = logoWidth * logo.naturalHeight / logo.naturalWidth;
       if (logo.complete && logo.naturalWidth) {
         sampleContext.filter = "blur(8px)";
         sampleContext.drawImage(logo, (width - logoWidth) / 2, (height - logoHeight) / 2, logoWidth, logoHeight);
@@ -145,7 +143,7 @@ export function AuthParticleBackground() {
     reducedMotion.addEventListener("change", sync);
     document.addEventListener("visibilitychange", sync);
     logo.addEventListener("load", resize);
-    logo.src = authLogo;
+    logo.src = "/logo.svg";
     resize();
 
     return () => {

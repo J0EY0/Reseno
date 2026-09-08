@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.services.imports import load_json_upload
 from app.services.resume_starters import create_empty_resume
+from tests.template_fixtures import portable_template
 
 JSON_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
 
@@ -110,3 +111,52 @@ def test_import_resume_rejects_invalid_document(
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["code"] == 40000
     assert response.json()["message"] == expected_message
+
+
+@pytest.mark.parametrize("line_height", [1.1, 1.25])
+def test_compact_serif_template_survives_save_and_resume_import(
+    client: TestClient,
+    line_height: float,
+) -> None:
+    template = portable_template("Compact serif")
+    template["typography"] = {"fontFamily": "times", "fontSize": 14}
+    template["layout"]["section"] = "underlined"
+    template["settings"]["bodyLineHeight"] = line_height
+
+    saved = client.post("/api/templates", json={"template": template})
+    assert saved.status_code == status.HTTP_200_OK
+    template_id = saved.json()["data"]["template"]["id"]
+    listed = client.get("/api/templates")
+    stored = next(
+        item
+        for item in listed.json()["data"]["templates"]
+        if item["id"] == template_id
+    )
+    definition = {key: stored[key] for key in template}
+    assert definition == template
+
+    imported_resume = {
+        "title": "Compact serif resume",
+        "documentLocale": "en",
+        "resume": create_empty_resume("earlyCareer", "en"),
+        "jobBrief": "",
+        "typography": template["typography"],
+        "template": "custom:0",
+        "templateSettings": {"bodyLineHeight": line_height},
+    }
+    payload = {
+        "format": "reseno.resume",
+        "formatVersion": 1,
+        "templates": [{"ref": "custom:0", "definition": definition}],
+        "resumes": [imported_resume],
+    }
+    imported = client.post(
+        "/api/import/resume",
+        files={"file": ("resume.json", json.dumps(payload), "application/json")},
+    )
+
+    assert imported.status_code == status.HTTP_200_OK
+    assert imported.json()["data"] == {
+        "templates": payload["templates"],
+        "resumes": payload["resumes"],
+    }

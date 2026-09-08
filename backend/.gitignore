@@ -1,6 +1,10 @@
 .venv/
 .coverage
 htmlcov/
+.env
+.env.*
+!.env.example
+
 
 # Python cache
 __pycache__/

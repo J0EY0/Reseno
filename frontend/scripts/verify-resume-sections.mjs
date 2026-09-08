@@ -22,16 +22,11 @@ try {
   const {
     createResumeSection,
     isCanonicalResumeSection,
-    parseCommaSeparatedItems,
     projectResumeSection,
   } = sectionModule;
   const { applySectionMutation } = sectionMutationModule;
 
-  assert.deepEqual(
-    parseCommaSeparatedItems("React, TypeScript， FastAPI, "),
-    ["React", "TypeScript", "FastAPI"],
-    "Comma-separated fields must publish canonical values while the user types.",
-  );
+
 
   const education = createResumeSection("education");
   education.id = "education-1";

@@ -74,10 +74,10 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         _open_basic_info(page)
         pattern = f"**/api/resumes/{resume_id}/versions/{created['versionId']}"
         page.route(pattern, lambda route: pending.append(route))
-        page.get_by_role("button", name="保存版本", exact=True).click()
+        page.get_by_role("button", name="历史版本", exact=True).click()
         with page.expect_request(lambda request: "/versions/" in request.url):
             page.locator(
-                '[data-slot="popover-content"][aria-label="保存版本"]'
+                '[data-slot="popover-content"][aria-label="历史版本"]'
             ).get_by_role("button").last.click()
         assert pending
 

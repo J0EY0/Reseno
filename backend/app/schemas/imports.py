@@ -31,7 +31,7 @@ class ArtifactModel(BaseModel):
 
 
 class TypographySettings(ArtifactModel):
-    font_family: Literal["inter", "noto_sans_sc", "serif", "plex"] = Field(
+    font_family: Literal["inter", "noto_sans_sc", "serif", "times", "plex"] = Field(
         alias="fontFamily"
     )
     font_size: Literal[12, 14, 16, 18, 20] = Field(alias="fontSize")
@@ -43,7 +43,7 @@ class TemplateSettings(ArtifactModel):
     page_padding_bottom: float = Field(alias="pagePaddingBottom", ge=8, le=18)
     section_gap: float = Field(alias="sectionGap", ge=0.6, le=2.4)
     item_gap: float = Field(alias="itemGap", ge=0.4, le=1.8)
-    body_line_height: float = Field(alias="bodyLineHeight", ge=1.4, le=2.2)
+    body_line_height: float = Field(alias="bodyLineHeight", ge=1.1, le=2.2)
     name_scale: float = Field(alias="nameScale", ge=1.6, le=2.8)
     section_title_scale: float = Field(alias="sectionTitleScale", ge=0.75, le=1.6)
     item_title_scale: float = Field(alias="itemTitleScale", ge=0.85, le=1.4)
@@ -75,7 +75,7 @@ class TemplateSettingsOverrides(ArtifactModel):
     section_gap: float | None = Field(default=None, alias="sectionGap", ge=0.6, le=2.4)
     item_gap: float | None = Field(default=None, alias="itemGap", ge=0.4, le=1.8)
     body_line_height: float | None = Field(
-        default=None, alias="bodyLineHeight", ge=1.4, le=2.2
+        default=None, alias="bodyLineHeight", ge=1.1, le=2.2
     )
     name_scale: float | None = Field(default=None, alias="nameScale", ge=1.6, le=2.8)
     section_title_scale: float | None = Field(
@@ -159,7 +159,7 @@ class TemplateLayout(ArtifactModel):
     basic_info: Literal["centered", "left", "split", "profile", "sidebar"] = Field(
         alias="basicInfo"
     )
-    section: Literal["ruled", "boxed", "accent", "plain", "band"]
+    section: Literal["ruled", "underlined", "boxed", "accent", "plain", "band"]
     timeline_item_layout: Literal["split", "stacked", "compact"] = Field(
         alias="timelineItemLayout"
     )

@@ -608,7 +608,7 @@ def test_committed_draft_survives_session_reload_with_its_base(
     }
 
 
-def test_new_committed_draft_discards_previous_pending_draft(
+def test_new_committed_draft_supersedes_previous_pending_draft(
     client: object,
 ) -> None:
     del client
@@ -633,7 +633,7 @@ def test_new_committed_draft_discards_previous_pending_draft(
         if message.response is not None and message.response.draft is not None
     }
     assert draft_statuses == {
-        "assistant-draft-a": "discarded",
+        "assistant-draft-a": "superseded",
         "assistant-draft-b": "pending",
     }
 
@@ -798,7 +798,7 @@ def test_follow_up_draft_keeps_one_base_and_accumulates_same_field_edits(
         if message.response is not None and message.response.draft is not None
     }
     assert draft_statuses == {
-        "assistant-initial-draft": "discarded",
+        "assistant-initial-draft": "superseded",
         "assistant-refined-draft": "pending",
     }
 
@@ -1037,13 +1037,13 @@ def test_agent_draft_decision_preserves_private_conversation_checkpoint(
         assert next_turn.conversation_state.loaded_checkpoint == checkpoint
 
 
-def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
+def test_new_draft_supersession_preserves_private_conversation_checkpoint(
     client: object,
 ) -> None:
     del client
-    resume_id = _resume_id("resume-checkpoint-auto-discard")
+    resume_id = _resume_id("resume-checkpoint-supersession")
     checkpoint = AgentConversationCheckpoint(
-        throughMessageId="turn-checkpoint-auto-discard-1",
+        throughMessageId="turn-checkpoint-supersession-1",
         summary=_checkpoint_summary("Constraints: Keep every claim grounded."),
     )
 
@@ -1052,7 +1052,7 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
             conn,
             _request(
                 resume_id,
-                message_id="turn-checkpoint-auto-discard-1",
+                message_id="turn-checkpoint-supersession-1",
                 text="Prepare the first edit.",
                 revision=load_agent_session(conn, resume_id).revision,
             ),
@@ -1062,12 +1062,12 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
             conn,
             first,
             AgentChatMessage(
-                id="assistant-checkpoint-auto-discard-1",
+                id="assistant-checkpoint-supersession-1",
                 role="assistant",
                 text="The first edit is ready.",
                 edits=[
                     {
-                        "id": "edit-checkpoint-auto-discard-1",
+                        "id": "edit-checkpoint-supersession-1",
                         "title": "Update headline",
                         "target": "basic.headline",
                         "reason": "Use the requested title.",
@@ -1086,7 +1086,7 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
             conn,
             _request(
                 resume_id,
-                message_id="turn-checkpoint-auto-discard-2",
+                message_id="turn-checkpoint-supersession-2",
                 text="Prepare a newer edit instead.",
                 revision=load_agent_session(conn, resume_id).revision,
             ),
@@ -1095,12 +1095,12 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
             conn,
             second,
             AgentChatMessage(
-                id="assistant-checkpoint-auto-discard-2",
+                id="assistant-checkpoint-supersession-2",
                 role="assistant",
                 text="The newer edit is ready.",
                 edits=[
                     {
-                        "id": "edit-checkpoint-auto-discard-2",
+                        "id": "edit-checkpoint-supersession-2",
                         "title": "Update summary",
                         "target": "basic.summary",
                         "reason": "Use the newer request.",
@@ -1118,7 +1118,7 @@ def test_new_draft_auto_discard_preserves_private_conversation_checkpoint(
             conn,
             _request(
                 resume_id,
-                message_id="turn-checkpoint-auto-discard-3",
+                message_id="turn-checkpoint-supersession-3",
                 text="Continue.",
                 revision=load_agent_session(conn, resume_id).revision,
             ),
@@ -1517,8 +1517,10 @@ def test_agent_draft_decision_rejects_duplicate_unknown_and_resolved_items(
     assert exc_info.value.current_status == "discarded"
 
 
-def test_only_latest_committed_draft_can_be_applied(
+@pytest.mark.parametrize("decision", ["applied", "discarded"])
+def test_only_latest_committed_draft_can_be_resolved(
     client: TestClient,
+    decision: str,
 ) -> None:
     resume_id = _resume_id("resume-latest-draft-apply-only")
     original_payload = _resume_save_payload(headline="Engineer")
@@ -1557,12 +1559,18 @@ def test_only_latest_committed_draft_can_be_applied(
         f"/api/agent/resumes/{resume_id}/session/messages/assistant-draft-a/draft",
         json={
             "revision": latest_payload["session"]["revision"],
-            "status": "applied",
+            "status": decision,
             "reviewItemIds": [
                 _committed_review_item_id("assistant-draft-a"),
             ],
-            "resume": superseded_candidate,
-            "expectedVersionId": latest_payload["resume"]["versionId"],
+            **(
+                {
+                    "resume": superseded_candidate,
+                    "expectedVersionId": latest_payload["resume"]["versionId"],
+                }
+                if decision == "applied"
+                else {}
+            ),
         },
     )
 
@@ -1572,7 +1580,7 @@ def test_only_latest_committed_draft_can_be_applied(
         "detail": {
             "code": "AGENT_DRAFT_DECISION_CONFLICT",
             "revision": latest_payload["session"]["revision"],
-            "status": "discarded",
+            "status": "superseded",
         },
     }
     persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
@@ -1580,6 +1588,33 @@ def test_only_latest_committed_draft_can_be_applied(
     assert persisted_resume["resume"]["resume"]["basic"]["headline"] == (
         "Staff Engineer"
     )
+
+
+def test_draft_decision_api_rejects_superseded_as_a_user_decision(
+    client: TestClient,
+) -> None:
+    resume_id = _resume_id("resume-server-draft-status")
+    message_id = "assistant-server-draft-status"
+    with closing(connect()) as conn:
+        _persist_committed_draft(
+            conn,
+            resume_id=resume_id,
+            message_id=message_id,
+        )
+        original = load_agent_session(conn, resume_id)
+
+    response = client.patch(
+        f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",
+        json={
+            "revision": original.revision,
+            "status": "superseded",
+            "reviewItemIds": [_committed_review_item_id(message_id)],
+        },
+    )
+
+    assert response.status_code == 422
+    with closing(connect()) as conn:
+        assert load_agent_session(conn, resume_id) == original
 
 
 def test_apply_boundary_rejects_a_non_latest_pending_draft(

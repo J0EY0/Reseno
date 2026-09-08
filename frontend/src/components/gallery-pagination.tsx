@@ -130,7 +130,7 @@ export function GalleryPagination({
   const nextUnavailable = disabled || currentPage === totalPages;
 
   return (
-    <Pagination className="pt-4">
+    <Pagination aria-label={t.paginationLabel} className="pt-4">
       <PaginationContent>
         <PaginationItem>
           <PaginationPrevious

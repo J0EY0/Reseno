@@ -19,7 +19,11 @@ from app.schemas.agent import (
 )
 from app.services.agent.runtime.compaction import prepare_agent_prompt
 from app.services.agent.runtime.context import AgentRuntimeContext
-from app.services.agent.runtime.messages import estimate_agent_messages_tokens
+from app.services.agent.runtime.messages import (
+    AgentPromptCompiler,
+    agent_prompt_limits,
+    estimate_agent_messages_tokens,
+)
 from app.services.agent_sessions import (
     AgentSessionPersistenceError,
     AgentTerminalOutcome,
@@ -28,6 +32,7 @@ from app.services.agent_sessions import (
     persist_agent_terminal_outcome,
 )
 from app.services.llm import AgentLlmConfig
+from tests.agent_context import with_message_budget
 
 
 @pytest.fixture
@@ -269,6 +274,13 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
         throughMessageId="turn-2",
         summary=_checkpoint_summary("Keep claims grounded in supplied evidence."),
     )
+    original = _assistant("assistant-1", draft=True).model_dump(by_alias=True)
+    for status in ("applied", "discarded"):
+        edit_id = f"edit-{status}"
+        original["edits"].append({**original["edits"][0], "id": edit_id})
+        original["draft"]["reviewItems"].append(
+            {"id": f"review-{status}", "editIds": [edit_id], "status": status},
+        )
 
     with closing(connect()) as conn:
         first = accept_agent_turn(
@@ -288,7 +300,7 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
             AgentTerminalOutcome(
                 status="succeeded",
                 error_code=None,
-                assistant=_assistant("assistant-1", draft=True),
+                assistant=AgentChatMessage.model_validate(original),
                 checkpoint=first.conversation_state.active_checkpoint,
             ),
         )
@@ -323,7 +335,12 @@ def test_terminal_outcome_atomically_persists_changed_checkpoint_and_new_draft(
 
     assert session.messages[1].response is not None
     assert session.messages[1].response.draft is not None
-    assert session.messages[1].response.draft.review_items[0].status == "discarded"
+    assert [
+        item.status for item in session.messages[1].response.draft.review_items
+    ] == ["superseded", "applied", "discarded"]
+    assert session.messages[1].response.draft.base_resume == (
+        original["draft"]["baseResume"]
+    )
     assert session.messages[-1].response is not None
     assert session.messages[-1].response.draft is not None
     assert session.messages[-1].response.draft.review_items[0].status == "pending"
@@ -380,6 +397,11 @@ def test_rollover_checkpoint_is_restored_without_hiding_visible_history(
             run_id="run-2",
             resolved_config=None,
         )
+        config = with_message_budget(second.request, config, input_tokens=2_500)
+        limits = agent_prompt_limits(second.request, config)
+        assert limits is not None
+        exact = AgentPromptCompiler(second.request, config).build()
+        assert estimate_agent_messages_tokens(exact.messages) > limits.trigger_tokens
         second_prompt = anyio.run(
             partial(
                 prepare_agent_prompt,
@@ -393,7 +415,10 @@ def test_rollover_checkpoint_is_restored_without_hiding_visible_history(
         checkpoint = second.conversation_state.active_checkpoint
         assert checkpoint is not None
         assert checkpoint.through_message_id == "assistant-1"
-        assert estimate_agent_messages_tokens(second_prompt.messages) <= 6_000
+        assert (
+            estimate_agent_messages_tokens(second_prompt.messages)
+            <= limits.input_tokens
+        )
 
         persist_agent_terminal_outcome(
             conn,
@@ -609,3 +634,70 @@ def test_non_success_terminal_outcome_uses_the_same_atomic_seam(
         "turn-1",
         *([assistant_id] if assistant_id is not None else []),
     ]
+
+
+@pytest.mark.parametrize(
+    ("status", "error_code", "assistant_id"),
+    [
+        ("failed", "AGENT_INTERNAL_ERROR", None),
+        ("cancelled", "AGENT_RUN_CANCELLED", "assistant-cancelled"),
+        ("succeeded", None, "assistant-no-edits"),
+    ],
+)
+def test_terminal_without_new_draft_preserves_previous_pending_draft(
+    agent_database,
+    status,
+    error_code,
+    assistant_id,
+) -> None:
+    del agent_database
+    resume_id = f"PreservedDraft{status.title()}Resume"
+    original = _assistant("assistant-pending", draft=True)
+
+    with closing(connect()) as conn:
+        first = accept_agent_turn(
+            conn,
+            _request(
+                conn,
+                resume_id=resume_id,
+                turn_id="turn-pending",
+                text="Prepare the first draft.",
+            ),
+            run_id="run-pending",
+            resolved_config=None,
+        )
+        persist_agent_terminal_outcome(
+            conn,
+            first,
+            AgentTerminalOutcome(
+                status="succeeded",
+                error_code=None,
+                assistant=original,
+                checkpoint=None,
+            ),
+        )
+        second = accept_agent_turn(
+            conn,
+            _request(
+                conn,
+                resume_id=resume_id,
+                turn_id="turn-follow-up",
+                text="Continue reviewing the draft.",
+            ),
+            run_id="run-follow-up",
+            resolved_config=None,
+        )
+        persist_agent_terminal_outcome(
+            conn,
+            second,
+            AgentTerminalOutcome(
+                status=status,
+                error_code=error_code,
+                assistant=_assistant(assistant_id) if assistant_id else None,
+                checkpoint=None,
+            ),
+        )
+        session = load_agent_session(conn, resume_id)
+
+    assert session.messages[1].response == original
+    assert session.executions[-1].status == status

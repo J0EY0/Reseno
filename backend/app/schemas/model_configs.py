@@ -1,6 +1,7 @@
+from math import isfinite
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
 
 from app.services.thinking import ThinkingMode
@@ -88,6 +89,26 @@ class DiscoverModelsResponse(BaseModel):
     source: str = "provider"
 
 
+class ModelContextReferenceRequest(BaseModel):
+    """Model identity used to look up a catalog context reference."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class ModelContextReferenceResponse(BaseModel):
+    """Catalog context limit, independent of the deployed model configuration."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    status: Literal["found", "not_found", "ambiguous"]
+    context_window_tokens: int | None = Field(alias="contextWindowTokens")
+    matched_model: str | None = Field(alias="matchedModel")
+    source: Literal["models.dev", "litellm"] | None
+
+
 class ModelConfigUpsertRequest(BaseModel):
     """Model config data accepted from the frontend settings UI."""
 
@@ -130,6 +151,27 @@ class ModelConfigUpsertRequest(BaseModel):
     )
     supports_tools: bool = Field(default=True, alias="supportsTools")
     supports_streaming: bool = Field(default=True, alias="supportsStreaming")
+
+    @field_validator("temperature", "top_p")
+    @classmethod
+    def validate_local_sampling(
+        cls, value: float | None, info: ValidationInfo,
+    ) -> float | None:
+        if info.data.get("provider_kind") != "local" or value is None:
+            return value
+        if not isfinite(value):
+            raise PydanticCustomError(
+                "finite_number", "Input should be a finite number.",
+            )
+        if info.field_name == "temperature" and not 0 <= value <= 2:
+            raise PydanticCustomError(
+                "local_temperature_range", "Temperature must be between 0 and 2.",
+            )
+        if info.field_name == "top_p" and not 0 < value <= 1:
+            raise PydanticCustomError(
+                "local_top_p_range", "Top P must be greater than 0 and at most 1.",
+            )
+        return value
 
 
 class ModelConfigBulkDeleteRequest(BaseModel):

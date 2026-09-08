@@ -257,6 +257,7 @@ export function TemplateLayoutTab({
             </SelectTrigger>
             <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="ruled">{t.sectionStyleRuled}</SelectItem>
+              <SelectItem value="underlined">{t.sectionStyleUnderlined}</SelectItem>
               <SelectItem value="boxed">{t.sectionStyleBoxed}</SelectItem>
               <SelectItem value="accent">{t.sectionStyleAccent}</SelectItem>
               <SelectItem value="plain">{t.sectionStylePlain}</SelectItem>

@@ -119,7 +119,7 @@ try {
   const compactGapMeasurements = [2, 1];
   await smartOnePage.fitResumeToOnePage(
     currentStyle,
-    { ...settings, sectionGap: 0.6 },
+    { ...settings, sectionGap: 0.6, bodyLineHeight: 1.15 },
     {
       applyStyle: (style) => compactGapStyles.push(style),
       measurePageCount: async () => compactGapMeasurements.shift() ?? 1,
@@ -129,6 +129,11 @@ try {
     compactGapStyles[0]?.templateSettings.sectionGap,
     0.6,
     "Smart One Page must not enlarge an already compact section gap.",
+  );
+  assert.equal(
+    compactGapStyles[0]?.templateSettings.bodyLineHeight,
+    1.15,
+    "Smart One Page must not enlarge an already compact line height.",
   );
 
   const exhaustedStyles = [];
@@ -172,7 +177,7 @@ try {
     compact: 0.7,
     classic: 0.8,
     executive: 0.7,
-    academic: 0.8,
+    academic: 1.2,
   };
   assert.deepEqual(
     Object.fromEntries(
@@ -189,6 +194,37 @@ try {
       .sectionGap,
     0.6,
     "The compact section-gap lower bound must remain available.",
+  );
+
+  const compactSerifTemplate = templates.createCustomTemplateFromBase({
+    id: "template-compact-serif",
+    preset: "minimal",
+    name: "Compact serif",
+    description: "",
+    layout: {
+      ...templates.createTemplateLayout("minimal"),
+      section: "underlined",
+    },
+    typography: { fontFamily: "times", fontSize: 14 },
+    settings: {
+      ...templates.createTemplateSettings("minimal"),
+      bodyLineHeight: 1.15,
+    },
+    updatedAt: "",
+    isBuiltIn: false,
+  });
+  assert.deepEqual(
+    {
+      section: compactSerifTemplate.layout.section,
+      typography: compactSerifTemplate.typography,
+      bodyLineHeight: compactSerifTemplate.settings.bodyLineHeight,
+    },
+    {
+      section: "underlined",
+      typography: { fontFamily: "times", fontSize: 14 },
+      bodyLineHeight: 1.15,
+    },
+    "Duplicating a custom template must preserve its typography and layout.",
   );
 
   const resumeDetailRouteSource = await readFile(

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { evaluateTypeScript } from "./typescript-module.mjs";
+
 const sourceRoot = new URL("../src/", import.meta.url);
 const [
   mainEntry,
@@ -92,5 +94,31 @@ assert(
     /serif:\s*[\s\S]{0,300}Noto Serif SC Variable/.test(previewStyles),
   "Conditional assets must preserve the exact preview font fallback stacks.",
 );
+
+const requestedFonts = [];
+const thumbnailFontModule = evaluateTypeScript(thumbnailFonts, {
+  imports: {
+    react: { useEffect: (effect) => effect() },
+    "@/components/preview/resume-font-loader": {
+      loadResumeFontStyles(fontFamily) {
+        requestedFonts.push(fontFamily);
+        return Promise.resolve();
+      },
+    },
+  },
+});
+for (const [fontFamilies, expectedFonts] of [
+  [["times"], ["serif"]],
+  [["times", "serif", "inter"], ["inter", "serif"]],
+  [[], []],
+]) {
+  requestedFonts.length = 0;
+  thumbnailFontModule.useResumeThumbnailFonts(fontFamilies);
+  assert.deepEqual(
+    requestedFonts,
+    expectedFonts,
+    "Thumbnail collections must load each required script font only once.",
+  );
+}
 
 console.log("Conditional resume font loading verified.");

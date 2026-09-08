@@ -102,7 +102,7 @@ function createSettingsCandidate(
     bodyLineHeight: compactNumber(
       settings.bodyLineHeight,
       level.bodyLineHeight,
-      1.4,
+      1.1,
     ),
     nameScale: compactNumber(settings.nameScale, level.nameScale, 1.6),
     sectionTitleScale: compactNumber(

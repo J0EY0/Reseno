@@ -116,6 +116,7 @@ class AgentLlmConfig:
     context_window_tokens: int | None = None
     # Normalized discovery/metadata capability. This is not a user request cap.
     model_max_output_tokens: int | None = None
+    shared_context_window_tokens: int | None = None
     # Effective per-request projection, recomputed as a tool loop grows. It is
     # runtime-only and must never be persisted as the user's override.
     request_max_output_tokens: int | None = None

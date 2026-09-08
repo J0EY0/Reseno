@@ -6,6 +6,7 @@ import { ResumeThumbnail } from "@/components/preview/resume-thumbnail";
 import { Button } from "@/components/ui/button";
 import type { AppMessages } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 import type {
   ResumeTemplateDefinition,
@@ -39,7 +40,8 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
   onRequestDelete: (resumeIds: string[]) => void;
   onToggleSelected: (resumeId: string) => void;
 }) {
-  const resumeLabel = item.title || item.resume.basic.name || t.untitledResume;
+  const resumeLabel =
+    item.title || getRichTextPlainText(item.resume.basic.name) || t.untitledResume;
   const preloadDetail = isSelecting ? undefined : onPreloadDetail;
   const documentMessages = useLocalizedMessages(item.documentLocale);
 
@@ -126,7 +128,7 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
                   {resumeLabel}
                 </p>
                 <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {item.resume.basic.headline ||
+                  {getRichTextPlainText(item.resume.basic.headline) ||
                     item.resume.basic.email ||
                     item.resume.basic.phone}
                 </p>

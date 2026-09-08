@@ -30,7 +30,7 @@ function HighlightsFallback({
   const visibleHighlights = useMemo(
     () => highlights
       .filter((value) => !isRichTextEmpty(value))
-      .map(sanitizeRichTextHtml),
+      .map((value) => sanitizeRichTextHtml(value)),
     [highlights],
   );
   const hasDiffs = diffs.length > 0;

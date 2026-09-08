@@ -1,6 +1,10 @@
 import { PopoverTitle } from "@/components/ui/popover";
 import type { AppMessages } from "@/i18n";
 import { formatAgentDiffValue } from "@/lib/agent-diff-value";
+import {
+  formatRichTextAsPlainText,
+  sanitizeRichTextHtml,
+} from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 import type { ResumeDraftDiff } from "@/types/resume";
 
@@ -28,14 +32,14 @@ function comparisonRows(diff: ResumeDraftDiff, t: AppMessages) {
       return [
         {
           label: t.agentDiffAddedContent,
-          value: formatAgentDiffValue(diff.after),
+          value: diff.after,
         },
       ];
     case "deleted":
       return [
         {
           label: t.agentDiffDeletedContent,
-          value: formatAgentDiffValue(diff.before),
+          value: diff.before,
         },
       ];
     case "moved":
@@ -45,10 +49,37 @@ function comparisonRows(diff: ResumeDraftDiff, t: AppMessages) {
       ];
     case "modified":
       return [
-        { label: t.agentDiffBefore, value: formatAgentDiffValue(diff.before) },
-        { label: t.agentDiffAfter, value: formatAgentDiffValue(diff.after) },
+        { label: t.agentDiffBefore, value: diff.before },
+        { label: t.agentDiffAfter, value: diff.after },
       ];
   }
+}
+
+function ComparisonValue({ value }: { value: unknown }) {
+  if (typeof value === "string" && formatRichTextAsPlainText(value)) {
+    return (
+      <div
+        className="resume-rich-text"
+        dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(value) }}
+      />
+    );
+  }
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => typeof item === "string")
+  ) {
+    return (
+      <ul className="list-disc pl-4">
+        {value.map((item, index) => (
+          <li key={index}>
+            <ComparisonValue value={item} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return formatAgentDiffValue(value);
 }
 
 export function ResumeDraftReviewComparison({
@@ -86,7 +117,7 @@ export function ResumeDraftReviewComparison({
               )}
               tabIndex={0}
             >
-              {row.value}
+              <ComparisonValue value={row.value} />
             </dd>
           </div>
         ))}

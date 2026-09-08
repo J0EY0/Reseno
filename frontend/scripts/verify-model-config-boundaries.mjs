@@ -19,6 +19,8 @@ const [
   draft,
   providerFields,
   modelFields,
+  advancedSettingsField,
+  contextWindowField,
   thinkingModeField,
   modelFocus,
   modelConfigLibrary,
@@ -40,6 +42,8 @@ const [
     readText("src/components/models/model-config-draft.ts"),
     readText("src/components/models/model-config-provider-fields.tsx"),
     readText("src/components/models/model-config-model-fields.tsx"),
+    readText("src/components/models/model-config-advanced-settings-field.tsx"),
+    readText("src/components/models/model-config-context-window-field.tsx"),
     readText("src/components/models/model-config-thinking-mode-field.tsx"),
     readText("src/components/models/model-config-focus.ts"),
     readText("src/lib/model-config.ts"),
@@ -377,11 +381,6 @@ assert.match(
   /draft\.providerKind === "cloud"[\s\S]*provider\.defaultBaseUrl\.trim\(\)[\s\S]*draft\.apiUrl\.trim\(\)/,
   "Saved cloud configs must use the manifest URL while local configs keep the typed URL.",
 );
-assert.match(
-  draft,
-  /temperature:\s*null,[\s\S]*topP:\s*null/,
-  "The form must not persist the removed sampling controls.",
-);
 
 assert.match(
   providerFields,
@@ -410,9 +409,14 @@ assert.match(
   "Manual configs must preserve tool capability editing.",
 );
 assert.match(
-  modelFields,
-  /messages\.capabilities[\s\S]*messages\.advancedSettings[\s\S]*name="model-context-window"[\s\S]*name="model-max-tokens"/,
+  `${modelFields}\n${advancedSettingsField}`,
+  /messages\.capabilities[\s\S]*messages\.advancedSettings[\s\S]*usesManualSettings \? \([\s\S]*<ModelConfigContextWindowField[\s\S]*name="model-max-tokens"/,
   "Manual configs must preserve capabilities and token limits.",
+);
+assert.match(
+  contextWindowField,
+  /htmlFor="model-context-window"[\s\S]*id="model-context-catalog"[\s\S]*type="button"[\s\S]*messages\.contextWindowCatalog[\s\S]*name="model-context-window"/,
+  "The context window must retain manual input with an explicit catalog action before it.",
 );
 assert.match(
   modelFields,
@@ -425,24 +429,19 @@ assert.match(
   "The discovery action must remain an explicit focus fallback.",
 );
 assert.match(
-  modelFields,
+  advancedSettingsField,
   /<Collapsible open=\{expanded\} onOpenChange=\{handleOpenChange\}>[\s\S]*?<CollapsibleContent[\s\S]*?className="model-output-settings-content"[\s\S]*?className="model-output-settings-content-inner gap-5 pt-3"/,
-  "Cloud advanced settings must reveal as one complete field instead of clipping through its controls.",
+  "Advanced settings must reveal as one complete field instead of clipping through its controls.",
 );
 assert.match(
-  modelFields,
-  /function CloudAdvancedSettingsField[\s\S]*?<Field\s+orientation="horizontal"\s+className="flex-wrap gap-x-3 gap-y-1\.5"[\s\S]*?htmlFor="model-max-tokens"[\s\S]*?<Input[\s\S]*?id="model-max-tokens"[\s\S]*?className="w-32 max-w-\[55%\] shrink-0"[\s\S]*?<FieldError[\s\S]*?className="basis-full"/,
+  advancedSettingsField,
+  /function ModelConfigAdvancedSettingsField[\s\S]*?<Field\s+orientation="horizontal"\s+className="flex-wrap gap-x-3 gap-y-1\.5"[\s\S]*?htmlFor="model-max-tokens"[\s\S]*?<Input[\s\S]*?id="model-max-tokens"[\s\S]*?className="w-32 max-w-\[55%\] shrink-0"[\s\S]*?<FieldError[\s\S]*?className="basis-full"/,
   "Cloud max_tokens must use a compact right-aligned input while its error keeps a full row.",
 );
 assert.match(
-  modelFields,
+  advancedSettingsField,
   /closest<HTMLElement>[\s\S]*?viewport\.scrollTo\(\{[\s\S]*?prefers-reduced-motion: reduce/,
   "User-expanded advanced settings must scroll only the form viewport and respect reduced motion.",
-);
-assert.doesNotMatch(
-  `${providerFields}\n${modelFields}`,
-  /name="model-temperature"|name="model-top-p"/,
-  "Removed temperature and topP controls must not return.",
 );
 assert.match(
   thinkingModeField,
@@ -828,6 +827,53 @@ try {
     validationMaxTokens: "Enter a positive integer",
     validationMaxTokensExceeded: "Must not exceed {count}",
   };
+  const localProvider = {
+    ...cloudProvider,
+    id: "ollama",
+    kind: "local",
+    label: "Ollama",
+    defaultBaseUrl: "http://localhost:11434/v1",
+  };
+  const localDraft = {
+    ...createModelConfigDraft("en"),
+    provider: localProvider.id,
+    providerKind: "local",
+    apiUrl: localProvider.defaultBaseUrl,
+    model: "qwen3:8b",
+  };
+  for (const [temperature, topP] of [[0, 1], [1.234, 0.8765], [2, 0.01]]) {
+    const input = { ...localDraft, temperature: String(temperature), topP: String(topP) };
+    assert.deepEqual(validateModelConfigDraft(input, localProvider, [], messages), {});
+    const saved = createSavedModelConfig(input, localProvider);
+    const [normalized] = normalizeModelConfigs({ modelConfigs: [saved] }, "en");
+    const restored = createModelConfigDraft("en", normalized);
+    assert.equal(saved.temperature, temperature);
+    assert.equal(saved.topP, topP);
+    assert.equal(restored.temperature, String(temperature), "Saved local temperature must retain zero and decimal precision.");
+    assert.equal(restored.topP, String(topP), "Saved local Top P must retain decimal precision.");
+  }
+  const autoSampling = createSavedModelConfig(
+    { ...localDraft, temperature: " ", topP: "" }, localProvider,
+  );
+  assert.equal(autoSampling.temperature, null);
+  assert.equal(autoSampling.topP, null);
+  for (const [field, invalidValues] of [
+    ["temperature", ["-0.1", "2.01", "NaN", "Infinity", "1e999", "abc", "0x1"]],
+    ["topP", ["0", "-0.1", "1.01", "NaN", "Infinity", "1e999", "abc", "0x1"]],
+  ]) {
+    for (const value of invalidValues) {
+      const errors = validateModelConfigDraft({ ...localDraft, [field]: value }, localProvider, [], messages);
+      assert.equal(errors[field], field === "temperature" ? messages.validationTemperature : messages.validationTopP,
+        `${field} must reject ${value} before saving.`);
+    }
+  }
+  for (const providerKind of ["cloud", "custom"]) {
+    const saved = createSavedModelConfig(
+      { ...localDraft, providerKind, temperature: "1.234", topP: "0.8765" }, cloudProvider,
+    );
+    assert.equal(saved.temperature, null);
+    assert.equal(saved.topP, null);
+  }
   const autoOutputDraft = applyDiscoveredModel(
     {
       ...createModelConfigDraft("en"),
@@ -1024,6 +1070,26 @@ try {
         },
       }),
     );
+  for (const providerKind of ["local", "custom"]) {
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelConfigModelFields, {
+        controller: {
+          draft: { ...localDraft, providerKind, temperature: "0", topP: "0.75", maxTokens: "4096" },
+          errors: {},
+          modelOptionsLoading: false,
+          selectedProvider: localProvider,
+          updateField() {},
+        },
+        messages,
+      }),
+    );
+    if (providerKind === "local") {
+      assert.match(markup, /id="model-temperature"[^>]*inputMode="decimal"[^>]*value="0"/);
+      assert.match(markup, /id="model-top-p"[^>]*inputMode="decimal"[^>]*value="0.75"/);
+    } else {
+      assert.doesNotMatch(markup, /id="model-temperature"|id="model-top-p"/);
+    }
+  }
   const loadingCloudFieldsMarkup = renderCloudFields(
     "",
     {},

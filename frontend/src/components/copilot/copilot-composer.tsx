@@ -32,6 +32,7 @@ import type { AgentPromptActions } from './use-agent-prompt-actions'
 
 export function CopilotComposer({
   globalDropActive,
+  hasConversationHistory,
   isSessionReady,
   modelConfigs,
   onOpenModelSettings,
@@ -43,6 +44,7 @@ export function CopilotComposer({
   t,
 }: {
   globalDropActive: boolean
+  hasConversationHistory: boolean
   isSessionReady: boolean
   modelConfigs: ModelConfig[]
   onOpenModelSettings: () => void
@@ -100,6 +102,7 @@ export function CopilotComposer({
             <AgentPromptAttachmentsDisplay
               disableRemoval={promptActions.isSubmittingPrompt}
               fallbackLabel={t.agentAttachmentFallback}
+              removeLabel={t.agentRemoveAttachment}
               onLocalCountChange={promptActions.setPromptLocalAttachmentCount}
               onRemoveReferenced={
                 promptActions.removeReferencedAttachment
@@ -112,7 +115,11 @@ export function CopilotComposer({
                 className="min-h-[58px] max-h-[132px] px-4 pb-0 pt-3 text-[15px] leading-[22px] text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed"
                 disabled={!composerReady}
                 placeholder={
-                  hasConfiguredModel ? t.agentPromptPlaceholderShort : ''
+                  hasConfiguredModel &&
+                  isSessionReady &&
+                  !hasConversationHistory
+                    ? t.agentPromptPlaceholderShort
+                    : ''
                 }
                 rows={1}
               />

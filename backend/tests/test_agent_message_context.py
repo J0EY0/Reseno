@@ -27,6 +27,7 @@ from app.services.llm.output_budget import (
     resolve_request_output_budget,
 )
 from app.services.llm.types import LlmPrompt
+from tests.agent_context import with_message_budget
 
 
 def _config(
@@ -449,7 +450,7 @@ def test_agent_context_hides_identity_from_base_and_pending_draft() -> None:
 
     serialized = json.dumps(messages, ensure_ascii=False)
     assert "王小明" not in serialized
-    assert "[redacted_name]" in serialized
+    assert "[redacted_identity_0]" in serialized
 
 
 def test_agent_context_preserves_attachment_only_history_as_safe_metadata() -> None:
@@ -559,7 +560,7 @@ def test_recent_assistant_prose_is_context_not_a_behavior_example() -> None:
     }
 
 
-def test_each_model_turn_compacts_old_web_excerpts_without_moving_prefix() -> None:
+def test_each_model_turn_compacts_old_web_passages_without_moving_prefix() -> None:
     request = _request(prompt="Research the target role.")
     config = _config(context_window_tokens=32_000, max_tokens=2_048)
     prompt = AgentPromptCompiler(request, config).build()
@@ -596,21 +597,17 @@ def test_each_model_turn_compacts_old_web_excerpts_without_moving_prefix() -> No
                         {
                             "state": "output-available",
                             "output": {
-                                "data": {
-                                    "results": [
-                                        {
-                                            "sourceId": f"source-{call_id}",
-                                            "title": f"Result {call_id}",
-                                            "url": f"https://example.test/{call_id}",
-                                            "sourceKind": "fetched_page",
-                                            "excerpt": excerpt,
-                                            "excerptBoundary": {
-                                                "start": 0,
-                                                "end": len(excerpt),
-                                            },
-                                        },
-                                    ],
-                                },
+                                "references": [
+                                    {
+                                        "sourceId": f"source-{call_id}",
+                                        "title": f"Result {call_id}",
+                                        "url": f"https://example.test/{call_id}",
+                                        "sourceKind": "fetched_page",
+                                        "passages": [
+                                            {"section": "Requirements", "text": excerpt}
+                                        ],
+                                    },
+                                ],
                             },
                         },
                     ),
@@ -628,8 +625,10 @@ def test_each_model_turn_compacts_old_web_excerpts_without_moving_prefix() -> No
     assert fitted.messages[: prefix_counts[-1]] == prompt.messages[: prefix_counts[-1]]
     old_result = json.loads(str(fitted.messages[-3]["content"]))
     latest_result = json.loads(str(fitted.messages[-1]["content"]))
-    assert "excerpt" not in old_result["output"]["data"]["results"][0]
-    assert latest_result["output"]["data"]["results"][0]["excerpt"] == (latest_excerpt)
+    assert "passages" not in old_result["output"]["references"][0]
+    assert latest_result["output"]["references"][0]["passages"][0]["text"] == (
+        latest_excerpt
+    )
     assert estimate_agent_messages_tokens(fitted.messages) <= limits.trigger_tokens
 
 
@@ -680,15 +679,15 @@ def test_each_model_turn_preserves_every_observation_in_the_latest_parallel_batc
                 "content": json.dumps(
                     {
                         "output": {
-                            "data": {
-                                "results": [
-                                    {
-                                        "sourceId": f"source-{call_id}",
-                                        "url": f"https://example.test/{call_id}",
-                                        "excerpt": excerpt,
-                                    },
-                                ],
-                            },
+                            "references": [
+                                {
+                                    "sourceId": f"source-{call_id}",
+                                    "url": f"https://example.test/{call_id}",
+                                    "passages": [
+                                        {"section": "Requirements", "text": excerpt}
+                                    ],
+                                },
+                            ],
                         },
                     },
                 ),
@@ -706,10 +705,12 @@ def test_each_model_turn_preserves_every_observation_in_the_latest_parallel_batc
         strict=True,
     ):
         result = json.loads(str(message["content"]))
-        assert result["output"]["data"]["results"][0]["excerpt"] == (expected_excerpt)
+        assert result["output"]["references"][0]["passages"][0]["text"] == (
+            expected_excerpt
+        )
 
 
-def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -> None:
+def test_each_model_turn_keeps_bounded_latest_jd_passages_at_the_hard_limit() -> None:
     request = _request(prompt="Tailor the resume to this current job description.")
     config = _config(context_window_tokens=16_000, max_tokens=2_048)
     prompt = AgentPromptCompiler(request, config).build()
@@ -744,7 +745,7 @@ def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -
                 "content": json.dumps(
                     {
                         "output": {
-                            "results": [
+                            "references": [
                                 {
                                     "sourceId": "source-latest-jd",
                                     "title": "Frontend Engineer",
@@ -752,7 +753,9 @@ def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -
                                     "sourceKind": "fetched_page",
                                     "publishedDate": "2026-08-20",
                                     "validThrough": "2026-09-20",
-                                    "excerpt": excerpt,
+                                    "passages": [
+                                        {"section": "Requirements", "text": excerpt}
+                                    ],
                                 },
                             ],
                         },
@@ -763,11 +766,11 @@ def test_each_model_turn_keeps_a_bounded_latest_jd_excerpt_at_the_hard_limit() -
     )
 
     fitted = fit_agent_model_turn_prompt(request, config, prompt)
-    result = json.loads(str(fitted.messages[-1]["content"]))["output"]["results"][0]
+    result = json.loads(str(fitted.messages[-1]["content"]))["output"]["references"][0]
 
-    assert result["excerpt"]
-    assert len(result["excerpt"]) == 800
-    assert result["excerptTruncated"] is True
+    assert result["passages"][0]["text"]
+    assert len(result["passages"][0]["text"]) == 800
+    assert result["passagesTruncated"] is True
     assert result["publishedDate"] == "2026-08-20"
     assert result["validThrough"] == "2026-09-20"
     assert estimate_agent_messages_tokens(fitted.messages) <= limits.input_tokens
@@ -843,9 +846,9 @@ def test_agent_context_preserves_named_attachment_metadata_beside_user_text() ->
 @pytest.mark.parametrize(
     ("filename", "expected_filename"),
     [
-        ("John_Smith_CV.pdf", "[redacted_name]_CV.pdf"),
-        ("John-Smith-CV.pdf", "[redacted_name]-CV.pdf"),
-        ("John.Smith.CV.pdf", "[redacted_name].CV.pdf"),
+        ("John_Smith_CV.pdf", "[redacted_identity_0]_CV.pdf"),
+        ("John-Smith-CV.pdf", "[redacted_identity_0]-CV.pdf"),
+        ("John.Smith.CV.pdf", "[redacted_identity_0].CV.pdf"),
     ],
 )
 def test_agent_context_hides_resume_name_in_historical_attachment_filename(
@@ -1046,7 +1049,12 @@ def test_agent_pure_projection_keeps_history_until_context_preparation() -> None
 
     messages = (
         AgentPromptCompiler(
-            request, _config(context_window_tokens=6000, max_tokens=512)
+            request,
+            with_message_budget(
+                request,
+                _config(context_window_tokens=16_000, max_tokens=512),
+                input_tokens=6000,
+            ),
         )
         .build()
         .messages
@@ -1088,10 +1096,15 @@ def test_agent_exact_projection_preserves_unclassified_user_constraints() -> Non
         for index in range(12)
     )
 
+    request = _request(prompt="Continue.", messages=history)
     messages = (
         AgentPromptCompiler(
-            _request(prompt="Continue.", messages=history),
-            _config(context_window_tokens=5000, max_tokens=512),
+            request,
+            with_message_budget(
+                request,
+                _config(context_window_tokens=16_000, max_tokens=512),
+                input_tokens=5000,
+            ),
         )
         .build()
         .messages
@@ -1129,10 +1142,15 @@ def test_agent_exact_projection_preserves_assistant_proposals() -> None:
             ],
         )
 
+    request = _request(prompt="Use option two.", messages=history)
     messages = (
         AgentPromptCompiler(
-            _request(prompt="Use option two.", messages=history),
-            _config(context_window_tokens=5000, max_tokens=512),
+            request,
+            with_message_budget(
+                request,
+                _config(context_window_tokens=16_000, max_tokens=512),
+                input_tokens=5000,
+            ),
         )
         .build()
         .messages
@@ -1140,7 +1158,10 @@ def test_agent_exact_projection_preserves_assistant_proposals() -> None:
     assert proposal in json.dumps(messages, ensure_ascii=False)
 
 
-def test_agent_context_keeps_structured_assistant_state_without_visible_text() -> None:
+@pytest.mark.parametrize("review_status", ["discarded", "superseded"])
+def test_agent_context_keeps_structured_assistant_state_without_visible_text(
+    review_status: str,
+) -> None:
     request = _request(
         prompt="继续刚才的修改。",
         messages=[
@@ -1159,7 +1180,7 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
                             {
                                 "id": "agent-review-silent-edit",
                                 "editIds": ["silent-edit"],
-                                "status": "discarded",
+                                "status": review_status,
                             },
                         ],
                     },
@@ -1213,7 +1234,8 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
     assert contexts[0]["draftReview"] == {
         "pendingCount": 0,
         "appliedCount": 0,
-        "discardedCount": 1,
+        "discardedCount": int(review_status == "discarded"),
+        "supersededCount": int(review_status == "superseded"),
     }
     assert "edits" not in contexts[0]
     assert [source["id"] for source in contexts[0]["sourceRefs"]] == [
@@ -1222,7 +1244,6 @@ def test_agent_context_keeps_structured_assistant_state_without_visible_text() -
 
 
 def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
-    config = _config(context_window_tokens=6_000, max_tokens=512)
     history = [
         {
             "id": f"checkpoint-history-{index}",
@@ -1238,6 +1259,11 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
     first_request = _request(
         prompt="检查当前项目。",
         messages=history,
+    )
+    config = with_message_budget(
+        first_request,
+        _config(context_window_tokens=16_000, max_tokens=512),
+        input_tokens=6_000,
     )
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="checkpoint-history-5",
@@ -1308,7 +1334,6 @@ def test_agent_compressed_history_keeps_summary_and_exact_tail_stable() -> None:
 
 
 def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
-    compact_config = _config(context_window_tokens=6_000, max_tokens=512)
     history = [
         {
             "id": f"stable-boundary-{index}",
@@ -1326,6 +1351,11 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
         for index in range(12)
     ]
     first_request = _request(prompt="检查当前项目。", messages=history)
+    compact_config = with_message_budget(
+        first_request,
+        _config(context_window_tokens=16_000, max_tokens=512),
+        input_tokens=6_000,
+    )
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="stable-boundary-5",
         summary=_checkpoint_context([]),
@@ -1359,9 +1389,6 @@ def test_agent_loaded_checkpoint_never_reexpands_with_a_larger_model() -> None:
 
 
 def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
-    # Keep the same useful prompt headroom after the runtime's mandatory 4K
-    # transport safety reserve was made explicit.
-    config = _config(context_window_tokens=7_100, max_tokens=512)
     history: list[dict[str, object]] = [
         {
             "id": f"headroom-history-{index}",
@@ -1371,11 +1398,19 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
         for index in range(8)
     ]
     request = _request(prompt="initial prompt", messages=history)
+    config = with_message_budget(
+        request,
+        _config(context_window_tokens=16_000, max_tokens=512),
+        input_tokens=2_000,
+    )
     checkpoint = AgentConversationCheckpoint(
         throughMessageId="headroom-history-3",
         summary=_checkpoint_context([]),
     )
-    AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
+    initial = AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+    assert estimate_agent_messages_tokens(initial.messages) < limits.trigger_tokens
     initial_boundary = checkpoint.through_message_id
 
     for index in range(1, 6):
@@ -1394,8 +1429,12 @@ def test_agent_pure_projection_never_advances_loaded_checkpoint() -> None:
             current_id=f"headroom-user-{index}",
             messages=history,
         )
-        AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
+        projection = AgentPromptCompiler(request, config).build(checkpoint=checkpoint)
         assert checkpoint.through_message_id == initial_boundary
+
+    limits = agent_prompt_limits(request, config)
+    assert limits is not None
+    assert estimate_agent_messages_tokens(projection.messages) > limits.input_tokens
 
 
 def test_agent_pure_projection_never_drops_recent_exact_messages() -> None:
@@ -1414,7 +1453,12 @@ def test_agent_pure_projection_never_drops_recent_exact_messages() -> None:
 
     messages = (
         AgentPromptCompiler(
-            request, _config(context_window_tokens=6000, max_tokens=512)
+            request,
+            with_message_budget(
+                request,
+                _config(context_window_tokens=16_000, max_tokens=512),
+                input_tokens=6000,
+            ),
         )
         .build()
         .messages

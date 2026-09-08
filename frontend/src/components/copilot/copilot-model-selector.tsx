@@ -131,10 +131,10 @@ export function CopilotModelSelector({
       <ModelSelectorTrigger asChild>
         <PromptInputButton
           aria-label={triggerAriaLabel}
-          className="h-8 w-fit min-w-0 max-w-none justify-start text-foreground transition-colors duration-200"
+          className="h-8 w-fit min-w-0 max-w-full shrink justify-start text-foreground transition-colors duration-200"
           disabled={disabled}
           size="sm"
-          title={selectedModelConfig ? undefined : t.agentModelConfigureHover}
+          title={selectedModelConfig?.model || t.agentModelConfigureHover}
         >
           {selectedModelConfig ? (
             <ModelSelectorLogo
@@ -145,7 +145,7 @@ export function CopilotModelSelector({
           )}
           <ModelSelectorName
             className={cn(
-              'flex-none overflow-visible text-clip whitespace-nowrap text-[12px] font-medium',
+              'min-w-0 text-[12px] font-medium',
               !selectedModelConfig && 'text-muted-foreground',
             )}
           >
@@ -155,7 +155,7 @@ export function CopilotModelSelector({
           </ModelSelectorName>
         </PromptInputButton>
       </ModelSelectorTrigger>
-      <ModelSelectorContent>
+      <ModelSelectorContent title={t.agentSelectModel} closeLabel={t.close}>
         <ModelSelectorInput placeholder={t.agentModelSearchPlaceholder} />
         <ModelSelectorList>
           <ModelSelectorEmpty>

@@ -28,9 +28,11 @@ const localFocusOrder: ReadonlyArray<
   ["model", ["model-name"]],
   ["apiKey", ["model-api-key"]],
   ["apiUrl", ["model-api-url"]],
-  ["contextWindowTokens", ["model-context-window"]],
-  ["maxTokens", ["model-max-tokens"]],
-  ["thinkingMode", ["model-thinking-mode"]],
+  ["thinkingMode", ["model-thinking-mode", "model-output-settings"]],
+  ["contextWindowTokens", ["model-context-window", "model-output-settings"]],
+  ["maxTokens", ["model-max-tokens", "model-output-settings"]],
+  ["temperature", ["model-temperature", "model-output-settings"]],
+  ["topP", ["model-top-p", "model-output-settings"]],
 ];
 
 export function focusFirstModelConfigError(

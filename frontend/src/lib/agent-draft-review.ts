@@ -7,15 +7,29 @@ import type {
 import type { ResumeData, ResumeDraftDiff } from "@/types/resume";
 
 import {
+  applyAgentEditsToDraft,
   applyAgentEditsWithMerge,
+  createAgentDraftBaseSnapshot,
   type AgentDraftApplyError,
+  type AgentDraftApplyResult,
 } from "./resume-agent-edits";
+
+export type AgentDraftConflictResolution = "use-original" | "keep-manual";
 
 export interface AgentDraftReviewProjection {
   diffs: ResumeDraftDiff[];
   errors: AgentDraftApplyError[];
   resume: ResumeData;
   reviewItemIds: string[];
+}
+
+export interface AgentDraftReviewConflict {
+  reviewItemId: string;
+  diffs: ResumeDraftDiff[];
+}
+
+export interface AgentDraftReviewPreview extends AgentDraftReviewProjection {
+  conflicts: AgentDraftReviewConflict[];
 }
 
 export function getAgentDraftSnapshotFromMessages(
@@ -83,25 +97,65 @@ function getReviewItemEdits(
   return selectedEdits;
 }
 
+function mergePendingReviewKeepingManual(
+  baseResume: ResumeData,
+  currentResume: ResumeData,
+  edits: AgentResumeEditSuggestion[],
+  reviewItems: AgentDraftReviewItem[],
+): AgentDraftApplyResult {
+  const applied = applyAgentEditsToDraft(
+    baseResume,
+    getReviewItemEdits(reviewItems.filter((item) => item.status === "applied"), edits),
+  );
+  const pendingItems = getPendingAgentDraftReviewItems(reviewItems);
+  const validation = applied.errors.length > 0
+    ? applied
+    : applyAgentEditsToDraft(applied.resume, getReviewItemEdits(pendingItems, edits));
+  if (validation.errors.length > 0) {
+    return { ...validation, resume: createAgentDraftBaseSnapshot(currentResume) };
+  }
+
+  let base = applied.resume;
+  let resume = createAgentDraftBaseSnapshot(currentResume);
+  const diffs: ResumeDraftDiff[] = [];
+  let appliedCount = 0;
+  for (const item of pendingItems) {
+    const groupEdits = getReviewItemEdits([item], edits);
+    const result = applyAgentEditsWithMerge(base, resume, groupEdits, "keep-manual");
+    if (result.errors.some((error) => error.reason !== "conflict")) {
+      return { ...result, resume: createAgentDraftBaseSnapshot(currentResume) };
+    }
+    if (result.errors.length === 0) {
+      resume = result.resume;
+      diffs.push(...result.diffs);
+      appliedCount += result.appliedCount;
+    }
+    base = applyAgentEditsToDraft(base, groupEdits).resume;
+  }
+  return { resume, diffs, errors: [], appliedCount };
+}
+
 /**
  * Builds one complete preview from the formal resume and the selected review
  * items. The selection controls both rendered content and highlighted diffs.
  */
 export function projectAgentDraftReview({
   baseResume,
+  conflictResolution,
   currentResume,
   edits,
   reviewItemIds,
   reviewItems,
 }: {
   baseResume: ResumeData;
+  conflictResolution?: AgentDraftConflictResolution;
   currentResume: ResumeData;
   edits: AgentResumeEditSuggestion[];
   reviewItemIds?: string[];
   reviewItems: AgentDraftReviewItem[];
 }): AgentDraftReviewProjection {
-  const requestedIds = reviewItemIds ??
-    getPendingAgentDraftReviewItems(reviewItems).map((item) => item.id);
+  const pendingItems = getPendingAgentDraftReviewItems(reviewItems);
+  const requestedIds = reviewItemIds ?? pendingItems.map((item) => item.id);
   const requestedIdSet = new Set(requestedIds);
   const selectedItems = reviewItems.filter(
     (item) => item.status === "pending" && requestedIdSet.has(item.id),
@@ -113,6 +167,26 @@ export function projectAgentDraftReview({
     selectedItems.length !== requestedIds.length
   ) {
     throw new Error("Agent review selection contains an unavailable item.");
+  }
+
+  if (conflictResolution) {
+    if (!reviewItemIds?.length || requestedIds.length !== pendingItems.length) {
+      throw new Error("Agent conflict resolution requires every pending review item.");
+    }
+    const result = conflictResolution === "use-original"
+      ? applyAgentEditsToDraft(
+          baseResume,
+          getReviewItemEdits(reviewItems.filter((item) => item.status === "pending" || item.status === "applied"), edits),
+        )
+      : mergePendingReviewKeepingManual(baseResume, currentResume, edits, reviewItems);
+    return {
+      diffs: result.diffs,
+      errors: result.errors,
+      resume: result.errors.length > 0
+        ? createAgentDraftBaseSnapshot(currentResume)
+        : result.resume,
+      reviewItemIds: requestedIds,
+    };
   }
 
   // Preserve the caller's review-item order even if the durable list is later
@@ -135,6 +209,51 @@ export function projectAgentDraftReview({
     errors: result.errors,
     resume: result.resume,
     reviewItemIds: requestedIds,
+  };
+}
+
+export function previewAgentDraftReview(
+  input: Omit<Parameters<typeof projectAgentDraftReview>[0], "conflictResolution">,
+): AgentDraftReviewPreview {
+  const projection = projectAgentDraftReview(input);
+  if (
+    projection.errors.length === 0 ||
+    projection.errors.some((error) => error.reason !== "conflict")
+  ) {
+    return { ...projection, conflicts: [] };
+  }
+
+  let baseResume = input.baseResume;
+  let resume = input.currentResume;
+  const diffs: ResumeDraftDiff[] = [];
+  const errors: AgentDraftApplyError[] = [];
+  const conflicts: AgentDraftReviewConflict[] = [];
+
+  for (const reviewItemId of projection.reviewItemIds) {
+    const item = input.reviewItems.find((item) => item.id === reviewItemId)!;
+    const edits = getReviewItemEdits([item], input.edits);
+    const proposal = applyAgentEditsToDraft(baseResume, edits);
+    const merged = applyAgentEditsWithMerge(baseResume, resume, edits);
+
+    if (merged.errors.length > 0) {
+      errors.push(...merged.errors);
+      conflicts.push({
+        reviewItemId,
+        diffs: proposal.diffs,
+      });
+    } else {
+      resume = merged.resume;
+      diffs.push(...merged.diffs);
+    }
+    baseResume = proposal.resume;
+  }
+
+  return {
+    conflicts,
+    diffs,
+    errors,
+    resume,
+    reviewItemIds: projection.reviewItemIds,
   };
 }
 

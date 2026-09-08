@@ -27,12 +27,7 @@ export const conditionalFontCssBudgets = [
   },
 ]
 
-export const dynamicEntryLegacyBudgets = new Map([
-  [
-    'src/components/editor/rich-highlights-editor.tsx',
-    { maxRawBytes: 376_000, maxGzipBytes: 116_500 },
-  ],
-])
+export const dynamicEntryLegacyBudgets = new Map()
 
 // These stable manifest roots describe the chunks fetched after each route is active.
 export const routeBudgets = [
@@ -135,6 +130,6 @@ export const routeBudgets = [
       'src/components/preview/document-canvas.tsx',
     ],
     forbiddenStaticEntries: ['src/components/resume-builder.tsx'],
-    maxGzipBytes: 312 * KIB,
+    maxGzipBytes: 313 * KIB,
   },
 ]

@@ -1,8 +1,7 @@
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import type { EducationItem } from '@/types/resume'
 
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
 import { ResumeItemEditorShell } from './resume-item-editor-shell'
 import {
   HighlightsField,
@@ -49,60 +48,74 @@ export function EducationSectionEditor({
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.school}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.school}
             value={item.school}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.school}
-            onChange={(event) => updateItem(item, { school: event.target.value })}
+            onChange={(value) => updateItem(item, { school: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.degree}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.degree}
             value={item.degree}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.degree}
-            onChange={(event) => updateItem(item, { degree: event.target.value })}
+            onChange={(value) => updateItem(item, { degree: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.major}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.major}
             value={item.major}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.major}
-            onChange={(event) => updateItem(item, { major: event.target.value })}
+            onChange={(value) => updateItem(item, { major: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.gpa}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.gpa}
             value={item.gpa}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.gpa}
-            onChange={(event) => updateItem(item, { gpa: event.target.value })}
+            onChange={(value) => updateItem(item, { gpa: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.location}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.location}
             value={item.location}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.location}
-            onChange={(event) => updateItem(item, { location: event.target.value })}
+            onChange={(value) => updateItem(item, { location: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.period}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.period}
             value={item.period}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.period}
-            onChange={(event) => updateItem(item, { period: event.target.value })}
+            onChange={(value) => updateItem(item, { period: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.description} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.description}
+            multiline
             value={item.description}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.description}
-            onChange={(event) => updateItem(item, { description: event.target.value })}
+            onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
         <HighlightsField

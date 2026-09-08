@@ -68,6 +68,7 @@ export interface AgentConversationController {
   messages: AgentPanelMessage[]
   requestPhase: AgentRequestPhase
   retrySession: () => void
+  runAgentDraftDecision: (decision: CopilotPanelProps['onApplyAgentDraft']) => Promise<void>
   sessionResetVersion: number
   sendPrompt: SendAgentPrompt
   sessionLoadError: boolean

@@ -62,31 +62,35 @@ def resolve_request_output_budget(
         # clamp it against this request's remaining context below.
         desired = capability
 
-    context_ceiling = _positive_int(config.context_window_tokens)
-    if context_ceiling is not None:
+    input_ceiling = _positive_int(config.context_window_tokens)
+    shared_context = shared_context_tokens(config)
+    if input_ceiling is not None or shared_context is not None:
         estimated_input = estimate_prompt_tokens(prompt) + estimate_tools_tokens(tools)
-        safety_tokens = input_estimation_safety_tokens(context_ceiling)
-        if config.provider_kind != "cloud":
-            # Local/custom settings describe one shared input+output context.
-            # Recompute on every tool iteration so appended model/tool messages
-            # reduce only this request's transient output allowance.
-            available_output = context_ceiling - estimated_input - safety_tokens
+        if (
+            config.provider_kind == "cloud"
+            and input_ceiling is not None
+            and estimated_input
+            > input_ceiling - input_estimation_safety_tokens(input_ceiling)
+        ):
+            raise LlmRequestError(
+                "The current prompt and tools exceed the selected model's input "
+                "context after the runtime estimation safety margin.",
+            )
+        if shared_context is not None:
+            available_output = (
+                shared_context
+                - estimated_input
+                - input_estimation_safety_tokens(shared_context)
+            )
             if available_output < 1:
                 raise LlmRequestError(
                     "The current prompt and tools exceed the selected model's "
                     "shared context after the runtime estimation safety margin.",
                 )
-            desired = (
-                available_output if desired is None else min(desired, available_output)
-            )
-        # Official cloud discovery accepts only explicit provider input fields
-        # or LiteLLM max_input_tokens. Output is an independent capability and
-        # must not be reduced by prompt length.
-        elif estimated_input > context_ceiling - safety_tokens:
-            raise LlmRequestError(
-                "The current prompt and tools exceed the selected model's input "
-                "context after the runtime estimation safety margin.",
-            )
+            if desired is not None:
+                desired = min(desired, available_output)
+            elif config.provider_kind != "cloud":
+                desired = available_output
 
     # Cloud providers which permit omission retain their native Auto behavior.
     # A discovered maximum is a capability ceiling, not a request-size choice.
@@ -95,6 +99,16 @@ def resolve_request_output_budget(
         return replace(config, request_max_output_tokens=None)
 
     return replace(config, request_max_output_tokens=desired)
+
+
+def shared_context_tokens(config: AgentLlmConfig) -> int | None:
+    """Return the known combined input/output ceiling for this deployment."""
+
+    return _positive_int(
+        config.shared_context_window_tokens
+        if config.provider_kind == "cloud"
+        else config.context_window_tokens
+    )
 
 
 def compaction_headroom_tokens(config: AgentLlmConfig) -> int:

@@ -7,9 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event, Lock
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.fernet import Fernet
+from dotenv import dotenv_values
 from fastapi.testclient import TestClient
 
 from app.agent_locales import DEFAULT_AGENT_LOCALE, SUPPORTED_AGENT_LOCALES
@@ -60,6 +62,7 @@ from app.services.model_discovery_cache import (
 from app.services.model_providers import DiscoveredModel
 from app.services.pdf import ResumeImageExportResult
 from app.services.resume_document_contract import ITEM_FIELDS_BY_KIND
+from app.services.template_presets import BUILTIN_TEMPLATE_PRESETS
 from app.services.templates import TemplateCatalog
 
 ASYNC_STREAM_TOOL_CALL_PATH = "app.services.agent.runtime.loop.async_stream_tool_call"
@@ -349,21 +352,25 @@ def test_model_provider_discovery_merges_litellm_metadata(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "azure_ai/deepseek-v4-pro": {
-                "litellm_provider": "azure_ai",
-                "max_input_tokens": 200000,
-            },
-            "deepseek/deepseek-v4-pro": {
-                "litellm_provider": "deepseek",
-                "max_input_tokens": 1000000,
-                "max_output_tokens": 8192,
-                "supports_reasoning": True,
-                "supports_tool_choice": True,
-                "supports_vision": False,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "azure_ai/deepseek-v4-pro": {
+                    "litellm_provider": "azure_ai",
+                    "max_input_tokens": 200000,
+                },
+                "deepseek/deepseek-v4-pro": {
+                    "litellm_provider": "deepseek",
+                    "max_input_tokens": 1000000,
+                    "max_output_tokens": 8192,
+                    "supports_reasoning": True,
+                    "supports_tool_choice": True,
+                    "supports_vision": False,
+                },
+            }
+        ),
     )
+
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
 
     response = client.post(
         "/api/model-providers/discover-models",
@@ -391,10 +398,6 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
     client: TestClient,
     monkeypatch,
 ) -> None:
-    class ForbiddenOpenAIClient:
-        def __init__(self, *_: object, **__: object) -> None:
-            raise AssertionError("Model discovery routes must be explicit.")
-
     expected_routes = {
         "openai": (
             "openai_responses",
@@ -446,21 +449,19 @@ def test_model_provider_discovery_uses_manifest_routes_for_all_providers(
 
     def fake_get_json(url: str, *, headers: dict[str, str]) -> dict:
         calls.append((url, dict(headers)))
+        model_id = (
+            "qwen-test-chat" if url == expected_routes["qwen"][2] else "test-chat"
+        )
         return {
-            "data": [{"id": "test-chat"}],
+            "data": [{"id": model_id}],
             "models": [
                 {
-                    "name": "models/test-chat",
+                    "name": f"models/{model_id}",
                     "supportedGenerationMethods": ["generateContent"],
                 },
             ],
         }
 
-    monkeypatch.setattr(
-        "app.services.model_providers.OpenAI",
-        ForbiddenOpenAIClient,
-        raising=False,
-    )
     monkeypatch.setattr("app.services.model_providers._get_json", fake_get_json)
 
     for provider_id, (api_family, _api_url, expected_url) in expected_routes.items():
@@ -1198,41 +1199,35 @@ def test_resume_workspace_contract_requires_current_appearance_fields(
     }
 
 
+@pytest.mark.parametrize("template_id", sorted(BUILTIN_TEMPLATE_PRESETS))
 def test_new_resume_uses_workspace_default_template_typography(
     client: TestClient,
+    template_id: str,
 ) -> None:
+    expected_typography = dict(BUILTIN_TEMPLATE_PRESETS[template_id]["typography"])
     default_response = client.put(
         "/api/workspace/default-template",
-        json={"documentLocale": "en", "templateId": "academic"},
+        json={"documentLocale": "en", "templateId": template_id},
     )
 
     created_response = client.post(
         "/api/resumes",
-        json={"documentLocale": "en", "title": "Academic default"},
+        json={"documentLocale": "en", "title": "Workspace default"},
     )
 
     assert default_response.status_code == 200
     assert created_response.status_code == 200
     created = created_response.json()["data"]["resume"]
-    assert created["template"] == "academic"
-    assert created["typography"] == {
-        "fontFamily": "serif",
-        "fontSize": 16,
-    }
+    assert created["template"] == template_id
+    assert created["typography"] == expected_typography
 
 
-@pytest.mark.parametrize(
-    ("template_id", "expected_typography"),
-    [
-        ("academic", {"fontFamily": "serif", "fontSize": 16}),
-        ("compact", {"fontFamily": "plex", "fontSize": 14}),
-    ],
-)
+@pytest.mark.parametrize("template_id", sorted(BUILTIN_TEMPLATE_PRESETS))
 def test_new_resume_uses_explicit_template_typography(
     client: TestClient,
     template_id: str,
-    expected_typography: dict[str, object],
 ) -> None:
+    expected_typography = dict(BUILTIN_TEMPLATE_PRESETS[template_id]["typography"])
     created_response = client.post(
         "/api/resumes",
         json={
@@ -2019,7 +2014,8 @@ def test_auth_setup_creates_hashed_owner_and_signs_in(
             """
         ).fetchone()
 
-    env_content = get_settings().env_file_path.read_text(encoding="utf-8")
+    settings = get_settings()
+    env_content = settings.env_file_path.read_text(encoding="utf-8")
 
     assert status_before.json()["data"] == {
         "setupRequired": True,
@@ -2050,6 +2046,7 @@ def test_auth_setup_creates_hashed_owner_and_signs_in(
     assert "auth_owner" not in business_tables
     assert "AUTH_USERNAME" not in env_content
     assert "AUTH_PASSWORD" not in env_content
+    assert "OwnerPassword1" not in env_content
 
 
 def test_all_environments_require_authentication(
@@ -2335,6 +2332,9 @@ def test_old_jwt_cannot_authenticate_against_replaced_auth_database(
         )
         old_token = first_setup.json()["data"]["accessToken"]
 
+    original_env = env_file.read_bytes()
+    monkeypatch.setenv("RESENO_MASTER_KEY", "")
+    monkeypatch.setenv("RESENO_JWT_SECRET", "")
     monkeypatch.setenv("APP_DATA_DIR", str(replacement_data_dir))
     monkeypatch.setenv("APP_STORAGE_DIR", str(replacement_data_dir / "storage"))
     get_settings.cache_clear()
@@ -2379,6 +2379,7 @@ def test_old_jwt_cannot_authenticate_against_replaced_auth_database(
     replacement_payload = decode_access_token(replacement_token)
     assert old_payload.subject == replacement_payload.subject == "first-owner"
     assert old_payload.auth_revision != replacement_payload.auth_revision
+    assert env_file.read_bytes() == original_env
 
 
 def test_auth_refresh_revokes_previous_jwt(
@@ -3074,74 +3075,69 @@ def test_resume_autosave_persists_without_creating_history_version(
     assert checkpoint_response.json()["data"]["versionId"] == latest_autosave_version_id
 
 
-def test_master_key_generated_once(client: TestClient) -> None:
+def test_env_secrets_generated_once(client: TestClient, monkeypatch) -> None:
     settings = get_settings()
-    env_file = settings.env_file_path
-    first_content = env_file.read_text(encoding="utf-8")
+    first_content = settings.env_file_path.read_bytes()
+    secrets = dotenv_values(settings.env_file_path, interpolate=False)
+    monkeypatch.setenv("RESENO_MASTER_KEY", "")
+    monkeypatch.setenv("RESENO_JWT_SECRET", "")
 
     get_settings.cache_clear()
     second_settings = get_settings()
-    second_content = env_file.read_text(encoding="utf-8")
 
-    assert second_settings.env_file_path == env_file
-    assert "APP_DATA_DIR=~/.reseno" in first_content
-    assert "AUTH_USERNAME" not in first_content
-    assert "AUTH_PASSWORD" not in first_content
-    assert "DO NOT CHANGE: RESENO_MASTER_KEY" in first_content
-    assert "DO NOT CHANGE: RESENO_JWT_SECRET" in first_content
-    assert first_content == second_content
-    assert first_content.count("RESENO_MASTER_KEY=") == 1
-    assert first_content.count("RESENO_JWT_SECRET=") == 1
+    assert second_settings.env_file_path == settings.env_file_path
+    assert settings.env_file_path.read_bytes() == first_content
+    assert set(secrets) == {"RESENO_MASTER_KEY", "RESENO_JWT_SECRET"}
+    assert settings.env_file_path.stat().st_mode & 0o777 == 0o600
+    assert secrets["RESENO_MASTER_KEY"]
+    assert secrets["RESENO_JWT_SECRET"]
+    Fernet(secrets["RESENO_MASTER_KEY"].encode("ascii"))
+    assert len(secrets["RESENO_JWT_SECRET"].encode("utf-8")) >= 32
 
 
-def test_existing_master_key_is_not_rewritten(tmp_path, monkeypatch) -> None:
+def test_existing_env_secrets_are_not_rewritten(tmp_path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
-    master_key = Fernet.generate_key().decode("ascii")
-    jwt_secret = "x" * 48
-    original_content = (
-        f"CUSTOM_VALUE=preserved\n"
-        f"RESENO_MASTER_KEY={master_key}\n"
-        f"RESENO_JWT_SECRET={jwt_secret}\n"
+    original_config = (
+        "CUSTOM_VALUE=preserved\n"
+        f"RESENO_MASTER_KEY={Fernet.generate_key().decode('ascii')}\n"
+        f"RESENO_JWT_SECRET={'x' * 48}\n"
     )
-    env_file.write_text(original_content, encoding="utf-8")
+    monkeypatch.delenv("CUSTOM_VALUE", raising=False)
+    env_file.write_text(original_config, encoding="utf-8")
     monkeypatch.delenv("RESENO_MASTER_KEY", raising=False)
+    monkeypatch.delenv("RESENO_JWT_SECRET", raising=False)
     monkeypatch.setenv("APP_ENV_FILE", str(env_file))
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.db"))
-    monkeypatch.setenv("APP_STORAGE_DIR", str(tmp_path / "storage"))
     get_settings.cache_clear()
 
     first_settings = get_settings()
     get_settings.cache_clear()
     second_settings = get_settings()
 
-    assert first_settings.env_file_path == env_file
-    assert second_settings.env_file_path == env_file
-    assert env_file.read_text(encoding="utf-8") == original_content
+    assert first_settings.env_file_path == second_settings.env_file_path == env_file
+    assert env_file.read_text(encoding="utf-8") == original_config
 
 
-def test_default_env_file_lives_in_data_dir(tmp_path, monkeypatch) -> None:
-    data_dir = tmp_path / ".reseno"
+def test_default_env_stays_separate_from_runtime_data(
+    tmp_path, monkeypatch,
+) -> None:
+    from app import config
+
+    default_env = tmp_path / "project" / ".env"
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(config, "DEFAULT_ENV_PATH", default_env)
     monkeypatch.delenv("APP_ENV_FILE", raising=False)
-    monkeypatch.delenv("RESENO_MASTER_KEY", raising=False)
     monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("APP_DB_PATH", str(data_dir / "app.db"))
-    monkeypatch.setenv("APP_STORAGE_DIR", str(data_dir / "storage"))
     get_settings.cache_clear()
 
     settings = get_settings()
-    env_file = data_dir / ".env"
-    content = env_file.read_text(encoding="utf-8")
 
-    assert settings.env_file_path == env_file.resolve()
-    assert env_file.exists()
-    assert "APP_DATA_DIR=~/.reseno" in content
-    assert "AUTH_USERNAME" not in content
-    assert "AUTH_PASSWORD" not in content
-    assert "DO NOT CHANGE: RESENO_MASTER_KEY" in content
-    assert "DO NOT CHANGE: RESENO_JWT_SECRET" in content
-    assert content.count("RESENO_MASTER_KEY=") == 1
-    assert content.count("RESENO_JWT_SECRET=") == 1
+    assert settings.env_file_path == default_env
+    assert settings.data_dir == data_dir
+    assert set(dotenv_values(default_env, interpolate=False)) == {
+        "RESENO_MASTER_KEY", "RESENO_JWT_SECRET",
+    }
+    assert not default_env.is_relative_to(data_dir)
 
 
 def test_model_config_encrypts_api_key_in_sqlite(client: TestClient) -> None:
@@ -3310,19 +3306,21 @@ def test_model_config_resolves_litellm_token_limits(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-5.1": {
-                "litellm_provider": "openai",
-                "max_input_tokens": 131072,
-                "max_output_tokens": 8192,
-            },
-            "openai/gpt-proxy": {
-                "litellm_provider": "azure_ai",
-                "max_input_tokens": 9999999,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "openai/gpt-5.1": {
+                    "litellm_provider": "openai",
+                    "max_input_tokens": 131072,
+                    "max_output_tokens": 8192,
+                },
+                "openai/gpt-proxy": {
+                    "litellm_provider": "azure_ai",
+                    "max_input_tokens": 9999999,
+                },
+            }
+        ),
     )
-    assert model_metadata.refresh_model_metadata_cache() is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
 
     rejected = client.post(
         "/api/model-configs",
@@ -3810,7 +3808,7 @@ def test_model_config_api_keeps_thinking_capability_without_obsolete_toggle(
     assert persisted["encrypted_api_key"] == encrypted_api_key
 
 
-def test_model_metadata_cache_is_prepared_before_config_save(
+def test_model_metadata_refresh_persists_normalized_capabilities(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3822,17 +3820,19 @@ def test_model_metadata_cache_is_prepared_before_config_save(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-5.1": {
-                "litellm_provider": "openai",
-                "max_input_tokens": 131072,
-                "max_output_tokens": 8192,
-                "supports_web_search": True,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "openai/gpt-5.1": {
+                    "litellm_provider": "openai",
+                    "max_input_tokens": 131072,
+                    "max_output_tokens": 8192,
+                    "supports_web_search": True,
+                },
+            }
+        ),
     )
 
-    assert model_metadata.ensure_model_metadata_cache() is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
     cache_path = tmp_path / model_metadata.MODEL_METADATA_CACHE_NAME
     assert cache_path.exists()
     cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -3845,6 +3845,7 @@ def test_model_metadata_cache_is_prepared_before_config_save(
     }
     assert "gpt-proxy" not in cache_data["catalogs"]["litellm"]["providers"]["openai"]
     assert cache_data["catalogs"]["modelsDev"] == {
+        "contextModels": {},
         "fetchedAt": None,
         "providers": {},
     }
@@ -3876,6 +3877,7 @@ def test_model_metadata_cache_is_reused_without_refresh(
                 "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
                 "catalogs": {
                     "litellm": {
+                        "contextModels": {},
                         "fetchedAt": fresh_time,
                         "providers": {
                             "openai": {
@@ -3888,6 +3890,7 @@ def test_model_metadata_cache_is_reused_without_refresh(
                         },
                     },
                     "modelsDev": {
+                        "contextModels": {},
                         "fetchedAt": fresh_time,
                         "providers": {},
                     },
@@ -3898,13 +3901,15 @@ def test_model_metadata_cache_is_reused_without_refresh(
     )
     model_metadata._CATALOG_CACHE = None
 
-    def fail_fetch() -> dict[str, object]:
+    async def fail_fetch() -> dict[str, object]:
         raise AssertionError("cached model metadata should not refresh implicitly")
 
-    monkeypatch.setattr(model_metadata, "_fetch_catalog", fail_fetch)
+    fetch = AsyncMock(side_effect=fail_fetch)
+    monkeypatch.setattr(model_metadata, "_fetch_catalog", fetch)
+    monkeypatch.setattr(model_metadata, "_fetch_reasoning_catalog", fetch)
 
-    assert model_metadata.ensure_model_metadata_cache() is True
     assert model_metadata.resolve_model_metadata("openai", "gpt-5.1") is not None
+    fetch.assert_not_called()
     get_settings.cache_clear()
 
 
@@ -3925,6 +3930,7 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
                 "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
                 "catalogs": {
                     "litellm": {
+                        "contextModels": {},
                         "fetchedAt": "2026-06-01T00:00:00+00:00",
                         "providers": {
                             "deepseek": {
@@ -3937,6 +3943,7 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
                         },
                     },
                     "modelsDev": {
+                        "contextModels": {},
                         "fetchedAt": "2026-06-01T00:00:00+00:00",
                         "providers": {},
                     },
@@ -3950,18 +3957,20 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "deepseek-v4-pro": {
-                "litellm_provider": "deepseek",
-                "max_input_tokens": 1000000,
-                "max_output_tokens": 8192,
-                "supports_reasoning": True,
-                "supports_tool_choice": True,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "deepseek-v4-pro": {
+                    "litellm_provider": "deepseek",
+                    "max_input_tokens": 1000000,
+                    "max_output_tokens": 8192,
+                    "supports_reasoning": True,
+                    "supports_tool_choice": True,
+                },
+            }
+        ),
     )
 
-    assert model_metadata.ensure_model_metadata_cache() is True
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is True
     metadata = model_metadata.resolve_model_metadata("deepseek", "deepseek-v4-pro")
 
     assert metadata is not None
@@ -3972,7 +3981,7 @@ def test_stale_model_metadata_cache_refreshes_deepseek_v4_limits(
     get_settings.cache_clear()
 
 
-def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
+def test_metadata_refresh_keeps_old_cache_when_source_parse_is_empty(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3989,6 +3998,7 @@ def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
                 "source": model_metadata.MODEL_METADATA_CACHE_SOURCE,
                 "catalogs": {
                     "litellm": {
+                        "contextModels": {},
                         "fetchedAt": "2026-06-01T00:00:00+00:00",
                         "providers": {
                             "deepseek": {
@@ -4000,6 +4010,7 @@ def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
                         },
                     },
                     "modelsDev": {
+                        "contextModels": {},
                         "fetchedAt": "2026-06-01T00:00:00+00:00",
                         "providers": {},
                     },
@@ -4012,15 +4023,17 @@ def test_provider_metadata_refresh_keeps_old_cache_when_provider_parse_is_empty(
     monkeypatch.setattr(
         model_metadata,
         "_fetch_catalog",
-        lambda: {
-            "openai/gpt-5.1": {
-                "litellm_provider": "openai",
-                "max_input_tokens": 131072,
-            },
-        },
+        AsyncMock(
+            return_value={
+                "proxy/gpt-5.1": {
+                    "litellm_provider": "unsupported-proxy",
+                    "max_input_tokens": 131072,
+                },
+            }
+        ),
     )
 
-    assert model_metadata.refresh_model_metadata_cache(provider="deepseek") is False
+    assert asyncio.run(model_metadata.refresh_model_metadata_cache()) is False
     metadata = model_metadata.resolve_model_metadata("deepseek", "deepseek-v4-pro")
 
     assert metadata is not None
@@ -4036,7 +4049,7 @@ def test_model_config_save_does_not_fetch_model_metadata(
 
     model_metadata._CATALOG_CACHE = {}
 
-    def fail_fetch() -> dict[str, object]:
+    async def fail_fetch() -> dict[str, object]:
         raise AssertionError("model metadata fetch should not run during save")
 
     monkeypatch.setattr(model_metadata, "_fetch_catalog", fail_fetch)
@@ -7146,7 +7159,7 @@ def test_agent_chat_streams_plain_model_tokens(
         body = "".join(response.iter_text())
 
     assert response.status_code == 200
-    assert "正在等待模型返回。" not in body
+    assert "正在等待模型返回" not in body
     assert "event: timeline" not in body
     assert "event: text_delta" in body
     assert "你好，我可以帮你看简历。" in body

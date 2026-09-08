@@ -40,11 +40,12 @@ import type {
 
 const fontLabels: Record<
   ResumeFontFamily,
-  "fontInter" | "fontNotoSans" | "fontSerif" | "fontPlex"
+  "fontInter" | "fontNotoSans" | "fontSerif" | "fontTimes" | "fontPlex"
 > = {
   inter: "fontInter",
   noto_sans_sc: "fontNotoSans",
   serif: "fontSerif",
+  times: "fontTimes",
   plex: "fontPlex",
 };
 
@@ -229,6 +230,25 @@ export function ResumeFormatPopover({
               {t.template}
             </span>
             <div className="flex min-w-0 items-center gap-1">
+              <Select value={template} onValueChange={onTemplateChange}>
+                <SelectTrigger
+                  ref={templateSelectTriggerRef}
+                  aria-label={t.applyTemplate}
+                  className="w-32 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" position="popper">
+                  <SelectGroup>
+                    {templates.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
               <TooltipProvider delayDuration={180}>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -260,25 +280,6 @@ export function ResumeFormatPopover({
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <Select value={template} onValueChange={onTemplateChange}>
-                <SelectTrigger
-                  ref={templateSelectTriggerRef}
-                  aria-label={t.applyTemplate}
-                  className="w-32 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
-                  size="sm"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end" position="popper">
-                  <SelectGroup>
-                    {templates.map((item) => (
-                      <SelectItem key={item.id} value={item.id}>
-                        {item.name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
             </div>
           </div>
 
@@ -300,7 +301,7 @@ export function ResumeFormatPopover({
               >
                 <SelectTrigger
                   aria-label={t.fontFamily}
-                  className="w-36 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent [&:lang(zh)]:w-28"
+                  className="w-44 justify-end rounded-md border-0 bg-transparent px-1.5 text-sm font-medium text-foreground shadow-none hover:bg-muted/60 focus-visible:border-transparent"
                   size="sm"
                 >
                   <SelectValue />
@@ -368,7 +369,7 @@ export function ResumeFormatPopover({
           <FormatSliderField
             label={t.lineSpacing}
             value={settings.bodyLineHeight}
-            min={1.4}
+            min={1.1}
             max={2.2}
             step={0.05}
             suffix="pt"

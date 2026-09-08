@@ -193,6 +193,7 @@ export interface AgentChatUserMessage {
 export type AgentDraftDecisionStatus = "applied" | "discarded";
 type AgentDraftReviewItemStatus =
   | "pending"
+  | "superseded"
   | AgentDraftDecisionStatus;
 export type AgentTransactionState =
   | "none"
@@ -365,6 +366,11 @@ export interface AgentSessionResponse {
   revision: string;
   messages: AgentStoredMessage[];
   executions: AgentTurnExecution[];
+}
+
+export interface AgentSessionRecoveryResponse {
+  session: AgentSessionResponse;
+  run: AgentRunResponse | null;
 }
 
 export interface AgentSessionReplaceRequest {

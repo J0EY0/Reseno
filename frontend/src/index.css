@@ -498,6 +498,11 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   height: 0;
 }
 
+[data-academic-italic="true"] {
+  font-family: 'Latin Modern Roman', serif;
+  font-style: italic;
+}
+
 .rich-text-editor em,
 .rich-text-editor i {
   font-style: italic;

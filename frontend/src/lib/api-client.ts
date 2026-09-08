@@ -53,10 +53,11 @@ export const apiRoutes = {
   modelConfigs: "/api/model-configs",
   modelProviders: "/api/model-providers",
   modelProviderDiscovery: "/api/model-providers/discover-models",
+  modelContextWindow: "/api/model-providers/context-window",
   agentResumeSession: (resumeId: string) =>
     `/api/agent/resumes/${encodeURIComponent(resumeId)}/session`,
-  agentResumeRun: (resumeId: string) =>
-    `/api/agent/resumes/${encodeURIComponent(resumeId)}/run`,
+  agentResumeRecovery: (resumeId: string) =>
+    `/api/agent/resumes/${encodeURIComponent(resumeId)}/recovery`,
   agentRun: (runId: string) =>
     `/api/agent/runs/${encodeURIComponent(runId)}`,
   agentRunEvents: (runId: string) =>

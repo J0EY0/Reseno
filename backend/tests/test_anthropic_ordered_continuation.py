@@ -499,3 +499,37 @@ def test_stream_ping_is_activity_while_adaptive_thinking_is_not_displayed(
         "activity",
         "done",
     ]
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "model_context_window_exceeded"])
+def test_nonstream_truncation_does_not_expose_an_executable_tool_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    stop_reason: str,
+) -> None:
+    async def fake_post_json(*_: Any, **__: Any) -> dict[str, Any]:
+        return {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu-project",
+                    "name": "resume_lookup",
+                    "input": {"query": "project"},
+                }
+            ],
+            "stop_reason": stop_reason,
+        }
+
+    monkeypatch.setattr(anthropic_messages, "async_post_json", fake_post_json)
+    events = asyncio.run(
+        _collect(
+            async_stream_tool_call(
+                _config(),
+                LlmPrompt(messages=[{"role": "user", "content": "Inspect."}]),
+                [_tool()],
+            )
+        )
+    )
+    message = events[-1].message
+    assert message is not None
+    assert message.stop_reason == "length"
+    assert message.tool_calls == []

@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useMemo, useState } from "react";
 
 import { useGalleryUrlState } from "@/components/use-gallery-url-state";
 import type { Locale } from "@/i18n";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { ResumeWorkspaceItem } from "@/types/resume";
 
 function matchesResumeQuery(
@@ -14,8 +15,8 @@ function matchesResumeQuery(
 
   return [
     item.title,
-    item.resume.basic.name,
-    item.resume.basic.headline,
+    getRichTextPlainText(item.resume.basic.name),
+    getRichTextPlainText(item.resume.basic.headline),
     item.resume.basic.email,
     item.resume.basic.phone,
   ]

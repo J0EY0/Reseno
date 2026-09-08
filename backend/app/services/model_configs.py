@@ -17,7 +17,7 @@ from app.services.llm_secrets import (
     mask_encrypted_api_key,
 )
 from app.services.model_discovery_cache import get_cached_provider_model
-from app.services.model_metadata import resolve_model_metadata
+from app.services.model_metadata import is_provider_model, resolve_model_metadata
 from app.services.model_providers import (
     DiscoveredModel,
     enrich_selected_model,
@@ -307,6 +307,9 @@ def _validated_cloud_model_metadata(
     base_url: str,
     api_key: str | None,
 ) -> DiscoveredModel:
+    if not is_provider_model(provider, model):
+        raise ValueError("MODEL_CONFIG_MODEL_NOT_DISCOVERED")
+
     if (
         existing is not None
         and not api_key

@@ -37,6 +37,7 @@ from app.services.auth_accounts import (
 from app.services.auth_github_app import github_app_configured
 from app.services.auth_identities import list_identities
 from app.services.auth_tokens import (
+    AuthTokenError,
     create_access_token,
     format_token_expiry,
     refresh_access_token,
@@ -185,7 +186,13 @@ def post_auth_refresh(request: Request) -> ApiResponse[AuthLoginResponse]:
             detail=APP_MESSAGE_UNAUTHORIZED,
         )
 
-    refreshed_token, payload = refresh_access_token(token)
+    try:
+        refreshed_token, payload = refresh_access_token(token)
+    except AuthTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=APP_MESSAGE_UNAUTHORIZED,
+        ) from exc
 
     return ok_response(
         AuthLoginResponse(

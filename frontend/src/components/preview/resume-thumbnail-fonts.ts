@@ -7,9 +7,11 @@ export function useResumeThumbnailFonts(
   fontFamilies: readonly ResumeFontFamily[],
 ) {
   const needsSansStyles = fontFamilies.some(
-    (fontFamily) => fontFamily !== "serif",
+    (fontFamily) => fontFamily !== "serif" && fontFamily !== "times",
   );
-  const needsSerifStyles = fontFamilies.includes("serif");
+  const needsSerifStyles = fontFamilies.some(
+    (fontFamily) => fontFamily === "serif" || fontFamily === "times",
+  );
 
   useEffect(() => {
     if (needsSansStyles) {

@@ -14,6 +14,10 @@ from app.services.agent.integrations import web as agent_web
 from app.services.agent.runtime import loop as agent_loop
 from app.services.agent.runtime import streaming as agent_streaming
 from app.services.agent.runtime.context import AgentRuntimeContext
+from app.services.agent.runtime.messages import (
+    agent_prompt_limits,
+    estimate_agent_messages_tokens,
+)
 from app.services.agent_runs import _AgentRunMetrics
 from app.services.llm import (
     AgentLlmConfig,
@@ -1084,3 +1088,87 @@ def test_model_turn_limit_rolls_back_and_emits_an_internal_error(monkeypatch) ->
         assert '"transactionState":"rolled_back"' in "".join(frames)
 
     asyncio.run(scenario())
+
+
+def test_parallel_web_fetch_keeps_fresh_passages_when_context_is_compacted(
+    monkeypatch,
+) -> None:
+    request = _request(
+        "比较这四个公开岗位的要求："
+        + " ".join(f"https://example.test/job-{index}" for index in range(4))
+    )
+    config = replace(_config(), context_window_tokens=16_000, max_tokens=2_048)
+    model_calls = 0
+
+    async def fake_fetch(url, *_args):
+        return agent_web.WebReference(
+            title="软件工程师",
+            final_url=url,
+            excerpt="当前岗位要求",
+            passages=tuple(
+                agent_web.WebPassage(
+                    section=f"任职要求 {index}",
+                    text=("实际岗位要求包括系统设计跨团队合作稳定性优化" * 40)[:700],
+                )
+                for index in range(4)
+            ),
+        )
+
+    async def fake_model_response(_config, prompt, *_args):
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            response = LlmAssistantMessage(
+                tool_calls=[
+                    LlmToolCall(
+                        id=f"fetch-{index}",
+                        name="web_fetch",
+                        arguments={"url": f"https://example.test/job-{index}"},
+                        raw_arguments=json.dumps(
+                            {"url": f"https://example.test/job-{index}"},
+                        ),
+                    )
+                    for index in range(4)
+                ],
+                stop_reason="tool_calls",
+            )
+        else:
+            references = [
+                json.loads(message["content"])["output"]["references"][0]
+                for message in prompt.messages
+                if message["role"] == "tool"
+            ]
+            assert len(references) == 4
+            assert all(
+                reference.get("passages")
+                and all(passage["text"] for passage in reference["passages"])
+                for reference in references
+            )
+            assert references[0]["passagesTruncated"] is True
+            assert (
+                sum(len(passage["text"]) for passage in references[0]["passages"])
+                == 800
+            )
+            assert references[0]["passages"][0]["section"] == "任职要求 0"
+            limits = agent_prompt_limits(request, config)
+            assert limits is not None
+            assert (
+                estimate_agent_messages_tokens(prompt.messages) <= limits.input_tokens
+            )
+            response = LlmAssistantMessage(content="已比较四个岗位", stop_reason="stop")
+        yield LlmStreamEvent(type="done", message=response)
+
+    monkeypatch.setattr(agent_web, "_async_fetch_web_reference", fake_fetch)
+    monkeypatch.setattr(agent_loop, "_async_iter_model_response", fake_model_response)
+
+    async def scenario() -> None:
+        events = [
+            event
+            async for event in agent_loop.async_iter_agent_tool_call_loop(
+                request, config
+            )
+        ]
+        assert _completed_result(events).terminal_text == "已比较四个岗位"
+
+    asyncio.run(scenario())
+    assert model_calls == 2

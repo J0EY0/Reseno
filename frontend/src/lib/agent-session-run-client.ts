@@ -3,7 +3,7 @@ import {
   isApiErrorCode,
   requestApi,
 } from "@/lib/api-client";
-import { projectAgentDraftReview } from "@/lib/agent-draft-review";
+import { projectAgentDraftReview, type AgentDraftConflictResolution } from "@/lib/agent-draft-review";
 import type {
   AgentChatMessage,
   AgentCommittedDraft,
@@ -11,6 +11,7 @@ import type {
   AgentDraftDecisionRequest,
   AgentDraftDecisionResponse,
   AgentRunResponse,
+  AgentSessionRecoveryResponse,
   AgentSessionReplaceRequest,
   AgentSessionResponse,
   ResumeDetailResponse,
@@ -19,6 +20,7 @@ import type { ResumeData } from "@/types/resume";
 
 type AgentDraftDecision =
   | {
+      conflictResolution?: AgentDraftConflictResolution;
       currentResume: ResumeData;
       currentVersionId: string | null;
       rebaseOnLatest: boolean;
@@ -84,11 +86,12 @@ function getRequestedReviewItemState(
   return "changed" as const;
 }
 
-export function loadActiveAgentRun(
+export function loadAgentSessionRecovery(
   resumeId: string,
   options: { notifyOnError?: boolean; signal?: AbortSignal } = {},
 ) {
-  return requestApi<AgentRunResponse | null>(apiRoutes.agentResumeRun(resumeId), {
+  return requestApi<AgentSessionRecoveryResponse>(apiRoutes.agentResumeRecovery(resumeId), {
+    cacheTtlMs: 0,
     notifyOnError: options.notifyOnError,
     signal: options.signal,
   });
@@ -206,13 +209,17 @@ export async function resolveAgentDraftDecision(
         }
         const formalVersionChanged =
           decision.currentVersionId !== formalResume.versionId;
-        if (formalVersionChanged && !decision.rebaseOnLatest) {
+        if (
+          formalVersionChanged &&
+          (!decision.rebaseOnLatest || decision.conflictResolution)
+        ) {
           throw new Error(
-            "The formal resume changed while local edits were still pending.",
+            "The formal resume changed before the draft decision completed.",
           );
         }
         const projection = projectAgentDraftReview({
           baseResume: currentDraft.baseResume,
+          conflictResolution: decision.conflictResolution,
           currentResume: decision.rebaseOnLatest
             ? formalResume.resume.resume
             : decision.currentResume,

@@ -40,9 +40,10 @@ from app.services.agent_runs import AgentRunManager
 from app.services.agent_sessions import fail_interrupted_agent_turn_executions
 from app.services.auth_accounts import ensure_auth_database
 from app.services.auth_oauth import OAUTH_SESSION_TTL_SECONDS
-from app.services.model_metadata import ensure_model_metadata_cache
+from app.services.model_metadata import model_metadata_lifespan
 from app.services.pdf import cleanup_expired_exports
 from app.services.storage_deletions import recover_pending_storage_deletions
+from app.services.template_publications import recover_pending_template_publications
 
 ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]]
 
@@ -53,16 +54,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     ensure_auth_database()
     ensure_database_schema()
+    recover_pending_template_publications()
     recover_pending_storage_deletions()
     with closing(connect()) as conn:
         fail_interrupted_agent_turn_executions(conn)
-    ensure_model_metadata_cache()
     cleanup_expired_exports()
     app.state.agent_runs = AgentRunManager()
-    try:
-        yield
-    finally:
-        await app.state.agent_runs.shutdown()
+    async with model_metadata_lifespan():
+        try:
+            yield
+        finally:
+            await app.state.agent_runs.shutdown()
 
 
 def create_app() -> FastAPI:

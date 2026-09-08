@@ -22,6 +22,7 @@ interface ContactItem {
   href?: string;
   id: string;
   text: string;
+  richText?: boolean;
 }
 
 function getContactItems(basic: ResumeBasicInfo) {
@@ -36,7 +37,7 @@ function getContactItems(basic: ResumeBasicInfo) {
       text: basic.email.trim(),
       href: createContactHref("email", basic.email) ?? undefined,
     },
-    { id: "location", text: basic.location.trim() },
+    { id: "location", text: basic.location.trim(), richText: true },
     ...basic.customFields.map((field) => {
       const label = field.label.trim();
       const value = field.value.trim();
@@ -63,7 +64,9 @@ function ContactItemText({
   item: ContactItem;
 }) {
   if (!enableLink || !item.href) {
-    return <span>{item.text}</span>;
+    return (
+      <ResumeDiffText richText={item.richText} value={item.text} diffs={[]} />
+    );
   }
 
   const opensNewTab =
@@ -163,13 +166,17 @@ export function StandardBasicInfo({
   const identityContent = (
     <>
       <h1
-        className="font-extrabold tracking-[-0.04em]"
+        className="font-extrabold tracking-(--resume-name-tracking)"
         style={{
           color: isProfile ? settings.bodyColor : settings.headingColor,
           fontSize: `${settings.nameScale}em`,
         }}
       >
-        {basic.name || getResumeFallbackName(t)}
+        <ResumeDiffText
+          richText
+          value={basic.name || getResumeFallbackName(t)}
+          diffs={[]}
+        />
       </h1>
       {basic.headline || headlineDiff ? (
         <p
@@ -185,6 +192,7 @@ export function StandardBasicInfo({
         >
           <ResumeDiffBadge diff={headlineDiff} t={t} />
           <ResumeDiffText
+            richText
             value={basic.headline}
             diffs={headlineDiff ? [headlineDiff] : []}
           />
@@ -291,6 +299,7 @@ export function StandardBasicInfo({
         >
           <ResumeDiffBadge diff={summaryDiff} t={t} />
           <ResumeDiffText
+            richText
             value={basic.summary}
             diffs={summaryDiff ? [summaryDiff] : []}
           />
@@ -338,7 +347,11 @@ export function SidebarBasicInfo({
           className="font-semibold tracking-[-0.03em]"
           style={{ fontSize: `${settings.nameScale}em` }}
         >
-          {basic.name || getResumeFallbackName(t)}
+          <ResumeDiffText
+            richText
+            value={basic.name || getResumeFallbackName(t)}
+            diffs={[]}
+          />
         </h1>
         {basic.headline || headlineDiff ? (
           <p
@@ -353,6 +366,7 @@ export function SidebarBasicInfo({
           >
             <ResumeDiffBadge diff={headlineDiff} t={t} />
             <ResumeDiffText
+              richText
               value={basic.headline}
               diffs={headlineDiff ? [headlineDiff] : []}
             />
@@ -411,6 +425,7 @@ export function SidebarBasicInfo({
           >
             <ResumeDiffBadge diff={summaryDiff} t={t} />
             <ResumeDiffText
+              richText
               value={basic.summary}
               diffs={summaryDiff ? [summaryDiff] : []}
             />

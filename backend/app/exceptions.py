@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Mapping
+from math import isfinite
 from typing import Any
 
 from fastapi import Request, status
@@ -131,7 +132,13 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """Convert request validation failures into the API envelope."""
 
-    errors = jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
+    errors = jsonable_encoder(
+        exc.errors(),
+        custom_encoder={
+            Exception: str,
+            float: lambda value: value if isfinite(value) else str(value),
+        },
+    )
     if not request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

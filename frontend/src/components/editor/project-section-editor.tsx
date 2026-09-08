@@ -1,11 +1,11 @@
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import type { ProjectItem } from '@/types/resume'
 
 import { FormField } from './form-field'
+import { InlineTextInput } from './inline-text-input'
+import { InlineTextListInput } from './inline-text-list-input'
 import { ResumeItemEditorShell } from './resume-item-editor-shell'
 import {
-  CommaSeparatedInput,
   HighlightsField,
   compactResumeFieldClassName,
 } from './resume-section-editor-fields'
@@ -50,34 +50,43 @@ export function ProjectSectionEditor({
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.projectName}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.projectName}
             value={item.name}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.projectName}
-            onChange={(event) => updateItem(item, { name: event.target.value })}
+            onChange={(value) => updateItem(item, { name: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.role}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.role}
             value={item.role}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.role}
-            onChange={(event) => updateItem(item, { role: event.target.value })}
+            onChange={(value) => updateItem(item, { role: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.techStack}>
-          <CommaSeparatedInput
+          <InlineTextListInput
+            t={t}
+            aria-label={t.fieldLabels.techStack}
+            className={compactResumeFieldClassName}
             value={item.techStack}
             placeholder={t.placeholders.techStack}
             onChange={(techStack) => updateItem(item, { techStack })}
           />
         </FormField>
         <FormField label={t.fieldLabels.period}>
-          <Input
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.period}
             value={item.period}
             className={compactResumeFieldClassName}
             placeholder={t.placeholders.period}
-            onChange={(event) => updateItem(item, { period: event.target.value })}
+            onChange={(value) => updateItem(item, { period: value })}
           />
         </FormField>
         <FormField label={t.fieldLabels.url} className="md:col-span-2">
@@ -91,12 +100,14 @@ export function ProjectSectionEditor({
           />
         </FormField>
         <FormField label={t.fieldLabels.description} className="md:col-span-2">
-          <Textarea
-            rows={2}
+          <InlineTextInput
+            t={t}
+            aria-label={t.fieldLabels.description}
+            multiline
             value={item.description}
-            className={`${compactResumeFieldClassName} min-h-16 resize-y`}
+            className={`${compactResumeFieldClassName} min-h-16`}
             placeholder={t.placeholders.description}
-            onChange={(event) => updateItem(item, { description: event.target.value })}
+            onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
         <HighlightsField

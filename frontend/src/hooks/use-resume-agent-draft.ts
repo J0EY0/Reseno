@@ -13,8 +13,10 @@ import {
   getAgentDraftReviewSuccessorId,
   getAgentDraftSnapshotFromMessages,
   getPendingAgentDraftReviewItems,
+  previewAgentDraftReview,
   projectAgentDraftReview,
-  type AgentDraftReviewProjection,
+  type AgentDraftReviewPreview,
+  type AgentDraftConflictResolution,
 } from "@/lib/agent-draft-review";
 import type { AgentDraftDecisionResolution } from "@/lib/agent-session-run-client";
 import { createId } from "@/lib/resume";
@@ -34,6 +36,9 @@ import type {
 import type { ResumeData } from "@/types/resume";
 
 export interface AgentDraftReviewController {
+  allConflicts: AgentDraftReviewPreview["conflicts"];
+  applyOriginal: () => Promise<AgentSessionResponse | null>;
+  keepManual: () => Promise<AgentSessionResponse | null>;
   applyScope: () => Promise<AgentSessionResponse | null>;
   disabled: boolean;
   discardScope: () => Promise<AgentSessionResponse | null>;
@@ -41,7 +46,7 @@ export interface AgentDraftReviewController {
   mode: "all" | "single";
   pendingCount: number;
   pendingItems: AgentDraftReviewItem[];
-  projection: AgentDraftReviewProjection;
+  projection: AgentDraftReviewPreview;
   resolvingStatus: AgentDraftDecisionStatus | null;
   reviewItemIdByOperationId: Record<string, string>;
   selectFirst: () => void;
@@ -90,7 +95,7 @@ function createAgentDraftState({
   sourceMessageId?: string;
   transactionState: AgentTransactionState;
 }) {
-  const projection = projectAgentDraftReview({
+  const projection = previewAgentDraftReview({
     baseResume,
     currentResume,
     edits,
@@ -129,6 +134,7 @@ export function useResumeAgentDraft({
     resume: ResumeData,
     reviewItemIds: string[],
     status: AgentDraftDecisionStatus,
+    conflictResolution?: AgentDraftConflictResolution,
   ) => Promise<AgentDraftDecisionResolution>;
   resume: ResumeData;
   resumeId?: string;
@@ -202,7 +208,7 @@ export function useResumeAgentDraft({
         transactionState,
       });
 
-      if (result.errors.length > 0) {
+      if (result.errors.some((error) => error.reason !== "conflict")) {
         if (transactionState === "committed") {
           clearRejectedAgentDraft(sourceMessageId);
           toast.error(messages.agentDraftBatchRejected, {
@@ -273,7 +279,7 @@ export function useResumeAgentDraft({
         transactionState: snapshot.transactionState,
       });
 
-      if (result.errors.length > 0) {
+      if (result.errors.some((error) => error.reason !== "conflict")) {
         clearRejectedAgentDraft(snapshot.sourceMessageId);
         toast.error(messages.agentDraftBatchRejected, {
           closeButton: true,
@@ -310,19 +316,12 @@ export function useResumeAgentDraft({
       return storedAgentDraft;
     }
 
-    const projection = projectAgentDraftReview({
+    const projection = previewAgentDraftReview({
       baseResume: draftBase.resume,
       currentResume: resume,
       edits: storedAgentDraft.edits,
       reviewItems: storedAgentDraft.reviewItems,
     });
-    if (projection.errors.length > 0) {
-      return {
-        ...storedAgentDraft,
-        diffs: [],
-        resume,
-      };
-    }
     return {
       ...storedAgentDraft,
       diffs: projection.diffs,
@@ -354,8 +353,11 @@ export function useResumeAgentDraft({
     showAll,
   } = reviewSelection;
 
-  const resolveCurrentScope = useCallback(
-    async (status: AgentDraftDecisionStatus) => {
+  const resolveDraftReview = useCallback(
+    async (
+      status: AgentDraftDecisionStatus,
+      conflictResolution?: AgentDraftConflictResolution,
+    ) => {
       const draft = agentDraftRef.current;
       if (!draft || draft.transactionState !== "committed") {
         return null;
@@ -380,16 +382,12 @@ export function useResumeAgentDraft({
       if (!selection || selection.isTransitioning) {
         return null;
       }
-      const selectedItem = selection.mode === "single"
+      const selectedItem = !conflictResolution && selection.mode === "single"
         ? previousPendingItems.find(
             (item) => item.id === selection.selectedItemId,
           ) ?? previousPendingItems[0]
         : null;
-      const scopeItems = selection.mode === "single"
-        ? selectedItem
-          ? [selectedItem]
-          : []
-        : previousPendingItems;
+      const scopeItems = selectedItem ? [selectedItem] : previousPendingItems;
       if (scopeItems.length === 0) {
         return null;
       }
@@ -397,6 +395,7 @@ export function useResumeAgentDraft({
       const candidate = status === "applied"
         ? projectAgentDraftReview({
             baseResume: draftBase.resume,
+            conflictResolution,
             currentResume: currentResumeRef.current,
             edits: draft.edits,
             reviewItemIds,
@@ -424,6 +423,7 @@ export function useResumeAgentDraft({
           currentResumeRef.current,
           reviewItemIds,
           status,
+          conflictResolution,
         );
         const [resolution] = await Promise.all([
           decisionRequest,
@@ -505,12 +505,12 @@ export function useResumeAgentDraft({
     ],
   );
   const applyAgentDraft = useCallback(
-    () => resolveCurrentScope("applied"),
-    [resolveCurrentScope],
+    () => resolveDraftReview("applied"),
+    [resolveDraftReview],
   );
   const discardAgentDraft = useCallback(
-    () => resolveCurrentScope("discarded"),
-    [resolveCurrentScope],
+    () => resolveDraftReview("discarded"),
+    [resolveDraftReview],
   );
 
   const review = useMemo<AgentDraftReviewController | null>(() => {
@@ -526,17 +526,21 @@ export function useResumeAgentDraft({
     if (!draftBase || draftBase.draftId !== agentDraft.id) {
       return null;
     }
-    const projection = projectAgentDraftReview({
+    const projectionInput = {
       baseResume: draftBase.resume,
       currentResume: resume,
       edits: agentDraft.edits,
-      reviewItemIds: selectedItem
-        ? [selectedItem.id]
-        : undefined,
       reviewItems: agentDraft.reviewItems,
-    });
+    };
+    const allProjection = previewAgentDraftReview(projectionInput);
+    const projection = selectedItem
+      ? previewAgentDraftReview({ ...projectionInput, reviewItemIds: [selectedItem.id] })
+      : allProjection;
 
     return {
+      allConflicts: allProjection.conflicts,
+      applyOriginal: () => resolveDraftReview("applied", "use-original"),
+      keepManual: () => resolveDraftReview("applied", "keep-manual"),
       applyScope: applyAgentDraft,
       disabled: resolvingStatus !== null,
       discardScope: discardAgentDraft,
@@ -560,6 +564,7 @@ export function useResumeAgentDraft({
     };
   }, [
     agentDraft,
+    resolveDraftReview,
     applyAgentDraft,
     discardAgentDraft,
     exitingReviewItemIds,

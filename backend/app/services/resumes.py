@@ -5,9 +5,11 @@ import secrets
 import shutil
 from collections.abc import Iterable
 from contextlib import closing
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
+from sqlite3 import Error as SqliteError
 from typing import Any, Literal, NamedTuple, cast
 
 from fastapi import HTTPException, status
@@ -30,6 +32,7 @@ from app.services.resume_document_contract import (
     ResumeDocumentContractError,
     validate_resume_document,
 )
+from app.services.resume_rich_text import resume_text_content
 from app.services.resume_starters import create_empty_resume
 from app.services.storage_deletions import (
     delete_storage,
@@ -58,11 +61,12 @@ ResumeVersionKind = Literal["autosave", "checkpoint"]
 ResumeVersionFile = tuple[str, int]
 
 
-class ResumeTemplateRebindResult(NamedTuple):
+@dataclass
+class ResumeTemplateRebindResult:
     """Version files created or superseded by one template rebind command."""
 
-    created_versions: tuple[ResumeVersionFile, ...]
-    obsolete_autosaves: tuple[ResumeVersionFile, ...]
+    created_versions: list[ResumeVersionFile] = field(default_factory=list)
+    obsolete_autosaves: list[ResumeVersionFile] = field(default_factory=list)
 
 
 class ResumeSaveTransaction(NamedTuple):
@@ -286,8 +290,8 @@ def _resume_title(resume_item: dict[str, Any]) -> str:
     resume = resume_item.get("resume")
     basic = resume.get("basic") if isinstance(resume, dict) else None
     name = basic.get("name") if isinstance(basic, dict) else None
-    if isinstance(name, str) and name.strip():
-        return name.strip()[:MAX_RESUME_TITLE_LENGTH]
+    if isinstance(name, str) and (plain_name := resume_text_content(name).strip()):
+        return plain_name[:MAX_RESUME_TITLE_LENGTH]
 
     resume_id = resume_item.get("id")
     fallback = resume_id if isinstance(resume_id, str) else "Untitled"
@@ -548,8 +552,12 @@ def rebind_current_resume_template_references(
     source_template_id: str,
     target_template_ids: dict[DocumentLocale, str],
     saved_at: str,
-) -> ResumeTemplateRebindResult:
+    writes: ResumeTemplateRebindResult,
+) -> None:
     """Rebind current resume snapshots while the caller owns the transaction."""
+
+    if not conn.in_transaction:
+        raise RuntimeError("A template rebind requires a caller-owned transaction.")
 
     for target_template_id in set(target_template_ids.values()):
         if not is_visible_template(conn, target_template_id):
@@ -565,51 +573,57 @@ def rebind_current_resume_template_references(
         WHERE current_version_id > 0
         """
     ).fetchall()
-    created_versions: list[ResumeVersionFile] = []
-    obsolete_autosaves: list[ResumeVersionFile] = []
+    for row in rows:
+        current_version_id = int(row["current_version_id"])
+        resume_item = _read_resume_json(row["id"], current_version_id)
+        if resume_item["template"] != source_template_id:
+            continue
+        target_template_id = target_template_ids[
+            cast(DocumentLocale, resume_item["documentLocale"])
+        ]
 
-    try:
-        for row in rows:
-            current_version_id = int(row["current_version_id"])
-            resume_item = _read_resume_json(row["id"], current_version_id)
-            if resume_item["template"] != source_template_id:
-                continue
-            target_template_id = target_template_ids[
-                cast(DocumentLocale, resume_item["documentLocale"])
-            ]
-
-            # A template change necessarily changes the content hash, so the
-            # command owns the next version file until the transaction commits.
-            created_versions.append((row["id"], current_version_id + 1))
-            _, obsolete_autosave_version_id = _save_resume_item(
-                conn,
-                resume_item={
-                    **resume_item,
-                    "template": target_template_id,
-                    "updatedAt": saved_at,
-                },
-                saved_at=saved_at,
-                deleted=bool(row["deleted"]),
-                deleted_at=row["deleted_at"],
-                version_kind="checkpoint",
-            )
-            if obsolete_autosave_version_id is not None:
-                obsolete_autosaves.append((row["id"], obsolete_autosave_version_id))
-    except Exception:
-        cleanup_resume_version_files(created_versions)
-        raise
-
-    return ResumeTemplateRebindResult(
-        tuple(created_versions),
-        tuple(obsolete_autosaves),
-    )
+        writes.created_versions.append((row["id"], current_version_id + 1))
+        _, obsolete_autosave_version_id = _save_resume_item(
+            conn,
+            resume_item={
+                **resume_item,
+                "template": target_template_id,
+                "updatedAt": saved_at,
+            },
+            saved_at=saved_at,
+            deleted=bool(row["deleted"]),
+            deleted_at=row["deleted_at"],
+            version_kind="checkpoint",
+        )
+        if obsolete_autosave_version_id is not None:
+            writes.obsolete_autosaves.append((row["id"], obsolete_autosave_version_id))
 
 
 def cleanup_resume_version_files(version_files: Iterable[ResumeVersionFile]) -> None:
-    """Best-effort cleanup after a multi-resume command succeeds or rolls back."""
+    """Remove unreferenced version files while excluding concurrent readers/writers."""
 
-    for resume_id, version_id in version_files:
-        _delete_resume_json(resume_id, version_id)
+    files = tuple(version_files)
+    if not files:
+        return
+    try:
+        with closing(connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for resume_id, version_id in files:
+                referenced = conn.execute(
+                    """
+                    SELECT 1 FROM resume_versions
+                    WHERE resume_id = ? AND version_id = ?
+                    UNION ALL
+                    SELECT 1 FROM resumes
+                    WHERE id = ? AND current_version_id = ?
+                    LIMIT 1
+                    """,
+                    (resume_id, version_id, resume_id, version_id),
+                ).fetchone()
+                if referenced is None:
+                    _delete_resume_json(resume_id, version_id)
+    except (OSError, SqliteError):
+        return
 
 
 def _deleted_resume_preview(
@@ -773,8 +787,14 @@ def _load_resume_detail(
         version_id=requested_version_id,
     )
 
+    item = _read_resume_json(row["id"], requested_version_id)
+    if not is_visible_template(conn, item["template"]):
+        item = {
+            **item,
+            "template": load_default_template_id(conn, item["documentLocale"]),
+        }
     return {
-        "resume": _read_resume_json(row["id"], requested_version_id),
+        "resume": item,
         "savedAt": version_row["saved_at"],
         "versionId": str(version_row["version_id"]),
     }
@@ -1319,6 +1339,7 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
             )
 
         _reject_running_agent_turns(conn, [row["id"]])
+
         def delete_files() -> None:
             delete_agent_session_attachments(row["id"])
             _delete_resume_storage(row["id"])

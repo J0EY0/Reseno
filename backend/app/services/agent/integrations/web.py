@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import re
-import socket
 from collections.abc import AsyncIterable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import date, datetime
 from html import unescape
@@ -36,6 +35,12 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+from app.services.agent.integrations.web_network import (
+    PublicWebTransport,
+    is_public_web_url,
+)
+from app.services.agent.integrations.web_proxy import PublicWebProxy
+
 SEARCH_MAX_RESULTS = 5
 SEARCH_DISCOVERY_RESULTS = SEARCH_MAX_RESULTS * 2
 SEARCH_RESULTS_PER_SOURCE = 2
@@ -63,15 +68,6 @@ DUCKDUCKGO_CHALLENGE_MARKERS = (
     b"captcha",
     b"bots use duckduckgo",
 )
-BLOCKED_WEB_HOSTS = frozenset(
-    {
-        "instance-data.ec2.internal",
-        "metadata.azure.internal",
-        "metadata.google",
-        "metadata.google.internal",
-    },
-)
-TUN_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 BLOCKED_EXCERPT_MARKERS = (
     "enable javascript",
     "please enable javascript",
@@ -165,30 +161,42 @@ class WebBrowser:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        self._approved_targets: dict[str, bool] = {}
+        self._proxy = PublicWebProxy()
+        self._resources = AsyncExitStack()
 
     async def context(self) -> BrowserContext:
         if self._context is not None:
             return self._context
         async with self._lock:
             if self._context is None:
-                self._playwright = await async_playwright().start()
-                self._browser = await self._playwright.chromium.launch(headless=True)
-                self._context = await self._browser.new_context(
-                    ignore_https_errors=False,
-                )
+                try:
+                    proxy_url = await self._proxy.start()
+                    self._resources.push_async_callback(self._proxy.close)
+                    self._playwright = await async_playwright().start()
+                    self._resources.push_async_callback(self._playwright.stop)
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=True,
+                        proxy={"server": proxy_url, "bypass": "<-loopback>"},
+                        args=[
+                            "--disable-quic",
+                            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                        ],
+                    )
+                    self._resources.push_async_callback(self._browser.close)
+                    self._context = await self._browser.new_context(
+                        ignore_https_errors=False,
+                    )
+                    self._resources.push_async_callback(self._context.close)
+                except BaseException:
+                    await self.close()
+                    raise
         return self._context
 
     async def close(self) -> None:
-        if self._context is not None:
-            await self._context.close()
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
         self._context = None
         self._browser = None
         self._playwright = None
+        await self._resources.aclose()
 
 
 def _canonical_web_url(url: str) -> str:
@@ -233,93 +241,6 @@ def _canonical_web_url(url: str) -> str:
     )
 
 
-def _is_public_reference_url(url: str) -> bool:
-    """Reject obvious private targets before sending a URL to the extractor."""
-
-    canonical = _canonical_web_url(url)
-    if not canonical:
-        return False
-    hostname = (urlsplit(canonical).hostname or "").casefold()
-    if (
-        hostname == "localhost"
-        or hostname.endswith(".localhost")
-        or hostname in BLOCKED_WEB_HOSTS
-    ):
-        return False
-
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return True
-    return address.is_global and not address.is_multicast
-
-
-def _safe_web_target_addresses(url: str) -> frozenset[str] | None:
-    """Resolve one outbound target and reject private-network destinations."""
-
-    canonical = _canonical_web_url(url)
-    if not canonical:
-        return None
-    parsed = urlsplit(canonical)
-    hostname = (parsed.hostname or "").casefold()
-    if not _is_public_reference_url(canonical):
-        return None
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        try:
-            address_info = socket.getaddrinfo(
-                hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
-        except (OSError, UnicodeError):
-            return None
-        addresses = frozenset(str(sockaddr[0]) for *_, sockaddr in address_info)
-        if not addresses or not all(
-            _is_safe_resolved_address(value) for value in addresses
-        ):
-            return None
-        return addresses
-    return frozenset({str(address)}) if address.is_global else None
-
-
-def _is_safe_resolved_address(value: str) -> bool:
-    try:
-        address = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return address.is_global or (
-        address.version == 4 and address in TUN_FAKE_IP_NETWORK
-    )
-
-
-def _has_safe_connected_peer(
-    response: httpx.Response,
-    resolved_addresses: frozenset[str],
-) -> bool:
-    stream = response.extensions.get("network_stream")
-    get_extra_info = getattr(stream, "get_extra_info", None)
-    if not callable(get_extra_info):
-        return False
-    try:
-        server_address = get_extra_info("server_addr")
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return False
-    peer = server_address[0] if isinstance(server_address, tuple) else server_address
-    if not isinstance(peer, str):
-        return False
-    try:
-        address = ipaddress.ip_address(peer)
-    except ValueError:
-        return False
-    return address.is_global or (
-        peer in resolved_addresses
-        and address.version == 4
-        and address in TUN_FAKE_IP_NETWORK
-    )
-
-
 async def _async_read_limited_bytes(
     chunks: AsyncIterable[bytes],
     limit: int,
@@ -343,15 +264,9 @@ async def _async_get_bounded_web_response(
 ) -> _BoundedWebResponse | None:
     current_url = url
     for redirect_count in range(MAX_WEB_REDIRECTS + 1):
-        resolved_addresses = await asyncio.to_thread(
-            _safe_web_target_addresses,
-            current_url,
-        )
-        if resolved_addresses is None:
+        if not is_public_web_url(current_url):
             return None
         async with client.stream(method, current_url, data=data) as response:
-            if not _has_safe_connected_peer(response, resolved_addresses):
-                return None
             if response.is_redirect:
                 location = response.headers.get("location")
                 if not location or redirect_count >= MAX_WEB_REDIRECTS:
@@ -470,7 +385,7 @@ def _parse_duckduckgo_results(raw: bytes, charset: str) -> list[WebSearchResult]
     results: list[WebSearchResult] = []
     seen_urls: set[str] = set()
     for result in parser.results:
-        if result.url in seen_urls or not _is_public_reference_url(result.url):
+        if result.url in seen_urls or not is_public_web_url(result.url):
             continue
         seen_urls.add(result.url)
         results.append(result)
@@ -1090,6 +1005,7 @@ async def _async_search_web(
     try:
         async with asyncio.timeout(SEARCH_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(
+                transport=PublicWebTransport(),
                 headers={
                     "Accept": "text/html,*/*;q=0.8",
                     "Accept-Language": WEB_ACCEPT_LANGUAGE,
@@ -1389,19 +1305,7 @@ async def _async_render_web_references(
                 if not canonical:
                     await route.abort()
                     return
-                parsed = urlsplit(canonical)
-                target_key = f"{parsed.scheme}://{parsed.netloc}"
-                approved = session._approved_targets.get(target_key)
-                if approved is None:
-                    approved = (
-                        await asyncio.to_thread(
-                            _safe_web_target_addresses,
-                            canonical,
-                        )
-                        is not None
-                    )
-                    session._approved_targets[target_key] = approved
-                if approved:
+                if is_public_web_url(canonical):
                     await route.continue_()
                 else:
                     await route.abort()
@@ -1423,7 +1327,7 @@ async def _async_render_web_references(
                 except PlaywrightTimeoutError:
                     pass
                 final_url = _canonical_web_url(page.url)
-                if not final_url or not _is_public_reference_url(final_url):
+                if not final_url or not is_public_web_url(final_url):
                     return requested_url, None
                 title, visible_text, json_ld = await asyncio.gather(
                     page.title(),
@@ -1462,7 +1366,7 @@ async def _async_render_web_references(
                 await page.close()
 
         rendered = await asyncio.gather(*(render(*request) for request in requests))
-    except (PlaywrightError, PlaywrightTimeoutError):
+    except (OSError, PlaywrightError, PlaywrightTimeoutError):
         return {}
     finally:
         if owns_session:
@@ -1486,13 +1390,14 @@ async def _async_fetch_web_reference(
     """Download one public page and extract query-relevant visible text."""
 
     requested_url = _canonical_web_url(url)
-    if not requested_url or not _is_public_reference_url(requested_url):
+    if not requested_url or not is_public_web_url(requested_url):
         return None
 
     bounded_timeout = min(max(timeout, 0.1), FETCH_TIMEOUT_SECONDS)
     try:
         async with asyncio.timeout(bounded_timeout):
             async with httpx.AsyncClient(
+                transport=PublicWebTransport(),
                 headers={
                     "Accept": "text/html,text/plain;q=0.9,*/*;q=0.8",
                     "Accept-Language": WEB_ACCEPT_LANGUAGE,

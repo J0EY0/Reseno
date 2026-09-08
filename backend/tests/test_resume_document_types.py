@@ -36,7 +36,10 @@ def test_document_field_metadata_matches_each_discriminated_item() -> None:
         assert set(contract.ITEM_FIELDS_BY_KIND[kind]) == set(item_fields)
         assert set(contract.ITEM_STRING_FIELDS_BY_KIND[kind]) == {
             name for name, shape in item_fields.items()
-            if name != "id" and shape.get("type") == "string"
+            if name != "id" and (
+                definitions[shape["$ref"].rsplit("/", 1)[1]]
+                if "$ref" in shape else shape
+            ).get("type") == "string"
         }
         assert set(contract.ITEM_LIST_FIELDS_BY_KIND[kind]) == {
             name for name, shape in item_fields.items()
