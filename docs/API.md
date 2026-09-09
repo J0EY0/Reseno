@@ -1,1089 +1,381 @@
-# Reseno Frontend API Contract
+# Reseno API
 
-## 基础约定
+本文描述前端与 FastAPI 后端之间的 HTTP 接口。默认基址为同源 `/api`；开发环境由 Vite 代理到后端。前端可用 `VITE_API_BASE_URL` 指定 API 基址，开发代理目标可用 `VITE_DEV_API_TARGET` 指定。启动、密钥和存储配置见 [README](../README.md)。
 
-前端 API 入口集中在 `frontend/src/lib/api-client.ts`。
+## 契约来源
 
-- 如果设置 `VITE_API_BASE_URL`，请求真实后端。
-- 如果未设置，默认请求同源 `/api`；Vite 开发环境通过代理转发到本地后端。
-- 前端不再读取静态 mock JSON，也不再用浏览器本地存储保存业务快照。
+下文表格中的响应类型均指 JSON envelope 的 `data`，标明 SSE、文件、HTML 或重定向的接口除外。JSON 字段使用 schema 声明的别名，例如 `documentLocale`、`savedAt`。
 
-统一响应格式：
+| 内容 | 精确字段与实现 |
+| --- | --- |
+| HTTP 路由、查询参数、状态码 | [backend/app/routers](../backend/app/routers) |
+| 请求与响应校验 | [backend/app/schemas](../backend/app/schemas) |
+| 前端 API 类型 | [frontend/src/types/api.ts](../frontend/src/types/api.ts) |
+| 简历文档结构 | [resume_document.schema.json](../backend/app/services/resume_document.schema.json) |
+| Agent 编辑操作 | [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) |
+| 前端简历、模板和工作区类型 | [frontend/src/types/resume.ts](../frontend/src/types/resume.ts) |
+| 内置模板定义 | [template_presets.json](../backend/app/services/template_presets.json) |
 
-```ts
-type ApiResponse<T> = {
-  code: number
-  message: string // stable i18n key, for example "OK" or "UNAUTHORIZED_REQUEST"
-  data: T
-  requestId?: string
-}
-```
+服务通过 `app.main:create_app` 创建。`/docs`、`/redoc` 和 `/openapi.json` 未公开；契约工具可对应用对象调用 `app.openapi()`。SSE、手工文件响应及认证中间件规则还需参照对应实现。
 
-HTTP 状态码遵循标准语义：2xx 表示成功，400 表示无效请求，401 表示认证失败，
-403 表示请求被禁止，404 表示资源不存在，409 表示状态冲突，422 表示请求结构
-校验失败，429 表示请求过多，5xx 表示服务端或上游故障。所有 `/api/*` 响应仍使用
-上述统一 envelope；payload 中的 `code` 和 `message` 用于区分具体业务错误，而不是
-替代 HTTP 状态码。
+## HTTP 与认证约定
 
-常用业务码：
+普通 JSON 成功响应为：
 
-```ts
-const ApiCode = {
-  ok: 0,
-  badRequest: 40000,
-  unauthorized: 40001,
-  validationError: 40002,
-  notFound: 40004,
-  internalError: 50000,
-}
-```
-
-成功时 `code = 0`。后端应保持该 envelope，避免前端大范围改动。
-`message` 不返回中文或英文句子，只返回稳定映射 key；前端根据当前语言做 i18n
-展示。
-
-## Auth
-
-所有环境都要求认证。空实例只公开一次性 owner 设置接口；owner 创建后，除 setup
-状态和登录外的 `/api/*` 都要求有效 Bearer JWT。
-
-### GET `/api/auth/setup`
-
-用途：查询实例是否仍需创建唯一 owner，以及 GitHub 登录是否可用。响应带 `Cache-Control: no-store`。
-
-```ts
-type AuthSetupStatusResponse = {
-  setupRequired: boolean
-  githubLoginAvailable: boolean
-}
-```
-
-### POST `/api/auth/setup`
-
-用途：首次从 loopback 客户端创建唯一 owner。成功后 setup 永久关闭，并直接返回
-`AuthLoginResponse`。用户名去除首尾空白后至少 3 个字符，只允许字母、数字、`_`
-和 `-`；密码至少 8 个字符并同时包含字母和数字。
-
-```ts
-type AuthSetupRequest = {
-  username: string
-  password: string
-  confirmPassword: string
-}
-```
-
-### POST `/api/auth/login`
-
-用途：由后端校验用户名和密码。前端只接收成功或失败结果，不读取后端明文凭据。
-登录成功后返回 36 小时有效的 Bearer JWT。前端将会话保存到同源共享的
-localStorage，登录和退出会同步到其他已打开的标签页。
-
-请求：
-
-```ts
-type AuthLoginRequest = {
-  username: string
-  password: string
-}
-```
-
-响应数据：
-
-```ts
-type AuthLoginResponse = {
-  username: string
-  accessToken: string
-  expiresAt: string
-  tokenType: "bearer"
-}
-```
-
-### POST `/api/auth/refresh`
-
-用途：使用当前有效 JWT 刷新登录状态。前端每 4 小时检查续签，并通过同源共享锁
-协调多个标签页对同一 token 的并发刷新。刷新成功后，后端会将旧 token 哈希
-保留在内存失效缓存中直到其原定过期时间；后续携带旧 token 的请求会被中间件拦截。
-
-请求头：
-
-```http
-Authorization: Bearer <accessToken>
-```
-
-响应数据同 `AuthLoginResponse`。
-
-### POST `/api/auth/password`
-
-用途：修改登录密码。前端只提交当前密码和新密码；后端在同一个 `auth.db`
-事务内写入新的 Argon2id 哈希和随机认证 revision。全部已有 JWT 因 revision
-不再匹配而失效，前端清理本地 session 并跳转登录页。
-
-请求头：
-
-```http
-Authorization: Bearer <accessToken>
-```
-
-请求：
-
-```ts
-type AuthPasswordUpdateRequest = {
-  currentPassword: string
-  newPassword: string
-  confirmPassword: string
-}
-```
-
-响应数据：
-
-```ts
-type AuthPasswordUpdateResponse = {
-  username: string
-  updated: true
-}
-```
-
-所有环境下，除 `/api/auth/setup`（GET/POST）和 `/api/auth/login` 外，所有
-`/api/*` 接口都需要携带 `Authorization: Bearer <accessToken>`。缺失、过期、
-签名错误、owner revision 不匹配或已被刷新失效的 token 会返回 HTTP 401，并携带
-`WWW-Authenticate: Bearer`；payload 为：
-
-```ts
+```json
 {
-  code: 40001,
-  message: "UNAUTHORIZED_REQUEST",
-  data: {
-    loginUrl: "/login",
-    reason:
-      | "missing_token"
-      | "invalid_or_expired_token"
-      | "owner_missing_or_changed"
-  }
+  "code": 0,
+  "message": "OK",
+  "data": {},
+  "requestId": null
 }
 ```
 
-前端收到 `code = 40001` 后，会等待正在进行的续签完成；只有失败请求携带的
-token 仍对应当前会话时，才清理共享 session 并跳转登录页。旧 token 的迟到响应
-不会清除已经建立的新会话。
+`requestId` 可以为空或省略。`message` 是稳定的消息标识，由客户端本地化。错误保留实际 HTTP 状态，不通过 HTTP 200 表示失败。
 
-## Workspace 页面查询与资源边界
-
-`/api/workspace/pages/*` 是只读的页面聚合查询（BFF），用于一次返回某个路由
-首次渲染需要的上下文。它不是通用 workspace 快照，也不负责资源 CRUD 或版本
-管理。每个页面只能调用对应的查询；未知路由不发起 workspace 请求。
-
-原 `/api/workspace/bootstrap`、`/api/workspace/snapshot` 和
-`/api/workspace/versions*` 已移除。简历、模板和模型的写操作由各自的资源接口
-负责，简历版本也必须带上所属的 `resumeId`。
-
-### 页面查询矩阵
-
-| 页面 | 页面查询 | 职责 |
+| HTTP 状态 | 含义 | 常见 `code` |
 | --- | --- | --- |
-| `/resume` | `GET /api/workspace/pages/resumes` | 有效简历列表和模板目录 |
-| `/resume/:id` | `GET /api/workspace/pages/resume-editor` | 编辑器共享的模板、模型和 Agent 设置；简历详情及版本由资源接口读取 |
-| `/templates`、`/template/:id` | `GET /api/workspace/pages/templates` | 有效模板目录和默认模板 |
-| `/trash` | `GET /api/workspace/pages/trash` | 已删除简历、已删除模板及预览所需的有效模板目录 |
-| `/models` | `GET /api/workspace/pages/models` | 模型配置和引用模型的 Agent 设置 |
-| `/settings` | `GET /api/workspace/pages/settings` | 设置页所需的模型配置和 Agent 设置 |
+| 2xx | 成功 | `0` |
+| 400、403、409、413、429 | 无效请求、禁止操作、冲突、上传过大、运行容量不足 | `40000` |
+| 401 | 登录失败或会话无效 | `40001` |
+| 404 | 资源不存在 | `40004` |
+| 422 | 请求结构或字段校验失败 | 请求模型校验为 `40002` |
+| 5xx | 服务端或上游错误 | `50000` |
 
-PDF 渲染页同样需要模板目录，因此复用 templates 页面查询。共享依赖不表示页面
-可以读取无关资源，例如 templates、models 和 settings 查询都不会读取简历列表。
+Pydantic 请求校验失败返回 `message: "VALIDATION_ERROR"`，`data.errors` 包含字段错误。手工抛出的 HTTP 错误按 HTTP 状态映射；例如 Agent 会话替换校验失败使用 HTTP 422、`code: 40000`、`message: "AGENT_SESSION_REPLACEMENT_INVALID"`。完整规则见 [exceptions.py](../backend/app/exceptions.py)。
 
-六个页面查询都使用独立的强类型响应模型；响应 `data` 的准确字段如下：
+受保护接口要求：
 
-```ts
-type WorkspacePageTheme = {
-  theme?: "light" | "dark" | "system"
-}
-
-type TemplatePageContext = {
-  defaultTemplateId: string
-  customTemplates: ResumeTemplateDefinition[]
-}
-
-type ModelPageContext = {
-  modelConfigs: ModelConfig[]
-  agentSettings: AgentSettings
-}
-
-type ResumesPageResponse = WorkspacePageTheme &
-  TemplatePageContext & {
-    resumes: ResumeWorkspaceItem[]
-  }
-
-type ResumeEditorPageResponse = WorkspacePageTheme &
-  TemplatePageContext &
-  ModelPageContext
-
-type TemplatesPageResponse = WorkspacePageTheme & TemplatePageContext
-
-type TrashPageResponse = WorkspacePageTheme &
-  TemplatePageContext & {
-    deletedResumes: DeletedResumeWorkspaceItem[]
-    deletedTemplates: DeletedResumeTemplateDefinition[]
-  }
-
-type ModelsPageResponse = WorkspacePageTheme & ModelPageContext
-type SettingsPageResponse = WorkspacePageTheme & ModelPageContext
+```http
+Authorization: Bearer <accessToken>
 ```
 
-字段是按页面必需依赖声明的，不再使用“所有字段都可选”的统一
-`WorkspacePayload`。后端 response model 会校验并过滤响应字段，前端也按路由
-获得对应 DTO。
+[认证中间件](../backend/app/middleware/auth.py) 仅对下列实际 API 路径免除 Bearer 校验：
 
-### Workspace 偏好命令
+- `/api/auth/setup`
+- `/api/auth/login`
+- `/api/auth/oauth/github/login`
+- `/api/auth/oauth/github/callback`
+- `/api/auth/oauth/github/setup/callback`
+- `/api/auth/oauth/complete`
 
-| 方法 | 路径 | 职责 |
-| --- | --- | --- |
-| `PUT` | `/api/workspace/user-settings?locale=zh\|en` | 保存主题和 Agent 设置，不保存简历或模板 |
-| `PUT` | `/api/workspace/default-template` | 校验模板可用后保存默认模板 ID |
+`OPTIONS` 请求也不经过 Bearer 校验。GitHub 回调和兑换仍校验 OAuth 流程状态及浏览器会话，公开不等于无校验。`/health` 位于 API 前缀之外。
 
-`PUT /api/workspace/user-settings` 的请求体为
-`{ settings: { theme?, agentSettings? } }`；
-`PUT /api/workspace/default-template` 的请求体为 `{ templateId: string }`，响应
-`data` 为 `{ defaultTemplateId: string }`。
+认证中间件拒绝请求时返回 HTTP 401、`WWW-Authenticate: Bearer`，以及：
 
-### 简历资源与版本
-
-| 方法 | 路径 | 职责 |
-| --- | --- | --- |
-| `GET` | `/api/resumes?status=active\|deleted` | 按状态列出简历；deleted 返回回收站预览 |
-| `POST` | `/api/resumes` | 创建简历及初始版本 |
-| `GET` | `/api/resumes/{resumeId}` | 读取一份有效简历的当前版本 |
-| `PUT` | `/api/resumes/{resumeId}?saveMode=autosave\|checkpoint` | 保存完整简历；默认形成正式检查点，自动保存只保留最新临时快照 |
-| `POST` | `/api/resumes/{resumeId}/duplicate?locale=zh\|en` | 从当前版本创建独立副本，不复制会话和版本历史 |
-| `POST` | `/api/resumes/{resumeId}/trash` | 将有效简历移入回收站，不创建版本 |
-| `POST` | `/api/resumes/{resumeId}/restore` | 恢复已删除简历，不创建版本 |
-| `DELETE` | `/api/resumes/{resumeId}` | 永久删除已在回收站中的简历及其版本、会话和附件 |
-| `DELETE` | `/api/resumes/trash` | 永久清空简历回收站 |
-| `GET` | `/api/resumes/{resumeId}/versions` | 列出指定简历的版本摘要 |
-| `GET` | `/api/resumes/{resumeId}/versions/{versionId}` | 读取指定简历的一个历史版本 |
-
-简历详情和历史版本都返回：
-
-```ts
-type ResumeDetailResponse = {
-  resume: ResumeWorkspaceItem
-  savedAt: string
-  versionId: string
-}
-
-type ResumeVersionsResponse = {
-  versions: Array<{
-    versionId: string
-    savedAt: string
-  }>
+```json
+{
+  "code": 40001,
+  "message": "UNAUTHORIZED_REQUEST",
+  "data": {
+    "loginUrl": "/login",
+    "reason": "invalid_or_expired_token"
+  },
+  "requestId": null
 }
 ```
 
-后端按简历 ID 持久化。`versionId` 从 `1` 开始递增；内容 hash 与当前版本相同
-时不会制造新版本，展示时间字段不参与 hash。`saveMode` 默认为
-`checkpoint`，兼容既有调用；`autosave` 最多保留一个临时版本，后续自动保存会
-替换前一个临时版本，手动保存、离开和导出前则将最新快照提升为正式检查点。
-`GET /versions` 只返回正式检查点，因此版本号出现间隔属于正常情况。
+`reason` 为 `missing_token`、`invalid_or_expired_token` 或 `owner_missing_or_changed`。密码错误则使用 `INVALID_CREDENTIALS`。客户端应按状态码和消息标识处理，不依赖英文错误句子。
+
+JSON envelope 不适用于 Agent SSE、附件和导出文件下载、OAuth HTML/303 回调、`/health`。`/api/*` 接口交给通用异常处理器的错误使用 JSON 错误 envelope；OAuth 流程失败沿对应回调格式返回，SSE 已建立后的运行错误通过流事件报告。
+
+## Owner 与登录会话
+
+契约：[auth.py schema](../backend/app/schemas/auth.py)、[auth 路由](../backend/app/routers/auth.py)、[auth_tokens.py](../backend/app/services/auth_tokens.py)。实例只有一个 owner，没有公开注册或默认密码。
+
+| 方法 | 路径 | 请求 | 响应与行为 |
+| --- | --- | --- | --- |
+| GET | `/api/auth/setup` | 无；公开 | `AuthSetupStatusResponse`：`setupRequired`、`githubLoginAvailable`；`Cache-Control: no-store` |
+| POST | `/api/auth/setup` | `AuthSetupRequest`：`username`、`password`、`confirmPassword`；公开 | 从 loopback 客户端创建唯一 owner，返回 `AuthLoginResponse`；非本机 403，已初始化 409 |
+| POST | `/api/auth/login` | `AuthLoginRequest`：`username`、`password`；公开 | `AuthLoginResponse`；凭据错误 401 |
+| POST | `/api/auth/refresh` | 有效 Bearer；无请求体 | `AuthLoginResponse`；续签并撤销旧 token |
+| POST | `/api/auth/password` | `AuthPasswordUpdateRequest`：`currentPassword`、`newPassword`、`confirmPassword` | `AuthPasswordUpdateResponse`：`username`、`updated: true`；原密码错误 400 |
+
+用户名去除首尾空白后至少 3 个字符，只允许 ASCII 字母、数字、`_`、`-`。新密码至少 8 个字符，包含 ASCII 字母和数字，并与确认值一致。首次设置判断的是后端收到的客户端地址。
+
+`AuthLoginResponse` 包含 `username`、`accessToken`、`expiresAt`、`tokenType: "bearer"`。JWT 有效期为签发起 36 小时；续签要求旧 token 仍有效。旧 token 的 `jwt_id` 与原到期时间写入 `auth.db` 的 `auth_revoked_tokens`，撤销在后端重启后仍有效，同一 token 只能成功续签一次。
+
+密码修改会更新 owner 的认证 revision，使全部已有 JWT 失效。前端将会话存入同源 localStorage，并协调标签页之间的续签、登录和退出；客户端退出清理本地会话，没有单独的服务端 logout 接口。会话客户端见 [auth.ts](../frontend/src/lib/auth.ts)、[auth-session.ts](../frontend/src/lib/auth-session.ts)。
+
+### GitHub App 与身份绑定
+
+契约：[auth_oauth.py](../backend/app/routers/auth_oauth.py)、[auth.py schema](../backend/app/schemas/auth.py)。`provider` 当前只接受 `github`。
+
+| 方法 | 路径 | 请求与认证 | 响应 |
+| --- | --- | --- | --- |
+| GET | `/api/auth/oauth/identities` | Bearer | `OAuthIdentitiesResponse`：已绑定身份 `identities` 与 provider 配置状态 `providers` |
+| POST | `/api/auth/oauth/{provider}/login` | GitHub 路径公开；无请求体 | `OAuthStartResponse.authorizationUrl` |
+| POST | `/api/auth/oauth/{provider}/bind` | Bearer；无请求体 | `OAuthStartResponse.authorizationUrl` |
+| GET | `/api/auth/oauth/{provider}/callback` | GitHub 路径公开；供 provider 回调 | 登录为 303 重定向；绑定为 HTML 通知页 |
+| POST | `/api/auth/oauth/complete` | 公开；`{ "code": "一次性交换码" }`；保留发起流程的浏览器 cookie | `OAuthCompleteResponse`：`provider`、`intent: "login" / "bind"`、`auth`；仅登录返回新本地 token，绑定时 `auth: null` |
+| DELETE | `/api/auth/oauth/{provider}/binding` | Bearer；无请求体 | `OAuthDeleteResponse`：`deleted: true` |
+| POST | `/api/auth/oauth/github/setup` | Bearer；`{ "publicBaseUrl": "https://实例地址" }` | `OAuthSetupResponse`：`registrationUrl`、`manifest` |
+| GET | `/api/auth/oauth/github/setup/callback` | 公开；供 GitHub App Manifest 回调 | 成功 303 进入授权流程；失败 HTML 通知页 |
+
+owner 先使用密码登录，再创建实例自己的 GitHub App 并绑定身份。`publicBaseUrl` 使用实例正常浏览器地址：远端要求 HTTPS，本机 localhost/loopback 可用 HTTP。前端与 `/api` 使用同源地址；OAuth 使用签名浏览器会话记录流程，流程有效期 10 分钟。
+
+登录回调跳转至 `/login#oauth_code=...`，失败使用 `#oauth_error=...`。绑定回调页面通过带来源校验的 `postMessage` 与发起窗口交接。客户端再调用 `/complete` 消费与当前浏览器关联的交换码；交换码有效期 60 秒且只能使用一次。JWT 不放入回调 URL。配置和回调响应带 `Cache-Control: no-store`；回调带 `Referrer-Policy: no-referrer`。
+
+## 简历、模板与语言的数据边界
+
+`ResumeData` 是简历正文，结构为 `schemaVersion: 2`、`basic`、`sections`。每个 section 有 `id`、`kind`、`title`、`items`；`kind` 是 `education`、`experience`、`project`、`publication`、`achievement`、`simple_list`。section 不存放模板布局字段。
+
+每种 section 的 item 使用自己的字段。例如 project 的 `techStack` 是字符串数组；`simple_list` 恰有一个 `{id, content}` item，可见条目保存在 `content` 的富文本中。基本信息包含 `customFields`，每项有 `id`、`type`、`label`、`value`。完整规则以 [文档 JSON schema](../backend/app/services/resume_document.schema.json) 为准。
+
+`ResumeWorkspaceItemResponse` 在正文外保存 `id`、`title`、`updatedAt`、`documentLocale`、`jobBrief`、`typography`、`template`、`templateSettings`。`documentLocale` 为 `zh` 或 `en`，独立于界面语言；`template` 是模板 ID，`templateSettings` 为视觉覆盖或 `null`。`typography` 包含 `fontFamily` 与 CSS 像素单位的 `fontSize`。
+
+模板定义包含 `preset`、`name`、`description`、`layout`、`typography`、`settings`。`preset` 必须引用内置模板；布局、头像与装饰图片字段在 `layout` 中，视觉参数在 `settings` 中。便携模板不含服务端的 `id`、`updatedAt`、`isBuiltIn`。字段与数值约束见 [imports.py](../backend/app/schemas/imports.py)、[templates.py](../backend/app/schemas/templates.py)。
+
+## 工作区页面与偏好
+
+契约：[workspace.py schema](../backend/app/schemas/workspace.py)、[workspace 路由](../backend/app/routers/workspace.py)。页面查询仅聚合初始化所需资源；单份简历正文、Agent 会话和模板编辑状态通过各自资源接口读取。
+
+| 方法 | 路径 | 请求 | `data` |
+| --- | --- | --- | --- |
+| GET | `/api/workspace/pages/resumes` | 无 | `ResumesPageResponse`：`resumes`、`customTemplates`、`defaultTemplateIds`、可选 `theme` |
+| GET | `/api/workspace/pages/resume-editor` | 无 | `ResumeEditorPageResponse`：`customTemplates`、`defaultTemplateIds`、`modelConfigs`、`agentSettings`、可选 `theme` |
+| GET | `/api/workspace/pages/templates` | 无 | `TemplatesPageResponse`：`customTemplates`、`defaultTemplateIds`、可选 `theme` |
+| GET | `/api/workspace/pages/trash` | 无 | `TrashPageResponse`：`deletedResumes`、`deletedTemplates`、`customTemplates`、`defaultTemplateIds`、可选 `theme` |
+| GET | `/api/workspace/pages/models` | 无 | `ModelsPageResponse`：`modelConfigs`、`agentSettings`、可选 `theme` |
+| GET | `/api/workspace/pages/settings` | 无 | `SettingsPageResponse`：`modelConfigs`、`agentSettings`、可选 `theme` |
+| PUT | `/api/workspace/user-settings` | `{settings: UserSettingsUpdate}`；可选查询 `locale=zh/en` | `UserSettingsSaveResponse`：保存后的 `locale`、可选 `theme`、`agentSettings` |
+| PUT | `/api/workspace/default-template` | `{documentLocale, templateId}` | `{defaultTemplateIds: {zh, en}}` |
+
+`theme` 为 `light`、`dark`、`system`。省略 `locale` 会保留既有偏好，首次未设置时为 `en`。`defaultTemplateIds` 为中文、英文简历分别保存默认模板 ID，不是单一全局模板。
+
+`agentSettings` 的准确结构见 [agent_settings.py](../backend/app/schemas/agent_settings.py)：
+
+- `defaultModelConfigId`：默认模型配置 ID。
+- `responseLanguage`：`follow`、`zh`、`en`。
+- `behaviorMode`：`balanced`、`strict`、`aggressive`。
+- `confirmationMode`：`always`、`suggestOnly`。
+
+Agent 在接受一次运行时读取并固定这些偏好，运行期间修改设置作用于之后的运行。正式简历仍通过审核应用接口提交。
+
+## 简历与版本
+
+契约：[resumes.py schema](../backend/app/schemas/resumes.py)、[resumes 路由](../backend/app/routers/resumes.py)。
+
+| 方法 | 路径 | 请求 | `data` |
+| --- | --- | --- | --- |
+| GET | `/api/resumes` | 查询 `status=active/deleted`，默认 `active` | `ResumeListResponse`：`resumes`；已删除项附带 `deletedAt` |
+| POST | `/api/resumes` | `ResumeCreateRequest` | `ResumeDetailResponse` |
+| GET | `/api/resumes/{resume_id}` | 无 | 当前活动简历的 `ResumeDetailResponse` |
+| PUT | `/api/resumes/{resume_id}` | `ResumeSaveRequest`；查询 `saveMode=autosave/checkpoint`，默认 `checkpoint` | `ResumeDetailResponse` |
+| POST | `/api/resumes/{resume_id}/duplicate` | 无请求体 | 独立副本的 `ResumeDetailResponse` |
+| POST | `/api/resumes/{resume_id}/trash` | 无请求体 | `{resume: DeletedResumeWorkspaceItemResponse}`；移入回收站 |
+| POST | `/api/resumes/{resume_id}/restore` | 无请求体 | 恢复后的 `ResumeDetailResponse` |
+| DELETE | `/api/resumes/{resume_id}` | 无请求体；目标须已在回收站 | `ResumeDeleteResponse`：`{id}` |
+| DELETE | `/api/resumes/trash` | 无请求体 | `ResumeTrashEmptyResponse`：`{deletedCount}` |
+| GET | `/api/resumes/{resume_id}/versions` | 无 | `ResumeVersionsResponse`：`versions`，每项含 `versionId`、`savedAt` |
+| GET | `/api/resumes/{resume_id}/versions/{version_id}` | 无 | 历史快照的 `ResumeDetailResponse` |
+
+创建最小请求：
+
+```json
+{"documentLocale":"zh"}
+```
+
+服务端分配简历 ID、时间与版本，按所选语言和模板生成起始内容。可以通过 `ResumeCreateRequest` 提供标题、正文、模板及排版覆盖。标题最长 50 个字符。
+
+保存是整份替换请求，包含 `title`、`documentLocale`、`resume`、`jobBrief`、`typography`、`template`、`templateSettings`；不要把 `ResumeDetailResponse` 或服务端身份字段直接当请求体。`ResumeDetailResponse` 为 `{resume: ResumeWorkspaceItemResponse, savedAt, versionId}`，`versionId` 是字符串。
+
+`autosave` 保存当前工作内容，后续保存会替换未固定的自动保存版本；`checkpoint` 固定显式历史节点。同内容保存不会无条件创建新版本，当前 autosave 可被提升为 checkpoint。历史列表只列 checkpoint。普通 PUT 没有 `expectedVersionId` 查询参数；Agent 审核应用的版本并发控制见后文。
+
+彻底删除同时清理版本、关联 Agent 会话与附件。有仍在执行的 Agent turn 时，彻底删除或清空回收站返回 409 `AGENT_RUN_CONFLICT`。回收站列表提供预览数据，不能通过活动详情接口编辑已删除简历。
+
+## 自定义模板
+
+契约：[templates.py schema](../backend/app/schemas/templates.py)、[templates 路由](../backend/app/routers/templates.py)。这些资源接口管理自定义模板；内置模板由共享预设提供，不通过这些接口修改。
+
+| 方法 | 路径 | 请求 | `data` |
+| --- | --- | --- | --- |
+| GET | `/api/templates` | 查询 `status=active/deleted`，默认 `active` | `TemplateListResponse`：`templates` |
+| POST | `/api/templates` | `{template: TemplateArtifactItem}` | `TemplateResponse`：新建 `{template}` |
+| GET | `/api/templates/{template_id}` | 无 | `TemplateEditingResponse`：`{template, checkpoint}` |
+| PUT | `/api/templates/{template_id}` | `{template: TemplateArtifactItem, saveMode?: "autosave" / "checkpoint"}` | `TemplateEditingResponse` |
+| POST | `/api/templates/{template_id}/discard` | 无请求体 | 恢复后的 `TemplateEditingResponse` |
+| POST | `/api/templates/{template_id}/trash` | 无请求体 | `TemplateResponse`；已删除模板附带 `deletedAt` |
+| POST | `/api/templates/{template_id}/restore` | 无请求体 | `TemplateResponse` |
+| DELETE | `/api/templates/{template_id}` | 无请求体；目标须已在回收站 | `TemplateDeleteResponse`：`{id}` |
+| DELETE | `/api/templates/trash` | 无请求体 | `TemplateTrashEmptyResponse`：`{deletedCount}` |
+
+模板 PUT 的 `saveMode` 在 JSON 请求体中，默认 `checkpoint`。首次 autosave 保存此前显式内容为 `checkpoint`，后续 autosave 保留同一个 checkpoint；显式保存确认当前内容并使 `checkpoint` 为 `null`。`discard` 恢复该 checkpoint，没有待处理 checkpoint 时返回现有内容。编辑状态保存在后端，重新进入页面仍可恢复；模板没有简历式的历史版本列表。
+
+创建和保存请求中的 `template` 使用便携内容形状，不携带 `id`、`updatedAt`、`isBuiltIn`、`deletedAt` 或内部 `_checkpoint` 字段。创建得到的新 ID 才是工作区引用 ID。
+
+## 模型提供商与配置
+
+契约：[model_configs.py schema](../backend/app/schemas/model_configs.py)、[model_providers 路由](../backend/app/routers/model_providers.py)、[model_configs 路由](../backend/app/routers/model_configs.py)。
+
+| 方法 | 路径 | 请求 | `data` |
+| --- | --- | --- | --- |
+| GET | `/api/model-providers` | 无 | `ModelProvidersResponse`：`providers` manifest |
+| POST | `/api/model-providers/discover-models` | `DiscoverModelsRequest` | `DiscoverModelsResponse`：`models`、`source: "cache" / "provider"` |
+| POST | `/api/model-providers/context-window` | `{provider, model}`；用于 local/custom provider | `ModelContextReferenceResponse`：`status`、`contextWindowTokens`、`matchedModel`、`source` |
+| GET | `/api/model-configs` | 无 | `ModelConfigsResponse`：启用的 `configs` |
+| POST | `/api/model-configs` | `ModelConfigUpsertRequest`；`id` 命中已有配置则更新，否则由服务端分配新 ID 创建 | `ModelConfigResponse` |
+| POST | `/api/model-configs/bulk-delete` | `{ids: string[]}`；非空、无重复 | `ModelConfigBulkDeleteResponse`：`{ids}`；原子软删除，ID 不存在返回 404 |
+| DELETE | `/api/model-configs/{client_id}` | 无请求体 | `{id}`；停用单个配置 |
+
+`providerKind` 为 `cloud`、`local`、`custom`；`apiFamily` 为 `openai_responses`、`openai_compatible_chat`、`anthropic_messages`、`google_gemini`。provider ID、默认地址、鉴权及发现能力以 manifest 返回值为准，客户端不要另维护 provider 清单。
+
+`DiscoverModelsRequest` 包含 `provider`、`apiUrl`，以及可选 `apiFamily`、`apiKey`、`configId`、`refresh`。此端点只支持具有发现能力的 cloud provider：
+
+- 默认 `refresh: false` 只读本地 provider 缓存，没有缓存时返回空数组和 `source: "cache"`。
+- `refresh: true` 调用 manifest 声明的官方端点；`apiUrl` 不用于改变发现目标。可提交 API key，或通过 `configId` 使用已保存配置的 key。
+- 发现不会保存新提交的凭据，但会更新模型列表缓存。响应包含上下文、输出上限、图像/工具/流式能力、`availableThinkingModes` 与元数据来源。
+
+`context-window` 只查询本地模型目录，不联系部署模型服务。`status` 是 `found`、`not_found`、`ambiguous`；未获得明确匹配时上限可为 `null`，不能解释为零。这个值是模型目录参考，不是对本地部署上下文设置的探测。
+
+保存配置的关键字段为 provider 身份、协议、`model`、`apiUrl`、`nickname`、凭据及模型参数。响应只返回 `apiKeyPreview`，不返回明文 key；更新时可省略 `apiKey` 保留已保存凭据。服务端按 provider 模式校验并规范化能力，而非直接信任客户端布尔值。
+
+`thinkingMode` 仅为 `auto` 或 `off`。`auto` 委托模型正常行为；只有元数据与实际协议都支持显式关闭时，`availableThinkingModes` 才包含 `off`，不支持的请求返回 `MODEL_CONFIG_THINKING_MODE_UNSUPPORTED`。见 [thinking.py](../backend/app/services/thinking.py)。
+
+`maxTokens: null` 使用运行时自动输出预算；显式值须为正安全整数，并接受已知模型输出上限校验。`contextWindowTokens`、采样参数及 capability 字段的模式约束见 schema 与 [model_configs.py service](../backend/app/services/model_configs.py)。HTTP 配置契约不包含运行时 `timeout_seconds`、解密后的凭据或 provider 原始推理状态。
+
+## 导入、导出与共享目录
+
+### JSON 导入
+
+契约：[imports.py schema](../backend/app/schemas/imports.py)、[imports 路由](../backend/app/routers/imports.py)。两个端点均接收 `multipart/form-data`，单个文件字段名为 `file`。
+
+| 方法 | 路径 | 内容 | `data` |
+| --- | --- | --- | --- |
+| POST | `/api/import/resume` | UTF-8 JSON `ResumeArtifactV1` | `ImportResumeResponse`：`templates`、`resumes` |
+| POST | `/api/import/templates` | UTF-8 JSON `TemplateArtifactV1` | `ImportTemplatesResponse`：`templates` |
+
+简历文件的 `format` 为 `reseno.resume`，模板文件为 `reseno.template`，两者 `formatVersion` 均为 `1`。简历 artifact 含 `templates` 与非空 `resumes`；内嵌自定义模板用 `custom:0` 等 artifact 局部引用，必须与简历引用对应。正文自身仍使用 `schemaVersion: 2`。模板 artifact 的 `templates` 为非空便携模板数组。
+
+导入端点只解析与校验，不创建工作区资源。客户端先创建内嵌模板并映射新 ID，再创建简历。JSON 导出由前端序列化为同一 artifact 格式，见 [import-api.ts](../frontend/src/lib/import-api.ts)、[export-api.ts](../frontend/src/lib/export-api.ts)。
+
+单文件上限 10 MiB；multipart 总体上限为 10 MiB + 64 KiB，最多一个文件和一个普通字段。文件或 multipart 总字节超限使用 413；无效 JSON、artifact 及 multipart 结构限制错误使用 400。上传规则见 [upload_route.py](../backend/app/routers/upload_route.py)。
+
+### PDF 与图片导出
+
+契约：[exports.py schema](../backend/app/schemas/exports.py)、[exports 路由](../backend/app/routers/exports.py)。
+
+| 方法 | 路径 | 请求 | 响应 |
+| --- | --- | --- | --- |
+| POST | `/api/exports/resume-pdf` | `ExportResumePdfRequest` | JSON `ExportResumePdfResponse` |
+| POST | `/api/exports/resume-images` | `ExportResumeImagesRequest` | JSON `ExportResumeImagesResponse` |
+| GET | `/api/exports/download/{export_id}` | 可选查询 `fileName`；Bearer | PDF 文件 |
+| GET | `/api/exports/image-download/{export_id}` | 可选查询 `fileName`；Bearer | 单页 PNG 或多页 ZIP 文件 |
+
+两个生成请求使用相同字段：
+
+```json
+{
+  "resumeId": "服务端简历ID",
+  "fileNameSeed": "Resume",
+  "savedAt": "保存响应中的时间",
+  "versionId": "保存响应中的版本ID"
+}
+```
+
+`versionId` 可省略，此时渲染当前保存版本。导出调用本身不保存编辑器内容，客户端应先保存，再提交该次响应的 `savedAt` 与 `versionId`。请求不接受前端渲染 URL 或语言参数；后端从指定简历快照读取 `documentLocale`，通过 `FRONTEND_RENDER_BASE_URL` 对应的 `/pdf-export` 页面完成渲染。
+
+生成响应包含 `exportId`、`downloadUrl`、`fileName`、`expiresAt`；图片另含 `pageCount`、`isArchive`。文件自生成起保留 1 小时，下载不续期；下载 URL 仍要求 Bearer，请使用带鉴权的资源请求。过期或缺失返回 404 `EXPORT_FILE_NOT_FOUND`。
+
+后端复用 Chromium，每次导出创建独立 context；最多四个请求排队或执行。容量满为 503 `EXPORT_RENDERER_BUSY`，带 `Retry-After: 1`；关闭中为 `EXPORT_RENDERER_UNAVAILABLE`。PDF/图片超时分别为 504 `PDF_RENDER_TIMEOUT` / `IMAGE_RENDER_TIMEOUT`，渲染失败为 503 `PDF_RENDER_FAILED` / `IMAGE_RENDER_FAILED`。
+
+### 健康与解析目录
+
+| 方法 | 路径 | 认证 | 响应 |
+| --- | --- | --- | --- |
+| GET | `/health` | 不要求 Bearer | 原始 JSON `{ "status": "ok" }` |
+| GET | `/api/section-registry` | Bearer | `SectionRegistryResponse`：后端 section kind、默认渲染布局、双语标签与别名 |
+| GET | `/api/resume-import-lexicon` | Bearer | `ResumeImportLexiconResponse`：PDF 导入所需语言词汇 |
+
+PDF 简历导入由[前端 PDF 解析器](../frontend/src/lib/pdf-resume-import.ts)执行，使用上述目录接口取得解析配置，再调用简历创建接口持久化。`/api/import/resume` 接受 JSON，不接收 PDF。
+
+## Agent 会话、运行与审核
+
+契约：[agent.py schema](../backend/app/schemas/agent.py)、[agent 路由](../backend/app/routers/agent.py)、[前端 Agent 类型](../frontend/src/types/api.ts)。所有 Agent 接口都需要 Bearer。
+
+| 方法 | 路径 | 请求 | 响应 |
+| --- | --- | --- | --- |
+| POST | `/api/agent/chat` | `AgentChatRequest` | SSE；响应头 `X-Agent-Run-Id` |
+| GET | `/api/agent/resumes/{resume_id}/session` | 无 | `AgentSessionResponse` |
+| PUT | `/api/agent/resumes/{resume_id}/session` | `AgentSessionReplaceRequest`：`revision`、`messages`、可选 `locale` | `AgentSessionResponse` |
+| GET | `/api/agent/resumes/{resume_id}/recovery` | 无 | `AgentSessionRecoveryResponse`：`{session, run}` |
+| GET | `/api/agent/runs/{run_id}/events` | 查询 `after` 为非负整数，默认 `0` | SSE；重放后继续订阅 |
+| DELETE | `/api/agent/runs/{run_id}` | 无请求体 | `AgentRunResponse`；请求停止执行 |
+| PATCH | `/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft` | `AgentDraftDecisionRequest` | `AgentDraftDecisionResponse`：`{session, resume}` |
+| POST | `/api/agent/attachments` | multipart：`resumeId` 与文件 `file` | `AgentAttachmentResponse` |
+| GET | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | 无 | 原始附件文件 |
+| DELETE | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | 无请求体；仅未发送附件 | `{id}`；不存在或不可删除为 404 |
+
+### 接受一次用户输入
+
+`AgentChatRequest.message` 是本次唯一用户输入，必须有非空且无首尾空白的 `id`、`role: "user"`，以及非空文本或附件，不能携带 assistant `response`。`messages` 只表示此前历史，不能再次包含本次 message ID。
+
+工作区请求指定 `resumeId` 时必须提供从会话读取的 `expectedRevision`。后端在开始 provider 请求之前持久化用户消息，并从 SQLite 重建权威历史；客户端提交的历史不能替换已保存会话。`resumeId` 省略时使用不绑定持久会话的运行。
+
+`resume` 是 `ResumeData` 正文；`draftState` 表示未审核草稿。`modelConfig` 只接受 `{id}`，引用已保存配置，不能在 chat 中传 API key、地址或参数覆盖。`locale` 为 Agent 请求语言；最终执行偏好由后端保存的 `agentSettings` 固定。`execution_profile` 属于内部运行数据，客户端不提交。
+
+`stream` 字段不切换本 HTTP 端点的响应格式：成功接受的 `/chat` 始终返回 SSE。前端封装的 `AgentChatResponse` 是消费完整流后的聚合结果，不是该端点的 JSON envelope。
+
+每份简历同时只能有一个活动 run，全局最多四个活动 run；冲突返回 409 `AGENT_RUN_CONFLICT`，容量不足返回 429 `AGENT_RUN_CAPACITY_EXCEEDED`。run 与模型身份在接受后固定。断开页面、取消 fetch 或 SSE 连接不等于停止运行；停止必须调用 run DELETE，之后继续读取流或 recovery 确认最终状态。
+
+### SSE 事件与恢复
+
+事件协议的实现见 [streaming.py](../backend/app/services/agent/runtime/streaming.py)、[agent_runs.py](../backend/app/services/agent_runs.py)，客户端见 [agent-stream-client.ts](../frontend/src/lib/agent-stream-client.ts)。每个业务帧具有递增数字 `id`、`event` 名称和 JSON `data`：
 
 ```text
-SQLite:
-  resumes(id, locale, current_version_id, title, saved_at, deleted, ...)
-  resume_versions(resume_id, version_id, content_hash, kind, saved_at, ...)
-
-Storage:
-  resumes/{resume_id}/versions/{version_id}.json
-```
-
-### 模板资源
-
-| 方法 | 路径 | 职责 |
-| --- | --- | --- |
-| `GET` | `/api/templates?status=active\|deleted` | 按状态列出自定义模板 |
-| `POST` | `/api/templates` | 创建后端分配 ID 的自定义模板 |
-| `PUT` | `/api/templates/{templateId}` | 更新一份有效的自定义模板 |
-| `POST` | `/api/templates/{templateId}/trash` | 将自定义模板移入回收站；若为默认模板则恢复内置默认值 |
-| `POST` | `/api/templates/{templateId}/restore` | 恢复已删除模板 |
-| `DELETE` | `/api/templates/{templateId}` | 永久删除已在回收站中的模板 |
-| `DELETE` | `/api/templates/trash` | 永久清空模板回收站 |
-
-内置模板不能通过模板资源接口修改或删除。自定义模板使用 SQLite 元信息和
-`templates/{template_id}/current.json` 保存当前内容，不创建版本历史。
-
-模型配置由 `/api/model-configs` 负责查询、创建或更新、删除；Provider 元数据和
-模型发现由 `/api/model-providers*` 负责。模型资源接口的完整契约见后文
-“ModelConfig”章节。
-
-## PDF Export
-
-### POST `/api/exports/resume-pdf`
-
-用途：基于刚保存的简历版本生成 PDF。调用方必须先保存当前简历版本，
-再调用该接口；PDF 生成由后端完成。
-
-当前前端导出按钮保存最新版本后调用该接口，并通过返回的 `downloadUrl`
-直接下载固定 A4 PDF。`/pdf-export` 仅作为后端 Playwright 使用的内部渲染页面，
-不会触发浏览器原生打印对话框。
-
-请求：
-
-```ts
-type ExportResumePdfRequest = {
-  resumeId: string
-  locale: "zh" | "en"
-  fileNameSeed: string
-  savedAt: string
-  versionId?: string
-}
-```
-
-渲染页面地址只允许由后端的 `FRONTEND_RENDER_BASE_URL` 配置提供，客户端不能
-覆盖该地址。导出中的远程图片通过受限连接读取：不携带浏览器凭据，
-每次跳转重新校验目标地址，拒绝内网目标；本地上传的 data URL 图片照常渲染。
-
-响应：
-
-```ts
-type ExportResumePdfResponse = {
-  exportId: string
-  downloadUrl: string
-  fileName: string
-  expiresAt: string
-}
-```
-
-`expiresAt` 固定为导出文件写入后一小时；过期下载返回 404，后端会清理对应临时文件。
-
-后端流程：
-
-```txt
-加载 resumeId 对应的 savedAt/versionId 数据
-打开前端 /pdf-export 专用渲染页面
-用 Playwright 等待字体、图片和页面稳定标记
-调用 page.pdf 生成 PDF
-将 PDF 写入对象存储或临时下载目录
-返回 downloadUrl
-```
-
-PDF 专用渲染页面复用前端 A4 预览的结构化数据和模板配置，但隐藏编辑器、
-工具栏、Agent 面板等交互 UI。
-
-## Resume Import
-
-### POST `/api/import/resume`
-
-用途：上传 JSON/PDF/文本等文件并生成简历数据。
-
-请求：`multipart/form-data`
-
-```ts
-file: File
-```
-
-响应：
-
-```ts
-type ImportResumeResponse = {
-  resumes: ResumeWorkspaceItem[]
-}
-```
-
-当前后端支持 JSON 文件导入；PDF/文本自动生成仍是待实现能力。
-
-## Template Import
-
-### POST `/api/import/templates`
-
-用途：上传模板文件并生成模板数据。
-
-请求：`multipart/form-data`
-
-```ts
-file: File
-```
-
-响应：
-
-```ts
-type ImportTemplatesResponse = {
-  templates: ResumeTemplateDefinition[]
-}
-```
-
-## Agent
-
-### POST `/api/agent/chat`
-
-用途：发送当前简历、待确认草稿、历史消息、附件、模型配置和当前用户输入，返回
-Agent 的自然语言回复与可选结构化草稿。岗位、JD 和申请目标都是普通上下文，不存在
-独立的目标状态协议；请求也不接受独立的 `jobBrief` 或 `keywordMatch` 字段。
-该接口启动一个后台 run，并立即订阅其 SSE 事件流。
-
-Agent 只有一个开放循环：`模型 → 工具(auto) → observation → 模型 → 自然结束`。
-普通模式始终向模型提供 `web_search`、`web_fetch`、`edit_execute`；`suggestOnly` 不提供
-写工具。支持 hosted search 的 OpenAI Responses、Claude 和 Gemini 模型改用 provider
-原生搜索，只保留客户端 `edit_execute`；其他云模型和本地模型使用本地 Web 工具。模型可以在一轮中并行发出多个工具调用，也可以
-不调用工具直接回答。工具调用前后的模型文本按原始顺序保留在 timeline 中；模型返回
-无工具调用的自然语言响应时，本轮立即结束，不再发起额外的模型完成请求。
-
-完整的脱敏简历、当前待确认草稿、当前附件文本和历史上下文已经由上下文模块直接提供
-给模型，不需要额外的读取或提取步骤。当前公开信息会实质改善结果时，模型可按需搜索；
-`web_fetch` 可读取用户提供、搜索返回或历史保留的任意相关公网 URL。公开网页不能证明
-候选人的个人经历。所有简历修改统一通过 `edit_execute` 提交操作批次。
-
-前端只把返回的结构化修改操作应用到临时 JSON 草稿，用户确认后才写回当前简历。
-后端会使用 SQLite 中已配置并加密保存的大模型配置发起真实模型调用；如果没有
-可用模型配置，接口只返回配置引导，不返回模拟对话。
-
-请求头：
-
-```txt
-Content-Type: application/json
-Accept: text/event-stream
-```
-
-响应始终是 `text/event-stream`，并通过 `X-Agent-Run-Id` 返回可重连的 run ID。
-前端只渲染后端返回的 Agent 消息数据，不再内置示例对话、工具调用或固定建议。
-
-请求：
-
-```ts
-type AgentChatAttachment = {
-  id: string
-  filename: string
-  mediaType: string
-  kind: "text" | "image"
-}
-
-type AgentConversationMessage = {
-  id?: string
-  role: "user" | "assistant"
-  text: string
-  files?: AgentChatAttachment[]
-  createdAt?: string
-}
-
-type AgentCurrentMessage = {
-  id: string // 当前轮唯一 ID，也是唯一的幂等键
-  role: "user"
-  text: string // 可为空，但此时 files 必须非空
-  files?: AgentChatAttachment[]
-}
-
-type ResumeDraftDiff = {
-  id: string
-  operationId: string
-  path: string
-  kind: "added" | "modified" | "deleted" | "moved"
-  label: string
-  sectionId?: string
-  itemId?: string
-  before?: unknown
-  after?: unknown
-}
-
-type AgentDraftReviewItem = {
-  id: string
-  editIds: string[]
-  status: "pending" | "applied" | "discarded" | "superseded"
-}
-
-type AgentDraftState = {
-  id: string
-  sourceMessageId?: string
-  createdAt?: string
-  updatedAt?: string
-  resume: ResumeData
-  pendingCount: number
-  reviewItems: AgentDraftReviewItem[]
-  edits: AgentResumeEditSuggestion[]
-  diffs: ResumeDraftDiff[]
-  transactionState?: "none" | "provisional" | "committed" | "rolled_back"
-}
-
-type AgentModelConfigSelection = {
-  id: string // ModelConfig.id，不是 Provider 的原生模型 ID
-}
-
-type AgentChatRequest = {
-  resumeId?: string // 当前简历 ID；Agent 会话按 resumeId 存储和检索
-  expectedRevision?: string // 传 resumeId 时必填，取自 GET session 的 revision
-  message: AgentCurrentMessage // 当前唯一用户轮；附件也放在这里
-  messages?: AgentConversationMessage[] // 仅当前轮之前的历史，不能包含 message
-  locale: "zh" | "en"
-  resume: ResumeData
-  draftState?: AgentDraftState | null // 仅用于继续处理当前会话的待确认草稿
-  modelConfig?: AgentModelConfigSelection | null
-  stream?: boolean // 不改变传输；POST /chat 始终返回 SSE
-}
-```
-
-请求没有 `prompt`、顶层 `files`、`conversation` 或 `clientTurnId` 字段；这些旧字段
-不会被兼容，传入时会直接校验失败。`message.id` 是当前轮唯一的幂等键。
-
-最终消息 payload：
-
-```ts
-type AgentSource = {
-  id: string
-  title: string
-  sourceType: "attachment" | "web"
-  url?: string
-  excerpt?: string
-}
-
-type AgentToolInvocation = {
-  id: string
-  type: string
-  title: string
-  state:
-    | "input-streaming"
-    | "input-available"
-    | "output-available"
-    | "output-error"
-    | "approval-requested"
-    | "approval-responded"
-    | "output-denied"
-  input?: unknown
-  output?: unknown
-  errorText?: string
-  startedAt?: string
-  completedAt?: string
-}
-
-type AgentResumeEditSuggestion = {
-  id: string
-  title: string
-  target: string // 例如 basic.summary 或 sections.project.items.project-1
-  reason: string
-  replacement?: string
-  evidenceRefs?: string[]
-  status?: "planned" | "executed" | "rejected"
-  operation?: ResumeEditOperation
-  diffs?: ResumeDraftDiff[]
-}
-
-type AgentCommittedDraft = {
-  baseResume: ResumeData
-  reviewItems: AgentDraftReviewItem[]
-}
-
-type AgentTimelinePart = {
-  id: string
-  type: "text" | "tool_group"
-  text: string
-  toolIds: string[]
-}
-
-type ResumeEditOperation =
-  | { type: "replace_field"; path: "basic.headline" | "basic.summary"; value: string }
-  | { type: "insert_section"; section: ResumeSection; index?: number }
-  | { type: "update_section"; sectionId: string; patch: Partial<ResumeSection> }
-  | { type: "delete_section"; sectionId: string }
-  | { type: "reorder_sections"; sectionIds: string[] }
-  | { type: "insert_item"; sectionId: string; item: ResumeSectionItem; index?: number }
-  | { type: "update_item"; sectionId: string; itemId: string; patch: Partial<ResumeSectionItem> }
-  | { type: "delete_item"; sectionId: string; itemId: string }
-  | { type: "reorder_items"; sectionId: string; itemIds: string[] }
-
-type AgentChatResponse = {
-  message: {
-    id: string
-    role: "assistant"
-    tone?: "default" | "success"
-    text: string
-    reasoning?: string
-    timeline?: AgentTimelinePart[]
-    plan?: string[]
-    suggestions?: string[]
-    knowledge?: Array<{
-      title: string
-      detail: string
-    }>
-    tools?: AgentToolInvocation[]
-    sources?: AgentSource[]
-    edits?: AgentResumeEditSuggestion[]
-    draft?: AgentCommittedDraft
-    transactionState?: "none" | "provisional" | "committed" | "rolled_back"
-  }
-}
-```
-
-SSE 流式响应事件：
-
-```ts
-type AgentChatStreamEvent =
-  | {
-      type: "message_start"
-      message: Partial<Pick<AgentChatResponse["message"], "id" | "role" | "tone" | "text">>
-    }
-  | {
-      type: "text_delta"
-      delta: string
-      timelinePartId: string
-    }
-  | {
-      type: "tool_start" | "tool_delta" | "tool_done"
-      tool: AgentToolInvocation
-      timelinePartId: string
-    }
-  | {
-      type: "edits"
-      message: Pick<AgentChatResponse["message"], "edits" | "transactionState">
-    }
-  | {
-      type: "message_done"
-      message: AgentChatResponse["message"]
-    }
-  | {
-      type: "error"
-      error: string
-      errorCode?: string
-    }
-  | {
-      type: "run_done"
-      runId: string
-      status: "completed" | "cancelled" | "failed"
-      executionState: "succeeded" | "cancelled" | "failed"
-      errorCode: string | null
-    }
-```
-
-推荐事件顺序：
-
-```txt
-event: message_start
-data: {"type":"message_start","message":{"id":"agent-msg-xxx","role":"assistant","tone":"default"}}
-
+id: 2
 event: text_delta
-data: {"type":"text_delta","delta":"正在整理现有项目事实。","timelinePartId":"timeline-text-1"}
+data: {"type":"text_delta","delta":"正文片段","timelinePartId":"text-1"}
 
-event: tool_start
-data: {"type":"tool_start","timelinePartId":"timeline-tool-2","tool":{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"input-available","input":{"edits":[{"operation":{"type":"update_item","sectionId":"project","itemId":"project-1","patch":{"highlights":["使用 React 与 TypeScript 梳理表单状态并补充键盘交互。"]}}}]}}}
-
-event: tool_done
-data: {"type":"tool_done","timelinePartId":"timeline-tool-2","tool":{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"output-available","input":{"editCount":1},"output":{"editCount":1,"observations":[{"target":"sections.project.items.project-1"}]}}}
-
-event: edits
-data: {"type":"edits","message":{"edits":[{"id":"edit-1","title":"更新项目","target":"sections.project.items.project-1","status":"executed","operation":{"type":"update_item","sectionId":"project","itemId":"project-1","patch":{"highlights":["使用 React 与 TypeScript 梳理表单状态并补充键盘交互。"]}}}],"transactionState":"provisional"}}
-
-event: message_done
-data: {"type":"message_done","message":{"id":"agent-msg-xxx","role":"assistant","tone":"success","text":"已更新项目表述，请检查草稿。","timeline":[{"id":"timeline-text-1","type":"text","text":"正在整理现有项目事实。","toolIds":[]},{"id":"timeline-tool-2","type":"tool_group","text":"","toolIds":["call-1"]}],"tools":[{"id":"call-1","type":"tool-edit_execute","title":"edit_execute","state":"output-available"}],"edits":[{"id":"edit-1","title":"更新项目","target":"sections.project.items.project-1","status":"executed"}],"transactionState":"committed"}}
-
-event: run_done
-data: {"type":"run_done","runId":"agent-run-xxx","status":"completed","executionState":"succeeded","errorCode":null}
 ```
 
-约束：
-
-- `message_done.message.text` 必须是完整文本，不能只返回最后一个 delta。
-- `text_delta` 与工具事件使用 `timelinePartId` 增量重建顺序；完整 `text/timeline/tools/sources/edits` 只在 `message_done` 发送。前端不展示
-  原始 chain-of-thought，只展示产品化状态、模型可见文本和修改摘要。
-- `tool_start`、`tool_delta` 和 `tool_done` 用于生成当前执行状态和完成后的折叠详情；同一个工具调用的 `id` 在流式过程中应保持稳定。
-- 工具的 `input-available` / `input-streaming` 表示该步骤正在执行。前端主视图只展示当前步骤 shimmer，例如
-  “正在读取 JD / 正在生成草稿”；完成后折叠为
-  “已运行 N 条操作”。折叠详情只展示产品化执行文案，不默认展示底层工具名、参数或原始输出。
-- `sources` 用于引用来源展示；如果来源可打开，返回 `url`，否则只返回标题和摘要。
-- `edits` 是结构化修改建议；后端必须返回 `ResumeEditOperation`，前端先应用到临时草稿并高亮预览。
-- 审核项的 `superseded` 表示已被后续草稿继承并替代，由服务端在新草稿成功提交时记录；用户审核决定仅接受 `applied` 或 `discarded`，已经应用或主动放弃的审核项保留原状态。
-- 流式过程中 `edit_execute` 完成后可提前发送 `event: edits`，用于同步中间预览；
-  应用/撤回按钮只在 `message_done` 之后展示。
-- 前端必须把 `edits` 应用到 pending draft，而不是直接写入正式 `resume`；预览区显示
-  draft 并用新增、修改、移动、删除的颜色语义标记变更位置。
-- 模型直接从请求上下文读取完整的 sanitized resume、待确认草稿和当前附件；这些信息
-  不需要额外工具步骤。通用编辑请求由 `edit_execute` 直接携带完整 `edits` 批次执行。
-- 模型侧 edit entry 只提交 `operation`；标题、target、reason、diff 和内部证据引用由
-  `DraftEditEngine` 从操作与权威上下文派生。
-- `edit_execute.output.observations` 会返回本次草稿操作的目标位置、修改前快照和修改后快照，模型应根据 Observation 判断是否继续修正；当没有后续工具调用时，循环自然完成。
-- `edit_execute` 使用 `resume_edit_operation.schema.json` 作为操作协议的唯一事实来源。
-  整批操作只做结构校验和字符串整理，再检查 PII 写入、候选人证据与文档合同；
-  任一硬不变量失败都会拒绝整批，不产生部分草稿。`suggestOnly` 通过工具可见性和执行
-  环境阻止写调用，不从用户自然语言推导另一套授权 workflow。
-- STAR/CAR、篇幅、重复度、片段、时态、关键词覆盖等属于 prompt 写作判断或离线评测，
-  不作为在线编辑拦截条件。
-- 每次成功的 `edit_execute` 先产生 `provisional` 事务状态。模型自然结束后事务变为
-  `committed` 并持久化为待确认草稿；工具拒绝后未修复、取消、超出轮次上限或运行错误
-  都会回滚整轮。正式简历始终由用户在 UI 中确认后另行写入。
-- `web_search` / `web_fetch` 输出是不可信公开参考，不能作为候选人事实证据；本地工具
-  拒绝私网、凭据 URL 和已过期 JobPosting。可读页面 passage 与带正文的搜索 excerpt
-  都返回稳定 `sourceId`；超长聚合页只返回查询相关 passage，而不是整页列表文本。
-- `message` 是当前唯一用户轮，`messages` 只包含它之前的历史；当前 `message.id`
-  不能再次出现在 `messages` 中。
-- 传入 `resumeId` 时，后端会把当前用户消息和最终助手消息写入
-  `agent_sessions` / `agent_messages`。请求必须同时传入最近一次会话读取返回的
-  `revision` 作为 `expectedRevision`；并发冲突返回 409。
-- 附件先通过 Agent 附件接口上传；聊天请求只携带后端返回的附件引用。
-- 后端发生可恢复错误时可发送 `event: error`，也可以直接返回非 2xx JSON error。
-
-### Agent run 重连与停止
-
-`POST /api/agent/chat` 接受请求后，run 独立于当前 HTTP 订阅继续执行。每个 SSE frame
-都带单调递增的 `id`；网络断开后可通过以下接口恢复：
-
-| 方法 | 路径 | 用途 |
+| `event` / `data.type` | 主要数据 | 客户端处理 |
 | --- | --- | --- |
-| `GET` | `/api/agent/resumes/:resumeId/recovery` | 一次读取一致的会话历史和可重连 run |
-| `GET` | `/api/agent/runs/:runId/events?after=:lastEventId` | 重放游标之后的事件并继续订阅 |
-| `DELETE` | `/api/agent/runs/:runId` | 显式取消 run，并回滚未完成草稿事务 |
+| `message_start` | `message` | 建立 assistant 消息 |
+| `text_delta` | `delta`、`timelinePartId` | 追加正文与对应 timeline 文本 |
+| `tool_start`、`tool_delta`、`tool_done` | `tool`、`timelinePartId` | 按 tool ID 合并公开工具状态，维护显示顺序 |
+| `edits` | `message.edits`、`message.transactionState` | 更新草稿编辑及事务状态，不写正式简历 |
+| `message_delta` | `message` | 接收压缩重放后的绝对消息快照，不当作追加 token |
+| `message_done` | 完整 `message` | 接收最终 assistant 消息，含 timeline、tools、sources、edits、draft |
+| `error` | `error`、`errorCode` | 显示运行错误，等待终态或执行恢复 |
+| `run_done` | `runId`、`status`、`executionState`、`errorCode` | 确认执行终态 |
 
-```ts
-type AgentSessionRecoveryResponse = {
-  session: AgentSessionResponse
-  run: AgentRunResponse | null
-}
+无业务事件时约每 12 秒发送 `: ping` 注释心跳，心跳没有事件 ID。响应带 `Cache-Control: no-cache`、`X-Accel-Buffering: no`；代理应透传并及时刷新事件。
 
-type AgentRunResponse = {
-  id: string
-  resumeId: string | null
-  baseResume: ResumeData
-  status: "active" | "completed" | "cancelled" | "failed"
-  executionState: "running" | "succeeded" | "cancelled" | "failed"
-  errorCode: string | null
-  lastEventId: number
-}
-```
+重连使用最后已消费的事件 ID 作为 `?after=`，不是只发送 `Last-Event-ID` 请求头。重放缓冲可能把早期增量折叠为完整 `message_delta`/`message_done` 快照，客户端必须支持快照合并和按 ID 去重。`message_done` 不能替代 `run_done` 判断运行成功：可展示终态消息的失败运行仍有失败执行状态。
 
-run 与事件重放缓冲当前是进程内状态；会话消息、草稿决定和最终执行状态持久化到
-SQLite，但后端重启不会恢复正在执行的 provider 请求。
+run 的 `status` 为 `active`、`completed`、`cancelled`、`failed`；持久 turn 的 `executionState` 为 `running`、`succeeded`、`cancelled`、`failed`。终态错误类型为 `AGENT_PROVIDER_AUTH_ERROR`、`AGENT_PROVIDER_ERROR`、`AGENT_PROVIDER_TIMEOUT`、`AGENT_INTERNAL_ERROR`、`AGENT_RUN_CANCELLED`、`AGENT_EDIT_TRANSACTION_INCOMPLETE`。
 
-### GET `/api/agent/resumes/:resumeId/session`
+`AgentSessionResponse` 包含 `resumeId`、`revision`、`messages`、`executions`。`executions` 保存 run/turn ID、模型身份快照、起止时间和执行结果。`recovery` 在同一恢复流程中返回权威 session 及匹配的活动 run；没有活动 run 时 `run: null`。运行和 SSE 重放属于当前后端进程，重启后不能接回旧执行；后端启动会将中断的持久执行标记失败，历史仍由 session 接口读取。
 
-用途：按简历 ID 加载 Agent 会话历史消息，用于草稿操作和运行终态后的刷新。
-前端进入简历编辑页时调用 `/recovery`，同时恢复历史与运行状态；返回的 run
-存在时对应同一会话的运行中执行记录，已完成时返回包含最终回复的会话。
+会话 PUT 使用 `revision` 乐观并发控制，替换产品历史并清理对应执行记录与不再引用的附件；活动运行期间不接受替换。revision 过期返回 409 `AGENT_SESSION_REVISION_CONFLICT`；重复 turn 或消息身份冲突返回 `AGENT_SESSION_TURN_CONFLICT`。收到这些错误后应读取 recovery/session，以服务端状态协调界面，不盲目覆盖。
 
-响应：
+### 草稿审核与应用
 
-```ts
-type AgentStoredMessage = AgentConversationMessage & {
-  response?: AgentChatResponse["message"]
-}
+assistant 的 `transactionState` 为 `none`、`provisional`、`committed`、`rolled_back`。只有完成的草稿事务可进入审核；流中的 provisional edits 不代表正式内容已经保存。编辑 operation 的具体字段与允许路径以 [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) 为准。
 
-type AgentSessionResponse = {
-  resumeId: string
-  revision: string
-  messages: AgentStoredMessage[]
+`draft.baseResume` 保存草稿依据，`draft.reviewItems` 将有序 edits 分成可独立审核的组；每项有 `id`、`editIds`、`status`。编辑 ID 必须恰好覆盖一次且保持顺序。review item 状态为 `pending`、`applied`、`discarded`、`superseded`；客户端审核命令只能提交 `applied` 或 `discarded`。
+
+丢弃选中审核项的请求示例：
+
+```json
+{
+  "revision": "当前session revision",
+  "status": "discarded",
+  "reviewItemIds": ["待审核项ID"]
 }
 ```
 
-## Core Data Shapes
+应用时改用 `status: "applied"`，并提交 `expectedVersionId` 和 `resume`。其中 `resume` 必须是符合正文 schema 的完整合并候选。前端根据草稿与当前编辑器内容生成可审核结果，用户确认后调用此命令。
 
-### ResumeWorkspaceItem
+应用时 `revision`、`expectedVersionId` 同时防止覆盖新的会话决定或正式简历；后端在一个事务中写入简历 autosave 和审核状态。响应 `resume` 为保存后的 `ResumeDetailResponse`。丢弃请求只提交 `revision`、`status: "discarded"`、非空 `reviewItemIds`，禁止提交 `resume` 或 `expectedVersionId`，响应 `resume: null`。
 
-```ts
-type ResumeWorkspaceItem = {
-  id: string
-  title: string
-  updatedAt: string
-  resume: ResumeData
-  jobBrief: string
-  typography?: ResumeTypography
-  template?: BuiltinResumeTemplateId | ResumeTemplateDefinition
-}
-```
+review item ID 必须唯一并指向待审核项。冲突使用 HTTP 409：`AGENT_SESSION_REVISION_CONFLICT`（可含新 `revision`）、`RESUME_VERSION_CONFLICT`（含 `versionId`）、`AGENT_RUN_CONFLICT`（可含 `runId`）、`AGENT_DRAFT_DECISION_CONFLICT`（可含 `revision`、`status`）。这些附加字段位于 envelope 的 `data` 中。
 
-### ResumeData
+### 附件
 
-```ts
-type ResumeData = {
-  basic: ResumeBasicInfo
-  sections: ResumeSection[]
-}
-```
+附件先上传，再在用户消息 `files` 中引用返回的后端附件 ID 与元数据。上传响应为 `id`、`filename`、`mediaType`、`kind: "text" / "image"`；不要把浏览器临时 URL 当作持久引用。附件归属于指定简历的 Agent 会话，不能跨简历复用。
 
-### ResumeBasicInfo
+支持文本、PDF、DOCX 与经内容识别的图片。单附件最多 10 MiB，provider 上下文最多五个附件，合计最多 20 MiB；单文件提取文本最多 250,000 字符、请求合计最多 400,000 字符，PDF 最多 50 页。具体格式识别与限制见 [attachments.py](../backend/app/services/agent/attachments.py)。这些 provider 请求限制不用于裁剪已保存的历史引用。
 
-```ts
-type ResumeBasicInfo = {
-  name: string
-  headline: string
-  phone: string
-  email: string
-  location: string
-  avatar?: string
-  summary?: string
-  customFields: Array<{
-    id: string
-    label: string
-    value: string
-  }>
-}
-```
-
-### ResumeSection
-
-```ts
-type ResumeSection = {
-  id: string
-  kind:
-    | "education"
-    | "work"
-    | "internship"
-    | "project"
-    | "skills"
-    | "awards"
-    | "certificates"
-    | "languages"
-    | "other"
-    | "custom"
-  layout: "timeline" | "list"
-  customTitle?: string
-  items: ResumeSectionItem[]
-}
-```
-
-### ResumeSectionItem
-
-```ts
-type ResumeSectionItem = {
-  id: string
-  title: string
-  subtitle: string
-  meta: string
-  period: string
-  description: string
-  highlights: string[]
-}
-```
-
-When `ResumeSection.layout` is `"list"`, only `title` and `subtitle` may contain
-content. `meta`, `period`, and `description` must be empty strings, and
-`highlights` must be an empty array. Resume create, update, JSON import, and
-Agent edits reject documents that violate this invariant.
-
-### ResumeTemplateDefinition
-
-```ts
-type ResumeTemplateDefinition = {
-  id: string
-  preset:
-    | "minimal"
-    | "modern"
-    | "compact"
-    | "classic"
-    | "executive"
-    | "academic"
-  name: string
-  description: string
-  layout: ResumeTemplateLayout
-  typography: ResumeTypography
-  settings: ResumeTemplateSettings
-  updatedAt: string
-  isBuiltIn?: boolean
-}
-```
-
-### ModelConfig
-
-```ts
-type ModelConfig = {
-  id: string
-  provider: string
-  providerLabel: string
-  iconProvider: string
-  providerKind: "cloud" | "local" | "custom"
-  apiFamily:
-    | "openai_responses"
-    | "openai_compatible_chat"
-    | "anthropic_messages"
-    | "google_gemini"
-  nickname: string
-  apiKeyPreview: string
-  model: string
-  apiUrl: string
-  temperature: number | null
-  topP: number | null
-  maxTokens: number | null
-  contextWindowTokens: number
-  supportsImage: boolean
-  supportsThinking: boolean
-  supportsTools: boolean
-  supportsStreaming: boolean
-  thinkingEnabled: boolean
-}
-```
-
-`apiKeyPreview` 由后端生成，只返回前 6 位加固定 `****`，例如
-`sk-edA****`。接口响应不返回真实 API Key，也不通过占位长度暴露真实
-Key 长度。
-
-### GET `/api/model-configs`
-
-用途：返回 SQLite 中已启用的大模型配置。API Key 只返回 `apiKeyPreview`。
-
-响应数据：
-
-```ts
-type ModelConfigsResponse = {
-  configs: ModelConfig[]
-}
-```
-
-### POST `/api/model-configs`
-
-用途：创建或更新大模型配置。请求可携带一次性明文 `apiKey`，后端使用
-配置中的 `RESENO_MASTER_KEY` 加密后写入 SQLite；明文只在当前请求内
-使用，不写入日志、不返回前端。
-
-请求：
-
-```ts
-type ModelConfigUpsertRequest = {
-  id?: string
-  provider: string
-  providerKind: "cloud" | "local" | "custom"
-  apiFamily:
-    | "openai_responses"
-    | "openai_compatible_chat"
-    | "anthropic_messages"
-    | "google_gemini"
-  nickname?: string
-  apiKey?: string
-  model: string
-  apiUrl: string
-  temperature?: number | null
-  topP?: number | null
-  maxTokens?: number | null
-  contextWindowTokens?: number | null
-  supportsImage?: boolean
-  supportsThinking?: boolean
-  supportsTools?: boolean
-  supportsStreaming?: boolean
-  thinkingEnabled?: boolean
-}
-```
-
-响应数据：
-
-```ts
-type ModelConfigUpsertResponse = ModelConfig
-```
-
-### GET `/api/model-providers`
-
-用途：返回后端维护的 provider manifest。前端只用它渲染选项和默认 API
-地址，不自行维护云端 provider 清单。
-
-响应数据：
-
-```ts
-type ModelProvidersResponse = {
-  providers: Array<{
-    id: string
-    label: string
-    kind: "cloud" | "local" | "custom"
-    apiFamily: ModelConfig["apiFamily"] | null
-    iconProvider: string
-    defaultBaseUrl: string
-    officialUrl: string
-    authRequired: boolean
-    supportsModelDiscovery: boolean
-    supportsCustomCapabilities: boolean
-  }>
-}
-```
-
-### POST `/api/model-providers/discover-models`
-
-用途：用用户提供的 API Key 和 API 地址即时获取当前 provider 支持的模型
-列表。刷新获取的模型列表会写入本地模型发现缓存，普通请求优先返回缓存。
-
-请求：
-
-```ts
-type DiscoverModelsRequest = {
-  provider: string
-  apiFamily?: ModelConfig["apiFamily"]
-  apiUrl: string
-  apiKey?: string
-  configId?: string
-  refresh?: boolean
-}
-```
-
-响应数据：
-
-```ts
-type DiscoverModelsResponse = {
-  models: Array<{
-    id: string
-    label: string
-    contextWindowTokens: number
-    maxOutputTokens: number | null
-    supportsImage: boolean
-    supportsThinking: boolean
-    metadataSource: "provider" | "litellm" | "fallback" | string
-  }>
-  source: "cache" | "provider"
-}
-```
-
-### DELETE `/api/model-configs/{id}`
-
-用途：删除模型配置。后端执行软删除，将该配置标记为 disabled，不返回或删除
-密钥明文。
-
-响应数据：
-
-```ts
-type ModelConfigDeleteResponse = {
-  id: string
-}
-```
-
-### AgentSettings
-
-```ts
-type AgentSettings = {
-  defaultModelConfigId: string
-  responseLanguage: "follow" | "zh" | "en"
-  behaviorMode: "balanced" | "strict" | "aggressive"
-  confirmationMode: "always" | "suggestOnly"
-}
-```
-
-## Backend Integration Checklist
-
-- 保持统一 `ApiResponse<T>` envelope。
-- 支持 `VITE_API_BASE_URL` 作为前端后端切换开关。
-- 页面初始化使用职责明确的 `/api/workspace/pages/*` 查询；不要增加通用
-  bootstrap，也不要让页面查询承担资源写入或版本管理。
-- 简历、模板、模型和 Agent 会话通过各自资源接口读写，组件不要自行拼接路径。
-- 文件上传接口需要支持 multipart。
-- 生产环境不要返回明文认证配置；任何环境都不要返回明文 API Key。
-- Agent chat 只维护一个 SSE 事件投影；会话、run 状态和草稿决定继续使用普通 JSON 资源接口。
-
-## Runtime Data And Environment
-
-后端默认读取 `backend/.env`，可通过启动环境中的 `APP_ENV_FILE` 指定其他路径。
-未配置的设置使用代码默认值；进程环境变量优先于文件值，密钥环境变量留空时读取文件值。
-`backend/.env.example` 是可复制的配置示例，真实 `.env` 被 Git 忽略。
-
-```env
-APP_DATA_DIR=~/.reseno
-APP_DB_PATH=
-APP_STORAGE_DIR=
-APP_USER_SETTINGS_PATH=
-FRONTEND_RENDER_BASE_URL=http://127.0.0.1:5173
-PDF_RENDER_TIMEOUT_MS=30000
-BACKEND_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
-RESENO_MASTER_KEY=
-RESENO_JWT_SECRET=
-```
-
-未明确指定的数据库、存储和用户设置路径分别采用 `APP_DATA_DIR/app.db`、
-`APP_DATA_DIR/storage`、`APP_DATA_DIR/user_settings.json`；`EXPORT_DIR` 默认是
-存储目录下的 `exports`。改变配置路径不会移动现有数据。
-
-业务 `app.db` 继续使用 schema v1，不加入或迁移任何认证表。唯一 owner 的用户名、
-Argon2id 密码哈希和随机认证 revision 单独保存在 `APP_DATA_DIR/auth.db`。
-替换 `auth.db` 或修改密码都会使旧 JWT 的 revision 失效。
-
-SQLite 中的大模型配置保存非敏感字段、`encrypted_api_key` 和固定长度
-`api_key_preview`。Fernet 主密钥和 JWT 签名密钥保存在 `.env` 中；首次启动时，
-缺失或留空的密钥会自动生成并一起写回配置文件，不存在时创建文件，写入权限为仅 owner 可读写。
-已有密钥和其他配置内容保留不变。环境变量或配置文件已提供完整密钥时，不写配置文件。
-已有数据库但缺少密钥时，需要恢复原 `.env` 或显式提供原来的两项密钥，不会重新生成。
-备份时应将 `.env`（或外部管理的密钥）与数据库、存储目录一起保留。
-Docker 自动生成密钥时，应挂载可写配置目录，以便原子替换 `.env`，不能仅挂载一个空的
-`.env` 文件。也可以通过环境变量或预先填好的配置文件提供两项固定密钥。密钥与数据目录均需持久化。
-Reseno 不提供默认用户名或
-密码；首次打开时通过 `POST /api/auth/setup` 创建唯一 owner，之后通过设置页调用
-`POST /api/auth/password` 修改密码。
+发送前可 DELETE 取消上传；已发送的历史附件不可通过该接口删除。未发送附件在 24 小时后可被后台清理；已发送附件随历史引用和所属简历生命周期管理。下载返回原始文件并要求 Bearer。
